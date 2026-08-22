@@ -252,7 +252,7 @@ lifecycleTeardownRetainedArtifactCustodySuite =
                      | kind <- [minBound .. maxBound]
                      , kind /= RetainedSubstrateInstaller
                      ]
-        length [effect | effect@("place", _) <- effects] `shouldBe` 4
+        length [effect | effect@("place", _) <- effects] `shouldBe` 6
         length [effect | effect@("discard", _) <- effects] `shouldBe` 0
 
       it "discards a delivery whose bytes are not the pinned ones instead of placing it" $ do
@@ -265,7 +265,7 @@ lifecycleTeardownRetainedArtifactCustodySuite =
                      | kind <- [minBound .. maxBound]
                      ]
         [effect | effect@("place", _) <- effects] `shouldBe` []
-        length [effect | effect@("discard", _) <- effects] `shouldBe` 5
+        length [effect | effect@("discard", _) <- effects] `shouldBe` 7
 
       it "keeps a lost delivery, a failed placement, and a failed collection distinct" $ do
         inventory <- requireInventory
@@ -329,8 +329,8 @@ lifecycleTeardownRetainedArtifactCustodySuite =
                               ]
             NonEmpty.toList residue
               `shouldContain` [ RetainedArtifactMissing
-                                  RetainedSubstrateSystemImages
-                                  (pathFor RetainedSubstrateSystemImages)
+                                  RetainedSubstrateReleaseTarball
+                                  (pathFor RetainedSubstrateReleaseTarball)
                               ]
             NonEmpty.toList residue
               `shouldContain` [RetainedArtifactUnreferenced "recovery-artifacts/amd64/superseded.tar"]
@@ -361,6 +361,8 @@ lifecycleTeardownRetainedArtifactCustodySuite =
         plan <- requireRepairPlan LocalRke2RecoveryAbsent
         fmap kindOf (retainedArtifactRepairPlanRefs plan)
           `shouldBe` [ RetainedSubstrateInstaller
+                     , RetainedSubstrateReleaseTarball
+                     , RetainedSubstrateChecksum
                      , RetainedSubstrateSystemImages
                      , RetainedObjectStoreImage
                      , RetainedSecretStoreImage
@@ -436,6 +438,8 @@ digestFor kind = "sha256:" <> Text.replicate 64 (Text.singleton (digestNibble ki
 digestNibble :: RetainedArtifactKind -> Char
 digestNibble kind = case kind of
   RetainedSubstrateInstaller -> '1'
+  RetainedSubstrateReleaseTarball -> '6'
+  RetainedSubstrateChecksum -> '7'
   RetainedSubstrateSystemImages -> '2'
   RetainedObjectStoreImage -> '3'
   RetainedSecretStoreImage -> '4'

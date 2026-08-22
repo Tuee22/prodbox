@@ -20,6 +20,7 @@ module Prodbox.Lifecycle.Teardown.Graph
   , compiledOperationForNode
   , DesiredAbsenceGraphError (..)
   , compileDesiredAbsenceGraph
+  , cleanupSurfaceRequiresAwsScope
   )
 where
 

@@ -26,6 +26,9 @@ module Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter
   , mkAwsStackProviderBinding
   , AwsEksPresentDestroyBoundary
   , mkAwsEksPresentDestroyBoundary
+  , Dns01ChallengeOwnerDeleteBoundary
+  , mkDns01ChallengeOwnerDeleteBoundary
+  , refusingDns01ChallengeOwnerDeleteBoundary
   , AwsRegisteredTargetInterpreter (..)
   , observeVerifiedAwsEksForDecision
   , observeAwsRegisteredTarget
@@ -50,8 +53,11 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   )
 import Prodbox.Lifecycle.Teardown.AwsEbsAdapter
 import Prodbox.Lifecycle.Teardown.AwsEksAdapter
+import Prodbox.Lifecycle.Teardown.AwsRetainedEbsAdapter
+import Prodbox.Lifecycle.Teardown.AwsRoute53ZoneAdapter
 import Prodbox.Lifecycle.Teardown.AwsStackAdapter
 import Prodbox.Lifecycle.Teardown.Decision
+import Prodbox.Lifecycle.Teardown.Dns01ChallengeRecordAdapter
 import Prodbox.Lifecycle.Teardown.Execution
   ( TeardownExecutionContext
   , teardownExecutionObservationScope
@@ -247,6 +253,67 @@ mkAwsEksPresentDestroyBoundary
   -> AwsEksPresentDestroyBoundary m
 mkAwsEksPresentDestroyBoundary = AwsEksPresentDestroyBoundary
 
+-- | Sprint 7.36: the interpreter's __Kubernetes-scoped execution arm__.
+--
+-- Every other registered target reconciles through
+-- 'dispatchRegisteredProviderMutation', because every other registered target
+-- is an AWS resource this repository created.  The DNS01 challenge record is
+-- not: cert-manager's DNS01 solver writes it, holds a finalizer over it, and
+-- would rewrite a record deleted underneath it.  Removing it means deleting the
+-- Kubernetes object that owns it — and the Provider deliberately has __no__
+-- Kubernetes capability at all, which is the contract rather than an omission.
+--
+-- So the arm is a separate typed boundary beside the Provider one, in exactly
+-- the shape 'AwsEksPresentDestroyBoundary' already uses for the other
+-- continuation this interpreter cannot inline.  Three properties are properties
+-- of this type rather than of its callers:
+--
+--   * It is reachable only with an 'ExactDns01ChallengeOwnerDeleteAuthorization',
+--     which only a __present__ observation of the family can mint.  An absent or
+--     unobservable family cannot reach a Kubernetes delete at all.
+--   * It returns a 'RegisteredTargetMutationAttempt', not an absence.  The
+--     mandatory Route 53 read-back is a separate node, which matters more here
+--     than anywhere else: cert-manager removes the record asynchronously after
+--     its object is gone, so a successful delete genuinely is not absence yet.
+--   * Keeping it a continuation avoids a module cycle between this interpreter
+--     and the EKS client-auth composition that scopes the Kubernetes access.
+newtype Dns01ChallengeOwnerDeleteBoundary m = Dns01ChallengeOwnerDeleteBoundary
+  { internalDeleteDns01ChallengeOwners
+      :: forall surface
+       . TeardownExecutionContext surface
+      -> RegisteredTargetBinding
+      -> ExactDns01ChallengeOwnerDeleteAuthorization
+      -> m (Either AwsRegisteredTargetInterpreterError RegisteredTargetMutationAttempt)
+  }
+
+mkDns01ChallengeOwnerDeleteBoundary
+  :: ( forall surface
+        . TeardownExecutionContext surface
+       -> RegisteredTargetBinding
+       -> ExactDns01ChallengeOwnerDeleteAuthorization
+       -> m
+            ( Either
+                AwsRegisteredTargetInterpreterError
+                RegisteredTargetMutationAttempt
+            )
+     )
+  -> Dns01ChallengeOwnerDeleteBoundary m
+mkDns01ChallengeOwnerDeleteBoundary = Dns01ChallengeOwnerDeleteBoundary
+
+-- | The boundary a composition that has no Kubernetes access at all installs.
+--
+-- It exists so "this runtime cannot reach Kubernetes" is a value rather than an
+-- omission: a composition that left the field unset would fail at the first
+-- DNS01 reconcile with a bottom instead of a refusal, and a refusal is what the
+-- cleanup report is able to carry.
+refusingDns01ChallengeOwnerDeleteBoundary
+  :: (Monad m) => Text -> Dns01ChallengeOwnerDeleteBoundary m
+refusingDns01ChallengeOwnerDeleteBoundary detail =
+  mkDns01ChallengeOwnerDeleteBoundary
+    ( \_ _ _ ->
+        pure (Right (RegisteredTargetMutationRefused (Text.take 1024 detail)))
+    )
+
 data AwsRegisteredTargetInterpreter m = AwsRegisteredTargetInterpreter
   { awsRegisteredTargetProviderBoundary :: !(TeardownProviderBoundary m)
   , awsRegisteredTargetReadStackDecisionInputs
@@ -261,6 +328,12 @@ data AwsRegisteredTargetInterpreter m = AwsRegisteredTargetInterpreter
       -> m (Either Text AwsStackProviderBinding)
   , awsRegisteredTargetPresentEksDestroyBoundary
       :: !(AwsEksPresentDestroyBoundary m)
+  , awsRegisteredTargetDns01ChallengeOwnerDeleteBoundary
+      :: !(Dns01ChallengeOwnerDeleteBoundary m)
+  -- ^ Sprint 7.36: the Kubernetes-scoped execution arm, beside the Provider
+  -- one.  A composition with no Kubernetes access installs
+  -- 'refusingDns01ChallengeOwnerDeleteBoundary' rather than leaving the field
+  -- unset.
   }
 
 data AwsRegisteredTargetInterpreterError
@@ -287,6 +360,10 @@ data AwsRegisteredTargetInterpreterError
     AwsRegisteredTargetAdapterUnbuilt
       !RegisteredResourceKey
       !RegisteredTargetAdapterGap
+  | -- | Sprint 7.36: a retained EBS adapter refusal, kept distinct from the
+    -- per-run EBS one so a report cannot attribute a retained-family refusal
+    -- to the per-run family.
+    AwsRegisteredTargetRetainedEbsInvalid !AwsRetainedEbsAdapterError
   | AwsRegisteredTargetProviderRefInvalid
       !RegisteredResourceKey
       !ProviderRefError
@@ -298,6 +375,11 @@ data AwsRegisteredTargetInterpreterError
   | AwsRegisteredTargetStackBindingInvalid !AwsStackBindingError
   | AwsRegisteredTargetStackDestroyRefused !AwsStackDestroyRefusal
   | AwsRegisteredTargetEbsInvalid !AwsEbsAdapterError
+  | AwsRegisteredTargetValidationZoneInvalid !AwsValidationZoneAdapterError
+  | -- | Sprint 7.36: a DNS01 challenge record adapter refusal.  Distinct from
+    -- the validation-zone one because the two families are removed by different
+    -- authorities, so a report must not attribute one\'s refusal to the other.
+    AwsRegisteredTargetDns01ChallengeInvalid !Dns01ChallengeAdapterError
   | AwsRegisteredTargetEksInvalid !AwsEksAdapterError
   | AwsRegisteredTargetEksKeyMismatch !RegisteredResourceKey
   | AwsRegisteredTargetObservationSetInvalid !CompleteObservationSetError
@@ -358,6 +440,21 @@ observeAwsRegisteredTarget interpreter context target =
             interpreter
             ProviderDecisionObservation
             context
+        Right ValidationHostedZoneFamilyExecutor ->
+          observeValidationZone
+            interpreter
+            ProviderDecisionObservation
+            context
+        Right RetainedEbsFamilyExecutor ->
+          observeRetainedEbs
+            interpreter
+            ProviderDecisionObservation
+            context
+        Right Dns01ChallengeRecordFamilyExecutor ->
+          observeDns01Challenge
+            interpreter
+            ProviderDecisionObservation
+            context
         Left unexecutable ->
           pure
             ( Right
@@ -395,6 +492,12 @@ reconcileAwsRegisteredTargetAbsent interpreter context target =
       Right GenericStackExecutor -> reconcileStack interpreter context target
       Right PerRunTestEbsFamilyExecutor ->
         reconcileEbs interpreter context target
+      Right ValidationHostedZoneFamilyExecutor ->
+        reconcileValidationZone interpreter context target
+      Right RetainedEbsFamilyExecutor ->
+        reconcileRetainedEbs interpreter context target
+      Right Dns01ChallengeRecordFamilyExecutor ->
+        reconcileDns01Challenge interpreter context target
       Left unexecutable ->
         pure
           ( refusedResult
@@ -424,6 +527,21 @@ readBackAwsRegisteredTargetAbsent interpreter context target =
           (teardownExecutionObservationScope context)
       Right PerRunTestEbsFamilyExecutor ->
         observeEbs
+          interpreter
+          ProviderAbsenceReadBack
+          context
+      Right ValidationHostedZoneFamilyExecutor ->
+        observeValidationZone
+          interpreter
+          ProviderAbsenceReadBack
+          context
+      Right RetainedEbsFamilyExecutor ->
+        observeRetainedEbs
+          interpreter
+          ProviderAbsenceReadBack
+          context
+      Right Dns01ChallengeRecordFamilyExecutor ->
+        observeDns01Challenge
           interpreter
           ProviderAbsenceReadBack
           context
@@ -543,6 +661,43 @@ observeEbs interpreter purpose context =
             Left err -> Left (AwsRegisteredTargetDispatchInvalid err)
             Right result ->
               mapEbs (decodeExactAwsEbsObservation request (Right result))
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context
+
+-- | Sprint 7.36: the same observation for the registered validation
+-- hosted-zone family.
+observeValidationZone
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> ProviderDispatchPurpose
+  -> TeardownExecutionContext surface
+  -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
+observeValidationZone interpreter purpose context =
+  case mkProviderDispatchKey operationId purpose of
+    Left err -> pure (Left (AwsRegisteredTargetDispatchKeyInvalid err))
+    Right dispatchKey ->
+      case mkValidationZoneObservationRequest
+        (observationRevisionForProviderDispatchKey dispatchKey)
+        scope of
+        Left err -> pure (Left (AwsRegisteredTargetValidationZoneInvalid err))
+        Right request -> do
+          dispatched <-
+            dispatchRegisteredProviderObservation
+              (awsRegisteredTargetProviderBoundary interpreter)
+              dispatchKey
+              (awsValidationZoneObservationRequestProviderIntent request)
+          pure $ case dispatched of
+            Left (ProviderDispatchObservationUnobservable detail) ->
+              mapValidationZone
+                (decodeExactAwsValidationZoneObservation request (Left detail))
+            Left (ProviderDispatchObservationRefused detail) ->
+              mapValidationZone
+                (decodeExactAwsValidationZoneObservation request (Left detail))
+            Left err -> Left (AwsRegisteredTargetDispatchInvalid err)
+            Right result ->
+              mapValidationZone
+                (decodeExactAwsValidationZoneObservation request (Right result))
  where
   operationId = teardownExecutionOperationId context
   scope = teardownExecutionObservationScope context
@@ -931,7 +1086,6 @@ unexecutableTargetError
   -> AwsRegisteredTargetInterpreterError
 unexecutableTargetError key unexecutable = case unexecutable of
   NotAnAwsRegisteredTarget -> AwsRegisteredTargetNotAnAwsTarget key
-  NoProductionExecutor gap -> AwsRegisteredTargetAdapterUnbuilt key gap
 
 validateInvocation
   :: TeardownExecutionContext surface
@@ -1046,6 +1200,448 @@ mapEbs
   :: Either AwsEbsAdapterError value
   -> Either AwsRegisteredTargetInterpreterError value
 mapEbs = either (Left . AwsRegisteredTargetEbsInvalid) Right
+
+mapValidationZone
+  :: Either AwsValidationZoneAdapterError value
+  -> Either AwsRegisteredTargetInterpreterError value
+mapValidationZone =
+  either (Left . AwsRegisteredTargetValidationZoneInvalid) Right
+
+-- | Surface-witness dispatch for the validation hosted-zone request, in the
+-- same shape 'mkEbsObservationRequest' uses.
+mkValidationZoneObservationRequest
+  :: ObservationRevision
+  -> ObservationEvidenceScope
+  -> Either
+       AwsValidationZoneAdapterError
+       ExactAwsValidationZoneObservationRequest
+mkValidationZoneObservationRequest revision scope =
+  case evidenceCleanupSurface scope of
+    LocalOnly ->
+      mkExactAwsValidationZoneObservationRequest LocalOnlySurface revision scope
+    Cascade ->
+      mkExactAwsValidationZoneObservationRequest CascadeSurface revision scope
+    ExplicitPerRun ->
+      mkExactAwsValidationZoneObservationRequest
+        ExplicitPerRunSurface
+        revision
+        scope
+    OperationalTeardown ->
+      mkExactAwsValidationZoneObservationRequest
+        OperationalTeardownSurface
+        revision
+        scope
+    ExplicitLongLived ->
+      mkExactAwsValidationZoneObservationRequest
+        ExplicitLongLivedSurface
+        revision
+        scope
+    TotalDecommission ->
+      mkExactAwsValidationZoneObservationRequest
+        TotalDecommissionSurface
+        revision
+        scope
+
+-- | Sprint 7.36: observe, authorize, reap, in the shape 'reconcileEbs' uses.
+reconcileValidationZone
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> TeardownExecutionContext surface
+  -> RegisteredTargetBinding
+  -> m (Either AwsRegisteredTargetInterpreterError RegisteredTargetReconcileResult)
+reconcileValidationZone interpreter context target = do
+  exactResult <- observeValidationZone interpreter ProviderDecisionObservation context
+  case exactResult of
+    Left err -> pure (refusedResult context target err)
+    Right exact ->
+      case mkProviderDispatchKey operationId ProviderDecisionObservation of
+        Left err ->
+          pure
+            ( refusedResult
+                context
+                target
+                (AwsRegisteredTargetDispatchKeyInvalid err)
+            )
+        Right dispatchKey ->
+          case mkValidationZoneObservationRequest
+            (observationRevisionForProviderDispatchKey dispatchKey)
+            scope of
+            Left err ->
+              pure
+                ( refusedResult
+                    context
+                    target
+                    (AwsRegisteredTargetValidationZoneInvalid err)
+                )
+            Right request ->
+              case authorizeExactAwsValidationZoneReap request exact of
+                Left err ->
+                  pure
+                    ( refusedResult
+                        context
+                        target
+                        (AwsRegisteredTargetValidationZoneInvalid err)
+                    )
+                Right Nothing ->
+                  pure
+                    ( mapResult
+                        ( mkAlreadyAbsentRegisteredTargetReconcile
+                            operationId
+                            target
+                            scope
+                            exact
+                        )
+                    )
+                Right (Just authorization) -> applyValidationZoneReap authorization
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context
+
+  applyValidationZoneReap authorization =
+    case mkProviderDispatchKey operationId ProviderRegisteredMutation of
+      Left err ->
+        pure
+          ( refusedResult
+              context
+              target
+              (AwsRegisteredTargetDispatchKeyInvalid err)
+          )
+      Right dispatchKey -> do
+        attempted <-
+          dispatchRegisteredProviderMutation
+            (awsRegisteredTargetProviderBoundary interpreter)
+            dispatchKey
+            (awsValidationZoneReapProviderIntent authorization)
+        pure $ case attempted of
+          Left err ->
+            refusedResult context target (AwsRegisteredTargetDispatchInvalid err)
+          Right mutation ->
+            mapResult
+              ( mkAwsValidationZoneRegisteredTargetReconcile
+                  operationId
+                  target
+                  scope
+                  authorization
+                  mutation
+              )
+
+mapDns01Challenge
+  :: Either Dns01ChallengeAdapterError value
+  -> Either AwsRegisteredTargetInterpreterError value
+mapDns01Challenge =
+  either (Left . AwsRegisteredTargetDns01ChallengeInvalid) Right
+
+-- | Sprint 7.36: surface-witness dispatch for the DNS01 challenge record
+-- request, in the same shape 'mkValidationZoneObservationRequest' uses.
+mkDns01ChallengeObservationRequest
+  :: ObservationRevision
+  -> ObservationEvidenceScope
+  -> Either Dns01ChallengeAdapterError ExactDns01ChallengeObservationRequest
+mkDns01ChallengeObservationRequest revision scope =
+  case evidenceCleanupSurface scope of
+    LocalOnly ->
+      mkExactDns01ChallengeObservationRequest LocalOnlySurface revision scope
+    Cascade ->
+      mkExactDns01ChallengeObservationRequest CascadeSurface revision scope
+    ExplicitPerRun ->
+      mkExactDns01ChallengeObservationRequest
+        ExplicitPerRunSurface
+        revision
+        scope
+    OperationalTeardown ->
+      mkExactDns01ChallengeObservationRequest
+        OperationalTeardownSurface
+        revision
+        scope
+    ExplicitLongLived ->
+      mkExactDns01ChallengeObservationRequest
+        ExplicitLongLivedSurface
+        revision
+        scope
+    TotalDecommission ->
+      mkExactDns01ChallengeObservationRequest
+        TotalDecommissionSurface
+        revision
+        scope
+
+-- | Sprint 7.36: the Route 53 half of the DNS01 family, used for both the
+-- decision observation and the mandatory absence read-back.
+observeDns01Challenge
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> ProviderDispatchPurpose
+  -> TeardownExecutionContext surface
+  -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
+observeDns01Challenge interpreter purpose context =
+  case mkProviderDispatchKey operationId purpose of
+    Left err -> pure (Left (AwsRegisteredTargetDispatchKeyInvalid err))
+    Right dispatchKey ->
+      case mkDns01ChallengeObservationRequest
+        (observationRevisionForProviderDispatchKey dispatchKey)
+        scope of
+        Left err -> pure (Left (AwsRegisteredTargetDns01ChallengeInvalid err))
+        Right request -> do
+          dispatched <-
+            dispatchRegisteredProviderObservation
+              (awsRegisteredTargetProviderBoundary interpreter)
+              dispatchKey
+              (dns01ChallengeObservationRequestProviderIntent request)
+          pure $ case dispatched of
+            Left (ProviderDispatchObservationUnobservable detail) ->
+              mapDns01Challenge
+                (decodeExactDns01ChallengeObservation request (Left detail))
+            Left (ProviderDispatchObservationRefused detail) ->
+              mapDns01Challenge
+                (decodeExactDns01ChallengeObservation request (Left detail))
+            Left err -> Left (AwsRegisteredTargetDispatchInvalid err)
+            Right result ->
+              mapDns01Challenge
+                (decodeExactDns01ChallengeObservation request (Right result))
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context
+
+-- | Sprint 7.36: observe, authorize, then delete the Kubernetes owner.
+--
+-- Structurally the same three steps every other registered family takes, with
+-- the third crossing a different boundary.  The observation is a Provider Route
+-- 53 read; the authorization can only be minted from a present family; and the
+-- delete is the interpreter\'s Kubernetes-scoped execution arm.  An absent
+-- family short-circuits to already-absent without reaching Kubernetes at all.
+reconcileDns01Challenge
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> TeardownExecutionContext surface
+  -> RegisteredTargetBinding
+  -> m (Either AwsRegisteredTargetInterpreterError RegisteredTargetReconcileResult)
+reconcileDns01Challenge interpreter context target = do
+  exactResult <-
+    observeDns01Challenge interpreter ProviderDecisionObservation context
+  case exactResult of
+    Left err -> pure (refusedResult context target err)
+    Right exact ->
+      case mkProviderDispatchKey operationId ProviderDecisionObservation of
+        Left err ->
+          pure
+            ( refusedResult
+                context
+                target
+                (AwsRegisteredTargetDispatchKeyInvalid err)
+            )
+        Right dispatchKey ->
+          case mkDns01ChallengeObservationRequest
+            (observationRevisionForProviderDispatchKey dispatchKey)
+            scope of
+            Left err ->
+              pure
+                ( refusedResult
+                    context
+                    target
+                    (AwsRegisteredTargetDns01ChallengeInvalid err)
+                )
+            Right request ->
+              case authorizeExactDns01ChallengeOwnerDelete request exact of
+                Left err ->
+                  pure
+                    ( refusedResult
+                        context
+                        target
+                        (AwsRegisteredTargetDns01ChallengeInvalid err)
+                    )
+                Right Nothing ->
+                  pure
+                    ( mapResult
+                        ( mkAlreadyAbsentRegisteredTargetReconcile
+                            operationId
+                            target
+                            scope
+                            exact
+                        )
+                    )
+                Right (Just authorization) ->
+                  applyDns01ChallengeOwnerDelete authorization
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context
+
+  applyDns01ChallengeOwnerDelete authorization = do
+    attempted <-
+      internalDeleteDns01ChallengeOwners
+        (awsRegisteredTargetDns01ChallengeOwnerDeleteBoundary interpreter)
+        context
+        target
+        authorization
+    pure $ case attempted of
+      Left err -> refusedResult context target err
+      Right attempt ->
+        mapResult
+          ( mkDns01ChallengeRegisteredTargetReconcile
+              operationId
+              target
+              scope
+              authorization
+              attempt
+          )
+
+-- | Sprint 7.36: surface-witness dispatch for the retained EBS request, in the
+-- same shape 'mkEbsObservationRequest' uses.  The adapter refuses every
+-- surface but @ExplicitLongLived@ and @TotalDecommission@ on its own, because
+-- 'projectCleanupTarget' does; this function only supplies the witness.
+mkRetainedEbsObservationRequest
+  :: ObservationRevision
+  -> ObservationEvidenceScope
+  -> Either
+       AwsRetainedEbsAdapterError
+       ExactAwsRetainedEbsObservationRequest
+mkRetainedEbsObservationRequest revision scope =
+  case evidenceCleanupSurface scope of
+    LocalOnly ->
+      mkExactAwsRetainedEbsObservationRequest LocalOnlySurface revision scope
+    Cascade ->
+      mkExactAwsRetainedEbsObservationRequest CascadeSurface revision scope
+    ExplicitPerRun ->
+      mkExactAwsRetainedEbsObservationRequest
+        ExplicitPerRunSurface
+        revision
+        scope
+    OperationalTeardown ->
+      mkExactAwsRetainedEbsObservationRequest
+        OperationalTeardownSurface
+        revision
+        scope
+    ExplicitLongLived ->
+      mkExactAwsRetainedEbsObservationRequest
+        ExplicitLongLivedSurface
+        revision
+        scope
+    TotalDecommission ->
+      mkExactAwsRetainedEbsObservationRequest
+        TotalDecommissionSurface
+        revision
+        scope
+
+mapRetainedEbs
+  :: Either AwsRetainedEbsAdapterError value
+  -> Either AwsRegisteredTargetInterpreterError value
+mapRetainedEbs = either (Left . AwsRegisteredTargetRetainedEbsInvalid) Right
+
+observeRetainedEbs
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> ProviderDispatchPurpose
+  -> TeardownExecutionContext surface
+  -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
+observeRetainedEbs interpreter purpose context =
+  case mkProviderDispatchKey operationId purpose of
+    Left err -> pure (Left (AwsRegisteredTargetDispatchKeyInvalid err))
+    Right dispatchKey ->
+      case mkRetainedEbsObservationRequest
+        (observationRevisionForProviderDispatchKey dispatchKey)
+        scope of
+        Left err -> pure (Left (AwsRegisteredTargetRetainedEbsInvalid err))
+        Right request -> do
+          dispatched <-
+            dispatchRegisteredProviderObservation
+              (awsRegisteredTargetProviderBoundary interpreter)
+              dispatchKey
+              (awsRetainedEbsObservationRequestProviderIntent request)
+          pure $ case dispatched of
+            Left (ProviderDispatchObservationUnobservable detail) ->
+              mapRetainedEbs
+                (decodeExactAwsRetainedEbsObservation request (Left detail))
+            Left (ProviderDispatchObservationRefused detail) ->
+              mapRetainedEbs
+                (decodeExactAwsRetainedEbsObservation request (Left detail))
+            Left err -> Left (AwsRegisteredTargetDispatchInvalid err)
+            Right result ->
+              mapRetainedEbs
+                (decodeExactAwsRetainedEbsObservation request (Right result))
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context
+
+-- | Sprint 7.36: observe, authorize, reap, in the shape 'reconcileEbs' uses.
+reconcileRetainedEbs
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> TeardownExecutionContext surface
+  -> RegisteredTargetBinding
+  -> m (Either AwsRegisteredTargetInterpreterError RegisteredTargetReconcileResult)
+reconcileRetainedEbs interpreter context target = do
+  exactResult <- observeRetainedEbs interpreter ProviderDecisionObservation context
+  case exactResult of
+    Left err -> pure (refusedResult context target err)
+    Right exact ->
+      case mkProviderDispatchKey operationId ProviderDecisionObservation of
+        Left err ->
+          pure
+            ( refusedResult
+                context
+                target
+                (AwsRegisteredTargetDispatchKeyInvalid err)
+            )
+        Right dispatchKey ->
+          case mkRetainedEbsObservationRequest
+            (observationRevisionForProviderDispatchKey dispatchKey)
+            scope of
+            Left err ->
+              pure
+                ( refusedResult
+                    context
+                    target
+                    (AwsRegisteredTargetRetainedEbsInvalid err)
+                )
+            Right request ->
+              case authorizeExactAwsRetainedEbsReap request exact of
+                Left err ->
+                  pure
+                    ( refusedResult
+                        context
+                        target
+                        (AwsRegisteredTargetRetainedEbsInvalid err)
+                    )
+                Right Nothing ->
+                  pure
+                    ( mapResult
+                        ( mkAlreadyAbsentRegisteredTargetReconcile
+                            operationId
+                            target
+                            scope
+                            exact
+                        )
+                    )
+                Right (Just authorization) -> applyRetainedEbsReap authorization
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context
+
+  applyRetainedEbsReap authorization =
+    case mkProviderDispatchKey operationId ProviderRegisteredMutation of
+      Left err ->
+        pure
+          ( refusedResult
+              context
+              target
+              (AwsRegisteredTargetDispatchKeyInvalid err)
+          )
+      Right dispatchKey -> do
+        attempted <-
+          dispatchRegisteredProviderMutation
+            (awsRegisteredTargetProviderBoundary interpreter)
+            dispatchKey
+            (awsRetainedEbsReapProviderIntent authorization)
+        pure $ case attempted of
+          Left err ->
+            refusedResult context target (AwsRegisteredTargetDispatchInvalid err)
+          Right mutation ->
+            mapResult
+              ( mkAwsRetainedEbsRegisteredTargetReconcile
+                  operationId
+                  target
+                  scope
+                  authorization
+                  mutation
+              )
 
 requireStackIdentity
   :: RegisteredResourceKey

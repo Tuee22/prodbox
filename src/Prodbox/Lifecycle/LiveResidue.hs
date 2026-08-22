@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Sprint 4.16: live source-of-truth residue queries.
@@ -53,6 +54,8 @@ module Prodbox.Lifecycle.LiveResidue
   , residueStatusFromMinioListingWithVaultGate
   , residueStatusFromS3ListingWithVaultGate
   , residueStatusFromCheckpointObservability
+  , checkpointCustodyObservation
+  , fixedCheckpointAbsenceDischargeRegression
   , residueStatusFromCheckpointObservabilityResult
   , residueStatusFromObjectListing
   , residueStatusFromObjectListingWithVaultGate
@@ -69,6 +72,7 @@ module Prodbox.Lifecycle.LiveResidue
 where
 
 import Control.Exception qualified
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import Data.Maybe (isJust)
 import Data.Text qualified as Text
@@ -105,6 +109,24 @@ import Prodbox.Lifecycle.ResidueStatus
   , observeResidueAt
   , renderResidueUnreachableReason
   )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal
+  ( CapabilityCustodyError (..)
+  , CapabilityDependants (..)
+  , CustodyReleaseBoundary (CustodyReleaseBoundary)
+  , capabilityDependants
+  , checkpointCapabilityForStackName
+  , dischargeByObservedAbsence
+  , dischargeByObservedEmptiness
+  , releaseCustody
+  , renderCapabilityCustodyError
+  , rotateOntoRetiredReference
+  )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CheckpointCustodyObservation (..)
+  , CustodialCapability (CheckpointCapability, CredentialCapability)
+  , recordCapabilityDisposition
+  )
+import Prodbox.Lifecycle.Teardown.Model (RegisteredResourceKey (AwsEksKey))
 import Prodbox.Lifecycle.Teardown.Registry qualified as Registry
 import Prodbox.Observation.AbsenceMarker
   ( AbsenceProbe (..)
@@ -608,42 +630,105 @@ pruneCorruptPerRunCheckpointWithAuthentication authentication repoRoot stackName
             )
     Right CheckpointAbsent ->
       pure (Right ("encrypted Pulumi checkpoint already absent; nothing to prune for " ++ name ++ "."))
-    Right CheckpointEmpty -> deleteAndReport name "empty (zero-length)"
-    Right (CheckpointCorrupt detail) -> deleteAndReport name ("corrupt (" ++ detail ++ ")")
-    Right CheckpointPresent ->
-      pure
-        ( Left
-            ( "the encrypted Pulumi checkpoint for "
-                ++ name
-                ++ " decodes to a valid non-empty stack state; refusing to prune a live checkpoint "
-                ++ "(it may map to live AWS resources). Use `prodbox aws stack <stack> destroy --yes` instead."
-            )
-        )
+    Right observability -> disposeAndReport name observability
  where
-  deleteAndReport name kind = do
-    deleteResult <-
-      pruneLogicalPulumiStack
-        authentication
-        repoRoot
-        (stackRefFor stackName)
-    pure $ case deleteResult of
-      Left err ->
-        Left
-          ( "failed to prune the "
-              ++ kind
-              ++ " encrypted Pulumi checkpoint for "
-              ++ name
-              ++ ": "
-              ++ renderEncryptedBackendError err
+  -- Sprint 4.89: pruning ends this run's custody of the capability that made
+  -- the stack's resources destroyable, so it goes through the destructive
+  -- boundary and the boundary takes a disposition.  There is no destroy
+  -- constructor, so the only question is which discharge the observation
+  -- supports — and answering it is what stops a prune from being an
+  -- unaccountable deletion.
+  --
+  -- A zero-length object names no stack state, so the capability is already
+  -- inert and retiring it strands nothing.  A corrupt, unparseable blob may
+  -- still be the only thing naming live AWS resources, so it is /rotated/: the
+  -- Lifecycle Authority records the reference in its retained set and clears
+  -- the live slot, and the retained reference still names the backup copy's
+  -- version.  A present checkpoint names resources and is refused, as before.
+  disposeAndReport name observability =
+    case checkpointCapabilityForStackName rawName of
+      Nothing ->
+        pure
+          ( Left
+              ( "refusing to prune the encrypted Pulumi checkpoint for "
+                  ++ name
+                  ++ ": the managed resource registry declares no stack descriptor for it, "
+                  ++ "so nothing enumerates what its checkpoint reaches."
+              )
           )
-      Right () ->
-        Right
-          ( "pruned the "
-              ++ kind
-              ++ " encrypted Pulumi checkpoint object for "
-              ++ name
-              ++ "."
-          )
+      Just capability ->
+        case dispositionFor capability observability of
+          Left err ->
+            pure
+              ( Left
+                  ( "refusing to prune the encrypted Pulumi checkpoint for "
+                      ++ name
+                      ++ ": "
+                      ++ Text.unpack (renderCapabilityCustodyError err)
+                      ++ ". Use `prodbox aws stack <stack> destroy --yes` instead."
+                  )
+              )
+          Right (disposition, kind) -> do
+            -- The boundary's argument type mentions no @m@ and its action
+            -- returns @m ()@, so the retirement's own result is carried out of
+            -- it rather than through it: the boundary is the destructive act,
+            -- not a channel for its answer.
+            retired <- newIORef Nothing
+            released <-
+              releaseCustody
+                ( CustodyReleaseBoundary
+                    ( \_release ->
+                        retireCheckpointReference
+                          (recordCapabilityDisposition disposition)
+                          >>= writeIORef retired . Just
+                    )
+                )
+                [capability]
+                [disposition]
+            outcome <- readIORef retired
+            pure $ case released of
+              Left err -> Left (Text.unpack (renderCapabilityCustodyError err))
+              Right () -> case outcome of
+                Nothing ->
+                  Left
+                    ( "internal: the custody release for "
+                        ++ name
+                        ++ " did not reach the destructive boundary."
+                    )
+                Just (Left err) ->
+                  Left
+                    ( "failed to prune the "
+                        ++ kind
+                        ++ " encrypted Pulumi checkpoint for "
+                        ++ name
+                        ++ ": "
+                        ++ renderEncryptedBackendError err
+                    )
+                Just (Right ()) ->
+                  Right
+                    ( "pruned the "
+                        ++ kind
+                        ++ " encrypted Pulumi checkpoint object for "
+                        ++ name
+                        ++ "."
+                    )
+
+  dispositionFor capability observability =
+    case checkpointCustodyObservation observability of
+      CheckpointCapabilityCorrupt detail ->
+        (,"corrupt (" ++ Text.unpack detail ++ ")")
+          <$> rotateOntoRetiredReference capability
+      other ->
+        -- 'dischargeByObservedEmptiness' admits the zero-length arm and refuses
+        -- the other two by name, so this one call is both the discharge and the
+        -- refusal rather than a second copy of the same three-way decision.
+        (,"empty (zero-length)")
+          <$> dischargeByObservedEmptiness capability other
+
+  -- Sprint 4.89: the destructive boundary carries the disposition onward to the
+  -- Lifecycle Authority, which refuses a retirement for which none was stated.
+  retireCheckpointReference =
+    pruneLogicalPulumiStack authentication repoRoot (stackRefFor stackName)
 
 queryResidueVaultGate :: IO VaultGateDecision
 queryResidueVaultGate = do
@@ -733,6 +818,89 @@ residueStatusFromMinioListingWithVaultGate gate stackName result
 --     evidence string names the stack and the parse detail so the refusal
 --     is actionable.
 --   * 'CheckpointPresent' — a real checkpoint: 'ResiduePresent' (DESTROY).
+-- | Sprint 4.89 (pure): the same four arms, answered as a __custody__ question
+-- rather than a residue question.
+--
+-- The residue question is "is there a stack to destroy", and an absent or empty
+-- checkpoint correctly answers @ResidueAbsent@ to it. The custody question is
+-- "does this run still hold what makes that stack's resources destroyable", and
+-- the same observation answers it @lost@: the resources may exist and nothing
+-- now names them. Reading the first answer as the second is what stranded two
+-- AWS resources, so the two answers are two functions over one observation
+-- rather than one function consumed twice.
+--
+-- Total with no fall-through arm, and it lives here because this module already
+-- holds both vocabularies.
+checkpointCustodyObservation
+  :: CheckpointObservability -> CheckpointCustodyObservation
+checkpointCustodyObservation = \case
+  CheckpointAbsent -> CheckpointCapabilityAbsent
+  CheckpointEmpty -> CheckpointCapabilityEmpty
+  CheckpointCorrupt detail -> CheckpointCapabilityCorrupt (Text.pack detail)
+  CheckpointPresent -> CheckpointCapabilityPresent
+
+-- | Sprint 4.89 (pure): the absence discharge is constructible only from a
+-- __provider__ observation of every derived dependant.
+--
+-- This lives here rather than beside the discharge because a residue
+-- observation records which authority answered and may be minted only where the
+-- observation is made — the same § 21 class-A rule the observation type already
+-- carries. A fixture that minted one inside the custody boundary would be a
+-- consumer asserting the layer, which is exactly what stranded the resources.
+--
+-- Four refusals, each naming a different way a discharge could be invented: a
+-- checkpoint-layer absence (the exact answer a lost capability produces), an
+-- unobserved dependant, a dependant the provider still reports, and a dependant
+-- set nothing enumerates.
+fixedCheckpointAbsenceDischargeRegression :: Bool
+fixedCheckpointAbsenceDischargeRegression =
+  isRightResult (discharge providerAbsent)
+    && isLayerRefusal (discharge checkpointAbsent)
+    && isUnobservedRefusal (discharge [])
+    && isNotAbsentRefusal (discharge providerPresent)
+    && isUnderivableRefusal
+      ( dischargeByObservedAbsence
+          underivableCapability
+          (capabilityDependants underivableCapability)
+          []
+      )
+ where
+  capability = CheckpointCapability AwsEksKey
+  underivableCapability = CredentialCapability minBound
+  dependants = capabilityDependants capability
+  dependantKeys = case dependants of
+    CapabilityDependantsDerived keys -> keys
+    CapabilityDependantsUnderivable _ -> []
+  discharge = dischargeByObservedAbsence capability dependants
+  observationsAt layer status =
+    [(key, observeResidueAt layer status) | key <- dependantKeys]
+  providerAbsent = observationsAt ResidueLayerAwsResource ResidueAbsent
+  checkpointAbsent = observationsAt ResidueLayerRetainedCheckpoint ResidueAbsent
+  providerPresent =
+    observationsAt
+      ResidueLayerAwsResource
+      ( ResiduePresent
+          ResidueDetails
+            { residueEvidence = "the provider still reports the resource"
+            , residueStackName = "aws-eks"
+            }
+      )
+  isRightResult result = case result of
+    Right _ -> True
+    Left _ -> False
+  isLayerRefusal result = case result of
+    Left (CustodyAbsenceNotProviderObserved _ _) -> True
+    _ -> False
+  isUnobservedRefusal result = case result of
+    Left (CustodyDependantUnobserved _ _) -> True
+    _ -> False
+  isNotAbsentRefusal result = case result of
+    Left (CustodyDependantNotAbsent _ _) -> True
+    _ -> False
+  isUnderivableRefusal result = case result of
+    Left (CustodyDependantsUnderivable _ _) -> True
+    _ -> False
+
 residueStatusFromCheckpointObservability :: String -> CheckpointObservability -> ResidueStatus
 residueStatusFromCheckpointObservability stackName observability = case observability of
   CheckpointAbsent -> ResidueAbsent

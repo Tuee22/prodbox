@@ -224,10 +224,18 @@ import Prodbox.Settings
   , defaultConfigFile
   , loadConfigFile
   , parsePublicEdgeAdvertisementMode
+  , requireSesCaptureBucket
   , supportedPublicHostname
+  , validateAndLoadBootstrapSettings
   , validateAndLoadSettings
   , validateAwsBootstrapConfig
   , validatePublicEdgeDeployment
+  )
+import Prodbox.Settings.Coordinate
+  ( AwsRegion
+  , S3BucketName
+  , mkAwsRegion
+  , s3BucketNameText
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -531,9 +539,6 @@ data ConfigSetupInput = ConfigSetupInput
   }
   deriving (Eq, Show)
 
-defaultAwsRegion :: Text
-defaultAwsRegion = "us-east-1"
-
 zeroSslAcmeServer :: Text
 zeroSslAcmeServer = "https://acme.zerossl.com/v2/DV90"
 
@@ -568,11 +573,19 @@ fullQuotaSpecs =
        , QuotaSpec "Subnets per VPC" "vpc" "L-407747CB" 200.0
        ]
 
-buildIamPolicyDocument :: PolicyTier -> Value
-buildIamPolicyDocument policyTier =
+-- | The grant @prodbox aws policy@ prints for an operator to paste into IAM.
+--
+-- Sprint 1.91 threads the validated @ses.capture_bucket@ through it. The two
+-- capture ARNs were compiled, so the printed document — the one that becomes a
+-- real IAM grant — named a bucket the deployment does not own, while the
+-- account-qualified builder that /does/ thread the configured bucket was
+-- reached only from the unit suite. The parameter is an 'S3BucketName' rather
+-- than a 'Text' so there is no unconfigured inhabitant to substitute for.
+buildIamPolicyDocument :: S3BucketName -> PolicyTier -> Value
+buildIamPolicyDocument captureBucket policyTier =
   object
     [ "Version" .= ("2012-10-17" :: String)
-    , "Statement" .= (corePolicyStatements ++ extraPolicyStatements policyTier)
+    , "Statement" .= (corePolicyStatements ++ extraPolicyStatements captureBucket policyTier)
     ]
 
 -- | Build the policy that is actually installed on the operational IAM
@@ -650,9 +663,11 @@ buildIamPolicyDocumentForAccountAndCaptureBucket accountId maybeCaptureBucket po
         Nothing
     pure (Text.strip bucket)
 
-buildIamPolicyJson :: PolicyTier -> String
-buildIamPolicyJson policyTier =
-  BL8.unpack (AesonPretty.encodePretty' prettyConfig (buildIamPolicyDocument policyTier)) ++ "\n"
+buildIamPolicyJson :: S3BucketName -> PolicyTier -> String
+buildIamPolicyJson captureBucket policyTier =
+  BL8.unpack
+    (AesonPretty.encodePretty' prettyConfig (buildIamPolicyDocument captureBucket policyTier))
+    ++ "\n"
 
 -- | Build the entire IAM policy for one dedicated adapter identity.  Only
 -- registered durable namespaces are accepted, and the result grants exactly:
@@ -740,8 +755,22 @@ executeAwsCommand :: FilePath -> AwsTeardownLongLivedPreflight -> AwsCommand -> 
 executeAwsCommand repoRoot longLivedPreflight command =
   case command of
     AwsPolicy policyTier -> do
-      writeOutput (buildIamPolicyJson policyTier)
-      pure ExitSuccess
+      -- Sprint 1.91: the printed grant names the configured capture bucket or
+      -- is not printed at all. Substituting a compiled name here would produce
+      -- a valid-looking policy for the wrong bucket.
+      --
+      -- The Tier-0 bootstrap loader, not the in-force one: this command prints
+      -- the grant an operator installs in order to *create* the identity the
+      -- Lifecycle Authority later runs as, so it must not require a reachable
+      -- Authority to answer.
+      settingsResult <- validateAndLoadBootstrapSettings repoRoot
+      case settingsResult >>= requireSesCaptureBucket of
+        Left err -> do
+          writeError (fatalError (Text.pack err))
+          pure (ExitFailure 1)
+        Right captureBucket -> do
+          writeOutput (buildIamPolicyJson captureBucket policyTier)
+          pure ExitSuccess
     AwsSetup policyTier planOptions -> do
       input <- interactiveAwsSetupInput repoRoot policyTier
       runPlanWithOptions
@@ -879,8 +908,8 @@ corePolicyStatements =
   , statement "Route53ChangePolling" ["route53:GetChange"] "arn:aws:route53:::change/*"
   ]
 
-extraPolicyStatements :: PolicyTier -> [Value]
-extraPolicyStatements policyTier =
+extraPolicyStatements :: S3BucketName -> PolicyTier -> [Value]
+extraPolicyStatements captureBucket policyTier =
   case policyTier of
     PolicyCore -> []
     PolicyFull ->
@@ -927,11 +956,11 @@ extraPolicyStatements policyTier =
           [ "s3:GetBucketLocation"
           , "s3:ListBucket"
           ]
-          "arn:aws:s3:::prodbox-ses-capture"
+          captureBucketArn
       , statement
           "SesCaptureObjectRead"
           ["s3:GetObject"]
-          "arn:aws:s3:::prodbox-ses-capture/*"
+          (captureBucketArn ++ "/*")
       , -- Sprint 7.5.c.v.e: read-only SES grants for the Sprint 8.4
         -- prerequisite checks. `ses_sending_identity_verified` needs
         -- `ses:GetIdentityVerificationAttributes`; `ses_receive_rule_set_active`
@@ -943,6 +972,8 @@ extraPolicyStatements policyTier =
           sesReadOnlyActions
           "*"
       ]
+ where
+  captureBucketArn = "arn:aws:s3:::" ++ Text.unpack (s3BucketNameText captureBucket)
 
 route53HostedZoneLifecycleActions :: [String]
 route53HostedZoneLifecycleActions =
@@ -3593,11 +3624,19 @@ renderPolicyTier policyTier =
     PolicyCore -> "core"
     PolicyFull -> "full"
 
-currentRegionDefault :: FilePath -> IO Text
+-- | Sprint 1.91: the configured operational region, or nothing.
+--
+-- It used to substitute @defaultAwsRegion@ for an unconfigured one. That branch
+-- was unreachable only because 'defaultConfigFile' seeded the field; emptying
+-- the seed made it the normal first-run path, so keeping it would have moved
+-- the invented region one layer up rather than removing it. The prompt now
+-- offers no pre-fill when the config carries none, and the shape rule runs on
+-- the way out so a malformed configured region does not become a pre-fill
+-- either.
+currentRegionDefault :: FilePath -> IO (Maybe AwsRegion)
 currentRegionDefault repoRoot = do
   config <- loadConfigForWrite repoRoot
-  let configuredRegion = Text.strip (awsCredentialRegion (aws config))
-  pure (if Text.null configuredRegion then defaultAwsRegion else configuredRegion)
+  pure (either (const Nothing) Just (mkAwsRegion (awsCredentialRegion (aws config))))
 
 loadConfigForWrite :: FilePath -> IO ConfigFile
 loadConfigForWrite repoRoot = do

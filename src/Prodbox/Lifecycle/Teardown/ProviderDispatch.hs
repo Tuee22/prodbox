@@ -73,6 +73,13 @@ data ProviderDispatchPurpose
   = ProviderDecisionObservation
   | ProviderRegisteredMutation
   | ProviderAbsenceReadBack
+  | -- | Sprint 7.36: the cascade's terminal escape audit.  It is a fourth
+    -- purpose rather than a third observation because the audit asks about
+    -- every owned resource rather than about one registered target: admitting
+    -- its query at a registered-target purpose would let a global tag listing
+    -- stand in for an exact family read-back, and admitting a registered
+    -- observation here would let one family's answer close the audit.
+    ProviderTerminalAudit
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 data ProviderDispatchKey = ProviderDispatchKey
@@ -154,6 +161,7 @@ purposeSuffix purpose = case purpose of
   ProviderDecisionObservation -> "decision-observe"
   ProviderRegisteredMutation -> "mutate"
   ProviderAbsenceReadBack -> "absence-readback"
+  ProviderTerminalAudit -> "terminal-audit"
 
 -- | Preserve the Authority's definite refusal separately from a transport or
 -- availability failure.  A refused mutation is terminal; an unavailable
@@ -316,9 +324,16 @@ validateObservationIntent purpose intent =
     (ProviderDecisionObservation, ObserveRegisteredStack {}) -> True
     (ProviderDecisionObservation, ObserveTestEbsVolumes {}) -> True
     (ProviderDecisionObservation, ObserveEksClusterIdentity {}) -> True
+    (ProviderDecisionObservation, ObserveValidationHostedZones {}) -> True
+    (ProviderDecisionObservation, ObserveRetainedEbsVolumes {}) -> True
+    (ProviderDecisionObservation, ObserveDns01ChallengeRecords {}) -> True
     (ProviderAbsenceReadBack, ReadBackRegisteredStack {}) -> True
     (ProviderAbsenceReadBack, ObserveTestEbsVolumes {}) -> True
     (ProviderAbsenceReadBack, ObserveEksClusterIdentity {}) -> True
+    (ProviderAbsenceReadBack, ObserveValidationHostedZones {}) -> True
+    (ProviderAbsenceReadBack, ObserveRetainedEbsVolumes {}) -> True
+    (ProviderAbsenceReadBack, ObserveDns01ChallengeRecords {}) -> True
+    (ProviderTerminalAudit, ObserveOwnedResourceTags {}) -> True
     _ -> False
 
 validateMutationIntent
@@ -333,4 +348,6 @@ validateMutationIntent purpose intent =
   allowed = case (purpose, intent) of
     (ProviderRegisteredMutation, DestroyRegisteredStack {}) -> True
     (ProviderRegisteredMutation, ReapTestEbsVolumes {}) -> True
+    (ProviderRegisteredMutation, ReapValidationHostedZones {}) -> True
+    (ProviderRegisteredMutation, ReapRetainedEbsVolumes {}) -> True
     _ -> False

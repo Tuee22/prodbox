@@ -48,6 +48,7 @@ import Network.Socket
   )
 import Network.Socket.ByteString (recv)
 import Numeric.Natural (Natural)
+import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.ControlPlane.AuthorityBackupEndpoint
   ( AuthorityBackupBlobClass (AuthorityAggregateEnvelope)
   , AuthorityBackupBlobObservation (AuthorityBackupBlobPresent)
@@ -62,7 +63,14 @@ import Prodbox.ControlPlane.AuthorityObservationEndpoint
   , lifecycleAuthorityServiceIdentity
   )
 import Prodbox.ControlPlane.AuthorityProviderEndpoint
-  ( ProviderDispatchResponse (ProviderDispatchCompleted, ProviderDispatchRefused)
+  ( ProviderDispatchLane (ProviderAdmitAndExecute, ProviderAdmitOnly)
+  , ProviderDispatchPayload (providerDispatchLane)
+  , ProviderDispatchResponse
+    ( ProviderDispatchAdmitted
+    , ProviderDispatchCompleted
+    , ProviderDispatchRefused
+    )
+  , providerDispatchResponseMaximumBytes
   )
 import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   ( AwsAdminProvisionerResponse (AwsAdminFirstReconcileObserved)
@@ -334,17 +342,20 @@ authorityBody cleanupRunState request path
             ( encodeControlPlaneResponse
                 ( ConfigObservationObserved
                     ConfigProjection
-                      { configProjectionIdentity = fixtureInForceConfig
+                      { configProjectionIdentity = fixtureInForceConfigFor config
                       , configProjectionScope = ConfigProjectionOperator
                       , configProjectionBytes = config
                       }
                 )
             )
         )
-  | path == "/v1/authority/config/propose-cas" =
+  | path == "/v1/authority/config/propose-cas" = do
+      config <- fixtureConfigBytes
       pure
         ( LazyByteString.toStrict
-            (encodeControlPlaneResponse (ConfigProposalAlreadyCurrent fixtureInForceConfig))
+            ( encodeControlPlaneResponse
+                (ConfigProposalAlreadyCurrent (fixtureInForceConfigFor config))
+            )
         )
   | path == "/v1/authority/control" =
       pure
@@ -357,7 +368,7 @@ authorityBody cleanupRunState request path
             (encodeControlPlaneResponse (AwsAdminFirstReconcileObserved Nothing))
         )
   | path == "/v1/authority/provider-dispatch" =
-      providerDispatchBody
+      providerDispatchBody request
   | path == "/v1/authority/tls-retention/observe" =
       pure
         ( LazyByteString.toStrict
@@ -517,8 +528,13 @@ fixtureMigrationEpoch =
     Nothing -> error "fixture migration epoch is invalid"
     Just epoch -> epoch
 
-providerDispatchBody :: IO ByteString.ByteString
-providerDispatchBody = do
+-- | Sprint 7.36: the fixture answers on the lane it was asked on.
+--
+-- An admit-only call must not come back completed: the caller refuses that,
+-- because a fixture that executes what it was asked only to admit would let the
+-- two-step create lane pass while behaving as the one-step lane it replaced.
+providerDispatchBody :: ByteString.ByteString -> IO ByteString.ByteString
+providerDispatchBody request = do
   mode <- lookupEnv "PRODBOX_FAKE_SES_READINESS_MODE"
   let response = case mode of
         Just "identity-failed" ->
@@ -528,8 +544,24 @@ providerDispatchBody = do
         -- admitted, so the fixture must name one too. It is a fixed value: the
         -- fixture admits nothing, and a caller that decides from it would be
         -- deciding from a fixture rather than from an admission.
-        _ -> ProviderDispatchCompleted fixtureAdmittedOperation "fixture-ready"
+        _ -> case requestedProviderDispatchLane request of
+          ProviderAdmitOnly -> ProviderDispatchAdmitted fixtureAdmittedOperation
+          ProviderAdmitAndExecute ->
+            ProviderDispatchCompleted fixtureAdmittedOperation "fixture-ready"
   pure (LazyByteString.toStrict (encodeControlPlaneResponse response))
+
+-- | An unreadable request keeps the historical lane, so a fixture path that
+-- never carried a body behaves exactly as it did.
+requestedProviderDispatchLane :: ByteString.ByteString -> ProviderDispatchLane
+requestedProviderDispatchLane request =
+  case authenticatedInnerBody request of
+    Left _ -> ProviderAdmitAndExecute
+    Right innerBody ->
+      case decodeControlPlaneRequest
+        providerDispatchResponseMaximumBytes
+        (LazyByteString.fromStrict innerBody) of
+        Left _ -> ProviderAdmitAndExecute
+        Right payload -> providerDispatchLane payload
 
 fixtureConfigBytes :: IO ByteString.ByteString
 fixtureConfigBytes = do
@@ -542,8 +574,15 @@ fixtureConfigBytes = do
         Left detail -> ioError (userError detail)
         Right config -> pure (TextEncoding.encodeUtf8 (Text.pack (renderConfigDhall config)))
 
-fixtureInForceConfig :: InForceConfig
-fixtureInForceConfig =
+-- | The in-force identity of the exact bytes this fixture serves.
+--
+-- The digest was a fixed literal, which no rendering of the operator config
+-- could ever hash to, so every caller that validated the projection refused it
+-- as non-canonical.  A fixture that answers for a config must answer with that
+-- config's own identity; anything else measures the fixture rather than the
+-- caller.
+fixtureInForceConfigFor :: ByteString.ByteString -> InForceConfig
+fixtureInForceConfigFor bytes =
   InForceConfig
     { inForceGeneration = ConfigGeneration 1
     , inForceSchema = ConfigSchemaVersion 1
@@ -551,7 +590,7 @@ fixtureInForceConfig =
     , inForceReference = ConfigReference fixtureDigest
     }
  where
-  fixtureDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  fixtureDigest = TextEncoding.decodeUtf8 (hexSha256 bytes)
 
 brokerBody :: ByteString8.ByteString -> String -> IO ByteString.ByteString
 brokerBody _ path = do

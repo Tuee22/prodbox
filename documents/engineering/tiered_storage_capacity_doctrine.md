@@ -255,9 +255,10 @@ durable-destruction primitive.
 - **Linked dependents**:
   `dhall/capacity/Schema.dhall` (the closed, self-validating shared budget vocabulary),
   `src/Prodbox/Capacity/Config.hs` (the `FromDhall` mirror plus `storageFitsWithin`),
-  `src/Prodbox/Settings.hs` (the binary-sibling `capacity` block), the scheduled
-  `src/Prodbox/Capacity/UnboundedSink.hs` (the `Capacity` / `ScalingWitness` types),
-  the scheduled `src/Prodbox/Capacity/MlEngineBudget.hs` (the `MlEngineCapacity` types), and
+  `src/Prodbox/Settings.hs` (the binary-sibling `capacity` block), an unscheduled home for the
+  `Capacity` / `ScalingWitness` types and an unscheduled home for the `MlEngineCapacity` types —
+  named here as types rather than as module paths, because no sprint owns building either, and a
+  doctrine that cites a path nothing will create is a promise no reader can collect on — and
   `src/Prodbox/Aws.hs` (the reused `QuotaSpec` / `ensureServiceQuota` / `applyAwsCheckQuotas`
   region-quota surface).
 

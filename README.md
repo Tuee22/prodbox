@@ -157,9 +157,14 @@ validation environments.
   [Lifecycle Reconciliation Doctrine](./documents/engineering/lifecycle_reconciliation_doctrine.md)
   and [Lifecycle Control-Plane Architecture §11.0](./documents/engineering/lifecycle_control_plane_architecture.md#110-ordinary-teardown-recovery-profile).
   Until the plan-tracked cutover lands, the current binary still uses the legacy handwritten
-  cascade: it may short-circuit when local RKE2 is absent and may uninstall RKE2 after unresolved
-  phases. A non-zero cascade is therefore unresolved, not a clean result; preserve `.data/` and the
-  complete output for recovery. Rollout status lives only in
+  cascade: it short-circuits to success when local RKE2 is absent — before any phase, before the
+  per-run residue gate, and without rendering the preserved-host-state boundary — and it may
+  uninstall RKE2 after unresolved phases. **Neither exit code is a clean result.** A non-zero cascade
+  is unresolved; a **zero** cascade is also not evidence, because that short-circuit returns success
+  having observed nothing, which is how per-run AWS resources have already been stranded. Preserve
+  `.data/` and the complete output for recovery in both cases, and treat deleting `.data/` as an
+  action that needs a positive disposition of the capabilities it holds rather than a clean-looking
+  exit. Rollout status lives only in
   [Development Plan → Resume Here](./DEVELOPMENT_PLAN/README.md#resume-here).
 - This target edge doctrine has substrate-specific lower layers: the home substrate uses MetalLB,
   while the AWS substrate uses the AWS Load Balancer Controller/NLB path. Both substrates provision
@@ -561,6 +566,7 @@ non-interactively.
 |-------------|-------------|
 | `route53.zone_id` | Route 53 hosted zone ID |
 | `acme.email` | Email for the selected public ACME provider |
+| `aws.region` | Operational AWS region. `prodbox config generate` emits it **empty**, like every other operator-owned coordinate, so an AWS flow refuses by name until you supply it — run `prodbox aws setup`, which the refusal names. There is no compiled fallback, and the admin-credential prompt offers no pre-filled region when the config carries none |
 
 ### Operationally Important Fields
 
@@ -570,11 +576,10 @@ These fields are not all parser-required, but they matter for normal operation:
 |-------------|-------------|
 | `domain.demo_fqdn` | Primary public FQDN used by DNS inspection, public-edge diagnostics, and the gateway/public host flow |
 | `deployment.public_edge_advertisement_mode` | Optional MetalLB advertisement mode: `l2` or `bgp` |
-| `deployment.envoy_gateway_controller_replicas` | Optional Envoy Gateway controller replica count |
-| `deployment.envoy_gateway_data_plane_replicas` | Optional Envoy data-plane replica count |
-| `deployment.api_replicas` | Optional API workload replica count |
-| `deployment.websocket_replicas` | Optional WebSocket workload replica count |
-| `aws.region` | Operational AWS region; the default config value is `us-east-1` |
+| `deployment.envoy_gateway_controller_scaling` | Envoy Gateway controller scaling policy, per substrate (`home_local`, `aws`), each `Fixed n` or `Elastic {min,max}` |
+| `deployment.envoy_gateway_data_plane_scaling` | Envoy data-plane scaling policy, same shape |
+| `deployment.api_scaling` | API workload scaling policy, same shape |
+| `deployment.websocket_scaling` | WebSocket workload scaling policy, same shape |
 | `storage.manual_pv_host_root` | Host root reserved for retained PV contents; defaults to `.data` under the repo |
 
 ### Optional Fields
@@ -669,8 +674,14 @@ audit still runs outside the external receipt. A normal cluster rebuild is there
 a fresh Vault: `vault init` runs exactly once (the first time the PV is empty) and every later
 `cluster reconcile` only unseals the existing data, so Vault KV is as durable across rebuilds as
 any retained PV. Invoking local-only `cluster delete --yes` when no RKE2 installation exists is a
-no-op success (`No RKE2 cluster to delete.`, exit 0). The target cascade does not take that shortcut
-because local absence says nothing about durable cleanup or AWS.
+no-op success (`No RKE2 cluster to delete.`, exit 0). `cluster delete --cascade --yes` does not take
+that shortcut, because local absence says nothing about durable cleanup or AWS: with no install
+present it reaches no phase, names the durable cleanup run namespace it could not reach and the
+`RecoveryPlaneNotEstablished` disposition it reports, makes no statement about per-run AWS stacks,
+and exits non-zero. **No cascade exit authorizes deleting the retained root.** Only a `cluster
+delete` terminal arm carrying a completion receipt, or an explicit local-only uninstall, says the
+retained root is preserved by what it did; every other arm names the root and states that the run
+establishes nothing about retiring it.
 
 Consequences of that preservation are tracked in the development plan rather than described here.
 Preserving `.data/` also preserves the Bootstrap Broker's session fence. A bring-up abandoned partway

@@ -117,6 +117,17 @@ import Prodbox.Lifecycle.PulumiCheckpoint
   , registeredPulumiCheckpointFor
   , registeredPulumiCheckpointName
   )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal
+  ( checkpointCapabilityForStackName
+  , dischargeByObservedEmptiness
+  , renderCapabilityCustodyError
+  , rotateOntoRetiredReference
+  )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CheckpointCustodyObservation (..)
+  , CustodyDispositionRecord
+  , recordCapabilityDisposition
+  )
 import Prodbox.Result (Result (..))
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import Prodbox.Subprocess
@@ -715,7 +726,13 @@ persistAuthorityCheckpoint
   -> Maybe ByteString
   -> IO (Either String ())
 persistAuthorityCheckpoint clients expected maybeBytes = case maybeBytes of
-  Nothing -> retireAuthorityCheckpoint clients expected
+  -- Sprint 4.89: a fenced reconcile that collected no checkpoint state has left
+  -- a capability that names nothing, so retiring it strands nothing.  That is
+  -- an inertness discharge and it is minted by the one constructor that admits
+  -- one, from the emptiness this branch has just observed.
+  Nothing -> case authorityCheckpointDisposition clients CheckpointCapabilityEmpty of
+    Left detail -> pure (Left detail)
+    Right disposition -> retireAuthorityCheckpoint clients expected disposition
   Just bytes ->
     case decodeCanonicalPulumiCheckpoint
       (Set.singleton PulumiFileBackendCheckpoint)
@@ -769,11 +786,40 @@ publishAuthorityCheckpoint clients expected checkpoint = do
           PulumiCheckpointPublicationRefused detail -> Left (Text.unpack detail)
           PulumiCheckpointPublicationUnavailable detail -> Left (Text.unpack detail)
 
+-- | The disposition this run states for the registered checkpoint it is about
+-- to stop holding.
+--
+-- Minted from the observation rather than authored: the only inertness this
+-- module can honestly claim is the one it just observed, and a corrupt blob
+-- rotates onto the reference the Lifecycle Authority retains instead.
+authorityCheckpointDisposition
+  :: AuthorityCheckpointClients
+  -> CheckpointCustodyObservation
+  -> Either String CustodyDispositionRecord
+authorityCheckpointDisposition clients observation =
+  case checkpointCapabilityForStackName registeredName of
+    Nothing ->
+      Left
+        ( "the managed resource registry declares no stack descriptor for "
+            ++ Text.unpack registeredName
+        )
+    Just capability ->
+      case discharge capability of
+        Left err -> Left (Text.unpack (renderCapabilityCustodyError err))
+        Right disposition -> Right (recordCapabilityDisposition disposition)
+ where
+  registeredName =
+    registeredPulumiCheckpointName (authorityCheckpointRegistration clients)
+  discharge capability = case observation of
+    CheckpointCapabilityCorrupt _ -> rotateOntoRetiredReference capability
+    other -> dischargeByObservedEmptiness capability other
+
 retireAuthorityCheckpoint
   :: AuthorityCheckpointClients
   -> Maybe PulumiCheckpointDigest
+  -> CustodyDispositionRecord
   -> IO (Either String ())
-retireAuthorityCheckpoint clients expected = do
+retireAuthorityCheckpoint clients expected disposition = do
   operationResult <- submitCheckpointOperation clients "retire" expected Nothing
   case operationResult of
     Left detail -> pure (Left detail)
@@ -786,6 +832,7 @@ retireAuthorityCheckpoint clients expected = do
               (authorityCheckpointClient clients)
               operation
               expected
+              disposition
           )
       pure $ do
         result <- retired
@@ -1025,8 +1072,9 @@ pruneLogicalPulumiStack
   :: LifecycleAuthorityAuthentication
   -> FilePath
   -> PulumiStackRef
+  -> CustodyDispositionRecord
   -> IO (Either EncryptedBackendError ())
-pruneLogicalPulumiStack authentication _repoRoot stackRef =
+pruneLogicalPulumiStack authentication _repoRoot stackRef disposition =
   withAuthorityCheckpointTransport authentication stackRef $ \clients -> do
     observed <-
       retryAuthorityCall
@@ -1037,7 +1085,7 @@ pruneLogicalPulumiStack authentication _repoRoot stackRef =
       Left detail -> pure (Left (EncryptedBackendDeleteFailed detail))
       Right PulumiCheckpointMissing -> pure (Right ())
       Right (PulumiCheckpointCorruptAt digest _) -> do
-        retired <- retireAuthorityCheckpoint clients (Just digest)
+        retired <- retireAuthorityCheckpoint clients (Just digest) disposition
         pure (mapLeft EncryptedBackendDeleteFailed retired)
       Right (PulumiCheckpointCorrupt _) ->
         pure

@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Lifecycle-owned orchestration for the destructive host boundary of a
@@ -111,7 +112,8 @@ import Prodbox.Lifecycle.Teardown.Execution
   , LocalFoundationObservationResult (LocalFoundationAbsent)
   )
 import Prodbox.Lifecycle.Teardown.Model
-  ( ObservationEvidenceScope
+  ( CleanupSurface (Cascade)
+  , ObservationEvidenceScope
   , ObservationFailure
   )
 import System.Directory (createDirectory, createDirectoryLink)
@@ -266,7 +268,7 @@ data HostCleanupRunnerEffects m = HostCleanupRunnerEffects
   , hostRunnerReadBackLocalAbsence
       :: HostCleanupRunnerContext
       -> ReadyToUninstallEvidence
-      -> m (Either Text (Maybe LocalUninstallEvidence))
+      -> m (Either Text (Maybe (LocalUninstallEvidence 'Cascade)))
   , hostRunnerReestablishBootstrapRecovery
       :: HostCleanupRunnerContext
       -> m HostCleanupEffectOutcome
@@ -281,14 +283,14 @@ data HostCleanupRunnerEffects m = HostCleanupRunnerEffects
       -> m (Either Text ReadyToUninstallEvidence)
   , hostRunnerReconcileCleanupRun
       :: HostCleanupRunnerContext
-      -> LocalUninstallEvidence
+      -> LocalUninstallEvidence 'Cascade
       -> m HostCleanupEffectOutcome
   , hostRunnerReadBackCleanupRun
       :: HostCleanupRunnerContext
       -> m (Either Text CleanupRun)
   , hostRunnerCommitCompletionReceipt
       :: HostCleanupRunnerContext
-      -> LocalUninstallEvidence
+      -> LocalUninstallEvidence 'Cascade
       -> m HostCleanupEffectOutcome
   , hostRunnerReadBackCompletionReceipt
       :: HostCleanupRunnerContext
@@ -821,8 +823,8 @@ requireExactReadyReadBack step expected observed = case observed of
 requireExactLocalAbsence
   :: HostCleanupEffectOutcome
   -> ReadyToUninstallEvidence
-  -> Either Text (Maybe LocalUninstallEvidence)
-  -> Either HostCleanupRunnerError LocalUninstallEvidence
+  -> Either Text (Maybe (LocalUninstallEvidence 'Cascade))
+  -> Either HostCleanupRunnerError (LocalUninstallEvidence 'Cascade)
 requireExactLocalAbsence attempt ready observed = case observed of
   Left detail ->
     mutationObservationFailure
@@ -838,8 +840,8 @@ requireExactLocalAbsence attempt ready observed = case observed of
 
 requireExactLocalAbsenceReadBack
   :: ReadyToUninstallEvidence
-  -> Either Text (Maybe LocalUninstallEvidence)
-  -> Either HostCleanupRunnerError LocalUninstallEvidence
+  -> Either Text (Maybe (LocalUninstallEvidence 'Cascade))
+  -> Either HostCleanupRunnerError (LocalUninstallEvidence 'Cascade)
 requireExactLocalAbsenceReadBack ready observed = case observed of
   Left detail ->
     Left
@@ -857,8 +859,8 @@ requireExactLocalAbsenceReadBack ready observed = case observed of
 
 requireOptionalLocalAbsence
   :: ReadyToUninstallEvidence
-  -> Either Text (Maybe LocalUninstallEvidence)
-  -> Either HostCleanupRunnerError (Maybe LocalUninstallEvidence)
+  -> Either Text (Maybe (LocalUninstallEvidence 'Cascade))
+  -> Either HostCleanupRunnerError (Maybe (LocalUninstallEvidence 'Cascade))
 requireOptionalLocalAbsence ready observed = case observed of
   Left detail ->
     Left
@@ -871,8 +873,8 @@ requireOptionalLocalAbsence ready observed = case observed of
 
 validateLocalEvidence
   :: ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
-  -> Either HostCleanupRunnerError LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
+  -> Either HostCleanupRunnerError (LocalUninstallEvidence 'Cascade)
 validateLocalEvidence ready evidence = do
   expected <-
     either
@@ -972,7 +974,7 @@ requireCompletionReadBack
   -> HostCleanupEffectOutcome
   -> HostCleanupRunnerContext
   -> ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> Either Text HostCleanupCompletionReadBack
   -> Either HostCleanupRunnerError HostCleanupCompletionReadBack
 requireCompletionReadBack step attempt context ready local observed = case observed of
@@ -982,7 +984,7 @@ requireCompletionReadBack step attempt context ready local observed = case obser
 requireCompletionReadBackOnly
   :: HostCleanupRunnerContext
   -> ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> Either Text HostCleanupCompletionReadBack
   -> Either HostCleanupRunnerError HostCleanupCompletionReadBack
 requireCompletionReadBackOnly context ready local observed = case observed of
@@ -997,7 +999,7 @@ requireCompletionReadBackOnly context ready local observed = case observed of
 validateCompletionReadBack
   :: HostCleanupRunnerContext
   -> ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> HostCleanupCompletionReadBack
   -> Either HostCleanupRunnerError HostCleanupCompletionReadBack
 validateCompletionReadBack context ready local readBack = do
@@ -1123,7 +1125,7 @@ fixedHostCleanupRunnerRegression =
 runFixedHostCleanupRunnerRegression
   :: CleanupRun
   -> ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> CascadeCompleteEvidence
   -> ReadyToUninstallEvidence
   -> IO (Either Text HostCleanupRunnerRegression)
@@ -1250,7 +1252,7 @@ fixedUnboundScenario
   -> HostCleanupIntent
   -> CleanupRun
   -> ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> CascadeCompleteEvidence
   -> IO Bool
 fixedUnboundScenario root intent run ready local complete = do
@@ -1276,7 +1278,7 @@ fixedSuccessfulScenario
   -> HostCleanupIntent
   -> CleanupRun
   -> ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> CascadeCompleteEvidence
   -> HostCleanupEffectOutcome
   -> IO Bool
@@ -1314,7 +1316,7 @@ fixedSteppedScenario
   -> HostCleanupIntent
   -> CleanupRun
   -> ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> CascadeCompleteEvidence
   -> IO (Bool, Bool)
 fixedSteppedScenario root intent run ready local complete = do
@@ -1369,7 +1371,7 @@ fixedNoRepeatScenario
   -> HostCleanupIntent
   -> CleanupRun
   -> ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> CascadeCompleteEvidence
   -> IO Bool
 fixedNoRepeatScenario root intent run ready local complete = do
@@ -1408,7 +1410,7 @@ fixedWrongReadyScenario
   -> HostCleanupIntent
   -> CleanupRun
   -> ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> CascadeCompleteEvidence
   -> ReadyToUninstallEvidence
   -> IO Bool
@@ -1441,7 +1443,7 @@ fixedMissingCompletionScenario
   -> HostCleanupIntent
   -> CleanupRun
   -> ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> CascadeCompleteEvidence
   -> IO Bool
 fixedMissingCompletionScenario root intent run ready local complete = do
@@ -1471,7 +1473,7 @@ fixedConcurrentLeaseScenario
   -> HostCleanupIntent
   -> CleanupRun
   -> ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> CascadeCompleteEvidence
   -> IO Bool
 fixedConcurrentLeaseScenario root intent run ready local complete = do
@@ -1571,7 +1573,7 @@ fixedPersistArmed store intent ready = do
 fixedHostRunnerEffects
   :: CleanupRun
   -> ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> CascadeCompleteEvidence
   -> IORef FixedHostRunnerState
   -> HostCleanupEffectOutcome

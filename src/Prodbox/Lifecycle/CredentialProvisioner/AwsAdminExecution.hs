@@ -126,7 +126,8 @@ import Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
   , destroyProductionIamIdentity
   , ensureProductionIamPrerequisites
   , observeProductionAccessKeyInventory
-  , observeProductionIamIdentityAbsent
+  , observeProductionIamFamilyAbsent
+  , productionIamJointAuthorization
   , waitProductionIamVisibilityGrace
   )
 import Prodbox.Lifecycle.CredentialProvisioner.TargetMaterial
@@ -175,13 +176,21 @@ productionAwsAdminIamBoundary session =
     , internalObserveIamKeys = observeProductionAccessKeyInventory session
     , internalDeleteIamKey = deleteProductionAccessKey session
     , internalCreateIamKey = createProductionAccessKey session
-    , internalDestroyIamIdentity =
-        either (Left . boundedShow) Right <$> destroyProductionIamIdentity session
-    , internalObserveIamIdentityAbsent = do
-        result <- observeProductionIamIdentityAbsent session
-        pure $ case result of
-          Left err -> Left (boundedShow err)
-          Right () -> Right True
+    , -- Sprint 7.36: both arms decide through the joint family disposition, so
+      -- "the destroy returned" and "the family is gone" are no longer the same
+      -- answer. A partial destroy refuses here naming every surviving member.
+      internalDestroyIamIdentity = case productionIamJointAuthorization session of
+        Left err -> pure (Left (boundedShow err))
+        Right authorization ->
+          either (Left . boundedShow) (const (Right ()))
+            <$> destroyProductionIamIdentity authorization session
+    , internalObserveIamIdentityAbsent = case productionIamJointAuthorization session of
+        Left err -> pure (Left (boundedShow err))
+        Right authorization -> do
+          result <- observeProductionIamFamilyAbsent authorization session
+          pure $ case result of
+            Left err -> Left (boundedShow err)
+            Right _ -> Right True
     , internalWaitIamVisibilityGrace = waitProductionIamVisibilityGrace
     }
 

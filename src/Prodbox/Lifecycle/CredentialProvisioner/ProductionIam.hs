@@ -33,13 +33,14 @@ module Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
   , deleteProductionAccessKey
   , createProductionAccessKey
   , destroyProductionIamIdentity
-  , observeProductionIamIdentityAbsent
+  , observeProductionIamFamilyAbsent
+  , productionIamJointAuthorization
   , waitProductionIamVisibilityGrace
   )
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (unless)
+import Control.Monad (unless, void)
 import Data.Aeson
   ( Value
   , eitherDecodeStrict'
@@ -47,6 +48,7 @@ import Data.Aeson
   , object
   , (.=)
   )
+import Data.Bifunctor (first)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.List (sort)
@@ -93,6 +95,18 @@ import Prodbox.Lifecycle.CredentialProvisioner.Execution
   , mkProvisionedAccessKeyId
   , observedAccessKeyInventory
   , provisionedAccessKeyIdText
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.JointIamDisposition
+  ( IamFamilyMember (..)
+  , IamMemberObservation (..)
+  , JointIamDispositionAuthorization
+  , JointIamDispositionComplete
+  , JointIamDispositionRefusal
+  , disposeJointIamFamily
+  , jointIamDispositionOrder
+  , jointIamDispositionPrincipal
+  , jointIamDispositionRole
+  , mkJointIamDispositionAuthorization
   )
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( AwsCredentialClass (..)
@@ -317,6 +331,12 @@ data ProductionIamError
   | ProductionIamRolePolicyReadBackMismatch
   | ProductionIamAccessKeyInvalid !Text
   | ProductionIamMaterialInvalid !TargetMaterialValueError
+  | -- | Sprint 7.36: the family survived the destroy, could not be observed, or
+    -- was observed incompletely. It names every surviving member rather than
+    -- the first, because that set is what a retry resumes from.
+    ProductionIamJointDispositionRefused !JointIamDispositionRefusal
+  | -- | The authorization does not name the family this session's program owns.
+    ProductionIamJointAuthorizationMismatch !Text
   deriving (Eq, Show)
 
 openProductionIamSession
@@ -488,85 +508,172 @@ createProductionAccessKey session = do
               Left _ -> AwsAccessKeyCreateFailed "IAM returned an invalid access-key identifier"
               Right keyId -> AwsAccessKeyCreated keyId material
 
+-- | Sprint 7.36: destroy the whole IAM family as one disposition.
+--
+-- Two properties replace the sequence this used to be. Every member is
+-- /attempted/, so a failure part-way through no longer abandons the remainder
+-- and leaves a partially destroyed principal; and the inline policies are
+-- /enumerated/ rather than addressed by one authored name, so a creator that
+-- wrote a different policy name no longer strands a policy that IAM then cites
+-- forever when refusing to delete the principal. Completion is minted only from
+-- the separate read-back below, in which every member is independently absent.
 destroyProductionIamIdentity
-  :: ProductionIamSession -> IO (Either ProductionIamError ())
-destroyProductionIamIdentity session = do
-  inventory <- listAccessKeys client principal
-  case inventory of
-    Left err -> pure (Left (awsFailure "list access keys for revoke" err))
-    Right keys -> do
-      deleted <- deleteKeys keys
-      case deleted of
-        Left err -> pure (Left err)
-        Right () -> do
-          policyDeleted <- deleteUserInlinePolicy client principal policyName
-          case policyDeleted of
-            Left err -> pure (Left (awsFailure "delete inline policy" err))
-            Right () -> do
-              userDeleted <- deleteUser client principal
-              case userDeleted of
-                Left err -> pure (Left (awsFailure "delete IAM user" err))
-                Right () -> do
-                  roleDeleted <- destroyProgramRole session
-                  case roleDeleted of
-                    Left err -> pure (Left err)
-                    Right () -> observeProductionIamIdentityAbsent session
- where
-  iamProgram = productionIamProgram session
-  client = productionIamClient session
-  principal = credentialIamProgramPrincipal iamProgram
-  policyName = credentialIamProgramPolicyName iamProgram
-  deleteKeys keys = sequenceDeletes keys
-  sequenceDeletes remaining = case remaining of
-    [] -> pure (Right ())
-    key : rest -> do
-      result <- deleteAccessKey client principal (accessKeyMetadataId key)
-      case result of
-        Left err -> pure (Left (awsFailure "delete access key" err))
-        Right () -> sequenceDeletes rest
+  :: JointIamDispositionAuthorization
+  -> ProductionIamSession
+  -> IO (Either ProductionIamError JointIamDispositionComplete)
+destroyProductionIamIdentity authorization session =
+  case validateJointAuthorization authorization session of
+    Left err -> pure (Left err)
+    Right () -> do
+      mapM_ (attemptMember session) (jointIamDispositionOrder authorization)
+      observeProductionIamFamilyAbsent authorization session
 
-observeProductionIamIdentityAbsent
-  :: ProductionIamSession -> IO (Either ProductionIamError ())
-observeProductionIamIdentityAbsent session = do
-  observed <- observeUser client principal
-  case observed of
-    Left err -> pure (Left (awsFailure "observe IAM user absence" err))
-    Right (IamUserPresent _) ->
-      pure (Left (ProductionIamUserReadBackMismatch "IAM user remained present"))
-    Right IamUserAbsent -> observeProgramRoleAbsent session
+-- | Attempt one member's removal, never failing the disposition.
+--
+-- A member that cannot be removed here is not an error: the read-back is what
+-- decides, and it will name this member as surviving. Returning early instead
+-- is exactly the abandonment this sprint removes.
+attemptMember :: ProductionIamSession -> IamFamilyMember -> IO ()
+attemptMember session member = case member of
+  IamAccessKeyFamily -> do
+    inventory <- listAccessKeys client principal
+    case inventory of
+      Left _ -> pure ()
+      Right keys ->
+        mapM_
+          (\key -> void (deleteAccessKey client principal (accessKeyMetadataId key)))
+          keys
+  IamInlinePolicyFamily -> do
+    policies <- listUserInlinePolicies client principal
+    case policies of
+      Left _ -> pure ()
+      Right names ->
+        mapM_ (\name -> void (deleteUserInlinePolicy client principal name)) names
+  IamPrincipal -> void (deleteUser client principal)
+  IamAssumedRoleInlinePolicy -> case programRole of
+    Nothing -> pure ()
+    Just role ->
+      void
+        ( deleteRoleInlinePolicy
+            client
+            (programRoleName role)
+            (programRolePolicyName role)
+        )
+  IamAssumedRole -> case programRole of
+    Nothing -> pure ()
+    Just role -> void (deleteRole client (programRoleName role))
  where
   client = productionIamClient session
   principal = credentialIamProgramPrincipal (productionIamProgram session)
+  programRole = internalCredentialIamRole (productionIamProgram session)
 
-destroyProgramRole :: ProductionIamSession -> IO (Either ProductionIamError ())
-destroyProgramRole session = case internalCredentialIamRole (productionIamProgram session) of
-  Nothing -> pure (Right ())
-  Just role -> do
-    policyDeleted <-
-      deleteRoleInlinePolicy
-        client
-        (programRoleName role)
-        (programRolePolicyName role)
-    case policyDeleted of
-      Left err -> pure (Left (awsFailure "delete Lifecycle-provider role policy" err))
-      Right () -> do
-        deleted <- deleteRole client (programRoleName role)
-        case deleted of
-          Left err -> pure (Left (awsFailure "delete Lifecycle-provider role" err))
-          Right () -> observeProgramRoleAbsent session
+-- | The exact-coordinate read-back over the whole family.
+--
+-- Total over the family, so a member nothing answered for refuses rather than
+-- passing; and an unobservable member refuses distinctly from a surviving one,
+-- because they license different next steps.
+observeProductionIamFamilyAbsent
+  :: JointIamDispositionAuthorization
+  -> ProductionIamSession
+  -> IO (Either ProductionIamError JointIamDispositionComplete)
+observeProductionIamFamilyAbsent authorization session =
+  case validateJointAuthorization authorization session of
+    Left err -> pure (Left err)
+    Right () -> do
+      observations <-
+        traverse
+          (\member -> (,) member <$> observeMember session member)
+          (jointIamDispositionOrder authorization)
+      pure
+        ( first
+            ProductionIamJointDispositionRefused
+            (disposeJointIamFamily authorization observations)
+        )
+
+observeMember
+  :: ProductionIamSession -> IamFamilyMember -> IO IamMemberObservation
+observeMember session member = case member of
+  IamAccessKeyFamily -> do
+    observed <- listAccessKeys client principal
+    pure $ case observed of
+      Left err -> IamMemberUnobservable (boundedDetail err)
+      Right [] -> IamMemberAbsent
+      Right _ -> IamMemberPresent
+  IamInlinePolicyFamily -> do
+    observed <- listUserInlinePolicies client principal
+    pure $ case observed of
+      Left err -> IamMemberUnobservable (boundedDetail err)
+      Right [] -> IamMemberAbsent
+      Right _ -> IamMemberPresent
+  IamPrincipal -> do
+    observed <- observeUser client principal
+    pure $ case observed of
+      Left err -> IamMemberUnobservable (boundedDetail err)
+      Right IamUserAbsent -> IamMemberAbsent
+      Right (IamUserPresent _) -> IamMemberPresent
+  IamAssumedRoleInlinePolicy -> case programRole of
+    Nothing -> pure IamMemberAbsent
+    Just role -> do
+      observed <-
+        observeRoleInlinePolicy
+          client
+          (programRoleName role)
+          (programRolePolicyName role)
+      pure $ case observed of
+        Left err -> IamMemberUnobservable (boundedDetail err)
+        Right IamRolePolicyAbsent -> IamMemberAbsent
+        Right (IamRolePolicyPresent _) -> IamMemberPresent
+  IamAssumedRole -> case programRole of
+    Nothing -> pure IamMemberAbsent
+    Just role -> do
+      observed <- observeRole client (programRoleName role)
+      pure $ case observed of
+        Left err -> IamMemberUnobservable (boundedDetail err)
+        Right IamRoleAbsent -> IamMemberAbsent
+        Right IamRolePresent {} -> IamMemberPresent
  where
   client = productionIamClient session
+  principal = credentialIamProgramPrincipal (productionIamProgram session)
+  programRole = internalCredentialIamRole (productionIamProgram session)
+  boundedDetail = Text.take 200 . Text.pack . show
 
-observeProgramRoleAbsent :: ProductionIamSession -> IO (Either ProductionIamError ())
-observeProgramRoleAbsent session = case internalCredentialIamRole (productionIamProgram session) of
-  Nothing -> pure (Right ())
-  Just role -> do
-    observed <- observeRole (productionIamClient session) (programRoleName role)
-    pure $ case observed of
-      Left err -> Left (awsFailure "observe Lifecycle-provider role absence" err)
-      Right IamRoleAbsent -> Right ()
-      Right IamRolePresent {} ->
-        Left (ProductionIamRoleReadBackMismatch "role remained present")
+-- | The authorization this session's own program licenses.
+--
+-- Derived from the program rather than accepted beside it, so the caller
+-- constructing an authorization and the session executing it cannot name two
+-- different families.
+productionIamJointAuthorization
+  :: ProductionIamSession
+  -> Either ProductionIamError JointIamDispositionAuthorization
+productionIamJointAuthorization session =
+  first
+    (ProductionIamJointAuthorizationMismatch . Text.take 200 . Text.pack . show)
+    ( mkJointIamDispositionAuthorization
+        ( awsCredentialDescriptorClass
+            (internalCredentialIamDescriptor (productionIamProgram session))
+        )
+        (programRoleName <$> internalCredentialIamRole (productionIamProgram session))
+    )
+
+validateJointAuthorization
+  :: JointIamDispositionAuthorization
+  -> ProductionIamSession
+  -> Either ProductionIamError ()
+validateJointAuthorization authorization session = do
+  expected <- productionIamJointAuthorization session
+  if jointIamDispositionPrincipal authorization
+    == jointIamDispositionPrincipal expected
+    && jointIamDispositionRole authorization == jointIamDispositionRole expected
+    then Right ()
+    else
+      Left
+        ( ProductionIamJointAuthorizationMismatch
+            ( "authorization names "
+                <> jointIamDispositionPrincipal authorization
+                <> " but this session's program owns "
+                <> jointIamDispositionPrincipal expected
+            )
+        )
 
 waitProductionIamVisibilityGrace :: IO (Either Text ())
 waitProductionIamVisibilityGrace = do

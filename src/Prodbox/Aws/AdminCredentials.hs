@@ -53,6 +53,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.CLI.Output (writeOutput, writeOutputLine)
 import Prodbox.Settings (Credentials (..))
+import Prodbox.Settings.Coordinate (AwsRegion, awsRegionText)
 import Prodbox.Vault.Host
   ( TestSecrets (..)
   , TestSecretsAdminCredentials
@@ -86,7 +87,7 @@ acquireAdminAwsCredentials repoRoot = do
       isTty <- hIsTerminalDevice stdin
       if isTty
         then do
-          credentials <- promptAdminCredentials ""
+          credentials <- promptAdminCredentials Nothing
           pure (Right credentials)
         else
           pure
@@ -139,7 +140,13 @@ sessionTokenPromptShape accessKeyId
 
 -- | Prompt the operator for a temporary admin AWS credential. Includes the
 -- AKIA/ASIA session-token shape detection. The credential is never persisted.
-promptAdminCredentials :: Text -> IO Credentials
+--
+-- Sprint 1.91: the pre-fill is a 'Maybe' rather than a 'Text'. It took a
+-- @Text@, and the one caller that could not supply a configured region
+-- supplied a compiled one, so the operator was offered a region prodbox had
+-- picked and could accept it by pressing Enter. @Nothing@ offers no pre-fill,
+-- which is the only honest answer when nothing has been configured.
+promptAdminCredentials :: Maybe AwsRegion -> IO Credentials
 promptAdminCredentials defaultRegion = do
   ensureAwsCliAvailable
   showAdminCredentialsGuidance
@@ -153,7 +160,7 @@ promptAdminCredentials defaultRegion = do
   regionRaw <-
     promptText
       "AWS region for admin operations (you can change it after regions are listed)"
-      (Just (Text.unpack defaultRegion))
+      (Text.unpack . awsRegionText <$> defaultRegion)
   validateAdminCredentialsInput
     Credentials
       { access_key_id = accessKeyId

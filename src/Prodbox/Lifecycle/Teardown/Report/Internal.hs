@@ -23,6 +23,7 @@ module Prodbox.Lifecycle.Teardown.Report.Internal
   , completeCascadeDesiredAbsence
   , completeExplicitPerRunDesiredAbsence
   , completeOperationalTeardownDesiredAbsence
+  , completeExplicitLongLivedDesiredAbsence
   , SurfaceIncompleteEvidence
   , incompleteEvidenceSurface
   , incompleteEvidenceRunId
@@ -54,6 +55,9 @@ module Prodbox.Lifecycle.Teardown.Report.Internal
   , desiredAbsenceRegressionOperationalUnavailableRefused
   , desiredAbsenceRegressionOperationalSurfaceMismatchRefused
   , desiredAbsenceRegressionOperationalObligationNonEmpty
+  , desiredAbsenceRegressionLongLivedCompletes
+  , desiredAbsenceRegressionLongLivedNeedsExactAggregate
+  , desiredAbsenceRegressionLongLivedRunBound
   )
 where
 
@@ -74,6 +78,10 @@ import Prodbox.ControlPlane.CleanupRunClient
   , descriptorBoundCleanupRunNodeStates
   , descriptorBoundCleanupRunReport
   , withDescriptorBoundCleanupProgram
+  )
+import Prodbox.Lifecycle.Authority.AdminAction
+  ( PermitFreshness (PermitFresh)
+  , RunnerRole (AdminActionRunner)
   )
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupAttemptId
@@ -109,6 +117,15 @@ import Prodbox.Lifecycle.Teardown.Graph
   , compiledDesiredAbsenceObservationScope
   , compiledDesiredAbsenceOperations
   , compiledDesiredAbsenceRunId
+  )
+import Prodbox.Lifecycle.Teardown.LongLivedAggregatePermit
+  ( LongLivedAggregatePermit
+  , LongLivedAggregatePermitRefusal (LongLivedPermitAggregateIncomplete)
+  , LongLivedAggregatePermitRequest (..)
+  , admitLongLivedAggregatePermit
+  , longLivedAggregatePermitGraphDigest
+  , longLivedAggregatePermitRunId
+  , longLivedAggregateUniverse
   )
 import Prodbox.Lifecycle.Teardown.Model
   ( AwsAccountId (..)
@@ -222,18 +239,28 @@ data SurfaceCompletionEvidence surface where
   OperationalTeardownCompletionEvidence
     :: !(SurfaceReadBackEvidence 'OperationalTeardown)
     -> SurfaceCompletionEvidence 'OperationalTeardown
+  -- | Sprint 7.36. Minted only by 'completeExplicitLongLivedDesiredAbsence',
+  -- which additionally consumes the aggregate operator permit. It is the one
+  -- ordinary surface whose completion is not implied by its own read-backs.
+  ExplicitLongLivedCompletionEvidence
+    :: !(SurfaceReadBackEvidence 'ExplicitLongLived)
+    -> !LongLivedAggregatePermit
+    -> SurfaceCompletionEvidence 'ExplicitLongLived
 
 completionEvidenceSurface :: SurfaceCompletionEvidence surface -> CleanupSurface
 completionEvidenceSurface evidence = case evidence of
   CascadeCompletionEvidence {} -> Cascade
   ExplicitPerRunCompletionEvidence {} -> ExplicitPerRun
   OperationalTeardownCompletionEvidence {} -> OperationalTeardown
+  ExplicitLongLivedCompletionEvidence {} -> ExplicitLongLived
 
 completionEvidenceRunId :: SurfaceCompletionEvidence surface -> CleanupRunId
 completionEvidenceRunId evidence = case evidence of
   CascadeCompletionEvidence complete -> cascadeCompleteRunId complete
   ExplicitPerRunCompletionEvidence readBacks -> readBackEvidenceRunId readBacks
   OperationalTeardownCompletionEvidence readBacks -> readBackEvidenceRunId readBacks
+  ExplicitLongLivedCompletionEvidence readBacks _ ->
+    readBackEvidenceRunId readBacks
 
 completionEvidenceGraphDigest
   :: SurfaceCompletionEvidence surface -> CleanupDigest
@@ -242,6 +269,8 @@ completionEvidenceGraphDigest evidence = case evidence of
   ExplicitPerRunCompletionEvidence readBacks ->
     readBackEvidenceGraphDigest readBacks
   OperationalTeardownCompletionEvidence readBacks ->
+    readBackEvidenceGraphDigest readBacks
+  ExplicitLongLivedCompletionEvidence readBacks _ ->
     readBackEvidenceGraphDigest readBacks
 
 -- | Sprint 4.85: complete an explicit per-run desired-absence run.
@@ -330,6 +359,59 @@ completeOperationalTeardownDesiredAbsence readBacks
       Just disposition ->
         Left (DesiredAbsenceRecoveryDispositionConflict disposition)
 
+-- | Sprint 7.36: complete an explicit long-lived desired-absence run.
+--
+-- Three of this surface's four required facts — aggregate\/family absence,
+-- credential\/tombstone disposition, and checkpoint disposition — are the
+-- content of a complete read-back set, for the same structural reason explicit
+-- per-run's are: 'classifyDesiredAbsenceReportInternal' refuses to produce one
+-- unless every mandatory read-back succeeded.  Until Sprint 7.36 the retained
+-- EBS family had no production executor, so this surface's mandatory read-back
+-- could never succeed and completing it was unreachable rather than merely
+-- unwritten.
+--
+-- The fourth fact is the one this surface does __not__ get from its own run:
+-- the aggregate operator permit.  A long-lived family is infrastructure the
+-- rest of the system preserves, so its removal is a decision rather than a
+-- consequence of convergence.  The permit is re-checked here against the
+-- evidence's run and graph, so a permit issued for another run cannot complete
+-- this one, and the permit's own admission already required the aggregate to
+-- be exactly the registry's projection.
+completeExplicitLongLivedDesiredAbsence
+  :: LongLivedAggregatePermit
+  -> SurfaceReadBackEvidence 'ExplicitLongLived
+  -> Either
+       DesiredAbsenceReportError
+       (SurfaceCompletionEvidence 'ExplicitLongLived)
+completeExplicitLongLivedDesiredAbsence permit readBacks
+  | readBackEvidenceSurface readBacks /= ExplicitLongLived =
+      Left
+        ( DesiredAbsenceReportSurfaceMismatch
+            ExplicitLongLived
+            (readBackEvidenceSurface readBacks)
+        )
+  | longLivedAggregatePermitRunId permit /= readBackEvidenceRunId readBacks =
+      Left
+        ( DesiredAbsenceLongLivedPermitRunMismatch
+            (readBackEvidenceRunId readBacks)
+            (longLivedAggregatePermitRunId permit)
+        )
+  | longLivedAggregatePermitGraphDigest permit
+      /= readBackEvidenceGraphDigest readBacks =
+      Left
+        ( DesiredAbsenceLongLivedPermitGraphMismatch
+            (readBackEvidenceGraphDigest readBacks)
+            (longLivedAggregatePermitGraphDigest permit)
+        )
+  | otherwise = case recoveryPlaneFinalDisposition
+      <$> readBackEvidenceRecoveryPlane readBacks of
+      Nothing ->
+        Left (DesiredAbsenceRecoveryEvidenceUnavailable ExplicitLongLived)
+      Just RecoveryPlaneEstablished ->
+        Right (ExplicitLongLivedCompletionEvidence readBacks permit)
+      Just disposition ->
+        Left (DesiredAbsenceRecoveryDispositionConflict disposition)
+
 completeCascadeDesiredAbsence
   :: SurfaceReadBackEvidence 'Cascade
   -> CascadeCompleteEvidence
@@ -414,6 +496,12 @@ data DesiredAbsenceReportError
   | DesiredAbsenceReportNodeSetMismatch ![CleanupNodeId] ![CleanupNodeId]
   | DesiredAbsenceCompletionRunMismatch !CleanupRunId !CleanupRunId
   | DesiredAbsenceCompletionGraphMismatch !CleanupDigest !CleanupDigest
+  | -- | Sprint 7.36: the aggregate operator permit authorizes a different run.
+    DesiredAbsenceLongLivedPermitRunMismatch !CleanupRunId !CleanupRunId
+  | -- | Sprint 7.36: the aggregate operator permit authorizes a different
+    -- compiled graph, so it did not authorize the destruction this evidence
+    -- reports.
+    DesiredAbsenceLongLivedPermitGraphMismatch !CleanupDigest !CleanupDigest
   deriving stock (Eq, Show)
 
 -- | Fixed package-private regression result.  It deliberately exposes only
@@ -459,6 +547,18 @@ data DesiredAbsenceReportRegression = DesiredAbsenceReportRegression
   -- ^ The operational program is not vacuous even with zero registered
   -- targets: its mandatory read-back set contains the credential revocation
   -- read-back, which is the credential\/lease absence the deliverable names.
+  , desiredAbsenceRegressionLongLivedCompletes :: !Bool
+  -- ^ Sprint 7.36: an explicit long-lived run whose read-backs are complete,
+  -- whose recovery plane is @Established@, and which holds an aggregate
+  -- operator permit for that same run mints its own completion witness. Until
+  -- the retained EBS adapter landed this was unreachable rather than unwritten.
+  , desiredAbsenceRegressionLongLivedNeedsExactAggregate :: !Bool
+  -- ^ A permit naming fewer keys than the surface projects is refused, and the
+  -- refusal names every key it omitted. A subset permit would authorize a
+  -- partial destruction the surface then reports as complete.
+  , desiredAbsenceRegressionLongLivedRunBound :: !Bool
+  -- ^ A permit issued for another run cannot complete this one. The permit is
+  -- an operator decision about one destruction, not a standing authorization.
   }
   deriving stock (Eq, Show)
 
@@ -1073,6 +1173,127 @@ fixedDesiredAbsenceReportRegression = do
         | (_, operation) <- compiledDesiredAbsenceOperations operationalCompiled
         , operationIsMandatoryReadBack operation
         ]
+  longLivedCompiled <-
+    firstShow
+      ( compileDesiredAbsenceGraph
+          runId
+          (LinuxRke2FoundationId "report-foundation")
+          (Just fixedReportAwsScope)
+          ExplicitLongLivedSurface
+      )
+  longLivedRun <-
+    firstShow
+      ( newCleanupRun
+          runId
+          (compiledDesiredAbsenceGraph longLivedCompiled)
+          owner
+          0
+          1000000
+      )
+  longLivedRequirement <-
+    firstShow
+      (deriveOrdinaryTeardownRecoveryRequirementInternal longLivedCompiled longLivedRun)
+  longLivedIdentity <-
+    firstShow
+      ( RecoveryPlaneInternal.deriveRecoveryPlaneIdentityFromCompiledInternal
+          descriptorDigest
+          ExplicitLongLivedRecoverySurface
+          longLivedCompiled
+          longLivedRequirement
+      )
+  let longLivedEstablishOperation =
+        recoveryPlaneIdentityEstablishOperationId longLivedIdentity
+      longLivedReadBackOperation =
+        recoveryPlaneIdentityReadBackOperationId longLivedIdentity
+      longLivedDispositionOperation =
+        recoveryPlaneIdentityDispositionOperationId longLivedIdentity
+      longLivedEstablishBinding =
+        RecoveryPlaneInternal.recoveryPlaneAttemptBindingInternal
+          longLivedIdentity
+          longLivedEstablishOperation
+          establishAttempt
+      longLivedReadBackBinding =
+        RecoveryPlaneInternal.recoveryPlaneAttemptBindingInternal
+          longLivedIdentity
+          longLivedReadBackOperation
+          readBackAttempt
+      longLivedDispositionBinding =
+        RecoveryPlaneInternal.recoveryPlaneAttemptBindingInternal
+          longLivedIdentity
+          longLivedDispositionOperation
+          dispositionAttempt
+  longLivedInitialFacts <-
+    firstShow
+      ( RecoveryPlaneInternal.normalizeRecoveryPlaneComponentFactsInternal
+          longLivedReadBackBinding
+          ( fixedComponentObservations
+              longLivedIdentity
+              longLivedReadBackOperation
+              readBackAttempt
+              RecoveryPlaneInternal.RecoveryPlaneRawReady
+          )
+      )
+  longLivedFinalFacts <-
+    firstShow
+      ( RecoveryPlaneInternal.normalizeRecoveryPlaneComponentFactsInternal
+          longLivedDispositionBinding
+          ( fixedComponentObservations
+              longLivedIdentity
+              longLivedDispositionOperation
+              dispositionAttempt
+              RecoveryPlaneInternal.RecoveryPlaneRawReady
+          )
+      )
+  longLivedInitial <-
+    firstShow
+      ( RecoveryPlaneInternal.mkRecoveryPlaneInitialReadBackInternal
+          longLivedEstablishBinding
+          longLivedReadBackBinding
+          longLivedInitialFacts
+      )
+  longLivedEstablished <-
+    firstShow
+      ( RecoveryPlaneInternal.mkRecoveryPlaneFinalEvidenceInternal
+          longLivedInitial
+          longLivedDispositionBinding
+          longLivedFinalFacts
+      )
+  let longLivedGraph = compiledDesiredAbsenceGraph longLivedCompiled
+      longLivedStates =
+        fixedSuccessfulStates
+          longLivedGraph
+          longLivedEstablishOperation
+          establishAttempt
+          longLivedReadBackOperation
+          readBackAttempt
+          longLivedDispositionOperation
+          dispositionAttempt
+          otherAttempt
+      longLivedClassification =
+        classifyDesiredAbsenceReportInternal
+          ExplicitLongLivedSurface
+          longLivedCompiled
+          (fixedReport longLivedCompiled longLivedStates)
+          (Just longLivedEstablished)
+      longLivedPermitRequest theRunId =
+        LongLivedAggregatePermitRequest
+          { longLivedPermitRequestAudience = AdminActionRunner
+          , longLivedPermitRequestRunId = theRunId
+          , longLivedPermitRequestGraphDigest = cleanupGraphDigest longLivedGraph
+          , longLivedPermitRequestAggregate = longLivedAggregateUniverse
+          , longLivedPermitRequestNonce = "report-regression-long-lived-permit"
+          }
+      longLivedPermit theRunId =
+        admitLongLivedAggregatePermit PermitFresh (longLivedPermitRequest theRunId)
+      longLivedCompletionFor theRunId =
+        case (longLivedClassification, longLivedPermit theRunId) of
+          (Right (DesiredAbsenceReadBacksComplete readBacks), Right permit) ->
+            Just (completeExplicitLongLivedDesiredAbsence permit readBacks)
+          _ -> Nothing
+      longLivedSubsetPermit =
+        admitLongLivedAggregatePermit
+          PermitFresh
+          (longLivedPermitRequest runId) {longLivedPermitRequestAggregate = []}
   pure
     DesiredAbsenceReportRegression
       { desiredAbsenceRegressionEstablishedCompletes =
@@ -1144,6 +1365,24 @@ fixedDesiredAbsenceReportRegression = do
             _ -> False
       , desiredAbsenceRegressionOperationalObligationNonEmpty =
           any operationIsCredentialRevocationReadBack operationalObligations
+      , desiredAbsenceRegressionLongLivedCompletes =
+          case longLivedCompletionFor runId of
+            Just (Right completion) ->
+              completionEvidenceSurface completion == ExplicitLongLived
+                && completionEvidenceRunId completion == runId
+                && completionEvidenceGraphDigest completion
+                  == cleanupGraphDigest longLivedGraph
+            _ -> False
+      , desiredAbsenceRegressionLongLivedNeedsExactAggregate =
+          case longLivedSubsetPermit of
+            Left (LongLivedPermitAggregateIncomplete missing) ->
+              missing == longLivedAggregateUniverse
+                && not (null longLivedAggregateUniverse)
+            _ -> False
+      , desiredAbsenceRegressionLongLivedRunBound =
+          case longLivedCompletionFor otherRunId of
+            Just (Left (DesiredAbsenceLongLivedPermitRunMismatch _ _)) -> True
+            _ -> False
       }
 
 fixedReportAwsScope :: AwsScope

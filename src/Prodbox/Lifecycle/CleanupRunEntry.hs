@@ -1,27 +1,48 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
--- | Validation-side client seam for one lifecycle-owned cascade cleanup run.
+-- | The entry protocol for one durable, descriptor-bound cleanup run.
 --
 -- This module does not compile a graph, allocate an identity, interpret a
 -- teardown operation, or decide whether node outcomes amount to success.  It
 -- binds a caller-supplied stable run id to the already-compiled lifecycle
 -- program and initial 'CleanupRun', captures their canonical program
--- descriptor, commits the matching host intent before the first validation
--- mutation, and speaks only the authenticated descriptor-bound cleanup
--- protocol once the Lifecycle Authority is reachable.
-module Prodbox.Test.LifecycleCleanupClient
-  ( LifecycleCleanupDescriptor
+-- descriptor, commits the matching host intent before the first mutation, and
+-- speaks only the authenticated descriptor-bound cleanup protocol once the
+-- Lifecycle Authority is reachable.
+--
+-- Sprint @4.86@ moved it out of @Prodbox.Test.*@.  Nothing here is
+-- validation-specific: capturing the descriptor, preparing the host intent
+-- before any mutation, observing-or-creating the run, claiming it, attaching
+-- the primary outcome, and reading the terminal report back independently
+-- before compacting are what /any/ caller of the descriptor-bound protocol must
+-- do.  It was named as harness-owned, and the first production caller — the
+-- non-public cascade candidate entrypoint — could not reach it without crossing
+-- the boundary the Sprint-@4.85@ harness-namespace gate makes
+-- non-constructible.  The validation harness remains a client; it is no longer
+-- the owner.
+module Prodbox.Lifecycle.CleanupRunEntry
+  ( -- * What a surface records on the host
+    CleanupHostIntent (..)
+  , CleanupHostPreparation (..)
+  , LifecycleCleanupDescriptor
   , mkLifecycleCleanupDescriptor
+  , mkOrdinaryCleanupDescriptor
   , lifecycleCleanupDescriptorRunId
   , lifecycleCleanupDescriptorProgram
   , lifecycleCleanupDescriptorInitialRun
   , lifecycleCleanupDescriptorProgramDescriptor
+  , lifecycleCleanupDescriptorHostRecord
   , lifecycleCleanupDescriptorHostIntent
   , LifecycleCleanupDescriptorError (..)
   , RegisteredLifecycleCleanup
   , registeredLifecycleCleanupBoundRun
+  , registeredLifecycleCleanupHostRecord
   , registeredLifecycleCleanupHostIntent
   , prepareLifecycleCleanupBeforeMutation
   , registerLifecycleCleanupRun
@@ -105,7 +126,9 @@ import Prodbox.Lifecycle.Teardown.Graph
   , compiledDesiredAbsenceOperations
   , compiledDesiredAbsenceRunId
   )
-import Prodbox.Lifecycle.Teardown.Model (CleanupSurface (Cascade))
+import Prodbox.Lifecycle.Teardown.Model
+  ( CleanupSurface (Cascade, ExplicitPerRun)
+  )
 import Prodbox.Lifecycle.Teardown.Program
   ( TeardownOperation (UninstallCascadeLocalFoundation)
   )
@@ -113,36 +136,75 @@ import Prodbox.Lifecycle.Teardown.Program
 -- | Exact validation binding to the lifecycle-owned program.  The constructor
 -- is private so the host intent, compiled graph, and initial Authority run
 -- cannot disagree.
-data LifecycleCleanupDescriptor = LifecycleCleanupDescriptor
+-- | What a surface's cleanup run durably records on the host.
+--
+-- Sprint @5.36@: the entry protocol was fixed to the cascade, and that was not
+-- an oversight — the host cleanup record is the record that licenses
+-- uninstalling the retained local foundation, and @mkHostCleanupScope@ refuses
+-- any surface but the cascade for exactly that reason.  A per-run cleanup
+-- mutates registered targets and never the host, so it has no local-uninstall
+-- operation to bind a record to and no business holding the record that
+-- authorizes one.
+--
+-- The two answers are constructors rather than a @Maybe@, so a surface cannot
+-- carry the wrong one and an ordinary caller cannot reach the cascade's record
+-- at all.
+data CleanupHostIntent (surface :: CleanupSurface) where
+  CascadeHostIntent :: !HostCleanupIntent -> CleanupHostIntent 'Cascade
+  NoHostIntent :: CleanupHostIntent 'ExplicitPerRun
+
+deriving stock instance Eq (CleanupHostIntent surface)
+
+deriving stock instance Show (CleanupHostIntent surface)
+
+-- | The store half of the same answer, supplied at protocol time because the
+-- retained root is resolved by the composition root after the plan is built.
+--
+-- A surface with no host record has no store to pass, so an ordinary caller
+-- cannot supply one it does not use and a cascade caller cannot omit one.
+data CleanupHostPreparation (surface :: CleanupSurface) where
+  PrepareHostUninstallRecord
+    :: !HostCleanupIntentStore -> CleanupHostPreparation 'Cascade
+  NoHostPreparation :: CleanupHostPreparation 'ExplicitPerRun
+
+data LifecycleCleanupDescriptor (surface :: CleanupSurface)
+  = LifecycleCleanupDescriptor
   { internalLifecycleCleanupRunId :: !CleanupRunId
   , internalLifecycleCleanupProgram
-      :: !(CompiledDesiredAbsenceProgram 'Cascade)
+      :: !(CompiledDesiredAbsenceProgram surface)
   , internalLifecycleCleanupInitialRun :: !CleanupRun
   , internalLifecycleCleanupProgramDescriptor :: !CleanupProgramDescriptor
-  , internalLifecycleCleanupHostIntent :: !HostCleanupIntent
+  , internalLifecycleCleanupHostRecord :: !(CleanupHostIntent surface)
   }
 
 lifecycleCleanupDescriptorRunId
-  :: LifecycleCleanupDescriptor -> CleanupRunId
+  :: LifecycleCleanupDescriptor surface -> CleanupRunId
 lifecycleCleanupDescriptorRunId = internalLifecycleCleanupRunId
 
 lifecycleCleanupDescriptorProgram
-  :: LifecycleCleanupDescriptor
-  -> CompiledDesiredAbsenceProgram 'Cascade
+  :: LifecycleCleanupDescriptor surface
+  -> CompiledDesiredAbsenceProgram surface
 lifecycleCleanupDescriptorProgram = internalLifecycleCleanupProgram
 
 lifecycleCleanupDescriptorInitialRun
-  :: LifecycleCleanupDescriptor -> CleanupRun
+  :: LifecycleCleanupDescriptor surface -> CleanupRun
 lifecycleCleanupDescriptorInitialRun = internalLifecycleCleanupInitialRun
 
 lifecycleCleanupDescriptorProgramDescriptor
-  :: LifecycleCleanupDescriptor -> CleanupProgramDescriptor
+  :: LifecycleCleanupDescriptor surface -> CleanupProgramDescriptor
 lifecycleCleanupDescriptorProgramDescriptor =
   internalLifecycleCleanupProgramDescriptor
 
+lifecycleCleanupDescriptorHostRecord
+  :: LifecycleCleanupDescriptor surface -> CleanupHostIntent surface
+lifecycleCleanupDescriptorHostRecord = internalLifecycleCleanupHostRecord
+
+-- | The cascade's host record, reachable only at the surface that has one.
 lifecycleCleanupDescriptorHostIntent
-  :: LifecycleCleanupDescriptor -> HostCleanupIntent
-lifecycleCleanupDescriptorHostIntent = internalLifecycleCleanupHostIntent
+  :: LifecycleCleanupDescriptor 'Cascade -> HostCleanupIntent
+lifecycleCleanupDescriptorHostIntent descriptor =
+  case internalLifecycleCleanupHostRecord descriptor of
+    CascadeHostIntent intent -> intent
 
 data LifecycleCleanupDescriptorError
   = LifecycleCleanupCompiledRunIdMismatch !CleanupRunId !CleanupRunId
@@ -164,44 +226,11 @@ mkLifecycleCleanupDescriptor
   -> CompiledDesiredAbsenceProgram 'Cascade
   -> CleanupRun
   -> HostTerminalPermitId
-  -> Either LifecycleCleanupDescriptorError LifecycleCleanupDescriptor
+  -> Either
+       LifecycleCleanupDescriptorError
+       (LifecycleCleanupDescriptor 'Cascade)
 mkLifecycleCleanupDescriptor suppliedRunId compiled initialRun terminalPermit = do
-  let compiledRunId = compiledDesiredAbsenceRunId compiled
-      initialRunId = cleanupRunId initialRun
-      compiledGraph = compiledDesiredAbsenceGraph compiled
-      expectedDigest = cleanupGraphDigest compiledGraph
-      actualDigest = cleanupRunGraphDigest initialRun
-  if compiledRunId == suppliedRunId
-    then Right ()
-    else
-      Left
-        ( LifecycleCleanupCompiledRunIdMismatch
-            suppliedRunId
-            compiledRunId
-        )
-  if initialRunId == suppliedRunId
-    then Right ()
-    else
-      Left
-        ( LifecycleCleanupInitialRunIdMismatch
-            suppliedRunId
-            initialRunId
-        )
-  if cleanupRunGraph initialRun == compiledGraph
-    then Right ()
-    else Left LifecycleCleanupInitialGraphMismatch
-  if actualDigest == expectedDigest
-    then Right ()
-    else
-      Left
-        ( LifecycleCleanupInitialGraphDigestMismatch
-            expectedDigest
-            actualDigest
-        )
-  programDescriptor <-
-    first
-      LifecycleCleanupProgramDescriptorInvalid
-      (captureCleanupProgramDescriptor compiled initialRun)
+  programDescriptor <- requireCleanupBinding suppliedRunId compiled initialRun
   terminalOperation <- compiledTerminalOperationId compiled
   scope <-
     first
@@ -215,7 +244,7 @@ mkLifecycleCleanupDescriptor suppliedRunId compiled initialRun terminalPermit = 
       LifecycleCleanupHostIntentInvalid
       ( mkHostCleanupIntent
           suppliedRunId
-          expectedDigest
+          (cleanupGraphDigest (compiledDesiredAbsenceGraph compiled))
           initialRun
           scope
           (mkHostCleanupTerminalIdentity terminalOperation terminalPermit)
@@ -226,8 +255,69 @@ mkLifecycleCleanupDescriptor suppliedRunId compiled initialRun terminalPermit = 
       , internalLifecycleCleanupProgram = compiled
       , internalLifecycleCleanupInitialRun = initialRun
       , internalLifecycleCleanupProgramDescriptor = programDescriptor
-      , internalLifecycleCleanupHostIntent = hostIntent
+      , internalLifecycleCleanupHostRecord = CascadeHostIntent hostIntent
       }
+
+-- | Sprint @5.36@: the same binding for an ordinary per-run cleanup.
+--
+-- It runs exactly the checks the cascade constructor runs, because both call
+-- one 'requireCleanupBinding', and then stops: there is no host record on this
+-- surface, so there is no local-uninstall operation to select and no host
+-- scope to build. A caller that needs one is on the wrong surface, and the type
+-- says so rather than a runtime refusal.
+mkOrdinaryCleanupDescriptor
+  :: CleanupRunId
+  -> CompiledDesiredAbsenceProgram 'ExplicitPerRun
+  -> CleanupRun
+  -> Either
+       LifecycleCleanupDescriptorError
+       (LifecycleCleanupDescriptor 'ExplicitPerRun)
+mkOrdinaryCleanupDescriptor suppliedRunId compiled initialRun = do
+  programDescriptor <- requireCleanupBinding suppliedRunId compiled initialRun
+  Right
+    LifecycleCleanupDescriptor
+      { internalLifecycleCleanupRunId = suppliedRunId
+      , internalLifecycleCleanupProgram = compiled
+      , internalLifecycleCleanupInitialRun = initialRun
+      , internalLifecycleCleanupProgramDescriptor = programDescriptor
+      , internalLifecycleCleanupHostRecord = NoHostIntent
+      }
+
+-- | The identity checks every surface's binding makes, written once.
+--
+-- Keeping them here rather than in each constructor is what stops a second
+-- surface from being admitted by a weaker prefix of the cascade's checks.
+requireCleanupBinding
+  :: CleanupRunId
+  -> CompiledDesiredAbsenceProgram surface
+  -> CleanupRun
+  -> Either LifecycleCleanupDescriptorError CleanupProgramDescriptor
+requireCleanupBinding suppliedRunId compiled initialRun = do
+  let compiledRunId = compiledDesiredAbsenceRunId compiled
+      initialRunId = cleanupRunId initialRun
+      compiledGraph = compiledDesiredAbsenceGraph compiled
+      expectedDigest = cleanupGraphDigest compiledGraph
+      actualDigest = cleanupRunGraphDigest initialRun
+  if compiledRunId == suppliedRunId
+    then Right ()
+    else Left (LifecycleCleanupCompiledRunIdMismatch suppliedRunId compiledRunId)
+  if initialRunId == suppliedRunId
+    then Right ()
+    else Left (LifecycleCleanupInitialRunIdMismatch suppliedRunId initialRunId)
+  if cleanupRunGraph initialRun == compiledGraph
+    then Right ()
+    else Left LifecycleCleanupInitialGraphMismatch
+  if actualDigest == expectedDigest
+    then Right ()
+    else
+      Left
+        ( LifecycleCleanupInitialGraphDigestMismatch
+            expectedDigest
+            actualDigest
+        )
+  first
+    LifecycleCleanupProgramDescriptorInvalid
+    (captureCleanupProgramDescriptor compiled initialRun)
 
 compiledTerminalOperationId
   :: CompiledDesiredAbsenceProgram 'Cascade
@@ -246,22 +336,30 @@ compiledTerminalOperationId compiled =
 
 -- | Authority registration witness.  It contains only the exact observed
 -- lifecycle aggregate and the independently read-back host descriptor.
-data RegisteredLifecycleCleanup = RegisteredLifecycleCleanup
+data RegisteredLifecycleCleanup (surface :: CleanupSurface)
+  = RegisteredLifecycleCleanup
   { internalRegisteredLifecycleCleanupBoundRun :: !DescriptorBoundCleanupRun
-  , internalRegisteredLifecycleCleanupHostIntent :: !HostCleanupIntent
+  , internalRegisteredLifecycleCleanupHostRecord
+      :: !(CleanupHostIntent surface)
   , internalRegisteredLifecycleCleanupDescriptor
-      :: !LifecycleCleanupDescriptor
+      :: !(LifecycleCleanupDescriptor surface)
   }
 
 registeredLifecycleCleanupBoundRun
-  :: RegisteredLifecycleCleanup -> DescriptorBoundCleanupRun
+  :: RegisteredLifecycleCleanup surface -> DescriptorBoundCleanupRun
 registeredLifecycleCleanupBoundRun =
   internalRegisteredLifecycleCleanupBoundRun
 
+registeredLifecycleCleanupHostRecord
+  :: RegisteredLifecycleCleanup surface -> CleanupHostIntent surface
+registeredLifecycleCleanupHostRecord =
+  internalRegisteredLifecycleCleanupHostRecord
+
 registeredLifecycleCleanupHostIntent
-  :: RegisteredLifecycleCleanup -> HostCleanupIntent
-registeredLifecycleCleanupHostIntent =
-  internalRegisteredLifecycleCleanupHostIntent
+  :: RegisteredLifecycleCleanup 'Cascade -> HostCleanupIntent
+registeredLifecycleCleanupHostIntent registered =
+  case internalRegisteredLifecycleCleanupHostRecord registered of
+    CascadeHostIntent intent -> intent
 
 data LifecycleCleanupReobserveDiagnostic
   = LifecycleCleanupReobserveClientFailed !CleanupRunClientError
@@ -304,12 +402,12 @@ data LifecycleCleanupClientError
 -- the supplied first mutation.  Runtime exceptions, including cancellation,
 -- deliberately propagate; the durable descriptor remains for the next owner.
 prepareLifecycleCleanupBeforeMutation
-  :: HostCleanupIntentStore
-  -> LifecycleCleanupDescriptor
+  :: CleanupHostPreparation surface
+  -> LifecycleCleanupDescriptor surface
   -> IO value
   -> IO (Either LifecycleCleanupClientError value)
-prepareLifecycleCleanupBeforeMutation store descriptor mutation = do
-  prepared <- prepareDescriptor store descriptor
+prepareLifecycleCleanupBeforeMutation preparation descriptor mutation = do
+  prepared <- prepareDescriptor preparation descriptor
   case prepared of
     Left err -> pure (Left err)
     Right _ -> Right <$> mutation
@@ -318,20 +416,24 @@ prepareLifecycleCleanupBeforeMutation store descriptor mutation = do
 -- absent.  A lost create response is resolved solely by observing that same
 -- id and exact graph binding.
 registerLifecycleCleanupRun
-  :: HostCleanupIntentStore
+  :: CleanupHostPreparation surface
   -> DescriptorBoundCleanupRunClient IO
-  -> LifecycleCleanupDescriptor
-  -> IO (Either LifecycleCleanupClientError RegisteredLifecycleCleanup)
-registerLifecycleCleanupRun store client descriptor = do
-  prepared <- prepareDescriptor store descriptor
+  -> LifecycleCleanupDescriptor surface
+  -> IO
+       ( Either
+           LifecycleCleanupClientError
+           (RegisteredLifecycleCleanup surface)
+       )
+registerLifecycleCleanupRun preparation client descriptor = do
+  prepared <- prepareDescriptor preparation descriptor
   case prepared of
     Left err -> pure (Left err)
-    Right hostIntent -> do
+    Right hostRecord -> do
       registered <- observeOrCreate client descriptor
       pure $
         RegisteredLifecycleCleanup
           <$> registered
-          <*> Right hostIntent
+          <*> Right hostRecord
           <*> Right descriptor
 
 -- | Claim the exact run through the Authority.  Expired-owner takeover and
@@ -342,8 +444,12 @@ claimLifecycleCleanupRun
   -> CleanupOwnerId
   -> Natural
   -> Natural
-  -> RegisteredLifecycleCleanup
-  -> IO (Either LifecycleCleanupClientError RegisteredLifecycleCleanup)
+  -> RegisteredLifecycleCleanup surface
+  -> IO
+       ( Either
+           LifecycleCleanupClientError
+           (RegisteredLifecycleCleanup surface)
+       )
 claimLifecycleCleanupRun client owner now expires registered = do
   refreshed <- observeBoundRun client descriptor
   case refreshed of
@@ -396,8 +502,12 @@ claimLifecycleCleanupRun client owner now expires registered = do
 attachLifecycleCleanupPrimaryOutcome
   :: DescriptorBoundCleanupRunClient IO
   -> CleanupPrimaryOutcome
-  -> RegisteredLifecycleCleanup
-  -> IO (Either LifecycleCleanupClientError RegisteredLifecycleCleanup)
+  -> RegisteredLifecycleCleanup surface
+  -> IO
+       ( Either
+           LifecycleCleanupClientError
+           (RegisteredLifecycleCleanup surface)
+       )
 attachLifecycleCleanupPrimaryOutcome client outcome registered = do
   refreshed <- observeBoundRun client descriptor
   case refreshed of
@@ -459,7 +569,7 @@ observeLifecycleCleanupResult
   :: DescriptorBoundCleanupRunClient IO
   -> Natural
   -> Natural
-  -> RegisteredLifecycleCleanup
+  -> RegisteredLifecycleCleanup surface
   -> IO LifecycleCleanupResult
 observeLifecycleCleanupResult client now retention registered = do
   observed <- observeBoundRun client descriptor
@@ -557,19 +667,28 @@ observeLifecycleCleanupResult client now retention registered = do
         Left (LifecycleCleanupReportReadBackMismatch expected observed)
     | otherwise = Right observed
 
+-- | Persist and read back the host record for the surface that has one.
+--
+-- Total over the two answers rather than a store call some callers are
+-- expected to skip: a surface with no host record has nothing to persist and
+-- nothing to read back.
 prepareDescriptor
-  :: HostCleanupIntentStore
-  -> LifecycleCleanupDescriptor
-  -> IO (Either LifecycleCleanupClientError HostCleanupIntent)
-prepareDescriptor store descriptor =
-  first LifecycleCleanupHostRunnerFailed
-    <$> prepareHostCleanupRunner
-      store
-      (lifecycleCleanupDescriptorHostIntent descriptor)
+  :: CleanupHostPreparation surface
+  -> LifecycleCleanupDescriptor surface
+  -> IO (Either LifecycleCleanupClientError (CleanupHostIntent surface))
+prepareDescriptor preparation descriptor =
+  case (preparation, lifecycleCleanupDescriptorHostRecord descriptor) of
+    (PrepareHostUninstallRecord store, CascadeHostIntent intent) ->
+      fmap
+        (fmap CascadeHostIntent)
+        ( first LifecycleCleanupHostRunnerFailed
+            <$> prepareHostCleanupRunner store intent
+        )
+    (NoHostPreparation, NoHostIntent) -> pure (Right NoHostIntent)
 
 observeOrCreate
   :: DescriptorBoundCleanupRunClient IO
-  -> LifecycleCleanupDescriptor
+  -> LifecycleCleanupDescriptor surface
   -> IO (Either LifecycleCleanupClientError DescriptorBoundCleanupRun)
 observeOrCreate client descriptor = do
   observed <- observeDescriptorBoundCleanupRun client runId
@@ -588,7 +707,7 @@ observeOrCreate client descriptor = do
 
 observeBoundRun
   :: DescriptorBoundCleanupRunClient IO
-  -> LifecycleCleanupDescriptor
+  -> LifecycleCleanupDescriptor surface
   -> IO (Either LifecycleCleanupClientError DescriptorBoundCleanupRun)
 observeBoundRun client descriptor = do
   observed <-
@@ -600,7 +719,7 @@ observeBoundRun client descriptor = do
     Right run -> validateBoundRun descriptor run
 
 validateBoundRun
-  :: LifecycleCleanupDescriptor
+  :: LifecycleCleanupDescriptor surface
   -> DescriptorBoundCleanupRun
   -> Either LifecycleCleanupClientError DescriptorBoundCleanupRun
 validateBoundRun descriptor observed
@@ -674,7 +793,7 @@ expectedClaimProjection owner now expires run
 
 confirmDescriptorMutation
   :: DescriptorBoundCleanupRunClient IO
-  -> LifecycleCleanupDescriptor
+  -> LifecycleCleanupDescriptor surface
   -> Either CleanupRunClientError DescriptorBoundCleanupRun
   -> ( DescriptorBoundCleanupRun
        -> Either LifecycleCleanupClientError DescriptorBoundCleanupRun
@@ -714,7 +833,7 @@ confirmDescriptorMutation client descriptor attempted validatePostState = do
             )
 
 validateCompactionReadBack
-  :: LifecycleCleanupDescriptor
+  :: LifecycleCleanupDescriptor surface
   -> CleanupDigest
   -> Either CleanupRunClientError DescriptorBoundCleanupRun
   -> Either LifecycleCleanupReobserveDiagnostic ()

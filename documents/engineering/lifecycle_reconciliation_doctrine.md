@@ -658,6 +658,27 @@ introductions are the two Provider proofs, so a create request can name the obse
 can never state its content; a create whose scope no retained receipt proves is refused rather than
 falling back to the scope the request asserted.
 
+**The generation is durable before the resource exists.** The producer's order above is only
+meaningful if it runs before the create does, and that requires admission and execution to be
+separate steps: the generation binds the create's admitted operation identity, and an identity
+assigned at admission does not exist until the submission has been admitted. A dispatch route that
+admits and executes in one call therefore cannot offer one — the create has already run by the time
+its operation can be named, so the generation can only be committed afterwards, and an Authority that
+becomes unreachable in between leaves a resource whose cycle no later cleanup run can address.
+
+The Provider dispatch route therefore carries a lane. On the admit-only lane it admits the submission,
+leaves the operation Pending, signs nothing, sends nothing to the Provider Worker, and returns the
+admitted operation; on the admit-and-execute lane it behaves as before. A registered-stack create
+runs both lanes at __one__ submission key: admit, commit and independently read back the generation,
+then execute. The submission digest is taken over what was submitted and deliberately not over which
+lane is running it, so the two calls are one submission and the second is recognized as the
+admission's own operation rather than refused as a digest conflict.
+
+Every failure before the execute step therefore leaves an addressable record and no cloud resource,
+and the one failure that can leave a cloud resource is one whose cycle is already durable. A create
+that executes under an operation other than the one it admitted is refused rather than reported as a
+success, because the committed generation would not name the effect that happened.
+
 The **consumer** is the cleanup path. Because a generation slot is addressed by its ordinal, a run
 that knows only the registered key reaches the record through exactly two authoritative reads: the
 series cursor, then the generation the cursor's ordinal addresses. An unopened series refuses rather
@@ -665,7 +686,7 @@ than inferring a cycle from visible residue, an unobservable store stays distinc
 the stored key must equal the key that addressed it, and surface eligibility is re-applied after the
 read-back.
 
-Five invariants define the registry boundary:
+Six invariants define the registry boundary:
 
 1. **Coverage.** Every direct creator and every Kubernetes/controller owner maps to one singleton or
    bounded-family entry before mutation.
@@ -675,6 +696,12 @@ Five invariants define the registry boundary:
 4. **Cardinality.** Provider rows are normalized to domain identity before counting or joining.
 5. **Completion.** Success is constructible only from complete exact absence evidence, never from
    exit codes, narration, checkpoint state, or a global audit verdict.
+6. **Custody.** A run may not stop holding a custodial capability that reaches a registered resource
+   without a disposition pairing that loss to the capability's own inertness, proven dependant
+   absence, rotation onto a named successor, or joint destruction in the same operation. A
+   capability reported lost blocks completion rather than being absorbed into an incomplete result.
+   The disposition's constructor set and the derivation of what a capability reaches are owned by
+   [Lifecycle Control-Plane Architecture §3.4](./lifecycle_control_plane_architecture.md#34-custodial-capability-and-the-disposition-rule).
 
 The compiled Haskell region makes illegal decisions and transitions unrepresentable. The external
 world is still authoritative and fallible, so its states remain explicit data. Constructor privacy,
@@ -1486,7 +1513,9 @@ construct that value refuses before mutation and names the missing exact key or 
 
 The no-install short-circuit belongs only to `prodbox cluster delete --yes`. When none of the local
 RKE2 install markers is present, local-only delete prints `No RKE2 cluster to delete.`, preserves
-`.data/`, makes no statement about AWS, and exits zero.
+`.data/`, makes no statement about AWS, and exits zero — and that zero is the absence of a
+statement, not a clean result. It licenses nothing about retiring the retained root, because a run
+that observed nothing has disposed of nothing (§3.1 invariant 6).
 
 `prodbox cluster delete --cascade --yes` must not take that short-circuit. Local RKE2 absence is not
 per-run AWS absence and is not evidence that no nonterminal cleanup run exists. Cascade inspects the
@@ -1500,6 +1529,21 @@ installed-but-stopped API is a recovery case, not a terminal unsupported state.
 The local-only escape hatch remains intentional. An operator may explicitly uninstall local RKE2
 while preserving `.data/` and leaving AWS untouched. That operation cannot be rendered as a
 successful cascade and cannot close a durable cleanup obligation.
+
+**The arm is selected by the delete mode.** The shipped binary reads the install-presence probe and
+then selects a terminal arm from the (mode, presence) product: exactly one arm is a no-install
+success and it belongs to local-only delete, so the cascade mode cannot reach it and cannot be given
+it by a later caller. A cascade with no install present reaches no phase, names the durable cleanup
+run namespace it could not reach and the `RecoveryPlaneNotEstablished` disposition it reports, makes
+no statement about per-run AWS stacks, and exits non-zero.
+
+**The retained-state narration is a total function over those arms.** Only an arm carrying a
+completion receipt, or an explicit local-only uninstall, may say the retained root is preserved by
+what it did; every other arm either says nothing about the root — because it reached no delete path
+— or names the root and states that this run establishes nothing about retiring it. The legacy
+cascade carries no completion receipt, so it takes the second form until the replacement that does
+becomes the sole writer. A new terminal arm with no narration fails to compile rather than silently
+rendering nothing.
 
 
 ### 5a.1. Inotify Host-Prep (first host-prep step)
@@ -1674,7 +1718,47 @@ The nodes have these contracts:
    The writer and the reader are separate injected boundaries, because the surface that claims to
    have written the report must not be the surface that decides it is durable. A report identity
    that differs between the commit and the observation refuses before a permit is requested, so the
-   Authority is never asked to sign over a report identity nothing durably holds. The module owns
+   Authority is never asked to sign over a report identity nothing durably holds.
+   The report reaches the independent failure domain as a **cleanup-report Authority-backup blob
+   class**, not through a second addressing scheme: the Backup Adapter names objects by class and
+   digest beneath one bucket prefix its least-privilege grant already covers, the report is already
+   a digest, and a distinct retained namespace would have needed its own prefix and its own grant
+   to express the same fact. `Prodbox.ControlPlane.CleanupReportBackupClient` is the authenticated
+   client restricted to that one class, and
+   `Prodbox.Lifecycle.Teardown.PreUninstallReportBackup` is the production read-back boundary over
+   it. A present observation reports the digest the **adapter's** receipt carries rather than the
+   digest the caller asked about, so the drift comparison is between two independently sourced
+   values; an absent object and a domain that answered nothing stay distinct, because an adapter
+   nobody could reach must not read as a commit that never landed. The adapter is content-addressed
+   and re-hashes what it reads, so against this backend a differing identity presents as missing or
+   corrupt rather than as an observed different digest — the drift arm is the protocol's, not this
+   reader's.
+   `Prodbox.ControlPlane.CascadeReportRepository` is the writing half's retained namespace and
+   `Prodbox.Lifecycle.Teardown.PreUninstallReportCommit` is the boundary over it. A run owns exactly
+   one report slot and exactly one permit slot, each named from the `CleanupRunId` alone, and the
+   only write either admits is into an empty slot — which is where the permit's one-shot semantics
+   are enforced, because a second and different permit under one run would be two licences to
+   destroy the same host, while an exact replay is a success. The commit checks the report bytes
+   against the identity it is asked to commit before writing anything, so the Authority never
+   records a name the replicated bytes do not have. The Authority write precedes the independent
+   copy: an identity held with no copy beside it is a run that can retry the copy, and a copy with
+   no Authority record is an object nothing refers to. A copy that does not confirm is reported as a
+   lost response rather than a refusal, because its outcome is not decidable from the writing side
+   and the read-back is what arbitrates. The permit handed back is the one read out of the durable
+   slot, so a grant nothing recorded cannot bind merely because a write reported success.
+   `Prodbox.Lifecycle.Teardown.PreUninstallReport` is the report those two identities are identities
+   *of*. It is admitted rather than merely rendered: a report is built only from a compiled program
+   together with the three convergence evidences, and only when all three bind to that program, so a
+   report describing one run with another run's proofs is refused by the bindings rather than by
+   discipline. Its enumeration is the exact-absence targets the program compiled — the same set the
+   absence evidence's constructor required the observation set to equal — so holding that evidence
+   is what makes the enumeration true and the report cannot name more than was proven. Its bytes are
+   canonical and its identity is their digest, computed the way the independent adapter computes the
+   name it stores them under, so one converged run re-renders to one identity and the renderer, the
+   writer, and the reader are never told each other's answers. It states identities and not
+   narration, because an identity a permit is signed over must be a function of what was proven.
+   The module
+   owns
    the protocol only: the report's content belongs to `Prodbox.Lifecycle.Teardown.Report`, the
    permit's one-shot semantics are enforced where the Authority signs it, and the uninstall that
    consumes the readiness belongs to `Prodbox.Lifecycle.HostCleanupRunner`.
@@ -1703,6 +1787,22 @@ The nodes have these contracts:
    the durable cleanup driver, so a rerun after a lost response replays its own attempt rather than
    colliding with it, and a transport failure is reported as a lost response because the run
    read-back is what decides.
+   All three of those retained slots — the accepted readiness, the committed report identity, and
+   the one-shot permit — live in the Authority's own object namespace, and the cascade that needs
+   them runs on the host. `Prodbox.ControlPlane.CascadeRetainedSlotEndpoint` is the authenticated
+   Authority route that closes that gap and `Prodbox.ControlPlane.CascadeRetainedSlotClient` is the
+   host adapter over it. The route is deliberately not a generic Authority-object
+   compare-and-swap: it admits exactly the three run-keyed slot families, by prefix and by the
+   canonical slot digest, so the admission projection, the cleanup runs, and every credential
+   namespace stay unreachable from it rather than one logical name away. Its only write is an
+   initialize, which makes the no-replace property all three slots already have a property of the
+   wire as well as of the repositories, and a conflict carries the bytes that are already there
+   because telling an exact replay from a genuine disagreement is what the accept, commit, and
+   grant protocols use it for. Authority identity never crosses that wire: the host names a slot
+   and the Authority builds the coordinate from the authority it was configured with, so a host
+   cannot address another cluster's retained namespace by construction. A response that cannot be
+   bound to the request that produced it is reported as unobservable rather than as a refusal,
+   because by then the write may already have landed.
 8. **Observe local absence and complete.** The uninstall preserves `.data/`, removes the managed
    kubeconfig, and is followed by an exact host observation. The host interpreter atomically stores
    and reads back the scoped completion receipt beside the preserved cleanup journal. Only that
@@ -1780,10 +1880,14 @@ materialized kubeconfigs.
 The `prodbox test ...` harness postflight (`Prodbox.TestRunner.runWithAwsHarnessCleanup`)
 runs the per-run Pulumi destroys on every exit path (Sprint 7.6 orphan-safety) and
 then, historically, always cleared operational `aws.*` and deleted the operational
-`prodbox` IAM user via `runManagedAwsHarnessTeardown`. As of Sprint 7.10 the
-operational-credential teardown runs **only when the per-run destroy succeeded**
-(pure decision `clearOperationalCredsAfterPostflight :: ExitCode -> Bool`, `True`
-iff `ExitSuccess`). When a per-run destroy fails (e.g. the §5c
+`prodbox` IAM user via `runManagedAwsHarnessTeardown`. As of Sprint 7.10 the operational-credential teardown runs **only when the per-run destroy
+succeeded**. *Corrected 2026-08-19:* the pure decision this record named,
+`clearOperationalCredsAfterPostflight :: ExitCode -> Bool`, is no longer the mechanism — it survives
+as an exported, Haddock-referenced, unit-tested value that nothing consumes. The rule itself still
+holds and is now enforced structurally, by a `CleanupRequiresSuccess` graph edge from every per-run
+resource to the operational-teardown node, which is the Standard-I "replacement done, helper
+survives" case rather than a lost rule. The surviving helper and its removal owner are recorded in
+the [deletion ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md#pending-removal). When a per-run destroy fails (e.g. the §5c
 `DependencyViolation` before Sprint 4.23 fully closes it), the orphaned per-run
 stacks still hold live AWS resources whose destroy path requires operational creds;
 clearing those creds would strand the orphans. The postflight therefore **holds**
@@ -1907,6 +2011,69 @@ escape. The retained-set digest is derived from the catalog rather than authored
 joins the catalog's AWS scope to its own proof of scope, so a foreign-account retained set cannot be
 presented under a matching digest.
 
+### 6.0b The audit's queries are one Provider effect per query
+
+The audit's field of view is the union of its catalog queries, and the Tagging API intersects the
+filters inside a single call, so the union is only preserved if each query is issued on its own. That
+holds at the provider seam too: one registered provider intent carries exactly one tag filter, in
+either the key-only or the exact-pair form, and the two forms are distinct provider coordinates so a
+narrower listing can never be returned as the wider family's answer.
+
+The audit's provider intent is admitted at its own dispatch purpose, separate from the
+registered-target decision and absence-read-back purposes. The separation is not organizational. A
+global tag listing admitted at a registered-target purpose could stand in for an exact family
+read-back, which §3 forbids; a registered observation admitted at the audit's purpose could close the
+audit on one family's answer.
+
+The listing is bounded and complete or it is not an answer. It follows the provider's own pagination
+cursor to exhaustion, refuses a cursor it has already been handed, and fails at its page bound rather
+than returning the rows gathered so far; a returned entry whose resource identity cannot be read
+makes its whole page unreadable rather than being dropped. Every one of these — together with
+transport failure, an answer bound to another intent, a mutation-shaped result, evidence naming a
+different query, and a row from outside the audited account or region — is reported as that query's
+own observation failure. The kernel already treats an unanswered query as a blind spot that
+downgrades a would-be-clean verdict, so none of them may be lowered to an empty row set.
+
+The evidence a provider returns is a canonical form whose renderer and parser are one unit, because a
+writer and a reader that can drift are a way to read an answer as something it did not say. It echoes
+the query it answered, states its completion explicitly rather than letting a short listing imply it,
+and distinguishes a resource returned carrying no tags from a resource not returned. Resource type
+and coordinate are derived from the returned identity rather than supplied by the caller; because a
+family matcher pins the type as well as the coordinate, a derivation this repository has not taught
+can only fail to match, which classifies the row as an escapee and fails the audit closed.
+
+### 6.0c The audit's verdict is durable where compaction cannot reach it
+
+An audit that ran and is not recorded is an audit that did not happen, as far as anything after it is
+concerned. The obvious place to keep the verdict is the durable record of the request that produced
+it — and that is the wrong place, because the Authority's compaction removes a settled submission's
+ledger record, its epoch binding, and its operation record together. A proof kept there is a proof
+capacity pressure may erase, while the thing it licenses remains licensed.
+
+The verdict is therefore recorded in the retained admission state that already holds the reservation
+the audit ran under, carrying the audit's scope, query-catalog, and retained-set digests alongside
+what it found. Recording is a transition of its own: separate from the fence that reserved the audit,
+because the audit runs between them, and separate from any credential disposition that follows,
+because a run must be able to state an escape or a blind spot durably without that statement
+authorizing anything.
+
+Four rules make the record trustworthy rather than merely present. Every verdict is recordable, but a
+verdict counting zero escapes or zero blind spots is refused as the clean verdict wearing another
+constructor. Recording the identical receipt again succeeds, because a lost response must not be
+distinguishable from a repeat; recording a *different* receipt against the same reservation is
+refused, because a second, differently answered audit must not replace a result the run may already
+have acted on. A fence re-issued after the record returns the recorded state rather than re-entering
+the reserved one, which would discard the result. And recording does not lift the fence: the
+reservation keeps admitting exactly its own submissions, because the read-back and any
+response-loss retry are still that same reserved work.
+
+The reservation and the receipt name the audit's scope by a digest derived from one function over
+every field of the evidence scope, including its optional account, region, and hosted zone. A scope
+that names no account cannot digest equal to one that does, so a digest mismatch means the audit
+answered about a different run rather than that two renderings disagreed. Finally, the writer does
+not trust its own response: the record is confirmed by re-reading the durable object and checking
+that what is there is what was committed, under the reservation it was committed against.
+
 The partition separates two failures a tag sweep conflated. An **escapee** is a resource no matcher
 names; it makes the surface dirty. A **declared retained resource the query should have returned and
 did not** is a retention defect; it is reported separately and does not make the surface dirty.
@@ -1935,6 +2102,40 @@ required credential remains live until the audit completes or the cascade return
 `CascadeIncomplete`.
 
 
+### 6.0d The credential that ran the audit is revoked only behind its clean verdict
+
+The cascade fences fresh Provider submissions so the terminal audit can run without new work
+arriving behind it, and the credential the audit ran with is eventually revoked. The order of those
+two events is not a convention: revoking before the audit's verdict is durable destroys the only
+credential that could re-run the audit, and leaves nothing that says what it found.
+
+The revocation is therefore reachable only from the state in which the verdict is already recorded,
+and only when that verdict is clean. An escape or a blind spot withholds the revocation rather than
+being overridden by it, because the credential is exactly what a retry or an operator investigation
+needs. The sequence — fence, audit, record, revoke — is a property of what the transitions accept
+rather than of the order a caller happens to call them in.
+
+The revocation binds two independent read-backs: the destroyed IAM family's joint disposition and the
+retained target generation's own revocation. One digest may not stand for both; that substitution is
+what the two-sided receipt exists to prevent. And the revoked state keeps the audit receipt alongside
+the revocation's, because revocation ends a credential and not the record of why ending it was
+allowed.
+
+**Within the revocation, the IAM family is destroyed before the retained material.** The IAM identity
+is what *grants*: once it is gone, any surviving copy of the credential material is already inert.
+Ending the material first would leave the grant standing while removing the only record of what it
+was, which is the worse of the two intermediate states. A revocation whose IAM half is not proved
+absent therefore leaves the retained material alone rather than proceeding.
+
+**The four steps are one composition, and it is what makes them reachable at all.** Each transition
+being correct says nothing about any of them being taken: a fence, an audit, a record, and a
+revocation that no production path issues are four proofs of an unrun protocol. One lane therefore
+drives all four in the order above, and its own contribution is restraint — when the verdict is not
+clean it stops at the record, and the destructive halves are not merely un-taken but never attempted.
+Whether that lane is invoked by the public cascade writer is a separate, later question governed by
+[Standard P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-deployment-qualification-and-counterexample-closure);
+being composable is not being cut over.
+
 ### 6a. IAM Is Registry-Owned, Not Tag-Sweep-Owned
 
 The AWS Resource Groups Tagging API does not enumerate IAM reliably enough to be an ownership
@@ -1961,9 +2162,53 @@ authority. The target therefore has no IAM “blind spot” delegated to §6:
    cutover. The harness then imports or destroys each registered ARN and proves absence; production
    cutover cannot complete while an auto-named role remains unregistered.
 
+**Destroying one credential class's IAM objects is a joint disposition over its whole family.** The
+family is a closed enumeration — the access-key set, the inline-policy set, the principal, and, for a
+class that owns one, the assumed role and its inline policy — and the principal and declared policy
+name are derived from the registered credential descriptor rather than accepted from a caller. Four
+rules follow, and each answers a way the sequential form went wrong.
+
+Every member is *attempted*. A destroy that abandons its remainder at the first failure leaves a
+partially destroyed principal and reports only that something failed, which is neither a completion
+nor a resumable state.
+
+Inline policies are *enumerated from the provider*, never addressed by an authored name. A creator
+and a destroyer that name different policies do not merely miss one object: IAM refuses to delete a
+principal that still owns an inline policy, so the principal becomes permanently undeletable while
+the delete that should have removed the policy reports the provider's not-found answer as success. A
+truncated listing is a failure rather than a short list.
+
+Completion is minted *only from a read-back in which every member is independently absent*, and that
+read-back is total over the family — a member nothing answered for refuses rather than passing.
+
+A refusal names *every* surviving member rather than the first, because that set is what a retry
+resumes from; and an unobservable member refuses distinctly from a surviving one, because the two
+license different next steps.
+
 The fixed historical LBC/EBS-CSI names are handled by the same manifest/registry path rather than a
 special preflight delete. After cutover, source/plan lint rejects every auto-named IAM create and
 every IAM create without its registry descriptor and durable cleanup proof.
+
+**A registration lands with its adapter, never before it.** Registering a managed descriptor compiles
+a mandatory absence read-back on every surface that projects it, and a surface that mints completion
+evidence asserts every one of those read-backs succeeded. A descriptor whose production executor does
+not exist therefore does not merely go unswept: it makes that surface's completion structurally
+unreachable, and the failing node reads like infrastructure that refused to go away. The rule is
+mechanical rather than advisory — `Prodbox.Lifecycle.Teardown.RegisteredTargetExecutor` names the
+executor as a total function of the closed key enumeration, and `prodbox dev check` fails when an
+executor-less descriptor projects onto a completion-minting surface. Three pairings were landed under
+it: the retained EBS family with its `ExplicitLongLived` completion minter, the `dns-aws` validation
+hosted zone with its Route 53 adapter, and the DNS01 challenge family with its Kubernetes-owner
+executor and Route 53 read-back.
+
+**The explicit long-lived surface additionally requires an aggregate operator permit.** Every other
+minting surface completes from its own read-backs, because a complete read-back set already is that
+surface's whole obligation. A long-lived family is infrastructure the rest of the system is built to
+preserve, so removing it is an operator decision rather than a consequence of a run converging. The
+permit names the exact aggregate it authorizes — which must equal the registry's own
+`ExplicitLongLived` projection, so it can neither omit a registered family nor name an unregistered
+one — and binds the run and compiled graph it authorizes, so a permit issued for one destruction
+cannot complete another.
 
 ### 6b. `nuke` Transfers Authority to an External Decommission Receipt
 

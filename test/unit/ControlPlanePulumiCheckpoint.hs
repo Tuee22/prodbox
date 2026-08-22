@@ -92,6 +92,11 @@ import Prodbox.Lifecycle.Lease
   , authorityTimeFromMicros
   )
 import Prodbox.Lifecycle.PulumiCheckpoint
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CustodyDispositionKind (DispositionDischargedByAbsence)
+  , CustodyDispositionRecord (..)
+  , renderedCheckpointCapability
+  )
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import TestSupport
 
@@ -247,6 +252,7 @@ controlPlanePulumiCheckpointSuite =
         capability
         retireOperation
         (Just (canonicalPulumiCheckpointDigest checkpoint))
+        fixtureRetirementDisposition
         `shouldReturn` Right PulumiCheckpointRetiredAndReadBack
       observePulumiCheckpoint capability
         `shouldReturn` Right PulumiCheckpointMissing
@@ -348,7 +354,7 @@ memoryRepository = do
                 )
               writeIORef state (Just checkpoint)
               pure (PulumiCheckpointPublished (canonicalPulumiCheckpointDigest checkpoint))
-          , retireRegisteredPulumiCheckpoint = \_callerSlot ticket registered -> do
+          , retireRegisteredPulumiCheckpoint = \_callerSlot ticket _disposition registered -> do
               record
                 ( RepositoryRetired
                     (pulumiCheckpointTicketOperation ticket)
@@ -361,7 +367,7 @@ memoryRepository = do
               pure (PulumiCheckpointRestoreUnavailable "fixture unavailable")
           , readBackRegisteredPulumiCheckpointRestore = \_callerSlot _ _ ->
               pure (PulumiCheckpointRestoreReadBackUnavailable "fixture unavailable")
-          , attemptRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ _ ->
+          , attemptRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ _ _ ->
               pure (PulumiCheckpointRetirementAttemptUnavailable "fixture unavailable")
           , readBackRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ ->
               pure (PulumiCheckpointRetirementReadBackUnavailable "fixture unavailable")
@@ -379,13 +385,13 @@ countingRepository effects =
         effect
           >> pure
             (PulumiCheckpointPublished (canonicalPulumiCheckpointDigest checkpoint))
-    , retireRegisteredPulumiCheckpoint = \_callerSlot _ _ ->
+    , retireRegisteredPulumiCheckpoint = \_callerSlot _ _ _ ->
         effect >> pure PulumiCheckpointRetiredAndReadBack
     , restoreRegisteredPulumiCheckpointPrimary = \_callerSlot _ _ _ ->
         effect >> pure (PulumiCheckpointRestoreUnavailable "fixture unavailable")
     , readBackRegisteredPulumiCheckpointRestore = \_callerSlot _ _ ->
         effect >> pure (PulumiCheckpointRestoreReadBackUnavailable "fixture unavailable")
-    , attemptRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ _ ->
+    , attemptRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ _ _ ->
         effect >> pure (PulumiCheckpointRetirementAttemptUnavailable "fixture unavailable")
     , readBackRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ ->
         effect >> pure (PulumiCheckpointRetirementReadBackUnavailable "fixture unavailable")
@@ -606,3 +612,15 @@ mustRight :: (Show err) => Either err value -> value
 mustRight result = case result of
   Left err -> error (show err)
   Right value -> value
+
+-- | Sprint 4.89: the disposition a retirement states for the checkpoint it
+-- retires.  The transport carries it; what the Lifecycle Authority does with it
+-- is measured in the registry's own suite.
+fixtureRetirementDisposition :: CustodyDispositionRecord
+fixtureRetirementDisposition =
+  CustodyDispositionRecord
+    { custodyDispositionCapability = renderedCheckpointCapability "aws-eks"
+    , custodyDispositionKind = DispositionDischargedByAbsence
+    , custodyDispositionDetail = "fixture discharge"
+    , custodyDispositionDependants = ["aws-eks"]
+    }

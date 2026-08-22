@@ -14,6 +14,9 @@ module Prodbox.ControlPlane.ProviderCaller
   , dispatchAuthenticatedProviderIntent
   , dispatchAuthenticatedProviderIntentFresh
   , dispatchAuthenticatedProviderIntentFreshWithOperation
+  , freshProviderSubmissionKey
+  , admitAuthenticatedProviderIntentAt
+  , executeAdmittedProviderIntentAt
   )
 where
 
@@ -22,6 +25,7 @@ import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Prodbox.ControlPlane.AuthorityProviderEndpoint
   ( AuthorityProviderClientError
+  , admitAuthorityProviderIntentOwnedBy
   , dispatchAuthorityProviderIntent
   , dispatchAuthorityProviderIntentOwnedBy
   , dispatchAuthorityProviderIntentWithOperation
@@ -165,6 +169,56 @@ dispatchAuthenticatedProviderIntentFreshWithOperation authentication prefix inte
       dispatched <-
         withLifecycleAuthorityAuthenticatedTransport authentication $ \transport ->
           dispatchAuthorityProviderIntentWithOperation transport validated intent
+      pure $ case dispatched of
+        Left err -> Left (ProviderCallerAuthenticationFailed err)
+        Right (Left err) -> Left (ProviderCallerDispatchFailed err)
+        Right (Right settled) -> Right settled
+
+-- | Sprint 7.36: admit one Provider submission at an exact submission key and
+-- stop, without executing it.
+--
+-- The key is the exact one, not a prefix: the whole point of the two-step lane
+-- is that the /same/ key names the same operation in both calls, so allocating a
+-- fresh one here would admit an operation the execute step could never reach.
+-- Use 'freshProviderSubmissionKey' once and hold the result across both.
+admitAuthenticatedProviderIntentAt
+  :: LifecycleAuthorityAuthentication
+  -> Text
+  -> ProviderIntent
+  -> IO (Either ProviderCallerError OperationId)
+admitAuthenticatedProviderIntentAt authentication rawSubmissionKey intent =
+  case mkClientSubmissionKey rawSubmissionKey of
+    Left err -> pure (Left (ProviderCallerSubmissionKeyInvalid err))
+    Right submissionKey -> do
+      admitted <-
+        withLifecycleAuthorityAuthenticatedTransport authentication $ \transport ->
+          admitAuthorityProviderIntentOwnedBy
+            transport
+            submissionKey
+            intent
+            ProviderOperationUnownedByCleanupRun
+      pure $ case admitted of
+        Left err -> Left (ProviderCallerAuthenticationFailed err)
+        Right (Left err) -> Left (ProviderCallerDispatchFailed err)
+        Right (Right operation) -> Right operation
+
+-- | Sprint 7.36: execute the operation an earlier
+-- 'admitAuthenticatedProviderIntentAt' admitted at this exact submission key.
+--
+-- The intent must be the one that was admitted; the Authority refuses a
+-- divergent replay of a retained submission rather than executing it.
+executeAdmittedProviderIntentAt
+  :: LifecycleAuthorityAuthentication
+  -> Text
+  -> ProviderIntent
+  -> IO (Either ProviderCallerError (OperationId, Text))
+executeAdmittedProviderIntentAt authentication rawSubmissionKey intent =
+  case mkClientSubmissionKey rawSubmissionKey of
+    Left err -> pure (Left (ProviderCallerSubmissionKeyInvalid err))
+    Right submissionKey -> do
+      dispatched <-
+        withLifecycleAuthorityAuthenticatedTransport authentication $ \transport ->
+          dispatchAuthorityProviderIntentWithOperation transport submissionKey intent
       pure $ case dispatched of
         Left err -> Left (ProviderCallerAuthenticationFailed err)
         Right (Left err) -> Left (ProviderCallerDispatchFailed err)

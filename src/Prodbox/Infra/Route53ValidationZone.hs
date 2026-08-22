@@ -57,8 +57,14 @@ import System.Exit (ExitCode (..))
 
 -- | Every zone this module creates is named and caller-referenced with this
 -- prefix. It is the identity the sweep discovers by.
+--
+-- Sprint 7.36: read from 'OwnedResourceTags.dnsValidationHostedZoneNamePrefix'
+-- rather than restated, because the registered teardown family is defined by
+-- the same prefix and two statements of it could disagree about which zones the
+-- compiled program sweeps.
 validationHostedZoneNamePrefix :: String
-validationHostedZoneNamePrefix = "prodbox-dns-aws-"
+validationHostedZoneNamePrefix =
+  Text.unpack OwnedResourceTags.dnsValidationHostedZoneNamePrefix
 
 validationHostedZoneName :: String -> String -> String
 validationHostedZoneName nonce baseZoneName =

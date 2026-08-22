@@ -93,6 +93,7 @@ import Data.Text qualified as Text
 import Prodbox.Lifecycle.CleanupRun (cleanupGraphDigest)
 import Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
   ( CascadeAbsenceEvidence
+  , CascadeCapabilityCustodyEvidence
   , CascadeCredentialDispositionEvidence
   , CascadeEvidenceError
   , CascadeLocalOperationReferences (..)
@@ -236,6 +237,7 @@ establishPreUninstallReadiness
   -> CascadeAbsenceEvidence
   -> CascadeCredentialDispositionEvidence
   -> CascadeTerminalAuditEvidence
+  -> CascadeCapabilityCustodyEvidence
   -> CascadeReportDigest
   -> m PreUninstallReadinessRun
 establishPreUninstallReadiness
@@ -245,6 +247,7 @@ establishPreUninstallReadiness
   absence
   credentials
   audit
+  custody
   committedDigest = do
     commit <- commitPreUninstallReport authority committedDigest
     observation <- readBackPreUninstallReport independent
@@ -281,6 +284,7 @@ establishPreUninstallReadiness
                     absence
                     credentials
                     audit
+                    custody
                     report
                     permit of
                     Left err ->
@@ -376,6 +380,7 @@ runStageC scenario absenceFrom authority independent =
         (fixedStageCAbsence absenceFrom)
         (fixedStageCCredentials scenario)
         (fixedStageCAudit scenario)
+        (fixedStageCCustody scenario)
         (fixedStageCDigest scenario)
     )
 
@@ -434,6 +439,7 @@ data FixedStageCScenario = FixedStageCScenario
   , fixedStageCAbsence :: !CascadeAbsenceEvidence
   , fixedStageCCredentials :: !CascadeCredentialDispositionEvidence
   , fixedStageCAudit :: !CascadeTerminalAuditEvidence
+  , fixedStageCCustody :: !CascadeCapabilityCustodyEvidence
   , fixedStageCDigest :: !CascadeReportDigest
   , fixedStageCOtherDigest :: !CascadeReportDigest
   , fixedStageCOperations :: !CascadeLocalOperationReferences
@@ -448,8 +454,10 @@ fixedStageCScenarioFor rawRunId = do
   assembled <-
     withCascadePreUninstallInputsInternal
       rawRunId
-      (\compiled _run absence credentials audit -> (compiled, absence, credentials, audit))
-  let (compiled, absence, credentials, audit) = assembled
+      ( \compiled _run absence credentials audit custody ->
+          (compiled, absence, credentials, audit, custody)
+      )
+  let (compiled, absence, credentials, audit, custody) = assembled
   digest <- mkCascadeReportDigest (Text.replicate 64 "b")
   otherDigest <- mkCascadeReportDigest (Text.replicate 64 "c")
   operations <-
@@ -461,6 +469,7 @@ fixedStageCScenarioFor rawRunId = do
       , fixedStageCAbsence = absence
       , fixedStageCCredentials = credentials
       , fixedStageCAudit = audit
+      , fixedStageCCustody = custody
       , fixedStageCDigest = digest
       , fixedStageCOtherDigest = otherDigest
       , fixedStageCOperations = operations
@@ -568,6 +577,7 @@ runFixedStageCRegression scenario = do
           (fixedStageCAbsence scenario)
           (fixedStageCCredentials scenario)
           (fixedStageCAudit scenario)
+          (fixedStageCCustody scenario)
           committed
       )
 
@@ -584,6 +594,7 @@ runFixedStageCRegression scenario = do
       (fixedStageCAbsence scenario)
       (fixedStageCCredentials scenario)
       (fixedStageCAudit scenario)
+      (fixedStageCCustody scenario)
       committed
 
   runCounted counter authority independent =
@@ -594,6 +605,7 @@ runFixedStageCRegression scenario = do
       (fixedStageCAbsence scenario)
       (fixedStageCCredentials scenario)
       (fixedStageCAudit scenario)
+      (fixedStageCCustody scenario)
       committed
 
   authorityWith commit permit =

@@ -148,6 +148,7 @@ import Prodbox.Lifecycle.Lease
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
   , ProviderIntentCoordinate
+  , ProviderOwnedTagQuery (..)
   , ProviderReadinessProbe (..)
   , ProviderRevision
   , ProviderStackConfig
@@ -617,6 +618,21 @@ wireProviderIntent intent = case intent of
           )
       )
   ObserveProviderAwsScope -> simple 20 "provider-aws-scope"
+  ObserveValidationHostedZones purpose -> simple 21 purpose
+  ReapValidationHostedZones purpose -> simple 22 purpose
+  ObserveRetainedEbsVolumes lifecycleValue -> simple 23 lifecycleValue
+  ReapRetainedEbsVolumes lifecycleValue -> simple 24 lifecycleValue
+  -- Sprint 7.36: the tag value distinguishes the two query forms, so a
+  -- key-only query carries no secondary and a pair query always does. A
+  -- decoder therefore cannot silently widen a pair query into its family.
+  -- Sprint 7.36: the zone travels as the resource and the record-name prefix
+  -- as the secondary, so an envelope that lost the prefix decodes as a refusal
+  -- rather than as a scan of the whole zone.
+  ObserveDns01ChallengeRecords zoneId recordNamePrefix ->
+    WireProviderIntent 26 zoneId Nothing Nothing (Just recordNamePrefix) Nothing
+  ObserveOwnedResourceTags (ProviderOwnedTagKeyQuery key) -> simple 25 key
+  ObserveOwnedResourceTags (ProviderOwnedTagPairQuery key value) ->
+    WireProviderIntent 25 key Nothing Nothing (Just value) Nothing
  where
   simple tag resource = WireProviderIntent tag resource Nothing Nothing Nothing Nothing
   publicARecordWire tag ref =
@@ -1206,6 +1222,34 @@ providerIntentFromWire wire = case wireProviderIntentTag wire of
     if selector == "provider-aws-scope"
       then Right ObserveProviderAwsScope
       else Left (ProviderCommittedIntentValueInvalid "invalid Provider AWS-scope selector")
+  21 -> ObserveValidationHostedZones <$> simpleText wire
+  22 -> ReapValidationHostedZones <$> simpleText wire
+  23 -> ObserveRetainedEbsVolumes <$> simpleText wire
+  24 -> ReapRetainedEbsVolumes <$> simpleText wire
+  25 -> do
+    noRevision wire
+    noStackConfig wire
+    noTertiary wire
+    if Text.null resource
+      then Left (ProviderCommittedIntentValueInvalid "missing owned-resource tag key")
+      else Right ()
+    pure
+      ( ObserveOwnedResourceTags
+          ( case wireProviderIntentSecondary wire of
+              Nothing -> ProviderOwnedTagKeyQuery resource
+              Just value -> ProviderOwnedTagPairQuery resource value
+          )
+      )
+  26 -> do
+    noRevision wire
+    noStackConfig wire
+    noTertiary wire
+    if Text.null resource
+      then Left (ProviderCommittedIntentValueInvalid "missing DNS01 challenge hosted zone")
+      else Right ()
+    recordNamePrefix <-
+      requireSecondary "missing DNS01 challenge record-name prefix" wire
+    pure (ObserveDns01ChallengeRecords resource recordNamePrefix)
   tag -> Left (ProviderCommittedIntentUnsupportedAction tag)
  where
   resource = wireProviderIntentResource wire

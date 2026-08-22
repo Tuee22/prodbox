@@ -15,6 +15,8 @@ module Prodbox.Lifecycle.Teardown.Model
   , CleanupSurface (..)
   , CleanupSurfaceWitness (..)
   , cleanupSurfaceFromWitness
+  , SomeCleanupSurfaceWitness (..)
+  , cleanupSurfaceWitnessFor
   , cleanupSurfaceMintsCompletionEvidence
   , RegisteredResourceKey (..)
   , registeredResourceKeyText
@@ -45,6 +47,8 @@ module Prodbox.Lifecycle.Teardown.Model
   , evidenceDurableRunScope
   , evidenceLinuxRke2Foundation
   , evidenceAwsScope
+  , evidenceAwsDnsZone
+  , mkObservationEvidenceScopeWithDnsZone
   , evidenceLifecycleOperation
   , ObservationRevision (..)
   , ObservationFailure (..)
@@ -58,6 +62,7 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word64)
 import Numeric (showHex)
+import Prodbox.Lifecycle.DnsRecord (HostedZoneId)
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
 
 -- | The closed physical shape of a registered identity.  A local substrate is
@@ -70,6 +75,22 @@ data ResourceKind
   | Topic
   | Credential
   | VolumeFamily
+  | -- | Sprint 7.36: a bounded family of Route 53 hosted zones this repository
+    -- creates and owns, identified by its owned tags rather than by a
+    -- deterministic name — the @dns-aws@ validation zone carries a per-run
+    -- nonce, so no exact name is knowable before it exists.
+    DnsZoneFamily
+  | -- | Sprint 7.36: a bounded family of Route 53 resource __record sets__
+    -- inside one retained hosted zone, identified by a record-name prefix.
+    --
+    -- Distinct from 'DnsZoneFamily' because the two are removed by different
+    -- authorities: a zone this repository created is deleted through the
+    -- Provider, while a DNS01 challenge record is written by cert-manager's
+    -- solver and is removed by deleting the Kubernetes object that owns it.  A
+    -- Provider delete would race the solver into rewriting the record, so
+    -- collapsing the two kinds would let one execution arm stand in for the
+    -- other.
+    DnsRecordFamily
   | LocalSubstrate
   deriving (Bounded, Enum, Eq, Ord, Show)
 
@@ -80,6 +101,8 @@ data ResourceKindWitness (kind :: ResourceKind) where
   TopicKind :: ResourceKindWitness 'Topic
   CredentialKind :: ResourceKindWitness 'Credential
   VolumeFamilyKind :: ResourceKindWitness 'VolumeFamily
+  DnsZoneFamilyKind :: ResourceKindWitness 'DnsZoneFamily
+  DnsRecordFamilyKind :: ResourceKindWitness 'DnsRecordFamily
   LocalSubstrateKind :: ResourceKindWitness 'LocalSubstrate
 
 resourceKindFromWitness :: ResourceKindWitness kind -> ResourceKind
@@ -90,6 +113,8 @@ resourceKindFromWitness witness = case witness of
   TopicKind -> Topic
   CredentialKind -> Credential
   VolumeFamilyKind -> VolumeFamily
+  DnsZoneFamilyKind -> DnsZoneFamily
+  DnsRecordFamilyKind -> DnsRecordFamily
   LocalSubstrateKind -> LocalSubstrate
 
 -- | Authority surfaces stay distinct even when they select some of the same
@@ -121,6 +146,26 @@ cleanupSurfaceFromWitness witness = case witness of
   ExplicitLongLivedSurface -> ExplicitLongLived
   TotalDecommissionSurface -> TotalDecommission
 
+-- | A witness whose surface index is not known to the caller.
+--
+-- Sprint @4.86@: a durable record keyed by @(stack key, scope)@ is read back
+-- by callers that hold the scope but no witness — a rank-2 reader over
+-- @forall surface@ cannot name one.  The scope already carries the surface, so
+-- recovering the witness /from/ it is the opposite of choosing one: it is the
+-- only value that can satisfy the surface checks the scope itself imposes.
+data SomeCleanupSurfaceWitness where
+  SomeCleanupSurfaceWitness
+    :: !(CleanupSurfaceWitness surface) -> SomeCleanupSurfaceWitness
+
+cleanupSurfaceWitnessFor :: CleanupSurface -> SomeCleanupSurfaceWitness
+cleanupSurfaceWitnessFor surface = case surface of
+  LocalOnly -> SomeCleanupSurfaceWitness LocalOnlySurface
+  Cascade -> SomeCleanupSurfaceWitness CascadeSurface
+  ExplicitPerRun -> SomeCleanupSurfaceWitness ExplicitPerRunSurface
+  OperationalTeardown -> SomeCleanupSurfaceWitness OperationalTeardownSurface
+  ExplicitLongLived -> SomeCleanupSurfaceWitness ExplicitLongLivedSurface
+  TotalDecommission -> SomeCleanupSurfaceWitness TotalDecommissionSurface
+
 -- | Whether a run on this surface can mint completion evidence today.
 --
 -- This lives beside 'CleanupSurface' rather than beside the minters because it
@@ -148,7 +193,12 @@ cleanupSurfaceMintsCompletionEvidence surface = case surface of
   -- target's -- which is what a completion claim over zero registered targets
   -- previously lacked.
   OperationalTeardown -> True
-  ExplicitLongLived -> False
+  -- Sprint 7.36: the explicit long-lived surface mints completion. Its
+  -- mandatory absence read-back became dischargeable when the retained EBS
+  -- adapter landed -- before that, completing it was structurally unreachable
+  -- rather than merely unwritten -- and its fourth required fact, the
+  -- aggregate operator permit, now has a type.
+  ExplicitLongLived -> True
   TotalDecommission -> False
 
 -- | Closed initial keys.  The two EBS families are different identities; no
@@ -161,6 +211,8 @@ data RegisteredResourceKey
   | AwsTestKey
   | AwsEbsPerRunTestKey
   | AwsEbsProductionRetainedKey
+  | AwsDnsValidationZoneKey
+  | AwsDns01ChallengeRecordKey
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 registeredResourceKeyText :: RegisteredResourceKey -> Text
@@ -171,6 +223,8 @@ registeredResourceKeyText key = case key of
   AwsTestKey -> "aws-test"
   AwsEbsPerRunTestKey -> "aws-ebs-volumes-per-run-test"
   AwsEbsProductionRetainedKey -> "aws-ebs-volumes-production-retained"
+  AwsDnsValidationZoneKey -> "dns-aws-validation-hosted-zone"
+  AwsDns01ChallengeRecordKey -> "dns-aws-dns01-challenge-records"
 
 -- | The inverse of 'registeredResourceKeyText', over the closed enumeration.
 --
@@ -214,6 +268,33 @@ data ManagedResourceCoordinate
       { awsEbsOwnershipTagKey :: !Text
       , awsEbsOwnershipTagValue :: !Text
       }
+  | -- | Sprint 7.36: the @dns-aws@ validation hosted-zone family.
+    --
+    -- Bounded by the zone-name prefix its creator authors, because the rest of
+    -- the name is a per-run nonce and no exact name is knowable before the zone
+    -- exists.  The prefix is the whole family definition, stated once here.
+    --
+    -- Deliberately __not__ defined by the owned tags in
+    -- "Prodbox.Lifecycle.OwnedResourceTags".  Those tags were added later so the
+    -- terminal escape audit could /see/ a leaked zone; a zone created before
+    -- they landed carries none, and defining the family by them would narrow
+    -- what the sweep removes to less than it removes today.  The tags remain
+    -- the audit's evidence; the prefix remains the family.
+    AwsRoute53ValidationZoneFamilyCoordinate
+      { awsRoute53ZoneNamePrefix :: !Text
+      }
+  | -- | Sprint 7.36: the DNS01 challenge record family.
+    --
+    -- Bounded by the record-name prefix every ACME DNS01 solver writes.  The
+    -- rest of the name is the certificate FQDN, which is per-run data, so the
+    -- prefix is the whole static family and the zone it lives in travels on the
+    -- run's 'ObservationEvidenceScope' rather than in this coordinate.  That
+    -- split is deliberate: a registry coordinate that named a zone would name
+    -- one substrate's zone, and the same family exists in every substrate's
+    -- retained zone.
+    AwsRoute53Dns01ChallengeRecordFamilyCoordinate
+      { awsRoute53Dns01RecordNamePrefix :: !Text
+      }
   deriving (Eq, Ord, Show)
 
 coordinateIsAws :: ManagedResourceCoordinate -> Bool
@@ -222,6 +303,8 @@ coordinateIsAws coordinate = case coordinate of
   AwsPulumiStackCoordinate {} -> True
   AwsEbsPerRunFamilyCoordinate {} -> True
   AwsEbsRetainedFamilyCoordinate {} -> True
+  AwsRoute53ValidationZoneFamilyCoordinate {} -> True
+  AwsRoute53Dns01ChallengeRecordFamilyCoordinate {} -> True
 
 -- | The AWS convention for "a Kubernetes cluster owns or shares this
 -- resource": @kubernetes.io\/cluster\/\<cluster-name\>@.  The cluster name is
@@ -265,6 +348,13 @@ coordinateControllerOwnerCluster coordinate = case coordinate of
   -- The retained family is keyed only by its retention marker and carries no
   -- cluster ownership tag, which is exactly what lets it outlive any cluster.
   AwsEbsRetainedFamilyCoordinate {} -> Nothing
+  -- A validation hosted zone is created by a suite validation, not by a
+  -- cluster's controllers, so no cluster owns its lifetime.
+  AwsRoute53ValidationZoneFamilyCoordinate {} -> Nothing
+  -- A DNS01 challenge record is written by cert-manager, which runs in a
+  -- cluster -- but the record outlives no cluster's teardown order, and the
+  -- solver that owns it is selected per certificate rather than per cluster.
+  AwsRoute53Dns01ChallengeRecordFamilyCoordinate {} -> Nothing
 
 -- | The cluster name a registered stack's provisioning program would give an
 -- EKS cluster, if that program declares one.
@@ -279,6 +369,8 @@ coordinateProvisionedClusterName coordinate = case coordinate of
     Just (stackName <> pulumiEksClusterNameSuffix)
   AwsEbsPerRunFamilyCoordinate {} -> Nothing
   AwsEbsRetainedFamilyCoordinate {} -> Nothing
+  AwsRoute53ValidationZoneFamilyCoordinate {} -> Nothing
+  AwsRoute53Dns01ChallengeRecordFamilyCoordinate {} -> Nothing
 
 newtype ManagedResourceCoordinateDigest
   = ManagedResourceCoordinateDigest Text
@@ -312,6 +404,14 @@ managedResourceCoordinateDigest coordinate =
         ]
     AwsEbsRetainedFamilyCoordinate tagKey tagValue ->
       Text.intercalate "\NUL" ["aws-ebs-retained-family/v1", tagKey, tagValue]
+    AwsRoute53ValidationZoneFamilyCoordinate namePrefix ->
+      Text.intercalate
+        "\NUL"
+        ["aws-route53-validation-zone-family/v1", namePrefix]
+    AwsRoute53Dns01ChallengeRecordFamilyCoordinate recordNamePrefix ->
+      Text.intercalate
+        "\NUL"
+        ["aws-route53-dns01-challenge-record-family/v1", recordNamePrefix]
 
   renderHexByte byte = case showHex byte "" of
     [digit] -> ['0', digit]
@@ -359,10 +459,28 @@ data ObservationEvidenceScope = ObservationEvidenceScope
   , internalEvidenceDurableRunScope :: !DurableObservationRunScope
   , internalEvidenceLinuxRke2Foundation :: !LinuxRke2FoundationId
   , internalEvidenceAwsScope :: !(Maybe AwsScope)
+  , internalEvidenceAwsDnsZone :: !(Maybe HostedZoneId)
+  -- ^ Sprint 7.36: the retained hosted zone this run's DNS resources live in.
+  --
+  -- A registered __record__ family — the DNS01 challenge TXTs — is bounded by
+  -- a record-name prefix inside a zone the run keeps, so unlike every other
+  -- registered family its coordinate is not complete without a zone. The
+  -- account and region already travel here for exactly the same reason, and
+  -- adding the zone beside them keeps one answer to \"which AWS thing is this
+  -- run talking about\" rather than two.
+  --
+  -- @Nothing@ means the run named no DNS zone, and an adapter that needs one
+  -- refuses rather than guessing: a challenge record swept in the wrong zone
+  -- is either a no-op that reads as absence or a deletion in an operator's
+  -- parent zone.
   , internalEvidenceLifecycleOperation :: !LifecycleOperation
   }
   deriving (Eq, Ord, Show)
 
+-- | Mint a scope that names no DNS hosted zone.
+--
+-- This is the arity every existing caller already has, and it stays the default
+-- because most registered families are complete without a zone.
 mkObservationEvidenceScope
   :: CleanupSurface
   -> RegistryRevision
@@ -378,8 +496,45 @@ mkObservationEvidenceScope surface revision runScope foundation awsScope operati
     , internalEvidenceDurableRunScope = runScope
     , internalEvidenceLinuxRke2Foundation = foundation
     , internalEvidenceAwsScope = awsScope
+    , internalEvidenceAwsDnsZone = Nothing
     , internalEvidenceLifecycleOperation = operation
     }
+
+-- | Sprint 7.36: mint a scope that names the run's retained DNS hosted zone.
+--
+-- Deliberately a second minter rather than a setter on an existing scope. A
+-- scope is the durable binding an observation request and its response share,
+-- and a function that attached a zone to a scope already minted would let a
+-- caller retarget an in-flight observation at a different zone.
+mkObservationEvidenceScopeWithDnsZone
+  :: CleanupSurface
+  -> RegistryRevision
+  -> DurableObservationRunScope
+  -> LinuxRke2FoundationId
+  -> Maybe AwsScope
+  -> HostedZoneId
+  -> LifecycleOperation
+  -> ObservationEvidenceScope
+mkObservationEvidenceScopeWithDnsZone
+  surface
+  revision
+  runScope
+  foundation
+  awsScope
+  dnsZone
+  operation =
+    ObservationEvidenceScope
+      { internalEvidenceCleanupSurface = surface
+      , internalEvidenceRegistryRevision = revision
+      , internalEvidenceDurableRunScope = runScope
+      , internalEvidenceLinuxRke2Foundation = foundation
+      , internalEvidenceAwsScope = awsScope
+      , internalEvidenceAwsDnsZone = Just dnsZone
+      , internalEvidenceLifecycleOperation = operation
+      }
+
+evidenceAwsDnsZone :: ObservationEvidenceScope -> Maybe HostedZoneId
+evidenceAwsDnsZone = internalEvidenceAwsDnsZone
 
 evidenceCleanupSurface :: ObservationEvidenceScope -> CleanupSurface
 evidenceCleanupSurface = internalEvidenceCleanupSurface

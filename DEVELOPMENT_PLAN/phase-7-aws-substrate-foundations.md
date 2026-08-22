@@ -101,7 +101,7 @@ tracked only in [substrates.md](substrates.md) — it is not closed by this home
 **Independent Validation**: Phase 7 is validatable on its owned surface — the AWS substrate
 foundations, the standalone `prodbox aws ...` command surface, the substrate-provisioning code,
 and the decrypt-to-scratch Pulumi interposition — independently of any later phase, per
-[development_plan_standards.md → N. Phase Independence](development_plan_standards.md#n-phase-independence-no-backward-blocking).
+[development_plan_standards.md → N. Phase Independence](development_plan_standards.md#n-phase-independence-and-execution-order).
 Code-owned closure is proven locally (`prodbox dev check`, `prodbox test unit`,
 `prodbox test integration cli`/`env`) plus live home-substrate reconcile; validations that touch a
 later-phase dependency are exercised against the home/local substrate or a fixture. Proof that
@@ -3596,7 +3596,7 @@ the config at author time, against a schema that can no longer drift from what t
 The phase-independence doctrine adopted here (Sprint `7.14` reframed to `Done` on its code-owned
 surface with a non-blocking `Live-proof: pending` note; Sprint `7.5`/`7.5.c` reframed so live-AWS
 proof never blocks an earlier phase; the `Independent Validation` lines) defers to
-[development_plan_standards.md → N. Phase Independence](development_plan_standards.md#n-phase-independence-no-backward-blocking)
+[development_plan_standards.md → N. Phase Independence](development_plan_standards.md#n-phase-independence-and-execution-order)
 and [O. Code-Local vs Live-Infra Proof](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof)
 as SSoT; the doctrine-adoption sprint and the relocated reopen narrative are recorded in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
@@ -4998,10 +4998,19 @@ None.
 
 ## Sprint 7.36: Exact AWS Desired-Absence Adapters, Write-Ahead Manifests, and Legacy Adoption [🔄 Active]
 
-**Status**: Active (opened 2026-08-15; updated 2026-08-16). Exact adapter/repository foundations are
-landed; the causal desired-present/session/generation and terminal-audit boundaries remain.
-Execution is parked behind the earlier queue entries in
-[README.md → Resume Here](README.md#resume-here); this is not a later-phase `Blocked` status.
+**Status**: Active (opened 2026-08-15; updated 2026-08-22). Exact adapter/repository foundations are
+landed, the registered `dns-aws` validation hosted-zone and retained-EBS adapters landed 2026-08-21,
+and the terminal audit's Provider query boundary, the durable audit receipt, the IAM revoke protocol,
+the admission/execution split that makes a registered stack's lifecycle generation durable before
+its create executes, and the DNS01 Kubernetes-scoped execution arm with its registered record family
+all landed 2026-08-22; the bounded legacy-adoption planner and the remaining fake refusal/read-back
+tables remain.
+**This sprint is the queue head as of 2026-08-21.** Sprints `5.36` and `6.5` each declare a
+`**Backward dependency**` on it under
+[Standard N.2](development_plan_standards.md#n-phase-independence-and-execution-order) — `5.36`
+because deleting the harness cleanup graph would strand the only sweep that removes a leaked
+billable Route 53 validation zone until this sprint's adapter exists, and `6.5` because its
+single-writer cutover converges over these adapters — so the queue runs this sprint first.
 **Closure dependency**: remaining Sprint-`4.85` stable generation, audit, and terminal proof inputs.
 No later-phase blocker.
 **Deployment qualification**: pending — AWS inventory, EKS authentication/drain, provider cleanup,
@@ -5033,7 +5042,335 @@ Give each per-run stack and controller family its own exact provider observer an
 adapter, with enough receipt-backed coordinates to recover when checkpoint copies are unusable, and
 authenticate EKS drain without checkpoint-derived kubeconfig materialization.
 
-### Current Implementation Checkpoint (2026-08-16, paused)
+### Current Implementation Checkpoint (2026-08-22)
+
+- **The bounded legacy-adoption planner's pure half is landed (2026-08-22).** A stack created before
+  write-ahead manifests existed, whose checkpoints are unusable, has no durable record of what it
+  owns, so adopting it means establishing that record from provider observation alone — the one place
+  in this lifecycle where discovery and authority come closest to touching.
+  `Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan` is the wall between them.
+  **The family is closed and registry-derived.** `legacyAdoptionExpectedFamily` is the stack plus
+  exactly the registered families whose controller-owner cluster is that stack's cluster — the same
+  derivation the write-ahead manifest seeds itself from, so an adopted manifest and a written-ahead
+  one describe the same universe. There is no name-prefix sweep and no tag query: an observation for
+  a key outside that set is an extra candidate and refuses the plan rather than widening it.
+  **Every way of not knowing refuses, and they stay distinct.** A missing observation, an extra one,
+  a duplicate for one key, a partial or unobservable result, and one observed identity claimed by two
+  registered keys are five separate refusals. None yields a smaller plan, because a smaller plan is
+  exactly what an adoption must never produce — it would record an ownership statement that omits
+  resources the stack really owns, and the cleanup consuming it would then prove absence over the
+  wrong set and report completion. An observed-empty family is recorded as empty rather than omitted,
+  because "nothing recorded" and "recorded as empty" are different states.
+  **The digest is over what the operator was shown.** `renderLegacyAdoptionPlan` is the canonical
+  document and the plan digest hashes exactly it, so confirming a digest is confirming those bytes
+  rather than a summary of them. `admitAdminLegacyAdoptionPermit` admits only the `AdminActionRunner`
+  audience, a fresh window, a nonce, and a named plan digest; `confirmLegacyAdoptionPlan` refuses a
+  permit naming a different plan or a different stack.
+  **The confirmed plan has a consumer.** `bindOwnershipManifestForCleanup` refuses a legacy purpose
+  outright and that refusal stays right for it — a write-ahead manifest's provenance is the create,
+  and nothing in that path establishes that an operator agreed to an adoption.
+  `bindConfirmedLegacyAdoptionManifestForCleanup` is the path that does: it requires the legacy
+  purpose for this exact surface, requires the manifest to carry a plan digest at all, and requires
+  that digest to equal the confirmed plan's. A manifest with no plan digest refuses distinctly from
+  one confirmed against a superseded plan, because the two license different next steps.
+  **What remains of the deliverable is its effectful half**: the provider-native read-only observer
+  that produces the candidate observations, and the receipt-commit of the confirmed manifest with its
+  independent read-back before mutation.
+- **The registered-target interpreter has a Kubernetes-scoped execution arm, and the DNS01 challenge
+  record family is registered behind it (landed 2026-08-22).** This is the item the Standard-C
+  correction below named as the real blocker: a registered target executes as a `ProviderIntent`, and
+  the Provider has no Kubernetes capability by construction, so the DNS01 owner delete had nowhere to
+  run. `Dns01ChallengeOwnerDeleteBoundary` is that arm, in the shape
+  `AwsEksPresentDestroyBoundary` already uses for the other continuation this interpreter cannot
+  inline; `Prodbox.Lifecycle.Teardown.Dns01ChallengeOwnerDeleteInterpreter` is its production
+  implementation, and `productionCloudRuntime` installs it. A composition with no Kubernetes access
+  installs `refusingDns01ChallengeOwnerDeleteBoundary` rather than leaving the field unset, so
+  "this runtime cannot reach Kubernetes" is a value the cleanup report can carry.
+  **The family's two halves take different authorities, and that is the deliverable.** The
+  observation and the mandatory absence read-back are Route 53 reads through the Provider —
+  `ObserveDns01ChallengeRecords` carries the run's hosted zone and the record-name prefix, and it is
+  the first registered family with **no reap intent beside it**, because cert-manager's solver owns
+  the record and a Provider delete would race it into rewriting one. The removal is the Kubernetes
+  owner delete, and only the separate read-back closes the family, which matters more here than
+  anywhere else: cert-manager removes the record asynchronously through a finalizer after its object
+  is gone.
+  **The owner set is a join, not a wildcard.** The interpreter lists cert-manager's challenges with
+  their `spec.dnsName`, derives each owner's record name through the one prefix constant the
+  coordinate and the creator already read, and deletes exactly the owners the observation named. A
+  malformed listing row makes the whole listing unusable rather than being dropped, because a
+  shortened owner set reads as an orphaned record — and an observed record no surviving owner claims
+  is reported as a **refusal naming it**, not as an applied delete, since an owner delete cannot
+  remove a record whose owner is already gone.
+  **The ephemeral Kubernetes client is now one statement.** The private-kubeconfig, FIFO-token, and
+  ambient-credential-scrub machinery was written once inside the drain interpreter because the drain
+  was the only teardown path that reached Kubernetes. `Prodbox.Lifecycle.Teardown.EphemeralKubectl`
+  owns it now and both callers use it: two statements of that machinery would be two statements of a
+  security property.
+  **What the registration does not yet reach is named and scheduled.** A compiled desired-absence
+  program builds its `ObservationEvidenceScope` in
+  `Prodbox.Lifecycle.Teardown.Graph.compileDesiredAbsenceGraph`, which takes the run's foundation and
+  optional `AwsScope` and **no DNS hosted zone**, so every compiled DNS01 node currently refuses with
+  `Dns01ChallengeHostedZoneMissing`. That refusal is correct — a challenge record swept in the wrong
+  zone is either a no-op that reads as absence or a deletion in an operator's parent zone — and it
+  breaks nothing live, because `runNativeDeleteCascade` is still the public writer and does not use
+  the compiled program at all. Supplying the zone changes `compileDesiredAbsenceGraph`'s arity at 43
+  call sites **and the durable `CleanupProgramDescriptor` wire**, which is a distinct piece of work:
+  it is Sprint `7.38`, and Sprint `6.5` declares the backward dependency.
+- **The stable-generation deliverable is landed in both halves (completed 2026-08-22).** "Bind a
+  Pending parent create to its deterministic scope-observation child" was already done:
+  `submitRegisteredStackCreation` dispatches `ObserveProviderAwsScope` under the create's own
+  submission prefix (`<prefix>-observe-aws-scope`) before the create, and the generation commit binds
+  both operation ids. "Independently read-back stable lifecycle generation **before dispatch**" is
+  now done as well, and the obstacle it had was structural rather than unwritten:
+  `dispatchAuthenticatedProviderIntentFreshWithOperation` submitted and executed in one step, so the
+  create's operation id — which the generation record binds — did not exist until the create had
+  already run.
+  **The Provider dispatch route now carries a lane.** `ProviderDispatchLane` is a closed two-arm
+  choice on the payload: `ProviderAdmitOnly` admits the submission, leaves the operation Pending,
+  signs nothing, sends nothing to the Provider Worker, and answers `ProviderDispatchAdmitted` naming
+  the operation; `ProviderAdmitAndExecute` is the historical behaviour. The admission/execution
+  boundary is one the retained aggregate already had — `AuthorityProviderPending` is a durable state
+  and `observeAuthorityAwsStackCreationOperation` already reads a create out of it — so the lane
+  exposes it rather than inventing one. The response arm is appended last, so every earlier
+  constructor keeps its `Serialise` index; the payload version is bumped `3` → `4`, because a caller
+  at the old version carries no lane and the only default for a missing one would be to execute.
+  **The submission digest is taken over what was submitted, deliberately not over which lane runs
+  it.** That is what makes the two calls one submission: the create is admitted and executed at one
+  submission key, and the execute call is recognized as the admission's own operation instead of
+  being refused as a digest conflict. The refusal is not hypothetical — the first implementation
+  digested the lane and reproduced exactly that refusal.
+  **`submitRegisteredStackCreation` is reordered to admit, commit, read back, then execute.** The
+  generation commit already settles by independent read-back
+  (`commitRegisteredStackGenerationWithRepair`), so the proof half needed nothing new. Every failure
+  before the execute step now leaves an addressable record and no AWS resource; the one arm that can
+  leave an AWS resource is the one whose generation is already durable, and its error says so. The
+  hazard the code named — `RegisteredStackCreationAuthorityUnreachable` as "the stack was created but
+  the Authority could not be reached to commit its generation" — is gone: that arm now means the
+  create is admitted, Pending, and unexecuted. A create that executes under an operation other than
+  the one it admitted is refused as `RegisteredStackCreationOperationDiverged`, because the committed
+  generation would not name the effect that happened.
+  **Measured at the handler.** `ControlPlaneAuthorityProviderDispatchLane` drives the real route over
+  a seeded admission aggregate and counts Provider Worker calls: an admit-only dispatch reaches the
+  worker zero times and still names its operation, a repeated admission stays at zero and answers with
+  the same operation, the execute lane on the same key runs it exactly once and returns that same
+  operation, and a payload at the superseded version is refused with nothing executed.
+- **The fence, the audit, the record, and the revocation now have one production driver (landed
+  2026-08-22).** Every transition in this protocol was proven and none of them ran: nothing in
+  production issued `AuthorityControlFreezeProviderAdmissionForCascadeAudit`,
+  `AuthorityControlRecordCascadeTerminalAuditReceipt`, or
+  `AuthorityControlRevokeCascadeProviderCredential`, so four correct transitions composed an unrun
+  protocol. `Prodbox.Lifecycle.Teardown.CascadeTerminalAuditLane` drives all four in the one order
+  the epoch admits, and `Prodbox.Lifecycle.Teardown.CascadeCredentialRevocation` supplies the two
+  independent read-back digests the revocation route needs — which is the wiring this sprint's
+  Remaining Work named as the revoke's last piece.
+  **The lane's own contribution is restraint.** The epoch already refuses a record with no fence and
+  a revocation with no record or an unclean verdict, so the lane cannot widen what is permitted. What
+  it adds is that an escape or a blind spot is *not attempted*: the IAM destroy and the retained-material
+  tombstone are never called, because the credential is exactly what a retry or an investigation runs
+  as. Nine unit cases count effects rather than assert intent — the clean run submits freeze, record,
+  and revoke in that order and destroys once on each side; the escaped and blind-spot runs submit
+  freeze and record and destroy zero times; a refused fence issues zero audit queries; and a refused
+  record destroys nothing.
+  **The revocation's internal order is a safety property.** The IAM family is destroyed first because
+  the IAM identity is what grants, so a surviving copy of the material is already inert once it is
+  gone; ending the material first would leave the grant standing with no record of what it was. A
+  revocation whose IAM half is not proved absent leaves the retained material untouched, and one whose
+  retained Target generation survives submits nothing. The Target half's digest names the coordinate,
+  the generation, and *which* read-back proved absence, so a retry that finds the work already done
+  cannot produce the digest of the run that performed it.
+  **This is composability, not cutover.** No public writer invokes the lane; activating one is Sprint
+  `6.5`'s qualified single-writer cutover, and this sprint makes no claim about it.
+- **The cascade credential revocation is reachable and strictly ordered (landed 2026-08-22).**
+  `ProviderCredentialRevocationReceipt` had a declared shape, no constructor, and no transition.
+  `mkProviderCredentialRevocationReceipt` binds the joint IAM disposition digest and the retained
+  Target generation's revocation read-back and refuses one digest standing for both;
+  `revokeCascadeProviderCredentialInternal` is reachable only from the recorded state and only over a
+  clean verdict, so "fence, audit, record, revoke" is a property of the type. Revoking from the
+  frozen state is refused because it destroys the only credential that could re-run the audit;
+  revoking over an escape or a blind spot is refused because the credential is what an investigation
+  needs. The revoked state carries the audit receipt alongside the revocation's own, so the durable
+  statement that the surface was clean outlives the credential that proved it, and the transition is
+  reached through its own authenticated control route beside the freeze and the record.
+- **Destroying a managed AWS identity is one joint disposition (landed 2026-08-22), and the audited
+  SES residue had a proximate cause the ledger row had not named.** The registered credential
+  descriptor declares the SMTP inline policy as `prodbox-ses-smtp-send`; the destroy deleted
+  `prodbox-ses-smtp-policy`, IAM answered `NoSuchEntity`, the path read that as success, and every
+  subsequent `delete-user` was then refused for as long as the real policy stayed attached — which is
+  exactly the state audited on 2026-08-20. The destroy now enumerates the principal's inline policies
+  through `aws iam list-user-policies` and deletes each one IAM reports, so no authored name
+  participates and a truncated listing is a failure rather than a short list.
+  `Prodbox.Lifecycle.CredentialProvisioner.JointIamDisposition` makes the family a closed enumeration
+  — access keys, inline policies, principal, and for a class that owns one the assumed role and its
+  policy — derives the principal and declared policy name from the registered descriptor, attempts
+  every member rather than abandoning the remainder, mints completion only from a read-back in which
+  every member is independently absent, names *every* surviving member in its refusal, and keeps an
+  unobservable member distinct from a surviving one. `destroyProductionIamIdentity` and the
+  Admin-worker boundary's two arms decide through the same disposition, and
+  `observeAwsSesSmtpIamWith` is total over the family rather than asking only about the principal.
+  The deletion-ledger row moves to Completed.
+- **A live refusal introduced by this sprint's own 2026-08-21 increments is closed.** A committed
+  provider intent is refused at the accepted authority's registered-resource set, and that set was
+  authored inline in `Prodbox.ControlPlane.Runtime` as a second statement joined to nothing. The
+  `dns-aws` validation hosted-zone and retained-EBS families were registered as intents without
+  entries there, so every committed intent for either adapter would have been refused as an
+  unregistered resource while their adapter tables stayed green. The list is now
+  `Prodbox.Lifecycle.ProviderWorker.ProviderWork.productionRegisteredProviderResources`, beside the
+  intents it bounds, and a unit case walks the exhaustive intent fixture and measures that each
+  intent's resource key is admitted; removing an entry reproduces the failure naming the stranded
+  intents. It stays an *authored allowlist* rather than a projection of the intent type, because its
+  three stack entries name exactly the stacks the worker may touch and deriving the family would
+  widen that authority to any stack reference a caller composed — measured by a second case.
+- **The terminal audit's verdict is durable, and its placement is the deliverable (landed
+  2026-08-22).** Compaction deletes a settled submission's ledger record, its epoch binding, and its
+  provider operation together, so a verdict kept in the provider operation the audit ran as is one
+  the Authority may discard under capacity pressure. `CascadeTerminalAuditReceipt` lives in the
+  retained admission epoch and carries the audit's scope, query-catalog, and retained-set digests
+  with its verdict; `RecordCascadeTerminalAuditReceipt` is its own `AuthorityAdmissionCommand` behind
+  its own control route, and `confirmAggregateCascadeTerminalAuditReceipt` is the independent
+  read-back over a re-read object. A unit case drives real compaction and measures that the audit's
+  own settled operation record is gone while the receipt survives and still confirms.
+- **All three verdicts record, and the refusals are the interesting part.** Clean, escaped, and
+  unobservable all mint, because a run that found an escape or could not see everything must be able
+  to say so durably without that statement authorizing anything; a zero-count escape or blind-spot
+  verdict is refused as the clean verdict wearing another constructor. Recording is idempotent on the
+  identical receipt and refuses a different receipt for the same reservation; a freeze retried after
+  the record returns the recorded epoch rather than re-entering the frozen state; and recording does
+  not lift the fence, because the read-back and any response-loss retry are still the reserved work.
+  `terminalAuditEvidenceScopeDigest` is the one derivation both the reservation and the receipt use,
+  over every field of the evidence scope including the optional AWS scope and DNS zone. The new epoch
+  state is appended, so the existing v6 fixture still decodes and canonical v7 still round-trips
+  byte-identically.
+- **The cascade's terminal escape audit has an execution half (landed 2026-08-22).** The audit's
+  pure kernel in `Prodbox.Lifecycle.Teardown.CascadeTerminalAudit` was complete and had no producer:
+  its query boundary is injected and no production one existed, because those queries are a Provider
+  effect this phase owns. `ObserveOwnedResourceTags` carries exactly one tag filter — key-only or an
+  exact pair — because the Tagging API intersects filters inside one call and the audit's field of
+  view is their union; the two forms take distinct provider coordinates, so a narrower pair listing
+  cannot answer for the wider family. `ProviderTerminalAudit` is a fourth `ProviderDispatchPurpose`
+  rather than a third observation arm: admitting a global tag listing at a registered-target purpose
+  would let it stand in for an exact family read-back, and admitting a registered observation here
+  would let one family's answer close the audit.
+  `Prodbox.Lifecycle.Teardown.CascadeTerminalAuditAdapter` maps one `TerminalAuditQuery` onto one
+  intent and lowers the answer back into the rows the kernel classifies; every inability — transport
+  failure, coordinate mismatch, a mutation-shaped result, unreadable evidence, a wrong query echo,
+  and a row from outside the audited account or region — becomes that query's own
+  `ObservationFailure`, which the kernel already counts as a blind spot, and none of them can produce
+  an empty row set.
+- **Truncation fails rather than shortening.** `Prodbox.Lifecycle.TaggedResourceQuery` follows the
+  Tagging API's own `PaginationToken` to exhaustion, refuses a cursor it has already been handed,
+  fails at its page bound rather than returning a prefix, and treats an entry with no readable ARN
+  as making the whole page unreadable. The surviving sweep does not:
+  `Prodbox.Lifecycle.TagSweep.parseTagSweepPayload` reads only the first response body and never
+  looks at the cursor, so an account holding more owned resources than one page returns a partial
+  listing that reads as a complete one. That executor is deleted rather than fixed, and the fact is
+  recorded on its existing row in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- **The evidence codec is one module.** `Prodbox.Lifecycle.OwnedResourceTagEvidence` owns the
+  canonical form the Provider Worker renders and the adapter parses, so the writer and the reader
+  cannot drift. It echoes the query, states completion as a terminator carrying the page count — so
+  evidence without one does not parse at all — and can represent a resource returned carrying no
+  tags, which is a different fact from one not returned. Resource type and coordinate are derived
+  from the ARN; a family matcher pins the type as well as the coordinate, so a mis-derived type can
+  only fail to match, which classifies the row as an escapee and fails the audit closed. Thirteen
+  unit cases measure the mapping, each refusal, and one end-to-end path from the bytes the Provider
+  returns to a verdict.
+- **The `dns-aws` validation hosted-zone family is registered and has an exact adapter (landed
+  2026-08-21).** `AwsDnsValidationZoneKey` is a member of the closed `RegisteredResourceKey`
+  enumeration keyed `dns-aws-validation-hosted-zone`;
+  `Prodbox.Lifecycle.Teardown.AwsRoute53ZoneAdapter` supplies the exact observation request,
+  observation decode, reap authorization, and separate absence read-back;
+  `ValidationHostedZoneFamilyExecutor` discharges the compiled node; and `ObserveValidationHostedZones`
+  / `ReapValidationHostedZones` execute through the production Provider path with the reaper
+  observing before it applies. The `dns-aws` row is deleted from
+  `Prodbox.CheckCode.untypedLifecycleInventoryExemptions`, so the family is now held by the typed
+  registry rather than by an exemption. The family is bounded by the single registered zone-name
+  prefix in `Prodbox.Lifecycle.OwnedResourceTags` — deliberately not by tags, because a legacy
+  untagged leaked zone must still be swept — and the creator, the harness sweep, and the registry
+  all read that one constant.
+- **The host-direct owner survives this increment on purpose.**
+  `Prodbox.Infra.Route53ValidationZone` and its `TestRunner` sweep call site are still the harness's
+  always-run node. Deleting them is the same decision as Sprint `5.36`'s cutover of the harness
+  cleanup graph, and Sprint `5.36`'s `**Backward dependency**` on this sprint is what the registered
+  adapter discharges: the compiled program can now express the deletion, so `5.36` may remove the
+  harness node without stranding a leaked billable zone. The duplicate owner is carried in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) until then.
+- **The retained-EBS adapter and the `ExplicitLongLived` completion minter landed together
+  (2026-08-21), as their pairing rule requires.**
+  `Prodbox.Lifecycle.Teardown.AwsRetainedEbsAdapter` supplies the exact observation request,
+  observation decode, reap authorization, and separate absence read-back for
+  `aws-ebs-volumes-production-retained`; `RetainedEbsFamilyExecutor` discharges the compiled node;
+  and `ObserveRetainedEbsVolumes` / `ReapRetainedEbsVolumes` execute through the production Provider
+  path with the reaper observing before it applies and refusing any lifecycle value but the
+  registered retained one. `registeredTargetExecutorFor` is now total *into `Right`*:
+  `RegisteredTargetAdapterGap` has no constructors, so declaring a gap is the only way to
+  reintroduce one, and adding a key without an executor is still an exhaustiveness failure.
+- **The aggregate operator permit now has a type**, which is what Sprint `4.85` recorded as the
+  reason this surface could not mint. `Prodbox.Lifecycle.Teardown.LongLivedAggregatePermit` admits a
+  request only when the named aggregate equals `longLivedAggregateUniverse` — the registry's own
+  `ExplicitLongLived` projection, derived rather than authored — under the `AdminActionRunner`
+  audience, a fresh window, and a nonce. `completeExplicitLongLivedDesiredAbsence` then re-checks the
+  permit's run and graph against the evidence, so a permit issued for one run cannot complete
+  another. `cleanupSurfaceMintsCompletionEvidence ExplicitLongLived` is `True`.
+- **Measured, not asserted.** The pairing rule was mutation-proven in both directions: reintroducing
+  the gap constructor first fails the *interpreter's* exhaustiveness check, and once that arm is
+  restored `prodbox dev check` fails naming `aws-ebs-volumes-production-retained` on the
+  `ExplicitLongLived` surface — a failure the gate could not have produced before the minter flip,
+  because that surface minted nothing. Both files were restored byte-exactly.
+- **Two defects in the 2026-08-21 Route 53 increment were found and fixed while landing this one.**
+  `ProviderDispatch` admitted neither dns intent at any purpose, so every dispatched validation-zone
+  observation would have refused as a purpose mismatch while the adapter's own tables stayed green;
+  and the committed-intent wire *encoded* tags 21/22 but the decoder rejected them as an unsupported
+  action, so a committed dns intent could not be recovered from its durable envelope. Both are
+  closed, and a new unit case walks every `RegisteredTargetExecutor` and measures that the dispatcher
+  admits its intents at the purposes the interpreter dispatches them — an exhaustive `case`, so a new
+  executor cannot be added without deciding what it dispatches. That case reproduces the defect when
+  the admission is removed. The audit disposition was also split: a deleted Route 53 zone and a
+  deleted retained volume no longer report as per-run EBS mutations.
+- **Standard-C correction (2026-08-22): the DNS01 registration's recorded blocker does not hold, and
+  the real one is different in kind.** The 2026-08-21 entry below ordered the executor after "this
+  sprint's own Provider credential-session binding protocol", on the grounds that the owner delete is
+  Kubernetes access scoped by an `EksDrainSession` and no protocol mints one. Both claims are wrong
+  against the tree. The credential-session binding protocol is landed and frozen — the binding carries
+  the credential generation, the exact Vault KV version, and the canonical Target-worker receipt
+  digest; the validator refuses legacy metadata, a metadata race, a wrong or destroyed exact version,
+  missing data, and an extra secret field; the committed-intent envelope keeps a frozen pre-v3 byte
+  fixture and a frozen historical action-ordinal digest; and production supplies the actual binding
+  through `providerProductionNarrowSession`, where a rotation is refused. And an `EksDrainSession`
+  *is* mintable in production: `productionEksDrainCommitSelectionBoundary` and
+  `productionEksDrainAttemptBoundary` acquire an `EksClientAuthProjection` keyed by the sealed
+  execution identity and construct the session through `mkEksDrainSession`, and both are composed
+  into `productionCloudRuntime`, which Sprint `4.86`'s candidate entrypoint drives.
+  **The actual blocker is the executor surface's shape.** A registered target executes as a
+  `ProviderIntent`, and the Provider has no Kubernetes capability by construction; the DNS01 record is
+  removed by deleting the cert-manager object that owns it. Registering the family therefore requires
+  the registered-target interpreter to gain a Kubernetes-scoped execution arm bound to a drain
+  session, beside its Provider arm — a larger change than either adapter landed here, and one that is
+  now scheduled rather than re-attempted.
+- **The DNS01 Challenge/TXT executor was attempted and is blocked on a measured design gap, not on
+  effort.** The half that is unambiguously needed landed:
+  `Prodbox.Aws.Native.Route53.scanResourceRecordSetsByPrefix` is the bounded paginated record-set
+  scan a registered DNS *record* family requires. `listExactResourceRecordSet` answers about one
+  coordinate the caller already names, and a cleanup proving a family absent has no names for its
+  members; the scan follows the truncation cursor, stops at the first record outside the prefix
+  because Route 53 returns records sorted, refuses a truncated page carrying no cursor, and fails
+  rather than truncating when it exceeds `maximumScannedRecordSetPages` — a short family answer would
+  read as absence, which is the defect class this family is most exposed to. Four unit cases measure
+  those behaviours.
+- **What blocks the registration is that a registered descriptor has no hosted zone to scan.**
+  `ObservationEvidenceScope` carries the cleanup surface, registry revision, durable run scope, local
+  foundation, an optional `AwsScope` (account and region), and the lifecycle operation — and no DNS
+  zone. A `Dns01ChallengeIntent` *does* carry its `HostedZoneId`, but it is per-certificate run data
+  in `Dns01ChallengeDesiredAbsence`, while a `RegisteredTargetBinding` comes from the static registry.
+  Joining per-run obligation data to a static registered descriptor is a design decision — either the
+  observation scope gains the substrate's retained zone, or the registry gains a family whose members
+  are supplied by the run rather than discovered — and it is not a mechanical extension of the two
+  adapters this sprint has landed. **The key, coordinate, `DnsRecordFamily` kind, and observe intent
+  were written and then deliberately withdrawn** rather than left registered without an executor,
+  which is exactly the shape `registeredTargetExecutorViolations` exists to refuse. The scan stays.
+- The remaining `4.85` receipts — the DNS01 Challenge/TXT executor above, the terminal cascade audit's
+  execution half, and the `residueLayerAnswersResourceExistence` wiring — are not landed.
+
+### Prior Implementation Checkpoint (2026-08-16, paused)
 
 - Exact EKS drain intent and read-back receipt repositories, authenticated routes, post-Begin
   attempt recovery, registered-target result/interpreters, checkpoint restore/read-back/retirement,
@@ -5088,40 +5425,60 @@ authenticate EKS drain without checkpoint-derived kubeconfig materialization.
   closed registry key enumeration and returns `NoProductionExecutor RetainedEbsFamilyAdapterUnbuilt`
   for `aws-ebs-volumes-production-retained`: the interpreter's `VolumeFamily` arm is guarded on the
   per-run EBS key, so the retained family has no exact observe, destroy, or absence read-back. The
-  `dns-aws` validation hosted zone has the same gap one step earlier — no `ProviderIntent` lists or
-  deletes a Route 53 hosted zone at all — so it is exempted from the typed registry rather than
-  registered, and its only sweep is the host-direct `aws` CLI owner
+  `dns-aws` validation hosted zone had the same gap one step earlier — no `ProviderIntent` listed or
+  deleted a Route 53 hosted zone at all — so it was exempted from the typed registry rather than
+  registered, and its only sweep was the host-direct `aws` CLI owner
   `src/Prodbox/Infra/Route53ValidationZone.hs`. Build both adapters as exact Provider intents,
   register `dns-aws-validation-hosted-zone` in `Prodbox.Lifecycle.Teardown.Registry`, delete its
   `Prodbox.CheckCode.untypedLifecycleInventoryExemptions` row, and delete the host-direct owner once
-  the compiled program sweeps the zone. Sprint `4.85`'s
+  the compiled program sweeps the zone. **The `dns-aws` half landed 2026-08-21**: the registered key,
+  `Prodbox.Lifecycle.Teardown.AwsRoute53ZoneAdapter`, `ValidationHostedZoneFamilyExecutor`, the two
+  Provider intents, and the exemption deletion are all in the tree. **The retained-EBS half landed
+  the same day**, together with the `ExplicitLongLived` minter the next deliverable pairs to it. The
+  host-direct owner's deletion is Sprint `5.36`'s cutover, not this sprint's. Sprint `4.85`'s
   `registeredTargetExecutorViolations` gate keeps the ordering mandatory: registering either target
   before its adapter exists compiles a mandatory absence read-back that cannot succeed, which makes
-  the projecting surface's completion unreachable rather than making the resource swept.
+  the projecting surface's completion unreachable rather than making the resource swept. **Both
+  adapters landed 2026-08-21**, so the gate's gap set is empty; it stays live for the next
+  registration because declaring a gap is the only way to produce one.
 - **Received from Sprint `4.85` on 2026-08-18 under
-  [Standard N](../DEVELOPMENT_PLAN/development_plan_standards.md#n-phase-independence-no-backward-blocking):
+  [Standard N](../DEVELOPMENT_PLAN/development_plan_standards.md#n-phase-independence-and-execution-order):
   the `ExplicitLongLived` completion minter.** It lands in the *same change* as the retained-EBS
   adapter above, not after it. `registeredTargetExecutorViolations` makes that mechanical rather
   than advisory: the retained EBS family is admissible today only because neither
   `ExplicitLongLived` nor `TotalDecommission` has a minter, and it "stops being admissible the
   moment either gains one". A Phase-4 sprint therefore could not add the minter without failing
   `prodbox dev check` until this adapter existed — a backward dependency, so ownership of the pair
-  moves here rather than the ordering being recorded in Phase 4.
+  moves here rather than the ordering being recorded in Phase 4. **Landed 2026-08-21 in the same
+  change as the adapter.** The minter needed a second thing the record named: the aggregate operator
+  permit, which "has no type". `Prodbox.Lifecycle.Teardown.LongLivedAggregatePermit` is that type,
+  and `longLivedAggregateUniverse` is derived from the registry rather than authored, so a newly
+  registered long-lived descriptor widens what a permit must name and an older permit naming the
+  smaller set stops being admissible.
 - **Received from Sprint `4.85` on the same re-scope: the DNS01 Challenge/TXT registered-target
-  executor and its registration.** Deletion is by Kubernetes owner object followed by a Route 53
-  read-back, and neither exists as a registered-target execution path; the AWS-lane challenge is
-  `PerRun`, so registering it before its executor would make the `Cascade` and `ExplicitPerRun`
-  programs unsatisfiable exactly as the `dns-aws` zone did. Phase 4 keeps the pure obligation data
-  (`Dns01ChallengeDesiredAbsence` and its always-run dependency); the executor, the
-  `RegisteredResourceKey`, and the response-loss/restart proof in the generic cleanup report land
-  here with the adapter.
+  executor and its registration. Landed 2026-08-22.** The bounded paginated Route 53 record-set
+  prefix scan the read-back needs landed 2026-08-21 with the observation scope's DNS-zone field;
+  `AwsDns01ChallengeRecordKey`, the `DnsRecordFamily` kind, the record-name-prefix coordinate,
+  `Prodbox.Lifecycle.Teardown.Dns01ChallengeRecordAdapter`, `Dns01ChallengeRecordFamilyExecutor`,
+  the `ObserveDns01ChallengeRecords` intent with its dispatch admission, worker capability, wire
+  ordinal, and resource-allowlist family, and the registry descriptor all landed 2026-08-22 — with
+  the Kubernetes-scoped execution arm that discharges the reconcile step and the production
+  owner-delete implementation `productionCloudRuntime` installs. Phase 4 keeps the pure obligation
+  data (`Dns01ChallengeDesiredAbsence` and its always-run dependency). This sprint makes no claim
+  about supplying the compiled program's observation scope with the run's DNS hosted zone; Sprint
+  `7.38` owns that.
 - **Received from Sprint `4.85` on the same re-scope: the terminal cascade audit's execution half.**
   Phase 4 owns and has landed the admission algebra — the freeze transition over the same aggregate
   the submission path reads, its projected pending-work proof, and the reservation that lets the
-  fence admit the audit it exists to run. What waits on this phase is the bounded paginated Provider
-  intent/result, the descriptor-bound retained matcher/query catalog, the independently read-back
-  durable audit receipt protected from compaction, and the separate IAM identity/generation/
-  attachment revoke and read-back.
+  fence admit the audit it exists to run. **The bounded paginated Provider intent/result landed
+  2026-08-22** as `ObserveOwnedResourceTags`, `Prodbox.Lifecycle.TaggedResourceQuery`,
+  `Prodbox.Lifecycle.OwnedResourceTagEvidence`, and
+  `Prodbox.Lifecycle.Teardown.CascadeTerminalAuditAdapter`, dispatched at the `ProviderTerminalAudit`
+  purpose; the descriptor-bound retained matcher/query catalog landed with Sprint `4.84`. What
+  **The independently read-back durable audit receipt landed 2026-08-22**: it is held in the retained
+  admission epoch rather than in the compactable provider operation record, recorded by its own
+  authenticated control route, and confirmed by an independent read of the re-read object. What
+  remains here is the separate IAM identity/generation/attachment revoke and read-back.
 - **Received on the same re-scope from a note that owned nothing: wire
   `residueLayerAnswersResourceExistence` into `residueBlocksTeardownGate`.** The predicate exists and
   is deliberately unwired, because doing so today would refuse every long-lived teardown: `aws-ses`
@@ -5150,7 +5507,10 @@ authenticate EKS drain without checkpoint-derived kubeconfig materialization.
 7. The received Sprint-`4.85` items are validated with their adapters in the same change:
    `ExplicitLongLived` completion is constructible only over a retained-EBS target whose exact
    observe/destroy/absence read-back all exist, and `registeredTargetExecutorViolations` stays at
-   zero across the whole registry rather than passing because the surface still mints nothing; the
+   zero across the whole registry rather than passing because the surface still mints nothing —
+   **measured 2026-08-21**, and mutation-proven by reintroducing the gap constructor and confirming
+   `dev check` fails naming the retained key on `ExplicitLongLived`, which it could not have done
+   while that surface minted nothing; the
    DNS01 challenge family compiles a node whose mandatory read-back its executor discharges, with
    response-loss and restart resuming the same stable operation; the terminal cascade audit reserves
    atomically under the freeze, reads its receipt back independently, and refuses on a key-only
@@ -5171,11 +5531,25 @@ authenticate EKS drain without checkpoint-derived kubeconfig materialization.
 
 ### Remaining Work
 
-First finish and freeze the Provider credential-session binding protocol, then bind a Pending parent
-create to its deterministic scope-observation child and independently read-back stable lifecycle
-generation before dispatch. Complete the retained audit catalog, atomic audit reservation,
-paginated Provider audit/result receipt, credential revoke/read-backs, and bounded confirmed-legacy
-adoption planner. Finish every fake refusal/read-back table and the plan for retiring checkpoint-only
+The Provider credential-session binding protocol is landed and frozen (see the Standard-C correction
+in the Implementation Checkpoint), and admission is separated from execution for the registered-stack
+create lane, so its lifecycle generation is committed and independently read back before the create
+executes. The registered-target interpreter's Kubernetes-scoped execution arm landed 2026-08-22
+together with the registered DNS01 challenge record family, its Route 53 observation and read-back,
+its production owner-delete implementation, and the shared ephemeral Kubernetes client both teardown
+paths now run `kubectl` through; supplying the run's DNS hosted zone to the compiled program's
+observation scope is Sprint `7.38`, and this sprint makes no claim about it.
+The bounded confirmed-legacy adoption planner's pure half landed 2026-08-22 — the closed
+registry-derived family, the five distinct refusals, the rendered plan and its digest, the admin
+permit over that exact digest, and the manifest binder that only a confirmed plan can satisfy. What
+remains of it is the effectful half: the provider-native read-only observer that supplies the
+candidate observations, and the receipt-commit of the confirmed manifest with its independent
+read-back before mutation. The credential revoke's
+joint IAM disposition, its exact-coordinate read-back, its ordered epoch transition, and the
+production lane that supplies both read-back digests to the revocation route all landed 2026-08-22,
+as did the one driver that fences, audits, records, and revokes. The retained audit catalog, the
+atomic audit reservation, the paginated Provider audit query, and the durable audit receipt with its
+independent read-back are landed. Finish every fake refusal/read-back table and the plan for retiring checkpoint-only
 and generic kubeconfig paths. The live all-three-stack campaign is non-blocking Standard-P evidence
 and runs without ad-hoc AWS mutations through the qualification-only adapters. Operational cutover
 and legacy-path deletion remain forbidden until current-revision AWS qualification is proven;
@@ -5190,6 +5564,24 @@ before ledger rows move to Completed.
   observers, ownership-manifest recovery, EKS drain sessions, and provider backstops.
 - `documents/engineering/lifecycle_reconciliation_doctrine.md` — Phase `7` adapters implement the
   lifecycle-owned observation/program interfaces; they do not redefine completion.
+- `documents/engineering/aws_integration_environment_doctrine.md` — the IAM revoke is one joint
+  disposition over the key family, the least-privilege policy, and the principal, with its
+  exact-coordinate read-back; the policy name is derived from the registered credential descriptor
+  rather than authored; the revoke is atomic over the family, so no failure part-way through can
+  leave a partially destroyed principal; and the tag sweep cannot answer for the
+  IAM class.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — § 6a gains the registered IAM-role
+  family and the rule that its registration lands with its adapter, alongside the retained-EBS and
+  DNS01 pairings this sprint already carries.
+
+**Cross-references to add:**
+
+- [substrates.md](substrates.md) — the fixed-name IAM residue table gains the current
+  deterministically named EKS roles and their destroy granularity; the long-lived SES section gains
+  the current-source divergence note.
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) — the surviving long-lived
+  residue-protection predicate, the missing IAM teardown family, the non-atomic SMTP destroy sequence,
+  the diverging SMTP policy name, and the drifted fixed-name reaper are all owned by this sprint.
 
 **Product docs to create/update:**
 
@@ -5202,6 +5594,275 @@ before ledger rows move to Completed.
   [system-components.md](system-components.md) and [substrates.md](substrates.md); and assign the
   checkpoint-only, controller-family, provider-name, and kubeconfig residuals in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 7.37: The Pulumi Programs Have No Configuration Path [📋 Planned]
+
+**Status**: Planned — Phase `7` own-surface reopen (Standard A/N) on the AWS substrate's
+provisioning inputs.
+**Implementation**: `src/Prodbox/Settings.hs` (the `aws_substrate` section),
+`src/Prodbox/Cluster/Topology.hs`, `src/Prodbox/ControlPlane/ProviderProduction.hs`,
+`src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs`,
+`src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/AwsTestStack.hs`,
+`pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml`, `dhall/cluster/Schema.dhall`.
+**Blocked by**: none.
+**Closure dependency**: Sprint `1.91`, which lands the compiled-versus-operator-supplied rule this
+sprint applies and the register-or-fail scanner that keeps a new literal from being added beside
+the ones this sprint removes.
+**Live-proof**: pending and non-blocking. A rendered node group and rendered EC2 instances carrying
+an authored envelope is a live observation and does not gate code-local closure.
+**Deployment qualification**: pending — **invalidated** on two Standard-P listed surfaces at once.
+*Resource envelopes*: the instance types, EBS class and size, node disk size, and node counts move
+from compiled literals to authored config, so no historical run's envelope evidence describes this
+revision. *Substrate routing*: every VPC and subnet CIDR, and the operator CIDR gating API-server
+and SSH ingress, become authored, so the network the substrate stands up is no longer the network
+any prior run exercised.
+**Independent Validation**: pure profile smart constructors and their refusal table; a rendered
+stack-configuration golden proving each authored value reaches the program's config key; decode
+round trips over the extended Tier-0 schema; and `prodbox dev check`. Every item is satisfiable
+without AWS and without a later phase.
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/config_doctrine.md`,
+`documents/engineering/cluster_topology_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/substrates.md`,
+`DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+The checked-in Pulumi programs have no configuration surface. Each accepts one input — an operator
+CIDR — and that input never touches Dhall: it is fetched at run time from a public IP-echo endpoint,
+validated by counting dots in the response body, suffixed `/32`, and replaced by a compiled
+loopback CIDR on the destroy path. Everything else is a literal in the program: node-group instance
+types, node disk size, desired/minimum/maximum node counts, three EC2 instance types, three root
+volume types and sizes, and every VPC and subnet CIDR in both stacks.
+
+Every one of those is a value whose namespace AWS owns and on which two correct deployments could
+legitimately differ. Give them a typed home in Tier-0 Dhall and a path to the programs.
+
+### Why the provider stack configuration type cannot simply be widened
+
+`ProviderStackConfig` derives `Serialise` generically and rides inside the provider intent into the
+retained authority's provider-operation map. The dispatch request digest is a SHA-256 over the
+serialised payload, persisted beside the intent and compared against the operation id's own digest
+on every later read. **Re-shaping an existing constructor** — adding a field to
+`AwsEksProviderStackConfig` or `AwsTestProviderStackConfig`, or reordering them — makes every
+retained authority object undecodable and shifts every request digest.
+
+Two facts narrow that constraint and both were measured rather than assumed. **Appending** a
+constructor is byte-compatible: the generic sum encoding tags constructors by declaration index, so
+existing encodings and digests are unchanged, and no pinned-byte golden test guards the type. And
+the `pulumi config set` transport is **not** an independent channel: `setPulumiConfiguration`
+iterates the compiled stack's configuration list, which is produced only by `compiledStackFor`,
+whose entire content input is this sum. Routing a profile onto that transport without touching the
+type requires a new parameter on `compiledStackFor`, `pulumiMutation`, `observeDesiredStack`,
+`applyDesiredStack`, both `ProviderIntentCapabilities` declarations, and the nullary production
+capabilities value — a strictly larger change that also places substrate values *outside* the
+signed intent that `validateProviderStackConfig` re-checks before execution, and that applies on
+the mutation path only, because the observation path builds its compiled stack from
+`defaultCompiledStack` and never sets configuration at all.
+
+This sprint therefore evaluates **appending a profile-bearing constructor** as the primary option,
+because it keeps the values inside the admitted, signed, re-validated intent. The bound is stated
+here rather than discovered later: whichever shape is taken, if the profile ends up outside the
+serialised intent then two dispatches under different profiles share a request digest, and the
+profile's identity is bound only by Standard P's generated-config identity.
+
+### Deliverables
+
+- A typed `AwsSubstrateProfile` on `ConfigFile`'s `aws_substrate` section, with smart constructors
+  that make an empty or ill-formed inhabitant unrepresentable, in the shape Sprints `1.87`-`1.89`
+  established for the Tier-0 coordinates. Every field is required and fails closed; **there is no
+  compiled default envelope**.
+- `pulumi/aws-eks/Main.yaml` loses its compiled node-group instance type list, node disk size, and
+  scaling triple, and its VPC and two subnet CIDRs; each becomes a stack config key.
+- `pulumi/aws-test/Main.yaml` loses its three instance types, three root-volume types and sizes,
+  and its VPC and three subnet CIDRs; each becomes a stack config key.
+- `cluster_topology.Eks.node_group_size` is **wired, not deleted**: it becomes the source of the
+  node-group scaling triple. Deleting it would change the committed Dhall wire format that Sprints
+  `1.88`-`1.90` deliberately preserved, and the field's defect is a broken thread rather than an
+  absent one. The same change either narrows it at the decode seam or states in Haddock why it is
+  unconstrained — today `narrowEksTopology` accepts zero.
+- The IP-echo fetch is deleted from both `src/Prodbox/Infra/AwsEksTestStack.hs` and
+  `src/Prodbox/Infra/AwsTestStack.hs`, along with its three-dot validation. The operator CIDR is an
+  authored profile field. The fetch may survive at most as an interactive suggestion an operator
+  confirms; it may never be the value.
+- `defaultCompiledStack`'s compiled loopback CIDR and observation placeholders are deleted. That
+  function applies the raw constructors directly, bypassing the smart constructors that return
+  `Either` and exist to refuse exactly these inhabitants. Route it through them and fail closed on
+  a `Left`; make "this configuration is never applied" an explicit observation-only case or an
+  argument rather than a comment.
+
+### Values that stay compiled, deliberately
+
+The AWS managed-policy ARNs on the cluster and node roles, because AWS's documentation determines
+the correct set. The EKS OIDC root-CA thumbprint, an AWS-schedule-varying real value declared in
+place and registered under
+[vault_doctrine.md § 20](../documents/engineering/vault_doctrine.md). The vendor AMI owner and name
+filter, which name an upstream publisher's artifact. And the EBS CSI driver add-on identifier. The
+names prodbox chooses for objects it creates — the stack names, its own tag keys, IAM name
+prefixes, and credential principal names — are prodbox's protocol identity and are out of scope by
+the same rule, not by exception to it.
+
+### Validation
+
+1. Profile smart-constructor refusal table: empty instance type, zero volume size, zero node count,
+   a maximum below the desired size, a malformed CIDR, and a host CIDR where a network CIDR is
+   required each produce a named `Left` and no inhabitant.
+2. Tier-0 decode round trip over the extended schema, with `prodbox config schema` regenerating
+   `prodbox-config-types.dhall` rather than a hand edit.
+3. A rendered stack-configuration golden for `aws-eks` and for `aws-test`: every authored profile
+   field appears as its own `pulumi config set` key with the authored value, and the goldens fail
+   when a field is added to the profile without being threaded.
+4. Every literal named in the Deliverables is absent from `pulumi/aws-eks/Main.yaml` and
+   `pulumi/aws-test/Main.yaml`, proven by a compiled check rather than by inspection.
+5. The node-group scaling triple in the rendered configuration is derived from
+   `cluster_topology.Eks.node_group_size`, and changing that field changes the rendered value.
+6. No IP-echo call remains: the HTTP client call sites are gone from both infra modules, and an
+   absent operator CIDR refuses rather than fetching.
+7. `defaultCompiledStack` cannot be reached with a configuration the smart constructors would
+   refuse; the raw constructors are not exported for its use.
+8. **Non-blocking Standard-O live proof.** A live `prodbox aws stack eks reconcile` and
+   `prodbox aws stack test reconcile` render a node group and EC2 instances carrying the authored
+   envelope rather than the previously compiled one, and both destroy cleanly. This is the
+   qualification evidence Standard P requires for the two invalidated surfaces; it does not gate
+   code-local closure.
+
+### Remaining Work
+
+The AWS account id stays out of scope: runtime discovery through `sts get-caller-identity` remains
+the supported source. Whether the profile is carried by an appended provider-stack-configuration
+constructor or threaded beside it is settled during implementation against the two constraints
+above, and whichever is chosen the decision and its digest consequence are recorded in the sprint
+block rather than left in the commit.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/aws_integration_environment_doctrine.md` — § 2.4 becomes a description of
+  the implemented surface rather than a target, and § 4.3 item 7's current-source correction is
+  retired when the correction is no longer true.
+- `documents/engineering/config_doctrine.md` — the typed Tier-0 field index records the AWS
+  substrate profile as implemented, and § 4's decoded-but-unreached limit is updated when
+  `node_group_size` becomes load-bearing.
+- `documents/engineering/cluster_topology_doctrine.md` — § 2.1's recorded defect is retired and the
+  field's consumer is named.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `7` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md); update the AWS substrate's `Required Config` and `Provision`
+  rows in [substrates.md](substrates.md); add the profile to the CLI inventory in
+  [system-components.md](system-components.md); and move the four owned rows in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 7.38: The Compiled Program's Observation Scope Has No Producer for the Run's DNS Zone [📋 Planned]
+
+**Status**: Planned — Phase `7` own-surface reopen (Standard A/N) on the compiled desired-absence
+program's evidence scope, opened 2026-08-22 by Sprint `7.36` when it registered the DNS01 challenge
+record family.
+**Implementation**: `src/Prodbox/Lifecycle/Teardown/Graph.hs`,
+`src/Prodbox/Lifecycle/Teardown/CleanupProgramDescriptor/Internal.hs`,
+`src/Prodbox/Lifecycle/Teardown/CascadeCandidate/Internal.hs`,
+`src/Prodbox/ControlPlane/CleanupProgramDescriptorRepository/Internal.hs`,
+`src/Prodbox/ControlPlane/DescriptorBoundLifecycleRuntime/Internal.hs`,
+`src/Prodbox/Lifecycle/Teardown/Model.hs`.
+**Blocked by**: none.
+**Live-proof**: pending and non-blocking. Removing a real challenge record from a real hosted zone
+is a live observation and does not gate code-local closure.
+**Deployment qualification**: pending — the durable `CleanupProgramDescriptor` wire and the sealed
+graph identity change, so no historical run's evidence describes this revision.
+**Independent Validation**: pure compile-and-scope tables over every surface with and without a
+zone; a descriptor round trip proving the zone is sealed into the graph identity and that two runs
+naming different zones cannot share a descriptor digest; the DNS01 adapter reaching a decidable
+observation from a compiled cascade scope; and `prodbox dev check`. Every item is satisfiable
+against fakes, with no AWS and no later phase.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+`ObservationEvidenceScope` gained `evidenceAwsDnsZone` on 2026-08-21 and
+`mkObservationEvidenceScopeWithDnsZone` mints one, and **nothing in the compiled-program path calls
+that minter**. `compileDesiredAbsenceGraph` takes the run id, the local foundation, an optional
+`AwsScope`, and the surface witness; it builds every compiled program's observation scope through the
+zoneless minter. So the registered DNS01 challenge record family — whose coordinate is a record-name
+prefix and is therefore not complete without a zone — refuses every compiled node with
+`Dns01ChallengeHostedZoneMissing`.
+
+The refusal is the correct behaviour and this sprint does not change it. What it changes is that a
+run which *has* a DNS zone can say so.
+
+### Why this is not a one-line change
+
+Two things make the zone a real deliverable rather than an extra argument.
+
+**The scope is a durable binding, not a parameter.** A compiled program's observation scope is what
+an observation request and its response share, and `CleanupProgramDescriptor` seals the run id,
+surface, foundation, AWS scope, registry revision, lifecycle operation, and graph digest into the
+identity a descriptor-bound run is admitted under. A zone that did not enter the descriptor would let
+two runs against *different zones* share a descriptor digest, which is exactly the substitution the
+scope exists to prevent — so the descriptor and its wire gain the field, and every frozen fixture
+over those bytes is re-pinned in the same change.
+
+**The arity change is wide.** `compileDesiredAbsenceGraph` has 43 call sites across `src/` and
+`test/`. Most tests pass no zone and stay that way; the production callers thread the zone beside the
+`Maybe AwsScope` they already thread, and the top of that chain is where the operator-supplied zone
+actually enters.
+
+### Deliverables
+
+- `compileDesiredAbsenceGraph` accepts the run's optional DNS hosted zone and builds its observation
+  scope through `mkObservationEvidenceScopeWithDnsZone` when one is supplied. The zoneless behaviour
+  is unchanged and remains the default, so a surface that names no DNS resource is unaffected.
+- `CleanupProgramDescriptor` and its wire carry the zone, and the sealed graph identity includes it.
+  A descriptor whose zone differs from the compiled program's is a binding mismatch rather than an
+  accepted run.
+- The production cascade inputs (`CascadeCandidateInputs` and the descriptor-bound runtime's
+  compile path) carry the zone from the operator-supplied substrate configuration that already
+  supplies the public-edge hosted zone, so no new configuration surface is invented.
+- The registered DNS01 challenge record family reaches a decidable observation from a compiled
+  cascade scope, which is the measurement that closes this sprint.
+
+### Validation
+
+1. A compile table over every surface, with and without a zone, showing that the zoneless scope is
+   byte-identical to today's and that a zoned scope differs only in the zone.
+2. A descriptor round trip proving the zone is sealed: two otherwise identical runs naming different
+   zones produce different descriptor digests, and a descriptor whose zone disagrees with its
+   compiled program is refused.
+3. The DNS01 adapter, driven from a compiled cascade scope carrying a zone, produces its exact
+   observation request rather than `Dns01ChallengeHostedZoneMissing`.
+4. Frozen descriptor-byte fixtures are re-pinned in the same change and the old fixture is recorded
+   as superseded rather than deleted silently.
+5. `prodbox dev check`, `prodbox test unit`, and `prodbox test integration cli` / `env` pass locally.
+
+### Remaining Work
+
+All of it; the sprint is not started.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — the observation scope's DNS zone is
+  part of the durable binding a compiled program is admitted under, and a registered record family
+  is not complete without it.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `7` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md), and update the compiled-program evidence-scope row in
+  [system-components.md](system-components.md).
 
 ## Related Documents
 

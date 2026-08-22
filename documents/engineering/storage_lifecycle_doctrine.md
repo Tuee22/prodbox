@@ -354,9 +354,20 @@ Rules:
    cycle. The in-force config uses the opaque Model-B object key; main Pulumi checkpoints use the
    Sprint `7.14` decrypt-to-scratch interposition, with first-touch raw checkpoint migration into
    the encrypted object-store.
-10. Deleting `.data/` is an operator-only action. It is the supported way to start from
-    a truly empty baseline; on the next reconcile a brand-new Vault is initialized from
-    the empty anchor and every secret is generated fresh as a new Vault KV object.
+10. Deleting `.data/` is an operator-only action, and it is the supported way to start from a truly
+    empty baseline — but it is not an unconditional one. `.data/` is a capability store as well as a
+    data root (rule 1): while a registered AWS resource still depends on a checkpoint, key family,
+    or credential generation held inside it, deleting the root destroys the means of destroying that
+    resource and leaves it stranded with no coordinate any later run can name. Retiring the root is
+    licensed by a positive disposition of the capabilities it holds —
+    [Lifecycle Control-Plane Architecture §3.4](./lifecycle_control_plane_architecture.md#34-custodial-capability-and-the-disposition-rule)
+    — and never by a command's exit code, including a zero one (§5). The supported surface says so
+    in its own narration: only a `cluster delete` terminal arm carrying a completion receipt, or an
+    explicit local-only uninstall, states that the root is preserved by what it did; every other arm
+    names the root and states that the run establishes nothing about retiring it. When the
+    precondition holds, the
+    next reconcile initializes a brand-new Vault from the empty anchor and every secret is generated
+    fresh as a new Vault KV object.
 11. `.data/vault/vault/0` is the durable Vault storage anchor. It is preserved by cluster
     delete and only removed when the operator wipes `.data/`. A cluster rebuild against the
     preserved anchor never re-inits Vault — `vault init` runs exactly once, when the anchor
@@ -397,8 +408,9 @@ Rules:
     `.cluster-established` marker rather than of the MinIO and Vault data roots, because its bytes
     are prodbox's own retained inputs rather than a component's state. It holds exactly the
     artifacts the ordinary-teardown repair inventory
-    (`Prodbox.Config.OrdinaryTeardownRepair`) names: the pinned substrate installer and
-    system-images archives and the control-plane runtime images the recovery closure loads, because
+    (`Prodbox.Config.OrdinaryTeardownRepair`) names: the pinned substrate installer, release
+    tarball, checksum, and system-images archives — the four files an offline install reads as one
+    artifact directory — and the control-plane runtime images the recovery closure loads, because
     that closure excludes the image Registry in every observed state. Custody of those bytes —
     acquiring what is missing, verifying what is present, and collecting what no inventory entry
     names — is `Prodbox.Lifecycle.Teardown.RetainedArtifactCustody`, under three rules:

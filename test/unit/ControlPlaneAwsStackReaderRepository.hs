@@ -111,8 +111,12 @@ controlPlaneAwsStackReaderRepositorySuite =
         sourceImporters
           "src"
           "import Prodbox.ControlPlane.AwsStackReaderTransportClient"
+      -- Sprint 4.86: the host-side authenticated client had no importer at
+      -- all, which is what made the production cloud runtime unbuildable.  Its
+      -- one production constructor is named here deliberately, and the module
+      -- stays Cabal-hidden so nothing outside the library can build one.
       transportImporters
-        `shouldBe` []
+        `shouldBe` ["src/Prodbox/Lifecycle/Teardown/CloudRuntimeProduction.hs"]
       cabal <- readFile "prodbox.cabal"
       let exposedLibrary =
             unlines

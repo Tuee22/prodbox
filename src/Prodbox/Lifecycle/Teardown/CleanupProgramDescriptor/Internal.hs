@@ -786,6 +786,8 @@ resourceKindText resourceKind = case resourceKind of
   Topic -> "topic"
   Credential -> "credential"
   VolumeFamily -> "volume-family"
+  DnsZoneFamily -> "dns-zone-family"
+  DnsRecordFamily -> "dns-record-family"
   LocalSubstrate -> "local-substrate"
 
 cleanupProgramDescriptorRunId :: CleanupProgramDescriptor -> CleanupRunId

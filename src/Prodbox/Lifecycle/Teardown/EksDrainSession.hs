@@ -32,6 +32,7 @@ module Prodbox.Lifecycle.Teardown.EksDrainSession
   , eksClusterArnFromExactObservation
   , mkEksDrainSession
   , validateEksDrainSession
+  , maximumEksDrainLifetimeSeconds
   )
 where
 

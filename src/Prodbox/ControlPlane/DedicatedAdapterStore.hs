@@ -336,6 +336,7 @@ authorityBackupBlobObjectName blobClass digest = do
     "authority-aggregate" -> Right "authority-aggregate"
     "checkpoint" -> Right "checkpoint"
     "config" -> Right "config"
+    "cleanup-report" -> Right "cleanup-report"
     _ -> Left "invalid Authority backup blob class"
   normalized <- validateSha256Digest digest
   Right (AdapterObjectName ("blobs/" <> classSegment <> "/sha256-" <> normalized))

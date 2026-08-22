@@ -7,6 +7,7 @@
 module Prodbox.CLI.Vault
   ( runVaultCommand
   , lifecycleProviderAwsVaultFields
+  , validateLifecycleProviderAwsRegion
   , gatewayEndpointFromEnv
   , runVaultBootstrapViaBroker
   , BrokerVaultSealStatus (..)

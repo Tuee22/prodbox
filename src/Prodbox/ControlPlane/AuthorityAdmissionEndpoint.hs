@@ -149,6 +149,8 @@ import Prodbox.Lifecycle.Authority.ProjectionImport
   )
 import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
   ( CascadeAuditFreezeBinding
+  , CascadeTerminalAuditReceipt
+  , ProviderCredentialRevocationReceipt
   )
 import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
   ( AuthorityPulumiCheckpoints
@@ -193,6 +195,17 @@ data AuthorityControlPayload
     -- existed no authenticated caller could reach either.
     AuthorityControlFreezeProviderAdmissionForCascadeAudit
       !CascadeAuditFreezeBinding
+  | -- | Sprint 7.36: make the terminal audit's verdict durable against the
+    -- reservation that admitted it. Appended for the same reason as the two
+    -- constructors above: every earlier one keeps its @Serialise@ index.
+    AuthorityControlRecordCascadeTerminalAuditReceipt
+      !CascadeAuditFreezeBinding
+      !CascadeTerminalAuditReceipt
+  | -- | Sprint 7.36: end the cascade's Provider credential. Appended for the
+    -- same reason as every constructor above it.
+    AuthorityControlRevokeCascadeProviderCredential
+      !CascadeAuditFreezeBinding
+      !ProviderCredentialRevocationReceipt
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -213,6 +226,10 @@ authorityControlPayloadRoute payload = case payload of
     AuthorityControlProviderGenerationBindingRoute
   AuthorityControlFreezeProviderAdmissionForCascadeAudit _ ->
     AuthorityControlCascadeAuditFreezeRoute
+  AuthorityControlRecordCascadeTerminalAuditReceipt _ _ ->
+    AuthorityControlCascadeAuditReceiptRoute
+  AuthorityControlRevokeCascadeProviderCredential _ _ ->
+    AuthorityControlCascadeCredentialRevokeRoute
 
 -- | The aggregate command one externally admissible payload issues.
 authorityControlPayloadCommand
@@ -227,6 +244,10 @@ authorityControlPayloadCommand payload = case payload of
     BindProviderAdmissionGeneration generation
   AuthorityControlFreezeProviderAdmissionForCascadeAudit binding ->
     FreezeProviderAdmissionForCascadeAudit binding
+  AuthorityControlRecordCascadeTerminalAuditReceipt binding receipt ->
+    RecordCascadeTerminalAuditReceipt binding receipt
+  AuthorityControlRevokeCascadeProviderCredential binding revocation ->
+    RevokeCascadeProviderCredential binding revocation
 
 data AuthorityOperationSubmitPayload = AuthorityOperationSubmitPayload
   { authorityOperationSubmitKey :: !Text
@@ -294,7 +315,12 @@ data AuthorityAdmissionAggregateV6Wire = AuthorityAdmissionAggregateV6Wire
   , authorityAdmissionV6ProviderOperations
       :: !(Map (ClientId, ClientSequence) AuthorityProviderOperation)
   , authorityAdmissionV6RegisteredClients :: !RegisteredClientTable
-  , authorityAdmissionV6PulumiCheckpoints :: !AuthorityPulumiCheckpoints
+  , -- Sprint 4.89: the checkpoint aggregate gained a disposition map, encoded
+    -- only when non-empty.  A v6 object predates dispositions and decodes with
+    -- none, so it re-encodes byte-identically here; a v6 object that somehow
+    -- carried one would re-encode wider and be refused as non-canonical, which
+    -- is the right answer rather than silently dropping it.
+    authorityAdmissionV6PulumiCheckpoints :: !AuthorityPulumiCheckpoints
   , authorityAdmissionV6Config :: !ConfigState
   , authorityAdmissionV6Decommission :: !AuthorityDecommissionState
   }
@@ -723,6 +749,8 @@ authorityTransitionHttpStatus result = case result of
     AuthorityForwardMigrationDecided _ -> ReplyOk
     AuthorityProviderGenerationBound _ -> ReplyOk
     AuthorityProviderAdmissionFrozenForCascadeAudit -> ReplyOk
+    AuthorityCascadeTerminalAuditReceiptRecorded -> ReplyOk
+    AuthorityCascadeProviderCredentialRevoked -> ReplyOk
     AuthorityAdmissionCommandRefused _ -> ReplyConflict
 
 authorityTransitionSummary :: AuthorityTransitionResult -> Text
@@ -763,6 +791,10 @@ authorityTransitionSummary result = case result of
     AuthorityProviderGenerationBound _ -> "authority-provider-generation-bound"
     AuthorityProviderAdmissionFrozenForCascadeAudit ->
       "authority-provider-admission-frozen-for-cascade-audit"
+    AuthorityCascadeTerminalAuditReceiptRecorded ->
+      "authority-cascade-terminal-audit-receipt-recorded"
+    AuthorityCascadeProviderCredentialRevoked ->
+      "authority-cascade-provider-credential-revoked"
     AuthorityAdmissionCommandRefused _ -> "authority-transition-refused"
 
 data AuthorityOperationSubmitResult

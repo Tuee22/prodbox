@@ -38,6 +38,7 @@ import CertScopeSuite (certScopeSuite)
 import CertificateScopeServing (certificateScopeServingSuite)
 import CleanRoomHandoff (cleanRoomHandoffSuite)
 import CleanupRun (cleanupRunSuite)
+import ClusterDeleteEntryArm (clusterDeleteEntryArmSuite)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (SomeException, finally, try)
 import Control.Monad (forM_, unless, when)
@@ -47,6 +48,9 @@ import ControlPlaneAdminActionAuthorityExecutionEndpoint
 import ControlPlaneAuthorityBackupEndpoint (controlPlaneAuthorityBackupEndpointSuite)
 import ControlPlaneAuthorityClock (controlPlaneAuthorityClockSuite)
 import ControlPlaneAuthorityObservation (controlPlaneAuthorityObservationSuite)
+import ControlPlaneAuthorityProviderDispatchLane
+  ( controlPlaneAuthorityProviderDispatchLaneSuite
+  )
 import ControlPlaneAwsStackCreationBindingRepository
   ( controlPlaneAwsStackCreationBindingRepositorySuite
   )
@@ -57,6 +61,9 @@ import ControlPlaneCapability (controlPlaneCapabilitySuite)
 import ControlPlaneCapacity (controlPlaneCapacitySuite)
 import ControlPlaneCascadeHostRuntime
   ( controlPlaneCascadeHostRuntimeSuite
+  )
+import ControlPlaneCascadeRetainedSlot
+  ( controlPlaneCascadeRetainedSlotSuite
   )
 import ControlPlaneCleanupProgramDescriptorRepository
   ( controlPlaneCleanupProgramDescriptorRepositorySuite
@@ -122,6 +129,9 @@ import ControlPlaneVaultSession (controlPlaneVaultSessionSuite)
 import CredentialProvisioner (credentialProvisionerSuite)
 import CredentialProvisionerAwsAdminAuthority
   ( credentialProvisionerAwsAdminAuthoritySuite
+  )
+import CredentialProvisionerJointIamDisposition
+  ( credentialProvisionerJointIamDispositionSuite
   )
 import Data.Aeson
   ( Value (..)
@@ -207,6 +217,7 @@ import GatewayReadiness (gatewayReadinessSuite)
 import GatewayRoutes (gatewayRoutesSuite)
 import GatewayRuntimeStability (gatewayRuntimeStabilitySuite)
 import HelmRelease (helmReleaseSuite)
+import HostCleanupCompositionRoot (hostCleanupCompositionRootSuite)
 import HostCleanupIntent (hostCleanupIntentSuite)
 import HostCleanupRke2 (hostCleanupRke2Suite)
 import HostCleanupRunner (hostCleanupRunnerSuite)
@@ -244,6 +255,9 @@ import LifecycleHostCleanupCompletion
 import LifecycleHostCleanupLocalAbsence
   ( lifecycleHostCleanupLocalAbsenceSuite
   )
+import LifecycleHostCleanupProductionEffects
+  ( lifecycleHostCleanupProductionEffectsSuite
+  )
 import LifecycleHostCleanupRecoveryPlane
   ( lifecycleHostCleanupRecoveryPlaneSuite
   )
@@ -270,25 +284,50 @@ import LifecycleTeardownAwsEksRegisteredTargetDestroyInterpreter
 import LifecycleTeardownAwsRegisteredTargetInterpreter
   ( lifecycleTeardownAwsRegisteredTargetInterpreterSuite
   )
+import LifecycleTeardownAwsRetainedEbsAdapter
+import LifecycleTeardownAwsRoute53ZoneAdapter
+  ( lifecycleTeardownAwsRoute53ZoneAdapterSuite
+  )
 import LifecycleTeardownAwsStackAdapter
   ( lifecycleTeardownAwsStackAdapterSuite
   )
 import LifecycleTeardownAwsStackReaderInterpreter
   ( lifecycleTeardownAwsStackReaderInterpreterSuite
   )
+import LifecycleTeardownCapabilityCustody
+  ( lifecycleTeardownCapabilityCustodySuite
+  )
+import LifecycleTeardownCascadeCandidate
+  ( lifecycleTeardownCascadeCandidateSuite
+  )
 import LifecycleTeardownCascadeCredentialDisposition
   ( lifecycleTeardownCascadeCredentialDispositionSuite
   )
 import LifecycleTeardownCascadeEvidence (lifecycleTeardownCascadeEvidenceSuite)
+import LifecycleTeardownCascadeFrozenComposition
+  ( lifecycleTeardownCascadeFrozenCompositionSuite
+  )
 import LifecycleTeardownCascadeTerminalAudit
   ( lifecycleTeardownCascadeTerminalAuditSuite
+  )
+import LifecycleTeardownCascadeTerminalAuditAdapter
+  ( lifecycleTeardownCascadeTerminalAuditAdapterSuite
+  )
+import LifecycleTeardownCascadeTerminalAuditLane
+  ( lifecycleTeardownCascadeTerminalAuditLaneSuite
   )
 import LifecycleTeardownCheckpoint (lifecycleTeardownCheckpointSuite)
 import LifecycleTeardownCheckpointAuthority
   ( lifecycleTeardownCheckpointAuthoritySuite
   )
 import LifecycleTeardownCloudRuntime (lifecycleTeardownCloudRuntimeSuite)
+import LifecycleTeardownCloudRuntimeProduction
+  ( lifecycleTeardownCloudRuntimeProductionSuite
+  )
 import LifecycleTeardownDecision (lifecycleTeardownDecisionSuite)
+import LifecycleTeardownDns01ChallengeRecordAdapter
+  ( lifecycleTeardownDns01ChallengeRecordAdapterSuite
+  )
 import LifecycleTeardownEksDrainAttemptRecovery
   ( lifecycleTeardownEksDrainAttemptRecoverySuite
   )
@@ -307,6 +346,9 @@ import LifecycleTeardownEksDrainSession
 import LifecycleTeardownEksTeardownExecutor
   ( lifecycleTeardownEksTeardownExecutorSuite
   )
+import LifecycleTeardownLegacyAdoptionPlan
+  ( lifecycleTeardownLegacyAdoptionPlanSuite
+  )
 import LifecycleTeardownOperationalCredentialInventory
   ( lifecycleTeardownOperationalCredentialInventorySuite
   )
@@ -315,6 +357,18 @@ import LifecycleTeardownOwnershipManifest
   )
 import LifecycleTeardownPreUninstallReadiness
   ( lifecycleTeardownPreUninstallReadinessSuite
+  )
+import LifecycleTeardownPreUninstallReport
+  ( lifecycleTeardownPreUninstallReportSuite
+  )
+import LifecycleTeardownPreUninstallReportBackup
+  ( lifecycleTeardownPreUninstallReportBackupSuite
+  )
+import LifecycleTeardownPreUninstallReportCommit
+  ( lifecycleTeardownPreUninstallReportCommitSuite
+  )
+import LifecycleTeardownPreUninstallStageC
+  ( lifecycleTeardownPreUninstallStageCSuite
   )
 import LifecycleTeardownProgram (lifecycleTeardownProgramSuite)
 import LifecycleTeardownProviderAwsScopeAdapter (providerAwsScopeAdapterSuite)
@@ -335,6 +389,9 @@ import LifecycleTeardownRecoveryPlaneInterpreter
   )
 import LifecycleTeardownRecoveryRepairExecution
   ( lifecycleTeardownRecoveryRepairExecutionSuite
+  )
+import LifecycleTeardownRecoveryRepairProduction
+  ( lifecycleTeardownRecoveryRepairProductionSuite
   )
 import LifecycleTeardownRegisteredTargetResult
   ( lifecycleTeardownRegisteredTargetResultSuite
@@ -392,6 +449,7 @@ import Prodbox.Aws
   , buildDedicatedAdapterIamPolicyDocument
   , buildIamPolicyDocument
   , buildIamPolicyDocumentForAccountAndCaptureBucket
+  , buildIamPolicyJson
   , configFromSetupInput
   , harnessPostflightResiduePolicy
   , longLivedResourceNames
@@ -515,7 +573,7 @@ import Prodbox.CLI.Pulumi
 import Prodbox.CLI.Rke2
   ( CascadePhaseOutcome (..)
   , CascadeSubstrateDecision (..)
-  , DeleteMode (..)
+  , DeleteTerminalArm (..)
   , GatewayFullModeProbe (..)
   , KubernetesReadinessCheck (..)
   , MinioImageSource (..)
@@ -577,6 +635,7 @@ import Prodbox.CLI.Tree (renderCommandTree)
 import Prodbox.CLI.Vault
   ( BrokerVaultSealStatus (..)
   , lifecycleProviderAwsVaultFields
+  , validateLifecycleProviderAwsRegion
   )
 import Prodbox.Capacity.Allocation qualified as Allocation
 import Prodbox.Capacity.Config qualified as Capacity
@@ -586,8 +645,14 @@ import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 import Prodbox.Capacity.Storage qualified as Storage
 import Prodbox.Cbor qualified as Cbor
 import Prodbox.CheckCode
-  ( DoctrineViolation (..)
+  ( AwsCoordinateLiteral (..)
+  , AwsCoordinateReason (..)
+  , DoctrineViolation (..)
   , ProductionEnvVarRead (..)
+  , awsCoordinateFindings
+  , awsCoordinateLiteralRegistry
+  , awsCoordinateLiteralsIn
+  , awsCoordinateRegistryOwners
   , awsCreateSiteViolations
   , awsCreateVerbs
   , boundSectionCitationsInLine
@@ -598,6 +663,7 @@ import Prodbox.CheckCode
   , developmentPlanResumeViolations
   , doctrineViolationsInPaths
   , documentSectionNumbers
+  , executionOrderViolations
   , extractMarkdownLinkTargets
   , extractStringLiterals
   , generatedSectionsReconcilerViolations
@@ -608,6 +674,7 @@ import Prodbox.CheckCode
   , iamCreateVerbs
   , inlineCodeSpansInLine
   , inlineRetrySubstringListViolations
+  , isAwsRegionShapedToken
   , isCitedSourcePath
   , isEnvironmentVariableName
   , isRelativeLinkTarget
@@ -728,6 +795,11 @@ import Prodbox.Config.InForce
   , sealInForcePayload
   , seedProposeDecision
   , storeInForceConfigWith
+  )
+import Prodbox.Config.RetainedArtifacts
+  ( RetainedArtifactDeclaration (..)
+  , RetainedArtifactsSection (..)
+  , emptyRetainedArtifactsSection
   )
 import Prodbox.Config.SchemaDhall
   ( renderConfigTypesDhall
@@ -1193,6 +1265,7 @@ import Prodbox.Settings
   , renderSettingsDisplay
   , requireAcmeAccount
   , requireOperationalAwsRegion
+  , requireSesCaptureBucket
   , servedHostCertScopes
   , substrateServedHost
   , validateAndLoadSettingsAtPath
@@ -1202,6 +1275,7 @@ import Prodbox.Settings
   , validateConfig
   , validateConfiguredCertScope
   , validateLocalConfig
+  , validateOperationalAwsCredentials
   , validatePublicEdgeDeployment
   , validateTestTopology
   , validatedCoordinates
@@ -1209,9 +1283,12 @@ import Prodbox.Settings
   , validatedPublicEdgeFor
   )
 import Prodbox.Settings.Coordinate
-  ( awsRegionText
+  ( S3BucketName
+  , awsRegionText
   , dnsTtlSeconds
+  , mkS3BucketName
   , route53ZoneIdText
+  , s3BucketNameText
   )
 import Prodbox.Settings.SecretRef
   ( SecretRef (..)
@@ -1768,6 +1845,7 @@ poisonTier0 fields = defaultProjectConfig {parameters = poisonedParams}
       , Tier0.cluster_topology = Tier0.cluster_topology base
       , Tier0.storage = Tier0.storage base
       , Tier0.pulumi_state_backend = Tier0.pulumi_state_backend base
+      , Tier0.retained_artifacts = Tier0.retained_artifacts base
       , Tier0.components = Tier0.components base
       }
 
@@ -1869,6 +1947,7 @@ unitSuite = do
   controlPlaneConfigEndpointSuite
   controlPlaneDescriptorBoundLifecycleRuntimeSuite
   controlPlaneCascadeHostRuntimeSuite
+  controlPlaneCascadeRetainedSlotSuite
   controlPlaneLifecycleAuthorityRestoreSuite
   controlPlaneLocalRke2HostObservationEndpointSuite
   controlPlaneLocalRke2HostObservationRepositorySuite
@@ -1947,6 +2026,7 @@ unitSuite = do
   controlPlaneVaultSessionSuite
   credentialProvisionerSuite
   credentialProvisionerAwsAdminAuthoritySuite
+  credentialProvisionerJointIamDispositionSuite
   externalMaterialIngressLifecycleSuite
   eksClientAuthProjectionSuite
   vaultSessionSafetySuite
@@ -1972,10 +2052,12 @@ unitSuite = do
   restoreGraphSuite
   cleanupRunSuite
   hostCleanupIntentSuite
+  hostCleanupCompositionRootSuite
   hostCleanupRunnerSuite
   hostCleanupRke2Suite
   lifecycleHostCleanupLocalAbsenceSuite
   lifecycleHostCleanupCompletionSuite
+  lifecycleHostCleanupProductionEffectsSuite
   lifecycleHostCleanupRecoveryPlaneSuite
   lifecycleHostCleanupAuthorityArmsSuite
   lifecycleCleanupClientSuite
@@ -1987,14 +2069,29 @@ unitSuite = do
   lifecycleTeardownAwsEksDestroyAdapterSuite
   lifecycleTeardownAwsEksRegisteredTargetDestroyInterpreterSuite
   lifecycleTeardownAwsRegisteredTargetInterpreterSuite
+  lifecycleTeardownAwsRetainedEbsAdapterSuite
+  lifecycleTeardownAwsRoute53ZoneAdapterSuite
+  lifecycleTeardownDns01ChallengeRecordAdapterSuite
+  lifecycleTeardownLegacyAdoptionPlanSuite
   lifecycleTeardownAwsStackAdapterSuite
   lifecycleTeardownAwsStackReaderInterpreterSuite
+  clusterDeleteEntryArmSuite
+  lifecycleTeardownCapabilityCustodySuite
+  lifecycleTeardownCascadeCandidateSuite
+  lifecycleTeardownCascadeFrozenCompositionSuite
   lifecycleTeardownCloudRuntimeSuite
+  lifecycleTeardownCloudRuntimeProductionSuite
   lifecycleTeardownRegistrySuite
   lifecycleTeardownCascadeCredentialDispositionSuite
   lifecycleTeardownCascadeTerminalAuditSuite
+  lifecycleTeardownCascadeTerminalAuditAdapterSuite
   lifecycleTeardownPreUninstallReadinessSuite
+  lifecycleTeardownPreUninstallReportSuite
+  lifecycleTeardownPreUninstallReportBackupSuite
+  lifecycleTeardownPreUninstallReportCommitSuite
+  lifecycleTeardownPreUninstallStageCSuite
   lifecycleTeardownRecoveryRepairExecutionSuite
+  lifecycleTeardownRecoveryRepairProductionSuite
   lifecycleTeardownRetainedArtifactCustodySuite
   lifecycleTeardownRetainedInventorySuite
   lifecycleTeardownAuditFieldOfViewSuite
@@ -2003,10 +2100,12 @@ unitSuite = do
   lifecycleTeardownRecoveryPlaneSuite
   lifecycleTeardownRecoveryPlaneComponentObserverSuite
   lifecycleTeardownRecoveryPlaneInterpreterSuite
+  controlPlaneAuthorityProviderDispatchLaneSuite
   controlPlaneRegisteredStackCreationSubmitterSuite
   lifecycleTeardownStackGenerationSuite
   lifecycleTeardownRegisteredTargetResultSuite
   lifecycleTeardownDecisionSuite
+  lifecycleTeardownCascadeTerminalAuditLaneSuite
   lifecycleTeardownCascadeEvidenceSuite
   lifecycleTeardownCheckpointSuite
   lifecycleTeardownCheckpointAuthoritySuite
@@ -4340,6 +4439,7 @@ unitSuite = do
               , Tier0.cluster_topology = Tier0.cluster_topology base
               , Tier0.storage = Tier0.storage base
               , Tier0.pulumi_state_backend = Tier0.pulumi_state_backend base
+              , Tier0.retained_artifacts = Tier0.retained_artifacts base
               , Tier0.components = Tier0.components base
               }
           poisoned = defaultProjectConfig {parameters = poisonedParams}
@@ -5626,7 +5726,7 @@ unitSuite = do
           )
 
     it "renders the full AWS policy with EKS lifecycle statements" $ do
-      case buildIamPolicyDocument PolicyFull of
+      case buildIamPolicyDocument printedPolicyCaptureBucket PolicyFull of
         Object payload -> do
           case KeyMap.lookup (Key.fromString "Statement") payload of
             Just (Array statements) -> do
@@ -5645,6 +5745,31 @@ unitSuite = do
                                 ]
             _ -> expectationFailure "expected Statement array"
         _ -> expectationFailure "expected policy document object"
+
+    -- Sprint 1.91: the printed grant is the one an operator pastes into IAM, so
+    -- the bucket in it must be the configured one. Both capture ARNs were
+    -- compiled to a fixed name, and this assertion pinned that name.
+    it "names the configured capture bucket in the printed grant" $ do
+      let rendered = buildIamPolicyJson printedPolicyCaptureBucket PolicyFull
+      rendered `shouldContain` "arn:aws:s3:::operator-chosen-capture"
+      rendered `shouldContain` "arn:aws:s3:::operator-chosen-capture/*"
+      rendered `shouldNotContain` "prodbox-ses-capture"
+
+    it "refuses to print a grant when no capture bucket is configured" $ do
+      -- `testValidatedConfigFile` authors no `ses.capture_bucket`, which is the
+      -- unconfigured shape `defaultConfigFile` also emits.
+      requireSesCaptureBucket (testValidatedSettings "/tmp") `shouldSatisfy` isLeft
+      let configured =
+            testValidatedConfigFile
+              { ses = (ses testValidatedConfigFile) {capture_bucket = "operator-chosen-capture"}
+              }
+          settings =
+            (testValidatedSettings "/tmp")
+              { validatedConfig = configured
+              , validatedCoordinates = either error id (validatedCoordinatesFor configured)
+              }
+      fmap s3BucketNameText (requireSesCaptureBucket settings)
+        `shouldBe` Right "operator-chosen-capture"
 
     it "installs an account- and capture-qualified bounded SES pre-lease policy" $ do
       let policyResult =
@@ -11253,8 +11378,12 @@ unitSuite = do
     it "Sprint 4.85 no registered target lacks an executor on a completing surface" $ do
       Prodbox.CheckCode.registeredTargetExecutorViolations `shouldBe` []
 
-      -- Not vacuous in either direction. One registered descriptor genuinely
-      -- has no executor today, so the gate is being asked a real question.
+      -- Sprint 7.36: every registered descriptor now has an executor, so the
+      -- gap set is empty and the gate is vacuous *today*. That is the intended
+      -- end state rather than a weakening: 'RegisteredTargetAdapterGap' has no
+      -- constructors, so declaring a gap is the only way to reintroduce one,
+      -- and adding a key without an executor is still an exhaustiveness
+      -- failure in 'registeredTargetExecutorFor'.
       let unexecutableKeys =
             [ TeardownRegistry.managedResourceKey descriptor
             | TeardownRegistry.SomeManagedResourceDescriptor descriptor <-
@@ -11264,12 +11393,12 @@ unitSuite = do
                     (TeardownRegistry.managedResourceKey descriptor)
                 ]
             ]
-      unexecutableKeys `shouldBe` [TeardownModel.AwsEbsProductionRetainedKey]
+      unexecutableKeys `shouldBe` []
 
-      -- And it passes for a reason rather than by accident: the retained EBS
-      -- family projects onto exactly the two surfaces that mint no completion
-      -- evidence, so no run can claim clean completion over its unreachable
-      -- read-back.
+      -- The retained EBS family still projects onto exactly two surfaces, and
+      -- one of them now mints completion. That is what made its adapter
+      -- mandatory rather than optional: with the minter flipped and no
+      -- executor, the gate would fail.
       let retainedSurfaces =
             [ surface
             | surface <- [minBound .. maxBound]
@@ -11287,7 +11416,10 @@ unitSuite = do
                    , TeardownModel.TotalDecommission
                    ]
       map TeardownModel.cleanupSurfaceMintsCompletionEvidence retainedSurfaces
-        `shouldBe` [False, False]
+        `shouldBe` [True, False]
+      TeardownExecutor.registeredTargetExecutorFor
+        TeardownModel.AwsEbsProductionRetainedKey
+        `shouldBe` Right TeardownExecutor.RetainedEbsFamilyExecutor
 
       -- The predicate is discriminating: the per-run surfaces do mint, which
       -- is why the same gap would be a violation there.
@@ -12798,17 +12930,20 @@ unitSuite = do
       -- Degenerate, but pinned: nothing ran, so nothing failed.
       aggregateCascadeExit [] `shouldBe` ExitSuccess
 
-  describe "Sprint 4.76 retained-state notice is mode-aware" $ do
+  -- Sprint 4.88: the notice is keyed by the terminal arm rather than the
+  -- delete mode, because what a run may say about the retained root follows
+  -- from what it proved and not from which flag it was given.
+  describe "Sprint 4.76 retained-state notice is arm-aware" $ do
     it "the local uninstall still advises --cascade" $
-      retainedStateNoticePerRunLine DeleteModeLocalUninstall
+      retainedStateNoticePerRunLine DeleteArmLocalOnlyUninstalled
         `shouldContain` "prodbox cluster delete --cascade"
 
     it "a --cascade run does not advise running --cascade" $
-      retainedStateNoticePerRunLine DeleteModeCascade
+      retainedStateNoticePerRunLine DeleteArmCascadeReachedPhases
         `shouldNotContain` "prodbox cluster delete --cascade"
 
     it "the cascade line does not claim the per-run destroys succeeded" $
-      retainedStateNoticePerRunLine DeleteModeCascade
+      retainedStateNoticePerRunLine DeleteArmCascadeReachedPhases
         `shouldContain` "attempted"
 
   describe "Sprint 4.81 a residue answer names the authority that answered it" $ do
@@ -15211,6 +15346,8 @@ unitSuite = do
                    , "legacy-harbor-helm-release"
                    , -- Sprint 5.28: the dns-aws validation's throwaway hosted zone.
                      "dns-aws-validation-hosted-zone"
+                   , -- Sprint 7.36: the ACME DNS01 challenge TXT records.
+                     "dns-aws-dns01-challenge-records"
                    , -- Sprint 4.84: test-scoped EBS is statically PerRun. It was
                      -- `aws-ebs-volumes :: LongLived` until the two families were
                      -- split into separate registered identities.
@@ -16226,6 +16363,76 @@ unitSuite = do
           ]
           `shouldBe` 5
 
+    describe "Sprint 1.91 compiled AWS-coordinate registry" $ do
+      let owned = "src/Prodbox/Owned.hs"
+          entry =
+            AwsCoordinateLiteral
+              { awsCoordinateValue = "eu-west-3"
+              , awsCoordinateSymbol = "ownedRegion"
+              , awsCoordinateOwners = [owned]
+              , awsCoordinateReason = AwsCoordinateProtocolFixed
+              , awsCoordinateNote = "fixture"
+              }
+          findings scanned observedByPath symbols =
+            awsCoordinateFindings [entry] scanned observedByPath symbols
+
+      it "matches a region by shape rather than from a pinned list" $ do
+        -- The partition regions AWS has not launched yet must match, and the
+        -- hyphenated protocol tokens that share their punctuation must not.
+        map
+          isAwsRegionShapedToken
+          ["us-east-1", "ap-southeast-2", "us-gov-west-1", "cn-northwest-1", "us-iso-east-1"]
+          `shouldBe` [True, True, True, True, True]
+        map
+          isAwsRegionShapedToken
+          ["x-amz-content-sha256", "pv-prodbox-minio-0", "api-v1-2", "2012-10-17", "us-east"]
+          `shouldBe` [False, False, False, False, False]
+
+      it "reads a region out of a larger literal and ignores comments" $ do
+        awsCoordinateLiteralsIn "a = mkArn \"arn:aws:eks:eu-west-3:1:cluster/x\""
+          `shouldBe` ["eu-west-3"]
+        awsCoordinateLiteralsIn "-- eu-west-3 is not a value\na = 1" `shouldBe` []
+
+      it "fails an unregistered literal in a scanned module" $
+        findings
+          [owned, "src/Prodbox/Other.hs"]
+          [("src/Prodbox/Other.hs", ["eu-west-3"])]
+          [(owned, ["ownedRegion"])]
+          `shouldSatisfy` any ("does not admit here" `isInfixOf`)
+
+      it "fails a registered literal seen outside its declared file set" $ do
+        -- Same value, same registry, different file: registration is per
+        -- (value, file), not per value.
+        findings [owned] [(owned, ["eu-west-3"])] [(owned, ["ownedRegion"])] `shouldBe` []
+        findings
+          [owned, "src/Prodbox/Elsewhere.hs"]
+          [("src/Prodbox/Elsewhere.hs", ["eu-west-3"])]
+          [(owned, ["ownedRegion"])]
+          `shouldSatisfy` any ("does not admit here" `isInfixOf`)
+
+      it "fails a registry entry whose symbol has been deleted" $
+        findings [owned] [(owned, ["eu-west-3"])] [(owned, ["someOtherSymbol"])]
+          `shouldSatisfy` any ("no longer exists in" `isInfixOf`)
+
+      it "fails when a declared owner is not in the scanned set at all" $
+        -- A rename must not silently empty the gate's region.
+        findings ["src/Prodbox/Other.hs"] [] []
+          `shouldSatisfy` any ("is scoped to" `isInfixOf`)
+
+      it "declares an owner set the worktree actually contains" $ do
+        paths <- mapM doesFileExist (awsCoordinateRegistryOwners awsCoordinateLiteralRegistry)
+        paths `shouldSatisfy` and
+
+      it "keeps the registry free of the duplication it exists to forbid" $
+        -- One (value, file) pair may be registered once. Two entries covering
+        -- the same pair would let a deleted symbol keep the pair admitted.
+        let pairs =
+              [ awsCoordinateValue e ++ " " ++ owner
+              | e <- awsCoordinateLiteralRegistry
+              , owner <- awsCoordinateOwners e
+              ]
+         in length (nub pairs) `shouldBe` length pairs
+
     describe "Sprint 0.27 Standard-H sprint field gate" $ do
       let block heading fields = unlines (("## Sprint " ++ heading) : fields ++ ["", "### Objective", "body"])
 
@@ -16320,6 +16527,93 @@ unitSuite = do
         directionViolations "4.85" ["**Blocked by**: Sprint `4.84`"] `shouldBe` []
         directionViolations "5.36" ["**Closure dependency**: Sprint `4.85`"] `shouldBe` []
         directionViolations "4.85" ["**Blocked by**: none."] `shouldBe` []
+
+      it "admits a declared backward dependency and refuses an undeclared one" $ do
+        -- Sprint 0.32: forbidding the declaration did not remove the
+        -- dependency, it removed the record of it. A later dependency is now
+        -- admissible when the same block says so and says why.
+        let justification =
+              "**Backward dependency**: Sprint `7.36` deleting the harness "
+                ++ "cleanup graph strands the only sweep that removes a "
+                ++ "billable zone until that adapter exists"
+        directionViolations
+          "5.36"
+          ["**Blocked by**: Sprint `7.36`", justification]
+          `shouldBe` []
+        -- Without the admission it still fails, which is the regression guard
+        -- on the rule this replaces.
+        directionViolations "5.36" ["**Blocked by**: Sprint `7.36`"]
+          `shouldSatisfy` any (isInfixOf "does not admit it")
+
+      it "refuses an orphan, a non-later, and an unjustified admission" $ do
+        let admits body = directionViolations "5.36" body
+        -- An admission with nothing to admit is a declaration that outlived
+        -- its dependency.
+        admits
+          [ "**Backward dependency**: Sprint `7.36` strands the only sweep "
+              ++ "that removes a billable hosted zone until it lands"
+          ]
+          `shouldSatisfy` any (isInfixOf "no `**Blocked by**`")
+        -- Only a backward dependency needs admitting.
+        admits
+          [ "**Blocked by**: Sprint `4.85`"
+          , "**Backward dependency**: Sprint `4.85` is earlier so this "
+              ++ "admission is meaningless and must be refused outright"
+          ]
+          `shouldSatisfy` any (isInfixOf "not a later sprint")
+        -- The justification is required, and its absence is its own arm.
+        admits
+          ["**Blocked by**: Sprint `7.36`", "**Backward dependency**: Sprint `7.36`."]
+          `shouldSatisfy` any (isInfixOf "without a justification")
+
+      it "does not let a justification void the admission it justifies" $ do
+        -- `sprintLiveDependencyIds` suppresses a whole field that reads as a
+        -- historical resolution note. Running it over an admission would have
+        -- silently voided the declaration and let the unadmitted dependency
+        -- through — the same shape as the prose hole this rule closes. The
+        -- justification below deliberately contains "unresolved".
+        directionViolations
+          "5.36"
+          [ "**Blocked by**: Sprint `7.36`"
+          , "**Backward dependency**: Sprint `7.36` leaves the billable zone "
+              ++ "sweep unresolved until its adapter lands, stranding it"
+          ]
+          `shouldBe` []
+
+      it "derives queue order rather than accepting an authored one" $ do
+        -- Sprint 0.32: order is a function of the declared graph. Row shape is
+        -- (order, sprintId, phase, state, dependencies).
+        let row order sprintId state deps = (order, sprintId, "x", state, deps)
+        -- With no declared dependency the derivation is ascending numerical
+        -- order, so this strictly generalises the rule it replaces.
+        executionOrderViolations
+          [row 1 "4.85" "Next" [], row 2 "5.36" "Parked" [], row 3 "7.36" "Parked" []]
+          `shouldBe` []
+        executionOrderViolations
+          [row 1 "7.36" "Next" [], row 2 "4.85" "Parked" []]
+          `shouldSatisfy` any (isInfixOf "execution order")
+        -- The live queue: 7.36 leads because 5.36 declares it, and 6.5 follows
+        -- 5.36. This exact order is required, not merely permitted.
+        let liveQueue =
+              [ row 1 "7.36" "Next" []
+              , row 2 "5.36" "Blocked" ["7.36"]
+              , row 3 "6.5" "Blocked" ["7.36", "5.36"]
+              , row 4 "7.37" "Parked" []
+              ]
+        executionOrderViolations liveQueue `shouldBe` []
+        -- Any permutation of it fails.
+        executionOrderViolations
+          [ row 1 "7.36" "Next" []
+          , row 2 "6.5" "Blocked" ["7.36", "5.36"]
+          , row 3 "5.36" "Blocked" ["7.36"]
+          , row 4 "7.37" "Parked" []
+          ]
+          `shouldSatisfy` any (isInfixOf "Expected")
+        -- A cycle is the case where no complete order exists, and is reported
+        -- as itself rather than as a deviation.
+        executionOrderViolations
+          [row 1 "5.36" "Blocked" ["6.5"], row 2 "6.5" "Blocked" ["5.36"]]
+          `shouldSatisfy` any (isInfixOf "cycle")
 
       it "reads a historical line that records its own resolution as resolved" $ do
         -- ~130 existing `**Blocked by**` lines annotate their own closure in
@@ -17209,6 +17503,7 @@ unitSuite = do
           withBackend section = defaultConfigFile {pulumi_state_backend = section}
           withSubstrate section = defaultConfigFile {aws_substrate = section}
           withComponents nodes = defaultConfigFile {components = nodes}
+          withRetainedArtifacts section = defaultConfigFile {retained_artifacts = section}
           refusedWith fragment = either (isInfixOf fragment) (const False)
 
       it "refuses a malformed ses identity, and tolerates an unset one" $ do
@@ -17238,6 +17533,35 @@ unitSuite = do
           `shouldSatisfy` refusedWith "pulumi_state_backend.bucket_name"
         validateLocalConfig (withBackend (PulumiStateBackendSection "" "" "../pulumi"))
           `shouldSatisfy` refusedWith "pulumi_state_backend.key_prefix"
+
+      it "refuses an unprojectable retained-artifact declaration at config load" $ do
+        -- Sprint 4.86: the section is validated by projecting it onto the
+        -- inventory and source catalog a recovery consumes, so a declaration
+        -- that loads is one a repair can be rendered against. The refusal has
+        -- to land here rather than at the moment a control plane is already
+        -- gone and the repair is the only way back.
+        validateLocalConfig (withRetainedArtifacts emptyRetainedArtifactsSection)
+          `shouldBe` Right ()
+        validateLocalConfig
+          ( withRetainedArtifacts
+              emptyRetainedArtifactsSection {rasArchitecture = "x86_64"}
+          )
+          `shouldSatisfy` refusedWith "x86_64"
+        validateLocalConfig
+          ( withRetainedArtifacts
+              emptyRetainedArtifactsSection
+                { rasArtifacts =
+                    [ RetainedArtifactDeclaration
+                        { radKind = "substrate_installer"
+                        , radVersion = "v1.31.4+rke2r1"
+                        , radDigest = "sha256:not-a-digest"
+                        , radRetainedPath = "recovery-artifacts/amd64/install.sh"
+                        , radSourceUrl = ""
+                        }
+                    ]
+                }
+          )
+          `shouldSatisfy` refusedWith "canonical `sha256:` hex digest"
 
       it "refuses an ill-formed component graph at decode, not at bring-up" $ do
         -- An EMPTY graph is well-formed (no nodes, no cycles), so the ill-formed
@@ -17819,6 +18143,35 @@ unitSuite = do
           `shouldSatisfy` refusedWith "acme.server"
         coordinatesOf (withAcme (acmeWith "ops@resolvefintech.com" "http://acme.zerossl.com/v2"))
           `shouldSatisfy` refusedWith "acme.server"
+
+    describe "Sprint 1.91 the three region refusals a seeded default disarmed" $ do
+      -- All three rules already existed, with their messages and their
+      -- operator remedy. `defaultConfigFile` seeded `aws.region` with a
+      -- literal, the seed reached the generated schema default and therefore
+      -- every generated config, and the field was consequently never absent.
+      -- These assert that a freshly generated config reaches each of them.
+
+      it "generates an empty operational region" $
+        awsCredentialRegion (aws defaultConfigFile) `shouldBe` Text.empty
+
+      it "refuses at the settings tier, naming the field and the remedy" $ do
+        let settings =
+              (testValidatedSettings "/tmp")
+                { validatedConfig = defaultConfigFile
+                , validatedCoordinates =
+                    either error id (validatedCoordinatesFor defaultConfigFile)
+                }
+        requireOperationalAwsRegion settings
+          `shouldBe` Left "aws.region must be configured. Run `prodbox aws setup`."
+
+      it "refuses at the operational-credential tier" $ do
+        validateOperationalAwsCredentials defaultConfigFile `shouldSatisfy` isLeft
+        validateOperationalAwsCredentials testValidatedConfigFile `shouldBe` Right ()
+
+      it "refuses on the Vault lifecycle-provider path" $ do
+        validateLifecycleProviderAwsRegion (aws defaultConfigFile)
+          `shouldBe` Left "aws.region must not be empty"
+        validateLifecycleProviderAwsRegion (aws testValidatedConfigFile) `shouldBe` Right ()
 
     describe "the half-set ACME pair, which the repository's own default is" $
       it "is not an error, and yields no account rather than a partial one" $ do
@@ -20262,6 +20615,13 @@ testValidatedSettings manualRoot =
       validatedCoordinates =
         either error id (validatedCoordinatesFor testValidatedConfigFile)
     }
+
+-- | Sprint 1.91: the capture bucket the printed-grant assertions thread. It is
+-- deliberately not the name the two deleted literals carried, so an assertion
+-- that passes proves the configured value reached the document.
+printedPolicyCaptureBucket :: S3BucketName
+printedPolicyCaptureBucket =
+  either (error . show) id (mkS3BucketName "operator-chosen-capture")
 
 testValidatedConfigFile :: ConfigFile
 testValidatedConfigFile =

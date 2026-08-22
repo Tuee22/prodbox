@@ -190,6 +190,7 @@ aggregatePulumiCheckpointRepository authorityRepository blobStore =
             registered
             RestoreCheckpoint
             expected
+            Nothing
         case prepared of
           CheckpointPermitRejected detail ->
             pure (PulumiCheckpointRestoreRefused detail)
@@ -458,7 +459,7 @@ aggregatePulumiCheckpointRepository authorityRepository blobStore =
      where
       checkpoints = authorityAggregatePulumiCheckpoints aggregate
 
-  attemptRetirement callerSlot ticket registered expectedReference =
+  attemptRetirement callerSlot ticket disposition registered expectedReference =
     case registeredGenerationForSlot callerSlot of
       Left detail -> pure (PulumiCheckpointRetirementAttemptRefused detail)
       Right generation ->
@@ -466,6 +467,7 @@ aggregatePulumiCheckpointRepository authorityRepository blobStore =
           callerSlot
           generation
           ticket
+          disposition
           registered
           expectedReference
 
@@ -473,6 +475,7 @@ aggregatePulumiCheckpointRepository authorityRepository blobStore =
     callerSlot
     generation
     ticket
+    disposition
     registered
     expectedReference = do
       let operation = pulumiCheckpointTicketOperation ticket
@@ -493,6 +496,7 @@ aggregatePulumiCheckpointRepository authorityRepository blobStore =
               registered
               RetireCheckpoint
               expected
+              (Just disposition)
           case prepared of
             CheckpointPermitRejected detail ->
               pure (PulumiCheckpointRetirementAttemptRefused detail)
@@ -654,7 +658,15 @@ aggregatePulumiCheckpointRepository authorityRepository blobStore =
   publishForCaller callerSlot generation ticket registered checkpoint = do
     let operation = pulumiCheckpointTicketOperation ticket
         expected = pulumiCheckpointTicketExpectedDigest ticket
-    prepared <- preparePermit callerSlot generation operation registered PublishCheckpoint expected
+    prepared <-
+      preparePermit
+        callerSlot
+        generation
+        operation
+        registered
+        PublishCheckpoint
+        expected
+        Nothing
     case prepared of
       CheckpointPermitRejected detail ->
         pure (PulumiCheckpointPublicationRefused detail)
@@ -770,15 +782,24 @@ aggregatePulumiCheckpointRepository authorityRepository blobStore =
         PulumiCheckpointPublicationUnavailable detail
       other -> PulumiCheckpointPublicationConflict other
 
-  retire callerSlot ticket registered =
+  retire callerSlot ticket disposition registered =
     case registeredGenerationForSlot callerSlot of
       Left detail -> pure (PulumiCheckpointRetirementUnavailable detail)
-      Right generation -> retireForCaller callerSlot generation ticket registered
+      Right generation ->
+        retireForCaller callerSlot generation ticket disposition registered
 
-  retireForCaller callerSlot generation ticket registered = do
+  retireForCaller callerSlot generation ticket disposition registered = do
     let operation = pulumiCheckpointTicketOperation ticket
         expected = pulumiCheckpointTicketExpectedDigest ticket
-    prepared <- preparePermit callerSlot generation operation registered RetireCheckpoint expected
+    prepared <-
+      preparePermit
+        callerSlot
+        generation
+        operation
+        registered
+        RetireCheckpoint
+        expected
+        (Just disposition)
     case prepared of
       CheckpointPermitRejected _ -> do
         current <- observeCurrent callerSlot registered
@@ -880,7 +901,7 @@ aggregatePulumiCheckpointRepository authorityRepository blobStore =
                     aggregate
                 pure (PulumiCheckpointRetirementRefused current)
 
-  preparePermit callerSlot generation operation registered kind expected = do
+  preparePermit callerSlot generation operation registered kind expected disposition = do
     observed <- readAuthorityAdmission authorityRepository
     case observed of
       Left detail -> pure (CheckpointPermitUnavailable detail)
@@ -892,6 +913,7 @@ aggregatePulumiCheckpointRepository authorityRepository blobStore =
           registered
           kind
           expected
+          disposition
           (authorityAdmissionSnapshotState snapshot) of
           Left invariant ->
             pure
@@ -906,11 +928,19 @@ aggregatePulumiCheckpointRepository authorityRepository blobStore =
                 authorityRepository
                 (authorityAdmissionRevision snapshot)
                 next
-            confirmPermit callerSlot generation attempted operation registered kind expected
+            confirmPermit
+              callerSlot
+              generation
+              attempted
+              operation
+              registered
+              kind
+              expected
+              disposition
           Right (decision, _) ->
             pure (permitDecisionFailure decision)
 
-  confirmPermit callerSlot generation attempted operation registered kind expected = do
+  confirmPermit callerSlot generation attempted operation registered kind expected disposition = do
     readback <- readAuthorityAdmission authorityRepository
     case readback of
       Left detail ->
@@ -926,6 +956,7 @@ aggregatePulumiCheckpointRepository authorityRepository blobStore =
           registered
           kind
           expected
+          disposition
           (authorityAdmissionSnapshotState snapshot) of
           Right (CheckpointPermitAlreadyRegistered, _) ->
             readyPermit snapshot operation

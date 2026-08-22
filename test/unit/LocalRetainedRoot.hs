@@ -117,6 +117,7 @@ localRetainedRootSuite =
         `shouldBe` [ "src/Prodbox/Config/LocalRetainedRoot.hs"
                    , "src/Prodbox/Config/LocalRetainedRoot/Internal.hs"
                    , "src/Prodbox/Lifecycle/HostCleanupCompletion.hs"
+                   , "src/Prodbox/Lifecycle/HostCleanupCompositionRoot.hs"
                    , "src/Prodbox/Lifecycle/HostCleanupIntent/Internal.hs"
                    , "src/Prodbox/Lifecycle/Teardown/RetainedArtifactCustody.hs"
                    ]
@@ -153,6 +154,21 @@ localRetainedRootSuite =
         `shouldContain` "mkHostCleanupIntentStore . bootstrapRetainedRootControlDirectory"
       hostIntent
         `shouldContain` "mkHostCleanupIntentStore . authorityBoundRetainedRootControlDirectory"
+
+      -- Sprint 4.86: the fourth consumer is the composition root, and it
+      -- holds the locator only to hand one located root to the two surfaces
+      -- above.  It is admitted for the reason the store is: locating is not
+      -- mutating, and deriving both the artifact store and the completion
+      -- journal from one locator is what stops a run reading its artifacts
+      -- under one root and appending its completion beside another.
+      compositionRoot <-
+        readFile "src/Prodbox/Lifecycle/HostCleanupCompositionRoot.hs"
+      compositionRoot
+        `shouldContain` "localRetainedRoot :: !BootstrapRetainedRootLocator"
+      compositionRoot
+        `shouldContain` "bootstrapLocatedRetainedArtifactStore locator"
+      compositionRoot
+        `shouldContain` "bootstrapLocatedHostCleanupCompletionJournal locator"
 
       -- Sprint 4.86: the third consumer is the completion journal, and it is
       -- the same deliberate case as the record above rather than a new one.

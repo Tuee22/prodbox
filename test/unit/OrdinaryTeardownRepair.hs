@@ -122,6 +122,8 @@ ordinaryTeardownRepairSuite =
         absent <- requireKinds LocalRke2RecoveryAbsent recovery
         absent
           `shouldBe` [ RetainedSubstrateInstaller
+                     , RetainedSubstrateReleaseTarball
+                     , RetainedSubstrateChecksum
                      , RetainedSubstrateSystemImages
                      , RetainedObjectStoreImage
                      , RetainedSecretStoreImage
@@ -194,7 +196,11 @@ ordinaryTeardownRepairSuite =
                      , "reconcile:provider-worker"
                      ]
         installedKinds plan
-          `shouldBe` [RetainedSubstrateInstaller, RetainedSubstrateSystemImages]
+          `shouldBe` [ RetainedSubstrateInstaller
+                     , RetainedSubstrateReleaseTarball
+                     , RetainedSubstrateChecksum
+                     , RetainedSubstrateSystemImages
+                     ]
 
       it "refuses an absent substrate against a repository that retains nothing" $ do
         recovery <- requireRecovery OrdinaryTeardownWithoutTargetAgent
@@ -206,6 +212,8 @@ ordinaryTeardownRepairSuite =
                 RetainedArtifactAmd64
                 ( NonEmpty.fromList
                     [ RetainedSubstrateInstaller
+                    , RetainedSubstrateReleaseTarball
+                    , RetainedSubstrateChecksum
                     , RetainedSubstrateSystemImages
                     , RetainedObjectStoreImage
                     , RetainedSecretStoreImage
@@ -224,7 +232,7 @@ ordinaryTeardownRepairSuite =
           Right _ -> expectationFailure "an incomplete inventory must not render a plan"
           Left err ->
             renderOrdinaryTeardownRepairError err
-              `shouldContain` "substrate_system_images, object_store_image, prodbox_runtime_image"
+              `shouldContain` "substrate_release_tarball, substrate_checksum, substrate_system_images, object_store_image, prodbox_runtime_image"
 
       it "renders a healthy substrate from an image-only inventory" $ do
         recovery <- requireRecovery OrdinaryTeardownWithoutTargetAgent
@@ -243,7 +251,11 @@ ordinaryTeardownRepairSuite =
                 LocalRke2RecoveryAbsent
                 RetainedArtifactAmd64
                 ( NonEmpty.fromList
-                    [RetainedSubstrateInstaller, RetainedSubstrateSystemImages]
+                    [ RetainedSubstrateInstaller
+                    , RetainedSubstrateReleaseTarball
+                    , RetainedSubstrateChecksum
+                    , RetainedSubstrateSystemImages
+                    ]
                 )
             )
 
@@ -332,11 +344,150 @@ ordinaryTeardownRepairSuite =
         boundNamespaces harnessControlPlaneVaultRole `shouldBe` ["gateway"]
         all (`elem` deleted) (boundNamespaces harnessControlPlaneVaultRole) `shouldBe` True
 
+    describe "Sprint 4.86 operator-declared retained artifacts" $ do
+      it "treats an empty declaration as a repository that retains nothing" $ do
+        declared <- requireDeclared emptyRetainedArtifactsSection
+        retainedArtifactInventoryKinds
+          (declaredRetainedArtifactInventory declared)
+          `shouldBe` []
+        retainedArtifactSourceCatalogKinds
+          (declaredRetainedArtifactCatalog declared)
+          `shouldBe` []
+
+      it "projects one declaration into both surfaces carrying one digest" $ do
+        -- This is the whole reason the declaration is one list rather than
+        -- two: the digest the acquisition promises and the digest the store is
+        -- measured against are the same field, so they cannot drift.
+        declared <- requireDeclared (sectionOf [declarationFor RetainedSubstrateInstaller])
+        let inventory = declaredRetainedArtifactInventory declared
+            catalog = declaredRetainedArtifactCatalog declared
+        fmap
+          retainedArtifactRefDigest
+          (lookupRetainedArtifact RetainedSubstrateInstaller inventory)
+          `shouldBe` Just declaredDigest
+        fmap
+          retainedArtifactSourceDigest
+          (lookupRetainedArtifactSource RetainedSubstrateInstaller catalog)
+          `shouldBe` Just (Text.pack declaredDigest)
+
+      it "carries the declared architecture onto both surfaces" $ do
+        declared <- requireDeclared (sectionOf [declarationFor RetainedObjectStoreImage])
+        retainedArtifactInventoryArchitecture
+          (declaredRetainedArtifactInventory declared)
+          `shouldBe` RetainedArtifactAmd64
+        retainedArtifactSourceCatalogArchitecture
+          (declaredRetainedArtifactCatalog declared)
+          `shouldBe` RetainedArtifactAmd64
+
+      it "retains an artifact with no source without inventing one" $ do
+        -- An empty source url is a fact about acquisition, not about
+        -- retention: the artifact is a member of the inventory and custody
+        -- reports it unsourced rather than fetching it from somewhere.
+        declared <-
+          requireDeclared
+            ( sectionOf
+                [(declarationFor RetainedSecretStoreImage) {radSourceUrl = ""}]
+            )
+        retainedArtifactInventoryKinds
+          (declaredRetainedArtifactInventory declared)
+          `shouldBe` [RetainedSecretStoreImage]
+        retainedArtifactSourceCatalogKinds
+          (declaredRetainedArtifactCatalog declared)
+          `shouldBe` []
+
+      it "names an unrecognized kind rather than dropping it" $ do
+        -- A dropped entry becomes an inventory that reports "nothing is
+        -- retained" and then refuses a repair for a reason that says nothing
+        -- about the typo.
+        declaredRetainedArtifacts
+          (sectionOf [(declarationFor RetainedSubstrateInstaller) {radKind = "substrate_instaler"}])
+          `shouldBe` Left
+            (RetainedArtifactDeclarationUnknownKind "substrate_instaler")
+
+      it "names an unrecognized architecture" $ do
+        declaredRetainedArtifacts
+          (sectionOf [declarationFor RetainedSubstrateInstaller])
+            { rasArchitecture = "x86_64"
+            }
+          `shouldBe` Left
+            (RetainedArtifactDeclarationUnknownArchitecture "x86_64")
+
+      it "refuses a malformed digest through the inventory rule" $ do
+        declaredRetainedArtifacts
+          (sectionOf [(declarationFor RetainedSubstrateInstaller) {radDigest = "sha256:short"}])
+          `shouldBe` Left
+            ( RetainedArtifactDeclarationInventoryInvalid
+                ( RetainedArtifactInventoryMalformedDigest
+                    RetainedSubstrateInstaller
+                    "sha256:short"
+                )
+            )
+
+      it "refuses a retained path that escapes the retained root" $ do
+        declaredRetainedArtifacts
+          (sectionOf [(declarationFor RetainedSubstrateInstaller) {radRetainedPath = "../outside"}])
+          `shouldBe` Left
+            ( RetainedArtifactDeclarationInventoryInvalid
+                ( RetainedArtifactInventoryUnsafeRetainedPath
+                    RetainedSubstrateInstaller
+                    "../outside"
+                )
+            )
+
+      it "refuses a source that is not an https archive" $ do
+        declaredRetainedArtifacts
+          (sectionOf [(declarationFor RetainedSubstrateInstaller) {radSourceUrl = "http://example.test/a.tar"}])
+          `shouldSatisfy` isSourceRefusal
+
+      it "refuses a second declaration of one kind" $ do
+        declaredRetainedArtifacts
+          ( sectionOf
+              [ declarationFor RetainedSubstrateInstaller
+              , declarationFor RetainedSubstrateInstaller
+              ]
+          )
+          `shouldBe` Left
+            ( RetainedArtifactDeclarationInventoryInvalid
+                (RetainedArtifactInventoryDuplicateKind RetainedSubstrateInstaller)
+            )
+
 completeEntries :: [RetainedArtifactEntry]
 completeEntries = fmap entryFor [minBound .. maxBound]
 
 -- | Synthetic retained declaration.  Every digest is an obviously synthetic
 -- repeated nibble; no value here identifies a real published artifact.
+requireDeclared :: RetainedArtifactsSection -> IO DeclaredRetainedArtifacts
+requireDeclared section =
+  case declaredRetainedArtifacts section of
+    Left err ->
+      expectationFailure (renderRetainedArtifactDeclarationError err)
+        >> fail "unreachable"
+    Right declared -> pure declared
+
+sectionOf :: [RetainedArtifactDeclaration] -> RetainedArtifactsSection
+sectionOf declarations =
+  emptyRetainedArtifactsSection {rasArtifacts = declarations}
+
+declaredDigest :: String
+declaredDigest = "sha256:" ++ replicate 64 'a'
+
+declarationFor :: RetainedArtifactKind -> RetainedArtifactDeclaration
+declarationFor kind =
+  RetainedArtifactDeclaration
+    { radKind = Text.pack (retainedArtifactKindText kind)
+    , radVersion = Text.pack (versionFor kind)
+    , radDigest = Text.pack declaredDigest
+    , radRetainedPath =
+        Text.pack ("recovery-artifacts/amd64/" ++ retainedArtifactKindText kind ++ ".tar")
+    , radSourceUrl = "https://artifacts.test/prodbox/retained.tar"
+    }
+
+isSourceRefusal
+  :: Either RetainedArtifactDeclarationError DeclaredRetainedArtifacts -> Bool
+isSourceRefusal outcome = case outcome of
+  Left (RetainedArtifactDeclarationSourceInvalid _) -> True
+  _ -> False
+
 entryFor :: RetainedArtifactKind -> RetainedArtifactEntry
 entryFor kind =
   RetainedArtifactEntry
@@ -351,6 +502,8 @@ entryFor kind =
 versionFor :: RetainedArtifactKind -> String
 versionFor kind = case kind of
   RetainedSubstrateInstaller -> "v1.31.4+rke2r1"
+  RetainedSubstrateReleaseTarball -> "v1.31.4+rke2r1"
+  RetainedSubstrateChecksum -> "v1.31.4+rke2r1"
   RetainedSubstrateSystemImages -> "v1.31.4+rke2r1"
   RetainedObjectStoreImage -> "RELEASE.0000-00-00T00-00-00Z"
   RetainedSecretStoreImage -> "0.0.0-fixture"
@@ -359,6 +512,8 @@ versionFor kind = case kind of
 digestNibble :: RetainedArtifactKind -> Char
 digestNibble kind = case kind of
   RetainedSubstrateInstaller -> '1'
+  RetainedSubstrateReleaseTarball -> '6'
+  RetainedSubstrateChecksum -> '7'
   RetainedSubstrateSystemImages -> '2'
   RetainedObjectStoreImage -> '3'
   RetainedSecretStoreImage -> '4'

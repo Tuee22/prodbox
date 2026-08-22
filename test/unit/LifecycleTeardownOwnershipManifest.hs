@@ -163,6 +163,13 @@ lifecycleTeardownOwnershipManifestSuite =
       importers
         `shouldBe` sort
           [ "src/Prodbox/ControlPlane/OwnershipManifestRepository.hs"
+          , -- Sprint 7.36: the bounded legacy-adoption planner reads the plan
+            -- digest type and the registry-derived ownership edges from the
+            -- internal module rather than from the facade, because the facade
+            -- imports the planner: it is the facade's adoption binder that
+            -- consumes a confirmed plan. Importing the facade here would be a
+            -- module cycle, so the direction is the deliberate one.
+            "src/Prodbox/Lifecycle/Teardown/LegacyAdoptionPlan.hs"
           , "src/Prodbox/Lifecycle/Teardown/OwnershipManifest.hs"
           ]
 

@@ -63,7 +63,7 @@ for the authoritative doctrine.
 
 Substrate coverage of a suite validation is tracked **here, in the parity table and the
 coverage notes below — never as a phase blocker.** Per
-[development_plan_standards.md → N. Phase Independence](development_plan_standards.md#n-phase-independence-no-backward-blocking)
+[development_plan_standards.md → N. Phase Independence](development_plan_standards.md#n-phase-independence-and-execution-order)
 and
 [O. Code-Local vs Live-Infra Proof](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof)
 (and the [M](development_plan_standards.md#m-test-suite-substrates) amendment), a
@@ -83,7 +83,7 @@ home-substrate suite-content closure and the AWS-substrate coverage proof are se
 axes; the parity table is the single place the AWS axis is tracked.
 
 The defers-to SSoT for this orthogonality is
-[development_plan_standards.md → N / O](development_plan_standards.md#n-phase-independence-no-backward-blocking);
+[development_plan_standards.md → N / O](development_plan_standards.md#n-phase-independence-and-execution-order);
 the substrate-coverage application of it lives in this file's parity table and coverage
 notes.
 
@@ -258,11 +258,11 @@ reached, never *which* services are stood up, so substrate equivalence is preser
 
 | Field | Value |
 |-------|-------|
-| Provision | `prodbox aws stack eks reconcile` (EKS test cluster), `prodbox aws stack aws-subzone reconcile` (per-substrate Route 53 subzone), and `prodbox aws stack test reconcile` (three Ubuntu 24.04 EC2 instances for HA-RKE2) |
+| Provision | `prodbox aws stack eks reconcile` (EKS test cluster), `prodbox aws stack aws-subzone reconcile` (per-substrate Route 53 subzone), and `prodbox aws stack test reconcile` (three Ubuntu 24.04 EC2 instances for HA-RKE2). The three EC2 instances are the structural HA-RKE2 quorum; their instance type, root-volume class and size, and the EKS node group's instance type, disk, and count are compiled into `pulumi/aws-test/Main.yaml` and `pulumi/aws-eks/Main.yaml` today. Sprint `7.37` moves them to an authored `aws_substrate` resource profile. |
 | Teardown | Current explicit surfaces are `prodbox aws stack eks destroy --yes`, `prodbox aws stack aws-subzone destroy --yes`, and `prodbox aws stack test destroy --yes`. Sprint `7.36` targets exact independent desired-absence adapters for `aws-eks`, `aws-eks-subzone`, and `aws-test`, so each public destroy and cascade projection consumes the same durable node and exact read-back. Existing pre-manifest stacks with unusable checkpoints enter only the bounded, plan-confirmed legacy-adoption protocol described below; discovery alone never authorizes mutation. |
 | Historical inventory | Three per-run Pulumi stacks: registry `aws-eks` / Pulumi stack id `aws-eks-test` (dedicated VPC, EKS cluster/node group/IAM/security group), `aws-eks-subzone`, and `aws-test`. Sprint `7.30` historically accessed opaque Model-B state through the gateway daemon object-store API; that transport is the pre-cutover baseline scheduled for deletion in Sprint `4.50`, not the target architecture. Sprint `7.29`'s fresh-EKS-VPC guarantee remains valid. |
 | Target inventory | The same substrate-local service set as home: cert-manager + real ZeroSSL, Envoy Gateway, registry + MinIO + Vault + Percona, canonical application charts, a physically separate Bootstrap Broker, an AWS Target Secret Agent, and Gateway Runtime replicas whose mesh remains active but whose DNS mutation capability is disabled, with encrypted identity-bound journals on pre-created static `Retain` EBS PVs. Cross-substrate Pulumi/lifecycle operations use the explicit retained home Lifecycle Authority and its aggregate/immutable blobs; the AWS target agent owns only allowlisted AWS-substrate Vault KV CAS/read-back. Gateway and target-agent endpoints cannot be used as retained authority. The lower-layer differences remain MetalLB versus AWS Load Balancer Controller/NLB, parent zone versus delegated subzone, and hostPath versus pre-created EBS. |
-| Required Config | `aws_substrate.subzone_name` (the AWS-substrate public FQDN, e.g. `aws.test.resolvefintech.com`), optional `aws_substrate.hosted_zone_id` when an operator wants to pin the already-provisioned subzone ID in config, `ses.*` (sender_domain, receive_subdomain, capture_bucket — shared cross-substrate; same values as home substrate), AWS operator credentials, plus the same `acme.*` settings the home substrate uses. During harness-driven AWS runs, the suite reads the live `aws-eks-subzone` Pulumi output after provisioning and passes the hosted-zone ID to child commands. Missing AWS-substrate values fail fast; the AWS substrate does not fall back to `route53.zone_id` or `domain.demo_fqdn` from the home substrate. |
+| Required Config | `aws_substrate.subzone_name` (the AWS-substrate public FQDN, e.g. `aws.test.resolvefintech.com`), optional `aws_substrate.hosted_zone_id` when an operator wants to pin the already-provisioned subzone ID in config, `ses.*` (sender_domain, receive_subdomain, capture_bucket — shared cross-substrate; same values as home substrate), AWS operator credentials, plus the same `acme.*` settings the home substrate uses. During harness-driven AWS runs, the suite reads the live `aws-eks-subzone` Pulumi output after provisioning and passes the hosted-zone ID to child commands. Missing AWS-substrate values fail fast; the AWS substrate does not fall back to `route53.zone_id` or `domain.demo_fqdn` from the home substrate. `aws.region` is generated **empty** like every other operator coordinate, with no compiled default, so an unconfigured region refuses rather than resolving to a literal (Sprint `1.91`). Sprint `7.37` adds `aws_substrate.profile.*` — the EKS node instance type, node disk size, node-group desired/minimum/maximum size, the `aws-test` instance type and root-volume type and size, every VPC and subnet CIDR, and the operator CIDR gating API-server and SSH ingress. Each will be required and fail fast, with no compiled default envelope. **The profile does not exist yet**, so those values are still literals inside the checked-in Pulumi programs. Status lives only in [README.md → Resume Here](README.md#resume-here). |
 | Target capability prerequisites | Existing AWS/config/stack prerequisites plus exact operation-indexed `CapabilityRef` admission for the EKS Bootstrap Broker, retained Lifecycle Authority observe/CAS/submit, the AWS Target Secret Agent observe/CAS/read-back, and EKS Gateway mesh. The AWS A-record mutation reference belongs to retained Lifecycle Authority's registered provider intent; no EKS Gateway DNS reference exists. The retained authority reference is control-plane-scoped; the target-agent reference is AWS-substrate-scoped. No missing AWS coordinate falls back to home, and no target coordinate is promoted to authority. |
 | Phase ownership (provision/teardown) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
 | Suite parity | Required coverage: Sprint `7.33` provides prerequisite AWS isolation evidence and Sprint `7.36` provides exact teardown-adapter evidence; Sprint `8.12` is the sole final owner of AWS `LCPC-2026-07-11`, `TEARDOWN-2026-08-15`, consecutive AWS aggregates, exact retained-authority/target routing, EKS replacement, fault isolation, invite specialization, and full cleanup. Historical runs remain revision-scoped evidence. Current status/evidence live only in [README.md → Deployment Qualification](README.md#deployment-qualification). |
@@ -364,6 +364,7 @@ resource cannot be added to the registry without this inventory updating in lock
 | `pulsar-topics-per-run` | PerRun |
 | `legacy-harbor-helm-release` | PerRun |
 | `dns-aws-validation-hosted-zone` | PerRun |
+| `dns-aws-dns01-challenge-records` | PerRun |
 | `aws-ebs-volumes-per-run-test` | PerRun |
 | `aws-ses` | LongLived |
 | `aws-ebs-volumes-production-retained` | LongLived |
@@ -595,7 +596,7 @@ remain `QualificationPendingLiveEvidence`; the live rows below remain pending un
 The substrate `Suite parity` rows above track aggregate canonical-suite coverage per
 substrate. Individual validations whose AWS-substrate coverage is on a separate axis from
 their home-substrate suite-content closure are called out here, per the orthogonality rule
-above and [development_plan_standards.md → N / O](development_plan_standards.md#n-phase-independence-no-backward-blocking).
+above and [development_plan_standards.md → N / O](development_plan_standards.md#n-phase-independence-and-execution-order).
 
 | Validation | Home-substrate suite-content closure (owned surface) | AWS-substrate coverage (owned surface) |
 |------------|------------------------------------------------------|----------------------------------------|

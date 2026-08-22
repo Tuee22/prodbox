@@ -449,6 +449,16 @@ command contract.
 
 ### `prodbox config` notes
 
+**A freshly generated `prodbox.dhall` is deliberately not deployable.** `prodbox config generate`
+emits every operator-owned coordinate **empty** — `aws.region` alongside `route53.zone_id`,
+`aws_substrate.hosted_zone_id`, `ses.*`, and `pulumi_state_backend.*` — and the first consumer of
+each refuses by name with the command that authors it. That is the intended shape, not an
+incomplete generator: a pre-filled coordinate is a value in force that nobody chose, and it makes
+the refusal written against the field's absence unreachable code
+([config_doctrine.md](./config_doctrine.md) § 0). `config generate` therefore produces a file that
+loads, decodes, and passes the local tier, and that an AWS flow refuses until the operator supplies
+the coordinates.
+
 `src/Prodbox/Aws.hs` owns `config setup`. `src/Prodbox/Settings.hs` owns `config show` and
 `config validate`. `prodbox config compile` is not part of the supported command surface. Sprint
 `1.61` removed the `config show --show-secrets` unrestricted-reveal flag: `config show` now always
@@ -472,6 +482,23 @@ non-interactively. See [vault_doctrine.md § 4](./vault_doctrine.md#4-config-spl
 [aws_admin_credentials.md](./aws_admin_credentials.md).
 
 ### `prodbox aws` notes
+
+**`aws setup` is named by the region refusal without becoming a config author.** The three rules
+that refuse an absent `aws.region` — `requireOperationalAwsRegion`,
+`validateOperationalAwsCredentials`, and `validateLifecycleProviderAwsRegion` — name
+`prodbox aws setup` as the remedy, and that remains a pointer to the interactive flow the operator
+runs, not a claim that the command writes coordinates behind the operator's back. `aws setup`
+persists no secret payload and authors no coordinate the operator did not enter at its prompt. The
+admin-credential prompt offers **no pre-filled region** when the config carries none; the four
+interactive entry points that reach `promptAdminCredentialsWithRegionChoice` immediately overwrite
+any pre-fill from a live `aws ec2 describe-regions` selection, so with nothing configured the
+selection simply opens on the first row of a list the operator is reading.
+
+`prodbox aws policy` **prints** the grant an operator pastes into IAM, and it names the configured
+`ses.capture_bucket`. It refuses when that coordinate is unconfigured rather than substituting a
+name, for the same reason as above: a printed grant naming a bucket the deployment does not own
+becomes a real IAM policy, and the mistake surfaces as an `AccessDenied` from S3 rather than as a
+refusal from prodbox.
 
 `src/Prodbox/Aws.hs` owns the full public `prodbox aws ...` surface. **Target contract:** the public
 flow uses the interactive `SecretRef.Prompt` arm only for setup/teardown, a permit-bound SMTP IAM
@@ -569,9 +596,20 @@ recover-to-clean `--cascade` contract. The latter is not a claim of current-revi
 implementation and qualification remain plan-owned.
 
 Local-only delete probes for an installed RKE2 from the on-disk markers. When none is present, it
-prints `No RKE2 cluster to delete.` and exits `0`. Cascade does not use that shortcut: local absence
-does not answer for AWS or a durable cleanup run, so it enters recovery as defined by
-[Lifecycle Reconciliation Doctrine §5a](lifecycle_reconciliation_doctrine.md#5a-local-only-no-install-short-circuit).
+prints `No RKE2 cluster to delete.` and exits `0`.
+
+Cascade does not use that shortcut. Local absence answers neither for AWS nor for a durable cleanup
+run, so cascade enters recovery as defined by
+[Lifecycle Reconciliation Doctrine §5a](lifecycle_reconciliation_doctrine.md#5a-local-only-no-install-short-circuit),
+and a cascade that reached no phase exits non-zero carrying the recovery-plane disposition it
+reports. The arm is selected by the delete mode over the (mode, presence) product: exactly one arm
+is a no-install success and it belongs to local-only delete, so no later caller can hand the cascade
+mode a success it did not observe.
+
+No cascade exit authorizes deleting the retained root. The retained-state narration is a total
+function over the command's terminal arms: only an arm carrying a completion receipt or an explicit
+local-only uninstall says the root is preserved by what it did, and every other arm either says
+nothing about the root or names it and states that this run establishes nothing about retiring it.
 
 - (default, no flag) → **pure local uninstall**. It uninstalls RKE2 and preserves `.data/` (the
   MinIO-backed per-run Pulumi state) WITHOUT querying, gating on, or destroying the per-run AWS

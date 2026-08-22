@@ -48,6 +48,8 @@ module Prodbox.Lifecycle.Teardown.Registry
   , awsTestResource
   , awsEbsPerRunTestResource
   , awsEbsProductionRetainedResource
+  , awsDnsValidationZoneResource
+  , awsDns01ChallengeRecordResource
   , managedResourceRegistry
   , lifecycleRegistry
   , lookupRegisteredIdentity
@@ -70,6 +72,10 @@ where
 
 import Data.List (group, sort)
 import Data.Text (Text)
+import Prodbox.Lifecycle.OwnedResourceTags
+  ( dns01ChallengeRecordNamePrefix
+  , dnsValidationHostedZoneNamePrefix
+  )
 import Prodbox.Lifecycle.Teardown.Model hiding (managedResourceCoordinateDigest)
 import Prodbox.Lifecycle.Teardown.Model qualified as Model
 import Prodbox.Lifecycle.Teardown.RecoveryCapability
@@ -336,12 +342,59 @@ awsEbsProductionRetainedResource =
     (AwsEbsRetainedFamilyCoordinate "prodbox.io/lifecycle" "retained-ebs")
     AwsResourceApiAuthority
 
+-- | Sprint 7.36: the @dns-aws@ validation hosted-zone family.
+--
+-- Registered only now, with its adapter, because registering a descriptor
+-- compiles a mandatory absence read-back and a surface that mints completion
+-- asserts every such read-back succeeded — so registering it before
+-- 'Prodbox.Lifecycle.Teardown.AwsRoute53ZoneAdapter' existed would have made
+-- the @Cascade@ and @ExplicitPerRun@ programs unsatisfiable rather than making
+-- the zone swept.  That pairing rule is mechanical:
+-- @Prodbox.CheckCode.registeredTargetExecutorViolations@ fails the build on the
+-- unpaired shape.
+awsDnsValidationZoneResource :: ManagedResourceDescriptor 'PerRun 'DnsZoneFamily
+awsDnsValidationZoneResource =
+  mkManagedResource
+    AwsDnsValidationZoneKey
+    PerRunLifecycle
+    DnsZoneFamilyKind
+    (AwsRoute53ValidationZoneFamilyCoordinate dnsValidationHostedZoneNamePrefix)
+    AwsResourceApiAuthority
+
+-- | Sprint 7.36: the DNS01 challenge record family.
+--
+-- Registered with its adapter and its executor, for the same reason the
+-- validation hosted zone was: a registered descriptor compiles a __mandatory__
+-- absence read-back, and a surface that reports completion asserts every such
+-- read-back succeeded.
+--
+-- Its executor is the only one in the registry whose reconcile step is not a
+-- Provider mutation.  cert-manager's solver owns the record, and a Provider
+-- delete would race it into rewriting one; the record is therefore removed by
+-- deleting the Kubernetes object that owns it, and only the separate Route 53
+-- read-back closes the family.
+--
+-- @PerRun@ because the AWS-lane challenge is per-run: the certificate the
+-- record validates is issued for one suite run, and a run that fails before
+-- issuance completes is exactly the case that leaves the record behind.
+awsDns01ChallengeRecordResource
+  :: ManagedResourceDescriptor 'PerRun 'DnsRecordFamily
+awsDns01ChallengeRecordResource =
+  mkManagedResource
+    AwsDns01ChallengeRecordKey
+    PerRunLifecycle
+    DnsRecordFamilyKind
+    (AwsRoute53Dns01ChallengeRecordFamilyCoordinate dns01ChallengeRecordNamePrefix)
+    AwsResourceApiAuthority
+
 managedResourceRegistry :: [SomeManagedResourceDescriptor]
 managedResourceRegistry =
   [ SomeManagedResourceDescriptor awsEksResource
   , SomeManagedResourceDescriptor awsEksSubzoneResource
   , SomeManagedResourceDescriptor awsTestResource
   , SomeManagedResourceDescriptor awsEbsPerRunTestResource
+  , SomeManagedResourceDescriptor awsDnsValidationZoneResource
+  , SomeManagedResourceDescriptor awsDns01ChallengeRecordResource
   , SomeManagedResourceDescriptor awsEbsProductionRetainedResource
   ]
 

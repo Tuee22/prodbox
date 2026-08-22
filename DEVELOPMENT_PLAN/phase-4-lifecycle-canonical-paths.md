@@ -221,7 +221,7 @@ non-blocking Standard-O axis.
 
 ✅ **Reclosed 2026-07-10 after the classifier follow-up** — Phase `4` expanded
 its **own** reconcile-driver + registry-config surface
-([Standard A/N](development_plan_standards.md#n-phase-independence-no-backward-blocking)). Sprint `4.43`
+([Standard A/N](development_plan_standards.md#n-phase-independence-and-execution-order)). Sprint `4.43`
 single-sourced the STEP narration and landed the deep registry→MinIO gate. Sprint `4.44` is Done:
 the deterministic `registryConfigYaml` `unlines` renderer takes a required typed
 `RegistryStorageBackend`, always renders its `RedirectPolicy` as `disable: true|false`, and the
@@ -8067,8 +8067,11 @@ an owning sprint (Standard I) and correct the false claim the type was making in
 ### Remaining Work
 
 **The recorder run, and it is not code work.** A committed control-plane measured profile plus its
-consumption through `certifyMeasuredProfile` closes the row; both are gated on Sprint `5.21`'s
-recorder producing its first artifact for any lane. Non-blocking under
+consumption through `certifyMeasuredProfile` closes the row. No such profile exists for any lane;
+Sprint `5.21` owns the recorder that produces one, and its first capture is that sprint's own
+`Live-proof` axis. This sprint makes no claim about when that capture happens — an ownership
+statement rather than a dependency, because both sprints are `Done` and the outstanding item is
+live-infra evidence. Non-blocking under
 [Standard O](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof).
 
 ## Sprint 4.76: The Cascade Reports Absence It Did Not Observe ✅
@@ -9022,7 +9025,7 @@ and validated.
 **Re-scoped on closure (2026-08-17, Standard N).** This sprint previously held a consumer-conversion
 item whose own text said it "cannot land independently of the caller restructuring in Sprints
 `4.85`/`5.36`/`6.5`". That is a dependency on a later phase, which
-[Standard N](development_plan_standards.md#n-phase-independence-no-backward-blocking) forbids and
+[Standard N](development_plan_standards.md#n-phase-independence-and-execution-order) forbids and
 directs to be re-scoped rather than recorded — and holding it made this sprint, and therefore the
 whole queue behind it, unable to close. The conversion is now owned by the sprints that already own
 the compositions it deletes: the `TestRunner`/`DurableCleanupComposition` half by Sprint `5.36`, and
@@ -10000,7 +10003,7 @@ require exact evidence.
     sides would require the compiled program and the signed manifest to become one universe — the
     single-writer cutover Sprint `6.5` owns, over adapters Sprint `7.36` owns. Read that way, item
     10 could not pass on Phase 4's owned surface, which
-    [Standard N](development_plan_standards.md#n-phase-independence-no-backward-blocking) forbids;
+    [Standard N](development_plan_standards.md#n-phase-independence-and-execution-order) forbids;
     it is re-scoped to `6.5` as of 2026-08-18. What this phase owns and proves is that the
     measurement exists, is exact, and fails the build when the claim and the two images disagree.
 11. The old `ManagedResource`/`CapabilityBoundCleanupAction` callback shapes and test-owned generic
@@ -10187,11 +10190,13 @@ gains a minter.
 The `dns-aws` registration is therefore withdrawn and its flat-inventory exemption restored, naming
 Sprint `7.36` — which owns the exact AWS desired-absence adapters — as the owner of both the Route 53
 hosted-zone adapter and the registration that depends on it. This follows
-[Standard N](development_plan_standards.md#n-phase-independence-no-backward-blocking) rather than
+[Standard N](development_plan_standards.md#n-phase-independence-and-execution-order) rather than
 merely tidying: a Phase-4 registration whose program cannot complete until a Phase-7 adapter lands
-would have made Sprint `6.5`'s cutover depend on a later phase. The precondition the measurement
-found is real and survives as a Sprint-`5.36` note: the harness sweep is still the only thing
-removing that billable zone, and deleting the harness graph before `7.36` would strand it.
+would have made Sprint `6.5`'s cutover depend on a later phase. **The precondition the measurement
+found is real, and since 2026-08-21 it is Sprint `5.36`'s declared `**Backward dependency**` on
+Sprint `7.36`** (Standard N.2): the harness sweep is still the only thing removing that billable
+zone. It is stated once, in that sprint's field. The 2026-08-21 audit found this paragraph was one of
+three prose copies of a dependency no gate could read.
 
 ### The Write-Ahead Manifest Named the Wrong Owning Stack (landed 2026-08-17)
 
@@ -10942,7 +10947,7 @@ mechanical rather than advisory: the family "stops being admissible the moment `
 or `TotalDecommission` gains a minter", so the minter and the retained-EBS desired-absence adapter
 are **one change**. Sprint `7.36` owns that adapter, and this sprint makes no claim about the pair.
 Re-scoped 2026-08-18 under
-[Standard N](development_plan_standards.md#n-phase-independence-no-backward-blocking), by the same
+[Standard N](development_plan_standards.md#n-phase-independence-and-execution-order), by the same
 argument that withdrew the `dns-aws` registration to `7.36` earlier: a Phase-4 item that cannot land
 until a Phase-7 adapter does is a backward dependency, not a sequencing note.
 
@@ -10959,11 +10964,13 @@ Both are Sprint `7.36`'s, re-scoped 2026-08-18 under Standard N. What stays here
 can prove on its own surface: the admission algebra, the freeze transition and its reservation, and
 the pure obligation data.
 
-## Sprint 4.86: Recover-to-Clean Cascade and Proof-Carrying Completion [🔄 Active]
+## Sprint 4.86: Recover-to-Clean Cascade and Proof-Carrying Completion [✅ Done]
 
-**Status**: Active (implementation began 2026-08-15; updated 2026-08-18). RecoveryPlane,
-authenticated phase routes, production observation, descriptor dispatcher foundations, and
-retained-artifact custody exist; the complete cascade proof chain does not.
+**Status**: Done (2026-08-20; implementation began 2026-08-15). Every node of doctrine § 5b has a
+production surface, both closed runtimes the descriptor-bound dispatcher takes are constructible,
+the non-public candidate entrypoint drives the total dispatcher over a durable descriptor-bound run,
+and the seven validation items are measured where the coverage map below records them. Activation of
+a public writer and the Standard-P qualification over the composed running system are Sprint `6.5`'s.
 **Closure dependency**: Sprint `3.41` for the recovery-only renderer/artifact authority and Sprint
 `4.85` for the remaining terminal proof protocols. Both are same/earlier-phase dependencies.
 **Deployment qualification**: pending — destructive orchestration, topology, credentials, and local
@@ -10978,12 +10985,22 @@ Command”](../documents/engineering/cli_command_surface.md#reconcilers-idempote
 `Prodbox.Lifecycle.Teardown.RetainedArtifactCustody`,
 `Prodbox.Lifecycle.Teardown.RecoveryRepairExecution`,
 `Prodbox.Lifecycle.Teardown.PreUninstallReadiness`,
+`Prodbox.Lifecycle.Teardown.PreUninstallStageC`,
 `Prodbox.Lifecycle.HostCleanupLocalAbsence`,
 `Prodbox.Lifecycle.HostCleanupCompletion`,
 `Prodbox.Lifecycle.HostCleanupRecoveryPlane`,
+`Prodbox.Lifecycle.HostCleanupProductionEffects`,
+`Prodbox.Lifecycle.Teardown.RecoveryRepairProduction`,
 `Prodbox.ControlPlane.HostCleanupReadinessRepository`,
 `Prodbox.Lifecycle.HostCleanupAuthorityArms`,
 `Prodbox.ControlPlane.LifecycleAuthorityRestoreProduction`,
+`Prodbox.ControlPlane.CascadeRetainedSlotEndpoint`,
+`Prodbox.ControlPlane.CascadeRetainedSlotClient`,
+`Prodbox.Config.RetainedArtifacts`,
+`Prodbox.Lifecycle.HostCleanupCompositionRoot`,
+`Prodbox.Lifecycle.Teardown.CloudRuntimeProduction`,
+`Prodbox.Lifecycle.CleanupRunEntry`,
+`Prodbox.Lifecycle.Teardown.CascadeCandidate`,
 `Prodbox.Lifecycle.Teardown.CascadeCredentialDisposition`,
 `Prodbox.Lifecycle.Teardown.CascadeTerminalAudit`, and the source-stable hidden
 `DescriptorBoundLifecycleRuntime` dispatcher form the unactivated candidate foundation. Retain the
@@ -11386,6 +11403,296 @@ convergence, records it durably, and can construct a local-uninstall plan only a
 - The cloud runtime refuses a cascade host operation that reaches it, the same way it already
   refuses a recovery-plane operation, so the route cannot silently fall back.
 
+### Current Implementation Checkpoint (2026-08-20, the report reaches the independent domain)
+
+- **The open decision is made: a fourth Authority-backup blob class, not a second addressing
+  scheme.** Node 7 requires the independent Backup Adapter to read back the exact pre-uninstall
+  report, and the adapter addresses objects only by `(class, digest)`. The alternative — a distinct
+  retained namespace the adapter reads — would have given one adapter two addressing schemes and
+  needed its own registered bucket prefix and its own least-privilege grant, for a value that is
+  already a digest. `AuthorityCleanupReportBlob` is appended to `AuthorityBackupBlobClass`, and its
+  objects land at `blobs/cleanup-report/sha256-<digest>` **inside the prefix the adapter's IAM grant
+  already covers**, so no policy widens.
+- **The constructor is appended rather than inserted.** The generic sum encoding tags constructors
+  by declaration index, so appending is byte-compatible with every retained object already written;
+  re-ordering would have made them undecodable. Sprint `4.87`'s enumeration gate — every class must
+  name a distinct adapter object — is extended to the fourth member rather than left at three.
+- **`Prodbox.ControlPlane.CleanupReportBackupClient` is the authenticated client for that one
+  class.** It cannot select the aggregate, checkpoint, or config objects, and it refuses a receipt
+  naming another class or another digest, so a reply that agrees with the request only by accident
+  is not admitted.
+- **`Prodbox.Lifecycle.Teardown.PreUninstallReportBackup` is the join.** It projects each adapter
+  answer onto the Stage-C observation and is the only place the three dispositions are decided:
+  a present receipt is `DurableReceiptObserved` carrying **the adapter's own digest** rather than
+  the digest it was asked about, a missing object is `DurableReceiptMissing`, and a corrupt object
+  or an unreachable domain is `DurableReceiptUnobservable`. Collapsing the last into the second
+  would let an adapter nobody could reach read as "the commit never landed", which is the fail-open
+  shape an independent read-back exists to exclude.
+- **The observation is bound to the run that asked for it.** The receipt carries the compiled run's
+  observation scope and graph digest, so the evidence constructor compares it against the binding
+  rather than against itself; the regression exercises both directions — accepted by its own run,
+  refused by another.
+- **One bound is recorded rather than implied.** The adapter is content-addressed and re-hashes what
+  it reads, so a report identity differing from the committed one presents as *missing* or
+  *corrupt*, never as a successfully observed different digest. Stage C's
+  `PreUninstallReportDigestDrift` arm stays reachable through the pure kernel, but this production
+  reader cannot produce it, and the module says so.
+
+### Current Implementation Checkpoint (2026-08-20, the Stage-C writing half)
+
+- **Both Stage-C boundaries now have production surfaces, and neither is injected.**
+  `Prodbox.ControlPlane.CascadeReportRepository` is the Authority's retained namespace for one
+  run's committed report identity and its one-shot local-completion permit, and
+  `Prodbox.Lifecycle.Teardown.PreUninstallReportCommit` is the `CascadeReportCommitBoundary` over it
+  and the independent copy target.
+- **The permit is one-shot by construction rather than by check.** Both slots are keyed by the
+  `CleanupRunId` alone, the only write either can issue is into an empty slot, and there is no
+  replace arm — so a second and different permit under one run is a conflict rather than a second
+  key. Two permits under one run would be two licences to destroy the same host. An *exact* replay
+  is a success, because a rerun that lost its response is what a resumable cascade does.
+- **The bytes and the identity are checked against each other before anything is written.** A
+  commit is asked for one `CascadeReportDigest` and the boundary holds the bytes that digest is
+  supposed to name; if they do not hash to it the commit refuses, so the Authority never records an
+  identity the replicated bytes do not have and the independent reader is never set up to confirm a
+  name nothing produces.
+- **The Authority write precedes the independent copy, and the order is load-bearing.** An identity
+  the Authority holds with no copy beside it is a run that can retry the copy; a copy with no
+  Authority record is an object nothing refers to. The regression measures the order rather than
+  asserting it.
+- **A failed replication is a lost response, not a refusal.** The copy's outcome is not decidable
+  from this side — a transport failure may have landed — and Stage C reads the report back after
+  *every* commit outcome precisely so the observation arbitrates. Reporting a definite refusal would
+  decide the run from the weaker fact.
+- **The permit that is returned is the durable one.** After the write the slot is read back and the
+  grant is rebuilt from what the Authority holds, so a grant nothing recorded cannot reach
+  `bindLocalCompletionPermit` merely because a write reported success.
+- **The durable record states only what the compiled run cannot.** The report slot holds the run and
+  the report digest; the permit slot holds the grant's own identities. Scope and graph digest are
+  re-derived from the compiled program rather than stored, so the durable bytes and the running
+  cascade have nothing to disagree about — unlike the durable readiness binding, which must restore
+  a proof from bytes alone while the Authority is absent and therefore has to carry them.
+
+### Current Implementation Checkpoint (2026-08-20, the report the digest is the digest of)
+
+- **Stage C's two boundaries both took a `CascadeReportDigest` that nothing produced.**
+  `Prodbox.Lifecycle.Teardown.PreUninstallReport` is what the digest is the digest *of*: the
+  canonical bytes of the complete pre-uninstall cleanup report, and their identity.
+- **The report is admitted, never merely rendered.** `PreUninstallReport` has no constructor
+  reachable from a compiled program alone — it is built only from a program together with the three
+  convergence evidences, and only when all three bind to that program. A report is a durable
+  statement that *this* run reached exact absence, disposed its credentials, and passed its terminal
+  audit, and the proof bindings are the only thing that can refuse a statement about the wrong run.
+  `requireCascadeConvergenceBinding` is the private check it goes through, and it is deliberately
+  the same three comparisons `mkReadyToUninstallEvidence` makes rather than a weaker prefix, so a
+  report and the readiness composed from it cannot disagree about which run they belong to.
+- **The enumeration comes from the compiled program, and that is not the weaker source.** The
+  resources the report names are the exact-absence targets the program compiled, not a list an
+  observer accumulated — which is the same set `mkCascadeAbsenceEvidence` required the observation
+  set to equal *exactly*. Holding the absence evidence is therefore what makes the enumeration true,
+  and deriving it from the program means a report cannot name more than was proven.
+- **The bytes are canonical and the identity is their digest.** Keys are sorted and de-duplicated
+  and the payload is a versioned record, so rendering one converged run twice yields the same bytes
+  and the same identity. That is what lets a rerun after a lost response re-render its own report and
+  find the Authority already holding exactly it, instead of committing a second identity for the
+  same facts — the exact-replay arm the Authority slot depends on.
+- **The report states identities, not narration.** No timestamps, no attempt counts, no operator
+  prose: an identity a permit is signed over must be a function of what was proven, and anything
+  varying between two renderings of one converged run would make the permit unrepeatable.
+- **The identity is computed the way the independent adapter computes the name it stores the bytes
+  under**, so the renderer, the commit boundary, and the adapter cannot disagree about what this
+  report is called, and none of them is told another's answer.
+
+### Current Implementation Checkpoint (2026-08-20, Stage C composed)
+
+- Stage C is a chain rather than five surfaces that never met.
+  `Prodbox.Lifecycle.Teardown.PreUninstallStageC` renders the pre-uninstall report from the compiled
+  program and its three convergence evidences, commits it at the Lifecycle Authority, replicates it
+  into the independent failure domain, reads it back from that domain, obtains the one-shot permit,
+  and composes `ReadyToUninstallEvidence`. Before this every one of those surfaces existed and each
+  was exercised only by its own regression.
+- **The report identity is rendered, never supplied.** No caller names a `CascadeReportDigest`: it is
+  the digest of the bytes this run rendered, and that one value is what the Authority is asked to
+  commit and what the independent adapter is asked to confirm. While each half took the digest as an
+  argument, a run could commit a report identity its own proofs do not produce; it now cannot.
+- **Nothing is written before the report is admitted.** The three evidences must bind to the compiled
+  program for the report to render at all, and that refusal returns before the commit boundary is
+  constructed — measured as no client being reached at all when the proofs describe another run. A
+  report is a durable statement that *this* run converged, so a run that cannot make the statement
+  never reaches the surface that records it.
+- **The same three evidences render the report and compose the readiness.** They are passed once and
+  used twice, so the report a permit is signed over and the readiness that permit belongs to are
+  statements about one run by construction rather than by the caller's discipline.
+- **The permit is signed after the durability decision, not before it.** The measured order of one
+  converged run is the Authority record, the independent copy, the independent read-back, and only
+  then the permit, so the licence to uninstall is never issued ahead of the observation that
+  justifies it.
+- The composition activates no writer: nothing in the repository constructs it outside its own
+  regression, and the two clients it takes are supplied by the caller. Composing it with the host
+  runner and the restore boundary into a running cascade is the non-public candidate entrypoint this
+  sprint still owns.
+
+### Current Implementation Checkpoint (2026-08-20, the production effects record)
+
+- The host cleanup runner's twelve injected arms are assembled.
+  `Prodbox.Lifecycle.HostCleanupProductionEffects` is the assembly, and it is what
+  `Prodbox.ControlPlane.CascadeHostRuntime` is handed to become a closed runtime. Every arm already
+  had a production surface and nothing put them together, so the runner could only ever be driven
+  by a fixture.
+- **Every arm reads its own source and the record holds no mutable state**, so an arm asked twice
+  observes twice. That is what keeps the runner's two readiness read-backs — the same question
+  before the uninstall and again after re-establishment — two observations rather than one cached
+  value.
+- **The completion read-back derives its own prerequisites.** It needs the run's readiness and its
+  observed local-uninstall evidence, and it obtains both by observing: the readiness from the
+  Authority's durable slot, the absence from a fresh marker observation. Remembering what the commit
+  arm was handed would have failed in exactly the case that matters most — a resumed run reaches the
+  verification without issuing a commit at all, so a remembered value would be missing precisely
+  when the run is closing.
+- **A host that is not absent refuses that read-back**, because the receipt's meaning is that *this
+  run* recorded its own local absence; asking the journal about a host whose markers are still
+  present would compare a durable entry against a proof the run does not hold. A host that could not
+  be observed stays a third answer.
+- **The resolution mentions neither proof type.** It is polymorphic in both, so routing is all it
+  can do — a signature naming `ReadyToUninstallEvidence` and `LocalUninstallEvidence` would have left
+  room to inspect them — and the four-arm table is therefore exercised over stand-ins, with no
+  Authority, no host, and no proof.
+- **The injected surface is now exactly the five host mutations.** Installing a substrate from
+  retained bytes, starting its service, awaiting its API, loading a retained image, and reconciling a
+  recovery chart are the only effects the record does not supply. Everything the repair needs to
+  *decide* is production: the substrate observation, and the retained-store listing, which
+  `observeRetainedArtifactStore` now exposes from either root — listing is not a mutation, and a
+  bootstrap-located root is what a recovery holds while the Authority is absent.
+- Nothing in the repository constructs the record. Building its sources is the non-public candidate
+  entrypoint this sprint still owns.
+
+### Current Implementation Checkpoint (2026-08-20, the repair's host mutations)
+
+- The last injected arm of the host cleanup runner has a production answer for four of its five
+  acts. `Prodbox.Lifecycle.Teardown.RecoveryRepairProduction` installs the substrate from retained
+  bytes, starts its service, awaits its API, and imports a retained image;
+  `Prodbox.Lifecycle.Teardown.RecoveryRepairExecution` had deliberately shipped no production
+  boundary at all.
+- **The retained-artifact kind universe was short two kinds, and that is the finding this increment
+  opened with.** It declared a substrate installer and a system-images archive, and an offline
+  install also reads the release tarball and the checksum file the installer verifies it against —
+  in one artifact directory, under fixed architecture-specific names. A repair rendered against the
+  old universe would have admitted against the retained store and then refused at its first step on
+  a real host. `RetainedSubstrateReleaseTarball` and `RetainedSubstrateChecksum` are now members,
+  the absent-substrate obligation names all four, and every surface that enumerates the universe
+  moves with it.
+- **The installer reads exactly the verified bytes.** The install stages a directory of links to the
+  verified retained files rather than copying, renaming, or re-fetching them, so the bytes the
+  installer reads are the bytes the admission hashed — and the staged directory is outside the
+  retained store, because custody measures store membership in both directions and scratch inside it
+  would be collected as unreferenced. It is discarded on every path, including a failed install.
+- **An incomplete install refuses before anything is staged**, measured as no command being issued at
+  all. A missing artifact must be named by the run rather than discovered inside a root subprocess,
+  where it can no longer say which byte source was absent.
+- **Availability is read from the one substrate observer.** The API wait polls
+  `Prodbox.Config.LocalRke2RecoveryState` rather than issuing a second health check, so the repair
+  and the read-back that judges it agree by construction about what healthy means. The wait stops at
+  the first healthy observation and an exhausted bound reports the last observation rather than a
+  bare timeout, which is what keeps a stopped substrate and an unobservable one distinct.
+- **The chart reconcile is supplied, not built here.** Reconciling a recovery chart is chart
+  delivery, which sits above the lifecycle surface rather than beside it; taking it as an argument
+  states that dependency instead of inverting it.
+- One bound is recorded rather than implied: the install, start, and import invocations are a
+  contract with the substrate's own tooling, and the regressions measure what this module decides
+  through an injected physical boundary. That the external tools accept these exact invocations is a
+  live-infrastructure proof and is not claimed.
+
+### Current Implementation Checkpoint (2026-08-20, the host reaches its own retained slots)
+
+- **The cascade's three retained slots had no production reader or writer on the host at all.** One
+  run's accepted pre-uninstall readiness, its committed report identity, and its one-shot
+  local-completion permit are all written against a `ModelBCasAdapter 'ClusterRetained`, and the only
+  production adapter in the repository was the in-cluster one. A cascade runs on the host — that is
+  what makes it a cascade — so `Prodbox.ControlPlane.HostCleanupReadinessRepository` and
+  `Prodbox.ControlPlane.CascadeReportRepository` were constructible only from a fixture.
+- `Prodbox.ControlPlane.CascadeRetainedSlotEndpoint` is the authenticated Authority route that closes
+  the gap and `Prodbox.ControlPlane.CascadeRetainedSlotClient` is the host adapter over it. The
+  adapter's type is the one the two repositories already take, so neither changed.
+- **The namespace is closed, and that is the whole point of the route.** A generic
+  "compare-and-swap any Authority object" boundary would have put the admission projection, the
+  cleanup-run index, the decommission manifest, and every credential namespace one logical name away
+  from a host — an escape path wearing a protocol. This route admits exactly three run-keyed slot
+  families, by prefix *and* by the canonical slot digest the repositories derive, so a prefix with a
+  traversal suffix is refused as surely as a foreign name.
+- **The only write is an initialize**, because the wire type has no replace arm and no guarded arm.
+  The no-replace property all three slots already had at their repositories is now a property of the
+  protocol as well, which is what keeps the permit one-shot across a boundary the repositories do not
+  own. A conflict carries the bytes already in the slot, because telling an exact replay from a
+  genuine disagreement is exactly what the accept, commit, and grant protocols use that arm for.
+- **Authority identity never crosses the wire.** The host names a slot; the Authority builds the
+  coordinate from the authority it was configured with. A host therefore cannot address another
+  cluster's retained namespace by construction, and there is no bucket, namespace, or cluster id on
+  the wire to tamper with.
+- **An unconfirmable answer is unobservable, never a refusal.** A failed call, an undecodable body, a
+  response bound to a different request, and a status that disagrees with its own payload all leave a
+  write that may have landed. Each becomes the unobservable arm of the Model-B result, so the run
+  resolves it by observing rather than by concluding the opposite of what is durable. The applied arm
+  carries only the object version and the caller reconstructs the value it sent, because an
+  initialize applies exactly the bytes it was given and believing an echo would let a corrupted
+  response rewrite the caller's own record of what it wrote.
+- The route is refused for every caller except the operator CLI, is registered in the closed
+  role/route registry like every other, and activates no writer: the endpoint is served by the
+  Authority runtime and nothing in the repository constructs the host adapter yet.
+
+### Current Implementation Checkpoint (2026-08-20, the sources are declared and assembled)
+
+- **The retained-artifact inventory had no configuration surface at all.** Nothing in `src/` or
+  `app/` constructed a `RetainedArtifactEntry`; the inventory and the source catalog existed only in
+  tests, so the repair that consumes them could be rendered only against a fixture. They are now
+  operator-declared Tier-0 config: `retained_artifacts` carries an architecture and a list of
+  artifacts, and `prodbox-config-types.dhall` is regenerated from the same Haskell source of truth
+  as every other section.
+- **An artifact is declared once.** One entry projects into both the inventory and the source
+  catalog, so the digest the acquisition promises the locator delivers and the digest the retained
+  store is measured against are the same field. Two separately authored lists could disagree, and
+  would, exactly when a recovery needed them — the run would acquire one artifact and then refuse
+  the store that now holds it. An empty `source_url` declares an artifact that is retained and has
+  no acquisition: a member of the inventory, not of the catalog, which is how custody reports it
+  unsourced rather than inventing somewhere to fetch it from.
+- **The declaration is validated by being projected**, inside `validateLocalConfig`'s positional
+  match, rather than by a second list of shape rules that could drift from the projection. A
+  malformed digest, an unsafe retained path, an unusable locator, a duplicate kind, or an
+  unrecognized architecture or kind is refused at config load rather than at the moment a control
+  plane is already gone and the repair is the only way back. An unrecognized token is *named*: a
+  dropped entry would become an inventory that reports "nothing is retained" and then refuses for a
+  reason that says nothing about the typo.
+- **This required a split, and the split is the finding.** The vocabulary lived in
+  `Prodbox.Config.OrdinaryTeardownRepair`, which also owns the repair matrix and therefore reaches
+  the observed substrate state and, through it, the lifecycle surface — so `Prodbox.Settings` could
+  not import it without a module cycle, and the declaration could not live in the config the repair
+  reads. `Prodbox.Config.RetainedArtifacts` is the leaf that vocabulary now lives in, re-exported
+  unchanged by the repair module, which also collapsed the two separate canonical-digest predicates
+  the two halves had been carrying.
+- **`Prodbox.Lifecycle.HostCleanupCompositionRoot` is the composition root.** Everything decidable
+  without a session is decided first — the Tier-0 declaration, the retained root, the inventory, the
+  catalog, the recovery closure, and the Authority coordinate — and only then are the two
+  authenticated transports opened. A composition that authenticated first would have taken a session
+  it cannot use and reported an operator's typo as an Authority failure; the local half is a value
+  whose type mentions no transport, so the ordering is a fact rather than a comment.
+- **One retained root feeds both roots**, so a run cannot read its artifacts under one root and
+  append its completion beside another; **the repair inherits the declaration's architecture** from
+  the projected inventory rather than a second supplied value; **the observation scope and the
+  retained coordinate are derived from one cluster id**; and the Authority Backup Adapter session is
+  opened beside the Authority session because that is what makes re-establishment's confirmation
+  independent of the Authority being re-established.
+- **The Tier-0 floor is the source, not the in-force projection**, and the consequence is stated
+  rather than hidden: a cascade repairs a control plane that may be absent, so a declaration
+  readable only through the Lifecycle Authority would be unreadable precisely when the repair exists
+  to run — and an operator's retained-artifact change therefore reaches a recovery when it reaches
+  `prodbox.dhall`.
+- **The durable host-cleanup record comes from that same located root**, beside the artifact store
+  and the completion journal, so a resumed run reads the phase it reached beside the bytes it
+  reached it with. The record, the effects that act on it, and the session they were built over are
+  handed over as one value because they are only meaningful together — and they are exactly what
+  `mkCascadeHostRuntime` takes, so the closed cascade host runtime the descriptor-bound dispatcher
+  admits is now constructible.
+- Building the sources issues no host mutation and no wire call, and nothing in the repository calls
+  the composition root: activating a writer is Sprint `6.5`'s.
+
 ### Deliverables
 
 - Acquire/resume one durable cleanup run and derive substrate/account/region/cluster identity from
@@ -11433,8 +11740,16 @@ convergence, records it durably, and can construct a local-uninstall plan only a
 6. A second cascade resumes the same run or accepts its scoped read-back local-completion receipt
    idempotently; it does not allocate a second ambiguous provider operation or reinstall merely to
    rewrite completion history.
-7. Installed CLI fake traces cover success, failure, cancellation, response loss, restart, and
-   terminal narration with exact keys/authorities and `CleanupRunId`.
+7. Fake-driven traces over this sprint's own surfaces cover success, failure, cancellation,
+   response loss, and restart with exact keys, authorities, and `CleanupRunId`.
+   **Re-scoped 2026-08-20 under
+   [Standard N](development_plan_standards.md#n-phase-independence-and-execution-order).** The item
+   previously required *installed CLI* traces and terminal narration. This sprint deliberately
+   activates no public writer — the candidate entrypoint is package-private and nothing calls it —
+   so there is no installed command whose narration could be traced, and the item was a Phase-4
+   validation criterion only a Phase-6 composition could satisfy. Sprint `6.5` received the
+   installed-binary and narration half as its validation item 10; this sprint makes no claim about
+   it.
 
 ### Validation Result (2026-08-18, retained-artifact custody)
 
@@ -11661,6 +11976,383 @@ convergence, records it durably, and can construct a local-uninstall plan only a
 - The library and unit surface build warning-clean under `--enable-tests --ghc-options=-Werror`,
   `prodbox dev check` passes, and the unit suite is 4286/4286.
 
+### Validation Result (2026-08-20, the report reaches the independent domain)
+
+- 7 focused cases in `test/unit/LifecycleTeardownPreUninstallReportBackup.hs` measure the
+  projection against a package-private compiled-run fixture: present is observed, present carries
+  the **adapter's** identity rather than the caller's question, missing stays distinct from
+  unobservable, corrupt is unobservable, an unreachable domain is unobservable and **not** missing,
+  and the resulting observation is accepted by its own run and refused by another. No compiled
+  cascade program, evidence value, or report digest leaves the package.
+- Sprint `4.87`'s class enumeration is extended and still measures what it measured: all **4**
+  classes name an adapter object, and all 4 names are distinct. The count is pinned deliberately so
+  a fifth class forces a decision there rather than passing by construction.
+- The library and unit surface build warning-clean under `--enable-tests --ghc-options=-Werror`.
+
+### Validation Result (2026-08-20, the Stage-C writing half)
+
+- 8 focused cases in `test/unit/LifecycleTeardownPreUninstallReportCommit.hs`, each produced by
+  running the boundary against the fault rather than by asserting its classification: both halves
+  landing is `Applied`; the Authority write is measured to precede the copy; an identity that does
+  not name the bytes refuses; a second and different report identity refuses; a failed copy is a
+  lost response and **not** a refusal; the granted permit is bound to the committed report; a
+  replaying run receives the durable grant rather than a fresh one; and a permit for a different
+  report under the same run refuses.
+- No Authority, compiled cascade program, report digest, or permit grant leaves the package: the
+  fixture runs against an in-memory `ClusterRetained` slot store and an in-memory copy target, and
+  the suite reads only booleans.
+- The library and unit surface build warning-clean under `--enable-tests --ghc-options=-Werror`.
+
+### Validation Result (2026-08-20, the report the digest is the digest of)
+
+- 6 focused cases in `test/unit/LifecycleTeardownPreUninstallReport.hs` over a package-private
+  compiled-run fixture: one converged run renders to the same bytes and the same identity twice; the
+  identity is the digest of the bytes; the enumeration is exactly the compiled exact-absence
+  targets; describing a program with another run's proofs refuses; two distinct converged runs get
+  two distinct identities; and the identity this module derives is the identity the commit boundary
+  derives from the same bytes.
+- The last of those is the join the rest of Stage C rests on and is measured rather than assumed.
+- The library and unit surface build warning-clean under `--enable-tests --ghc-options=-Werror`.
+
+### Validation Result (2026-08-20, Stage C composed)
+
+- 8 focused cases in `test/unit/LifecycleTeardownPreUninstallStageC.hs` over a package-private
+  compiled-run fixture, an in-memory `ClusterRetained` Authority slot store, and an in-memory
+  independent domain: a converged run reaches readiness; the readiness carries the identity of the
+  report the run rendered; the measured call order is Authority record, independent copy,
+  independent read-back, permit; proofs describing another run refuse; that refusal reaches no
+  client at all; a domain that accepted the copy and holds nothing is not ready; a domain that
+  answers nothing is not ready; and the same converged run run twice re-renders one identity.
+- Every property is produced by running the composition against the fault that causes it rather than
+  by asserting a classification, so an arm the chain stops producing disappears from the result
+  instead of surviving as an authored constant.
+- No compiled program, evidence value, report identity, or readiness proof leaves the package; the
+  suite reads only booleans.
+- `prodbox dev check` exits 0 with the new module and suite in the region, and the library and unit
+  surface build warning-clean under `--enable-tests --ghc-options=-Werror`.
+
+### Validation Result (2026-08-20, the production effects record)
+
+- 5 focused cases in `test/unit/LifecycleHostCleanupProductionEffects.hs` over the completion
+  read-back's closed prerequisite table: both observations answered resolves to exactly the pair it
+  was handed; an Authority holding no readiness refuses before the markers are consulted; a host
+  whose markers are present refuses; a host that could not be observed is a third answer; and the
+  three refusals render as three distinct answers.
+- The table is exercised over stand-in values rather than proofs, which is what measures that the
+  resolution routes and never inspects: a resolution that read either proof could not typecheck
+  against them.
+- The remaining eleven arms are one production surface applied to one source each, and each of those
+  surfaces is measured by its own regression. The end-to-end exercise of the assembled record is the
+  candidate entrypoint's fault matrix, which this sprint still owns and which is stated as remaining
+  rather than implied by this result.
+- Assembling the record exposed a gate reading its own spelling rather than the fact it measures.
+  The rule that only the completion journal may mint a `HostCleanupCompletionReadBack` matched the
+  type name as a *substring*, so a module that merely calls the production arm
+  `productionHostCleanupCompletionReadBack` was reported as a third producer. It now matches the
+  name as a token, and it is proven to refuse rather than only to pass: a standalone mention added
+  to a third source file fails the case, and removing it restores the pass.
+- `prodbox dev check` exits 0 with the new module and suite in the region, and the library and unit
+  surface build warning-clean under `--enable-tests --ghc-options=-Werror`.
+
+### Validation Result (2026-08-20, the repair's host mutations)
+
+- 9 focused cases in `test/unit/LifecycleTeardownRecoveryRepairProduction.hs` over an in-memory
+  physical boundary: the install stages exactly the four expected names against the four
+  store-resolved paths; it runs the installer over the staged directory and discards it; an
+  incomplete install stages nothing and issues nothing; a failed install still discards; the start
+  enables and starts in one act; the wait stops at the first healthy observation with no pause; an
+  exhausted wait observes exactly its bound and reports the last observation; the image import
+  addresses the store-resolved path; and the chart arm is delegated with no command issued here.
+- The kind-universe extension is measured by the existing Sprint-`3.41` matrix moving with it: the
+  absent-substrate obligation, the unretained-artifact refusal's complete missing set, the rendered
+  install step's references, and the custody read-back's residue all now name four substrate kinds,
+  and the whole unit suite passes at 4344.
+- `prodbox dev check` exits 0, and the library and unit surface build warning-clean under
+  `--enable-tests --ghc-options=-Werror`.
+
+### Validation Result (2026-08-20, the host reaches its own retained slots)
+
+- 16 focused cases in `test/unit/ControlPlaneCascadeRetainedSlot.hs` cover the closed namespace
+  measured against the names the two repositories actually derive (so a rename there fails this
+  route rather than silently stranding the host); a foreign name, a cascade prefix with a
+  non-canonical slot key, a malformed body, an oversize body, an unsupported format version, and an
+  oversize slot value each refused without the object store being reached; the conflict arm carrying
+  the observed bytes; every response arm bound to the exact request digest and format version; the
+  host side refusing a foreign name, a replace, and both guarded arms before a request is issued; an
+  applied value reconstructed from the bytes the caller sent; a lost or unconfirmable response
+  reported as unobservable; and missing/observed round-tripping.
+- The library, the executable, and every test suite build warning-clean under
+  `--enable-tests --ghc-options=-Werror`; `prodbox dev check` passes; `prodbox test unit` is
+  4359/4359 with the known-environmental SSH case excluded, and the three auxiliary control-plane
+  suites are 27/27, 33/33, and 29/29.
+- This result covers the route and its host adapter only. Validation items 1-7 above measure the
+  cascade proof chain and remain open. That the route behaves this way against a deployed Authority
+  is a live-infrastructure proof and is not claimed.
+
+### Validation Result (2026-08-20, the sources are declared and assembled)
+
+- 10 focused cases in `test/unit/OrdinaryTeardownRepair.hs` cover the empty declaration; one
+  declaration projecting into both surfaces carrying one digest; the architecture reaching both
+  surfaces; an unsourced artifact staying in the inventory and out of the catalog; an unrecognized
+  kind and an unrecognized architecture each named rather than dropped; and a malformed digest, an
+  unsafe retained path, a non-`https` locator, and a duplicate kind each refused.
+- One case in `test/unit/Main.hs` measures the config-load gate itself: an empty declaration loads,
+  a foreign architecture and a malformed digest are refused by `validateLocalConfig`.
+- Three cases in `test/unit/HostCleanupCompositionRoot.hs` measure the ordering property — a
+  directory with no Tier-0 floor is refused with a local error rather than an authentication
+  failure — that the artifact store, the completion journal, and the durable record all derive from
+  one locator, and that every refusal renders distinctly so an operator is told which surface to
+  fix.
+- `test/unit/LocalRetainedRoot.hs`'s bootstrap-locator consumer registry gains the composition root
+  with its admission recorded: it holds the locator only to hand one located root to the store and
+  the journal.
+- The library, the executable, and every test suite build warning-clean under
+  `--enable-tests --ghc-options=-Werror`; `prodbox dev check` passes; `prodbox test unit` is
+  4373/4373 with the known-environmental SSH case excluded.
+- This result covers the declaration and the composition root only. Validation items 1-7 above
+  measure the cascade proof chain and remain open; that the assembled record drives a real host is a
+  live-infrastructure proof and is not claimed.
+
+### Current Implementation Checkpoint (2026-08-20, the cloud half could not be composed)
+
+- **The cloud runtime had no production composition root at all.**
+  `Prodbox.Lifecycle.Teardown.CloudRuntime` normalizes four interpreters into the closed dispatcher
+  for the fourteen cloud-owned operations, and nothing in `src/` or `app/` constructed one: the only
+  inhabitants in the repository were the dispatcher's own fixed diagnostic and a unit fixture. The
+  descriptor-bound dispatcher therefore admitted a closed cascade *host* runtime it could construct
+  and a closed *cloud* runtime it could not.
+  `Prodbox.Lifecycle.Teardown.CloudRuntimeProduction` is that root.
+- **Two durable records were unreachable from a host, and that is the finding this increment opened
+  with.** The complete ownership manifest decision and the AWS stack creation binding are each keyed
+  by an authority identity whose derivation is private to the repository module that owns the record
+  — and both host-reachable transport clients take that identity as an *argument*. A host holding
+  either client could therefore not address the record at all, so two of the stack reader's three
+  durable inputs had no production reader.
+  `readBackOwnershipManifestDecisionForScope` and
+  `readBackCommittedAwsStackCreationBindingForScope` are the derivations, keyed by the stack and the
+  run's own observation scope and nothing else.
+- **The manifest target is rebuilt from the scope's surface rather than chosen.** A rank-2 reader
+  over `forall surface` has no witness to give, and `mkOwnershipManifestTarget` needs one.
+  `cleanupSurfaceWitnessFor` recovers it from the scope the run already carries, which is the
+  opposite of choosing one: it is the only witness that can satisfy the surface checks the scope
+  itself imposes, so a reader cannot name a surface the scope does not carry.
+- **The EKS drain interpreter carried two arms no production caller could inhabit.** It held a
+  session-acquisition arm and the ephemeral-client boundary that arm's session opens, and neither is
+  reachable from the descriptor-bound path: the three entry points the EKS teardown executor uses go
+  through the commit-selection and attempt boundaries, which issue their own Provider auth and build
+  their own session. The acquisition arm was moreover *unproducible*, because the session it must
+  return needs a fresh `VerifiedAwsEksObservation` that `EksDrainInvocationBinding` does not carry —
+  a production composition had no honest value to put there. Both arms moved to
+  `EksDrainSessionArms`, taken explicitly by the four session-driven entry points, so the interpreter
+  a production cloud runtime builds names exactly the clock it uses.
+- **The ephemeral facts a selection needs are derived, not sampled.** A drain intent is committed
+  durably and a resumed run must re-derive the same one, so the two observation revisions come from
+  the attempt's own operation identity under two distinct dispatch purposes. Sampling a counter here
+  would let a replay commit a second intent for one operation, which is exactly the ambiguity the
+  durable intent exists to remove.
+- **Liveness is the only thing a clock decides.** The drain deadline is `now + lease` under an
+  operator-declared lease bounded *at construction* by the session module's own ceiling, so a
+  deadline this runtime computes cannot be refused later by `mkEksDrainSession` for a reason an
+  operator could only discover mid-cascade. The execution identity the deadline callback receives
+  supplies no freedom, which is why it is ignored rather than consulted.
+- **One registered-target interpreter, by construction.** Checkpoint recovery, EKS drain, and
+  registered reconciliation must address the same Provider boundary; the composition builds exactly
+  one interpreter and lets `mkCloudRuntime` normalize it, and the recursion this creates is the
+  point — the stack reader's checkpoint input is the same checkpoint interpreter the graph's own
+  recovery nodes use, so the pair a stack decision is taken over and the pair a recovery read back
+  cannot be two observations of different authorities.
+- Nothing in the repository constructs the runtime outside its own regression, and building it
+  issues no AWS mutation and no wire call. Composing it with the closed cascade host runtime behind
+  the non-public candidate entrypoint is the item this sprint still owns.
+
+### Validation Result (2026-08-20, the production cloud runtime)
+
+- 5 focused cases in `test/unit/LifecycleTeardownCloudRuntimeProduction.hs` drive the real runtime
+  over a fake *wire* rather than fake components, so every arm under test is the production client.
+  They cover the drain lease's closed bound at both ends with the accepted value preserved; that
+  every refusal renders as a bounded operator-readable line naming its cause; that the runtime is
+  constructible on a host from one authenticated Authority transport; that every cloud-owned cascade
+  node that reaches a boundary reaches the local Lifecycle Authority endpoint and exactly one
+  authority — an arm that had opened an object store, a Vault session, or a provider CLI of its own
+  would leave no call recorded at all; and that an unavailable Authority closes *only* the three
+  checkpoint-pair observers, which is their job, while every node that would have had to decide
+  something from that outage fails instead.
+- The succeeding set is pinned rather than merely asserted non-empty, because "something failed" is
+  what a component closing a mutation from its own request would also satisfy.
+- The library, the executable, and every test suite build warning-clean under
+  `--enable-tests --ghc-options=-Werror`, and `prodbox dev check` passes.
+- This result covers the cloud runtime's composition and routing only. That its arms reach a real
+  Lifecycle Authority and a real AWS account is a live-infrastructure proof and is not claimed;
+  validation items 1-7 above measure the cascade proof chain and remain open.
+
+### Current Implementation Checkpoint (2026-08-20, the candidate entrypoint)
+
+- **Both closed runtimes the descriptor-bound dispatcher takes were constructible and nothing drove
+  the dispatcher.** `Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal` is that drive: it
+  resolves the compiled program, the declared initial run, the canonical program descriptor, the
+  host scope, and the terminal identity as one transport-free value; opens the two authenticated
+  sessions through the host composition root; builds the cloud runtime and the cascade host runtime
+  over the same transport; and runs the total dispatcher across the durable descriptor-bound run.
+- **The entrypoint is non-public and stays that way.** It is Cabal-hidden and its facade exposes
+  four booleans, exactly as the dispatcher and the cascade host runtime do; nothing in the
+  repository calls it. Activating it as the sole public writer and deleting the legacy route is
+  Sprint `6.5`'s qualified cutover, which this sprint makes no claim about.
+- **The durable-cascade entry protocol was on the wrong side of a boundary, and that is the finding
+  this increment opened with.** Capturing the program descriptor, preparing the host intent
+  *before* any mutation, observing-or-creating the run, claiming it, attaching the primary outcome,
+  and reading the terminal report back independently before compacting are what **any** caller of
+  the descriptor-bound protocol must do — none of it is validation-specific. It lived in
+  `Prodbox.Test.*`, and the Sprint-`4.85` harness-namespace gate refused the first production caller
+  outright. The remedy the gate itself names is "express the obligation in lifecycle-owned types",
+  so the module moved to `Prodbox.Lifecycle.CleanupRunEntry` rather than the allowlist being
+  widened. The validation harness remains a client of that protocol; it is no longer its owner.
+- **The plan is a function of the declared identity, so re-entry replays rather than forks.** The
+  program descriptor digests the initial run, and the initial run's lease is a *declared* window
+  rather than a clock sample — so two entries with the same inputs derive the same descriptor and
+  the Authority replays the run it already holds. Sampling a clock here would make every resume a
+  different program, which is precisely how a cascade would end up with two runs destroying one
+  host. A degenerate declared window is refused rather than admitted.
+- **The terminal identity is compiled, not authored.** The durable host record's terminal operation
+  is the operation id the compiled program gave its `UninstallCascadeLocalFoundation` node, so the
+  record and the graph cannot disagree about which node is licensed to destroy the host. The
+  regression computes both sides rather than checking the identity is non-empty, because a non-empty
+  identity would also be satisfied by one the graph never gave.
+- **One repository root and one caller for both halves.** The cloud half's Provider dispatch reads
+  them out of the host composition inputs rather than taking its own, because a cloud half
+  authenticating as a different caller than the host half would be two cascades sharing a run id.
+- **The cascade is its own primary work.** There is no separate action whose failure the cleanup
+  would be reacting to, so the primary outcome is recorded as a fact about the run rather than as an
+  observation of something else.
+- The dispatcher's Internal-module importer gate and the stack-reader transport client's
+  zero-importer gate both recorded their new member deliberately, which is what those gates exist
+  for: a module reaching a package-private construction is a decision with a stated reason rather
+  than an import.
+
+### Validation Result (2026-08-20, the candidate entrypoint)
+
+- 4 focused cases in `test/unit/LifecycleTeardownCascadeCandidate.hs` read the entrypoint's fixed
+  non-authorizing regression: that two resolutions of one declared cascade identity produce one
+  program descriptor, graph digest, and run id; that the durable host record's terminal operation
+  equals the compiled program's local-uninstall operation id, computed independently on both sides;
+  that a declared lease window of zero is refused as an invalid initial run; and that a different
+  declared run id produces a different program descriptor, so two cascades cannot share one.
+- `test/unit/ControlPlaneDescriptorBoundLifecycleRuntime.hs` and
+  `test/unit/ControlPlaneAwsStackReaderRepository.hs` each record their new package-private importer
+  by name, so a third one is a build failure rather than a silent widening.
+- `test/unit/LifecycleCleanupClient.hs` follows the entry protocol to its new lifecycle-owned path;
+  its own no-validation-owned-graph assertions are unchanged.
+- The library, the executable, and every test suite build warning-clean under
+  `--enable-tests --ghc-options=-Werror`; `prodbox dev check` passes; `prodbox test unit` is
+  4382/4382 with the known-environmental SSH case excluded.
+- This result covers the entrypoint's transport-free half and its ownership boundaries. Driving a
+  real cascade is a live-infrastructure proof and is not claimed.
+
+### Current Implementation Checkpoint (2026-08-20, the local-only surface could claim a cascade)
+
+- **`LocalUninstallEvidence` stood for both surfaces at once, and only a caller's discipline kept
+  them apart.** Validation item 3 names a `LocalUninstallEvidence 'LocalOnly`, and the type carried
+  no index: nothing but convention stopped a local-only host observation from being handed to
+  `mkCascadeCompleteEvidence`, which would have claimed a cascade converged on the strength of an
+  observation that says nothing about AWS. The type is now indexed by the surface whose compiled
+  program licensed the uninstall, both constructors are private, and there is deliberately no
+  conversion in either direction — the confusion is a type error rather than a runtime refusal.
+- **The local-only surface closes on its own terms.** `mkLocalOnlyUninstallEvidence` is licensed by
+  the compiled local-only program alone, and `mkLocalOnlyCompleteEvidence` confirms the receipt that
+  surface's own node commits. There is no report identity and no permit to compare, because the
+  local-only surface signs neither — which is precisely why its completion cannot stand in for a
+  cascade's. `LocalOnlyCompleteEvidence` is a separate type for the same reason.
+- **The binding is a distinct type, validated by the opposite rule.** A cascade binding refuses a
+  missing AWS scope; a local-only binding refuses a present one, so a value that satisfies one
+  cannot satisfy the other. That check is measured where it is *decidable*: a local-only program
+  carrying an AWS scope does not compile at all, so no such program can reach the binding. The
+  binding keeps its own check anyway, because this module must not depend on another module's
+  invariant to know that a local-only proof names no stack.
+- **The scope, present, and unobservable rules are shared rather than re-decided.** Both surfaces
+  reach absence through one `localFoundationAbsence`: an observation of another scope is a refusal, a
+  present foundation has not converged, and an unobservable one has said nothing. Collapsing the last
+  two would let an unreadable marker set read as absence, on either surface.
+- Nothing in production constructs the local-only evidence yet; it is exercised by the fixed
+  regression. Driving it from an installed command is the public writer Sprint `6.5` activates.
+
+### Validation Result (2026-08-20, the local-only surface)
+
+- 4 further arms in `fixedCascadeEvidenceRegression`, read by one case in
+  `test/unit/LifecycleTeardownCascadeEvidence.hs`: that the local-only chain closes from an observed
+  absence and its own committed receipt; that a local-only program carrying an AWS scope does not
+  compile; that a missing local-only receipt refuses the completion; and that a still-present
+  foundation refuses the absence. There is deliberately no arm for handing local-only evidence to
+  `mkCascadeCompleteEvidence`, because that does not type-check.
+- The library, the executable, and every test suite build warning-clean under
+  `--enable-tests --ghc-options=-Werror`; `prodbox dev check` passes; `prodbox test unit` is
+  4383/4383 with the known-environmental SSH case excluded.
+
+### Current Implementation Checkpoint (2026-08-20, the frozen composition)
+
+- **Every piece of validation item 1 had its own regression and nothing composed them.** The
+  composition is the claim: the audit reports one retained resource from one returned two-tag
+  mapping, no cloud node consumes what the audit saw, and every exact per-stack failure survives as
+  its own node's outcome rather than being folded into one verdict — which is the exact defect an
+  aggregate exit status invites and the one the legacy cascade's phase fold still has.
+- **The region bound and the retained classification are independent, and the case pins both.** The
+  frozen run's own region answers for no global service, so a would-be-clean verdict is downgraded
+  to unobservable on the region bound alone; asserting only "not clean" would have passed even if
+  the retained bucket had been classified as an escapee. The case therefore pins the inventory at
+  one resource, pins that no escapee was found, and pins that every carried failure names the
+  tagging API's endpoint rather than anything the returned mapping said.
+- **No EKS drain or destroy can be selected from the audit, and that is structural.** The cloud
+  runtime does not own `AuditCascadeEscapes` — it declines the operation rather than answering it —
+  so the measurement is that driving every cloud-owned node issues zero audit queries while the
+  audit, issued against its own boundary, issues exactly its catalog.
+
+### Validation Result (2026-08-20, the frozen composition)
+
+- 4 focused cases in `test/unit/LifecycleTeardownCascadeFrozenComposition.hs` over the production
+  cloud runtime with the Authority answering 503: the three exact per-stack observations produce
+  three separate failed node outcomes; the audit's two returned rows for one ARN report one retained
+  resource, no escapee, and an unobservability attributable only to the region bound; driving every
+  cloud-owned node issues no audit query at all; and the audit node is declined rather than answered.
+- The library, the executable, and every test suite build warning-clean under
+  `--enable-tests --ghc-options=-Werror`; `prodbox dev check` passes; `prodbox test unit` is
+  4387/4387 with the known-environmental SSH case excluded; `prodbox test integration cli` and
+  `prodbox test integration env` are 61/61 each.
+
+### Current Implementation Checkpoint (2026-08-20, two harness defects the closure found)
+
+Running this sprint's Definition of Done end to end — `prodbox test integration cli` and `env`, not
+only `dev check` and `prodbox test unit` — found six failing integration cases that no gate had been
+reading, and both causes were in the harness rather than in the command under test.
+
+- **The fixture Authority served a config projection whose digest could never match its bytes.**
+  `fixtureInForceConfig` declared a fixed literal digest while `fixtureConfigBytes` rendered the real
+  operator config, so every caller that validated the projection refused it as non-canonical. A
+  fixture that answers for a config must answer with that config's own identity; anything else
+  measures the fixture. The identity is now derived from the exact bytes served, on both the observe
+  and the propose-cas arm.
+- **The fixture repository had no retained-root layout at all.** `Prodbox.Config.LocalRetainedRoot`
+  validates the prodbox control directory, the retained MinIO volume under it, and the retained Vault
+  volume beside it before an Authority-bound root exists, and the harness created none of them — so
+  every reconcile refused with a layout error before reaching the behaviour the case was written to
+  measure.
+- Neither defect is in a production path and neither changes one. What they show is that a suite the
+  Definition of Done requires had been failing while the gates it runs beside were green, which is
+  why closure ran it rather than assuming it.
+
+### Validation Coverage Map (2026-08-20)
+
+Where each numbered item above is measured today, and what is open. An item is listed as measured
+only when a named regression exercises it; "structural" means the property holds because the value
+is non-constructible otherwise, and the refusal is what is measured.
+
+| Item | Measured by | State |
+|---|---|---|
+| 1 | `test/unit/LifecycleTeardownCascadeFrozenComposition.hs` (the composed frozen run), over `test/unit/LifecycleTeardownCascadeTerminalAudit.hs` (the two-tag mapping decoding as two rows for one retained resource, the disagreeing-row refusal, the blind-query downgrade) and `test/unit/LifecycleTeardownCloudRuntimeProduction.hs` (every AWS-scoped cloud node failing independently under an unavailable Authority) | Measured |
+| 2 | `test/unit/LifecycleTeardownCascadeEvidence.hs` over `fixedCascadeEvidenceRegression`: absence, credential, audit, pre-uninstall, permit, mixed-binding, local-absence, and completion refusals | Measured |
+| 3 | `test/unit/LifecycleTeardownCascadeEvidence.hs`, local-only arms (checkpoint above); the cross-surface confusion is a type error | Measured |
+| 4 | `test/unit/OrdinaryTeardownRepair.hs` (the image obligation identical in every observed state; stopped renders start+await, absent renders reinstall+start) and `test/unit/HostCleanupRunner.hs` (`HostCleanupRunnerReadyBindingMissing`) | Measured — the trust-root half is structural: every path to the uninstall node runs through an accepted readiness only a re-established Authority can produce |
+| 5 | `test/unit/LifecycleTeardownRecoveryRepairExecution.hs` (the unattempted tail preserved at the first failure) and the cleanup-run graph regressions | Measured |
+| 6 | `test/unit/LifecycleHostCleanupCompletion.hs` (the reference-keyed idempotent append), `test/unit/HostCleanupRunner.hs` (a phase already reached performs nothing), and `test/unit/LifecycleCleanupClient.hs` (observe-or-create resolving a lost create response) | Measured |
+| 7 | `test/unit/LifecycleCleanupClient.hs` (cancellation), `test/unit/HostCleanupRunner.hs` (restart and response loss), `test/unit/ControlPlaneDescriptorBoundLifecycleRuntime.hs` (typed refusal) | Measured on this sprint's surface; the installed-CLI and narration half is Sprint `6.5`'s validation item 10 |
+
 ### Remaining Work
 
 Acquiring, retaining, and garbage-collecting the artifact bytes the Sprint-`3.41` recovery plans name
@@ -11713,24 +12405,75 @@ cascade host node, and `Prodbox.ControlPlane.CascadeHostRuntime` is the closed r
 routes those four nodes to. What is still open is the *construction* of that runtime's production
 effects record, which is the non-public candidate entrypoint below rather than a separate surface.
 
-One remaining item is still blocked on a decision this sprint has not yet made, and stating it is
-the point of this paragraph rather than working around it:
+The decision this paragraph used to hold open was made and landed on 2026-08-20 (checkpoint above).
+The Stage-C read-back had no independent reader for a report identity: the Backup Adapter addresses
+objects only by `AuthorityBackupBlobClass` and digest, and no class named a cleanup report. It is a
+**fourth blob class** rather than a second addressing scheme, because the adapter's least-privilege
+grant already covers the prefix a new class lands under, and the report is already a digest.
+`Prodbox.ControlPlane.CleanupReportBackupClient` reaches that class and
+`Prodbox.Lifecycle.Teardown.PreUninstallReportBackup` is the production
+`CascadeReportReadBackBoundary` over it.
 
-- **The Stage-C read-back has no independent reader for a report identity.** Doctrine § 5b node 7
-  requires the physically separate Backup Adapter to read back the exact committed report, and
-  `CascadeReportCommitBoundary` carries only a `CascadeReportDigest`, never bytes — the content
-  belongs to `Prodbox.Lifecycle.Teardown.Report`. The Backup Adapter's observation surface is keyed
-  by `AuthorityBackupBlobClass`, whose members are the aggregate envelope, the checkpoint blob, and
-  the config blob; none of them is a cleanup report, and `authorityBackupBlobObjectName` admits only
-  the first two segments. Closing this means deciding how a report identity reaches the backup
-  failure domain — a fourth blob class replicated by the Authority, or a distinct retained namespace
-  the Backup Adapter reads — before the two boundaries can be wired to real clients.
+Stage C was complete as a chain and composed into nothing, and the composition landed on 2026-08-20
+(checkpoint above). `Prodbox.Lifecycle.Teardown.PreUninstallStageC` renders the report, commits it,
+replicates it, reads it back from the independent domain, obtains the permit, and composes
+`ReadyToUninstallEvidence`; the report identity is derived from the rendered bytes rather than
+supplied, so no caller can name a report identity the run's own proofs do not produce. Nothing
+constructs that composition outside its own regression, which is the candidate entrypoint below
+rather than a separate surface.
 
-What remains, in order: the Stage-C report identity's independent read-back path and the two
-boundaries wired to real clients; and the complete cascade Plan/Apply/fault matrix. Then run the total dispatcher through the serialized aggregate and compose
-it — with the repair-execution, Stage-C, restore, and host-runner production boundaries — behind a
-non-public candidate entrypoint. This sprint does not activate a public writer or delete the legacy
-route; Sprint `6.5` owns those cutover actions.
+What remains, in order:
+
+The production `HostCleanupRunnerEffects` record landed on 2026-08-20 (checkpoint above). The
+completion read-back's two prerequisites are derived by observing rather than remembered from the
+commit arm, so a resumed run that never issues a commit still closes; and
+`observeRetainedArtifactStore` is now available from either root, so the repair's *deciding*
+observations are production. What is still open in that item is the production
+`RecoveryRepairBoundary IO` — installing a substrate from retained bytes, starting its service,
+awaiting its API, loading retained images, and reconciling the recovery charts — which is the last
+injected arm and is host mutation belonging to the candidate entrypoint below.
+
+- **The construction of the record's remaining sources.** The production `RecoveryRepairBoundary`
+  landed on 2026-08-20 (checkpoint above) for four of its five acts, and the decision that had been
+  open here is made: the retained-artifact kind universe was short the release tarball and the
+  checksum file, and it now carries both. The one supplied arm is the recovery chart reconcile,
+  which is chart delivery and belongs above the lifecycle surface.
+  The Authority client's own missing half landed on 2026-08-20 with it (checkpoint above): the
+  readiness namespace and both Stage-C slots were reachable only from inside the cluster, so
+  `Prodbox.ControlPlane.CascadeRetainedSlotEndpoint` and
+  `Prodbox.ControlPlane.CascadeRetainedSlotClient` are the closed route and host adapter that make
+  `modelBHostCleanupReadinessRepository` and `modelBCascadeReportRepository` constructible on a
+  cascading host. What remains is the composition root that builds the inventory, the source
+  catalog, the recovery closure, the retained store, the journal, and the Authority and
+  cleanup-run clients from one located repository root and one authenticated Authority session —
+  and it landed on 2026-08-20 (checkpoint above) as
+  `Prodbox.Lifecycle.HostCleanupCompositionRoot`, on top of the Tier-0 `retained_artifacts`
+  declaration that gave the inventory and the source catalog the configuration surface they had
+  never had. Every source of `HostCleanupProductionSources` now has a production constructor and
+  the record is constructible on a host.
+- The cloud runtime beside it landed on 2026-08-20 (checkpoint above).
+  `Prodbox.Lifecycle.Teardown.CloudRuntimeProduction` assembles the four interpreters over one
+  authenticated Authority transport, and the two durable records that had no host-reachable reader —
+  the ownership manifest decision and the AWS stack creation binding — gained the scope-keyed
+  derivations their own repository modules owe them. The EKS drain interpreter's two unreachable
+  arms moved to `EksDrainSessionArms` rather than being filled with a refusal.
+- The non-public candidate entrypoint landed on 2026-08-20 (checkpoint above).
+  `Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal` resolves the transport-free plan, opens the
+  two sessions through the host composition root, builds both closed runtimes over one transport,
+  and drives the total dispatcher across the durable descriptor-bound run. The durable-cascade entry
+  protocol moved to `Prodbox.Lifecycle.CleanupRunEntry`, because it was named as harness-owned while
+  being lifecycle-owned and the harness-namespace gate refused the first production caller.
+The complete cascade Plan/Apply/fault matrix landed on 2026-08-20. Item 3 closed with the
+surface-indexed local uninstall evidence, item 1 with the composed frozen run, and item 7's
+installed-CLI half was re-scoped to Sprint `6.5` under Standard N because this sprint activates no
+public writer to trace. The coverage map above records where each of the seven items is measured.
+
+None. Activating the candidate entrypoint as the sole public writer, deleting the legacy route, and
+the Standard-P deployment qualification over the composed running system are Sprint `6.5`'s
+qualified cutover; this sprint makes no claim about them.
+
+This sprint does not activate a public writer or delete the legacy route; Sprint `6.5` owns those
+cutover actions.
 
 
 ## Sprint 4.87: The Backup Adapter Could Not Name a Config Blob [✅ Done]
@@ -11811,6 +12554,48 @@ production.
   `documents/engineering/storage_lifecycle_doctrine.md`, and
   `documents/engineering/streaming_doctrine.md` — public semantics and narration by reference to the lifecycle SSoT,
   without copying its phase sequence.
+- `documents/engineering/lifecycle_control_plane_architecture.md` — § 2 gains the capability-release
+  invariant, and a new § 3.4 owns the term *custodial capability*, its disambiguation from the
+  operation-indexed reference, the disposition's constructor set including the absent destroy
+  constructor, the derived-and-underivable dependant set, and why the rule survives arbitrary lifts.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — § 3.1 gains a sixth
+  registry-boundary invariant stating what a run must have proven before completion; § 5 and § 5a
+  gain the rule that the no-install arm is selected by delete mode rather than by install presence,
+  and that a cascade which reached no phase exits non-zero; § 5b node 5 carries the per-node
+  disposition; § 5d's stale naming of the postflight predicate as the live mechanism is corrected;
+  § 6a gains the IAM destroy-granularity consequence; § 9 gains the zero-key-family rule.
+- `documents/engineering/storage_lifecycle_doctrine.md` — § 5 states the zero-exit asymmetry
+  alongside the nonzero one, and § 7 rule 10 gains its missing precondition: retiring the retained
+  root is licensed by a positive disposition of the capabilities it holds, never by an exit code.
+- `documents/engineering/pure_fp_standards.md` — the generic form only: a fifth forbidden program
+  shape, the absent-constructor design statement in § 7, and one review-checklist item.
+- `documents/engineering/cli_command_surface.md` — the `cluster delete` public semantics as a
+  current/target split, the cascade mode's exit status, and the retained-state narration as a total
+  function over terminal arms.
+- `documents/engineering/streaming_doctrine.md` — § 6a's twin rule: an unnarrated exit is not a
+  narrated absence.
+- `documents/engineering/chaos_hardening_doctrine.md` — § 22's fifth honest consequence: a region can
+  be an argument type, not only a module set.
+- `documents/engineering/aws_integration_environment_doctrine.md` — the dated correction to the
+  Sprint-`4.19` record, which claimed this defect class closed.
+- `documents/engineering/README.md` — index Purpose cells and one Quick Navigation deep link.
+
+**Product docs to create/update:**
+
+- Root `README.md` — the corrected `--cascade` no-install behaviour and what a zero and a non-zero
+  cascade exit each do and do not say about AWS and about the retained root.
+- `AGENTS.md` — the same correction on the operator-authorization surface.
+
+**Cross-references to add:**
+
+- [system-components.md](system-components.md) — the custodial-capability disposition, the capability
+  dependant derivation, the destructive delete entry contract, and the custody row in Authority and
+  State Locations.
+- [substrates.md](substrates.md) — the readiness composition's custody requirement, the current
+  deterministically named EKS roles and their destroy granularity, and the SES current-source
+  divergence note, without restating the disposition algebra.
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) — the eight new rows, each owned
+  by the sprint that owns its file.
 
 **Product docs to create/update:**
 
@@ -11823,6 +12608,640 @@ production.
   lifecycle algorithm.
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) — every superseded funnel,
   callback, executor, and false completion has one removal owner.
+
+## Sprint 4.88: The No-Install Cascade Exit Licenses a Deletion It Never Observed [✅ Done]
+
+**Status**: Done (2026-08-20; opened 2026-08-19). The arm is selected by the delete mode over the
+(mode, presence) product, the cascade's no-install path exits non-zero naming the disposition it
+reports, and the retained-state narration is a total function over the command's terminal arms.
+**Blocked by**: none. The corrected arm is reached with no cluster present and no AWS credential, so
+nothing earlier in the queue is required to build or measure it.
+**Deployment qualification**: pending — this changes a destructive-cleanup entry contract and its
+exit status, which invalidates prior qualification under Standard P.
+**Doctrine**: [Lifecycle Reconciliation Doctrine § 5, “Mandatory Entry Contracts for Destructive
+Commands”](../documents/engineering/lifecycle_reconciliation_doctrine.md#5-mandatory-entry-contracts-for-destructive-commands),
+[Lifecycle Reconciliation Doctrine § 5a, “Local-only no-install
+short-circuit”](../documents/engineering/lifecycle_reconciliation_doctrine.md#5a-local-only-no-install-short-circuit),
+and [CLI Command Surface, “Reconcilers: Idempotent Mutation as a Single
+Command”](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command).
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` (`applyNativeDelete`'s install-presence arm and
+`renderRetainedStateNotice`), `src/Prodbox/CLI/Spec.hs` (the `cluster delete` leaf description and
+its generated artifacts), and `test/integration/CliSuite.hs` (the Sprint-`4.25` no-install cascade
+case, which currently pins the defect).
+**Live-proof**: pending and non-blocking. The refusal arm and the narration are measured through the
+installed binary with no cluster present; what remains live is a home host holding a preserved
+`.data/` and no RKE2 install, showing the cascade reach the durable cleanup namespace instead of
+returning.
+**Independent Validation**: a pure decision table over the delete-mode × install-presence product
+plus installed-binary traces against the existing fake RKE2 environment. No AWS, no reachable
+cluster, no later-phase implementation.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/cli_command_surface.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/streaming_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`, root `README.md`, `AGENTS.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make `prodbox cluster delete --cascade --yes` structurally unable to report the success that
+licenses deleting the capability store, when it observed nothing. Local RKE2 absence is not per-run
+AWS absence; a cascade that returned before its first phase must say so in its exit status and its
+narration, not in prose the operator reads afterwards.
+
+### Architecture
+
+The short-circuit is selected before the delete mode is consulted. `applyNativeDelete` reads the
+install-presence probe and, when nothing is installed, writes the no-cluster line and returns
+`ExitSuccess` for **both** modes — before the per-run residue gate and before any cascade phase.
+Doctrine § 5a says this arm belongs only to `--yes`: cascade must instead inspect the durable
+cleanup namespace and retained establishment metadata, and where neither a valid completion receipt
+nor a recoverable trust root exists, return `RecoveryPlaneNotEstablished` while making no AWS-absence
+claim.
+
+The consequence is not a narration defect. The retained-state notice — the only place the supported
+surface mentions the retained root — is rendered from both terminal arms, `runNativeLocalUninstall`
+and the cascade, each with its own mode-specific per-run sentence. The arm that renders nothing is
+the install-presence short-circuit, which returns before either. So the two exits that describe the
+retained root are the two that reached a delete path, while the exit that reached none says nothing
+about it and still returns zero. An operator reading exit `0` from a cascade has been told the
+cascade ran.
+
+The remedy is to make the arm a function of the mode rather than of install presence alone, and to
+make the retained-state narration a total function of what the run proved: a path carrying a
+completion receipt or an explicit local-only uninstall may say the store is preserved; every other
+terminal path emits the counterpart line naming what it did not observe.
+
+### Deliverables
+
+- The no-install arm is selected by the delete mode and not by install presence alone. Only the
+  local-only mode has a no-install success arm; the cascade mode has none, so a cascade cannot reach
+  it and cannot be given one by a later caller.
+- The cascade's no-install path returns a non-zero status carrying the disposition it reached, and
+  the exit-code contract change lands in the same commit as the test that pinned the old one.
+- The retained-state notice becomes a total function over the command's terminal arms. Its
+  root-is-preserved sentence is reachable only from an arm that carries a completion receipt or is
+  an explicit local-only uninstall; every other arm renders the counterpart line naming the
+  unobserved obligations, so no exit path silently reads as permission to delete the store.
+- The `cluster delete` leaf's public help stops describing graceful skipping in terms that read as
+  licensing the whole cascade, and every generated CLI artifact is regenerated through the
+  generated-section registry in the same change.
+- The local-only `--yes` behaviour is unchanged, and the unchanged half is measured so the scope of
+  the change is provable rather than asserted.
+
+This sprint makes no claim about what the cascade proves once it proceeds; the proof chain is Sprint
+`4.86`'s, and the disposition governing the store itself is Sprint `4.89`'s.
+
+### Validation
+
+1. A pure table over the delete-mode × install-presence product shows exactly one no-install
+   success arm and shows it is selected by the local-only mode, so the cascade mode is unable to
+   reach it.
+2. An installed-binary trace with no RKE2 install marker and `--cascade --yes` exits non-zero,
+   names the durable cleanup namespace it could not reach and the recovery-plane disposition it
+   reports, does not emit the no-cluster success line, and makes no AWS-absence statement.
+3. An installed-binary trace with no RKE2 install marker and `--yes` is unchanged: exit zero, the
+   no-cluster line, and neither the residue-gate refusal nor a teardown narration.
+4. Every terminal arm of the command is enumerated, and the root-is-preserved sentence is emitted by
+   exactly the arms that carry a completion receipt or an explicit local-only uninstall; each other
+   arm emits its counterpart line. A new arm with no narration fails the enumeration.
+5. `prodbox dev docs check` and `prodbox dev lint docs` exit 0 over the regenerated CLI artifacts,
+   so the public help and the arm cannot disagree.
+6. `prodbox dev check`, `prodbox test unit`, and `prodbox test integration cli` pass, with the
+   rewritten Sprint-`4.25` case measuring the refusal rather than the former success.
+
+### Validation Result (2026-08-20)
+
+- 4 focused cases in `test/unit/ClusterDeleteEntryArm.hs` over the two pure tables: the
+  delete-mode × install-presence product has exactly four members and exactly one no-install success
+  arm, selected by the local-only mode; every pair maps to a distinct terminal arm, so the four
+  constructors are exhausted and the cascade mode's no-install arm is a different constructor
+  entirely; the retained-root licence is emitted by exactly `DeleteArmLocalOnlyUninstalled`, with
+  the phase-running cascade arm rendering `RetainedStateUnproven` and both no-delete-path arms
+  rendering `RetainedStateSilent`; and the local-only per-run sentence keeps its advice while the
+  cascade's names the licence it does not carry.
+- The narration is total by construction rather than by assertion: a new terminal arm with no
+  narration fails to compile, which is what validation item 4 asks for.
+- `test/unit/Main.hs`'s three Sprint-`4.76` notice cases move from the delete mode to the terminal
+  arm and are otherwise unchanged, so the mode-aware behaviour they pinned is preserved under the
+  new key.
+- The Sprint-`4.25` integration case that pinned the defect is rewritten as
+  `Sprint 4.88: rke2 delete --cascade with no RKE2 install refuses instead of reporting success`: the
+  installed binary exits `1`, names the durable cleanup run namespace and
+  `RecoveryPlaneNotEstablished`, states that it makes no claim about per-run AWS stacks, does not
+  emit the local-only no-cluster line, and never starts the cascade orchestration.
+- The local-only half is measured unchanged: the sibling Sprint-`4.25` case still asserts exit `0`,
+  the no-cluster line, and neither the residue-gate refusal nor a teardown narration, so the scope
+  of the change is provable rather than asserted.
+- `prodbox dev docs check` and `prodbox dev lint docs` exit 0 over the regenerated CLI artifacts:
+  the `cluster delete` leaf help and both golden CLI renderings carry the new contract, so the
+  public help and the arm cannot disagree.
+- `prodbox dev check` passes; `prodbox test unit` is 4391/4391 with the known-environmental SSH case
+  excluded; `prodbox test integration cli` is 61/61.
+
+### Remaining Work
+
+None. This sprint does not activate the replacement cascade and does not delete the legacy route;
+Sprint `6.5` owns both, and this sprint makes no claim about them. What this sprint removed is the
+licence, not the possibility.
+
+## Sprint 4.89: Custodial-Capability Disposition and the Absent Destroy Constructor [✅ Done]
+
+**Status**: Done (opened 2026-08-19; implementation 2026-08-20 to 2026-08-21). The three-module
+unit, the derived dependant set, the disposition-carrying destructive boundary, the `dev check`
+derivation rule, and every consumption site are landed and measured.
+**Closure dependency**: Sprint `4.86`, which closed 2026-08-20. This sprint generalises a helper
+inside the cascade-evidence boundary that sprint was completing, so it could only close after that
+boundary stopped changing. Same-phase and earlier, permitted by Standard N.
+**Deployment qualification**: pending — checkpoint retirement, checkpoint pruning, and Authority
+retirement authorization are destructive-cleanup and lifecycle-orchestration surfaces under
+Standard P, so prior qualification is invalidated even though this sprint activates no public writer.
+**Doctrine**: [Lifecycle Control-Plane Architecture § 3.4, “Custodial capability and the disposition
+rule”](../documents/engineering/lifecycle_control_plane_architecture.md#34-custodial-capability-and-the-disposition-rule),
+[Lifecycle Reconciliation Doctrine § 3.1, “The managed-resource registry and exact observation
+boundary”](../documents/engineering/lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary),
+[Lifecycle Reconciliation Doctrine § 5b, “Canonical recover-to-clean
+cascade”](../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade),
+[Pure FP Standards § 7, “GADT-Indexed State
+Machines”](../documents/engineering/pure_fp_standards.md#7-gadt-indexed-state-machines), and
+[Pure FP Standards § 6, “External-System
+Boundaries”](../documents/engineering/pure_fp_standards.md#6-external-system-boundaries).
+**Implementation**: `Prodbox.Lifecycle.Teardown.CapabilityCustody` (zero-definition facade),
+`Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe` (exposed), and
+`Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal` (Cabal-hidden), placed exactly as
+`Prodbox.Lifecycle.Teardown.CascadeEvidence` and its `.Internal` are placed today. Consumed by
+`src/Prodbox/Lifecycle/LiveResidue.hs`,
+`src/Prodbox/Lifecycle/Teardown/AwsCheckpointInterpreter.hs`,
+`src/Prodbox/Pulumi/EncryptedBackend.hs`, and
+`src/Prodbox/Lifecycle/Authority/PulumiCheckpointRegistry.hs`; derived from
+`src/Prodbox/Lifecycle/Teardown/OwnershipManifest.hs`,
+`src/Prodbox/Lifecycle/Teardown/Registry.hs`, and
+`src/Prodbox/Lifecycle/CredentialProvisioner/OperatorMaterial.hs`; gated by
+`src/Prodbox/CheckCode.hs`.
+**Live-proof**: pending and non-blocking. The Authority checkpoint registry derives `Serialise`, so a
+real retained aggregate written by the pre-change revision must decode after the change; the frozen
+compatibility fixture measures the same shape code-locally and is what closure depends on.
+**Independent Validation**: total decision tables over the closed disposition universe, a derivation
+exercised against the compiled registries, a `prodbox dev check` gate measured against its own
+defect, fake checkpoint and Authority boundaries, and a natural-transformation invariance exercise.
+No provider observation, no live substrate, and no later-phase implementation is involved.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`,
+`documents/engineering/chaos_hardening_doctrine.md`, `documents/engineering/README.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/substrates.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Make it unrepresentable for a run to stop holding a custodial capability without stating where it
+went. A loss of custody must be paired with a value proving the capability already authorises
+nothing, proving the resources it reaches are absent, or destroying those resources in the same
+operation. The absence of a destroy constructor is the invariant; it is not an omission to be
+filled in later.
+
+### Terminology
+
+**Custodial capability** is the doctrine term for material whose possession is what makes a resource
+destroyable — a Pulumi checkpoint, an access-key family, a sealed credential generation, a retained
+store's contents. It is deliberately distinct from the operation-indexed reference to a live service
+boundary that
+[Lifecycle Control-Plane Architecture § 2](../documents/engineering/lifecycle_control_plane_architecture.md#2-non-negotiable-invariants)
+and § 3.1 define. A reference is how a run *reaches* a boundary; a custodial capability is what a run
+*holds*. The one-sentence disambiguation lives once, in § 3.4 of that document, and every governed
+document that uses both terms in one passage cites it rather than repeating it.
+
+### Architecture
+
+Two AWS resources were stranded by one event, and the two halves of the event are the two halves of
+this design. The EKS node role had its creation-side defects closed — an explicit deterministic name
+and an ownership tag now gated by the terminal-audit field-of-view check — while its recovery side
+has nothing: the teardown registry declares three stack descriptors and two volume families and no
+IAM family, and no provider intent lists or deletes an IAM role, so the only destroy granularity
+that reaches it is the whole-stack destroy, which needs the checkpoint. The retained SES SMTP
+principal exists with zero access keys because the decommission path deletes keys, then policy, then
+user inside a short-circuiting `ExceptT`, so a mid-sequence failure leaves a principal nothing can
+authenticate as. Both resources depended on capabilities inside the store, and the store was
+destroyed while they existed.
+
+The disposition is the value that must be produced before custody ends. Four constructors sit at the
+retire index — the capability is already inert, the capability is discharged by proven absence of
+everything it reaches, the capability is rotated onto a named successor, or the capability and the
+identity it belongs to are destroyed jointly — and each carries a mandatory strict discharge, so
+none can be built from a capability alone. One constructor sits at the hold index. **There is no
+destroy constructor**, and that absence is the whole mechanism: the destructive boundary takes the
+disposition multiset, so a caller with a capability and no discharge has nothing to pass.
+
+The dependant set is derived rather than authored, from the registered ownership edges, the managed
+resource registry, and the managed AWS credential inventory — the same three compiled sources the
+ownership manifest and the cascade credential disposition already read, so a new registered resource
+is covered without editing this module. Where the registry declares no family for a capability's
+dependants, the derivation reports the set **underivable** rather than empty: a capability whose
+dependant set defaulted to nothing would discharge trivially, which is the exact failure that
+stranded the node role.
+
+The invariant survives arbitrary lifts, and that is a property of the shape rather than a
+convention. The destructive boundary's argument type mentions no `m`, and the disposition multiset
+is a pure projection computed before dispatch, so any natural transformation — a test double, a
+chaos lift, a retry wrapper — observes identical arguments and has no arm through which to
+synthesise a disposition it was not handed.
+
+### Deliverables
+
+- The three-module `CapabilityCustody` unit: the indexed disposition and its closed class universe
+  in the exposed `Universe` module, every eliminator and the destructive boundary's argument type in
+  the Cabal-hidden `Internal` module, and a zero-definition facade, in the placement the
+  cascade-evidence boundary already uses.
+- The dependant derivation, computed from the three compiled sources, with an explicit underivable
+  answer and no default. A `prodbox dev check` rule fails the build when a registered capability's
+  dependant set is neither derived nor declared underivable, and when one of the three derivation
+  sources stops contributing.
+- The disposition-carrying destructive boundary, whose argument type mentions no `m`, together with
+  the pure pre-dispatch projection that computes the multiset.
+- The cascade proof binding generalised off its cascade-only index so the binding is indexed by
+  cleanup surface. The cascade instantiation produces the same binding the landed regression
+  measures.
+- The residue classifier stops converting checkpoint absence into a discharge. A checkpoint that is
+  absent or empty produces a lost-capability answer carrying what was lost, distinct from a corrupt
+  checkpoint's unobservability and from a provider-observed resource absence. A run holding a lost
+  capability cannot compose readiness.
+- Checkpoint retirement and checkpoint pruning consume a disposition. The registered-target absence
+  read-back the retirement path already performs becomes an input to the decision instead of being
+  discarded from it.
+- The Authority-side retirement authorization takes an absence observation. Because that registry
+  derives `Serialise`, the change ships with a frozen compatibility fixture proving pre-change
+  aggregate bytes decode and that a decode which loses the observation refuses rather than
+  defaulting.
+- The retained stores and the operational credential generations gain their custody wiring, so
+  ending custody of either is a disposition rather than a deletion.
+
+**This sprint does not perform the IAM joint destruction.** The audited defect — the short-circuiting
+key/policy/principal sequence and the pinned policy name that diverges from the registered
+descriptor's — needs a production IAM-principal observation and an IAM-role family registered
+alongside its executor. On the AWS substrate that observation is a Provider effect Sprint `7.36`
+owns, by the same rule that keeps the cascade credential-disposition observation unwired; reaching
+for a host-direct IAM call here would add an unregistered escape path. This sprint supplies the
+joint-destruction constructor that sprint's execution half consumes, and makes no claim about the
+execution half.
+
+**This sprint does not register the IAM-role family.** Registering a descriptor compiles a mandatory
+absence read-back, and no production executor can discharge one for an IAM role, so registering it
+here would make the compiled programs unsatisfiable rather than making the role destroyable. It is
+the third instance of the pairing rule Sprint `7.36` already carries for the retained EBS family and
+the DNS01 challenge family, and it lands there with its adapter.
+
+**This sprint does not wire the write-ahead ownership manifest's first production caller.** That
+caller is the surface that receipt-commits coordinates before the first provider mutation, which
+Sprint `7.36` owns and declares; this sprint supplies the disposition type it commits.
+
+**This sprint does not delete either dead guard.** The postflight operational-credential predicate
+lives in the harness composition Sprint `5.36` is migrating, and the long-lived residue-protection
+predicate lives on the AWS residue-policy surface whose open row is Sprint `7.36`. Each is a
+Standard-I surviving helper beside a landed replacement and is carried as a deletion-ledger row
+owned by the sprint that owns its file.
+
+**This sprint does not re-implement the signed retained-local-data disposition.** Sprint `4.85`
+landed it for the total-decommission surface, and it stays the precedent this design generalises
+rather than a second implementation.
+
+### Validation
+
+1. The disposition universe is closed and counted: exactly five constructors, four at the retire
+   index and one at the hold index, with the count asserted so a sixth fails the build. A table over
+   the closed universe shows no constructor whose meaning is destruction without a discharge.
+2. Every retire constructor's discharge is strict and mandatory: no value is constructible from a
+   capability alone, and the elimination table is total over the universe with no fall-through arm.
+3. The dependant set is derived, not authored. Over the compiled registries, every registered
+   capability's dependant set is computed; a capability the registry declares no family for reports
+   underivable rather than empty, and no capability derives an empty set.
+   **Corrected 2026-08-20 (Standard C).** This item named the EKS node role as the fixed inhabitant
+   of the underivable arm. The measurement is that **every managed AWS credential class** inhabits
+   it, because each one's permissions reach an IAM role, an S3 prefix, a Route 53 record set, or an
+   SES identity and the registry — three stack descriptors, two volume families, and the local RKE2
+   foundation — declares a family for none of them. The node role is inside that answer rather than
+   beside it: `LifecycleProviderCredential`'s `AssumeRegisteredProviderRole` is refused by name with
+   "the registry declares no IAM role family".
+4. The `dev check` rule is measured against its own defect rather than its own shape: removing one
+   derivation source makes the case fail and restoring it makes the case pass, in the idiom Sprint
+   `4.87` used.
+5. Lift invariance is exercised rather than argued. One fixed program runs under the identity
+   boundary and under a chaos lift, the argument sequences the destructive boundary observes are
+   identical, and the lift has no arm through which a disposition can be introduced.
+6. Checkpoint absence is not a discharge. Over the four checkpoint observability arms, absent and
+   empty produce the lost-capability answer, corrupt stays unobservable, and only a provider-observed
+   resource absence or a complete ownership manifest discharges. A run holding a lost capability
+   fails to compose readiness, measured as the composition refusing rather than as a warning.
+7. Retirement authorization requires an absence observation and cannot be reached without one; a
+   retirement authorized under a stale observation refuses. The frozen `Serialise` fixture decodes
+   pre-change aggregate bytes, and a decode that loses the observation refuses rather than
+   defaulting to a permissive one.
+8. The generalised proof binding is byte-identical at the cascade instantiation to the binding the
+   landed cascade-evidence regression already measures, so the generalisation is proven to change no
+   existing proof.
+9. The library and unit surface build warning-clean under `--enable-tests --ghc-options=-Werror`,
+   and `prodbox dev check`, `prodbox dev lint docs`, `prodbox dev docs check`, and
+   `prodbox test unit` pass.
+
+### Current Implementation Checkpoint (2026-08-20, the disposition and its derivation)
+
+- **The three-module unit exists in the placement the cascade-evidence boundary already uses.**
+  `Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe` is exposed and holds the closed capability
+  universe and the indexed disposition; `…​.Internal` is Cabal-hidden and holds the derived dependant
+  set, the release multiset, the destructive boundary, and the fixed regression; and
+  `Prodbox.Lifecycle.Teardown.CapabilityCustody` is the facade.
+- **There is no destroy constructor, and that is the mechanism rather than an omission.** Four
+  constructors sit at the retire index — already inert, discharged by proven absence, rotated onto a
+  named successor, destroyed jointly with its identity — and each takes a strict discharge, so none
+  is constructible from a capability alone. One sits at the hold index. A caller holding a capability
+  and nothing else has nothing to pass to the boundary.
+- **The dependant set is derived from the three compiled sources and never authored.** A checkpoint
+  reaches its own stack plus every controller-owned family the registered ownership edges say that
+  stack owns; a credential reaches whatever its declared permissions reach. A new registered resource
+  is covered without editing the module.
+- **An undeclared family is underivable, not empty**, and the measurement corrects this sprint's own
+  illustration under Standard C. The plan said the EKS node role is the fixed inhabitant of that arm;
+  what the compiled registries actually make underivable is **every managed AWS credential class**,
+  because each one's permissions reach an IAM role, an S3 prefix, a Route 53 record set, or an SES
+  identity and the registry declares a family for none of them. The node role is inside that answer
+  rather than beside it — `LifecycleProviderCredential`'s `AssumeRegisteredProviderRole` is refused
+  by name with "the registry declares no IAM role family" — and the shape the plan described is the
+  shape that is measured: a capability whose dependant set defaulted to empty would discharge
+  trivially, and none does.
+- **The permission-to-family map is total over the closed permission universe**, so registering a
+  family later turns one arm from a refusal into a key with no other change, and forgetting to is a
+  non-exhaustive pattern rather than a silent empty set.
+- **The gate is written against its sources, not against its answer.** The answer type has exactly
+  two arms, so "derived or explicitly underivable" is structural; what can rot is a derivation source
+  that stops contributing, which would make every capability quietly derivable-and-empty. The rule
+  therefore takes the three sources as arguments, and the regression removes one at a time.
+- **Lift invariance is a property of the shape.** `CustodyRelease` mentions no `m`, the multiset is
+  computed purely before dispatch, and the boundary is a newtype over
+  `CustodyRelease -> m ()`, so a natural transformation observes the identical argument.
+- No production surface consumes a disposition yet: checkpoint retirement, checkpoint pruning, the
+  Authority-side retirement authorization, the residue classifier, and the retained stores are the
+  consumption sites this sprint still owns.
+
+### Validation Result (2026-08-20, the disposition and its derivation)
+
+- 6 focused cases in `test/unit/LifecycleTeardownCapabilityCustody.hs` read the fixed
+  non-authorizing regression: the universe is closed at four retire arms and one hold arm with the
+  counts asserted and every retire arm naming the capability it disposes; a checkpoint's dependant
+  set is derived and strictly larger than its own stack; no capability derives an empty set while at
+  least one reports underivable with its reason; the derivation gate fails when any one of the three
+  sources is removed and passes when all three are restored; a release refuses an undisposed, a
+  foreign, and a duplicated capability and each refusal renders naming the capability; and one fixed
+  program hands the identity boundary and a chaos lift the identical release.
+- The foreign-capability case deliberately pairs the held capability's own disposition with the
+  foreign one, so the foreign disposition is the only thing wrong: a release that is both incomplete
+  and foreign reports the incompleteness first, because a capability with no disposition is the
+  failure custody exists to refuse.
+- The library, the executable, and every test suite build warning-clean under
+  `--enable-tests --ghc-options=-Werror`; `prodbox dev check` passes with the new derivation rule in
+  its doctrine-alignment run; `prodbox test unit` is 4397/4397 with the known-environmental SSH case
+  excluded.
+- This result covers the disposition, the derivation, and the gate. Validation items 6-8 measure the
+  consumption sites and remain open.
+
+### Current Implementation Checkpoint (2026-08-20, checkpoint absence is not a discharge)
+
+- **The residue answer and the custody answer are two questions over one observation, and they were
+  one function consumed twice.** "Is there a stack to destroy" and "does this run still hold what
+  makes that stack's resources destroyable" have different answers for an absent or empty checkpoint:
+  the first is `ResidueAbsent` and correctly so, and the second is *lost*, because the resources may
+  exist and nothing now names them. Reading the first as the second is what stranded two AWS
+  resources. `CheckpointCustodyObservation` and `classifyCheckpointCustody` are the second answer;
+  `residueStatusFromCheckpointObservability` is unchanged, because it was answering its own question
+  correctly.
+- **A corrupt checkpoint stays unobservable rather than lost.** A blob that cannot be parsed may
+  still be the capability, so declaring it gone would be an invention in the opposite direction —
+  the same asymmetry the residue classifier already applies.
+- **`dischargeByObservedAbsence` is the only constructor of an absence discharge**, and it has four
+  refusals, each naming a distinct way one could otherwise be invented: an underivable dependant set
+  cannot be discharged at all because nothing enumerates what the capability reaches; a dependant
+  with no observation cannot, because a missing answer is not an absent resource; an observation
+  taken at any layer other than the provider cannot — which is precisely the checkpoint-layer absence
+  this increment exists to stop accepting; and a dependant the provider still reports cannot.
+- **The gate found the fixture, which is what that gate is for.** The residue-observation minter rule
+  refused the custody module's regression for minting observations outside an observing boundary, and
+  the remedy the rule itself names was taken rather than the owner list widened: the discharge's
+  fixture moved to `Prodbox.Lifecycle.LiveResidue`, which already owns both vocabularies and is a
+  permitted minter. A fixture minting an observation inside the custody boundary would have been a
+  consumer asserting the layer — the exact move the Sprint-`4.81` layer field exists to prevent.
+- The total map from the encrypted-backend observability to the custody observation lives in
+  `LiveResidue` rather than in the custody vocabulary, because the backend type sits beside a
+  subprocess and a Vault session and the custody module is a vocabulary.
+
+### Validation Result (2026-08-20, checkpoint absence is not a discharge)
+
+- 2 further cases in `test/unit/LifecycleTeardownCapabilityCustody.hs`: the four checkpoint arms
+  answer held, lost, lost, and unobservable respectively; and the absence discharge is constructible
+  only from provider-observed absence of every derived dependant, with the checkpoint-layer absence,
+  the unobserved dependant, the still-present dependant, and the underivable dependant set each
+  refused by its own arm.
+- The library, the executable, and every test suite build warning-clean under
+  `--enable-tests --ghc-options=-Werror`; `prodbox dev check` passes; `prodbox test unit` is
+  4399/4399 with the known-environmental SSH case excluded.
+- This result covers the classification and the discharge constructor. Composing a run that holds a
+  lost capability into cascade readiness is the wiring this sprint still owns.
+
+### Current Implementation Checkpoint (2026-08-20, the binding is indexed by surface)
+
+- **The three identities a proof binds to were never cascade-specific; only the AWS-scope rule is.**
+  `CleanupProofBinding (surface :: CleanupSurface)` is the generalised type, `CascadeProofBinding`
+  and `LocalOnlyProofBinding` are its two instantiations, and `cleanupProofBinding` takes the same
+  surface witness the compiler already consults.
+- **The AWS-scope rule is read from the witness rather than written twice.** A surface that requires
+  a scope refuses its absence; a surface that requires none refuses its presence, because a
+  local-only run naming a stack has proven nothing about it by observing the host. The Sprint-`4.86`
+  local-only binding — a structurally identical record validated by the opposite rule — is deleted
+  rather than kept, because two implementations of one set of checks is how the two drift.
+- **The generalisation also strengthened the local-only side.** The cascade-only function checked the
+  durable run scope and the standalone local-only binding did not; unifying gives that check to both.
+- The operation, registry revision, and durable run scope are facts about the compiler rather than
+  about the target, which is why they are checked identically on every surface.
+
+### Validation Result (2026-08-20, the binding is indexed by surface)
+
+- One case in `test/unit/LifecycleTeardownCascadeEvidence.hs` measures validation item 8: the
+  cascade instantiation of the surface-indexed binding equals what the cascade-only function
+  produced, and its run id, graph digest, and scope are the compiled program's own — so the
+  generalisation is proven to change no existing proof rather than asserted to. The same case
+  measures that the local-only instantiation refuses a program carrying an AWS scope.
+- Every other arm of `fixedCascadeEvidenceRegression` is unchanged and still passes, including the
+  complete proof chain, so the generalisation is measured against the proofs it might have broken.
+- The library, the executable, and every test suite build warning-clean under
+  `--enable-tests --ghc-options=-Werror`; `prodbox dev check` passes; `prodbox test unit` is
+  4400/4400 with the known-environmental SSH case excluded.
+
+### Current Implementation Checkpoint (2026-08-21, readiness is a six-component composition)
+
+- **A run that has lost a checkpoint could still compose readiness, and readiness is what admits
+  the local RKE2 uninstall that destroys the retained store those checkpoints live in.** The three
+  convergence evidences say the resources are gone; none of them says the run can still prove that
+  about them. `CascadeCapabilityCustodyEvidence` is the sixth component, and it binds to the
+  compiled run exactly as the other five do.
+- **The capability set is derived from the compiled program's own registered stack targets**, not
+  authored and not taken from the caller. A run therefore cannot reach readiness by answering only
+  the capabilities it happened to look at, and cannot answer for a stack it never touched.
+- **The refusal is the composition refusing, not a warning beside it.** A lost capability yields no
+  evidence value, so `mkReadyToUninstallEvidence` cannot be called at all — the refusal is reached
+  before a report identity is committed or a one-shot permit is requested.
+- **A corrupt checkpoint refuses too, as unobservable rather than lost.** A capability nobody could
+  answer for is not a held one, which is the same asymmetry the residue classifier already applies.
+
+### Validation Result (2026-08-21, readiness is a six-component composition)
+
+- One further case in `test/unit/LifecycleTeardownCascadeEvidence.hs` measures validation item 6
+  over four arms: a lost capability refuses, an unobservable one refuses, an answer set smaller
+  than the derived set refuses on the set, and another run's custody evidence is refused by the
+  binding rather than accepted because its answers happened to be held.
+- `establishPreUninstallReadiness` and `runCascadeStageC` take the evidence as an input beside the
+  other three, so the Stage-C protocol is unchanged and its eleven fault arms still pass.
+
+### Current Implementation Checkpoint (2026-08-21, retirement and pruning consume a disposition)
+
+- **The retirement node waited only on its own stack's absence read-back.** Retiring the reference
+  ends this run's custody of the capability that made the stack's resources destroyable, so a
+  retirement gated on one read-back ends custody while a controller-owned family that stack owns may
+  still be present and nothing afterwards names it. That is the shape that stranded two AWS
+  resources, and it was in the compiled program rather than in any interpreter.
+- **The dependency set is now the derived dependant set.** `checkpointRetirementDependencies` reads
+  `capabilityDependants`, so a newly registered controller-owned family joins the ordering without
+  editing the program builder, and the ordering cannot disagree with the derivation the discharge
+  uses. A capability whose dependants nothing enumerates waits on every non-stack target instead —
+  never fewer than the derived set, and cycle-free because a stack never waits on another stack.
+- **The absence rule is one rule over two currencies.** `dischargeFromDependantAnswers` holds the
+  four refusals; `dischargeByObservedAbsence` projects a residue observation into it and
+  `dischargeBySucceededAbsenceReadBack` projects the run's completed absence read-backs. A
+  `ReadBackRegisteredTargetAbsent` node succeeds only on an exact absence answered at the registered
+  identity's own authority, so "this run read it back" *is* a provider observation — and it is the
+  answer the retirement path already had and discarded.
+- **The retirement authorization takes the disposition rather than producing one.** There is no
+  destroy constructor, so a caller holding a checkpoint and nothing else has nothing to pass; what
+  the authorization checks is that the discharge it was handed is about this checkpoint. The
+  compatibility execution entrypoint supplies no successful predecessors, so it can no longer reach
+  the effect at all — the "proof-gated effects consume only the durable path" rule, enforced.
+- **The retirement read-back stays gated on the attempt alone**, because a read-back that can be
+  blocked cannot close a lost response. Its discharge is the retirement it observes: having seen the
+  Authority holding the reference in its retired set, it reconstructs the authorization against a
+  rotation onto that retained reference.
+- **Pruning is a rotation, not a deletion, and saying so is what makes it checkable.** Retiring a
+  reference records it in the Authority's retained set and clears the live slot, and the retained
+  reference still names the backup copy's version. A zero-length object is already inert; a corrupt
+  blob may still be the only thing naming live resources and is therefore kept where it can be
+  found. `RetiredCheckpointCapability` names that successor, is never enumerated as something a run
+  holds, and reaches exactly what the live reference reached.
+
+### Validation Result (2026-08-21, retirement and pruning consume a disposition)
+
+- One case in `test/unit/LifecycleTeardownProgram.hs` measures every stack's retirement node against
+  the ownership edges rather than against a second copy of the derivation, over every non-local
+  surface, with a non-vacuity assertion so it cannot pass against the pre-sprint one-dependency
+  list.
+- Three further cases in `test/unit/LifecycleTeardownCapabilityCustody.hs`: the run projection
+  discharges from the complete read-back set and refuses a partial one as unobserved; inertness is
+  admitted only from a zero-length object; and a retirement rotates onto a retained successor that
+  reaches what the live reference reached.
+- One case in `test/unit/LifecycleTeardownCheckpoint.hs` refuses a retirement whose discharge names
+  another capability, and one in `test/unit/LifecycleTeardownAwsCheckpointInterpreter.hs` measures
+  that the compatibility entrypoint cannot reach the retirement effect.
+
+### Current Implementation Checkpoint (2026-08-21, the Authority refuses an unstated retirement)
+
+- **The Lifecycle Authority retired a registered checkpoint reference on the strength of an
+  operation permit alone.** It cannot observe AWS and so cannot check the proof a disposition
+  carries; what it can refuse — and now does — is a retirement for which no disposition was ever
+  stated. That is the failure the two stranded resources are an instance of.
+- **The disposition crosses the boundary as a flat record rather than as the indexed value.** The
+  disposition is a GADT precisely so it cannot be built without a discharge, and a decoder is a way
+  to build one; `CustodyDispositionRecord` is therefore evidence rather than authority, produced by
+  a total projection that gains an arm or fails to compile when a fifth retire constructor appears.
+- **The permit is registered against the disposition, and the retirement is authorized against the
+  permit.** A retire permit with no disposition naming the checkpoint it retires is refused at
+  registration; a retirement whose operation carries no recorded disposition is refused at
+  authorization and again at apply. A disposition that outlives its operation is a separate
+  invariant failure, because a claim nothing can consume is a different defect from a claim nobody
+  made.
+- **The `Serialise` change is a migration rather than a durability break, and the difference is one
+  line of the codec.** The disposition map is encoded __only when non-empty__: each value still has
+  exactly one byte string, so canonicality holds, and every retained aggregate that predates
+  dispositions re-encodes byte-identically. Widening the encoding unconditionally would have made
+  every retained Authority object fail the enclosing envelope's own canonicality check on its next
+  read — which the v6 compatibility fixture caught before it could reach a deployed Authority.
+- **The frozen fixture is a shadow type rather than a captured byte string.** A captured string
+  asserts over bytes nobody can re-derive; the shadow record derives the same generic encoding, so
+  a change to the first three fields breaks the fixture instead of leaving it silently stale.
+
+### Validation Result (2026-08-21, the Authority refuses an unstated retirement)
+
+- One case in `test/unit/LifecycleAuthorityPulumiCheckpointRegistry.hs` measures validation item 7's
+  `Serialise` half over three properties: a pre-change aggregate decodes and re-encodes
+  byte-identically; every retirement permit inside it refuses at both `authorizeCheckpointRetirement`
+  and `applyCheckpointRetirement` rather than defaulting to a permissive answer; and an aggregate
+  that does carry a disposition round-trips and authorizes.
+- The pre-existing v6 Authority-admission canonical-byte fixture passes unchanged, which is what
+  proves the encoding change is invisible to every retained object.
+- `prodbox dev check`, `prodbox dev lint docs`, `prodbox dev docs check`, `prodbox test unit`
+  (4409/4409), `prodbox test integration cli`, and `prodbox test integration env` all pass.
+
+### Current Implementation Checkpoint (2026-08-21, ending custody of a credential generation)
+
+- **Committing a revocation receipt is where a run stops holding a credential generation, and it now
+  consumes a disposition.** The disposition is minted from the read-back rather than authored: a
+  revocation that was independently read back proves the family's keys no longer authenticate, which
+  is inertness.
+- **A revocation is inertness and never destruction, and that distinction is the audited SES defect
+  stated as a type.** The retained SMTP principal exists with zero access keys because a
+  decommission deleted keys, then policy, then user inside a short-circuiting sequence; the keys'
+  absence made the capability inert, and inert is not destroyed. Destroying the identity alongside
+  the capability is `CapabilityDestroyedJointly`, a different constructor and the operation Sprint
+  `7.36` executes. `dischargeByObservedRevocation` refuses every non-credential capability, so a
+  checkpoint cannot be called revoked and a retired reference cannot be disposed twice.
+- **The external ACME EAB family is deliberately untouched**: it is not an AWS credential class and
+  so is not a capability in this universe, and its commit is unchanged rather than given a
+  disposition it has no capability to carry.
+- **The retained-store half needed no new surface, and saying which surface covers it is the
+  deliverable.** The retained store whose contents make registered resources destroyable is the
+  checkpoint store, and its contents are disposed by the retirement and prune wiring above. The
+  retained local data and the Vault-held retained source custody are both reachable only through
+  `runRetainedCustodyTombstone`, which requires a `VerifiedDecommissionManifest` naming the
+  `RetainedCustody` node — Sprint `4.85`'s signed retained-local-data disposition, which this sprint
+  states it does not re-implement. Adding a second disposition in front of a signed one would have
+  been two answers to one question, which is the shape `mkCustodyRelease` already refuses.
+
+### Validation Result (2026-08-21, ending custody of a credential generation)
+
+- One case in `test/unit/LifecycleTeardownCapabilityCustody.hs` measures that a revocation read-back
+  yields an inertness disposition naming the credential family and carrying the generation it
+  revoked, and that a checkpoint and an already-retired reference are each refused by their own arm.
+- `prodbox dev check` 0, `prodbox dev lint docs` 0, `prodbox dev docs check` 0, `prodbox test unit`
+  4410/4410, `prodbox test integration cli` 0, `prodbox test integration env` 0.
+
+### Closure
+
+All nine validation items are measured and no sprint-owned code work survives.
+
+The three-module unit, the derived dependant set with its explicit underivable answer, the
+disposition-carrying destructive boundary, the pure pre-dispatch projection, and the `dev check`
+derivation rule landed on 2026-08-20, together with the residue classifier's lost-capability answer,
+the provider-only absence discharge, and the surface-indexed proof binding. On 2026-08-21 the
+readiness composition gained its custody component, checkpoint retirement and pruning began
+consuming a disposition, the Lifecycle Authority began refusing a retirement no disposition was
+stated for, and ending custody of a credential generation became a disposition rather than a
+deletion.
+
+This sprint makes no claim about the IAM joint destruction, the IAM-role family registration, the
+write-ahead ownership manifest's first production caller, or either dead guard; Sprints `5.36`,
+`6.5`, and `7.36` own those, as the disclaimers above state. Deployment qualification remains
+pending, which Standard O keeps non-blocking and Sprint `6.5` owns.
+
+A durable custody ledger — a retained record of which disposition ended which custody — is
+deliberately out of scope and is not scheduled here: it is worth building once a disposition has more
+than one producer, and building it now would land a recorder with a single writer to record. If it
+becomes necessary it opens as its own sprint rather than as an unstated extension of this one.
 
 ## Related Documents
 

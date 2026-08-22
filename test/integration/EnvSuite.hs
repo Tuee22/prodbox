@@ -155,6 +155,12 @@ invalidResourceConfig =
           }
     }
 
+-- | Sprint 1.91: the fixture states its own region.
+--
+-- It used to inherit one from `defaultConfigFile`, which seeded a literal.
+-- Emptying that seed left this fixture describing an AWS-capable host with no
+-- region -- the enumeration of every `defaultConfigFile` consumer found this
+-- one, and `CliSuite` already overrode the whole `aws` block.
 envFixtureConfig :: Settings.ConfigFile
 envFixtureConfig =
   Settings.defaultConfigFile
@@ -162,6 +168,7 @@ envFixtureConfig =
         (Settings.aws Settings.defaultConfigFile)
           { Settings.awsCredentialSessionToken =
               Just (envVaultRef (Text.pack "aws/lifecycle-provider") (Text.pack "session_token"))
+          , Settings.awsCredentialRegion = Text.pack "us-east-1"
           }
     , Settings.route53 = Settings.Route53Section {Settings.zone_id = Text.pack "Z1234567890ABC"}
     , Settings.domain =

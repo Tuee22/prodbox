@@ -144,7 +144,16 @@ Policy:
    `disable: false`, and canonical `harborRegistryStorageBackend` chooses `RedirectDisabled`.
    `registryConfigYaml` intentionally remains a deterministic `unlines` renderer; the guarantee is
    that the typed input cannot omit the redirect decision, not that YAML line assembly disappeared.
-   The backend also uses the stable `harborRegistryStorageRegion = "us-east-1"` constant. The golden
+   The backend's signing region is `minioSigningRegion`, the single constant in
+   `Prodbox.Minio.ObjectStoreTypes` that Sprint `1.91` collapsed three agreeing copies into (this
+   backend's own, the subprocess object-store backend's, and the native SigV4 client's). **It is not
+   an AWS coordinate.** MinIO requires a region in the SigV4 scope string and ignores which one; no
+   AWS account is reached and no AWS namespace is consulted, which is
+   [config_doctrine.md](./config_doctrine.md) § 0's second compiled class ("not AWS"). It therefore
+   does not move to Tier-0 Dhall, and it is registered as such in the compiled-AWS-coordinate
+   registry rather than exempted from it. Collapsing the copies is what the substitutability of the
+   subprocess and native arms requires: a signing-region divergence between two arms that are meant
+   to be interchangeable presents as a signature mismatch naming neither of them. The golden
    at `test/golden/config/registry-config.yaml` pins the canonical output, including
    `redirect.disable: true`, and unit coverage pins the alternate `false` rendering (the dropped
    redirect line caused the 80a08e3 bring-up regression).

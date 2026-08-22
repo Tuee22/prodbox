@@ -49,10 +49,11 @@ lifecycleTeardownEksDrainInterpreterSuite :: SuiteBuilder ()
 lifecycleTeardownEksDrainInterpreterSuite =
   describe "Sprint 7.36 exact EKS drain interpreter" $ do
     it "mints selection only after complete UID, Service, Ingress, and Delete-policy PVC queries" $ do
-      (interpreter, cluster, calls) <- fixtureInterpreter
+      (arms, cluster, calls) <- fixtureArms
       selected <-
         observeVerifiedEksDrainSelection
-          interpreter
+          fixtureClock
+          arms
           fixtureBinding
           (ObservationRevision 41)
           fixtureEffectSession
@@ -83,7 +84,8 @@ lifecycleTeardownEksDrainInterpreterSuite =
         )
       refused <-
         observeVerifiedEksDrainSelection
-          interpreter
+          fixtureClock
+          arms
           fixtureBinding
           (ObservationRevision 42)
           fixtureEffectSession
@@ -478,10 +480,11 @@ lifecycleTeardownEksDrainInterpreterSuite =
       readIORef (attemptExecutionCalls unnecessaryEvidence) `shouldReturn` []
 
     it "reacquires a fenced session and deletes both complete classes plus every persisted PVC" $ do
-      (interpreter, _, calls) <- fixtureInterpreter
+      (arms, _, calls) <- fixtureArms
       executed <-
         executeCommittedEksDrainIntent
-          interpreter
+          fixtureClock
+          arms
           (effectInvocation attemptA)
           fixtureCommittedIntent
       fmap eksDrainAttemptOutcome executed `shouldBe` Right EksDrainMutationApplied
@@ -496,7 +499,7 @@ lifecycleTeardownEksDrainInterpreterSuite =
                            ]
 
     it "keeps response loss unconfirmed until a separately acquired exact read-back" $ do
-      (interpreter, cluster, calls) <- fixtureInterpreter
+      (arms, cluster, calls) <- fixtureArms
       modifyIORef'
         cluster
         ( \state ->
@@ -508,7 +511,8 @@ lifecycleTeardownEksDrainInterpreterSuite =
         )
       attempted <-
         executeCommittedEksDrainIntent
-          interpreter
+          fixtureClock
+          arms
           (effectInvocation attemptA)
           fixtureCommittedIntent
       attempt <- mustRightIO attempted
@@ -516,7 +520,8 @@ lifecycleTeardownEksDrainInterpreterSuite =
       modifyIORef' cluster classesAbsent
       completed <-
         executeEksDrainReadBack
-          interpreter
+          fixtureClock
+          arms
           (readBackInvocation attemptB)
           attempt
       completed `shouldSatisfy` isRight
@@ -529,8 +534,8 @@ lifecycleTeardownEksDrainInterpreterSuite =
                            ]
 
     it "queries a persisted PVC directly even after its Delete-policy PV disappears" $ do
-      (interpreter, cluster, calls) <- fixtureInterpreter
-      attempt <- executeApplied interpreter
+      (arms, cluster, calls) <- fixtureArms
+      attempt <- executeApplied arms
       modifyIORef'
         cluster
         ( \state ->
@@ -547,7 +552,8 @@ lifecycleTeardownEksDrainInterpreterSuite =
         )
       completed <-
         executeEksDrainReadBack
-          interpreter
+          fixtureClock
+          arms
           (readBackInvocation attemptB)
           attempt
       completed `shouldBe` Left (EksDrainPvcNotAbsent fixturePvcA EksDrainPvcPresent)
@@ -556,8 +562,8 @@ lifecycleTeardownEksDrainInterpreterSuite =
       observed `shouldContain` [FakeObservePvc fixturePvcA]
 
     it "treats a recreated same-name PVC with another UID as present" $ do
-      (interpreter, cluster, _) <- fixtureInterpreter
-      attempt <- executeApplied interpreter
+      (arms, cluster, _) <- fixtureArms
+      attempt <- executeApplied arms
       modifyIORef'
         cluster
         ( \state ->
@@ -573,7 +579,8 @@ lifecycleTeardownEksDrainInterpreterSuite =
         )
       observation <-
         observeEksDrainTargetsReadBack
-          interpreter
+          fixtureClock
+          arms
           (readBackInvocation attemptB)
           attempt
       confirmEksDrainTargetsAbsent attempt observation
@@ -587,17 +594,18 @@ lifecycleTeardownEksDrainInterpreterSuite =
             ]
       mapM_
         ( \invocation -> do
-            (interpreter, _, calls) <- fixtureInterpreter
+            (arms, _, calls) <- fixtureArms
             result <-
               executeCommittedEksDrainIntent
-                interpreter
+                fixtureClock
+                arms
                 invocation
                 fixtureCommittedIntent
             fmap eksDrainAttemptOutcome result `shouldSatisfy` isFailedResult
             shouldReturnNoMutation (readIORef calls)
         )
         wrongInvocations
-      (_, cluster, calls) <- fixtureInterpreter
+      (_, cluster, calls) <- fixtureArms
       let wrongAttemptAcquirer requested = do
             modifyIORef' calls (<> [FakeAcquire (eksDrainInvocationOperationId requested) attemptB])
             pure
@@ -605,14 +613,14 @@ lifecycleTeardownEksDrainInterpreterSuite =
                   requested {eksDrainInvocationAttemptId = attemptB}
                   fixtureEffectSession
               )
-          interpreter =
-            mkEksDrainInterpreter
-              (pure 1_000)
+          arms =
+            mkEksDrainSessionArms
               wrongAttemptAcquirer
               (fakeBoundary cluster calls)
       wrongAttempt <-
         executeCommittedEksDrainIntent
-          interpreter
+          fixtureClock
+          arms
           (effectInvocation attemptA)
           fixtureCommittedIntent
       fmap eksDrainAttemptOutcome wrongAttempt `shouldSatisfy` isFailedResult
@@ -626,11 +634,11 @@ lifecycleTeardownEksDrainInterpreterSuite =
               calls
               (<> [FakeAcquire (eksDrainInvocationOperationId requested) (eksDrainInvocationAttemptId requested)])
             pure (EksDrainSessionAcquired requested fixtureRecreatedClusterSession)
-          interpreter =
-            mkEksDrainInterpreter (pure 1_000) acquire (fakeBoundary cluster calls)
+          arms = mkEksDrainSessionArms acquire (fakeBoundary cluster calls)
       executed <-
         executeCommittedEksDrainIntent
-          interpreter
+          fixtureClock
+          arms
           (effectInvocation attemptA)
           fixtureCommittedIntent
       fmap eksDrainAttemptOutcome executed `shouldSatisfy` isFailedResult
@@ -647,11 +655,11 @@ lifecycleTeardownEksDrainInterpreterSuite =
               ( EksDrainSessionAcquisitionUnobservable
                   (ObservationFailure "Authority auth route unavailable")
               )
-          interpreter =
-            mkEksDrainInterpreter (pure 1_000) unavailable (fakeBoundary cluster calls)
+          arms = mkEksDrainSessionArms unavailable (fakeBoundary cluster calls)
       attempted <-
         executeCommittedEksDrainIntent
-          interpreter
+          fixtureClock
+          arms
           (effectInvocation attemptA)
           fixtureCommittedIntent
       attempt <- mustRightIO attempted
@@ -665,26 +673,29 @@ lifecycleTeardownEksDrainInterpreterSuite =
                     (ObservationFailure "Kubernetes network unknown" :| [])
               }
         )
-      let readBackInterpreter = fixtureInterpreterFor cluster calls
+      let readBackArms = fixtureArmsFor cluster calls
       completed <-
         executeEksDrainReadBack
-          readBackInterpreter
+          fixtureClock
+          readBackArms
           (readBackInvocation attemptB)
           attempt
       completed `shouldSatisfy` isLeft
 
     it "closes the provider-already-absent arm without acquiring Kubernetes credentials" $ do
-      (interpreter, _, calls) <- fixtureInterpreter
+      (arms, _, calls) <- fixtureArms
       attempted <-
         executeCommittedEksDrainIntent
-          interpreter
+          fixtureClock
+          arms
           (effectInvocation attemptA)
           fixtureNoTargetCommittedIntent
       attempt <- mustRightIO attempted
       eksDrainAttemptOutcome attempt `shouldBe` EksDrainSkippedNoKubernetesTarget
       completed <-
         executeEksDrainReadBack
-          interpreter
+          fixtureClock
+          arms
           (readBackInvocation attemptB)
           attempt
       fmap eksDrainTargetsAbsentDisposition completed
@@ -809,22 +820,7 @@ runCommitSelectionCase environment plan = do
 
 commitSelectionInterpreter :: EksDrainInterpreter CommitSelectionEffects
 commitSelectionInterpreter =
-  mkEksDrainInterpreter
-    (pure 1_000)
-    ( \_ ->
-        pure
-          ( EksDrainSessionAcquisitionRefused
-              (ObservationFailure "commit selector cannot acquire an effect session")
-          )
-    )
-    ( mkEksDrainClientBoundary $ \_ consume ->
-        consume
-          ( Left
-              ( EksDrainClientAccessRefused
-                  (ObservationFailure "commit selector cannot open an effect client")
-              )
-          )
-    )
+  mkEksDrainInterpreter (pure 1_000)
 
 commitSelectionBoundary
   :: EksDrainCommitSelectionBoundary CommitSelectionEffects
@@ -1089,22 +1085,7 @@ runDestroyAdmissionCase environment plan = do
 
 destroyAdmissionInterpreter :: EksDrainInterpreter DestroyAdmissionEffects
 destroyAdmissionInterpreter =
-  mkEksDrainInterpreter
-    (pure 1_000)
-    ( \_ ->
-        pure
-          ( EksDrainSessionAcquisitionRefused
-              (ObservationFailure "destroy admission uses only its projection boundary")
-          )
-    )
-    ( mkEksDrainClientBoundary $ \_ consume ->
-        consume
-          ( Left
-              ( EksDrainClientAccessRefused
-                  (ObservationFailure "destroy admission cannot open an effect client")
-              )
-          )
-    )
+  mkEksDrainInterpreter (pure 1_000)
 
 destroyAdmissionBoundary
   :: EksDrainCommitSelectionBoundary DestroyAdmissionEffects
@@ -1399,22 +1380,7 @@ runAttemptExecutionCaseForTarget target environment attempt plan = do
 attemptExecutionInterpreter
   :: EksDrainInterpreter AttemptExecutionEffects
 attemptExecutionInterpreter =
-  mkEksDrainInterpreter
-    (pure 1_000)
-    ( \_ ->
-        pure
-          ( EksDrainSessionAcquisitionRefused
-              (ObservationFailure "sealed attempt must not use legacy session acquisition")
-          )
-    )
-    ( mkEksDrainClientBoundary $ \_ consume ->
-        consume
-          ( Left
-              ( EksDrainClientAccessRefused
-                  (ObservationFailure "sealed attempt must not use legacy client boundary")
-              )
-          )
-    )
+  mkEksDrainInterpreter (pure 1_000)
 
 attemptExecutionBoundary :: EksDrainAttemptBoundary AttemptExecutionEffects
 attemptExecutionBoundary =
@@ -1567,22 +1533,27 @@ defaultFakeCluster =
           ]
     }
 
-fixtureInterpreter
+-- | Sprint 4.86: the clock is all the interpreter carries; the session
+-- acquisition and the ephemeral-client boundary belong to the arms only the
+-- session-driven entry points take.
+fixtureClock :: EksDrainInterpreter IO
+fixtureClock = mkEksDrainInterpreter (pure 1_000)
+
+fixtureArms
   :: IO
-       ( EksDrainInterpreter IO
+       ( EksDrainSessionArms IO
        , IORef FakeCluster
        , IORef [FakeCall]
        )
-fixtureInterpreter = do
+fixtureArms = do
   cluster <- newIORef defaultFakeCluster
   calls <- newIORef []
-  pure (fixtureInterpreterFor cluster calls, cluster, calls)
+  pure (fixtureArmsFor cluster calls, cluster, calls)
 
-fixtureInterpreterFor
-  :: IORef FakeCluster -> IORef [FakeCall] -> EksDrainInterpreter IO
-fixtureInterpreterFor cluster calls =
-  mkEksDrainInterpreter
-    (pure 1_000)
+fixtureArmsFor
+  :: IORef FakeCluster -> IORef [FakeCall] -> EksDrainSessionArms IO
+fixtureArmsFor cluster calls =
+  mkEksDrainSessionArms
     acquire
     (fakeBoundary cluster calls)
  where
@@ -1655,10 +1626,11 @@ fakeEffects cluster calls =
     project <$> readIORef cluster
 
 executeApplied
-  :: EksDrainInterpreter IO -> IO EksDrainAttemptEvidence
-executeApplied interpreter =
+  :: EksDrainSessionArms IO -> IO EksDrainAttemptEvidence
+executeApplied arms =
   executeCommittedEksDrainIntent
-    interpreter
+    fixtureClock
+    arms
     (effectInvocation attemptA)
     fixtureCommittedIntent
     >>= mustRightIO

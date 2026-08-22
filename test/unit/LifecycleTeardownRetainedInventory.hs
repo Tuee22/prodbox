@@ -399,8 +399,10 @@ binding =
 -- | The audited scope.  Its region is the global-service region, which is the
 -- only region from which the Tagging API answers for IAM and Route 53 and
 -- therefore the only region in which a terminal audit may mint a clean
--- witness.  'defaultAwsRegion' is this region today, so this is the deployed
--- shape rather than a convenient one.
+-- witness.  Nothing supplies it by default -- Sprint 1.91 emptied the seeded
+-- @aws.region@ -- so an operator who has configured any other region audits
+-- from a scope in which the global services are simply not asked about, which
+-- is the case 'outOfRegionScope' below exercises.
 auditedScope :: AwsScope
 auditedScope =
   AwsScope (AwsAccountId "111122223333") (AwsRegion globalServiceTaggingRegion)

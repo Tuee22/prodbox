@@ -19,9 +19,11 @@
 -- issues them in that scope's own region, and the region never entered any
 -- type — so whether a tagged IAM role was inside or outside the audit's field
 -- of view was a fact about the configured region that nothing recorded.
--- @defaultAwsRegion@ happens to be the global-service region today, which is
--- exactly what made the dependency invisible: every observation to date was
--- taken from the one region in which the unbound claim is true.
+-- The compiled default the config seeded happened to be the global-service
+-- region, which is exactly what made the dependency invisible: every
+-- observation to date was taken from the one region in which the unbound claim
+-- is true.  Sprint 1.91 emptied that seed, so an unconfigured deployment now
+-- refuses rather than silently landing in the one region that hid the bug.
 --
 -- This module is the binding.  It is a leaf so that both the provisioning-time
 -- join ("Prodbox.Lifecycle.Teardown.AuditFieldOfView") and the audit-time

@@ -149,6 +149,21 @@ identity, authority, DNS-owner, or cleanup boundaries above.
   the exact-keyed desired-absence decision and resumable recovery graph in
   [Lifecycle Reconciliation Doctrine §3](lifecycle_reconciliation_doctrine.md#3-exact-keyed-desired-absence-reconciliation);
   checkpoint unobservability and a terminal escape audit remain separate facts.
+  **Corrected 2026-08-19.** The gate closed the defect only on the path that reaches it, and the
+  consumer list above is itself now stale: default `prodbox cluster delete` is a pure local
+  uninstall that does not query or gate on the per-run backend at all, so the surviving consumers
+  are the cascade and `prodbox aws teardown`.
+  `applyNativeDelete` short-circuited on the local RKE2 install markers *before* the per-run residue
+  gate and returned zero, so on a host with no RKE2 install the fail-closed refusal never ran and
+  the incident class this bullet describes — a clean-looking teardown that then justified an
+  operator `rm .data` — remained reachable, and was reached: two AWS resources were stranded by that
+  exact sequence. **Corrected 2026-08-20 (Sprint `4.88`).** The terminal arm is selected by the
+  delete mode over the (mode, presence) product rather than by install presence alone: the
+  no-install success arm belongs to local-only delete, and a cascade with no install present reaches
+  no phase and exits non-zero naming the disposition it reports. The general rule that no exit code
+  licenses retiring the retained root is owned by
+  [Retained Storage Lifecycle Doctrine §7](./storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root),
+  and the supported surface now states it in its own narration.
 - Historical Sprint target, superseded by the final lifecycle split: the credential lifecycle
   moved under the managed-resource registry, but it is not true that every identity is
   `Operational`. Each Lifecycle-provider, Authority-backup, TLS-retention, Gateway-DNS, and
@@ -306,6 +321,9 @@ Provisioner; a converged family or target restore from retained-home custody req
 ### 2.1 Dhall Configuration Ownership
 
 Tier-0 `prodbox.dhall` carries non-secret account, region, zone, role, and capability coordinates.
+**Which of those values must be operator-supplied and which may be compiled is decided by
+[config_doctrine.md](./config_doctrine.md) § 0, not here**; § 2.4 below is the AWS inventory that
+rule produces, and this subsection does not restate the partition.
 Generated provider/DNS AWS keys live only at the role-specific Vault generations
 `secret/aws/lifecycle-provider`, `secret/aws/authority-backup-store`,
 `secret/aws/tls-retention-store`, `secret/aws/gateway-dns`, and
@@ -401,6 +419,63 @@ selects identity. A boundary interpreter may construct a short-lived subprocess 
 the already admitted exact generation, but no daemon handler parses config or logs into Vault per
 request. A sealed Vault or stale generation fails closed.
 
+### 2.4 AWS Deployment Values Are Operator-Supplied; AWS Protocol Constants Are Compiled
+
+> **Target.** This subsection states an accepted end state. The compiled side is current, and so is
+> the operational AWS region on the operator-supplied side. The **resource envelope** — node group
+> instance types and sizes, the `aws-test` instance type and root volume, every VPC and subnet CIDR,
+> and the operator CIDR — is still compiled inside the checked-in stack programs and is scheduled.
+> Ownership and rollout live only in the
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+The rule is [config_doctrine.md](./config_doctrine.md) § 0 and is not restated here. This
+subsection is the AWS inventory it produces.
+
+**Operator-supplied, from validated Tier-0 Dhall, fail-closed when absent.** The operational AWS
+region — **current**: `prodbox config generate` emits `aws.region` empty, and
+`requireOperationalAwsRegion`, `validateOperationalAwsCredentials`, and
+`validateLifecycleProviderAwsRegion` each refuse an absent one by name with the operator remedy.
+The EKS node group's instance types, node disk size, and desired/minimum/maximum size. The
+`aws-test` HA-RKE2 instance type and root-volume type and size. Every VPC and subnet CIDR in every
+checked-in stack program. The operator CIDR that gates API-server and SSH ingress. Each of these is
+a value whose namespace AWS owns and on which two correct deployments could legitimately differ —
+one operator's account has different instance quota, a different address plan, a different
+tolerance for node cost — so none of them may be compiled, and none may carry a default envelope
+that a deployment silently inherits.
+
+**Compiled, each for a stated reason.** The AWS managed-policy ARNs attached to the cluster and
+node roles: AWS's own documentation determines the correct set, and an operator choosing a
+different one is not configuring a deployment but breaking it. The EKS OIDC root-CA thumbprint: an
+AWS-schedule-varying real value, declared in place and registered under
+[vault_doctrine.md](./vault_doctrine.md) § 20. The vendor AMI owner and name filter: they name an
+upstream publisher's artifact, not a deployment choice. The EBS CSI driver add-on identifier: an
+AWS add-on name. The global signing region for Route 53 and IAM, and the empty
+`LocationConstraint` an S3 `CreateBucket` must carry in that region: both fixed by the AWS API. And
+the Resource Groups Tagging API's global-service region, which is **defined once and imported**
+(`globalServiceTaggingRegion` in `Prodbox.Lifecycle.Teardown.TaggingApiReach`, which the terminal
+cascade audit imports rather than restating) — two constants that agree today are not one constant,
+and nothing fails when AWS moves an endpoint and only one of them is updated. Every compiled value
+in this paragraph is registered in `awsCoordinateLiteralRegistry` with the class that covers it, so
+a new one cannot be added silently.
+
+**Transport constraint.** The profile reaches the Pulumi programs over the existing
+`pulumi config set` channel that `setPulumiConfiguration` already drives, and the typed
+configuration the Provider Worker carries is the one input to that channel. That type derives
+`Serialise` generically and rides inside the provider intent into the retained authority's
+provider-operation map, whose SHA-256 dispatch digest is persisted beside it and compared on every
+later read. **Re-shaping an existing constructor is therefore forbidden**: it makes retained
+authority objects undecodable and shifts every request digest. Appending a constructor is
+byte-compatible, because the generic sum encoding tags constructors by declaration index. Which of
+those two shapes the profile takes is an implementation decision scheduled in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here); the constraint is that the values
+stay inside the admitted, validated intent rather than arriving on a side channel the
+execution-time re-validation does not see.
+
+**Out of scope.** The AWS account id, which is discovered at runtime from `sts get-caller-identity`
+rather than pinned. And every name prodbox chooses for an object it creates — stack names, its own
+tag keys, IAM name prefixes, credential principal names — which are prodbox's protocol identity
+under `config_doctrine.md` § 0's third compiled class, not deployment configuration.
+
 ## 3. Harness Preflight Contract
 
 ### 3.1 Required Harness Checks
@@ -460,8 +535,8 @@ resolve and use the exact Lifecycle Authority operation capability and the relev
 `prodbox aws stack` surface can select, inspect, or create the canonical AWS test stack using
 settings-defined AWS auth. A raw MinIO socket or ready gateway is not equivalent evidence.
 
-The supported path synchronizes only non-secret validation inputs such as operator-CIDR and
-SSH-public-key into the stack with `pulumi config set`. The fenced provider worker acquires the
+The supported path synchronizes only non-secret validation inputs such as operator-CIDR into the
+stack with `pulumi config set`. The fenced provider worker acquires the
 Lifecycle-provider generation through its own Vault role and projects only its bounded role session
 into Pulumi's subprocess environment; no AWS credential lives in Dhall or stack-local config.
 
@@ -526,9 +601,12 @@ Minimum rule:
    throughout because its `LongLived` cleanup class is retained across cluster teardown and may
    only be destroyed by `prodbox aws stack aws-ses destroy --yes` or `prodbox nuke`; its main
    checkpoint remains the encrypted Model-B object in MinIO described by §4.5
-7. the AWS validation Pulumi programs take non-secret operator-CIDR and SSH-public-key inputs
-   through explicit stack config synchronized by the Haskell orchestration layer, while AWS
-   provider credentials stay in the Haskell-owned subprocess environment
+7. the AWS validation Pulumi programs take a non-secret operator-CIDR input through explicit stack
+   config synchronized by the Haskell orchestration layer, while AWS provider credentials stay in
+   the Haskell-owned subprocess environment. *Corrected 2026-08-20:* this item previously named an
+   SSH-public-key input on the same channel. No such config key exists in either program — each
+   declares exactly one, `operatorCidr`; the `aws-test` program declares its own `tls:PrivateKey`
+   and consumes `publicKeyOpenssh` internally
 8. both retained AWS destroy paths refresh Pulumi state and retry destroy once before surfacing a
    cleanup failure
 9. the HA-RKE2 validation destroys and recreates the retained AWS test stack once when stack
@@ -1017,6 +1095,33 @@ Each of `aws-eks`, `aws-eks-subzone`, and `aws-test` has its own observer and ke
 A cluster-wide tag query has no adapter into those values. Provider responses are normalized by ARN
 before cardinality, and the intentionally retained long-lived state bucket cannot inhabit any of
 the three per-run observations.
+
+**One registered family is removed through Kubernetes rather than through the Provider, and the
+split is deliberate.** The ACME DNS01 challenge TXT is written by cert-manager's DNS01 solver, which
+holds a finalizer over the record and would rewrite one deleted underneath it; the Provider has no
+Kubernetes capability at all, which is the contract rather than an omission. The registered
+DNS01 challenge record family therefore observes and reads back through the Provider — a bounded
+Route 53 record-set scan under the run's hosted zone and the one record-name prefix that bounds the
+family — while its reconcile step runs through the registered-target interpreter's separate
+Kubernetes-scoped execution arm. There is **no reap intent beside the observe one**: the absence of
+the provider mutation is what makes the race unrepresentable.
+
+The arm is reachable only with an authorization that a *present* observation of the family mints, so
+an absent or unobservable family never reaches Kubernetes. Its owner set is a join rather than a
+wildcard: cert-manager's challenges are listed with their `spec.dnsName`, each owner's record name is
+derived through the same prefix constant the registry coordinate uses, and exactly the owners the
+observation named are deleted. A malformed listing row makes the whole listing unusable rather than
+being dropped, because a shortened owner set reads as an orphaned record; and an observed record no
+surviving owner claims is a refusal naming it, not an applied delete, because an owner delete cannot
+remove a record whose owner is already gone. Only the separate Route 53 read-back closes the family,
+which is load-bearing here rather than ceremonial — cert-manager removes the record asynchronously
+after its object is gone.
+
+Both Kubernetes-reaching teardown paths run `kubectl` through one ephemeral client: a kubeconfig
+written into a private temporary directory with `O_EXCL`, `O_NOFOLLOW`, and owner-only mode; a bearer
+token served through a FIFO so the credential never lands on disk; an environment scrubbed of
+`KUBECONFIG` and every ambient AWS credential variable; and a client scoped to the continuation it is
+handed to. Two statements of that machinery would be two statements of a security property.
 
 
 ## 6. Required Command Surfaces

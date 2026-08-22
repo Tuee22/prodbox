@@ -75,6 +75,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderCheckpointRef
   , ProviderIntent (..)
   , ProviderIntentCoordinate
+  , ProviderOwnedTagQuery (..)
   , ProviderReadinessProbe (..)
   , ProviderRevision
   , ProviderSpotPriceQuery
@@ -206,6 +207,31 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
   , observeTestEbsVolumesCapability
       :: Text
       -> ProviderReadOnly m session
+  , observeValidationHostedZonesCapability
+      :: Text
+      -> ProviderReadOnly m session
+  , reapValidationHostedZonesCapability
+      :: Text
+      -> ProviderMutation m session
+  , observeRetainedEbsVolumesCapability
+      :: Text
+      -> ProviderReadOnly m session
+  , reapRetainedEbsVolumesCapability
+      :: Text
+      -> ProviderMutation m session
+  , observeDns01ChallengeRecordsCapability
+      :: Text
+      -> Text
+      -> ProviderReadOnly m session
+  -- ^ Sprint 7.36: the DNS01 challenge record family, read-only.  There is no
+  -- reap capability beside it: cert-manager's solver owns the record, so the
+  -- removal is a Kubernetes owner delete outside the Provider's capability set.
+  , observeOwnedResourceTagsCapability
+      :: ProviderOwnedTagQuery
+      -> ProviderReadOnly m session
+  -- ^ Sprint 7.36: the cascade terminal audit's single-filter owned-resource
+  -- tag listing.  Read-only by construction: the audit is the surface that
+  -- proves nothing escaped, and it never removes what it finds.
   , observeSpotPriceCapability
       :: ProviderSpotPriceQuery
       -> ProviderReadOnly m session
@@ -429,6 +455,22 @@ validateProviderIntent intent = case intent of
         | otherwise -> Left (ProviderWorkStateIntentInvalid "eks-client-auth")
   ObserveTestEbsVolumes clusterName ->
     validateTextRef "cluster-name" clusterName
+  ObserveValidationHostedZones purpose ->
+    validateTextRef "validation-zone-purpose" purpose
+  ReapValidationHostedZones purpose ->
+    validateTextRef "validation-zone-purpose" purpose
+  ObserveDns01ChallengeRecords zoneId recordNamePrefix -> do
+    validateTextRef "dns01-challenge-zone" zoneId
+    validateTextRef "dns01-challenge-record-prefix" recordNamePrefix
+  ObserveRetainedEbsVolumes lifecycleValue ->
+    validateTextRef "retained-ebs-lifecycle" lifecycleValue
+  ReapRetainedEbsVolumes lifecycleValue ->
+    validateTextRef "retained-ebs-lifecycle" lifecycleValue
+  ObserveOwnedResourceTags query -> case query of
+    ProviderOwnedTagKeyQuery key -> validateTextRef "owned-resource-tag-key" key
+    ProviderOwnedTagPairQuery key value -> do
+      validateTextRef "owned-resource-tag-key" key
+      validateTextRef "owned-resource-tag-value" value
   ObserveEksClusterIdentity request ->
     case mkEksClusterIdentityRequest
       (eksClusterIdentityRequestStackRef request)
@@ -796,6 +838,8 @@ operationForIntent capabilities intent = case intent of
     IntentMutation (reconcilePublicARecordCapability capabilities ref)
   ReapTestEbsVolumes clusterName ->
     IntentMutation (reapTestEbsVolumesCapability capabilities clusterName)
+  ObserveOwnedResourceTags query ->
+    IntentReadOnly (observeOwnedResourceTagsCapability capabilities query)
   ObserveSpotPrice query ->
     IntentReadOnly (observeSpotPriceCapability capabilities query)
   ObserveOperationalIdentity ->
@@ -808,6 +852,17 @@ operationForIntent capabilities intent = case intent of
     IntentReadOnly (issueEksClientAuthCapability capabilities request)
   ObserveTestEbsVolumes clusterName ->
     IntentReadOnly (observeTestEbsVolumesCapability capabilities clusterName)
+  ObserveValidationHostedZones purpose ->
+    IntentReadOnly (observeValidationHostedZonesCapability capabilities purpose)
+  ReapValidationHostedZones purpose ->
+    IntentMutation (reapValidationHostedZonesCapability capabilities purpose)
+  ObserveDns01ChallengeRecords zoneId recordNamePrefix ->
+    IntentReadOnly
+      (observeDns01ChallengeRecordsCapability capabilities zoneId recordNamePrefix)
+  ObserveRetainedEbsVolumes lifecycleValue ->
+    IntentReadOnly (observeRetainedEbsVolumesCapability capabilities lifecycleValue)
+  ReapRetainedEbsVolumes lifecycleValue ->
+    IntentMutation (reapRetainedEbsVolumesCapability capabilities lifecycleValue)
   ObserveEksClusterIdentity request ->
     IntentReadOnly (observeEksClusterIdentityCapability capabilities request)
 

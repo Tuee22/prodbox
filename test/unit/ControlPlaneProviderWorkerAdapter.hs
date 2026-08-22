@@ -228,6 +228,18 @@ fixtureCapabilities calls applied loseResponse unobservable =
         mutation ("ebs-reap:" <> clusterName)
     , observeTestEbsVolumesCapability = \clusterName ->
         readOnly ("ebs-observe:" <> clusterName)
+    , observeValidationHostedZonesCapability = \namePrefix ->
+        readOnly ("validation-zone-observe:" <> namePrefix)
+    , reapValidationHostedZonesCapability = \namePrefix ->
+        mutation ("validation-zone-reap:" <> namePrefix)
+    , observeRetainedEbsVolumesCapability = \lifecycleValue ->
+        readOnly ("retained-ebs-observe:" <> lifecycleValue)
+    , observeDns01ChallengeRecordsCapability = \zoneId recordNamePrefix ->
+        readOnly ("dns01-challenge-observe:" <> zoneId <> ":" <> recordNamePrefix)
+    , observeOwnedResourceTagsCapability = \query ->
+        readOnly ("owned-resource-tags:" <> providerOwnedTagQueryKey query)
+    , reapRetainedEbsVolumesCapability = \lifecycleValue ->
+        mutation ("retained-ebs-reap:" <> lifecycleValue)
     , observeSpotPriceCapability = \query ->
         readOnly
           ( "spot-price:"
@@ -453,7 +465,19 @@ labelFor intent = case intent of
   ObserveProviderReadiness probe -> readinessLabel probe
   IssueEksClientAuth _ -> "eks-client-auth"
   ObserveTestEbsVolumes clusterName -> "ebs-observe:" <> clusterName
+  ObserveValidationHostedZones namePrefix ->
+    "validation-zone-observe:" <> namePrefix
+  ReapValidationHostedZones namePrefix ->
+    "validation-zone-reap:" <> namePrefix
+  ObserveRetainedEbsVolumes lifecycleValue ->
+    "retained-ebs-observe:" <> lifecycleValue
+  ReapRetainedEbsVolumes lifecycleValue ->
+    "retained-ebs-reap:" <> lifecycleValue
   ObserveEksClusterIdentity _ -> "eks-cluster-identity"
+  ObserveOwnedResourceTags query ->
+    "owned-resource-tags:" <> providerOwnedTagQueryKey query
+  ObserveDns01ChallengeRecords zoneId recordNamePrefix ->
+    "dns01-challenge-observe:" <> zoneId <> ":" <> recordNamePrefix
 
 readinessLabel :: ProviderReadinessProbe -> Text
 readinessLabel probe = case probe of

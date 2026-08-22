@@ -36,6 +36,7 @@ module Prodbox.Lifecycle.TagSweep
   , isRetainedLongLived
   , partitionRetainedLongLived
   , partitionEbsTagRows
+  , isRetainedEbsTag
   )
 where
 

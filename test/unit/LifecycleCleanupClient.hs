@@ -92,6 +92,7 @@ import Prodbox.Http.Client (HttpBoundedError)
 import Prodbox.Http.ReplyStatus (replyStatusCode)
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.CleanupRun
+import Prodbox.Lifecycle.CleanupRunEntry
 import Prodbox.Lifecycle.HostCleanupIntent
   ( HostCleanupIntentStore
   , HostTerminalPermitId
@@ -123,13 +124,40 @@ import Prodbox.Lifecycle.Teardown.Program
   , teardownOperationTag
   )
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
-import Prodbox.Test.LifecycleCleanupClient
 import System.IO.Temp (withSystemTempDirectory)
 import TestSupport
 
 lifecycleCleanupClientSuite :: SuiteBuilder ()
 lifecycleCleanupClientSuite =
   describe "Sprint 5.36 lifecycle-owned validation cleanup client" $ do
+    it "binds an ordinary per-run surface with no host record at all" $ do
+      -- Sprint 5.36: the entry protocol was fixed to the cascade, and the
+      -- cascade is the surface that uninstalls the retained local foundation.
+      -- A per-run cleanup mutates registered targets and never the host, so it
+      -- has no local-uninstall operation to bind a host record to — binding one
+      -- anyway would have meant inventing a terminal the compiled program does
+      -- not contain.
+      --
+      -- The ordinary binding runs exactly the checks the cascade binding runs,
+      -- because both call one `requireCleanupBinding`; what differs is only the
+      -- host half.
+      lifecycleCleanupDescriptorRunId ordinaryDescriptor `shouldBe` fixtureRunId
+      lifecycleCleanupDescriptorInitialRun ordinaryDescriptor
+        `shouldBe` ordinaryInitialRun
+      lifecycleCleanupDescriptorHostRecord ordinaryDescriptor
+        `shouldBe` NoHostIntent
+      -- The shared binding refuses a foreign initial run on this surface for
+      -- the same reason it refuses one on the cascade, rather than by a weaker
+      -- prefix of those checks.
+      mkOrdinaryCleanupDescriptor fixtureRunId ordinaryCompiled fixtureInitialRun
+        `shouldSatisfy` isLeft
+      -- The cascade's host record is reachable only at the surface that has
+      -- one: `lifecycleCleanupDescriptorHostIntent` does not typecheck against
+      -- an ordinary descriptor, which is why there is no negative case for it.
+      lifecycleCleanupDescriptorHostRecord fixtureDescriptor
+        `shouldBe` CascadeHostIntent
+          (lifecycleCleanupDescriptorHostIntent fixtureDescriptor)
+
     it "binds one caller run id to the compiled graph, CleanupRun, scope, and terminal operation" $ do
       lifecycleCleanupDescriptorRunId fixtureDescriptor `shouldBe` fixtureRunId
       lifecycleCleanupDescriptorProgram fixtureDescriptor
@@ -162,7 +190,7 @@ lifecycleCleanupClientSuite =
         let store = fixtureStore retainedRoot
         observedInside <- newIORef (Right Nothing)
         result <-
-          prepareLifecycleCleanupBeforeMutation store fixtureDescriptor $ do
+          prepareLifecycleCleanupBeforeMutation (PrepareHostUninstallRecord store) fixtureDescriptor $ do
             observed <- observeHostCleanupIntent store
             writeIORef observedInside observed
             pure ("mutation-ran" :: Text)
@@ -180,7 +208,7 @@ lifecycleCleanupClientSuite =
         mutationRan <- newIORef False
         refused <-
           prepareLifecycleCleanupBeforeMutation
-            store
+            (PrepareHostUninstallRecord store)
             conflicting
             (writeIORef mutationRan True)
         refused `shouldSatisfy` isLeft
@@ -193,7 +221,7 @@ lifecycleCleanupClientSuite =
             (const CleanupNodeSucceeded)
         refusedRegistration <-
           registerLifecycleCleanupRun
-            store
+            (PrepareHostUninstallRecord store)
             (fakeCleanupRunClient fake)
             conflicting
         refusedRegistration `shouldSatisfy` isLeft
@@ -211,10 +239,10 @@ lifecycleCleanupClientSuite =
             client = fakeCleanupRunClient fake
         registered <-
           expectIoRight
-            (registerLifecycleCleanupRun store client fixtureDescriptor)
+            (registerLifecycleCleanupRun (PrepareHostUninstallRecord store) client fixtureDescriptor)
         replayed <-
           expectIoRight
-            (registerLifecycleCleanupRun store client fixtureDescriptor)
+            (registerLifecycleCleanupRun (PrepareHostUninstallRecord store) client fixtureDescriptor)
         descriptorBoundCleanupRunId (registeredLifecycleCleanupBoundRun replayed)
           `shouldBe` descriptorBoundCleanupRunId (registeredLifecycleCleanupBoundRun registered)
         readIORef (fakeCreateApplications fake) `shouldReturn` 1
@@ -253,7 +281,7 @@ lifecycleCleanupClientSuite =
             (const CleanupNodeSucceeded)
         result <-
           registerLifecycleCleanupRun
-            (fixtureStore retainedRoot)
+            (PrepareHostUninstallRecord (fixtureStore retainedRoot))
             (fakeCleanupRunClient fake)
             fixtureDescriptor
         result `shouldSatisfy` isBoundedUnconfirmed
@@ -273,7 +301,7 @@ lifecycleCleanupClientSuite =
         interrupted <-
           try
             ( prepareLifecycleCleanupBeforeMutation
-                store
+                (PrepareHostUninstallRecord store)
                 fixtureDescriptor
                 (throwIO ThreadKilled)
             )
@@ -289,7 +317,7 @@ lifecycleCleanupClientSuite =
 
         registered <-
           expectIoRight
-            (registerLifecycleCleanupRun store client fixtureDescriptor)
+            (registerLifecycleCleanupRun (PrepareHostUninstallRecord store) client fixtureDescriptor)
         recorded <-
           expectIoRight
             ( attachLifecycleCleanupPrimaryOutcome
@@ -317,7 +345,7 @@ lifecycleCleanupClientSuite =
             client = fakeCleanupRunClient fake
         registered <-
           expectIoRight
-            (registerLifecycleCleanupRun store client fixtureDescriptor)
+            (registerLifecycleCleanupRun (PrepareHostUninstallRecord store) client fixtureDescriptor)
         claimed <-
           expectIoRight
             ( claimLifecycleCleanupRun
@@ -336,7 +364,7 @@ lifecycleCleanupClientSuite =
           (const CleanupNodeSucceeded)
         replayed <-
           expectIoRight
-            (registerLifecycleCleanupRun store client fixtureDescriptor)
+            (registerLifecycleCleanupRun (PrepareHostUninstallRecord store) client fixtureDescriptor)
         descriptorBoundCleanupRunId (registeredLifecycleCleanupBoundRun replayed)
           `shouldBe` fixtureRunId
         result <- observeLifecycleCleanupResult client 1000 0 replayed
@@ -362,7 +390,7 @@ lifecycleCleanupClientSuite =
         registered <-
           expectIoRight
             ( registerLifecycleCleanupRun
-                (fixtureStore retainedRoot)
+                (PrepareHostUninstallRecord (fixtureStore retainedRoot))
                 (fakeCleanupRunClient fake)
                 fixtureDescriptor
             )
@@ -403,7 +431,7 @@ lifecycleCleanupClientSuite =
         registered <-
           expectIoRight
             ( registerLifecycleCleanupRun
-                (fixtureStore retainedRoot)
+                (PrepareHostUninstallRecord (fixtureStore retainedRoot))
                 (fakeCleanupRunClient fake)
                 fixtureDescriptor
             )
@@ -448,12 +476,12 @@ lifecycleCleanupClientSuite =
             when (AuthorityReachablePrefix `elem` beforeInterruption) $ do
               _ <-
                 expectIoRight
-                  (registerLifecycleCleanupRun store client fixtureDescriptor)
+                  (registerLifecycleCleanupRun (PrepareHostUninstallRecord store) client fixtureDescriptor)
               pure ()
             interrupted <-
               try
                 ( prepareLifecycleCleanupBeforeMutation
-                    store
+                    (PrepareHostUninstallRecord store)
                     fixtureDescriptor
                     (throwIO ThreadKilled)
                 )
@@ -468,7 +496,7 @@ lifecycleCleanupClientSuite =
             mapM_ (runPrefix store client fake mutations) afterRestart
             _ <-
               expectIoRight
-                (registerLifecycleCleanupRun store client fixtureDescriptor)
+                (registerLifecycleCleanupRun (PrepareHostUninstallRecord store) client fixtureDescriptor)
             readIORef mutations `shouldReturn` mutationPrefixes
             readIORef (fakeCreateApplications fake) `shouldReturn` 1
             assertOneRunId fake
@@ -481,7 +509,7 @@ lifecycleCleanupClientSuite =
             replayedOperationIds `shouldBe` fixtureOperationIds
 
     it "contains no validation-owned graph, id allocator, callback cleanup plan, or success fold" $ do
-      source <- readFile "src/Prodbox/Test/LifecycleCleanupClient.hs"
+      source <- readFile "src/Prodbox/Lifecycle/CleanupRunEntry.hs"
       source `shouldNotContain` "Prodbox.Test.ManagedCleanupPlan"
       source `shouldNotContain` "compileManagedCleanupPlan"
       source `shouldNotContain` "mkCleanupGraph"
@@ -519,7 +547,7 @@ runPrefix
   -> IO ()
 runPrefix store client fake mutations prefix = do
   result <-
-    prepareLifecycleCleanupBeforeMutation store fixtureDescriptor $ do
+    prepareLifecycleCleanupBeforeMutation (PrepareHostUninstallRecord store) fixtureDescriptor $ do
       observed <- observeHostCleanupIntent store
       unless
         (observed == Right (Just (lifecycleCleanupDescriptorHostIntent fixtureDescriptor)))
@@ -529,7 +557,7 @@ runPrefix store client fake mutations prefix = do
   when (prefix == AuthorityReachablePrefix) $ do
     _ <-
       expectIoRight
-        (registerLifecycleCleanupRun store client fixtureDescriptor)
+        (registerLifecycleCleanupRun (PrepareHostUninstallRecord store) client fixtureDescriptor)
     readIORef (fakeCreateApplications fake) `shouldReturn` 1
 
 data FakeFault
@@ -1055,7 +1083,7 @@ fixtureTerminalPermit =
   mustRight
     (mkHostTerminalPermitId "teardown-client-run-0001/local-uninstall")
 
-fixtureDescriptor :: LifecycleCleanupDescriptor
+fixtureDescriptor :: LifecycleCleanupDescriptor 'Cascade
 fixtureDescriptor =
   mustRight
     ( mkLifecycleCleanupDescriptor
@@ -1065,7 +1093,7 @@ fixtureDescriptor =
         fixtureTerminalPermit
     )
 
-descriptorFor :: CleanupRunId -> LifecycleCleanupDescriptor
+descriptorFor :: CleanupRunId -> LifecycleCleanupDescriptor 'Cascade
 descriptorFor runId =
   let compiled =
         mustRight
@@ -1177,7 +1205,7 @@ isNonterminalFailure failure = case failure of
   _ -> False
 
 isBoundedUnconfirmed
-  :: Either LifecycleCleanupClientError RegisteredLifecycleCleanup
+  :: Either LifecycleCleanupClientError (RegisteredLifecycleCleanup 'Cascade)
   -> Bool
 isBoundedUnconfirmed result = case result of
   Left
@@ -1188,7 +1216,7 @@ isBoundedUnconfirmed result = case result of
   _ -> False
 
 isCompiledRunIdMismatch
-  :: Either LifecycleCleanupDescriptorError LifecycleCleanupDescriptor
+  :: Either LifecycleCleanupDescriptorError (LifecycleCleanupDescriptor 'Cascade)
   -> Bool
 isCompiledRunIdMismatch result = case result of
   Left (LifecycleCleanupCompiledRunIdMismatch supplied compiled) ->
@@ -1196,7 +1224,7 @@ isCompiledRunIdMismatch result = case result of
   _ -> False
 
 isInitialGraphMismatch
-  :: Either LifecycleCleanupDescriptorError LifecycleCleanupDescriptor
+  :: Either LifecycleCleanupDescriptorError (LifecycleCleanupDescriptor 'Cascade)
   -> Bool
 isInitialGraphMismatch result = case result of
   Left LifecycleCleanupInitialGraphMismatch -> True
@@ -1241,3 +1269,30 @@ firstShow :: (Show err) => Either err value -> Either Text value
 firstShow result = case result of
   Left err -> Left (Text.pack (show err))
   Right value -> Right value
+
+-- | Sprint 5.36: the ordinary per-run surface the harness cleanup binds.
+ordinaryCompiled :: CompiledDesiredAbsenceProgram 'ExplicitPerRun
+ordinaryCompiled =
+  mustRight
+    ( compileDesiredAbsenceGraph
+        fixtureRunId
+        fixtureFoundation
+        (Just fixtureAwsScope)
+        ExplicitPerRunSurface
+    )
+
+ordinaryInitialRun :: CleanupRun
+ordinaryInitialRun =
+  mustRight
+    ( newCleanupRun
+        fixtureRunId
+        (compiledDesiredAbsenceGraph ordinaryCompiled)
+        fixtureOwner
+        0
+        100
+    )
+
+ordinaryDescriptor :: LifecycleCleanupDescriptor 'ExplicitPerRun
+ordinaryDescriptor =
+  mustRight
+    (mkOrdinaryCleanupDescriptor fixtureRunId ordinaryCompiled ordinaryInitialRun)

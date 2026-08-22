@@ -42,6 +42,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , EksClusterIdentityRequest
   , ProviderCheckpointRef
   , ProviderIntent (..)
+  , ProviderOwnedTagQuery (..)
   , ProviderReadinessProbe (..)
   , ProviderRevision
   , ProviderSpotPriceQuery
@@ -52,6 +53,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , SesDnsRef
   , SesIdentityRef
   , SesRuleSetRef
+  , isProviderResourceRegistered
   , mkAwsEksProviderStackConfig
   , mkEksClientAuthRequest
   , mkEksClusterIdentityRequest
@@ -60,10 +62,13 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkProviderSpotPriceQuery
   , mkProviderStackRef
   , mkPublicARecordRef
+  , mkRegisteredProviderResources
   , mkSesBucketRef
   , mkSesDnsRef
   , mkSesIdentityRef
   , mkSesRuleSetRef
+  , productionRegisteredProviderResources
+  , providerIntentResourceKey
   )
 import Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
   ( cascadeTerminalAuditNodeName
@@ -115,6 +120,40 @@ lifecycleTeardownOperationalCredentialInventorySuite =
       let classified = map operationalCredentialConsumerForIntent providerIntents
       classified `shouldBe` [minBound .. maxBound]
       operationalCredentialInventoryConsumers inventory `shouldBe` classified
+
+    it "admits every closed Provider intent at the production resource allowlist" $ do
+      -- The allowlist the accepted authority carries is the boundary a
+      -- committed intent is refused at, and it was a second statement nobody
+      -- joined to the intent universe: the validation hosted-zone and
+      -- retained-EBS families were registered as intents with no entry here, so
+      -- either would have been refused as an unregistered resource while every
+      -- adapter table stayed green. The fixture below is exhaustive over the
+      -- intent constructors by the preceding case, so this measures coverage
+      -- rather than restating the list.
+      filter
+        ( \intent ->
+            not
+              ( isProviderResourceRegistered
+                  (providerIntentResourceKey intent)
+                  (mkRegisteredProviderResources productionRegisteredProviderResources)
+              )
+        )
+        providerIntents
+        `shouldBe` []
+
+    it "keeps the allowlist an allowlist rather than a family projection" $ do
+      -- Deriving the stack family from the intent type would widen the worker's
+      -- authority from three named stacks to any stack reference a caller
+      -- composed, so the three entries stay exact and an unregistered stack is
+      -- still refused.
+      isProviderResourceRegistered
+        (providerIntentResourceKey (ObserveRegisteredStack stackRef))
+        (mkRegisteredProviderResources productionRegisteredProviderResources)
+        `shouldBe` True
+      isProviderResourceRegistered
+        (providerIntentResourceKey (ObserveRegisteredStack foreignStackRef))
+        (mkRegisteredProviderResources productionRegisteredProviderResources)
+        `shouldBe` False
 
     it "names only the currently Provider-backed teardown operations" $ do
       operationalCredentialInventoryGraphConsumers inventory
@@ -266,6 +305,14 @@ lifecycleTeardownOperationalCredentialInventorySuite =
                    , ApplyAuthorityForwardMigrationTag
                    , BindProviderAdmissionGenerationTag
                    , FreezeProviderAdmissionForCascadeAuditTag
+                   , -- Sprint 7.36: the audit's own result reaches the
+                     -- Authority through its own route, so the freeze and the
+                     -- record are separately reachable and separately auditable.
+                     RecordCascadeTerminalAuditReceiptTag
+                   , -- Sprint 7.36: and the revocation is a third route, because
+                     -- the two independent read-backs it binds happen after the
+                     -- record and before the credential ends.
+                     RevokeCascadeProviderCredentialTag
                    ]
 
     it "keeps the pre-cutover identity distinct and names what supersedes it" $ do
@@ -355,10 +402,19 @@ providerIntents =
   , ObserveTestEbsVolumes "prodbox-test"
   , ObserveEksClusterIdentity eksIdentity
   , ObserveProviderAwsScope
+  , ObserveValidationHostedZones "prodbox-dns-aws-"
+  , ReapValidationHostedZones "prodbox-dns-aws-"
+  , ObserveRetainedEbsVolumes "retained-ebs"
+  , ReapRetainedEbsVolumes "retained-ebs"
+  , ObserveOwnedResourceTags (ProviderOwnedTagKeyQuery "prodbox.io/managed-by")
+  , ObserveDns01ChallengeRecords "Z0123456789ABCDEFGHIJ" "_acme-challenge."
   ]
 
 stackRef :: ProviderStackRef
 stackRef = mustRight (mkProviderStackRef "aws-eks")
+
+foreignStackRef :: ProviderStackRef
+foreignStackRef = mustRight (mkProviderStackRef "aws-someone-elses-stack")
 
 revision :: ProviderRevision
 revision = mustRight (mkProviderRevision 1)

@@ -1,6 +1,13 @@
 -- | Read-only facade for the retained Provider admission epoch.  Generation
--- adoption, pending-operation classification, and revocation receipts remain
--- package-private.
+-- adoption and pending-operation classification remain package-private.
+--
+-- Sprint 7.36 exports the terminal-audit receipt and the credential-revocation
+-- receipt together with their smart constructors, for the same reason Sprint
+-- 4.85 exported the freeze binding: an authenticated control route now carries
+-- each of them.  What stays package-private is every way to /apply/ one — the
+-- record, revoke, freeze, and generation-binding transitions, and the epoch
+-- constructors themselves.  A caller can state the audit it took and the two
+-- read-backs it performed, and can transition nothing.
 --
 -- Sprint 4.85 exports the Cascade-audit freeze __binding__ and its smart
 -- constructor, because the authenticated control route that carries one now
@@ -47,6 +54,24 @@ module Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
   , freezeRegressionGenerationBindIdempotent
   , freezeRegressionRebindDifferentGenerationRefused
   , freezeRegressionFrozenAdmitsOnlyReservation
+  , CascadeTerminalAuditReceipt
+  , CascadeTerminalAuditVerdict (..)
+  , mkCascadeTerminalAuditReceipt
+  , cascadeTerminalAuditReceiptScopeDigest
+  , cascadeTerminalAuditReceiptQueryDigest
+  , cascadeTerminalAuditReceiptRetainedSetDigest
+  , cascadeTerminalAuditReceiptVerdict
+  , cascadeAuditFreezeBindingScopeDigest
+  , ProviderAdmissionAuditRecordRefusal (..)
+  , ProviderAdmissionAuditReadBackRefusal (..)
+  , confirmCascadeTerminalAuditReceipt
+  , CascadeTerminalAuditReceiptRegression (..)
+  , fixedCascadeTerminalAuditReceiptRegression
+  , ProviderCredentialRevocationReceipt
+  , mkProviderCredentialRevocationReceipt
+  , ProviderAdmissionRevokeRefusal (..)
+  , CascadeCredentialRevocationRegression (..)
+  , fixedCascadeCredentialRevocationRegression
   )
 where
 

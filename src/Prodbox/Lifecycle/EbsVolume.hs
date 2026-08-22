@@ -21,6 +21,18 @@ module Prodbox.Lifecycle.EbsVolume
   , testScopedEbsObservation
   , renderTestScopedEbsObservation
   , parseTestScopedEbsObservation
+  , RetainedEbsReaperInput (..)
+  , RetainedEbsReaperPlan (..)
+  , RetainedEbsReaperReport (..)
+  , RetainedEbsObservation
+  , retainedEbsObservationVolumeIds
+  , retainedEbsObservation
+  , renderRetainedEbsObservation
+  , parseRetainedEbsObservation
+  , retainedEbsVolumeIdsFromTagRows
+  , retainedEbsReaperPlan
+  , renderRetainedEbsReaperReport
+  , runRetainedEbsReaper
   , ebsManagedResourceName
   , ebsPerRunTestResourceName
   , ebsProductionRetainedResourceName
@@ -140,6 +152,26 @@ data TestEbsReaperReport = TestEbsReaperReport
   }
   deriving (Eq, Show)
 
+-- | Sprint 7.36: the retained family's reaper inputs.  It carries no cluster
+-- name, because the retained family is not owned by a cluster — that is the
+-- whole reason it survives a cascade.
+data RetainedEbsReaperInput = RetainedEbsReaperInput
+  { retainedEbsReaperEnvironment :: [(String, String)]
+  , retainedEbsReaperWorkingDirectory :: Maybe FilePath
+  }
+  deriving (Eq, Show)
+
+data RetainedEbsReaperPlan = RetainedEbsReaperPlan
+  { retainedEbsReaperVolumeIds :: [EbsVolumeId]
+  }
+  deriving (Eq, Show)
+
+data RetainedEbsReaperReport = RetainedEbsReaperReport
+  { retainedEbsReaperMatchedVolumeIds :: [EbsVolumeId]
+  , retainedEbsReaperDeletedVolumeIds :: [EbsVolumeId]
+  }
+  deriving (Eq, Show)
+
 -- | Canonical, bounded evidence returned by the Provider Worker for the
 -- exact test-scoped EBS family.  The constructor is private so a malformed,
 -- duplicated, or non-canonical volume set cannot be treated as provider
@@ -206,6 +238,76 @@ parseTestScopedEbsObservation raw
 
 testEbsObservationPrefix :: Text.Text
 testEbsObservationPrefix = "prodbox-test-ebs-observation/v1:"
+
+-- | Sprint 7.36: the same bounded canonical evidence for the __retained__
+-- family.  It is a distinct type, not a reuse of 'TestEbsObservation', because
+-- the two families have opposite default dispositions: a per-run volume is
+-- meant to go away and a retained volume is meant to survive.  Letting one
+-- decode as the other would let a per-run observation answer for the family
+-- whose deletion needs an explicit long-lived surface.
+newtype RetainedEbsObservation = RetainedEbsObservation [EbsVolumeId]
+  deriving (Eq, Show)
+
+retainedEbsObservationVolumeIds :: RetainedEbsObservation -> [EbsVolumeId]
+retainedEbsObservationVolumeIds (RetainedEbsObservation volumeIds) = volumeIds
+
+retainedEbsObservationPrefix :: Text.Text
+retainedEbsObservationPrefix = "prodbox-retained-ebs-observation/v1:"
+
+-- | Project only the registry-owned retained family, re-filtering client-side
+-- on the volumes' own tags exactly as 'testScopedEbsObservation' does.  The
+-- query filter narrowed the request; this narrows the answer, and neither is
+-- authority on its own.
+retainedEbsObservation :: [EbsVolume] -> RetainedEbsObservation
+retainedEbsObservation volumes =
+  RetainedEbsObservation
+    (sort (nub (retainedEbsReaperVolumeIds (retainedEbsReaperPlan volumes))))
+
+renderRetainedEbsObservation :: RetainedEbsObservation -> Text.Text
+renderRetainedEbsObservation (RetainedEbsObservation volumeIds) =
+  renderEbsObservationBody retainedEbsObservationPrefix volumeIds
+
+parseRetainedEbsObservation :: Text.Text -> Either String RetainedEbsObservation
+parseRetainedEbsObservation raw =
+  RetainedEbsObservation
+    <$> parseEbsObservationBody retainedEbsObservationPrefix "retained" raw
+
+-- | The one canonical wire grammar both EBS families use.  Sharing the writer
+-- keeps the two encodings from drifting; the distinct prefixes keep one from
+-- decoding as the other.
+renderEbsObservationBody :: Text.Text -> [EbsVolumeId] -> Text.Text
+renderEbsObservationBody prefix volumeIds =
+  case volumeIds of
+    [] -> prefix <> "absent"
+    _ -> prefix <> "present:" <> Text.pack (intercalate "," (map unEbsVolumeId volumeIds))
+
+parseEbsObservationBody
+  :: Text.Text -> String -> Text.Text -> Either String [EbsVolumeId]
+parseEbsObservationBody prefix familyName raw
+  | raw == prefix <> "absent" = Right []
+  | Just encoded <- Text.stripPrefix (prefix <> "present:") raw = do
+      let renderedIds = Text.splitOn "," encoded
+      if null renderedIds || any Text.null renderedIds
+        then Left (familyName ++ " EBS observation has no volume identities")
+        else Right ()
+      if length renderedIds > maximumTestEbsObservationVolumes
+        then Left (familyName ++ " EBS observation exceeds the volume bound")
+        else Right ()
+      volumeIds <- traverse parseObservedVolumeId renderedIds
+      let canonical = sort (nub volumeIds)
+      if volumeIds /= canonical
+        then Left (familyName ++ " EBS observation volume identities are not canonical")
+        else Right canonical
+  | otherwise = Left (familyName ++ " EBS observation has an unsupported encoding")
+ where
+  parseObservedVolumeId rendered =
+    let value = Text.unpack rendered
+        suffix = drop 4 value
+     in if take 4 value == "vol-"
+          && length suffix `elem` [8, 17]
+          && all (\character -> isHexDigit character && character `notElem` ['A' .. 'F']) suffix
+          then Right (EbsVolumeId value)
+          else Left (familyName ++ " EBS observation contains an invalid volume identity")
 
 maximumTestEbsObservationVolumes :: Int
 maximumTestEbsObservationVolumes = 128
@@ -462,6 +564,37 @@ ebsDiscoverResultToResidue scope result =
     Left err -> ResidueUnreachable (ResidueQueryFailed err)
     Right volumes -> ebsVolumesResidueStatus scope volumes
 
+-- | Sprint 7.36: the retained family's client-side re-filter.  Unlike the
+-- per-run projection it takes no cluster name: 'TagSweep.isRetainedEbsTag' is
+-- the whole membership test, and adding a cluster to it would exclude exactly
+-- the volume a mis-tagged retained family most needs to report.
+retainedEbsVolumeIdsFromTagRows :: [TagSweep.TaggedResource] -> [EbsVolumeId]
+retainedEbsVolumeIdsFromTagRows resources =
+  nub
+    [ volumeId
+    | arn <-
+        nub
+          [TagSweep.taggedResourceArn resource | resource <- resources, TagSweep.isRetainedEbsTag resource]
+    , Just volumeId <- [ebsVolumeIdFromArn arn]
+    ]
+
+retainedEbsReaperPlan :: [EbsVolume] -> RetainedEbsReaperPlan
+retainedEbsReaperPlan volumes =
+  RetainedEbsReaperPlan
+    { retainedEbsReaperVolumeIds =
+        retainedEbsVolumeIdsFromTagRows (concatMap ebsVolumeTagRows volumes)
+    }
+
+renderRetainedEbsReaperReport :: RetainedEbsReaperReport -> String
+renderRetainedEbsReaperReport report =
+  case retainedEbsReaperMatchedVolumeIds report of
+    [] -> "Retained EBS reaper: clean (no retained EBS volumes matched)."
+    matchedIds ->
+      "Retained EBS reaper: deleted "
+        ++ show (length (retainedEbsReaperDeletedVolumeIds report))
+        ++ " retained EBS volume(s): "
+        ++ intercalate ", " (map unEbsVolumeId matchedIds)
+
 testScopedEbsVolumeIdsFromTagRows :: String -> [TagSweep.TaggedResource] -> [EbsVolumeId]
 testScopedEbsVolumeIdsFromTagRows clusterName resources =
   nub
@@ -695,5 +828,43 @@ runTestScopedEbsReaper input = do
               TestEbsReaperReport
                 { testEbsReaperMatchedVolumeIds = testEbsReaperVolumeIds plan
                 , testEbsReaperDeletedVolumeIds = testEbsReaperVolumeIds plan
+                }
+          errs -> Left (intercalate "; " errs)
+
+-- | Sprint 7.36: the retained family's destructive sweep.
+--
+-- Deliberately a separate function from 'runTestScopedEbsReaper' rather than a
+-- scope parameter on it: the per-run reaper is called on every cascade, and a
+-- scope argument would make deleting production-retained storage one wrong
+-- value away at a call site that runs constantly.  This one is reachable only
+-- from the registered retained target, whose surface an operator has to select
+-- explicitly.
+runRetainedEbsReaper
+  :: RetainedEbsReaperInput -> IO (Either String RetainedEbsReaperReport)
+runRetainedEbsReaper input = do
+  discoverResult <-
+    discoverEbsVolumes
+      EbsDiscoverInput
+        { ebsDiscoverEnvironment = retainedEbsReaperEnvironment input
+        , ebsDiscoverWorkingDirectory = retainedEbsReaperWorkingDirectory input
+        , ebsDiscoverScope = EbsRetainedProduction
+        }
+  case discoverResult of
+    Left err -> pure (Left err)
+    Right volumes -> do
+      let plan = retainedEbsReaperPlan volumes
+          destroyInput =
+            EbsDestroyInput
+              { ebsDestroyEnvironment = retainedEbsReaperEnvironment input
+              , ebsDestroyWorkingDirectory = retainedEbsReaperWorkingDirectory input
+              }
+      deleteResults <- mapM (destroyEbsVolume destroyInput) (retainedEbsReaperVolumeIds plan)
+      pure $
+        case [err | Left err <- deleteResults] of
+          [] ->
+            Right
+              RetainedEbsReaperReport
+                { retainedEbsReaperMatchedVolumeIds = retainedEbsReaperVolumeIds plan
+                , retainedEbsReaperDeletedVolumeIds = retainedEbsReaperVolumeIds plan
                 }
           errs -> Left (intercalate "; " errs)

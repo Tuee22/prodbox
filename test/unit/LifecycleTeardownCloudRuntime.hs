@@ -259,6 +259,9 @@ registeredInterpreter environment owner =
     , awsRegisteredTargetPresentEksDestroyBoundary =
         mkAwsEksPresentDestroyBoundary $ \_ _ _ ->
           pure (Left AwsRegisteredTargetEksDrainProofRequired)
+    , awsRegisteredTargetDns01ChallengeOwnerDeleteBoundary =
+        refusingDns01ChallengeOwnerDeleteBoundary
+          "fixture has no Kubernetes access"
     }
 
 providerEvidence :: ProviderMode -> ProviderIntent -> Text
@@ -296,10 +299,10 @@ refusedCheckpointAuthority name =
     , observePulumiCheckpoint = checkpointRefusal
     , observePulumiCheckpointPair = checkpointRefusal
     , publishPulumiCheckpoint = \_ _ _ -> checkpointRefusal
-    , retirePulumiCheckpoint = \_ _ -> checkpointRefusal
+    , retirePulumiCheckpoint = \_ _ _ -> checkpointRefusal
     , restorePulumiCheckpointPrimary = \_ _ _ -> checkpointRefusal
     , readBackPulumiCheckpointRestore = \_ -> checkpointRefusal
-    , attemptPulumiCheckpointRetirement = \_ _ _ -> checkpointRefusal
+    , attemptPulumiCheckpointRetirement = \_ _ _ _ -> checkpointRefusal
     , readBackPulumiCheckpointRetirement = \_ -> checkpointRefusal
     }
 
@@ -314,22 +317,7 @@ refusedStackReaderClient =
 
 refusedDrainInterpreter :: EksDrainInterpreter CloudEffects
 refusedDrainInterpreter =
-  mkEksDrainInterpreter
-    (pure 1_000)
-    ( \_ ->
-        pure
-          ( EksDrainSessionAcquisitionUnobservable
-              (ObservationFailure "fixture session acquisition refused")
-          )
-    )
-    ( mkEksDrainClientBoundary $ \_ consume ->
-        consume
-          ( Left
-              ( EksDrainClientAccessUnobservable
-                  (ObservationFailure "fixture Kubernetes client refused")
-              )
-          )
-    )
+  mkEksDrainInterpreter (pure 1_000)
 
 refusedCommitSelection :: EksDrainCommitSelectionBoundary CloudEffects
 refusedCommitSelection =

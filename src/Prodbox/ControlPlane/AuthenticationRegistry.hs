@@ -232,6 +232,7 @@ controlPlaneRouteCallerTopology =
   , row LifecycleOwnershipManifest [authority]
   , row LifecycleRecoveryPlane [authority]
   , (LifecycleLocalRke2HostObservation, [CallerOperatorCli])
+  , (LifecycleCascadeRetainedSlot, [CallerOperatorCli])
   ]
  where
   row route services = (route, [CallerOperatorCli, CallerTestHarness] <> services)

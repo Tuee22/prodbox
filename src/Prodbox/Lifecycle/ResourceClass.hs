@@ -70,6 +70,12 @@ resourceLifecycleClasses =
     -- rather than by a remembered id -- a zone leaked by an exception or
     -- a cancelled run is still swept.
     ("dns-aws-validation-hosted-zone", PerRun)
+  , -- Sprint 7.36: the ACME DNS01 challenge TXT records cert-manager's solver
+    -- writes into the run's retained hosted zone. PerRun because the
+    -- certificate they validate is issued for one run, and a run that fails
+    -- before issuance completes is exactly the case that strands one. The name
+    -- matches 'Prodbox.Lifecycle.Teardown.Model.AwsDns01ChallengeRecordKey'.
+    ("dns-aws-dns01-challenge-records", PerRun)
   , -- Sprint 4.84: test-scoped EBS volumes that back EKS static
     -- @Retain@ PersistentVolumes for the lifetime of one validation
     -- run. They carry @prodbox.io/lifecycle=per-run-test@ plus the EKS

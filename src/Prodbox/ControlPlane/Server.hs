@@ -253,6 +253,8 @@ controlPlaneRouteMaximumBodyBytes route = case route of
   LifecycleRecoveryPlane -> controlPlaneMaximumLifecycleInputBodyBytes
   LifecycleLocalRke2HostObservation ->
     controlPlaneMaximumLifecycleInputBodyBytes
+  LifecycleCascadeRetainedSlot ->
+    controlPlaneMaximumLifecycleInputBodyBytes
 
 parseFramingHeaders
   :: ByteString

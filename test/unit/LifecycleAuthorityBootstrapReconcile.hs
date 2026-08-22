@@ -205,6 +205,8 @@ applyCommand state command = case command of
   -- provider epoch, not this fixture's admission state.
   BindProviderAdmissionGeneration _ -> state
   FreezeProviderAdmissionForCascadeAudit _ -> state
+  RecordCascadeTerminalAuditReceipt _ _ -> state
+  RevokeCascadeProviderCredential _ _ -> state
 
 openedState :: AuthorityAdmissionState
 openedState =

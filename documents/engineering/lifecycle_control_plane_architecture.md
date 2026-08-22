@@ -237,6 +237,10 @@ tombstone. Gateway and host-direct generic secret-write routes are absent.
 16. A current authority envelope or blob is promotable only after its canonical encrypted bytes are
     read back from a separately credentialed, non-aliased long-lived backup failure domain. Restore
     never activates a dangling reference.
+17. A run does not stop holding a custodial capability without a disposition value stating where it
+    went. Release is a typed decision with no unstated arm and no destroy-alone constructor; the
+    term, the constructor set, and the derivation are owned by
+    [§3.4](#34-custodial-capability-and-the-disposition-rule).
 
 ## 3. Pure Capability Algebra
 
@@ -953,6 +957,90 @@ Graph validation proves that a consumer requests an exact operation from the int
 scope. Runtime reconnaissance resolves that requirement into the corresponding opaque reference.
 The same reference is then used for admission and execution. Readiness details and graph ownership
 are canonical in [Bootstrap Readiness Doctrine](./bootstrap_readiness_doctrine.md).
+
+### 3.4 Custodial capability and the disposition rule
+
+> **Target.** This subsection defines an accepted end state. Implementation, scheduling, and
+> deployment qualification live only in the
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+**Disambiguation.** "Capability" carries two senses in this repository, and they are different types
+with no conversion. The sense §2 invariant 1 and §3.1 define — an operation-indexed reference to a
+live service boundary, identified by operation, service identity, and authority scope — is how a run
+*reaches* a boundary. A **custodial capability** is what a run *holds*: durable material whose
+possession is what makes a registered resource destroyable — a Pulumi checkpoint blob, an access-key
+family, a sealed credential generation, the contents of a retained store. A `CapabilityRef` grants
+no custody, and a custodial capability names no endpoint. Where both terms appear in one passage,
+this sentence is the disambiguation the passage refers to rather than repeats.
+
+**The rule.** A run does not stop holding a custodial capability without stating where it went.
+Ending custody requires a disposition value that pairs the loss with a proof that nothing is
+stranded by it: the capability already authorises nothing; every resource it reaches is proven
+absent; those resources are destroyed in the same operation; or custody passes to a named successor
+that carries it. Silence is not a disposition, and neither is an exit code.
+
+The disposition is an indexed value over two classes. At the **retire** index sit exactly four
+constructors — retire an inert capability, retire a capability discharged by proven dependant
+absence, rotate a capability onto a named successor, and destroy a capability jointly with the
+identity it belongs to — and each carries a mandatory strict discharge, so none is constructible
+from a capability alone. At the **hold** index sits the single constructor for continuing to hold.
+
+**There is no constructor for destroying a capability on its own**, and that absence is the
+invariant rather than an omission. A caller holding a capability and no discharge has nothing to
+pass to the destructive boundary, so the illegal case has no call site to guard and therefore no
+guard to bypass. The general form of that move is owned by
+[Pure FP Standards §7](./pure_fp_standards.md#7-gadt-indexed-state-machines).
+
+The set of resources a capability reaches is **derived** — from the registered ownership edges, the
+managed resource registry, and the managed AWS credential inventory — rather than authored beside
+them, so a newly registered resource is covered without editing the disposition. Where the registry
+declares no family for a capability's dependants the derivation answers *underivable*, never
+*empty*: a dependant set that defaulted to empty would discharge trivially and would be
+indistinguishable from a capability that genuinely reaches nothing.
+
+**A disposition is consumed where custody ends, and the program is ordered so it can be.** The
+proof a disposition carries is a fact the run establishes earlier — a dependant absence it read
+back, an object it observed empty — so the node that ends custody must not be reachable before the
+nodes that establish it. That ordering is derived from the same dependant set the discharge is
+derived from, so the order a program waits in and the proof a disposition carries cannot disagree.
+Where the ordering is what supplies the proof, the effect is admitted only through the durable
+execution path that preserves the run's successful predecessors; a compatibility entrypoint that
+carries none cannot reach it.
+
+**Retiring material onto a retained successor is a rotation, not a destruction.** Where the
+Lifecycle Authority records a reference in its retained set and clears the live slot, the capability
+moves rather than ceases and the disposition names the successor. The successor is a distinct
+capability class that reaches exactly what its predecessor reached, and it is never enumerated as
+something a run holds. This is why a present-but-unparseable checkpoint may be retired at all: it
+may still be the only material naming live resources, so it is kept where it can be found rather
+than deleted, and calling it inert would be an invention in the opposite direction from calling an
+absent one held.
+
+**A readiness proof that admits destroying the store is a composition that includes custody.** Where
+a proof licenses uninstalling the retained plane, convergence evidence that the resources are gone
+does not answer whether the run can still prove that about them, and those are different questions.
+Custody is therefore a component of such a proof rather than a warning beside it: a run holding a
+lost capability has no value to hand the constructor, so the refusal is reached before any durable
+identity is committed or one-shot permit requested. The capability set the proof requires is derived
+from the compiled program's own registered targets, so a run can neither answer for a target it
+never touched nor reach the proof by answering fewer than it holds.
+
+**The rule survives arbitrary lifts.** The destructive boundary's argument type mentions no
+interpreter monad, and the disposition multiset is a pure projection computed before dispatch, so
+every natural transformation of the interpreter — a test double, a deterministic-simulation lift, a
+chaos or retry wrapper — observes the same arguments and has no arm through which to synthesise a
+disposition it was not handed. §9 owns the interpreter boundary this rests on; what such a bound
+does and does not prove is owned by
+[Chaos Hardening Doctrine §22](./chaos_hardening_doctrine.md#22-what-a-ring-2-gate-does-and-does-not-prove).
+
+Consequences owned elsewhere and deliberately not restated here: what a reconciliation run must have
+proven before it may construct completion is
+[Lifecycle Reconciliation Doctrine §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary)
+and [§5](./lifecycle_reconciliation_doctrine.md#5-mandatory-entry-contracts-for-destructive-commands);
+the retained operator-host root as held material is
+[Retained Storage Lifecycle Doctrine §7](./storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root).
+§5.5 below remains the owner of retained operator-material custody, which is one custodial-capability
+class rather than the general rule.
 
 ## 4. Absolute Deadline and Admission Algebra
 
@@ -2430,6 +2518,14 @@ the client API. Both the bounded namespace and every active revision require an 
 Authority Backup receipt before their primary CAS; scan repairs a missing per-run primary from the
 complete indexed plan before returning it to the recovery worker.
 
+The cascade's three run-keyed retained slots — one run's accepted pre-uninstall readiness, its
+committed report identity, and its one-shot local-completion permit — are reachable from a host
+through the compiled route `/v1/authority/cascade-retained-slot` and through no other. That route is
+a closed namespace rather than a generic Authority-object compare-and-swap: it admits those three
+slot families alone, its only write is an initialize into an empty slot, and the Authority builds
+every coordinate from its own configured authority, so no logical name a host supplies can reach a
+neighbouring namespace or another cluster's.
+
 The exact `RequiresSuccess`/`RequiresAttempt` edges, substrate-specific drain treatment, canonical
 recover-to-clean order, resume rules, and proof-carrying aggregate are owned only by
 [Lifecycle Reconciliation Doctrine §3.3](./lifecycle_reconciliation_doctrine.md#33-result-indexed-programs-and-the-durable-cleanup-graph).
@@ -2494,8 +2590,14 @@ Registry, and the ordinary install path resolves its substrate installer over th
 time; neither an ambient network fetch nor a host container cache is an authority for a recovery
 that has to work while the platform is down.
 
-The inventory is a closed kind universe — substrate installer, substrate system images, object-store
-image, secret-store image, and the prodbox runtime image — declared for exactly one architecture.
+The inventory is a closed kind universe — substrate installer, substrate release tarball, substrate
+checksum, substrate system images, object-store image, secret-store image, and the prodbox runtime
+image — declared for exactly one architecture. The four substrate kinds are what an offline install
+reads as one artifact directory: the installer script, the release tarball it unpacks, the checksum
+file it verifies that tarball against, and the system-images archive the node loads instead of
+pulling. They are four entries rather than one because each carries its own pinned digest, and an
+obligation naming fewer of them would render a plan that admits against the retained store and then
+refuses at its first step on a real host.
 Each entry carries a pinned version, a canonical `sha256:` digest, and a normalized location relative
 to the retained root bound by `Prodbox.Config.LocalRetainedRoot`. Construction refuses a duplicate
 kind, a foreign architecture, an unpinned version, a non-canonical digest, and any location that is

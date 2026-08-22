@@ -54,12 +54,32 @@ import Prodbox.Lifecycle.Authority.Submission
   , TerminalOutcome (OperationCompletedOutcome)
   )
 import Prodbox.Lifecycle.PulumiCheckpoint
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CustodyDispositionKind (DispositionDischargedByAbsence)
+  , CustodyDispositionRecord (..)
+  , renderedCheckpointCapability
+  )
 import Prodbox.Runtime.Role (RuntimeRole (ProviderWorkerRuntime))
 import TestSupport
 
 lifecycleAuthorityPulumiCheckpointRegistrySuite :: SuiteBuilder ()
 lifecycleAuthorityPulumiCheckpointRegistrySuite =
   describe "Sprint 4.50 aggregate Pulumi checkpoint registry" $ do
+    it "refuses a retirement no disposition was ever stated for" $ do
+      -- Sprint 4.89: the Lifecycle Authority cannot observe AWS and so cannot
+      -- check the proof a disposition carries. What it refuses is a retirement
+      -- for which none was stated, which is the failure that stranded two AWS
+      -- resources.
+      --
+      -- An aggregate written before this sprint carries no disposition map at
+      -- all. It still decodes — a durable Authority must survive the upgrade —
+      -- and every retirement permit inside it refuses rather than defaulting to
+      -- a permissive answer.
+      let regression = fixedAuthorityCheckpointSerialiseRegression
+      authorityCheckpointLegacyAggregateDecodes regression `shouldBe` True
+      authorityCheckpointLegacyRetirementRefused regression `shouldBe` True
+      authorityCheckpointDispositionRoundTrips regression `shouldBe` True
+
     it "starts with exactly the closed stack inventory and no checkpoint" $ do
       validateAuthorityPulumiCheckpoints initialAuthorityPulumiCheckpoints
         `shouldBe` Right ()
@@ -93,6 +113,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
               registered
               PublishCheckpoint
               Nothing
+              Nothing
               initialAuthorityPulumiCheckpoints
           )
       registeredDecision `shouldBe` CheckpointPermitRegistered
@@ -103,6 +124,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
             registered
             PublishCheckpoint
             Nothing
+            Nothing
             permitted
         )
         `shouldBe` Right CheckpointPermitAlreadyRegistered
@@ -112,6 +134,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
             operation
             other
             PublishCheckpoint
+            Nothing
             Nothing
             permitted
         )
@@ -143,6 +166,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
             registered
             PublishCheckpoint
             Nothing
+            Nothing
             initial
         )
         `shouldBe` Right CheckpointPermitRefusedSubmissionUnknown
@@ -167,6 +191,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
             registered
             PublishCheckpoint
             Nothing
+            Nothing
             admitted
         )
         `shouldBe` Right CheckpointPermitRefusedSubmissionBinding
@@ -178,6 +203,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
               operation
               registered
               PublishCheckpoint
+              Nothing
               Nothing
               admitted
           )
@@ -217,6 +243,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
               operation
               registered
               PublishCheckpoint
+              Nothing
               Nothing
               initialAuthorityPulumiCheckpoints
           )
@@ -265,6 +292,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
               registered
               PublishCheckpoint
               Nothing
+              Nothing
               firstAdmitted
           )
       (_, firstPublished) <-
@@ -311,6 +339,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
               registered
               PublishCheckpoint
               Nothing
+              Nothing
               initialAuthorityPulumiCheckpoints
           )
       (_, firstPublished) <-
@@ -328,6 +357,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
             registered
             PublishCheckpoint
             Nothing
+            Nothing
             firstPublished
         )
         `shouldBe` Right
@@ -339,6 +369,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
               registered
               PublishCheckpoint
               (Just (verifiedPulumiCheckpointDigest firstReference))
+              Nothing
               firstPublished
           )
       (_, secondPublished) <-
@@ -356,6 +387,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
               registered
               RetireCheckpoint
               (Just (verifiedPulumiCheckpointDigest secondReference))
+              (Just (fixtureRetirementDispositionFor registered))
               secondPublished
           )
       (retiredDecision, retired) <-
@@ -382,6 +414,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
                 registered
                 PublishCheckpoint
                 Nothing
+                Nothing
                 initialAuthorityPulumiCheckpoints
             )
         (_, published) <-
@@ -399,6 +432,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
                 registered
                 RestoreCheckpoint
                 (Just (verifiedPulumiCheckpointDigest predecessor))
+                Nothing
                 published
             )
         (_, restored) <-
@@ -419,6 +453,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
                 registered
                 RetireCheckpoint
                 (Just (verifiedPulumiCheckpointDigest restoredReference))
+                (Just (fixtureRetirementDispositionFor registered))
                 restored
             )
         (_, retired) <-
@@ -465,6 +500,7 @@ lifecycleAuthorityPulumiCheckpointRegistrySuite =
             registered
             PublishCheckpoint
             Nothing
+            Nothing
             full
         )
         `shouldBe` Right CheckpointPermitRefusedCapacity
@@ -482,6 +518,7 @@ registerOne registered registry index = do
           operation
           registered
           PublishCheckpoint
+          Nothing
           Nothing
           registry
       )
@@ -569,3 +606,18 @@ accepted :: (Show err) => Either err value -> IO value
 accepted result = case result of
   Left err -> fail (show err)
   Right value -> pure value
+
+-- | Sprint 4.89: the disposition a retirement states for the checkpoint it
+-- retires.  The Authority cannot check the proof; what it refuses is a
+-- retirement for which none was stated.
+fixtureRetirementDispositionFor
+  :: RegisteredPulumiCheckpoint -> CustodyDispositionRecord
+fixtureRetirementDispositionFor registered =
+  CustodyDispositionRecord
+    { custodyDispositionCapability =
+        renderedCheckpointCapability (registeredPulumiCheckpointName registered)
+    , custodyDispositionKind = DispositionDischargedByAbsence
+    , custodyDispositionDetail = "fixture discharge"
+    , custodyDispositionDependants =
+        [registeredPulumiCheckpointName registered]
+    }

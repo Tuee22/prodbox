@@ -192,11 +192,16 @@ controlPlaneAuthorityBackupEndpointSuite =
             [ (blobClass, authorityBackupBlobObjectNameForClass blobClass digest)
             | blobClass <- [minBound .. maxBound]
             ]
-      length named `shouldBe` 3
+      -- Sprint 4.86 adds the fourth class: the pre-uninstall cleanup report,
+      -- which node 7 requires the independent Backup Adapter to read back.
+      length named `shouldBe` 4
       mapM_ (\(_, name) -> name `shouldSatisfy` isRight) named
       length
         (List.nub [adapterObjectNameText (mustRight name) | (_, name) <- named])
-        `shouldBe` 3
+        `shouldBe` 4
+      -- The count is pinned deliberately: adding a class must force a decision
+      -- here rather than pass by construction.
+      length named `shouldBe` length (List.nub [show blobClass | (blobClass, _) <- named])
 
     it "distinguishes missing and corrupt observations" $ do
       (transport, objectsRef, _) <- freshMemoryTransport False

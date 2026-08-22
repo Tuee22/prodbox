@@ -10,11 +10,14 @@ where
 
 import Data.IORef
 import Data.List (find)
+import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.ControlPlane.AuthorityOperationClient
+import Prodbox.ControlPlane.CleanupRunClient
+import Prodbox.ControlPlane.CleanupRunEndpoint
 import Prodbox.ControlPlane.PulumiCheckpointClient
 import Prodbox.ControlPlane.PulumiCheckpointEndpoint
 import Prodbox.Lifecycle.Authority.ClientRegistry
@@ -25,6 +28,10 @@ import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
 import Prodbox.Lifecycle.Authority.Submission
 import Prodbox.Lifecycle.CleanupRun
+import Prodbox.Lifecycle.CleanupRunRunner
+  ( CleanupNodeExecutionContext
+  , resumeDurableCleanupWithContext
+  )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork (ProviderIntent (..))
 import Prodbox.Lifecycle.PulumiCheckpoint
 import Prodbox.Lifecycle.Teardown.AwsCheckpointInterpreter
@@ -148,10 +155,25 @@ lifecycleTeardownAwsCheckpointInterpreterSuite =
       readIORef (fakeErrors noAttempt)
         `shouldReturnSatisfying` any (Text.isInfixOf "AttemptBindingInvalid []")
 
-    it "logically retires the active reference and closes response loss only by read-back" $ do
+    it "refuses a retirement reached without the run's dependant absences" $ do
+      -- Sprint 4.89: retiring the reference ends this run's custody of the
+      -- capability that made the stack's resources destroyable, and the
+      -- discharge is the absence read-back the run already performed for every
+      -- resource that checkpoint reaches. The compatibility entrypoint supplies
+      -- no successful predecessors, so it cannot reach the effect at all —
+      -- which is the rule that "proof-gated effects consume only the durable
+      -- path" already states, now enforced for this one.
       environment <-
         newEnvironment TargetAbsent PairBoth RestoreApplied RetireResponseLost
       runNode environment (nodeFor RetirementNode AwsTestKey)
+        `shouldReturn` CleanupNodeFailed "lifecycle interpreter returned the wrong result kind"
+      readIORef (fakeErrors environment)
+        `shouldReturnSatisfying` any (Text.isInfixOf "CustodyUndischarged")
+
+    it "logically retires the active reference and closes response loss only by read-back" $ do
+      environment <-
+        newEnvironment TargetAbsent PairBoth RestoreApplied RetireResponseLost
+      runDurableNode environment (nodeFor RetirementNode AwsTestKey)
         `shouldReturn` CleanupNodeEffectUnconfirmed "checkpoint retirement response lost"
       runNode environment (nodeFor RetirementReadBackNode AwsTestKey)
         `shouldReturn` CleanupNodeSucceeded
@@ -318,6 +340,9 @@ registeredTargetInterpreterFor environment =
     , awsRegisteredTargetPresentEksDestroyBoundary =
         mkAwsEksPresentDestroyBoundary $ \_ _ _ ->
           pure (Left AwsRegisteredTargetEksDrainProofRequired)
+    , awsRegisteredTargetDns01ChallengeOwnerDeleteBoundary =
+        refusingDns01ChallengeOwnerDeleteBoundary
+          "fixture has no Kubernetes access"
     }
 
 providerResult :: FakeEnvironment -> ProviderIntent -> TeardownProviderBoundaryResult
@@ -404,7 +429,7 @@ checkpointAuthorityFor environment rawName =
     , publishPulumiCheckpoint =
         \_ _ _ -> error "publication is outside this focused adapter"
     , retirePulumiCheckpoint =
-        \_ _ -> error "legacy retirement is outside this focused adapter"
+        \_ _ _ -> error "legacy retirement is outside this focused adapter"
     , restorePulumiCheckpointPrimary = \operation _ _ -> do
         recordCheckpointCall environment (CheckpointRestoreAttempted operation)
         pure $ Right $ case fakeRestoreFixture environment of
@@ -421,7 +446,7 @@ checkpointAuthorityFor environment rawName =
                   checkpointReference
               )
           )
-    , attemptPulumiCheckpointRetirement = \operation _ _ -> do
+    , attemptPulumiCheckpointRetirement = \operation _ _ _ -> do
         recordCheckpointCall environment (CheckpointRetirementAttempted operation)
         pure $ Right $ case fakeRetirementFixture environment of
           RetireApplied -> PulumiCheckpointRetirementApplied
@@ -465,6 +490,113 @@ data CheckpointNodeKind
 runNode :: FakeEnvironment -> CleanupNodePlan -> IO CleanupNodeOutcome
 runNode environment plan =
   runCheckpointEffects (runCompiledTeardownNode compiled plan) environment
+
+-- | Sprint 4.89: run one node through the durable path, so it sees the
+-- successful predecessors the compiled program made it wait on.
+--
+-- The checkpoint retirement is proof-gated on the absence read-back of every
+-- resource its checkpoint reaches, and those answers live in the run's
+-- successful predecessors rather than in a re-observation.
+runDurableNode :: FakeEnvironment -> CleanupNodePlan -> IO CleanupNodeOutcome
+runDurableNode environment plan = do
+  stored <- newIORef (durableRunPending plan)
+  resumed <-
+    resumeDurableCleanupWithContext
+      (memoryCleanupRunClient stored plan)
+      durableOwner
+      (runDurableFixtureNode environment)
+      (durableRunPending plan)
+  case resumed of
+    Left err -> error ("durable checkpoint fixture failed: " <> show err)
+    Right _ -> do
+      completed <- readIORef stored
+      pure (durableNodeOutcome completed plan)
+
+runDurableFixtureNode
+  :: FakeEnvironment
+  -> CleanupNodeExecutionContext
+  -> CleanupNodePlan
+  -> IO CleanupNodeOutcome
+runDurableFixtureNode environment execution plan =
+  runCheckpointEffects
+    (runCompiledTeardownNodeWithContext compiled execution plan)
+    environment
+
+-- | Every node succeeded except the one under test.
+durableRunPending :: CleanupNodePlan -> CleanupRun
+durableRunPending pending =
+  CleanupRun
+    { cleanupRunId = checkpointCleanupRunId
+    , cleanupRunGraphDigest = cleanupGraphDigest graph
+    , cleanupRunGraph = graph
+    , cleanupRunLease = CleanupLease durableOwner 1 1_000_000
+    , cleanupRunPrimaryOutcome = Just CleanupPrimarySucceeded
+    , cleanupRunNodeStates =
+        Map.fromList
+          [ ( cleanupNodeId plan
+            , if cleanupNodeId plan == cleanupNodeId pending
+                then CleanupNodePending
+                else CleanupNodeCompleted durableCompletedAttempt CleanupNodeSucceeded
+            )
+          | plan <- cleanupGraphNodes graph
+          ]
+    }
+ where
+  graph = compiledDesiredAbsenceGraph compiled
+
+durableNodeOutcome :: CleanupRun -> CleanupNodePlan -> CleanupNodeOutcome
+durableNodeOutcome run plan =
+  case Map.lookup (cleanupNodeId plan) (cleanupRunNodeStates run) of
+    Just (CleanupNodeCompleted _ outcome) -> outcome
+    other -> error ("durable node did not complete: " <> show other)
+
+durableOwner :: CleanupOwnerId
+durableOwner = mustRight (mkCleanupOwnerId "aws-checkpoint-interpreter-owner")
+
+durableCompletedAttempt :: CleanupAttemptId
+durableCompletedAttempt =
+  mustRight (mkCleanupAttemptId "aws-checkpoint-interpreter-completed")
+
+memoryCleanupRunClient
+  :: IORef CleanupRun -> CleanupNodePlan -> CleanupRunClient IO
+memoryCleanupRunClient stored _pending =
+  CleanupRunClient
+    { executeCleanupRunCommand = execute
+    , scanNonterminalCleanupRuns = pure (Right [])
+    , compactTerminalCleanupRun = \_ _ _ ->
+        pure (Left (CleanupRunClientHttpStatus 500 "unexpected compact request"))
+    }
+ where
+  execute command = do
+    current <- readIORef stored
+    transitioned <- case command of
+      CleanupRunBeginNode rawRun rawOwner fence rawNode rawAttempt ->
+        applyTransition rawRun rawOwner $ \owner ->
+          pure $ do
+            node <- mapIdentity (mkCleanupNodeId rawNode)
+            attempt <- mapIdentity (mkCleanupAttemptId rawAttempt)
+            mapTransition (beginCleanupNode owner fence node attempt current)
+      CleanupRunCompleteNode rawRun rawOwner fence rawNode rawAttempt outcome ->
+        applyTransition rawRun rawOwner $ \owner ->
+          pure $ do
+            node <- mapIdentity (mkCleanupNodeId rawNode)
+            attempt <- mapIdentity (mkCleanupAttemptId rawAttempt)
+            mapTransition (completeCleanupNode owner fence node attempt outcome current)
+      _ -> pure (Left (CleanupRunClientHttpStatus 500 "unexpected cleanup command"))
+    case transitioned of
+      Left err -> pure (Left err)
+      Right updated -> do
+        writeIORef stored updated
+        pure (Right (Just updated))
+  applyTransition rawRun rawOwner transition
+    | rawRun /= cleanupRunIdText checkpointCleanupRunId =
+        pure (Left (CleanupRunClientHttpStatus 500 "cleanup run mismatch"))
+    | otherwise = case mkCleanupOwnerId rawOwner of
+        Left detail -> pure (Left (CleanupRunClientHttpStatus 500 detail))
+        Right owner -> transition owner
+  mapIdentity = either (Left . CleanupRunClientHttpStatus 500) Right
+  mapTransition =
+    either (Left . CleanupRunClientHttpStatus 500 . Text.pack . show) Right
 
 nodeFor :: CheckpointNodeKind -> RegisteredResourceKey -> CleanupNodePlan
 nodeFor kind key = case matching of

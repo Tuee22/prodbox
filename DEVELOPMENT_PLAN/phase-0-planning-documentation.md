@@ -2918,7 +2918,7 @@ names the offending sprint or row, and pure unit cases over `compareSprintIds`,
 `sprintLiveDependencyIds`, `sprintDependencyDirectionViolations`, and
 `pendingRemovalPrerequisiteViolations`. No cluster, no AWS, no later phase.
 **Docs updated**: none under `documents/` — the standards this gate enforces
-([Standard N](development_plan_standards.md#n-phase-independence-no-backward-blocking),
+([Standard N](development_plan_standards.md#n-phase-independence-and-execution-order),
 [Standard H](development_plan_standards.md#h-sprint-status-format),
 [Standard I](development_plan_standards.md#i-explicit-cleanup-and-removal-ledger)) are amended in
 place in this directory, and restating them under `documents/` would be the § 1 duplication
@@ -3064,6 +3064,195 @@ review, so it is an explicitly `Unowned` ledger row.
 - Record the struck field in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) and the Sprint `0.21` row in
   [README.md](README.md).
+
+## Sprint 0.31: A Document That Describes The Future In The Present Tense ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/CheckCode.hs`, `documents/documentation_standards.md`
+**Blocked by**: none.
+**Live-proof**: not applicable — the sprint's whole surface is a governed document and a pure lint
+over the worktree; nothing it changes reaches live infrastructure.
+**Deployment qualification**: pending — no Standard-P surface moves. The change adds a documentation
+rule and widens one lint's file enumeration; process topology, capability wiring, deadline
+composition, queueing, resource envelopes, persistence protocol, lifecycle orchestration,
+destructive cleanup, and substrate routing are all untouched.
+**Independent Validation**: `prodbox dev lint docs` over the worktree, plus a negative test that
+injects an unresolvable citation into a `documents/` file and observes the refusal naming that file.
+Both run on Phase 0's owned surface with no dependency on any other phase.
+**Docs to update**: `documents/documentation_standards.md`,
+`documents/engineering/tiered_storage_capacity_doctrine.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+A governed document that states a scheduled thing in the present indicative is false, and false in
+the way hardest to catch: it reads as correct to every reviewer who does not open the source. On
+2026-08-19 a documentation change landed nine falsehoods of which six were exactly that — an
+`aws_substrate` resource profile described as existing, a `prodbox dev check` gate described as
+enforcing, a registry described as carried. All three gates returned `0` throughout, because no rule
+governed the class and no enumeration reached the documents that carried it.
+
+This sprint states the rule and closes the one part of it a machine can decide.
+
+### Deliverables
+
+- `documents/documentation_standards.md` § 12 **Revision-Scoped Claims**: declared target regions
+  and the region-scoping rule that keeps a wholly-target document from needing a banner per
+  sentence; the four claim kinds a declaration never covers — enforcement, measurement, another
+  document's contents, generated output; the single `> **Target.**` / `**Current revision.**` marker
+  convention; and an explicit statement of what can and cannot be gated.
+- A fourth § 9 anti-pattern, `Targets Stated As Current Fact`, in the existing BAD/GOOD shape.
+- **Appended, never inserted.** The document's section numbers are cited by number from compiled
+  source at fourteen sites in `src/Prodbox/CheckCode.hs` plus `test/unit/Main.hs`, and
+  `checkBoundSectionCitations` proves only that a cited number *is* a heading, not that it is the
+  right one — so renumbering would silently retarget six § 11 citations while passing every gate.
+  That is this sprint's own defect class, and appending is what avoids committing it.
+- `checkPlanCitedSourcePaths` gains `citedSourcePathRegion`, widening its enumeration from
+  `DEVELOPMENT_PLAN/` alone to the governed documents as well, and `citedSourcePathStandard`, so a
+  refusal cites the standard that actually governs the file it names.
+- The two unresolvable citations the widened region exposed are struck at the source: the
+  tiered-storage capacity doctrine named two *scheduled* modules that no sprint anywhere in
+  `DEVELOPMENT_PLAN/` would ever create. The doctrine now names the type families instead, and the
+  surviving obligation is recorded `Unowned` in the deletion ledger rather than assigned to an
+  invented owner.
+
+### Validation
+
+1. `prodbox dev lint docs` → `0` over 302 path-shaped source citations in `documents/`, none
+   unresolved. ✅
+2. Negative test: an unresolvable citation injected into `documents/engineering/code_quality.md` is
+   refused, naming that file and `documentation_standards.md section 12`. Before this sprint the
+   same injection passed. ✅
+3. `cabal build all --enable-tests --ghc-options=-Werror` links clean; the build recompiled rather
+   than reporting `Up to date`. ✅
+4. `prodbox dev check` → `0`. ✅
+5. § 12 adds no marker pair, so every `**Generated sections**` value is unchanged and
+   `prodbox dev docs check` reports no drift. ✅
+
+### Remaining Work
+
+None on the code-owned surface. Two obligations are deliberately left outside it and recorded rather
+than performed: the twelve surviving alternate marker spellings across nine files, which retire when
+the documents that carry them are next edited for substantive reasons; and the capacity type
+families, which have no owner and are an `Unowned` ledger row rather than a claim this sprint can
+close. § 12 § 12.3 states in the document itself that no future change may describe this section as
+enforced beyond the three decidable properties.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/documentation_standards.md` — § 12 and the fourth § 9 anti-pattern; this sprint's
+  entire doctrinal surface.
+- `documents/engineering/tiered_storage_capacity_doctrine.md` — the `Linked dependents` list names
+  two type families rather than two module paths nothing will create.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) — the unowned capacity type
+  families, and the alternate marker spellings, as rows rather than as prose.
+
+## Sprint 0.32: Forbidding The Declaration Did Not Remove The Dependency ✅
+
+**Status**: Done (2026-08-21) — Phase `0` own-surface reopen (Standard A) on this phase's own plan-
+governance surface.
+**Implementation**: `src/Prodbox/CheckCode.hs`, `DEVELOPMENT_PLAN/development_plan_standards.md`
+**Blocked by**: none.
+**Live-proof**: not applicable — the sprint's whole surface is a governed document and pure lints
+over the worktree; nothing it changes reaches live infrastructure.
+**Deployment qualification**: pending — no Standard-P surface moves. It amends a plan standard and
+three document lints; process topology, capability wiring, deadline composition, queueing, resource
+envelopes, persistence protocol, lifecycle orchestration, destructive cleanup, and substrate routing
+are all untouched.
+**Independent Validation**: pure unit cases over `sprintDependencyDirectionViolations`,
+`executionOrderViolations`, and the queue-projection rule, plus mutation exercises against the real
+worktree restored byte-exactly. All on Phase 0's owned surface with no dependency on any other
+phase.
+**Docs to update**: `DEVELOPMENT_PLAN/development_plan_standards.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Sprint `0.30` made the gate read the two declared dependency fields, and recorded that prose was
+deliberately not scanned because "disclaiming later work is the correct pattern the plan uses
+everywhere". A 2026-08-21 audit tested that assumption and it did not hold: **four backward
+dependencies were live, and every one of them was in prose.** Two were load-bearing — the queue head
+could not reach `Done` — which is structurally the same deadlock the 2026-08-17 audit found and the
+2026-08-18 remedy was meant to have closed.
+
+The finding is about the rule, not the authors. Standard N forbade a backward dependency outright,
+and its prescribed remedy — re-scope the sprint — was unavailable in both live cases, because
+Standard M's phase-ownership rules put the harness cleanup graph in Phase 5 and the single-writer
+cutover in Phase 6 while the capability both need is Phase 7's. Faced with a real dependency, an
+unavailable remedy, and a field that would fail the build, the only remaining channel was prose.
+**Forbidding the declaration did not remove the dependency; it removed the record of it.**
+
+### Deliverables
+
+- Standard N split into **N.1 validation independence** (unchanged and strict — every phase stays
+  validatable on its owned surface against fakes) and **N.2 execution order** (a declared backward
+  dependency is admissible when it is *physical*).
+- The `**Backward dependency**` field (Standard H), enforced as a **two-way bijection** against
+  `**Blocked by**`/`**Closure dependency**`: an unadmitted later dependency fails, an admission
+  nothing depends on fails, an admission of a non-later sprint fails, and an admission with no
+  justification fails. A declaration proof, not an exemption list.
+- `backwardDependencyAdmittedIds`, deliberately not `sprintLiveDependencyIds`: the latter voids a
+  whole field that reads as a historical resolution note, which is right for a dependency field and
+  wrong for one required to carry justification prose. Running it there would have silently voided
+  the admission and let the unadmitted dependency through — the same shape as the hole being closed.
+- `executionOrderViolations` replaces `numericOrderViolations`. Queue order becomes a **derivation**:
+  repeatedly emit the numerically smallest open sprint whose declared dependencies are already
+  emitted. With no backward dependency declared that is exactly ascending numerical order, so it
+  strictly generalises the rule it replaces rather than relaxing it; a cycle is the case where no
+  complete order exists and is reported as itself.
+- The queue-projection rule: every dependency a phase block declares on an **open** sprint must
+  appear in that sprint's `Resume Here` cell. Without it the fields and the queue were two unrelated
+  channels and the derived order was a proof over whatever a reader had restated.
+
+### Validation
+
+1. An unadmitted later dependency fails; the same dependency with a well-formed admission passes.
+2. An orphan admission, an admission of a non-later sprint, and an unjustified admission each fail
+   by their own arm.
+3. `executionOrderViolations` yields ascending numerical order on an empty dependency graph, yields
+   `7.36, 5.36, 6.5, 7.37` on the live queue, rejects any permutation of it, and reports a cycle as
+   a cycle.
+4. The queue-projection rule fails a declared open dependency missing from its cell and stays silent
+   for a dependency on a `Done` sprint.
+5. `prodbox dev check`, `prodbox dev lint docs`, `prodbox dev docs check`, and `prodbox test unit`
+   pass.
+
+### Remaining Work
+
+None on the code-owned surface.
+
+**What this sprint does not close.** Prose is still not scanned. This sprint makes a physical
+backward dependency *sayable and gated* so authors have a conforming channel; it does not detect an
+author who narrates one anyway. That detection is its own rule — a sentence inside a sprint block
+carrying a later sprint id near a dependency verb, while permitting the legitimate disclaimer form —
+and it is deliberately not attempted here, because the rule needs sizing against the existing corpus
+before it can be written without churning prose that is already correct. It opens as its own sprint
+rather than as an unstated extension of this one.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- None. The sprint's surface is `DEVELOPMENT_PLAN/development_plan_standards.md` and the lints in
+  `src/Prodbox/CheckCode.hs`; no `documents/engineering/` doctrine changes.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- [system-components.md](system-components.md) — the plan-governance gate family gains the
+  backward-dependency bijection and the derived execution order.
 
 ## Related Documents
 

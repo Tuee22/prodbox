@@ -620,6 +620,10 @@ controlPayload command = case command of
     Left "backup reconciler cannot bind the Provider admission generation"
   FreezeProviderAdmissionForCascadeAudit _ ->
     Left "backup reconciler cannot freeze Provider admission for the Cascade audit"
+  RecordCascadeTerminalAuditReceipt _ _ ->
+    Left "backup reconciler cannot record the Cascade terminal-audit receipt"
+  RevokeCascadeProviderCredential _ _ ->
+    Left "backup reconciler cannot revoke the Cascade Provider credential"
 
 mapShow :: (Show err) => Either err value -> Either Text value
 mapShow = either (Left . boundedShow) Right

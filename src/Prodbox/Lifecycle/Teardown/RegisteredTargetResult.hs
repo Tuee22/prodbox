@@ -18,6 +18,9 @@ module Prodbox.Lifecycle.Teardown.RegisteredTargetResult
   , mkAwsStackRegisteredTargetReconcile
   , mkAwsEksRegisteredTargetReconcile
   , mkAwsEbsRegisteredTargetReconcile
+  , mkAwsValidationZoneRegisteredTargetReconcile
+  , mkAwsRetainedEbsRegisteredTargetReconcile
+  , mkDns01ChallengeRegisteredTargetReconcile
   , mkRefusedRegisteredTargetReconcile
   , RegisteredTargetReconcileError (..)
   )
@@ -36,10 +39,22 @@ import Prodbox.Lifecycle.Teardown.AwsEksDestroyAdapter
   , awsEksDestroyAuthorizationOperationId
   , awsEksDestroyAuthorizationScope
   )
+import Prodbox.Lifecycle.Teardown.AwsRetainedEbsAdapter
+  ( ExactAwsRetainedEbsReapAuthorization
+  , awsRetainedEbsReapScope
+  )
+import Prodbox.Lifecycle.Teardown.AwsRoute53ZoneAdapter
+  ( ExactAwsValidationZoneReapAuthorization
+  , awsValidationZoneReapScope
+  )
 import Prodbox.Lifecycle.Teardown.AwsStackAdapter
   ( AwsStackDestroyAuthorization
   , awsStackDestroyAuthorizationKey
   , awsStackDestroyAuthorizationScope
+  )
+import Prodbox.Lifecycle.Teardown.Dns01ChallengeRecordAdapter
+  ( ExactDns01ChallengeOwnerDeleteAuthorization
+  , dns01ChallengeOwnerDeleteScope
   )
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
@@ -73,6 +88,19 @@ data RegisteredTargetReconcileDisposition
   | RegisteredTargetAwsStackMutation !RegisteredTargetMutationAttempt
   | RegisteredTargetAwsEksMutation !RegisteredTargetMutationAttempt
   | RegisteredTargetAwsEbsMutation !RegisteredTargetMutationAttempt
+  | -- | Sprint 7.36.  A distinct audit disposition rather than a reuse of the
+    -- EBS one: this record is what a teardown report says was done, and
+    -- reporting a deleted Route 53 zone as an EBS mutation would make the
+    -- audit trail wrong about which resource class was destroyed.
+    RegisteredTargetAwsValidationZoneMutation !RegisteredTargetMutationAttempt
+  | -- | Sprint 7.36.  Likewise distinct from the per-run EBS disposition: the
+    -- two families have opposite default dispositions, so a report must not
+    -- say "per-run EBS" when production-retained storage was deleted.
+    RegisteredTargetAwsRetainedEbsMutation !RegisteredTargetMutationAttempt
+  | -- | Sprint 7.36.  The DNS01 challenge family's mutation is a Kubernetes
+    -- owner delete, not an AWS one, so its audit disposition says so rather
+    -- than borrowing a provider-mutation name.
+    RegisteredTargetDns01ChallengeOwnerDelete !RegisteredTargetMutationAttempt
   | RegisteredTargetReconcileRefused !Text
   deriving (Eq, Show)
 
@@ -156,6 +184,17 @@ data RegisteredTargetReconcileError
       !CleanupOperationId
   | RegisteredTargetEbsPerRunKeyRequired !RegisteredResourceKey
   | RegisteredTargetEbsKindRequired !ResourceKind
+  | RegisteredTargetRetainedEbsKeyRequired !RegisteredResourceKey
+  | RegisteredTargetDns01ChallengeKeyRequired !RegisteredResourceKey
+  | RegisteredTargetDns01ChallengeKindRequired !ResourceKind
+  | RegisteredTargetDns01ChallengeAuthorizationScopeMismatch
+      !ObservationEvidenceScope
+      !ObservationEvidenceScope
+  | RegisteredTargetValidationZoneKeyRequired !RegisteredResourceKey
+  | RegisteredTargetValidationZoneKindRequired !ResourceKind
+  | RegisteredTargetValidationZoneAuthorizationScopeMismatch
+      !ObservationEvidenceScope
+      !ObservationEvidenceScope
   | RegisteredTargetEbsAuthorizationScopeMismatch
       !ObservationEvidenceScope
       !ObservationEvidenceScope
@@ -350,6 +389,147 @@ mkAwsEbsRegisteredTargetReconcile operationId target scope authorization attempt
         scope
         (RegisteredTargetAwsEbsMutation attempt)
     )
+
+-- | Sprint 7.36: the same closure for the registered validation hosted-zone
+-- family.  It is its own constructor rather than a widened EBS one, because a
+-- mutation authorization for one family must not be able to construct a
+-- reconcile result for another.
+mkAwsValidationZoneRegisteredTargetReconcile
+  :: CleanupOperationId
+  -> RegisteredTargetBinding
+  -> ObservationEvidenceScope
+  -> ExactAwsValidationZoneReapAuthorization
+  -> RegisteredTargetMutationAttempt
+  -> Either RegisteredTargetReconcileError RegisteredTargetReconcileResult
+mkAwsValidationZoneRegisteredTargetReconcile
+  operationId
+  target
+  scope
+  authorization
+  attempt = do
+    validateStaticTarget target
+    if registeredTargetKey target == AwsDnsValidationZoneKey
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetValidationZoneKeyRequired
+              (registeredTargetKey target)
+          )
+    if registeredTargetKind target == DnsZoneFamily
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetValidationZoneKindRequired
+              (registeredTargetKind target)
+          )
+    if awsValidationZoneReapScope authorization == scope
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetValidationZoneAuthorizationScopeMismatch
+              scope
+              (awsValidationZoneReapScope authorization)
+          )
+    Right
+      ( mkResult
+          operationId
+          target
+          scope
+          (RegisteredTargetAwsValidationZoneMutation attempt)
+      )
+
+-- | Sprint 7.36: the closure for the registered DNS01 challenge record family.
+--
+-- Its authorization is an owner-delete rather than a provider reap, and the
+-- disposition it mints says so: reporting a cert-manager object deletion as an
+-- AWS mutation would make the audit trail wrong about which system was written
+-- to, and about which credential performed it.
+mkDns01ChallengeRegisteredTargetReconcile
+  :: CleanupOperationId
+  -> RegisteredTargetBinding
+  -> ObservationEvidenceScope
+  -> ExactDns01ChallengeOwnerDeleteAuthorization
+  -> RegisteredTargetMutationAttempt
+  -> Either RegisteredTargetReconcileError RegisteredTargetReconcileResult
+mkDns01ChallengeRegisteredTargetReconcile
+  operationId
+  target
+  scope
+  authorization
+  attempt = do
+    validateStaticTarget target
+    if registeredTargetKey target == AwsDns01ChallengeRecordKey
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetDns01ChallengeKeyRequired
+              (registeredTargetKey target)
+          )
+    if registeredTargetKind target == DnsRecordFamily
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetDns01ChallengeKindRequired
+              (registeredTargetKind target)
+          )
+    if dns01ChallengeOwnerDeleteScope authorization == scope
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetDns01ChallengeAuthorizationScopeMismatch
+              scope
+              (dns01ChallengeOwnerDeleteScope authorization)
+          )
+    Right
+      ( mkResult
+          operationId
+          target
+          scope
+          (RegisteredTargetDns01ChallengeOwnerDelete attempt)
+      )
+
+-- | Sprint 7.36: the same closure for the registered retained EBS family.
+-- The retained key is required explicitly, so a per-run authorization cannot
+-- construct a reconcile result that deletes production-retained storage.
+mkAwsRetainedEbsRegisteredTargetReconcile
+  :: CleanupOperationId
+  -> RegisteredTargetBinding
+  -> ObservationEvidenceScope
+  -> ExactAwsRetainedEbsReapAuthorization
+  -> RegisteredTargetMutationAttempt
+  -> Either RegisteredTargetReconcileError RegisteredTargetReconcileResult
+mkAwsRetainedEbsRegisteredTargetReconcile
+  operationId
+  target
+  scope
+  authorization
+  attempt = do
+    validateStaticTarget target
+    if registeredTargetKey target == AwsEbsProductionRetainedKey
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetRetainedEbsKeyRequired
+              (registeredTargetKey target)
+          )
+    if registeredTargetKind target == VolumeFamily
+      then Right ()
+      else Left (RegisteredTargetEbsKindRequired (registeredTargetKind target))
+    if awsRetainedEbsReapScope authorization == scope
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetEbsAuthorizationScopeMismatch
+              scope
+              (awsRetainedEbsReapScope authorization)
+          )
+    Right
+      ( mkResult
+          operationId
+          target
+          scope
+          (RegisteredTargetAwsRetainedEbsMutation attempt)
+      )
 
 -- | Preserve an exact interpreter refusal without opening the reconcile node
 -- to the generic mutation result.  This constructor validates the immutable

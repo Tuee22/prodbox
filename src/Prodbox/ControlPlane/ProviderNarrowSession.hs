@@ -28,6 +28,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderCheckpointRef
   , ProviderIntent (..)
   , ProviderIntentCoordinate
+  , ProviderOwnedTagQuery
   , ProviderReadinessProbe
   , ProviderRevision
   , ProviderSpotPriceQuery
@@ -117,6 +118,31 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
   , observeTestEbsVolumesCapability
       :: Text
       -> ProviderReadOnly m session
+  , observeValidationHostedZonesCapability
+      :: Text
+      -> ProviderReadOnly m session
+  , reapValidationHostedZonesCapability
+      :: Text
+      -> ProviderMutation m session
+  , observeRetainedEbsVolumesCapability
+      :: Text
+      -> ProviderReadOnly m session
+  , reapRetainedEbsVolumesCapability
+      :: Text
+      -> ProviderMutation m session
+  , observeDns01ChallengeRecordsCapability
+      :: Text
+      -> Text
+      -> ProviderReadOnly m session
+  -- ^ Sprint 7.36: the DNS01 challenge record family, read-only.  There is no
+  -- reap capability beside it: cert-manager's solver owns the record, so the
+  -- removal is a Kubernetes owner delete outside the Provider's capability set.
+  , observeOwnedResourceTagsCapability
+      :: ProviderOwnedTagQuery
+      -> ProviderReadOnly m session
+  -- ^ Sprint 7.36: the cascade terminal audit's single-filter owned-resource
+  -- tag listing.  Read-only by construction: the audit is the surface that
+  -- proves nothing escaped, and it never removes what it finds.
   , observeSpotPriceCapability
       :: ProviderSpotPriceQuery
       -> ProviderReadOnly m session
@@ -185,6 +211,24 @@ operationForProviderIntent capabilities intent = case intent of
     ProviderIntentMutation (reconcilePublicARecordCapability capabilities ref)
   ReapTestEbsVolumes clusterName ->
     ProviderIntentMutation (reapTestEbsVolumesCapability capabilities clusterName)
+  ObserveValidationHostedZones purpose ->
+    ProviderIntentReadOnly
+      (observeValidationHostedZonesCapability capabilities purpose)
+  ReapValidationHostedZones purpose ->
+    ProviderIntentMutation
+      (reapValidationHostedZonesCapability capabilities purpose)
+  ObserveDns01ChallengeRecords zoneId recordNamePrefix ->
+    ProviderIntentReadOnly
+      (observeDns01ChallengeRecordsCapability capabilities zoneId recordNamePrefix)
+  ObserveRetainedEbsVolumes lifecycleValue ->
+    ProviderIntentReadOnly
+      (observeRetainedEbsVolumesCapability capabilities lifecycleValue)
+  ReapRetainedEbsVolumes lifecycleValue ->
+    ProviderIntentMutation
+      (reapRetainedEbsVolumesCapability capabilities lifecycleValue)
+  ObserveOwnedResourceTags query ->
+    ProviderIntentReadOnly
+      (observeOwnedResourceTagsCapability capabilities query)
   ObserveSpotPrice query ->
     ProviderIntentReadOnly (observeSpotPriceCapability capabilities query)
   ObserveOperationalIdentity ->

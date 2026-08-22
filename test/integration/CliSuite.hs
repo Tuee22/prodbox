@@ -242,23 +242,48 @@ integrationCliSuite = do
         commands `shouldNotContain` "put-"
         commands `shouldNotContain` "delete-"
 
-    it "renders native aws policy JSON directly from the built Haskell frontend" $ do
-      repoRoot <- getCurrentDirectory
-      binary <- resolveBinaryPath
+    -- Sprint 1.91: `aws policy` now reads the configured `ses.capture_bucket`,
+    -- so it runs against an authored Tier-0 fixture rather than in a bare
+    -- directory. The printed grant is the copy an operator pastes into IAM, and
+    -- the two capture ARNs in it used to be compiled.
+    it "renders native aws policy JSON directly from the built Haskell frontend" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfigForNuke)
 
-      (exitCode, stdoutText, stderrText) <-
-        readCreateProcessWithExitCode
-          (proc binary ["aws", "policy", "--tier", "full"]) {cwd = Just repoRoot}
-          ""
+        (exitCode, stdoutText, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["aws", "policy", "--tier", "full"]) {cwd = Just tmpDir}
+            ""
 
-      exitCode `shouldBe` ExitSuccess
-      stderrText `shouldBe` ""
-      stdoutText `shouldContain` "\"Sid\": \"Ec2TestStackLifecycle\""
-      stdoutText `shouldContain` "\"Sid\": \"IamEksRoleLifecycle\""
-      stdoutText `shouldContain` "\"Sid\": \"EksTestStackLifecycle\""
-      stdoutText `shouldContain` "\"Sid\": \"SesCaptureBucketRead\""
-      stdoutText `shouldContain` "\"Sid\": \"SesCaptureObjectRead\""
-      stdoutText `shouldContain` "\"Sid\": \"SesReadOnly\""
+        exitCode `shouldBe` ExitSuccess
+        stderrText `shouldBe` ""
+        stdoutText `shouldContain` "\"Sid\": \"Ec2TestStackLifecycle\""
+        stdoutText `shouldContain` "\"Sid\": \"IamEksRoleLifecycle\""
+        stdoutText `shouldContain` "\"Sid\": \"EksTestStackLifecycle\""
+        stdoutText `shouldContain` "\"Sid\": \"SesCaptureBucketRead\""
+        stdoutText `shouldContain` "\"Sid\": \"SesCaptureObjectRead\""
+        stdoutText `shouldContain` "\"Sid\": \"SesReadOnly\""
+        -- The configured bucket reaches the printed grant; the compiled one is gone.
+        stdoutText `shouldContain` "arn:aws:s3:::prodbox-test-ses-capture"
+        stdoutText `shouldContain` "arn:aws:s3:::prodbox-test-ses-capture/*"
+        stdoutText `shouldNotContain` "arn:aws:s3:::prodbox-ses-capture"
+
+    it "refuses to print an AWS policy naming a capture bucket nobody configured" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
+
+        (exitCode, stdoutText, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["aws", "policy", "--tier", "full"]) {cwd = Just tmpDir}
+            ""
+
+        exitCode `shouldBe` ExitFailure 1
+        stdoutText `shouldBe` ""
+        stderrText `shouldContain` "ses.capture_bucket must be configured"
 
     it "runs native gateway config-gen through the built frontend" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1151,7 +1176,7 @@ integrationCliSuite = do
           `shouldContain` "Per-run AWS stacks (if any) were NOT destroyed by this local uninstall."
         deleteStdout `shouldContain` "Local RKE2 substrate: cleanup complete"
         deleteStdout `shouldContain` "Managed kubeconfig: removed"
-        deleteStdout `shouldContain` "Preserved host state:"
+        deleteStdout `shouldContain` "Retained host state:"
         deleteStdout `shouldNotContain` "Logged in to fake-rke2"
         kubeconfigExists <- doesFileExist (tmpDir </> ".kube" </> "config")
         kubeconfigExists `shouldBe` False
@@ -1449,7 +1474,7 @@ integrationCliSuite = do
           `shouldContain` "Per-run AWS stacks (if any) were NOT destroyed by this local uninstall."
         deleteStdout `shouldContain` "Local RKE2 substrate: cleanup complete"
         deleteStdout `shouldContain` "Managed kubeconfig: removed"
-        deleteStdout `shouldContain` "Preserved host state:"
+        deleteStdout `shouldContain` "Retained host state:"
         deleteStdout `shouldNotContain` "Logged in to fake-rke2"
         deleteStdout `shouldNotContain` "Cannot find device"
         deleteStdout `shouldNotContain` "semodule: not found"
@@ -1527,7 +1552,7 @@ integrationCliSuite = do
         -- traces (per the refactored lifecycle doctrine).
         deleteStdout
           `shouldContain` "Per-run AWS stacks (if any) were NOT destroyed by this local uninstall."
-        deleteStdout `shouldContain` "Preserved host state:"
+        deleteStdout `shouldContain` "Retained host state:"
 
     it "cluster delete --yes is a pure local uninstall that never refuses on per-run residue" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1585,7 +1610,13 @@ integrationCliSuite = do
         combined `shouldNotContain` "per-run Pulumi state backend"
         combined `shouldNotContain` "Uninstalling the local cluster..."
 
-    it "Sprint 4.25: rke2 delete --cascade is a no-op success with no RKE2 install" $
+    -- Sprint 4.88: this case pinned the defect. `--cascade` with no RKE2
+    -- install exited 0 having reached no phase, which reads as a cascade that
+    -- ran — and the only supported narration about the retained root comes
+    -- from arms that reached a delete path, so the exit that reached none said
+    -- nothing about it and still returned success. Local RKE2 absence is not
+    -- per-run AWS absence.
+    it "Sprint 4.88: rke2 delete --cascade with no RKE2 install refuses instead of reporting success" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
@@ -1600,8 +1631,15 @@ integrationCliSuite = do
             ""
 
         let combined = deleteStdout ++ deleteStderr
-        deleteExitCode `shouldBe` ExitSuccess
-        combined `shouldContain` "No RKE2 cluster to delete."
+        deleteExitCode `shouldBe` ExitFailure 1
+        -- It names the durable cleanup namespace it could not reach and the
+        -- disposition it reports.
+        combined `shouldContain` "durable cleanup run namespace"
+        combined `shouldContain` "RecoveryPlaneNotEstablished"
+        -- It makes no AWS-absence claim, and it does not emit the local-only
+        -- no-cluster success line.
+        combined `shouldContain` "makes no claim about per-run AWS stacks"
+        combined `shouldNotContain` "No RKE2 cluster to delete."
         -- The cascade orchestration never started.
         combined `shouldNotContain` "confirm-MinIO"
 
@@ -1627,7 +1665,11 @@ integrationCliSuite = do
         exitCode `shouldBe` ExitSuccess
         stdoutText `shouldContain` "PRODBOX_NUKE_PLAN"
         stdoutText `shouldContain` "PROTOCOL=signed-external-decommission-v1"
-        stdoutText `shouldContain` "NODE=shared-object-bucket (unique terminal)"
+        -- The unique terminal moved from the shared bucket to the terminal
+        -- receipt when the decommission node set gained its receipt-convergence
+        -- node; this assertion still named the old terminal.
+        stdoutText `shouldContain` "NODE=shared-object-bucket"
+        stdoutText `shouldContain` "NODE=terminal-receipt (unique terminal)"
         stdoutText `shouldContain` "CONFIRMATION_LITERAL=NUKE EVERYTHING"
 
     it "Sprint 8.8: nuke refuses the total teardown when the typed confirmation is wrong" $
@@ -1640,7 +1682,18 @@ integrationCliSuite = do
 
         (exitCode, _, stderrText) <-
           readCreateProcessWithExitCode
-            (proc binary ["nuke", "--receipt", takeDirectory tmpDir </> "nuke-receipt.json"])
+            ( proc
+                binary
+                [ "nuke"
+                , "--receipt"
+                , takeDirectory tmpDir </> "nuke-receipt.json"
+                , -- An apply refuses without an explicit disposition of the
+                  -- retained local data root, which is a gate before the
+                  -- confirmation gate this case is about.
+                  "--local-data"
+                , "retain"
+                ]
+            )
               { cwd = Just tmpDir
               , env = Just nukeEnv
               }
@@ -1849,7 +1902,18 @@ integrationCliSuite = do
 
               (exitCode, stdoutText, stderrText) <-
                 readCreateProcessWithExitCode
-                  (proc binary ["nuke", "--receipt", takeDirectory tmpDir </> "nuke-receipt.json"])
+                  ( proc
+                      binary
+                      [ "nuke"
+                      , "--receipt"
+                      , takeDirectory tmpDir </> "nuke-receipt.json"
+                      , -- An apply refuses without an explicit disposition of
+                        -- the retained local data root, which gates ahead of the
+                        -- registry refusal this case is about.
+                        "--local-data"
+                      , "retain"
+                      ]
+                  )
                     { cwd = Just tmpDir
                     , env = Just nukeEnv
                     }
@@ -2033,7 +2097,11 @@ integrationCliSuite = do
                 , "ADMINKEY"
                 , "admin-secret"
                 , ""
-                , ""
+                , -- Sprint 1.91: the admin-region prompt has no pre-fill. It used
+                  -- to accept an empty answer because the prompt offered a
+                  -- compiled `us-east-1`, so this fixture was exercising the
+                  -- invented value rather than an operator's choice.
+                  "us-east-1"
                 , "1"
                 , "1"
                 , ""
@@ -2254,7 +2322,9 @@ integrationCliSuite = do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         envVars <- fakeAwsEnvironment tmpDir
-        let commandInput = unlines ["ADMINKEY", "admin-secret", "", "", "1"]
+        -- Sprint 1.91: the fourth line is the admin region, which the prompt no
+        -- longer pre-fills with a compiled value.
+        let commandInput = unlines ["ADMINKEY", "admin-secret", "", "us-east-1", "1"]
 
         (checkExitCode, checkStdout, checkStderr) <-
           readCreateProcessWithExitCode
@@ -2344,6 +2414,7 @@ resolveBinaryPath = do
 writeRepoMarkers :: FilePath -> IO ()
 writeRepoMarkers repoRoot = do
   writeFile (repoRoot </> "prodbox.cabal") "name: temp\n"
+  writeRetainedRootLayout repoRoot
   createDirectoryIfMissing True (repoRoot </> "DEVELOPMENT_PLAN")
   writeFile (repoRoot </> "DEVELOPMENT_PLAN/README.md") "# temp\n"
   createDirectoryIfMissing True (repoRoot </> "pulumi" </> "aws-test")
@@ -2352,6 +2423,19 @@ writeRepoMarkers repoRoot = do
   writeFile
     (repoRoot </> "pulumi" </> "aws-eks" </> "Pulumi.yaml")
     "name: aws-eks-test\nruntime: yaml\n"
+
+-- | The retained-root layout `Prodbox.Config.LocalRetainedRoot` validates
+-- before an Authority-bound root exists: the prodbox control directory, the
+-- retained MinIO volume under it, and the retained Vault volume beside it.
+--
+-- A fixture repository that omits them makes every reconcile refuse with a
+-- layout error, which measures the fixture rather than the command under test.
+writeRetainedRootLayout :: FilePath -> IO ()
+writeRetainedRootLayout repoRoot = do
+  createDirectoryIfMissing True (retainedRoot </> "prodbox" </> "minio" </> "0")
+  createDirectoryIfMissing True (retainedRoot </> "vault" </> "vault" </> "0")
+ where
+  retainedRoot = repoRoot </> ".data"
 
 copySchema :: FilePath -> FilePath -> IO ()
 copySchema sourceRoot targetRoot =

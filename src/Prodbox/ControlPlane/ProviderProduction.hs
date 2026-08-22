@@ -50,7 +50,7 @@ import Numeric (showHex)
 import Numeric.Natural (Natural)
 import Prodbox.Aws.CredentialHandle (baseCredentialHandleFromSettings)
 import Prodbox.Aws.Native.Route53 qualified as NativeRoute53
-import Prodbox.Aws.Native.Wire (httpSend)
+import Prodbox.Aws.Native.Wire (AwsClientError, httpSend)
 import Prodbox.AwsEnvironment (awsCliSubprocessEnvironment)
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientTransport
@@ -79,6 +79,7 @@ import Prodbox.ControlPlane.ProviderNarrowSession
   )
 import Prodbox.Http.Client (renderHttpError)
 import Prodbox.Infra.AwsEksTestStack (pulumiAwsProviderEnv)
+import Prodbox.Infra.Route53ValidationZone qualified as Route53ValidationZone
 import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
 import Prodbox.Lifecycle.DnsRecord
   ( AwsAccountId
@@ -115,12 +116,20 @@ import Prodbox.Lifecycle.DnsRecord
   )
 import Prodbox.Lifecycle.DnsRecord.Route53 (nativeDnsRecordSet, nativeDnsRecordType)
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
+import Prodbox.Lifecycle.OwnedResourceTagEvidence
+  ( OwnedResourceTagEntry (..)
+  , OwnedResourceTagObservation (..)
+  , OwnedResourceTagQueryEcho (..)
+  , renderOwnedResourceTagEvidenceError
+  , renderOwnedResourceTagObservation
+  )
 import Prodbox.Lifecycle.OwnedResourceTags (sesCaptureBucketTags)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( EksClientAuthRequest
   , EksClusterIdentityRequest
   , ProviderCheckpointRef
   , ProviderIntentCoordinate
+  , ProviderOwnedTagQuery (..)
   , ProviderReadinessProbe (..)
   , ProviderSpotPriceQuery
   , ProviderStackConfig (..)
@@ -154,6 +163,8 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , sesRuleSetRecipient
   , sesRuleSetRefText
   )
+import Prodbox.Lifecycle.TagSweep qualified as TagSweep
+import Prodbox.Lifecycle.TaggedResourceQuery qualified as TaggedResourceQuery
 import Prodbox.Lifecycle.Teardown.ProviderAwsScopeAdapter.Internal
   ( encodeProviderAwsScopeEvidence
   )
@@ -245,6 +256,12 @@ providerProductionCapabilities =
     , reconcilePublicARecordCapability = publicARecordMutation
     , reapTestEbsVolumesCapability = ebsReaperMutation
     , observeTestEbsVolumesCapability = testEbsObservation
+    , observeValidationHostedZonesCapability = validationHostedZoneObservation
+    , reapValidationHostedZonesCapability = validationHostedZoneReaperMutation
+    , observeDns01ChallengeRecordsCapability = dns01ChallengeRecordObservation
+    , observeRetainedEbsVolumesCapability = retainedEbsObservation
+    , reapRetainedEbsVolumesCapability = retainedEbsReaperMutation
+    , observeOwnedResourceTagsCapability = ownedResourceTagObservation
     , observeSpotPriceCapability = spotPriceObservation
     , observeOperationalIdentityCapability = operationalIdentityObservation
     , observeProviderAwsScopeCapability = providerAwsScopeObservation
@@ -704,6 +721,134 @@ testEbsObservation clusterName = ProviderReadOnly $ \session _ -> do
                 volumes
             )
         )
+
+-- | Sprint 7.36: read-only observation of the @dns-aws@ validation hosted-zone
+-- family, through the Provider Worker's own session credentials.
+--
+-- The family is the registered zone-name prefix and nothing else, and the
+-- discovery it runs filters by that same constant, so the registry and the
+-- observation cannot disagree about which zones are in scope. A listing this
+-- run cannot obtain is unobservable rather than empty — the doctrine rule that
+-- an unanswerable query is never an absence.
+validationHostedZoneObservation
+  :: Text
+  -> ProviderReadOnly IO ProviderProductionSession
+validationHostedZoneObservation namePrefix = ProviderReadOnly $ \session _ -> do
+  environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+  observed <-
+    Route53ValidationZone.discoverValidationHostedZones
+      providerWorkingDirectory
+      environment
+  pure $ case observed of
+    Left detail -> Left (Text.pack detail)
+    Right zones ->
+      Right
+        ( Text.intercalate
+            "\n"
+            ( namePrefix
+                : [ Text.pack (zoneId <> " " <> zoneName)
+                  | (zoneId, zoneName) <- zones
+                  ]
+            )
+        )
+
+-- | Sprint 7.36: the destroy half of the same family.
+--
+-- Observe-before-apply, so an already-absent family is satisfied without a
+-- mutation, and a listing that cannot be obtained refuses rather than reporting
+-- absence.
+validationHostedZoneReaperMutation
+  :: Text -> ProviderMutation IO ProviderProductionSession
+validationHostedZoneReaperMutation _namePrefix =
+  ProviderMutation
+    { observeProviderMutation = \session _ -> do
+        environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+        observed <-
+          Route53ValidationZone.discoverValidationHostedZones
+            providerWorkingDirectory
+            environment
+        pure $ case observed of
+          Left detail -> ProviderEffectUnobservable (Text.pack detail)
+          Right [] ->
+            ProviderEffectSatisfied "validation hosted zones are absent"
+          Right _ -> ProviderEffectNeedsApply "validation hosted zones remain"
+    , applyProviderMutation = \session _ -> do
+        environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+        result <-
+          Route53ValidationZone.destroyValidationHostedZones
+            providerWorkingDirectory
+            environment
+        pure $ case result of
+          ExitSuccess -> Right ()
+          ExitFailure code ->
+            Left
+              ( Text.pack
+                  ("validation hosted-zone reap exited " <> show code)
+              )
+    }
+
+-- | Sprint 7.36: the DNS01 challenge record family inside one retained hosted
+-- zone.
+--
+-- Read-only, and it is the whole Provider half of the family: the removal is a
+-- Kubernetes owner delete, because cert-manager's solver would rewrite a record
+-- the Provider deleted underneath it.
+--
+-- The scan is 'NativeRoute53.scanResourceRecordSetsByPrefix' rather than an
+-- exact lookup, because a cleanup proving a __family__ absent has no names for
+-- its members; it follows the truncation cursor to exhaustion and fails at its
+-- page bound rather than returning a prefix, so a short answer cannot read as
+-- absence.
+dns01ChallengeRecordObservation
+  :: Text
+  -> Text
+  -> ProviderReadOnly IO ProviderProductionSession
+dns01ChallengeRecordObservation zoneId recordNamePrefix =
+  ProviderReadOnly
+    (\session _ -> scanDns01ChallengeRecords zoneId recordNamePrefix session)
+
+scanDns01ChallengeRecords
+  :: Text
+  -> Text
+  -> ProviderProductionSession
+  -> IO (Either Text Text)
+scanDns01ChallengeRecords zoneId recordNamePrefix session =
+  case route53ClientForSession session of
+    Left detail -> pure (Left detail)
+    Right client -> do
+      scanned <-
+        NativeRoute53.scanResourceRecordSetsByPrefix
+          client
+          zoneId
+          recordNamePrefix
+          NativeRoute53.RecordTXT
+      pure (renderDns01ChallengeEvidence zoneId recordNamePrefix scanned)
+
+-- | The canonical evidence form: the echoed family line, then one record name
+-- per line.  The reader is
+-- 'Prodbox.Lifecycle.Teardown.Dns01ChallengeRecordAdapter.parseDns01ChallengeObservation'.
+renderDns01ChallengeEvidence
+  :: Text
+  -> Text
+  -> Either AwsClientError [NativeRoute53.ResourceRecordSet]
+  -> Either Text Text
+renderDns01ChallengeEvidence zoneId recordNamePrefix scanned = case scanned of
+  Left err -> Left (nativeRoute53Error err)
+  Right recordSets ->
+    Right
+      ( Text.intercalate
+          "\n"
+          ( (zoneId <> " " <> recordNamePrefix)
+              : map NativeRoute53.rrsName recordSets
+          )
+      )
+
+-- | The subprocess working directory for the Provider Worker's AWS calls.
+--
+-- The @aws@ CLI resolves nothing relative to it for these verbs; it is supplied
+-- because the shared capture helper requires one.
+providerWorkingDirectory :: FilePath
+providerWorkingDirectory = "."
 
 spotPriceObservation
   :: ProviderSpotPriceQuery
@@ -2355,3 +2500,137 @@ providerAwsEvidence label outputs =
       ( TextEncoding.encodeUtf8
           (Text.intercalate "\NUL" (Text.pack . processStdout <$> outputs))
       )
+
+-- | Sprint 7.36: one owned-resource tag listing for the cascade's terminal
+-- escape audit.
+--
+-- The listing follows the Tagging API's own cursor to exhaustion and fails
+-- rather than returning a prefix, because the audit's claim is that nothing
+-- escaped and a shortened listing is exactly how that claim goes wrong.  The
+-- evidence echoes the query it answered and states the page count it consumed,
+-- so a consumer can tell a complete empty answer from a truncated one.
+ownedResourceTagObservation
+  :: ProviderOwnedTagQuery
+  -> ProviderReadOnly IO ProviderProductionSession
+ownedResourceTagObservation query = ProviderReadOnly $ \session _ -> do
+  environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+  listed <-
+    TaggedResourceQuery.discoverTaggedResources
+      TaggedResourceQuery.TaggedResourceQueryInput
+        { TaggedResourceQuery.taggedResourceQueryEnvironment = environment
+        , TaggedResourceQuery.taggedResourceQueryWorkingDirectory = Nothing
+        , TaggedResourceQuery.taggedResourceQueryFilter = queryFilter
+        }
+  pure $ case listed of
+    Left detail -> Left (Text.pack detail)
+    Right listing ->
+      case renderOwnedResourceTagObservation
+        OwnedResourceTagObservation
+          { ownedResourceTagObservationQuery = queryEcho
+          , ownedResourceTagObservationEntries =
+              [ OwnedResourceTagEntry
+                  { ownedResourceTagEntryArn =
+                      TaggedResourceQuery.taggedResourceEntryArn entry
+                  , ownedResourceTagEntryTags =
+                      TaggedResourceQuery.taggedResourceEntryTags entry
+                  }
+              | entry <- TaggedResourceQuery.taggedResourceListingEntries listing
+              ]
+          , ownedResourceTagObservationPages =
+              TaggedResourceQuery.taggedResourceListingPages listing
+          } of
+        Left err -> Left (renderOwnedResourceTagEvidenceError err)
+        Right evidence -> Right evidence
+ where
+  queryFilter = case query of
+    ProviderOwnedTagKeyQuery key ->
+      TaggedResourceQuery.TaggedResourceTagKeyFilter key
+    ProviderOwnedTagPairQuery key value ->
+      TaggedResourceQuery.TaggedResourceTagPairFilter key value
+  queryEcho = case query of
+    ProviderOwnedTagKeyQuery key -> OwnedResourceTagKeyEcho key
+    ProviderOwnedTagPairQuery key value -> OwnedResourceTagPairEcho key value
+
+-- | Sprint 7.36: exact read-only observation of the retained EBS family.
+--
+-- The lifecycle tag value is carried by the intent and checked here rather
+-- than assumed, so an intent bounded to some other family cannot be served by
+-- the retained query.  Transport or parse inability stays a 'Left' and never
+-- becomes an empty family.
+retainedEbsObservation
+  :: Text
+  -> ProviderReadOnly IO ProviderProductionSession
+retainedEbsObservation lifecycleValue = ProviderReadOnly $ \session _ ->
+  if Text.unpack lifecycleValue /= TagSweep.ebsRetainedLifecycleValue
+    then
+      pure
+        ( Left
+            ( "retained EBS observation is bound to lifecycle value "
+                <> lifecycleValue
+                <> ", not the registered retained family"
+            )
+        )
+    else do
+      environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+      observed <-
+        EbsVolume.discoverEbsVolumes
+          EbsVolume.EbsDiscoverInput
+            { EbsVolume.ebsDiscoverEnvironment = environment
+            , EbsVolume.ebsDiscoverWorkingDirectory = Nothing
+            , EbsVolume.ebsDiscoverScope = EbsVolume.EbsRetainedProduction
+            }
+      pure $ case observed of
+        Left detail -> Left (Text.pack detail)
+        Right volumes ->
+          Right
+            ( EbsVolume.renderRetainedEbsObservation
+                (EbsVolume.retainedEbsObservation volumes)
+            )
+
+-- | Sprint 7.36: the retained family's destructive reap, observed before it
+-- applies.  It refuses an intent bound to any other lifecycle value for the
+-- same reason the observation does: this is the one path that deletes storage
+-- the rest of the system is built to preserve.
+retainedEbsReaperMutation :: Text -> ProviderMutation IO ProviderProductionSession
+retainedEbsReaperMutation lifecycleValue =
+  ProviderMutation
+    { observeProviderMutation = \session _ ->
+        withRetainedFamily $ do
+          environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+          observed <-
+            EbsVolume.discoverEbsVolumes
+              EbsVolume.EbsDiscoverInput
+                { EbsVolume.ebsDiscoverEnvironment = environment
+                , EbsVolume.ebsDiscoverWorkingDirectory = Nothing
+                , EbsVolume.ebsDiscoverScope = EbsVolume.EbsRetainedProduction
+                }
+          pure $ case observed of
+            Left detail -> ProviderEffectUnobservable (Text.pack detail)
+            Right volumes ->
+              case EbsVolume.retainedEbsObservationVolumeIds
+                (EbsVolume.retainedEbsObservation volumes) of
+                [] -> ProviderEffectSatisfied "retained EBS volumes are absent"
+                _ -> ProviderEffectNeedsApply "retained EBS volumes remain"
+    , applyProviderMutation = \session _ ->
+        if wrongFamily
+          then pure (Left wrongFamilyDetail)
+          else do
+            environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+            result <-
+              EbsVolume.runRetainedEbsReaper
+                EbsVolume.RetainedEbsReaperInput
+                  { EbsVolume.retainedEbsReaperEnvironment = environment
+                  , EbsVolume.retainedEbsReaperWorkingDirectory = Nothing
+                  }
+            pure (either (Left . Text.pack) (const (Right ())) result)
+    }
+ where
+  wrongFamily = Text.unpack lifecycleValue /= TagSweep.ebsRetainedLifecycleValue
+  wrongFamilyDetail =
+    "retained EBS reap is bound to lifecycle value "
+      <> lifecycleValue
+      <> ", not the registered retained family"
+  withRetainedFamily action =
+    if wrongFamily
+      then pure (ProviderEffectUnobservable wrongFamilyDetail)
+      else action

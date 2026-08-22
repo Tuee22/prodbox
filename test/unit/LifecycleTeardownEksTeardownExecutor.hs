@@ -151,7 +151,7 @@ executorFor :: FakeEnvironment -> EksTeardownExecutor ExecutorEffects
 executorFor environment =
   EksTeardownExecutor
     { eksTeardownRegisteredTargetInterpreter = registeredInterpreter environment
-    , eksTeardownDrainInterpreter = drainInterpreter environment
+    , eksTeardownDrainInterpreter = drainInterpreter
     , eksTeardownCommitSelectionBoundary =
         mkEksDrainCommitSelectionBoundary $ \_ _ consume -> do
           liftExecutorIO
@@ -198,30 +198,13 @@ registeredInterpreter environment =
     , awsRegisteredTargetPresentEksDestroyBoundary =
         mkAwsEksPresentDestroyBoundary $ \_ _ _ ->
           pure (Left AwsRegisteredTargetEksDrainProofRequired)
+    , awsRegisteredTargetDns01ChallengeOwnerDeleteBoundary =
+        refusingDns01ChallengeOwnerDeleteBoundary
+          "fixture has no Kubernetes access"
     }
 
-drainInterpreter :: FakeEnvironment -> EksDrainInterpreter ExecutorEffects
-drainInterpreter environment =
-  mkEksDrainInterpreter
-    (pure 1_000)
-    ( \_ -> do
-        liftExecutorIO
-          (modifyIORef' (fakeSessionCalls environment) (<> ["unexpected session acquisition"]))
-        pure
-          ( EksDrainSessionAcquisitionUnobservable
-              (ObservationFailure "already-absent target must not acquire a session")
-          )
-    )
-    ( mkEksDrainClientBoundary $ \_ consume -> do
-        liftExecutorIO
-          (modifyIORef' (fakeSessionCalls environment) (<> ["unexpected client open"]))
-        consume
-          ( Left
-              ( EksDrainClientAccessUnobservable
-                  (ObservationFailure "already-absent target must not open Kubernetes")
-              )
-          )
-    )
+drainInterpreter :: EksDrainInterpreter ExecutorEffects
+drainInterpreter = mkEksDrainInterpreter (pure 1_000)
 
 intentClient :: FakeEnvironment -> EksDrainIntentClient ExecutorEffects
 intentClient environment =

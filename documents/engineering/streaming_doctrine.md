@@ -117,6 +117,12 @@ line said otherwise. The rule that follows:
   inventory tracked in the
   [legacy deletion ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md), not the target
   narration source.
+- **An unnarrated exit is not a narrated absence.** The twin of the rule above: a terminal arm that
+  emits no sentence at all has not said the thing its exit code will be read as saying. `cluster
+  delete --cascade` on a host with no RKE2 install used to exit 0 having narrated nothing about
+  either AWS or the retained root, and an operator reads exit 0 from a cascade as a cascade that
+  ran. Every terminal arm of a destructive command is therefore enumerated, and its narration is a
+  total function of that arm — including the arms whose correct narration is a refusal.
 - The unobserved sentence goes to the **diagnostic** stream and says what remains true afterwards
   (which resources, that this is not a confirmation, and the canonical command to resolve it).
 - An aggregate line is derived from the typed terminal cleanup result, not from hand-maintained phase

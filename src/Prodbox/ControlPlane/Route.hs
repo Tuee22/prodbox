@@ -89,6 +89,7 @@ data ControlPlaneRoute
   | LifecycleOwnershipManifest
   | LifecycleRecoveryPlane
   | LifecycleLocalRke2HostObservation
+  | LifecycleCascadeRetainedSlot
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 allControlPlaneRoutes :: [ControlPlaneRoute]
@@ -152,6 +153,7 @@ controlPlaneRouteMethod route = case route of
   LifecycleOwnershipManifest -> ControlPlanePost
   LifecycleRecoveryPlane -> ControlPlanePost
   LifecycleLocalRke2HostObservation -> ControlPlanePost
+  LifecycleCascadeRetainedSlot -> ControlPlanePost
 
 controlPlaneRoutePath :: ControlPlaneRoute -> String
 controlPlaneRoutePath route = case route of
@@ -217,6 +219,7 @@ controlPlaneRoutePath route = case route of
   LifecycleRecoveryPlane -> "/v1/authority/recovery-plane"
   LifecycleLocalRke2HostObservation ->
     "/v1/authority/local-rke2-host-observation"
+  LifecycleCascadeRetainedSlot -> "/v1/authority/cascade-retained-slot"
 
 controlPlaneRouteRole :: ControlPlaneRoute -> RuntimeRole
 controlPlaneRouteRole route = case route of
@@ -276,6 +279,7 @@ controlPlaneRouteRole route = case route of
   LifecycleOwnershipManifest -> LifecycleAuthorityRuntime
   LifecycleRecoveryPlane -> LifecycleAuthorityRuntime
   LifecycleLocalRke2HostObservation -> LifecycleAuthorityRuntime
+  LifecycleCascadeRetainedSlot -> LifecycleAuthorityRuntime
 
 routesForRole :: RuntimeRole -> [ControlPlaneRoute]
 routesForRole role =

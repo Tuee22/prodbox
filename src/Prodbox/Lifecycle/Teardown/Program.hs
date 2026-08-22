@@ -37,6 +37,13 @@ where
 import Data.List (partition)
 import Data.Text (Text)
 import Prodbox.Lifecycle.CleanupRun (CleanupDependencyKind (..))
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal
+  ( CapabilityDependants (..)
+  , capabilityDependants
+  )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CustodialCapability (CheckpointCapability)
+  )
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.OwnershipManifest
   ( ownershipEdgeResourceKey
@@ -546,7 +553,7 @@ orderedTargetNodes allTargets observationDependencies =
     | registeredTargetKey target == AwsEksKey =
         eksStackInitialNodes observationDependencies target
     | registeredTargetKind target == Stack =
-        stackTargetNodes observationDependencies target
+        stackTargetNodes allTargets observationDependencies target
     | otherwise = directTargetNodes allTargets observationDependencies target
   finalNodes target
     | registeredTargetKey target == AwsEksKey =
@@ -574,10 +581,11 @@ directTargetNodes allTargets observationDependencies target =
   ]
 
 stackTargetNodes
-  :: [ProgramDependency]
+  :: [RegisteredTargetBinding]
+  -> [ProgramDependency]
   -> RegisteredTargetBinding
   -> [ProgramNode surface]
-stackTargetNodes observationDependencies target =
+stackTargetNodes allTargets observationDependencies target =
   [ programNode
       (checkpointObserveName target)
       (ObserveStackCheckpointPair target)
@@ -618,8 +626,13 @@ stackTargetNodes observationDependencies target =
   , programNode
       (checkpointRetirementName target)
       (RetireStackCheckpointPair target)
-      [success (targetReadBackName target)]
-  , programNode
+      (checkpointRetirementDependencies allTargets target)
+  , -- The read-back stays gated on the attempt alone.  A read-back that could
+    -- be blocked is a read-back that cannot close a lost response, which is the
+    -- whole reason every effect is paired with exactly one attempt-gated
+    -- read-back; the Sprint-4.89 discharge it needs is the retirement it
+    -- observes, not a second copy of the ordering the effect already waited on.
+    programNode
       (checkpointRetirementReadBackName target)
       (ReadBackStackCheckpointRetirement target)
       [attempt (checkpointRetirementName target)]
@@ -700,8 +713,13 @@ eksStackFinalNodes allTargets target =
   , programNode
       (checkpointRetirementName target)
       (RetireStackCheckpointPair target)
-      [success (targetReadBackName target)]
-  , programNode
+      (checkpointRetirementDependencies allTargets target)
+  , -- The read-back stays gated on the attempt alone.  A read-back that could
+    -- be blocked is a read-back that cannot close a lost response, which is the
+    -- whole reason every effect is paired with exactly one attempt-gated
+    -- read-back; the Sprint-4.89 discharge it needs is the retirement it
+    -- observes, not a second copy of the ordering the effect already waited on.
+    programNode
       (checkpointRetirementReadBackName target)
       (ReadBackStackCheckpointRetirement target)
       [attempt (checkpointRetirementName target)]
@@ -738,6 +756,46 @@ eksBackstopSuccessDependencies allTargets owner =
   | backstop <- allTargets
   , registeredTargetKey backstop `elem` ownedFamilyKeys (registeredTargetKey owner)
   ]
+
+-- | Sprint 4.89: a stack's checkpoint is not retired until every resource that
+-- checkpoint reaches has been read back absent.
+--
+-- Retiring the checkpoint reference ends this run's custody of the capability
+-- that made those resources destroyable at all.  Waiting only on the stack's
+-- own read-back ends that custody while a controller-owned family the stack
+-- owns may still be present, and nothing afterwards names it — which is the
+-- shape that stranded two AWS resources.
+--
+-- The set is the /derived/ dependant set rather than a second hand-authored
+-- list beside 'eksBackstopSuccessDependencies', so a newly registered
+-- controller-owned family joins this ordering without editing this module.  A
+-- capability whose dependants nothing enumerates cannot be shown discharged by
+-- ordering at all, so it waits on every non-stack target in the program — never
+-- fewer than the derived set would have been, and cycle-free because a stack
+-- never waits on another stack.
+checkpointRetirementDependencies
+  :: [RegisteredTargetBinding]
+  -> RegisteredTargetBinding
+  -> [ProgramDependency]
+checkpointRetirementDependencies allTargets target =
+  success (targetReadBackName target)
+    : [ success (targetReadBackName dependant)
+      | dependant <- allTargets
+      , registeredTargetKey dependant /= registeredTargetKey target
+      , dependantReaches (registeredTargetKey dependant)
+      ]
+ where
+  dependantReaches key =
+    case capabilityDependants (CheckpointCapability (registeredTargetKey target)) of
+      CapabilityDependantsDerived keys -> key `elem` keys
+      CapabilityDependantsUnderivable _ -> not (isStackKey key)
+
+  isStackKey key =
+    or
+      [ registeredTargetKind binding == Stack
+      | binding <- allTargets
+      , registeredTargetKey binding == key
+      ]
 
 owningStackKeys :: RegisteredResourceKey -> [RegisteredResourceKey]
 owningStackKeys resourceKey =

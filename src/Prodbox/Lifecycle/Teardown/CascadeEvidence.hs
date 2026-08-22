@@ -53,6 +53,15 @@ module Prodbox.Lifecycle.Teardown.CascadeEvidence
   , cascadeEvidenceRegressionCompletionRefused
   , cascadeEvidenceRegressionDurableReadyCanonical
   , cascadeEvidenceRegressionDurableReadyCorruptionRefused
+  , cascadeEvidenceRegressionLocalOnlyChainCloses
+  , cascadeEvidenceRegressionLocalOnlyAwsScopeUncompilable
+  , cascadeEvidenceRegressionLocalOnlyReceiptRefused
+  , cascadeEvidenceRegressionLocalOnlyAbsenceRefused
+  , cascadeEvidenceRegressionBindingGeneralisationPreserving
+  , cascadeEvidenceRegressionCustodyLostRefused
+  , cascadeEvidenceRegressionCustodyUnobservableRefused
+  , cascadeEvidenceRegressionCustodyIncompleteRefused
+  , cascadeEvidenceRegressionCustodyForeignBindingRefused
   )
 where
 
@@ -75,12 +84,21 @@ import Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
   , cascadeCompleteRunId
   , cascadeEvidenceRegressionAbsenceRefused
   , cascadeEvidenceRegressionAuditRefused
+  , cascadeEvidenceRegressionBindingGeneralisationPreserving
   , cascadeEvidenceRegressionCompleteChain
   , cascadeEvidenceRegressionCompletionRefused
   , cascadeEvidenceRegressionCredentialRefused
+  , cascadeEvidenceRegressionCustodyForeignBindingRefused
+  , cascadeEvidenceRegressionCustodyIncompleteRefused
+  , cascadeEvidenceRegressionCustodyLostRefused
+  , cascadeEvidenceRegressionCustodyUnobservableRefused
   , cascadeEvidenceRegressionDurableReadyCanonical
   , cascadeEvidenceRegressionDurableReadyCorruptionRefused
   , cascadeEvidenceRegressionLocalAbsenceRefused
+  , cascadeEvidenceRegressionLocalOnlyAbsenceRefused
+  , cascadeEvidenceRegressionLocalOnlyAwsScopeUncompilable
+  , cascadeEvidenceRegressionLocalOnlyChainCloses
+  , cascadeEvidenceRegressionLocalOnlyReceiptRefused
   , cascadeEvidenceRegressionMixedBindingRefused
   , cascadeEvidenceRegressionPermitRefused
   , cascadeEvidenceRegressionPreUninstallRefused

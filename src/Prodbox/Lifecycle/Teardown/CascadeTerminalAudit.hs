@@ -126,6 +126,7 @@ import Prodbox.Lifecycle.Teardown.RetainedInventory
   , terminalAuditQueryDigestFor
   , terminalAuditResultFor
   )
+import Prodbox.Lifecycle.Teardown.TaggingApiReach (globalServiceTaggingRegion)
 
 -- ---------------------------------------------------------------------------
 -- Issuing the audit
@@ -283,7 +284,7 @@ fixedAuditScenario = do
   compiled <-
     withCascadePreUninstallInputsInternal
       "cleanup-run/terminal-audit-fixed-regression"
-      (\program _run _absence _credentials _audit -> program)
+      (\program _run _absence _credentials _audit _custody -> program)
   binding <-
     firstShown
       ( mkRetainedNameBinding
@@ -302,7 +303,7 @@ fixedAuditScenario = do
     firstShown
       ( retainedCatalogFor
           CascadeSurface
-          runScope {awsScopeRegion = AwsRegion globalTaggingRegion}
+          runScope {awsScopeRegion = AwsRegion globalServiceTaggingRegion}
           binding
       )
   bucketArn <- firstShown (mkArn ("arn:aws:s3:::" <> fixedStateBucketName))
@@ -457,7 +458,7 @@ fixedRowScope :: AwsScope
 fixedRowScope =
   AwsScope
     { awsScopeAccountId = AwsAccountId "111122223333"
-    , awsScopeRegion = AwsRegion globalTaggingRegion
+    , awsScopeRegion = AwsRegion globalServiceTaggingRegion
     }
 
 bucketResourceType :: AwsResourceType
@@ -465,9 +466,6 @@ bucketResourceType = AwsResourceType "s3:bucket"
 
 fixedStateBucketName :: Text
 fixedStateBucketName = "prodbox-fixed-state"
-
-globalTaggingRegion :: Text
-globalTaggingRegion = "us-east-1"
 
 firstShown :: (Show err) => Either err value -> Either Text value
 firstShown = either (Left . Text.pack . show) Right

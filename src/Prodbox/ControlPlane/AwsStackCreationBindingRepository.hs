@@ -56,6 +56,7 @@ module Prodbox.ControlPlane.AwsStackCreationBindingRepository
   , confirmCommittedAwsStackCreationBindingReadBack
   , commitAwsStackCreationBindingAttempt
   , independentlyReadBackCommittedAwsStackCreationBinding
+  , readBackCommittedAwsStackCreationBindingForScope
   , AwsStackCreationBindingClient (..)
   , lifecycleAuthorityAwsStackCreationBindingClient
   )
@@ -602,6 +603,27 @@ independentlyReadBackCommittedAwsStackCreationBinding repository key cleanupScop
     Right identity -> do
       observed <- independentlyReadBackAwsStackCreationBinding repository identity
       pure (confirmCommittedAwsStackCreationBindingReadBack identity observed)
+
+-- | Read the committed creation binding back over the host-reachable client,
+-- keyed by the stack and the cleanup scope alone.
+--
+-- Sprint @4.86@: 'AwsStackCreationBindingClient' takes the authority identity
+-- as an argument, and the derivation is private to this module — so a host
+-- holding a transport-backed client could not address the record.  This is the
+-- client-side counterpart of
+-- 'independentlyReadBackCommittedAwsStackCreationBinding', which needs the
+-- in-cluster repository.
+readBackCommittedAwsStackCreationBindingForScope
+  :: (Monad m)
+  => AwsStackCreationBindingClient m
+  -> RegisteredResourceKey
+  -> ObservationEvidenceScope
+  -> m (Either AwsStackCreationBindingError CommittedAwsStackCreationBinding)
+readBackCommittedAwsStackCreationBindingForScope client key cleanupScope =
+  case identityFor ReconcileDesiredAbsent key cleanupScope of
+    Left err -> pure (Left err)
+    Right identity ->
+      readBackAwsStackCreationBindingByIdentity client identity
 
 -- | A binding-only client.  See the note on 'attemptAwsStackCreationBindingCommit'.
 lifecycleAuthorityAwsStackCreationBindingClient

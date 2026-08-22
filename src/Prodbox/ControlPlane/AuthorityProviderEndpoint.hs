@@ -10,6 +10,7 @@
 -- second confirmed aggregate CAS.
 module Prodbox.ControlPlane.AuthorityProviderEndpoint
   ( ProviderDispatchPayload (..)
+  , ProviderDispatchLane (..)
   , ProviderDispatchResponse (..)
   , AuthorityProviderDispatchBoundary (..)
   , providerDispatchResponseMaximumBytes
@@ -19,6 +20,7 @@ module Prodbox.ControlPlane.AuthorityProviderEndpoint
   , dispatchAuthorityProviderIntent
   , dispatchAuthorityProviderIntentWithOperation
   , dispatchAuthorityProviderIntentOwnedBy
+  , admitAuthorityProviderIntentOwnedBy
   )
 where
 
@@ -113,6 +115,35 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
 import Prodbox.Lifecycle.TargetCommitIntent (sha256TargetValueDigest)
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 
+-- | Sprint 7.36: whether one dispatch also executes what it admits.
+--
+-- Admission and execution were already two separate transitions over the
+-- retained aggregate — 'Prodbox.Lifecycle.Authority.Admission.AuthorityProviderPending'
+-- is a durable state, and
+-- 'Prodbox.ControlPlane.AwsStackCreationBindingRepository.observeAuthorityAwsStackCreationOperation'
+-- already reads a create out of it — but the route ran both in one call, so an
+-- admitted operation id did not exist until its effect had already happened.
+-- A caller that must bind durable state to the operation /before/ the effect
+-- therefore could not: the registered-stack create lane had to commit the
+-- lifecycle generation that names a stack's cycle after the stack existed, and
+-- an Authority that became unreachable in between left a stack no later
+-- cleanup run could address.
+--
+-- This lane exposes the boundary the aggregate already had.  It is deliberately
+-- a closed two-arm choice rather than a flag: a caller states which of the two
+-- lanes it is on, and the handler decides on the same closed value.
+data ProviderDispatchLane
+  = -- | Admit and execute in one call.  The lane every idempotent observation
+    -- and reconcile uses, and the historical behaviour of this route.
+    ProviderAdmitAndExecute
+  | -- | Admit and stop.  The operation stays Pending and its 'OperationId' is
+    -- returned; nothing is signed and nothing reaches the Provider Worker.
+    -- Executing it later is a second call on the same submission key, which
+    -- the admission ledger recognizes as the same operation.
+    ProviderAdmitOnly
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
 data ProviderDispatchPayload = ProviderDispatchPayload
   { providerDispatchVersion :: !Word16
   , providerDispatchSubmissionKey :: !Text
@@ -122,6 +153,8 @@ data ProviderDispatchPayload = ProviderDispatchPayload
   -- an explicit statement that no cleanup run did.  The Authority retains it
   -- beside the intent, so a disposition can be attributed to the run that
   -- authorized it.
+  , providerDispatchLane :: !ProviderDispatchLane
+  -- ^ Sprint 7.36: whether this call also executes the operation it admits.
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -137,8 +170,14 @@ data ProviderDispatchPayload = ProviderDispatchPayload
 --
 -- Sprint 4.85: bumped to @3@ when the payload began naming the cleanup
 -- operation that authorized the submission.
+--
+-- Sprint 7.36: bumped to @4@ when the payload began naming its
+-- 'ProviderDispatchLane'.  A caller at version @3@ carries no lane, and the
+-- only safe default for a missing one would be to execute — so the version
+-- refusal is what keeps an older caller from silently executing an operation a
+-- newer Authority would have admitted only.
 providerDispatchFormatVersion :: Word16
-providerDispatchFormatVersion = 3
+providerDispatchFormatVersion = 4
 
 -- | Sprint 4.84: a settled dispatch names the operation the Authority admitted.
 --
@@ -154,6 +193,10 @@ data ProviderDispatchResponse
   | ProviderDispatchAlreadyCompleted !OperationId !Text
   | ProviderDispatchRefused !Text
   | ProviderDispatchUnavailable !Text
+  | -- | Sprint 7.36: the submission is admitted and Pending, and nothing has
+    -- executed.  Appended last so every earlier constructor keeps its
+    -- 'Serialise' index.
+    ProviderDispatchAdmitted !OperationId
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -242,6 +285,16 @@ runProviderDispatch boundary caller payload =
             -- which is exactly what makes the submitting lane idempotent.
             Right (AuthorityProviderSubmissionDuplicateCompleted operation evidence) ->
               pure (ProviderDispatchAlreadyCompleted operation evidence)
+            -- Sprint 7.36: the admit-only lane stops here.  Nothing is signed,
+            -- nothing reaches the Provider Worker, and the caller is handed the
+            -- operation the aggregate now holds Pending.
+            Right submission
+              | ProviderAdmitOnly <- providerDispatchLane payload ->
+                  pure $ case submissionOperation submission of
+                    Nothing ->
+                      ProviderDispatchUnavailable
+                        "provider admission did not retain an operation"
+                    Just operation -> ProviderDispatchAdmitted operation
             Right submission -> do
               nowResult <- authorityProviderNow boundary
               revisionResult <- authorityProviderRevision boundary
@@ -281,6 +334,7 @@ providerResponseStatus :: ProviderDispatchResponse -> ReplyStatus
 providerResponseStatus response = case response of
   ProviderDispatchCompleted _ _ -> ReplyOk
   ProviderDispatchAlreadyCompleted _ _ -> ReplyOk
+  ProviderDispatchAdmitted _ -> ReplyOk
   ProviderDispatchRefused _ -> ReplyConflict
   ProviderDispatchUnavailable _ -> ReplyServiceUnavailable
 
@@ -435,16 +489,29 @@ buildSignedIntent boundary now revision operation submissionKey payload =
           , providerIntentExpectedAcceptedAuthority = Nothing
           }
 
+-- | The digest identifies /what/ was submitted, deliberately not /how/ this
+-- call is running it.
+--
+-- Sprint 7.36: the lane is normalized out before hashing.  The two-step create
+-- lane admits and then executes the same submission at the same key, and a
+-- digest that varied with the lane would make the execute call a different
+-- request from the admission it is executing — which the submission ledger
+-- correctly refuses as a digest conflict.  Normalizing keeps the two calls one
+-- submission, which is the property the lane exists to provide.
 providerDispatchRequestDigest :: ProviderDispatchPayload -> RequestDigest
 providerDispatchRequestDigest payload =
   RequestDigest
     ( TextEncoding.decodeUtf8
         ( hexSha256
             ( LazyByteString.toStrict
-                (serialise (1 :: Word, payload))
+                (serialise (1 :: Word, payload {providerDispatchLane = digestNormalizedLane}))
             )
         )
     )
+
+-- | The one lane every digest is taken at, whichever lane the call is on.
+digestNormalizedLane :: ProviderDispatchLane
+digestNormalizedLane = ProviderAdmitAndExecute
 
 providerExecutionEvidence :: ProviderIntentExecutionResult -> Text
 providerExecutionEvidence result = case result of
@@ -497,6 +564,92 @@ dispatchAuthorityProviderIntentOwnedBy
   -> ProviderOperationCleanupOwner
   -> IO (Either AuthorityProviderClientError (OperationId, Text))
 dispatchAuthorityProviderIntentOwnedBy transport submissionKey intent owner = do
+  decoded <-
+    callProviderDispatchRoute
+      transport
+      submissionKey
+      intent
+      owner
+      ProviderAdmitAndExecute
+  pure $ do
+    (status, response) <- decoded
+    case response of
+      ProviderDispatchCompleted operation evidence
+        | status == 200 -> Right (operation, evidence)
+        | otherwise -> Left (AuthorityProviderResponseStatusMismatch status)
+      ProviderDispatchAlreadyCompleted operation evidence
+        | status == 200 -> Right (operation, evidence)
+        | otherwise -> Left (AuthorityProviderResponseStatusMismatch status)
+      -- An execute lane that came back admitted-only means the Authority did
+      -- not run what this caller asked it to run.  It is not evidence, so it
+      -- cannot be returned as evidence.
+      ProviderDispatchAdmitted _ ->
+        Left
+          ( AuthorityProviderRemoteRefused
+              status
+              "provider dispatch returned an admission to an execute lane"
+          )
+      ProviderDispatchRefused detail ->
+        Left (AuthorityProviderRemoteRefused status detail)
+      ProviderDispatchUnavailable detail ->
+        Left (AuthorityProviderRemoteRefused status detail)
+
+-- | Sprint 7.36: admit one Provider submission without executing it.
+--
+-- The returned 'OperationId' names an operation the Authority holds Pending, so
+-- a caller can commit durable state against it before the effect happens and
+-- execute it afterwards with 'dispatchAuthorityProviderIntentOwnedBy' on the
+-- same submission key.
+--
+-- A replay whose operation has already completed answers with that same
+-- operation rather than refusing: the admission ledger recognizes the retry as
+-- the operation it already admitted, and refusing it would strand a lane that
+-- lost a response.  The invariant the lane exists to hold is unaffected, because
+-- the first attempt committed its own durable state before executing.
+admitAuthorityProviderIntentOwnedBy
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> ClientSubmissionKey
+  -> ProviderIntent
+  -> ProviderOperationCleanupOwner
+  -> IO (Either AuthorityProviderClientError OperationId)
+admitAuthorityProviderIntentOwnedBy transport submissionKey intent owner = do
+  decoded <-
+    callProviderDispatchRoute
+      transport
+      submissionKey
+      intent
+      owner
+      ProviderAdmitOnly
+  pure $ do
+    (status, response) <- decoded
+    case response of
+      ProviderDispatchAdmitted operation
+        | status == 200 -> Right operation
+        | otherwise -> Left (AuthorityProviderResponseStatusMismatch status)
+      ProviderDispatchAlreadyCompleted operation _
+        | status == 200 -> Right operation
+        | otherwise -> Left (AuthorityProviderResponseStatusMismatch status)
+      -- The admit-only lane never executes, so a completion answer to it means
+      -- the Authority did something this caller did not ask for.
+      ProviderDispatchCompleted _ _ ->
+        Left
+          ( AuthorityProviderRemoteRefused
+              status
+              "provider dispatch executed an admit-only submission"
+          )
+      ProviderDispatchRefused detail ->
+        Left (AuthorityProviderRemoteRefused status detail)
+      ProviderDispatchUnavailable detail ->
+        Left (AuthorityProviderRemoteRefused status detail)
+
+callProviderDispatchRoute
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> ClientSubmissionKey
+  -> ProviderIntent
+  -> ProviderOperationCleanupOwner
+  -> ProviderDispatchLane
+  -> IO (Either AuthorityProviderClientError (Int, ProviderDispatchResponse))
+callProviderDispatchRoute transport submissionKey intent owner lane = do
   response <-
     callAuthenticatedClientTransport
       transport
@@ -508,6 +661,7 @@ dispatchAuthorityProviderIntentOwnedBy transport submissionKey intent owner = do
                 , providerDispatchSubmissionKey = clientSubmissionKeyText submissionKey
                 , providerDispatchIntent = intent
                 , providerDispatchCleanupOwner = owner
+                , providerDispatchLane = lane
                 }
           )
       )
@@ -520,14 +674,4 @@ dispatchAuthorityProviderIntentOwnedBy transport submissionKey intent owner = do
             providerDispatchResponseMaximumBytes
             (LazyByteString.fromStrict bytes)
         )
-    case decoded of
-      ProviderDispatchCompleted operation evidence
-        | status == 200 -> Right (operation, evidence)
-        | otherwise -> Left (AuthorityProviderResponseStatusMismatch status)
-      ProviderDispatchAlreadyCompleted operation evidence
-        | status == 200 -> Right (operation, evidence)
-        | otherwise -> Left (AuthorityProviderResponseStatusMismatch status)
-      ProviderDispatchRefused detail ->
-        Left (AuthorityProviderRemoteRefused status detail)
-      ProviderDispatchUnavailable detail ->
-        Left (AuthorityProviderRemoteRefused status detail)
+    Right (status, decoded)

@@ -143,6 +143,7 @@ authorityBackupBlobObjectNameForClass blobClass digest =
         AuthorityAggregateEnvelope -> "authority-aggregate"
         AuthorityCheckpointBlob -> "checkpoint"
         AuthorityConfigBlob -> "config"
+        AuthorityCleanupReportBlob -> "cleanup-report"
     )
     (authorityBackupDigestText digest)
 

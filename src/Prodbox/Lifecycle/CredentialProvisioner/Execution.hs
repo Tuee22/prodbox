@@ -114,6 +114,15 @@ import Prodbox.Lifecycle.TargetCommitIntent
   , mkCredentialGeneration
   , targetValueDigestText
   )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal
+  ( CustodyReleaseBoundary (CustodyReleaseBoundary)
+  , dischargeByObservedRevocation
+  , releaseCustody
+  , renderCapabilityCustodyError
+  )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CustodialCapability (CredentialCapability)
+  )
 
 -- | Opaque secret-bearing ingress.  There is no 'Show', 'Eq', serialization,
 -- or byte accessor.  Its only construction is continuation-scoped below.
@@ -592,6 +601,9 @@ data CredentialProvisionerExecutionError
   | CredentialProvisionerTargetClientFailed !TargetMaterialClientError
   | CredentialProvisionerReceiptMismatch
   | CredentialProvisionerReceiptCommitFailed !Text
+  | -- | Sprint 4.89: this run cannot state where the credential generation
+    -- went, so it may not stop holding it.
+    CredentialProvisionerCustodyUndischarged !Text
   | CredentialProvisionerRevocationFailed !Text
   | CredentialProvisionerRevocationNotReadBack
   | CredentialProvisionerSessionRevokeFailed !Text
@@ -938,11 +950,63 @@ commitRevocation boundary request revoked = case revoked of
         || operatorMaterialRevocationGeneration receipt
           /= operatorMaterialRequestGeneration request ->
         pure (Left CredentialProvisionerReceiptMismatch)
-    | otherwise -> do
-        committed <- internalCommitRevocationReceipt boundary receipt
-        pure $ case committed of
-          Left detail -> Left (CredentialProvisionerReceiptCommitFailed detail)
-          Right () -> Right (CredentialProvisionerRevoked receipt)
+    | otherwise -> commitDisposedRevocation boundary request receipt
+
+-- | Sprint 4.89: committing the revocation receipt is where this run stops
+-- holding the credential generation, so it consumes a disposition.
+--
+-- The disposition is minted from the read-back rather than authored: a
+-- revocation that was independently read back is the proof that the family's
+-- keys no longer authenticate, which is inertness and nothing more.  It claims
+-- nothing about the IAM principal or the resources the permissions reached —
+-- destroying those alongside the capability is a joint destruction, which is a
+-- different constructor and the operation Sprint @7.36@ executes.
+--
+-- The external ACME EAB family is not an AWS credential class and so is not a
+-- capability in the custody universe; its commit is unchanged.
+commitDisposedRevocation
+  :: (Monad m)
+  => CredentialProvisionerBoundary m
+  -> OperatorMaterialRequest schema
+  -> OperatorMaterialRevocationReadBack
+  -> m (Either CredentialProvisionerExecutionError CredentialProvisionerResult)
+commitDisposedRevocation boundary request receipt =
+  case operatorMaterialRequestAwsClass request of
+    Nothing -> commitReceipt
+    Just credentialClass ->
+      let capability = CredentialCapability credentialClass
+       in case dischargeByObservedRevocation capability receiptIdentity of
+            Left err ->
+              pure
+                ( Left
+                    ( CredentialProvisionerCustodyUndischarged
+                        (renderCapabilityCustodyError err)
+                    )
+                )
+            Right disposition -> do
+              released <-
+                releaseCustody
+                  (CustodyReleaseBoundary (\_release -> pure ()))
+                  [capability]
+                  [disposition]
+              case released of
+                Left err ->
+                  pure
+                    ( Left
+                        ( CredentialProvisionerCustodyUndischarged
+                            (renderCapabilityCustodyError err)
+                        )
+                    )
+                Right () -> commitReceipt
+ where
+  receiptIdentity =
+    Text.pack
+      (show (operatorMaterialRevocationGeneration receipt))
+  commitReceipt = do
+    committed <- internalCommitRevocationReceipt boundary receipt
+    pure $ case committed of
+      Left detail -> Left (CredentialProvisionerReceiptCommitFailed detail)
+      Right () -> Right (CredentialProvisionerRevoked receipt)
 
 cleanupWorkload
   :: (Monad m)

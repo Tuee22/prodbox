@@ -192,6 +192,67 @@ the sealed-Vault fail-closed posture) are prodbox's ADDITIVE L1 layer that hostb
 does NOT own. Neither goal is compromised: non-secret config follows the shared base; secrecy is
 prodbox's additive layer.
 
+### Compiled protocol constants versus operator-supplied deployment values
+
+Before a value is placed in a secrecy tier it has to pass an earlier partition, and that partition
+has one question: **could two correct prodbox deployments differ on this value?**
+
+If yes, the value is operator-supplied Tier-0 Dhall. It fails closed when absent, and it carries
+**no compiled fallback** — a fallback makes the refusal unreachable, which is a stronger defect
+than the missing refusal it imitates, because the code then reports success.
+
+If no, the value is compiled, and the reason must be exactly one of four, recorded at the
+definition site:
+
+1. **Protocol-fixed.** The vendor fixes it and a deployment cannot choose otherwise: Route 53 and
+   IAM sign in one global region, an S3 `CreateBucket` in that region must omit
+   `LocationConstraint` entirely, the Resource Groups Tagging API answers for global services from
+   one region, AWS's own documentation determines the correct managed-policy ARN set, the EKS OIDC
+   root-CA thumbprint is an AWS-scheduled real value, and an add-on or AMI-owner identifier names a
+   vendor artifact rather than a deployment choice.
+2. **Not AWS.** An AWS-shaped string a non-AWS service requires — an S3-compatible object store's
+   SigV4 signing scope, for example. No AWS account is reached and no AWS namespace is consulted;
+   the string is a protocol token that happens to look like a coordinate.
+3. **prodbox-chosen identity.** A name prodbox itself picks for an object it creates: stack names,
+   its own tag keys, IAM name prefixes, credential principal names. These are prodbox's protocol
+   identity, and an operator changing one would be renaming prodbox rather than configuring a
+   deployment.
+4. **Compiled regression fixture.** A value that exists so a test can distinguish two behaviours,
+   reachable from no production path.
+
+Anything matching none of the four is deployment-varying by default. "The deployment we happen to
+run uses this one" is not a fifth reason; it is the absence of a reason, stated as a habit.
+
+**A seeded non-empty default is a compiled default.** The disguise is the sharp case and it is
+worth naming, because a value that arrives in the operator's own `prodbox.dhall` reads as
+authored even when nobody authored it. If a generator emits a field pre-filled from a Haskell
+literal, that literal is the value in force, the generated schema default carries it into every
+later `config generate`, and any refusal written against the field's absence becomes unreachable
+code. Tier-0 generation emits every operator-owned coordinate **empty**, and the first consumer
+refuses.
+
+**AWS vocabulary is where this bites hardest**, because an AWS region, instance type, EBS class, or
+CIDR is a well-formed string in every context — nothing about the value distinguishes a coordinate
+an operator should have chosen from a constant the protocol fixed. That is why the boundary is
+enforced from the other side as a **register-or-fail** rule rather than a ban: a compiled literal
+of AWS shape must declare which of the four reasons covers it, and an unregistered one fails
+`prodbox dev check` through `checkAwsCoordinateLiterals`. The registry is a bijection: a literal
+absent from it fails, a registered literal observed in a file outside its declared set fails, and a
+registry entry whose named symbol no longer exists fails. Its region is `src/` and `app/` — a
+literal inside a checked-in Pulumi program is outside it, and
+[code_quality.md](./code_quality.md) § 3 records that bound with the measurement that justifies the
+matcher's shape. The registry carries a fifth disposition beside the four compiled classes,
+`documentation example`, for a coordinate that appears inside operator-facing prose (a refusal
+message, a generated schema header) and is never a value the program uses; it is registered rather
+than exempted, because a scanner that skipped prose would be one string concatenation away from
+skipping a real coordinate. See
+[aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) § 2.4 for
+the exact AWS inventory on both sides of the line.
+
+**Out of scope: account identity.** Which AWS account a deployment runs in is discovered at runtime
+from `sts get-caller-identity`, not pinned in config. That is a deliberate decision and not an
+oversight of this rule; a pinned account id would add a second place for the same fact to be wrong.
+
 ### Typed topology / capacity fields, the test-run inversion, and serialization
 
 The Tier-0 `prodbox.dhall` `parameters` gain typed cluster-type, host-provider, substrate,
@@ -624,7 +685,7 @@ with no such check, and `acme.eab_*` had no local-tier check on any path at all.
 **positional** pattern over `ProdboxParameters` for the same reason `validateLocalConfig` is, so a
 new section carrying a `SecretRef` is a compile error rather than a silent omission.
 
-Two honest limits on that gate:
+The honest limits on that gate, which have accumulated rather than been designed:
 
 - **It is now total over the record (Sprint `1.81`).** `validateLocalConfig` used to be a flat list
   of named checks over field accessors. It never mentioned the record, so `-Wall` had nothing to
@@ -713,6 +774,16 @@ Two honest limits on that gate:
   capacity plan is proven, the public edge is parsed, and every registered coordinate is the type its
   rule established* — not *every field is known good*.
 
+- **A decoded field is not a read field.** Decoding and validation both operate over the record's
+  declared shape, so a field that no code path consumes passes every ring and still decides nothing.
+  `cluster_topology.Eks.node_group_size` is the standing instance: it is declared in the schema,
+  decoded into the Haskell record, and read by no consumer, so an operator can author it, watch it
+  round-trip through `prodbox config generate`, and get a node group sized by a literal inside a
+  Pulumi program instead. This limit is invisible from the config surface alone — nothing about the
+  field's decode distinguishes it from one that is honoured — and it is closed only by wiring the
+  field to its consumer. Removing the field instead would change the committed Dhall wire format
+  that Sprints `1.88`-`1.90` deliberately preserved.
+
 Neither limit is a reason to distrust the config in normal operation — the generator emits sound
 values. Both are reasons not to read "decoded" or "validated" as "illegal states are
 unrepresentable". Dhall is Ring 1, and Ring 1 was never where that guarantee is delivered.
@@ -775,6 +846,20 @@ consistently by hand, not a second check.
 
 The round-trip property is correspondingly restated: `decode ∘ render` is `stampTier0Witness`, not
 `id`. Outside the witness field it remains identity, and the unit cases assert both halves.
+
+- **A decoded field is not a reached field, and one Tier-0 field proves it.**
+  `cluster_topology.Eks.node_group_size` is declared in `dhall/cluster/Schema.dhall` and in
+  `Prodbox.Cluster.Topology`, and the `FromDhall` instance reads it. Nothing else does.
+  `narrowEksTopology` — the decode-seam narrowing that gives this record its smart-constructor
+  rule — constrains only the substrate's residency and passes the size through untouched, so
+  `node_group_size = 0` decodes clean; `validateClusterTopology` checks the same substrate rule and
+  no more; and no module in `src/`, `app/`, or `test/` reads the field. The node-group sizes that
+  actually reach AWS are literals in the `aws-eks` Pulumi program. An operator can set this field,
+  watch it decode, and receive the compiled value — which is worse than having no field, because
+  the config reports success. Decoding proves well-formedness; it proves neither validation nor
+  reach, and those are three separate properties that a green `config validate` does not
+  distinguish. Disposition is scheduled in the
+  [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ## 5. Dhall imports
 
@@ -1159,6 +1244,38 @@ so the prohibition is the intended end state rather than a present-tense fact:
   generation/digest/reference; it selects one immutable Tier-2 Vault-Transit-enveloped MinIO blob.
   A blob alone is never current, and no on-disk or ConfigMap-mounted Dhall file is authoritative
   (the historical storage inversion began in Sprints `1.38` / `1.42`; see §0 and §1a).
+
+- A compiled default for an AWS-namespace value that two correct deployments could differ on. The
+  prohibition covers every form the default can take — a Haskell constant, a `defaultConfigFile`
+  seed, the generated-schema default that seed propagates into, or a literal inside a checked-in
+  Pulumi program — because all four produce the same outcome: a value in force that nobody chose,
+  and a fail-closed rule that consequently cannot fire. The four compiled-by-reason classes in § 0
+  (protocol-fixed, not-AWS, prodbox-chosen identity, regression fixture) are **not exceptions to
+  this rule**; they are values the rule never reached, and each must say at its definition site
+  which class it is in. The sharp case is the seed: a pre-filled field in the operator's own
+  generated Dhall is the hardest compiled default to see, and the easiest to defend as authored.
+- A stack-program input the operator cannot author. A provisioning input fetched at run time from a
+  third-party endpoint, inferred from ambient host state, or replaced by a placeholder on one code
+  path is not configuration — no operator can state it, no config records what was chosen, and no
+  later run can be compared with an earlier one. Every non-secret input to a checked-in
+  infrastructure program comes from validated Tier-0 Dhall and fails closed when absent.
+
+## Intent Ownership
+
+This SSoT owns the prodbox configuration-sourcing intention: which values a binary may know before
+an operator speaks, which it must be told, and what a value's tier says about who may read it.
+
+- Owned statement: every value a `prodbox` binary needs is either compiled for exactly one of four
+  stated reasons — protocol-fixed, not-AWS, prodbox-chosen identity, or compiled regression fixture
+  — or operator-supplied Tier-0 Dhall that fails closed when absent. There is no third state, and a
+  seeded non-empty default is a compiled constant regardless of the file it appears in.
+- Linked dependents: `src/Prodbox/Settings.hs` (`defaultConfigFile`, the coordinate refusals, and
+  the canonical Tier-0 renderer), `src/Prodbox/Config/Tier0.hs`, `src/Prodbox/Cluster/Topology.hs`,
+  `dhall/cluster/Schema.dhall`, `src/Prodbox/CheckCode.hs` (`checkAwsCoordinateLiterals`, the
+  register-or-fail AWS-coordinate scanner), and the sibling doctrines
+  [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md),
+  [code_quality.md](./code_quality.md), and
+  [cluster_topology_doctrine.md](./cluster_topology_doctrine.md).
 
 ## 11. Cross-references
 

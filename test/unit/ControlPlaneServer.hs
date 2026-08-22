@@ -557,13 +557,13 @@ fixturePulumiCheckpointHandler =
           pure (PulumiCheckpointPairUnobservable "fixture unavailable")
       , publishRegisteredPulumiCheckpoint = \_callerSlot _ _ _ ->
           pure (PulumiCheckpointPublicationUnavailable "fixture unavailable")
-      , retireRegisteredPulumiCheckpoint = \_callerSlot _ _ ->
+      , retireRegisteredPulumiCheckpoint = \_callerSlot _ _ _ ->
           pure (PulumiCheckpointRetirementUnavailable "fixture unavailable")
       , restoreRegisteredPulumiCheckpointPrimary = \_callerSlot _ _ _ ->
           pure (PulumiCheckpointRestoreUnavailable "fixture unavailable")
       , readBackRegisteredPulumiCheckpointRestore = \_callerSlot _ _ ->
           pure (PulumiCheckpointRestoreReadBackUnavailable "fixture unavailable")
-      , attemptRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ _ ->
+      , attemptRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ _ _ ->
           pure (PulumiCheckpointRetirementAttemptUnavailable "fixture unavailable")
       , readBackRegisteredPulumiCheckpointRetirement = \_callerSlot _ _ ->
           pure (PulumiCheckpointRetirementReadBackUnavailable "fixture unavailable")

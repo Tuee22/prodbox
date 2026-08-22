@@ -165,6 +165,9 @@ registeredInterpreter environment =
         pure (Left "EKS present destroy must use AwsStackReaderClient")
     , awsRegisteredTargetPresentEksDestroyBoundary =
         awsEksRegisteredTargetDestroyBoundary (destroyInterpreter environment)
+    , awsRegisteredTargetDns01ChallengeOwnerDeleteBoundary =
+        refusingDns01ChallengeOwnerDeleteBoundary
+          "fixture has no Kubernetes access"
     }
 
 destroyInterpreter
@@ -214,22 +217,7 @@ providerBoundary environment =
 
 drainInterpreter :: EksDrainInterpreter DestroyEffects
 drainInterpreter =
-  mkEksDrainInterpreter
-    (pure currentEpoch)
-    ( \_ ->
-        pure
-          ( EksDrainSessionAcquisitionRefused
-              (ObservationFailure "fresh destroy uses its continuation boundary")
-          )
-    )
-    ( mkEksDrainClientBoundary $ \_ consume ->
-        consume
-          ( Left
-              ( EksDrainClientAccessRefused
-                  (ObservationFailure "fresh destroy uses its continuation boundary")
-              )
-          )
-    )
+  mkEksDrainInterpreter (pure currentEpoch)
 
 sessionBoundary
   :: FakeEnvironment -> EksDrainCommitSelectionBoundary DestroyEffects

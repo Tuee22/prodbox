@@ -11,7 +11,9 @@ import Data.Either (isLeft, isRight)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Prodbox.Lifecycle.AwsInventory
+import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.Registry
@@ -27,10 +29,12 @@ lifecycleTeardownRegistrySuite = do
                    , (AwsEksSubzoneKey, Just PerRun, Stack)
                    , (AwsTestKey, Just PerRun, Stack)
                    , (AwsEbsPerRunTestKey, Just PerRun, VolumeFamily)
+                   , (AwsDnsValidationZoneKey, Just PerRun, DnsZoneFamily)
+                   , (AwsDns01ChallengeRecordKey, Just PerRun, DnsRecordFamily)
                    , (AwsEbsProductionRetainedKey, Just LongLived, VolumeFamily)
                    ]
       map registeredIdentityAuthority lifecycleRegistry
-        `shouldBe` replicate 6 LinuxRke2LifecycleAuthority
+        `shouldBe` replicate 8 LinuxRke2LifecycleAuthority
       lifecycleRegistryValidation `shouldBe` Right ()
 
     it "keeps the two EBS families on distinct exact coordinates and fixed classes" $ do
@@ -69,10 +73,14 @@ lifecycleTeardownRegistrySuite = do
                    , AwsEksSubzoneKey
                    , AwsTestKey
                    , AwsEbsPerRunTestKey
+                   , AwsDnsValidationZoneKey
+                   , AwsDns01ChallengeRecordKey
                    , LocalLinuxRke2Key
                    ]
       map cleanupTargetLifecycleClass (cleanupTargetsForSurface CascadeSurface)
         `shouldBe` [ Just PerRun
+                   , Just PerRun
+                   , Just PerRun
                    , Just PerRun
                    , Just PerRun
                    , Just PerRun
@@ -90,6 +98,23 @@ lifecycleTeardownRegistrySuite = do
         `shouldSatisfy` isLeft
       projectCleanupTarget ExplicitLongLivedSurface (mustIdentity AwsEbsProductionRetainedKey)
         `shouldSatisfy` isRight
+
+  describe "Sprint 7.36 the observation scope names the run's DNS zone" $ do
+    it "defaults to no zone and carries one only when minted with it" $ do
+      -- Account and region already travel on the scope because a registered
+      -- family's coordinate is incomplete without them. A registered DNS
+      -- \*record* family is incomplete without a zone for the same reason, and
+      -- the zone is the run's retained zone rather than a static registry fact.
+      evidenceAwsDnsZone cascadeScope `shouldBe` Nothing
+      evidenceAwsDnsZone cascadeScopeWithZone `shouldBe` Just challengeZone
+
+    it "differs from the zoneless scope in the zone and nothing else" $ do
+      -- The scope is the durable binding a request and its response share, so
+      -- adding a zone must not silently change the surface, revision, run
+      -- scope, foundation, AWS scope, or operation the two agree on.
+      map ($ cascadeScopeWithZone) scopeFacets
+        `shouldBe` map ($ cascadeScope) scopeFacets
+      cascadeScopeWithZone `shouldNotBe` cascadeScope
 
   describe "Sprint 4.84 complete exact observation set" $ do
     it "admits one correctly bound observation for every selected key" $ do
@@ -333,6 +358,7 @@ surfaceTable =
   , (AwsEksSubzoneKey, [Cascade, ExplicitPerRun, TotalDecommission])
   , (AwsTestKey, [Cascade, ExplicitPerRun, TotalDecommission])
   , (AwsEbsPerRunTestKey, [Cascade, ExplicitPerRun, TotalDecommission])
+  , (AwsDns01ChallengeRecordKey, [Cascade, ExplicitPerRun, TotalDecommission])
   , (AwsEbsProductionRetainedKey, [ExplicitLongLived, TotalDecommission])
   ]
 
@@ -348,6 +374,14 @@ foundation = LinuxRke2FoundationId "home-linux-rke2"
 awsScope :: AwsScope
 awsScope = AwsScope (AwsAccountId "111122223333") (AwsRegion "ca-central-1")
 
+challengeZone :: HostedZoneId
+challengeZone = mustRightText (mkHostedZoneId "Z0123456789ABCDEFGHIJ")
+
+mustRightText :: (Show err) => Either err value -> value
+mustRightText result = case result of
+  Right value -> value
+  Left err -> error ("expected Right, got " <> show err)
+
 cascadeScope :: ObservationEvidenceScope
 cascadeScope =
   mkObservationEvidenceScope
@@ -357,6 +391,31 @@ cascadeScope =
     foundation
     (Just awsScope)
     ReconcileDesiredAbsent
+
+cascadeScopeWithZone :: ObservationEvidenceScope
+cascadeScopeWithZone =
+  mkObservationEvidenceScopeWithDnsZone
+    Cascade
+    lifecycleRegistryRevision
+    runScope
+    foundation
+    (Just awsScope)
+    challengeZone
+    ReconcileDesiredAbsent
+
+-- | Everything about a scope other than its DNS zone, as comparable text.
+scopeFacets :: [ObservationEvidenceScope -> Text]
+scopeFacets =
+  [ renderText . evidenceCleanupSurface
+  , renderText . evidenceRegistryRevision
+  , renderText . evidenceDurableRunScope
+  , renderText . evidenceLinuxRke2Foundation
+  , renderText . evidenceAwsScope
+  , renderText . evidenceLifecycleOperation
+  ]
+ where
+  renderText :: (Show value) => value -> Text
+  renderText = Text.pack . show
 
 scopeWithRevision :: RegistryRevision -> ObservationEvidenceScope
 scopeWithRevision revision =

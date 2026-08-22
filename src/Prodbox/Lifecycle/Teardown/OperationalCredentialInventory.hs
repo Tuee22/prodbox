@@ -157,6 +157,12 @@ data OperationalCredentialConsumer
   | TestEbsObserveConsumer
   | EksClusterIdentityObserveConsumer
   | ProviderAwsScopeObserveConsumer
+  | ValidationHostedZoneObserveConsumer
+  | ValidationHostedZoneReapConsumer
+  | RetainedEbsObserveConsumer
+  | RetainedEbsReapConsumer
+  | OwnedResourceTagObserveConsumer
+  | Dns01ChallengeRecordObserveConsumer
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 operationalCredentialConsumerForIntent
@@ -175,6 +181,10 @@ operationalCredentialConsumerForIntent intent = case intent of
   ObservePublicARecord {} -> PublicARecordObserveConsumer
   ReconcilePublicARecord {} -> PublicARecordReconcileConsumer
   ReapTestEbsVolumes {} -> TestEbsReapConsumer
+  ObserveValidationHostedZones {} -> ValidationHostedZoneObserveConsumer
+  ReapValidationHostedZones {} -> ValidationHostedZoneReapConsumer
+  ObserveRetainedEbsVolumes {} -> RetainedEbsObserveConsumer
+  ReapRetainedEbsVolumes {} -> RetainedEbsReapConsumer
   ObserveSpotPrice {} -> SpotPriceObserveConsumer
   ObserveOperationalIdentity -> OperationalIdentityObserveConsumer
   ObserveProviderReadiness {} -> ProviderReadinessObserveConsumer
@@ -182,6 +192,8 @@ operationalCredentialConsumerForIntent intent = case intent of
   ObserveTestEbsVolumes {} -> TestEbsObserveConsumer
   ObserveEksClusterIdentity {} -> EksClusterIdentityObserveConsumer
   ObserveProviderAwsScope -> ProviderAwsScopeObserveConsumer
+  ObserveOwnedResourceTags {} -> OwnedResourceTagObserveConsumer
+  ObserveDns01ChallengeRecords {} -> Dns01ChallengeRecordObserveConsumer
 
 operationalCredentialInventoryConsumers
   :: OperationalCredentialInventory -> [OperationalCredentialConsumer]

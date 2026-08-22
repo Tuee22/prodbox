@@ -228,6 +228,8 @@ digestFor kind = "sha256:" <> Text.replicate 64 (Text.singleton (digestSeed kind
 digestSeed :: RetainedArtifactKind -> Char
 digestSeed kind = case kind of
   RetainedSubstrateInstaller -> '1'
+  RetainedSubstrateReleaseTarball -> '6'
+  RetainedSubstrateChecksum -> '7'
   RetainedSubstrateSystemImages -> '2'
   RetainedObjectStoreImage -> '3'
   RetainedSecretStoreImage -> '4'

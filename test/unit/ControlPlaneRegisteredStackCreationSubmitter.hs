@@ -14,8 +14,11 @@ module ControlPlaneRegisteredStackCreationSubmitter
 where
 
 import Codec.Serialise (deserialiseOrFail, serialise)
+import Data.ByteString.Lazy qualified as LazyByteString
+import Data.Word (Word8)
 import Prodbox.ControlPlane.AuthorityProviderEndpoint
-  ( ProviderDispatchPayload (..)
+  ( ProviderDispatchLane (ProviderAdmitAndExecute, ProviderAdmitOnly)
+  , ProviderDispatchPayload (..)
   , ProviderDispatchResponse (..)
   , providerDispatchFormatVersion
   )
@@ -84,6 +87,36 @@ controlPlaneRegisteredStackCreationSubmitterSuite =
 
       it "carries a format version on the request, so a shape change refuses" $
         providerDispatchVersion samplePayload `shouldBe` providerDispatchFormatVersion
+
+    -- Sprint 7.36. Admission and execution were one route call, so the
+    -- OperationId the lifecycle generation binds did not exist until the create
+    -- had already run: the generation could only be committed after the stack
+    -- existed, and an Authority unreachable in between left a stack whose cycle
+    -- no later cleanup run could name. The lane makes the admitted operation
+    -- reachable before the effect.
+    describe "the admit-only lane" $ do
+      it "round-trips an admission that names an operation and no evidence" $
+        roundTrip (ProviderDispatchAdmitted admittedOperation)
+          `shouldBe` Right (ProviderDispatchAdmitted admittedOperation)
+
+      -- The new arm is appended last, so every response constructor that
+      -- existed before keeps its Serialise index and a reader written against
+      -- the older shape still decodes them. Frozen bytes are what makes that a
+      -- measurement rather than an intention: reordering the sum changes them.
+      it "leaves the earlier response constructors at their frozen indices" $ do
+        encodedOctets (ProviderDispatchRefused "no") `shouldBe` frozenRefusedOctets
+        encodedOctets (ProviderDispatchUnavailable "down")
+          `shouldBe` frozenUnavailableOctets
+
+      -- The handler decides on a stated value rather than on a default.
+      it "carries the lane on the request" $ do
+        providerDispatchLane samplePayload `shouldBe` ProviderAdmitAndExecute
+        providerDispatchLane admitOnlyPayload `shouldBe` ProviderAdmitOnly
+
+      -- The two lanes are different requests, so they cannot share a retained
+      -- admission digest by accident.
+      it "distinguishes the two lanes in the encoded request" $
+        serialise samplePayload `shouldNotBe` serialise admitOnlyPayload
 
     describe "the creation scope" $ do
       -- The foundation is part of the run-invariant generation *key*, so a
@@ -209,7 +242,23 @@ samplePayload =
     , providerDispatchSubmissionKey = "submission-key"
     , providerDispatchIntent = ObserveProviderAwsScope
     , providerDispatchCleanupOwner = ProviderOperationUnownedByCleanupRun
+    , providerDispatchLane = ProviderAdmitAndExecute
     }
+
+admitOnlyPayload :: ProviderDispatchPayload
+admitOnlyPayload = samplePayload {providerDispatchLane = ProviderAdmitOnly}
+
+-- | The exact encoded octets of one response, as a value a test can freeze.
+encodedOctets :: ProviderDispatchResponse -> [Word8]
+encodedOctets = LazyByteString.unpack . serialise
+
+-- | Frozen before Sprint 7.36 appended 'ProviderDispatchAdmitted'.
+frozenRefusedOctets :: [Word8]
+frozenRefusedOctets = [130, 2, 98, 110, 111]
+
+-- | Frozen before Sprint 7.36 appended 'ProviderDispatchAdmitted'.
+frozenUnavailableOctets :: [Word8]
+frozenUnavailableOctets = [130, 3, 100, 100, 111, 119, 110]
 
 admittedOperation :: OperationId
 admittedOperation =

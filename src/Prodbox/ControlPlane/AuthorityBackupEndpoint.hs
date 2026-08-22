@@ -63,10 +63,15 @@ import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 -- and a class the store could not name refused every copy of that class at
 -- run time instead of failing to compile.  Enumerating the class is what makes
 -- the gap measurable.
+-- Sprint 4.86 appends 'AuthorityCleanupReportBlob'.  The constructor is added
+-- last because the generic sum encoding tags constructors by declaration
+-- index, so appending is byte-compatible with every retained object already
+-- written; re-ordering would make them undecodable.
 data AuthorityBackupBlobClass
   = AuthorityAggregateEnvelope
   | AuthorityCheckpointBlob
   | AuthorityConfigBlob
+  | AuthorityCleanupReportBlob
   deriving stock (Bounded, Enum, Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -191,6 +196,11 @@ validateAuthorityBackupCiphertextForClass blobClass =
     AuthorityAggregateEnvelope -> authorityBackupMaximumAggregateCiphertextBytes
     AuthorityCheckpointBlob -> authorityBackupMaximumCiphertextBytes
     AuthorityConfigBlob -> 8 * 1024 * 1024
+    -- A pre-uninstall cleanup report enumerates one run's resources and their
+    -- exact absence observations.  It is the smallest class here, and the
+    -- bound is deliberately its own rather than shared: a report that grew to
+    -- config size would mean the run enumerated something it should not.
+    AuthorityCleanupReportBlob -> 2 * 1024 * 1024
 
 validateCiphertextBytes :: Int -> ByteString -> Either Text ()
 validateCiphertextBytes maximumBytes bytes

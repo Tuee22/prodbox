@@ -350,6 +350,9 @@ interpreterFor environment =
     , awsRegisteredTargetPresentEksDestroyBoundary =
         mkAwsEksPresentDestroyBoundary $ \_ _ _ ->
           pure (Left AwsRegisteredTargetEksDrainProofRequired)
+    , awsRegisteredTargetDns01ChallengeOwnerDeleteBoundary =
+        refusingDns01ChallengeOwnerDeleteBoundary
+          "fixture has no Kubernetes access"
     }
 
 providerResponse

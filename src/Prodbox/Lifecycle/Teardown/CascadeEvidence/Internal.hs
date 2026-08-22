@@ -2,7 +2,10 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 -- | Pure proof boundary around the destructive half of cascade teardown.
 -- Provider absence, credential disposition, the retained-set audit, the
@@ -32,6 +35,9 @@ module Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
   , CascadeTerminalAuditEvidence
   , cascadeAuditScope
   , mkCascadeTerminalAuditEvidence
+  , CascadeCapabilityCustodyEvidence
+  , cascadeExpectedCustodialCapabilities
+  , mkCascadeCapabilityCustodyEvidence
   , CascadePreUninstallReportEvidence
   , mkCascadePreUninstallReportEvidence
   , LocalCompletionPermit
@@ -44,6 +50,7 @@ module Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
   , readyToUninstallPermitId
   , readyToUninstallOperationReferences
   , mkReadyToUninstallEvidence
+  , requireCascadeConvergenceBinding
   , ReadyToUninstallBindingObservation
   , readyBindingObservationRunId
   , readyBindingObservationGraphDigest
@@ -61,6 +68,12 @@ module Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
   , LocalUninstallEvidence
   , localUninstallAbsenceEvidence
   , mkLocalUninstallEvidence
+  , mkLocalOnlyUninstallEvidence
+  , LocalOnlyProofBinding
+  , LocalOnlyCompleteEvidence
+  , localOnlyCompleteRunId
+  , localOnlyCompleteGraphDigest
+  , mkLocalOnlyCompleteEvidence
   , CascadeCompleteEvidence
   , cascadeCompleteRunId
   , cascadeCompleteGraphDigest
@@ -80,6 +93,15 @@ module Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
   , cascadeEvidenceRegressionCompletionRefused
   , cascadeEvidenceRegressionDurableReadyCanonical
   , cascadeEvidenceRegressionDurableReadyCorruptionRefused
+  , cascadeEvidenceRegressionLocalOnlyChainCloses
+  , cascadeEvidenceRegressionLocalOnlyAwsScopeUncompilable
+  , cascadeEvidenceRegressionLocalOnlyReceiptRefused
+  , cascadeEvidenceRegressionLocalOnlyAbsenceRefused
+  , cascadeEvidenceRegressionBindingGeneralisationPreserving
+  , cascadeEvidenceRegressionCustodyLostRefused
+  , cascadeEvidenceRegressionCustodyUnobservableRefused
+  , cascadeEvidenceRegressionCustodyIncompleteRefused
+  , cascadeEvidenceRegressionCustodyForeignBindingRefused
   , withFixedCascadeEvidenceFixtureInternal
   , withCascadeEvidenceFixtureForRunInternal
   , withCascadePreUninstallInputsInternal
@@ -121,6 +143,15 @@ import Prodbox.Lifecycle.CleanupRun
   , mkCleanupOwnerId
   , mkCleanupRunId
   , newCleanupRun
+  )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal
+  ( CapabilityLoss (CapabilityLoss)
+  , CheckpointCustody (..)
+  , checkpointCustodyCapability
+  , registeredCheckpointCapabilities
+  )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CustodialCapability (CheckpointCapability)
   )
 import Prodbox.Lifecycle.Teardown.Execution
 import Prodbox.Lifecycle.Teardown.Graph
@@ -226,6 +257,7 @@ data CascadeEvidenceComponent
   = CascadeAbsenceComponent
   | CascadeCredentialDispositionComponent
   | CascadeTerminalAuditComponent
+  | CascadeCapabilityCustodyComponent
   | CascadePreUninstallReportComponent
   | CascadeLocalCompletionPermitComponent
   deriving (Eq, Show)
@@ -267,6 +299,12 @@ data CascadeEvidenceError
   | CascadeTerminalAuditFoundEscapes !(NonEmpty AwsResource)
   | CascadeTerminalAuditUnobservable !(NonEmpty ObservationFailure)
   | CascadeTerminalAuditInventoryScopeMismatch !AwsScope !AwsScope
+  | CascadeCustodyAnswerSetMismatch
+      ![CustodialCapability]
+      ![CustodialCapability]
+  | CascadeCustodyCapabilityLost !(NonEmpty CapabilityLoss)
+  | CascadeCustodyCapabilityUnobservable
+      !(NonEmpty (CustodialCapability, Text))
   | CascadeReceiptKindMismatch !DurableReceiptKind !DurableReceiptKind
   | CascadeReceiptScopeMismatch
       !DurableReceiptKind
@@ -290,6 +328,7 @@ data CascadeEvidenceError
   | CascadePermitOperationReferencesMismatch
       !CascadeLocalOperationReferences
       !CascadeLocalOperationReferences
+  | CascadeLocalOnlyAwsScopePresent
   | CascadeEvidenceBindingMismatch !CascadeEvidenceComponent
   | CascadeReadyReportDigestMismatch !CascadeReportDigest !CascadeReportDigest
   | CascadeReadyBindingEncodedTooLarge !Int !Int
@@ -319,12 +358,29 @@ data CascadeEvidenceError
       !CascadeReportDigest
   deriving (Eq, Show)
 
-data CascadeProofBinding = CascadeProofBinding
+-- | What a compiled program's proofs are bound to, indexed by the surface that
+-- compiled it.
+--
+-- Sprint 4.89 generalised this off its cascade-only index. The three identities
+-- were never cascade-specific; only the AWS-scope rule is, and that rule is read
+-- from the surface witness the compiler already uses. Keeping two structurally
+-- identical bindings validated by opposite rules would have made the local-only
+-- surface's proof a second implementation of the cascade's, which is how the two
+-- drift.
+data CleanupProofBinding (surface :: CleanupSurface) = CleanupProofBinding
   { internalCascadeBindingRunId :: !CleanupRunId
   , internalCascadeBindingGraphDigest :: !CleanupDigest
   , internalCascadeBindingScope :: !ObservationEvidenceScope
   }
   deriving (Eq, Show)
+
+-- | The cascade instantiation, byte-identical to what it was before the
+-- generalisation.
+type CascadeProofBinding = CleanupProofBinding 'Cascade
+
+-- | The local-only instantiation. It carries the same three identities and is
+-- refused by the opposite AWS-scope rule.
+type LocalOnlyProofBinding = CleanupProofBinding 'LocalOnly
 
 data CascadeAbsenceEvidence = CascadeAbsenceEvidence !CascadeProofBinding
   deriving (Eq, Show)
@@ -459,6 +515,71 @@ mkCascadeTerminalAuditEvidence catalog compiled observation = do
     TerminalAuditUnobservable _ failures ->
       Left (CascadeTerminalAuditUnobservable failures)
 
+-- | Sprint 4.89: every custodial capability this cascade run holds is still
+-- held.
+--
+-- Readiness is what admits local RKE2 uninstall, and the uninstall destroys the
+-- retained store the checkpoints live in.  A run that has already lost one of
+-- those checkpoints cannot name the resources it reached, so destroying the
+-- store under that state is precisely the event that stranded two AWS
+-- resources.  Custody is therefore a /component/ of the readiness composition
+-- rather than a warning printed beside it: a run holding a lost capability has
+-- no value to pass, so it cannot compose readiness at all.
+--
+-- The three convergence evidences say the resources are gone.  This one says
+-- the run can still prove that about them, which is a different question and is
+-- unanswered by all three.
+data CascadeCapabilityCustodyEvidence
+  = CascadeCapabilityCustodyEvidence !CascadeProofBinding
+  deriving (Eq, Show)
+
+-- | The capabilities a compiled cascade run holds, derived from its own
+-- registered stack targets rather than authored.
+--
+-- A run proves absence for the registered targets its program names; the
+-- checkpoint of every stack among them is a capability that run holds, because
+-- holding it is what made those resources destroyable.  Deriving the set from
+-- the program keeps a run from answering the custody question for a stack it
+-- never touched, and keeps a stack the program does touch from going
+-- unanswered.
+cascadeExpectedCustodialCapabilities
+  :: CompiledDesiredAbsenceProgram 'Cascade -> [CustodialCapability]
+cascadeExpectedCustodialCapabilities compiled =
+  [ CheckpointCapability key
+  | key <- cascadeExpectedAbsenceKeys compiled
+  , key `elem` registeredCheckpointCapabilities
+  ]
+
+-- | Admit a custody answer set for one compiled cascade run.
+--
+-- Refuses an answer set that is not exactly the derived capability set — an
+-- unanswered capability is not a held one, and an answer about a foreign
+-- capability is about another run — then refuses any lost capability and any
+-- capability whose custody could not be observed.  A corrupt checkpoint is
+-- unobservable rather than lost, and it refuses too: readiness may not be
+-- composed over a capability nobody could answer for.
+mkCascadeCapabilityCustodyEvidence
+  :: CompiledDesiredAbsenceProgram 'Cascade
+  -> [CheckpointCustody]
+  -> Either CascadeEvidenceError CascadeCapabilityCustodyEvidence
+mkCascadeCapabilityCustodyEvidence compiled answers = do
+  binding <- cascadeProofBinding compiled
+  let expected = sort (nub (cascadeExpectedCustodialCapabilities compiled))
+      answered = sort (nub (map checkpointCustodyCapability answers))
+  if answered == expected
+    then Right ()
+    else Left (CascadeCustodyAnswerSetMismatch expected answered)
+  case [loss | CheckpointCustodyLost loss <- answers] of
+    [] -> Right ()
+    lost : rest -> Left (CascadeCustodyCapabilityLost (lost :| rest))
+  case [ (capability, detail)
+       | CheckpointCustodyUnobservable capability detail <- answers
+       ] of
+    [] -> Right ()
+    unobservable : rest ->
+      Left (CascadeCustodyCapabilityUnobservable (unobservable :| rest))
+  Right (CascadeCapabilityCustodyEvidence binding)
+
 data CascadePreUninstallReportEvidence = CascadePreUninstallReportEvidence
   { internalPreUninstallReportBinding :: !CascadeProofBinding
   , internalPreUninstallReportDigest :: !CascadeReportDigest
@@ -588,20 +709,27 @@ readyToUninstallOperationReferences
   :: ReadyToUninstallEvidence -> CascadeLocalOperationReferences
 readyToUninstallOperationReferences = internalReadyToUninstallOperations
 
-mkReadyToUninstallEvidence
+-- | Sprint 4.86: the three convergence evidences all bind to this compiled run.
+--
+-- It exists so the pre-uninstall report can be /rendered/ outside this module
+-- while still being admitted inside it.  A report is a durable statement that
+-- one run reached exact absence, disposed its credentials, and passed its
+-- terminal audit; rendering it from a compiled program that some other run's
+-- evidences prove would make the statement about the wrong run, and the proof
+-- bindings are the only thing that can refuse it.
+--
+-- It is deliberately the same three checks 'mkReadyToUninstallEvidence' makes
+-- and not a weaker prefix of them, so a report and the readiness composed from
+-- it cannot disagree about which run they belong to.
+requireCascadeConvergenceBinding
   :: CompiledDesiredAbsenceProgram 'Cascade
   -> CascadeAbsenceEvidence
   -> CascadeCredentialDispositionEvidence
   -> CascadeTerminalAuditEvidence
-  -> CascadePreUninstallReportEvidence
-  -> LocalCompletionPermit
-  -> Either CascadeEvidenceError ReadyToUninstallEvidence
-mkReadyToUninstallEvidence compiled absence credentials audit preUninstall permit = do
+  -> Either CascadeEvidenceError ()
+requireCascadeConvergenceBinding compiled absence credentials audit = do
   expectedBinding <- cascadeProofBinding compiled
-  requireBinding
-    CascadeAbsenceComponent
-    expectedBinding
-    (absenceBinding absence)
+  requireBinding CascadeAbsenceComponent expectedBinding (absenceBinding absence)
   requireBinding
     CascadeCredentialDispositionComponent
     expectedBinding
@@ -610,35 +738,70 @@ mkReadyToUninstallEvidence compiled absence credentials audit preUninstall permi
     CascadeTerminalAuditComponent
     expectedBinding
     (terminalAuditBinding audit)
-  requireBinding
-    CascadePreUninstallReportComponent
-    expectedBinding
-    (internalPreUninstallReportBinding preUninstall)
-  requireBinding
-    CascadeLocalCompletionPermitComponent
-    expectedBinding
-    (internalLocalCompletionPermitBinding permit)
-  let expectedReportDigest = internalPreUninstallReportDigest preUninstall
-      permitReportDigest = internalLocalCompletionPermitReportDigest permit
-  if permitReportDigest == expectedReportDigest
-    then Right ()
-    else
-      Left
-        ( CascadeReadyReportDigestMismatch
-            expectedReportDigest
-            permitReportDigest
-        )
-  Right
-    ReadyToUninstallEvidence
-      { internalReadyToUninstallFingerprint =
-          ReadyFingerprint
-            { internalReadyFingerprintBinding = expectedBinding
-            , internalReadyFingerprintReportDigest = expectedReportDigest
-            , internalReadyFingerprintPermitId = internalLocalCompletionPermitId permit
-            }
-      , internalReadyToUninstallOperations =
-          internalLocalCompletionPermitOperations permit
-      }
+
+mkReadyToUninstallEvidence
+  :: CompiledDesiredAbsenceProgram 'Cascade
+  -> CascadeAbsenceEvidence
+  -> CascadeCredentialDispositionEvidence
+  -> CascadeTerminalAuditEvidence
+  -> CascadeCapabilityCustodyEvidence
+  -> CascadePreUninstallReportEvidence
+  -> LocalCompletionPermit
+  -> Either CascadeEvidenceError ReadyToUninstallEvidence
+mkReadyToUninstallEvidence
+  compiled
+  absence
+  credentials
+  audit
+  custody
+  preUninstall
+  permit = do
+    expectedBinding <- cascadeProofBinding compiled
+    requireBinding
+      CascadeAbsenceComponent
+      expectedBinding
+      (absenceBinding absence)
+    requireBinding
+      CascadeCredentialDispositionComponent
+      expectedBinding
+      (credentialBinding credentials)
+    requireBinding
+      CascadeTerminalAuditComponent
+      expectedBinding
+      (terminalAuditBinding audit)
+    requireBinding
+      CascadeCapabilityCustodyComponent
+      expectedBinding
+      (capabilityCustodyBinding custody)
+    requireBinding
+      CascadePreUninstallReportComponent
+      expectedBinding
+      (internalPreUninstallReportBinding preUninstall)
+    requireBinding
+      CascadeLocalCompletionPermitComponent
+      expectedBinding
+      (internalLocalCompletionPermitBinding permit)
+    let expectedReportDigest = internalPreUninstallReportDigest preUninstall
+        permitReportDigest = internalLocalCompletionPermitReportDigest permit
+    if permitReportDigest == expectedReportDigest
+      then Right ()
+      else
+        Left
+          ( CascadeReadyReportDigestMismatch
+              expectedReportDigest
+              permitReportDigest
+          )
+    Right
+      ReadyToUninstallEvidence
+        { internalReadyToUninstallFingerprint =
+            ReadyFingerprint
+              { internalReadyFingerprintBinding = expectedBinding
+              , internalReadyFingerprintReportDigest = expectedReportDigest
+              , internalReadyFingerprintPermitId = internalLocalCompletionPermitId permit
+              }
+        , internalReadyToUninstallOperations =
+            internalLocalCompletionPermitOperations permit
+        }
 
 -- | Flat, secret-free representation observed at the durable boundary.  The
 -- constructor is intentionally not itself readiness evidence: only the
@@ -796,7 +959,7 @@ restoreReadyToUninstallEvidence expectedRun expectedScope durable = do
             (readyBindingObservationOperationReferences observation)
         )
   let binding =
-        CascadeProofBinding
+        CleanupProofBinding
           { internalCascadeBindingRunId = expectedRunId
           , internalCascadeBindingGraphDigest = expectedGraphDigest
           , internalCascadeBindingScope = expectedScope
@@ -1053,21 +1216,73 @@ awsAccountIdText (AwsAccountId value) = value
 awsRegionText :: AwsRegion -> Text
 awsRegionText (AwsRegion value) = value
 
-data LocalUninstallEvidence = LocalUninstallEvidence
-  { internalLocalUninstallFingerprint :: !ReadyFingerprint
-  , internalLocalUninstallAbsenceEvidence :: !AbsenceEvidence
-  }
-  deriving (Eq, Show)
+-- | The proof that a local RKE2 foundation is absent, indexed by the surface
+-- whose compiled program licensed the uninstall.
+--
+-- Sprint @4.86@ added the index, and it is load-bearing rather than
+-- descriptive.  The two surfaces reach local absence through different
+-- authorities: a cascade may uninstall only under a signed one-shot permit
+-- carried by 'ReadyToUninstallEvidence', while @cluster delete --yes@ has no
+-- AWS targets, no terminal audit, and no permit to carry.  Before the index,
+-- one type stood for both, so nothing but a caller's discipline stopped a
+-- local-only absence from being handed to 'mkCascadeCompleteEvidence' — which
+-- would have claimed a cascade converged on the strength of an observation
+-- that says nothing about AWS.  There is deliberately no conversion in either
+-- direction, and neither constructor is reachable outside this module.
+data LocalUninstallEvidence (surface :: CleanupSurface) where
+  CascadeLocalUninstallEvidence
+    :: !ReadyFingerprint
+    -> !AbsenceEvidence
+    -> LocalUninstallEvidence 'Cascade
+  LocalOnlyUninstallEvidence
+    :: !LocalOnlyProofBinding
+    -> !AbsenceEvidence
+    -> LocalUninstallEvidence 'LocalOnly
 
-localUninstallAbsenceEvidence :: LocalUninstallEvidence -> AbsenceEvidence
-localUninstallAbsenceEvidence = internalLocalUninstallAbsenceEvidence
+deriving stock instance Eq (LocalUninstallEvidence surface)
+
+deriving stock instance Show (LocalUninstallEvidence surface)
+
+localUninstallAbsenceEvidence
+  :: LocalUninstallEvidence surface -> AbsenceEvidence
+localUninstallAbsenceEvidence evidence = case evidence of
+  CascadeLocalUninstallEvidence _ absence -> absence
+  LocalOnlyUninstallEvidence _ absence -> absence
 
 mkLocalUninstallEvidence
   :: ReadyToUninstallEvidence
   -> LocalFoundationObservation
-  -> Either CascadeEvidenceError LocalUninstallEvidence
+  -> Either CascadeEvidenceError (LocalUninstallEvidence 'Cascade)
 mkLocalUninstallEvidence ready observation = do
-  let expectedScope = readyToUninstallScope ready
+  absence <-
+    localFoundationAbsence (readyToUninstallScope ready) observation
+  Right
+    ( CascadeLocalUninstallEvidence
+        (internalReadyToUninstallFingerprint ready)
+        absence
+    )
+
+-- | The same observation on the local-only surface, licensed by the compiled
+-- local-only program alone.
+mkLocalOnlyUninstallEvidence
+  :: CompiledDesiredAbsenceProgram 'LocalOnly
+  -> LocalFoundationObservation
+  -> Either CascadeEvidenceError (LocalUninstallEvidence 'LocalOnly)
+mkLocalOnlyUninstallEvidence compiled observation = do
+  binding <- localOnlyProofBinding compiled
+  absence <-
+    localFoundationAbsence (internalCascadeBindingScope binding) observation
+  Right (LocalOnlyUninstallEvidence binding absence)
+
+-- | Shared between the two surfaces: an observation of another scope is a
+-- refusal, a present foundation has not converged, and an unobservable one has
+-- said nothing.  Collapsing the last two would let an unreadable marker set
+-- read as absence.
+localFoundationAbsence
+  :: ObservationEvidenceScope
+  -> LocalFoundationObservation
+  -> Either CascadeEvidenceError AbsenceEvidence
+localFoundationAbsence expectedScope observation = do
   if localFoundationObservationScope observation == expectedScope
     then Right ()
     else
@@ -1076,16 +1291,84 @@ mkLocalUninstallEvidence ready observation = do
             expectedScope
             (localFoundationObservationScope observation)
         )
-  absence <- case localFoundationObservationResult observation of
+  case localFoundationObservationResult observation of
     LocalFoundationAbsent evidence -> Right evidence
     LocalFoundationPresent -> Left CascadeLocalFoundationStillPresent
     LocalFoundationUnobservable failure ->
       Left (CascadeLocalFoundationUnobservable failure)
-  Right
-    LocalUninstallEvidence
-      { internalLocalUninstallFingerprint = internalReadyToUninstallFingerprint ready
-      , internalLocalUninstallAbsenceEvidence = absence
-      }
+
+localOnlyProofBinding
+  :: CompiledDesiredAbsenceProgram 'LocalOnly
+  -> Either CascadeEvidenceError LocalOnlyProofBinding
+localOnlyProofBinding = cleanupProofBinding LocalOnlySurface
+
+-- | The terminal proof of a local-only teardown.
+--
+-- It is a different type from 'CascadeCompleteEvidence' and there is no
+-- conversion: the whole content of the local-only surface is that it completes
+-- /without/ claiming anything about AWS.
+data LocalOnlyCompleteEvidence
+  = LocalOnlyCompleteEvidence !LocalOnlyProofBinding !AbsenceEvidence
+  deriving (Eq, Show)
+
+localOnlyCompleteRunId :: LocalOnlyCompleteEvidence -> CleanupRunId
+localOnlyCompleteRunId (LocalOnlyCompleteEvidence binding _) =
+  internalCascadeBindingRunId binding
+
+localOnlyCompleteGraphDigest :: LocalOnlyCompleteEvidence -> CleanupDigest
+localOnlyCompleteGraphDigest (LocalOnlyCompleteEvidence binding _) =
+  internalCascadeBindingGraphDigest binding
+
+-- | The receipt is the one the local-only surface's own compiled node commits,
+-- checked against the local-only binding by the same four rules a cascade
+-- receipt goes through.  There is no permit and no report identity to compare,
+-- because the local-only surface signs neither — which is exactly why its
+-- completion cannot stand in for a cascade's.
+mkLocalOnlyCompleteEvidence
+  :: LocalUninstallEvidence 'LocalOnly
+  -> DurableReceiptObservation
+  -> Either CascadeEvidenceError LocalOnlyCompleteEvidence
+mkLocalOnlyCompleteEvidence
+  (LocalOnlyUninstallEvidence binding absence)
+  receipt = do
+    validateLocalOnlyReceipt binding LocalOnlyCompletionReceipt receipt
+    Right (LocalOnlyCompleteEvidence binding absence)
+
+validateLocalOnlyReceipt
+  :: LocalOnlyProofBinding
+  -> DurableReceiptKind
+  -> DurableReceiptObservation
+  -> Either CascadeEvidenceError ()
+validateLocalOnlyReceipt binding expectedKind receipt
+  | durableReceiptObservationKind receipt /= expectedKind =
+      Left
+        ( CascadeReceiptKindMismatch
+            expectedKind
+            (durableReceiptObservationKind receipt)
+        )
+  | durableReceiptObservationScope receipt
+      /= internalCascadeBindingScope binding =
+      Left
+        ( CascadeReceiptScopeMismatch
+            expectedKind
+            (internalCascadeBindingScope binding)
+            (durableReceiptObservationScope receipt)
+        )
+  | durableReceiptObservationGraphDigest receipt
+      /= internalCascadeBindingGraphDigest binding =
+      Left
+        ( CascadeReceiptGraphDigestMismatch
+            expectedKind
+            (internalCascadeBindingGraphDigest binding)
+            (durableReceiptObservationGraphDigest receipt)
+        )
+  | durableReceiptObservationResult receipt /= DurableReceiptObserved =
+      Left
+        ( CascadeReceiptNotObserved
+            expectedKind
+            (durableReceiptObservationResult receipt)
+        )
+  | otherwise = Right ()
 
 data CascadeCompleteEvidence = CascadeCompleteEvidence
   { internalCascadeCompleteFingerprint :: !ReadyFingerprint
@@ -1115,12 +1398,14 @@ cascadeCompletePermitId =
 
 mkCascadeCompleteEvidence
   :: ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> CascadeCompletionReceiptObservation
   -> Either CascadeEvidenceError CascadeCompleteEvidence
 mkCascadeCompleteEvidence ready localAbsence completion = do
   let fingerprint = internalReadyToUninstallFingerprint ready
-  if internalLocalUninstallFingerprint localAbsence == fingerprint
+      CascadeLocalUninstallEvidence localFingerprint localAbsenceEvidence =
+        localAbsence
+  if localFingerprint == fingerprint
     then Right ()
     else Left CascadeLocalAbsenceReadinessMismatch
   let expectedPermitId = internalReadyFingerprintPermitId fingerprint
@@ -1150,14 +1435,28 @@ mkCascadeCompleteEvidence ready localAbsence completion = do
   Right
     CascadeCompleteEvidence
       { internalCascadeCompleteFingerprint = fingerprint
-      , internalCascadeCompleteLocalAbsence =
-          internalLocalUninstallAbsenceEvidence localAbsence
+      , internalCascadeCompleteLocalAbsence = localAbsenceEvidence
       }
 
 cascadeProofBinding
   :: CompiledDesiredAbsenceProgram 'Cascade
   -> Either CascadeEvidenceError CascadeProofBinding
-cascadeProofBinding compiled
+cascadeProofBinding = cleanupProofBinding CascadeSurface
+
+-- | The binding a compiled program's proofs are bound to, for any surface.
+--
+-- The operation, registry revision, and durable run scope are checked
+-- identically on every surface — they are facts about the compiler, not about
+-- the target. The AWS scope is the one rule that differs, and it is read from
+-- the same witness the compiler consulted: a surface that requires one refuses
+-- its absence, and a surface that requires none refuses its presence, because a
+-- local-only run naming a stack has proven nothing about it by observing the
+-- host.
+cleanupProofBinding
+  :: CleanupSurfaceWitness surface
+  -> CompiledDesiredAbsenceProgram surface
+  -> Either CascadeEvidenceError (CleanupProofBinding surface)
+cleanupProofBinding surface compiled
   | evidenceLifecycleOperation scope /= ReconcileDesiredAbsent =
       Left (CascadeCompiledOperationMismatch (evidenceLifecycleOperation scope))
   | evidenceRegistryRevision scope /= lifecycleRegistryRevision =
@@ -1172,16 +1471,20 @@ cascadeProofBinding compiled
             expectedRunScope
             (evidenceDurableRunScope scope)
         )
-  | evidenceAwsScope scope == Nothing = Left CascadeCompiledAwsScopeMissing
+  | requiresAwsScope && evidenceAwsScope scope == Nothing =
+      Left CascadeCompiledAwsScopeMissing
+  | not requiresAwsScope && evidenceAwsScope scope /= Nothing =
+      Left CascadeLocalOnlyAwsScopePresent
   | otherwise =
       Right
-        CascadeProofBinding
+        CleanupProofBinding
           { internalCascadeBindingRunId = runId
           , internalCascadeBindingGraphDigest =
               cleanupGraphDigest (compiledDesiredAbsenceGraph compiled)
           , internalCascadeBindingScope = scope
           }
  where
+  requiresAwsScope = cleanupSurfaceRequiresAwsScope surface
   runId = compiledDesiredAbsenceRunId compiled
   expectedRunScope = DurableObservationRunScope (cleanupRunIdText runId)
   scope = compiledDesiredAbsenceObservationScope compiled
@@ -1283,6 +1586,10 @@ credentialBinding (CascadeCredentialDispositionEvidence binding) = binding
 terminalAuditBinding :: CascadeTerminalAuditEvidence -> CascadeProofBinding
 terminalAuditBinding (CascadeTerminalAuditEvidence binding) = binding
 
+capabilityCustodyBinding
+  :: CascadeCapabilityCustodyEvidence -> CascadeProofBinding
+capabilityCustodyBinding (CascadeCapabilityCustodyEvidence binding) = binding
+
 registryRevisionText :: RegistryRevision -> Text
 registryRevisionText (RegistryRevision revision) = revision
 
@@ -1293,7 +1600,7 @@ data FixedCascadeEvidenceFixture = FixedCascadeEvidenceFixture
   { fixedCascadeCompiled :: !(CompiledDesiredAbsenceProgram 'Cascade)
   , fixedCascadeRun :: !CleanupRun
   , fixedCascadeReady :: !ReadyToUninstallEvidence
-  , fixedCascadeLocalUninstall :: !LocalUninstallEvidence
+  , fixedCascadeLocalUninstall :: !(LocalUninstallEvidence 'Cascade)
   , fixedCascadeComplete :: !CascadeCompleteEvidence
   }
 
@@ -1301,7 +1608,7 @@ withFixedCascadeEvidenceFixtureInternal
   :: ( CompiledDesiredAbsenceProgram 'Cascade
        -> CleanupRun
        -> ReadyToUninstallEvidence
-       -> LocalUninstallEvidence
+       -> LocalUninstallEvidence 'Cascade
        -> CascadeCompleteEvidence
        -> result
      )
@@ -1314,7 +1621,7 @@ withCascadeEvidenceFixtureForRunInternal
   -> ( CompiledDesiredAbsenceProgram 'Cascade
        -> CleanupRun
        -> ReadyToUninstallEvidence
-       -> LocalUninstallEvidence
+       -> LocalUninstallEvidence 'Cascade
        -> CascadeCompleteEvidence
        -> result
      )
@@ -1346,6 +1653,7 @@ withCascadePreUninstallInputsInternal
        -> CascadeAbsenceEvidence
        -> CascadeCredentialDispositionEvidence
        -> CascadeTerminalAuditEvidence
+       -> CascadeCapabilityCustodyEvidence
        -> result
      )
   -> Either Text result
@@ -1359,6 +1667,7 @@ withCascadePreUninstallInputsInternal rawRunId consume = do
         (fixedCascadeAbsence compiled)
         (fixedCascadeCredentialsFor compiled)
         (fixedCascadeAuditFor compiled)
+        (fixedCascadeCustodyFor compiled)
     )
 
 data CascadeEvidenceRegression = CascadeEvidenceRegression
@@ -1373,6 +1682,15 @@ data CascadeEvidenceRegression = CascadeEvidenceRegression
   , cascadeEvidenceRegressionCompletionRefused :: !Bool
   , cascadeEvidenceRegressionDurableReadyCanonical :: !Bool
   , cascadeEvidenceRegressionDurableReadyCorruptionRefused :: !Bool
+  , cascadeEvidenceRegressionLocalOnlyChainCloses :: !Bool
+  , cascadeEvidenceRegressionLocalOnlyAwsScopeUncompilable :: !Bool
+  , cascadeEvidenceRegressionLocalOnlyReceiptRefused :: !Bool
+  , cascadeEvidenceRegressionLocalOnlyAbsenceRefused :: !Bool
+  , cascadeEvidenceRegressionBindingGeneralisationPreserving :: !Bool
+  , cascadeEvidenceRegressionCustodyLostRefused :: !Bool
+  , cascadeEvidenceRegressionCustodyUnobservableRefused :: !Bool
+  , cascadeEvidenceRegressionCustodyIncompleteRefused :: !Bool
+  , cascadeEvidenceRegressionCustodyForeignBindingRefused :: !Bool
   }
 
 fixedCascadeEvidenceRegression :: Either Text CascadeEvidenceRegression
@@ -1450,6 +1768,66 @@ fixedCascadeEvidenceRegression = do
           { cascadeCompletionReceipt =
               receipt CascadeCompletionReceipt DurableReceiptMissing
           }
+      custodyCapabilities = cascadeExpectedCustodialCapabilities compiled
+      custodyAnswersWithFirst answerFor = case custodyCapabilities of
+        [] -> []
+        first : rest -> answerFor first : map CheckpointCustodyHeld rest
+      lostFirst capability =
+        CheckpointCustodyLost
+          (CapabilityLoss capability "the encrypted checkpoint object is absent")
+      unobservableFirst capability =
+        CheckpointCustodyUnobservable capability "unparseable"
+      -- Sprint 4.86: the local-only surface, compiled from the same run id and
+      -- foundation with no AWS scope at all.  It is a second compiled program
+      -- rather than the cascade program re-read, because the whole content of
+      -- the surface is that it names no stack.
+      localOnlyCompiled =
+        compileDesiredAbsenceGraph
+          (compiledDesiredAbsenceRunId compiled)
+          fixedCascadeFoundation
+          Nothing
+          LocalOnlySurface
+      localOnlyScoped =
+        compileDesiredAbsenceGraph
+          (compiledDesiredAbsenceRunId compiled)
+          fixedCascadeFoundation
+          (Just fixedCascadeAwsScope)
+          LocalOnlySurface
+      localOnlyReceiptFor program result =
+        DurableReceiptObservation
+          { durableReceiptObservationKind = LocalOnlyCompletionReceipt
+          , durableReceiptObservationScope =
+              compiledDesiredAbsenceObservationScope program
+          , durableReceiptObservationGraphDigest =
+              cleanupGraphDigest (compiledDesiredAbsenceGraph program)
+          , durableReceiptObservationResult = result
+          }
+      localOnlyAbsentObservation program =
+        LocalFoundationObservation
+          { localFoundationObservationScope =
+              compiledDesiredAbsenceObservationScope program
+          , localFoundationObservationResult =
+              LocalFoundationAbsent
+                (AbsenceEvidence "local-rke2-fixed-local-only-not-found")
+          }
+      localOnlyChain = case localOnlyCompiled of
+        Left _ -> False
+        Right program ->
+          case mkLocalOnlyUninstallEvidence
+            program
+            (localOnlyAbsentObservation program) of
+            Left _ -> False
+            Right absence ->
+              case mkLocalOnlyCompleteEvidence
+                absence
+                (localOnlyReceiptFor program DurableReceiptObserved) of
+                Left _ -> False
+                Right completed ->
+                  localOnlyCompleteRunId completed
+                    == compiledDesiredAbsenceRunId compiled
+                    && localOnlyCompleteGraphDigest completed
+                      == cleanupGraphDigest
+                        (compiledDesiredAbsenceGraph program)
       durable = captureDurableReadyToUninstallBinding ready
       restored = do
         captured <- durable
@@ -1493,6 +1871,7 @@ fixedCascadeEvidenceRegression = do
                 (fixedCascadeAbsence (fixedCascadeCompiled other))
                 (fixedCascadeCredentials fixture)
                 (fixedCascadeAudit fixture)
+                (fixedCascadeCustodyFor compiled)
                 (fixedCascadePreUninstall fixture)
                 (fixedCascadePermit fixture)
             )
@@ -1516,6 +1895,121 @@ fixedCascadeEvidenceRegression = do
               (ByteString.snoc (encodeDurableReadyToUninstallBinding captured) 0) of
               Left CascadeReadyBindingNonCanonical -> True
               _ -> False
+      , -- The local-only surface closes on its own terms: an observed absence
+        -- and its own committed receipt, with no report identity and no
+        -- permit.  Handing the value it produces to `mkCascadeCompleteEvidence`
+        -- is a type error rather than a runtime refusal, which is why there is
+        -- no arm for it here.
+        cascadeEvidenceRegressionLocalOnlyChainCloses = localOnlyChain
+      , -- Measured where it is decidable: a local-only program carrying an AWS
+        -- scope does not compile at all, so no such program can reach the
+        -- binding.  The binding keeps its own AWS check anyway, because this
+        -- module must not depend on another module's invariant to know that a
+        -- local-only proof names no stack.
+        cascadeEvidenceRegressionLocalOnlyAwsScopeUncompilable =
+          case localOnlyScoped of
+            Left _ -> True
+            Right _ -> False
+      , cascadeEvidenceRegressionLocalOnlyReceiptRefused =
+          case localOnlyCompiled of
+            Left _ -> False
+            Right program ->
+              case mkLocalOnlyUninstallEvidence
+                program
+                (localOnlyAbsentObservation program) of
+                Left _ -> False
+                Right absence ->
+                  isLeftMatching
+                    isReceiptMissing
+                    ( mkLocalOnlyCompleteEvidence
+                        absence
+                        (localOnlyReceiptFor program DurableReceiptMissing)
+                    )
+      , -- Sprint 4.89: the generalisation is proven to change no existing
+        -- proof. The cascade instantiation of the surface-indexed binding is
+        -- the value the cascade-only function produced, field for field, and
+        -- the local-only instantiation is refused by the opposite AWS-scope
+        -- rule rather than by a second implementation of the same checks.
+        cascadeEvidenceRegressionBindingGeneralisationPreserving =
+          cascadeProofBinding compiled
+            == cleanupProofBinding CascadeSurface compiled
+            && fmap internalCascadeBindingRunId (cascadeProofBinding compiled)
+              == Right (compiledDesiredAbsenceRunId compiled)
+            && fmap internalCascadeBindingGraphDigest (cascadeProofBinding compiled)
+              == Right graphDigest
+            && fmap internalCascadeBindingScope (cascadeProofBinding compiled)
+              == Right scope
+            && case localOnlyScoped of
+              Left _ -> True
+              Right scopedProgram ->
+                cleanupProofBinding LocalOnlySurface scopedProgram
+                  == Left CascadeLocalOnlyAwsScopePresent
+      , cascadeEvidenceRegressionLocalOnlyAbsenceRefused =
+          case localOnlyCompiled of
+            Left _ -> False
+            Right program ->
+              mkLocalOnlyUninstallEvidence
+                program
+                LocalFoundationObservation
+                  { localFoundationObservationScope =
+                      compiledDesiredAbsenceObservationScope program
+                  , localFoundationObservationResult = LocalFoundationPresent
+                  }
+                == Left CascadeLocalFoundationStillPresent
+      , -- Sprint 4.89: a run that has lost one of the checkpoints it holds
+        -- cannot compose readiness.  Measured as the composition refusing:
+        -- there is no custody evidence to hand `mkReadyToUninstallEvidence`,
+        -- so the refusal is reached before a report identity or a permit is
+        -- involved at all.  Every other capability in the set is answered
+        -- held, so the loss is the only thing wrong.
+        cascadeEvidenceRegressionCustodyLostRefused =
+          not (null custodyCapabilities)
+            && isLeftMatching
+              isCustodyLost
+              ( mkCascadeCapabilityCustodyEvidence
+                  compiled
+                  (custodyAnswersWithFirst lostFirst)
+              )
+      , -- A corrupt checkpoint is unobservable rather than lost, and readiness
+        -- refuses it too: a capability nobody could answer for is not a held
+        -- one.  Refusing it here is the asymmetry the residue classifier
+        -- already applies, carried into the composition.
+        cascadeEvidenceRegressionCustodyUnobservableRefused =
+          isLeftMatching
+            isCustodyUnobservable
+            ( mkCascadeCapabilityCustodyEvidence
+                compiled
+                (custodyAnswersWithFirst unobservableFirst)
+            )
+      , -- An unanswered capability is not a held one.  Dropping one answer
+        -- refuses on the set rather than passing, which is what stops a run
+        -- from reaching readiness by answering only the capabilities it
+        -- happened to look at.
+        cascadeEvidenceRegressionCustodyIncompleteRefused =
+          isLeftMatching
+            isCustodyAnswerSetMismatch
+            ( mkCascadeCapabilityCustodyEvidence
+                compiled
+                (drop 1 (map CheckpointCustodyHeld custodyCapabilities))
+            )
+            && isLeftMatching
+              isCustodyAnswerSetMismatch
+              (mkCascadeCapabilityCustodyEvidence compiled [])
+      , -- Custody binds to its run like every other component: another run's
+        -- custody evidence is refused by the binding rather than accepted
+        -- because its answers happened to be held.
+        cascadeEvidenceRegressionCustodyForeignBindingRefused =
+          isLeftMatching
+            (== CascadeEvidenceBindingMismatch CascadeCapabilityCustodyComponent)
+            ( mkReadyToUninstallEvidence
+                compiled
+                (fixedCascadeAbsence compiled)
+                (fixedCascadeCredentials fixture)
+                (fixedCascadeAudit fixture)
+                (fixedCascadeCustodyFor (fixedCascadeCompiled other))
+                (fixedCascadePreUninstall fixture)
+                (fixedCascadePermit fixture)
+            )
       }
 
 fixedCascadeEvidenceFixtureFor
@@ -1541,6 +2035,7 @@ fixedCascadeEvidenceFixtureFor rawRunId foundation = do
   let absence = fixedCascadeAbsence compiled
       credentials = fixedCascadeCredentialsFor compiled
       audit = fixedCascadeAuditFor compiled
+      custody = fixedCascadeCustodyFor compiled
       preUninstall = fixedCascadePreUninstallFor compiled reportDigest
       permit = fixedCascadePermitFor compiled reportDigest permitId
   ready <-
@@ -1550,6 +2045,7 @@ fixedCascadeEvidenceFixtureFor rawRunId foundation = do
           absence
           credentials
           audit
+          custody
           preUninstall
           permit
       )
@@ -1610,6 +2106,21 @@ fixedCascadeCredentialsFor compiled =
               compiledDesiredAbsenceObservationScope compiled
           , cascadeCredentialDispositionResult = CascadeCredentialsDisposed
           }
+    )
+
+-- | Every capability the compiled run holds, answered held.
+--
+-- Built by running the same admission the production path runs, over the same
+-- derived capability set, so a change to what a cascade holds moves the fixture
+-- rather than leaving it as an authored constant.
+fixedCascadeCustodyFor
+  :: CompiledDesiredAbsenceProgram 'Cascade
+  -> CascadeCapabilityCustodyEvidence
+fixedCascadeCustodyFor compiled =
+  mustRightInternal
+    ( mkCascadeCapabilityCustodyEvidence
+        compiled
+        (map CheckpointCustodyHeld (cascadeExpectedCustodialCapabilities compiled))
     )
 
 fixedCascadeAudit :: FixedCascadeEvidenceFixture -> CascadeTerminalAuditEvidence
@@ -1808,6 +2319,21 @@ isCredentialsRemain err = case err of
 isAuditUnobservable :: CascadeEvidenceError -> Bool
 isAuditUnobservable err = case err of
   CascadeTerminalAuditUnobservable {} -> True
+  _ -> False
+
+isCustodyLost :: CascadeEvidenceError -> Bool
+isCustodyLost err = case err of
+  CascadeCustodyCapabilityLost _ -> True
+  _ -> False
+
+isCustodyUnobservable :: CascadeEvidenceError -> Bool
+isCustodyUnobservable err = case err of
+  CascadeCustodyCapabilityUnobservable _ -> True
+  _ -> False
+
+isCustodyAnswerSetMismatch :: CascadeEvidenceError -> Bool
+isCustodyAnswerSetMismatch err = case err of
+  CascadeCustodyAnswerSetMismatch _ _ -> True
   _ -> False
 
 isReceiptMissing :: CascadeEvidenceError -> Bool

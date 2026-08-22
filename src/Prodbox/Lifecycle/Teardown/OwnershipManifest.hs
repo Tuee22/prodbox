@@ -63,6 +63,7 @@ module Prodbox.Lifecycle.Teardown.OwnershipManifest
   , durableWriteAheadOwnershipManifestScope
   , ObservedDurableWriteAheadOwnershipManifest
   , bindObservedDurableWriteAheadOwnershipManifestForCleanup
+  , bindConfirmedLegacyAdoptionManifestForCleanup
   , DurableWriteAheadOwnershipManifestError (..)
   , maximumDurableWriteAheadOwnershipManifestBytes
   , OwnershipManifestDecisionEvidence
@@ -83,6 +84,12 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.Aws.SigV4 (hexSha256)
+import Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan
+  ( ConfirmedLegacyAdoptionPlan
+  , confirmedLegacyAdoptionPlan
+  , confirmedLegacyAdoptionPlanDigest
+  , legacyAdoptionPlanStackKey
+  )
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.OwnershipManifest.Internal
@@ -96,6 +103,7 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest.Internal
   , ObservedDurableWriteAheadOwnershipManifest
   , OwnershipManifestDigest (..)
   , OwnershipManifestPurposeValue (..)
+  , RegisteredOwnershipEdge
   , captureDurableCompleteOwnershipManifest
   , captureDurableWriteAheadOwnershipManifestInternal
   , completeOwnershipManifestDigest
@@ -105,6 +113,8 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest.Internal
   , completeOwnershipManifestScope
   , completeOwnershipManifestStackKey
   , completeOwnershipManifestVersion
+  , controllerOwnedFamilies
+  , controllerOwnedFamiliesWithoutRegisteredStack
   , durableCompleteOwnershipManifestBytes
   , durableCompleteOwnershipManifestScope
   , durableCompleteOwnershipManifestStackKey
@@ -120,7 +130,11 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest.Internal
   , observedDurableWriteAheadOwnershipManifestProvenance
   , observedDurableWriteAheadOwnershipManifestValue
   , observedDurableWriteAheadOwnershipManifestVersion
+  , ownershipEdgeResourceKey
+  , ownershipEdgeStackKey
   , ownershipManifestDigestText
+  , registeredOwnershipEdges
+  , registeredStackClusters
   )
 import Prodbox.Lifecycle.Teardown.Registry
 
@@ -134,84 +148,6 @@ data OwnershipManifestEntry = OwnershipManifestEntry
   , ownershipManifestEntryObservedIdentities :: ![ObservedResourceIdentity]
   }
   deriving (Eq, Ord, Show)
-
-data RegisteredOwnershipEdge = RegisteredOwnershipEdge
-  { internalOwnershipEdgeStackKey :: !RegisteredResourceKey
-  , internalOwnershipEdgeResourceKey :: !RegisteredResourceKey
-  }
-  deriving (Eq, Show)
-
-ownershipEdgeStackKey :: RegisteredOwnershipEdge -> RegisteredResourceKey
-ownershipEdgeStackKey = internalOwnershipEdgeStackKey
-
-ownershipEdgeResourceKey :: RegisteredOwnershipEdge -> RegisteredResourceKey
-ownershipEdgeResourceKey = internalOwnershipEdgeResourceKey
-
--- | Which registered stack's controllers own each registered resource family.
---
--- __Derived, not authored.__ This was a one-element literal naming
--- @AwsTestKey@ as the owner of the per-run test EBS family, and it was wrong.
--- That family's registered coordinate is keyed on
--- @kubernetes.io\/cluster\/aws-eks-test-cluster=owned@ — the ownership tag AWS
--- applies to volumes an EKS cluster's controllers provision — and
--- @pulumi\/aws-test\/Main.yaml@ declares no cluster at all, while
--- @pulumi\/aws-eks\/Main.yaml@ declares the cluster __and__ installs the EBS
--- CSI driver that creates them.
---
--- The consequence was not cosmetic. 'initialManifestEntries' seeds a stack's
--- write-ahead ownership manifest with its owned resources, and
--- 'projectRegisteredOwnershipEdge' is what admits a discovered resource into
--- that manifest. So the @aws-eks@ manifest could not record the EBS volumes
--- its own cluster created — the exact recovery evidence the manifest exists to
--- carry when both checkpoint copies are unusable — while the @aws-test@
--- manifest could legally adopt volumes that stack never creates.
---
--- Two registry coordinates already contain the answer, so the relation is
--- computed from them rather than restated beside them: the family names the
--- cluster that owns it, and a stack's Pulumi stack name determines the cluster
--- name its program would give an EKS cluster. A family whose cluster matches
--- no registered stack yields no edge, and @prodbox dev check@ fails on that
--- rather than letting it read as "no owner".
-registeredOwnershipEdges :: [RegisteredOwnershipEdge]
-registeredOwnershipEdges =
-  [ RegisteredOwnershipEdge stackKey resourceKey
-  | (resourceKey, ownerCluster) <- controllerOwnedFamilies
-  , (stackKey, candidateCluster) <- registeredStackClusters
-  , ownerCluster == candidateCluster
-  ]
-
--- | Every registered managed resource that declares a controller owner, with
--- the cluster name it names.
-controllerOwnedFamilies :: [(RegisteredResourceKey, Text)]
-controllerOwnedFamilies =
-  [ (managedResourceKey descriptor, ownerCluster)
-  | SomeManagedResourceDescriptor descriptor <- managedResourceRegistry
-  , Just ownerCluster <-
-      [coordinateControllerOwnerCluster (managedResourceCoordinate descriptor)]
-  ]
-
--- | Every registered stack, with the cluster name its provisioning program
--- would give an EKS cluster.
-registeredStackClusters :: [(RegisteredResourceKey, Text)]
-registeredStackClusters =
-  [ (managedResourceKey descriptor, candidateCluster)
-  | SomeManagedResourceDescriptor descriptor <- managedResourceRegistry
-  , Just candidateCluster <-
-      [coordinateProvisionedClusterName (managedResourceCoordinate descriptor)]
-  ]
-
--- | A controller-owned family whose cluster matches no registered stack.
---
--- Reported rather than silently dropped: an unmatched family has no owning
--- stack, so no write-ahead manifest may contain it and no destroy order can be
--- derived for it — which is indistinguishable, at the edge list, from a family
--- that genuinely has no controller owner.
-controllerOwnedFamiliesWithoutRegisteredStack :: [(RegisteredResourceKey, Text)]
-controllerOwnedFamiliesWithoutRegisteredStack =
-  [ family
-  | family@(_, ownerCluster) <- controllerOwnedFamilies
-  , ownerCluster `notElem` map snd registeredStackClusters
-  ]
 
 projectRegisteredOwnershipEdge
   :: RegisteredResourceKey
@@ -466,6 +402,109 @@ bindOwnershipManifestForCleanup
           planDigest
       )
 
+-- | Sprint 7.36: bind an /adopted/ manifest for cleanup.
+--
+-- 'bindOwnershipManifestForCleanup' refuses a legacy purpose outright, and that
+-- refusal is right for it: a legacy manifest is built from provider observation
+-- rather than written ahead of the create, so nothing in the write-ahead path
+-- establishes that an operator ever agreed to it. This binder is the path that
+-- does, and every additional check it makes is about that agreement.
+--
+-- The confirmed plan is the authorization. It cannot be forged from run state:
+-- 'Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan.planLegacyAdoption' produces a
+-- plan only over a complete, unambiguous observation of the closed
+-- registry-derived family, and only an admin permit naming that plan's exact
+-- digest turns it into a confirmed one. So the manifest's plan digest is checked
+-- against a value an operator confirmed rather than against one the run
+-- computed for itself.
+--
+-- Three things must agree beyond the ordinary binding checks: the manifest's
+-- purpose must be the legacy one for this surface (a write-ahead manifest has no
+-- business here, and neither does a legacy manifest adopted onto another
+-- surface), the manifest must actually carry a plan digest, and that digest must
+-- equal the confirmed plan's. A manifest with no plan digest is the case worth
+-- naming separately — it is an adoption that was never confirmed at all, which
+-- is a different failure from one confirmed against a superseded plan.
+bindConfirmedLegacyAdoptionManifestForCleanup
+  :: OwnershipManifestTarget surface
+  -> ConfirmedLegacyAdoptionPlan surface
+  -> VerifiedOwnershipManifest purpose surface
+  -> Either OwnershipManifestError (CompleteOwnershipManifest surface)
+bindConfirmedLegacyAdoptionManifestForCleanup
+  (OwnershipManifestTarget surface targetBinding)
+  confirmed
+  (VerifiedOwnershipManifestInternal purpose manifestBinding provenance version digest _ planDigest) = do
+    if manifestBindingStackKey manifestBinding == manifestBindingStackKey targetBinding
+      then Right ()
+      else
+        Left
+          ( OwnershipCleanupStackMismatch
+              (manifestBindingStackKey targetBinding)
+              (manifestBindingStackKey manifestBinding)
+          )
+    if sameDurableManifestScope (manifestBindingScope targetBinding) (manifestBindingScope manifestBinding)
+      then Right ()
+      else
+        Left
+          ( OwnershipCleanupScopeMismatch
+              (manifestBindingScope targetBinding)
+              (manifestBindingScope manifestBinding)
+          )
+    if manifestBindingCoordinateDigest manifestBinding == manifestBindingCoordinateDigest targetBinding
+      then Right ()
+      else
+        Left
+          ( OwnershipCleanupCoordinateMismatch
+              (manifestBindingCoordinateDigest targetBinding)
+              (manifestBindingCoordinateDigest manifestBinding)
+          )
+    case purpose of
+      WriteAheadOwnershipValue ->
+        Left
+          ( OwnershipManifestAdoptionPurposeRequired
+              (manifestBindingSurface targetBinding)
+          )
+      LegacyAdoptionOwnershipValue observedSurface
+        | observedSurface == manifestBindingSurface targetBinding -> Right ()
+        | otherwise ->
+            Left
+              ( OwnershipManifestLegacyCompleteUnsupported
+                  (manifestBindingSurface targetBinding)
+                  observedSurface
+              )
+    if legacyAdoptionPlanStackKey plan == manifestBindingStackKey targetBinding
+      then Right ()
+      else
+        Left
+          ( OwnershipCleanupStackMismatch
+              (manifestBindingStackKey targetBinding)
+              (legacyAdoptionPlanStackKey plan)
+          )
+    case planDigest of
+      Nothing -> Left OwnershipManifestAdoptionPlanDigestMissing
+      Just observedPlanDigest
+        | observedPlanDigest == confirmedDigest -> Right ()
+        | otherwise ->
+            Left
+              ( OwnershipManifestAdoptionPlanDigestMismatch
+                  confirmedDigest
+                  observedPlanDigest
+              )
+    Right
+      ( mkCompleteOwnershipManifestInternal
+          surface
+          (manifestBindingStackKey targetBinding)
+          (manifestBindingScope targetBinding)
+          purpose
+          provenance
+          version
+          digest
+          planDigest
+      )
+   where
+    plan = confirmedLegacyAdoptionPlan confirmed
+    confirmedDigest = confirmedLegacyAdoptionPlanDigest confirmed
+
 bindObservedDurableWriteAheadOwnershipManifestForCleanup
   :: OwnershipManifestTarget surface
   -> ObservedDurableWriteAheadOwnershipManifest
@@ -609,6 +648,20 @@ data OwnershipManifestError
       !ManagedResourceCoordinateDigest
       !ManagedResourceCoordinateDigest
   | OwnershipManifestLegacyCompleteUnsupported !CleanupSurface !CleanupSurface
+  | -- | Sprint 7.36: a write-ahead manifest reached the adoption binder. The
+    -- two provenances are not interchangeable: one is written before the create
+    -- and one is reconstructed from observation afterwards.
+    OwnershipManifestAdoptionPurposeRequired !CleanupSurface
+  | -- | An adoption manifest carrying no plan digest was never confirmed at
+    -- all, which is a different failure from one confirmed against a superseded
+    -- plan.
+    OwnershipManifestAdoptionPlanDigestMissing
+  | -- | The manifest was confirmed against a different plan. This is the case
+    -- the digest exists for: provider facts observed later are a different plan,
+    -- and the operator agreed to the earlier one.
+    OwnershipManifestAdoptionPlanDigestMismatch
+      !LegacyAdoptionPlanDigest
+      !LegacyAdoptionPlanDigest
   deriving (Eq, Show)
 
 manifestBindingFor

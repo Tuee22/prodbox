@@ -80,6 +80,12 @@ module Prodbox.CLI.Rke2
   , harborRegistryStorageBackend
   , registryConfigYaml
   , rke2InstallPresent
+  , Rke2InstallPresence (..)
+  , DeleteTerminalArm (..)
+  , selectDeleteEntryArm
+  , deleteArmIsNoInstallSuccess
+  , RetainedStateNarration (..)
+  , retainedStateNarrationFor
   , operationalAwsCredentialGateFromResult
   , runAnchoredReconcileSteps
   , runEdgeCommand
@@ -385,6 +391,10 @@ import Prodbox.Lifecycle.RegistryBackendWitness (registryBackendWitness)
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
+import Prodbox.Lifecycle.Teardown.RecoveryPlane
+  ( RecoveryPlaneFinalDisposition (RecoveryPlaneNotEstablished)
+  )
+import Prodbox.Minio.ObjectStoreTypes (minioSigningRegion)
 import Prodbox.Minio.RootCredential (minioRootPassword, minioRootUser)
 import Prodbox.PostgresPlatform
   ( patroniOperatorDeploymentName
@@ -686,9 +696,6 @@ harborRegistryStorageSecretName = "harbor-registry-s3"
 
 harborRegistryStorageBucket :: String
 harborRegistryStorageBucket = "prodbox-harbor-registry"
-
-harborRegistryStorageRegion :: String
-harborRegistryStorageRegion = "us-east-1"
 
 harborStorageUserPrefix :: String
 harborStorageUserPrefix = "prodbox-harbor-"
@@ -3045,21 +3052,102 @@ renderNativeDeletePlan repoRoot flags
 -- effects @--dry-run@ deliberately skips: the no-RKE2-install
 -- short-circuit, the inotify-limit host prep, and either the cascade
 -- reconciler (@--cascade@) or the refuse-gate default path.
+-- | Sprint 4.88: whether an RKE2 install is present, as a value rather than a
+-- bare 'Bool', so the entry table below is a total function over a named
+-- product instead of a nested @if@.
+data Rke2InstallPresence
+  = Rke2Installed
+  | Rke2NotInstalled
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+-- | Sprint 4.88: the terminal arm a @cluster delete@ invocation selects before
+-- any phase runs.
+--
+-- The no-install short-circuit used to be selected by install presence alone,
+-- so a @--cascade@ that observed nothing at all returned @ExitSuccess@ — and an
+-- operator reading exit @0@ from a cascade has been told the cascade ran. Local
+-- RKE2 absence is not per-run AWS absence, and doctrine § 5a gives the
+-- no-install success arm to the local-only mode alone.
+data DeleteTerminalArm
+  = -- | Local-only mode, nothing installed: there is genuinely nothing to
+    -- uninstall and no claim is made about anything else.
+    DeleteArmLocalOnlyNoInstall
+  | -- | Local-only mode, an install was present and was uninstalled.
+    DeleteArmLocalOnlyUninstalled
+  | -- | Cascade mode, nothing installed. The cascade could not reach the
+    -- durable cleanup namespace, so it reports what it did not establish
+    -- rather than returning success.
+    DeleteArmCascadeNoInstall
+  | -- | Cascade mode, an install was present and the phases ran.
+    DeleteArmCascadeReachedPhases
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+-- | Pure: the entry table over delete mode and install presence.
+--
+-- Exactly one arm is a no-install success, and it is selected by the local-only
+-- mode, so the cascade mode cannot reach it and cannot be given it by a later
+-- caller.
+selectDeleteEntryArm :: DeleteMode -> Rke2InstallPresence -> DeleteTerminalArm
+selectDeleteEntryArm mode presence = case (mode, presence) of
+  (DeleteModeLocalUninstall, Rke2NotInstalled) -> DeleteArmLocalOnlyNoInstall
+  (DeleteModeLocalUninstall, Rke2Installed) -> DeleteArmLocalOnlyUninstalled
+  (DeleteModeCascade, Rke2NotInstalled) -> DeleteArmCascadeNoInstall
+  (DeleteModeCascade, Rke2Installed) -> DeleteArmCascadeReachedPhases
+
+-- | Pure: whether an arm's exit status may be zero on the no-install path.
+deleteArmIsNoInstallSuccess :: DeleteTerminalArm -> Bool
+deleteArmIsNoInstallSuccess arm = case arm of
+  DeleteArmLocalOnlyNoInstall -> True
+  DeleteArmLocalOnlyUninstalled -> False
+  DeleteArmCascadeNoInstall -> False
+  DeleteArmCascadeReachedPhases -> False
+
+-- | Sprint 4.88: what a terminal arm may say about the retained root.
+--
+-- The retained-state notice is the only place the supported surface mentions
+-- the store an operator might then delete, so its licence sentence is a claim
+-- and not a convenience.
+data RetainedStateNarration
+  = -- | The run reached no delete path and observed nothing, so it says
+    -- nothing about the store either.
+    RetainedStateSilent
+  | -- | An explicit local-only uninstall, or a path carrying a completion
+    -- receipt. Only these may say the store is preserved.
+    RetainedStatePreserved
+  | -- | A path that reached a delete route without a completion receipt. It
+    -- names the store and names what this run did not observe.
+    RetainedStateUnproven
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+-- | Pure and total over the arm universe: a new arm with no narration fails to
+-- compile rather than silently rendering nothing.
+retainedStateNarrationFor :: DeleteTerminalArm -> RetainedStateNarration
+retainedStateNarrationFor arm = case arm of
+  DeleteArmLocalOnlyNoInstall -> RetainedStateSilent
+  DeleteArmLocalOnlyUninstalled -> RetainedStatePreserved
+  DeleteArmCascadeNoInstall -> RetainedStateSilent
+  -- The legacy cascade carries no completion receipt, so it may not license
+  -- retiring the store. Sprint `6.5` activates the replacement that does.
+  DeleteArmCascadeReachedPhases -> RetainedStateUnproven
+
 applyNativeDelete :: FilePath -> Rke2DeleteFlags -> IO ExitCode
 applyNativeDelete repoRoot flags = do
-  -- No RKE2 install on this host means there is nothing to delete, so
-  -- short-circuit to a no-op success BEFORE the per-run residue gate.
-  -- An unreachable in-cluster MinIO backend (the gate's fail-closed
-  -- case) is otherwise indistinguishable from "cluster already gone",
-  -- which would wrongly refuse a delete that has nothing to do. The
-  -- gate and --cascade orchestration are unchanged when a cluster
-  -- (even a stopped one) is present.
+  -- The residue gate's fail-closed case (an unreachable in-cluster MinIO
+  -- backend) is indistinguishable from "cluster already gone", which is why
+  -- install presence is read before it. What changed in Sprint 4.88 is that
+  -- presence alone no longer decides the arm: the mode does.
   present <- rke2InstallPresent
-  if not present
-    then do
+  let presence = if present then Rke2Installed else Rke2NotInstalled
+      mode =
+        if rke2DeleteCascade flags
+          then DeleteModeCascade
+          else DeleteModeLocalUninstall
+  case selectDeleteEntryArm mode presence of
+    DeleteArmLocalOnlyNoInstall -> do
       writeOutputLine noRke2ClusterMessage
       pure ExitSuccess
-    else
+    DeleteArmCascadeNoInstall -> runCascadeNoInstallRefusal
+    arm ->
       -- Raise the host inotify limits BEFORE systemd unwinds the
       -- RKE2 units during teardown, so PID 1 does not log
       -- `Failed to allocate directory watch: Too many open files`
@@ -3067,10 +3155,34 @@ applyNativeDelete repoRoot flags = do
       -- and shared with reconcile; covers both delete paths.
       runSequentially
         [ ensureHostInotifyLimits repoRoot
-        , if rke2DeleteCascade flags
-            then runNativeDeleteCascade repoRoot
-            else runNativeLocalUninstall repoRoot
+        , case arm of
+            DeleteArmCascadeReachedPhases -> runNativeDeleteCascade repoRoot
+            _ -> runNativeLocalUninstall repoRoot
         ]
+
+-- | Sprint 4.88: the cascade's no-install terminal arm.
+--
+-- It names the durable cleanup namespace it could not reach and the
+-- recovery-plane disposition it reports, and deliberately makes no statement
+-- about AWS: this run observed no stack, so it has no absence to report and no
+-- presence either.
+runCascadeNoInstallRefusal :: IO ExitCode
+runCascadeNoInstallRefusal = do
+  writeDiagnosticLine
+    ( "cluster delete --cascade reached no phase: no local RKE2 install is "
+        ++ "present, so the retained local Lifecycle Authority that owns the "
+        ++ "durable cleanup run namespace could not be reached. Recovery-plane "
+        ++ "disposition: "
+        ++ show RecoveryPlaneNotEstablished
+        ++ "."
+    )
+  writeDiagnosticLine
+    ( "This exit makes no claim about per-run AWS stacks: nothing was "
+        ++ "observed. Restore the retained local control plane and retry, or "
+        ++ "destroy a named stack directly with `prodbox aws stack <name> "
+        ++ "destroy --yes`."
+    )
+  pure (ExitFailure 1)
 
 -- | Default @prodbox cluster delete@: a PURE LOCAL UNINSTALL. It does NOT
 -- query, gate on, or destroy the per-run AWS Pulumi backend — deleting the
@@ -3087,7 +3199,7 @@ runNativeLocalUninstall repoRoot = do
     , removeCalicoEndpointStatusResidue
     , removeManagedKubeconfig
     , runHostFirewallGatewayUnrestrict defaultGatewayNodePort
-    , renderRetainedStateNotice DeleteModeLocalUninstall retainedManualPvRoot
+    , renderRetainedStateNotice DeleteArmLocalOnlyUninstalled retainedManualPvRoot
     ]
 
 -- | Sprint 4.76: which form of @prodbox cluster delete@ is running.
@@ -3313,7 +3425,7 @@ runAuthorizedDeleteCascade repoRoot cascadeSubstrate exactAnswers = do
       , removeCalicoEndpointStatusResidue
       , removeManagedKubeconfig
       , runHostFirewallGatewayUnrestrict defaultGatewayNodePort
-      , renderRetainedStateNotice DeleteModeCascade retainedManualPvRoot
+      , renderRetainedStateNotice DeleteArmCascadeReachedPhases retainedManualPvRoot
       ]
   -- Step 6: postflight cluster-tag sweep. Fail-closed since Sprint 4.76
   -- (doctrine § 6): a non-empty escapee list or an unreachable Tagging
@@ -5183,7 +5295,7 @@ data RegistryStorageBackend = RegistryStorageBackend
 harborRegistryStorageBackend :: RegistryStorageBackend
 harborRegistryStorageBackend =
   RegistryStorageBackend
-    { registryStorageBackendRegion = harborRegistryStorageRegion
+    { registryStorageBackendRegion = minioSigningRegion
     , registryStorageBackendEndpoint = minioClusterEndpoint
     , registryStorageBackendBucket = harborRegistryStorageBucket
     , registryStorageBackendSecure = False
@@ -8738,26 +8850,55 @@ removeManagedKubeconfig = do
 -- notice used to close with advice to run @--cascade@ — which a
 -- @--cascade@ run had, by then, already done. Its per-run sentence is now
 -- a total function of the mode.
-renderRetainedStateNotice :: DeleteMode -> FilePath -> IO ExitCode
-renderRetainedStateNotice mode retainedManualPvRoot = do
-  writeOutputLine "Local cluster uninstalled. Preserved host state:"
-  writeOutputLine ("  - manual PV root: " ++ retainedManualPvRoot)
-  writeOutputLine ("  - `.data/` (MinIO-backed per-run Pulumi state) is preserved")
-  writeOutputLine ("  - Vault durable PV: " ++ retainedManualPvRoot </> "vault" </> "vault" </> "0")
-  writeOutputLine (retainedStateNoticePerRunLine mode)
+-- | Sprint 4.88: the retained-state notice, rendered from the terminal arm the
+-- run reached rather than from the delete mode.
+--
+-- Only 'RetainedStatePreserved' says the store is preserved; every other arm
+-- either says nothing (it reached no delete path) or names what this run did
+-- not observe, so no exit path silently reads as permission to delete it.
+renderRetainedStateNotice :: DeleteTerminalArm -> FilePath -> IO ExitCode
+renderRetainedStateNotice arm retainedManualPvRoot = do
+  case retainedStateNarrationFor arm of
+    RetainedStateSilent -> pure ()
+    RetainedStatePreserved -> do
+      renderRetainedRootInventory retainedManualPvRoot
+      writeOutputLine (retainedStateNoticePerRunLine arm)
+    RetainedStateUnproven -> do
+      renderRetainedRootInventory retainedManualPvRoot
+      writeOutputLine (retainedStateNoticePerRunLine arm)
   -- Sprint 3.13 chunk 16: the @.prodbox-state/charts/@ chart-state root is
   -- gone; chart secrets and gateway event keys now live in k8s @Secret@s
   -- materialized by the gateway daemon. Nothing under @.prodbox-state/@
   -- is preserved by the supported lifecycle any more.
   pure ExitSuccess
 
--- | Pure: the per-run AWS sentence for each delete mode.
-retainedStateNoticePerRunLine :: DeleteMode -> String
-retainedStateNoticePerRunLine mode = case mode of
-  DeleteModeLocalUninstall ->
-    "Per-run AWS stacks (if any) were NOT destroyed by this local uninstall. To destroy them, run `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`."
-  DeleteModeCascade ->
-    "Per-run AWS stack destroys were attempted earlier in this cascade; see the per-run destroy and postflight sweep phases above for what each one reported. Any stack whose state could not be observed is still destroyable via `prodbox aws stack <name> destroy --yes` once the backend is readable."
+renderRetainedRootInventory :: FilePath -> IO ()
+renderRetainedRootInventory retainedManualPvRoot = do
+  writeOutputLine "Local cluster uninstalled. Retained host state:"
+  writeOutputLine ("  - manual PV root: " ++ retainedManualPvRoot)
+  writeOutputLine ("  - `.data/` (MinIO-backed per-run Pulumi state) is retained")
+  writeOutputLine ("  - Vault durable PV: " ++ retainedManualPvRoot </> "vault" </> "vault" </> "0")
+
+-- | Pure: the per-run AWS sentence for each terminal arm that renders one.
+--
+-- The local-only sentence is unchanged. The cascade's used to describe what its
+-- phases attempted, which reads as an account of what happened; it now states
+-- the licence it does not carry, because a run holding no completion receipt
+-- has not proven the obligations that would authorise retiring the store.
+retainedStateNoticePerRunLine :: DeleteTerminalArm -> String
+retainedStateNoticePerRunLine arm = case arm of
+  DeleteArmLocalOnlyNoInstall -> retainedStateLocalOnlyLine
+  DeleteArmLocalOnlyUninstalled -> retainedStateLocalOnlyLine
+  DeleteArmCascadeNoInstall -> retainedStateCascadeUnprovenLine
+  DeleteArmCascadeReachedPhases -> retainedStateCascadeUnprovenLine
+
+retainedStateLocalOnlyLine :: String
+retainedStateLocalOnlyLine =
+  "Per-run AWS stacks (if any) were NOT destroyed by this local uninstall. To destroy them, run `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. The retained root above is preserved by this uninstall."
+
+retainedStateCascadeUnprovenLine :: String
+retainedStateCascadeUnprovenLine =
+  "Per-run AWS stack destroys were attempted earlier in this cascade; see the per-run destroy and postflight sweep phases above for what each one reported. This cascade carries NO completion receipt, so it does not establish that the retained root above may be retired: no exit status from this route authorizes deleting it. Any stack whose state could not be observed is still destroyable via `prodbox aws stack <name> destroy --yes` once the backend is readable."
 
 reportDeleteStep :: String -> String -> IO ExitCode
 reportDeleteStep label status = do

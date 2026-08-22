@@ -384,9 +384,27 @@ transport before handoff.
 
 ## Sprint 6.5: Typed Teardown Single-Writer Cutover and Clean-Room Handoff [⏸️ Blocked]
 
-**Status**: Blocked by Sprints `4.86` and `5.36` (opened 2026-08-15).
-**Blocked by**: Sprint `4.86` for the complete replacement program and Sprint `5.36` for the
-lifecycle-kernel `TestRunner` client. Both are earlier-phase blockers permitted by Standard N.
+**Status**: Blocked by Sprints `5.36`, `7.36`, and `7.38` (opened 2026-08-15; Sprints `4.86` and
+`4.89` closed 2026-08-20 and 2026-08-21 and their entries are gone).
+**Blocked by**: Sprint `5.36` for the lifecycle-kernel `TestRunner` client, Sprint `7.36` for
+the exact AWS desired-absence adapters its convergence runs over, and Sprint `7.38` for the run's
+DNS hosted zone in the compiled program's observation scope. Sprint `4.89` closed on
+2026-08-21, so the custodial-capability disposition this sprint's uninstall node consumes is
+landed. The complete replacement program Sprint `4.86` owed landed on 2026-08-20: the non-public
+candidate entrypoint drives the total dispatcher over a durable descriptor-bound run, and this
+sprint activates it.
+**Backward dependency**: Sprints `7.36` and `7.38`. `7.36`: the single-writer cutover makes the
+compiled desired-absence program and the signed `DecommissionNode` manifest one universe, and every
+tag can only become two-sided over the exact AWS desired-absence adapters Sprint `7.36` supplies;
+performing the cutover first would activate a public writer whose convergence could not be observed,
+leaving the superseded cascade deleted and its replacement unable to prove absence. `7.38`: Sprint
+`7.36` registered the DNS01 challenge record family, whose coordinate is a record-name prefix and is
+not complete without a hosted zone, and the compiled program's observation scope has no producer for
+one — so activating the compiled cascade before `7.38` would delete the superseded writer and leave
+the replacement unable to converge on a family it is now obliged to prove absent. Both declared
+under
+[Standard N.2](../DEVELOPMENT_PLAN/development_plan_standards.md#n-phase-independence-and-execution-order);
+the queue runs `7.36` and `7.38` first.
 **Deployment qualification**: pending — clean-room/destructive evidence from the superseded
 cascade is invalid for the replacement composition.
 **Doctrine**: [Lifecycle Control-Plane Architecture § 12, “Cutover and
@@ -472,16 +490,23 @@ and remove the legacy generic/home path. The AWS adapter slot refuses as unavail
   and zero unexpected residue under one run/revision/account/region/substrate/report-digest scope.
   After qualified activation and legacy deletion, rerun the required Standard-P campaign for the
   resulting source/deployment identity before claiming the ledger row complete.
+- **Received from Sprint `4.86` on 2026-08-20 under
+  [Standard N](../DEVELOPMENT_PLAN/development_plan_standards.md#n-phase-independence-and-execution-order):
+  the installed cascade's fake traces and terminal narration.** The candidate entrypoint Sprint
+  `4.86` landed is package-private and drives no public command, so the traces its own validation
+  item asked for had no installed surface to run against. They land with the single-writer
+  activation, over the command this sprint exposes.
 - **Received from Sprint `4.85` on 2026-08-18 under
-  [Standard N](../DEVELOPMENT_PLAN/development_plan_standards.md#n-phase-independence-no-backward-blocking):
+  [Standard N](../DEVELOPMENT_PLAN/development_plan_standards.md#n-phase-independence-and-execution-order):
   total-decommission program-tag convergence.** Sprint `4.85` owns and has landed the *measurement* —
   `Prodbox.Lifecycle.Decommission.ProgramTag` names the closed semantic operation universe, both
   classifiers are total, and `validateDecommissionProgramTagParity` checks the authored claim against
   both measured images in `prodbox dev check`. What it cannot own is convergence: making every tag
   two-sided requires the compiled desired-absence program and the signed `DecommissionNode` manifest
   to become one universe, which is exactly the single-writer cutover this sprint performs over the
-  adapters Sprint `7.36` supplies. Held in Phase 4 it was a Phase-4 validation item that only a
-  Phase-6/7 composition could satisfy; it belongs here.
+  adapters Sprint `7.36` supplies — **this sprint's declared `**Backward dependency**`, recorded once
+  in the field above**. Held in Phase 4 it was a Phase-4 validation item that only a Phase-6/7
+  composition could satisfy; it belongs here.
 
 ### Validation
 
@@ -513,6 +538,14 @@ and remove the legacy generic/home path. The AWS adapter slot refuses as unavail
 9. Two consecutive home clean-room candidate cycles produce the complete artifacts, uninstall last,
    and leave only intended retained resources. These live results remain non-blocking Standard-P
    evidence and do not themselves make code-local closure contingent on infrastructure.
+10. **Received from Sprint `4.86` on 2026-08-20 under
+    [Standard N](development_plan_standards.md#n-phase-independence-and-execution-order).**
+    Installed-binary fake traces of the activated public cascade cover success, failure,
+    cancellation, response loss, restart, and terminal narration, each carrying the exact resource
+    keys, observation authorities, and `CleanupRunId`. Sprint `4.86` cannot own this: it
+    deliberately activates no public writer, so no installed command's narration exists to trace.
+    Held there it was a Phase-4 validation criterion that only this sprint's composition could
+    satisfy.
 
 ### Remaining Work
 

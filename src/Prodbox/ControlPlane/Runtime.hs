@@ -205,6 +205,10 @@ import Prodbox.ControlPlane.Capacity
   , serviceCapacityQueueCapacity
   , serviceCapacityWorkerCount
   )
+import Prodbox.ControlPlane.CascadeRetainedSlotEndpoint.Internal
+  ( cascadeRetainedSlotModelBCodec
+  , lifecycleAuthorityCascadeRetainedSlotEndpointHandlerInternal
+  )
 import Prodbox.ControlPlane.CleanupProgramDescriptorRepository.Internal
   ( cleanupProgramDescriptorModelBCodec
   , modelBCleanupProgramDescriptorRepository
@@ -433,6 +437,7 @@ import Prodbox.ControlPlane.RoleInterpreters
   , lifecycleAuthorityAdmissionAuthenticatedHandler
   , lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler
   , lifecycleAuthorityAwsStackReaderAuthenticatedHandler
+  , lifecycleAuthorityCascadeRetainedSlotAuthenticatedHandler
   , lifecycleAuthorityDecommissionAuthenticatedHandler
   , lifecycleAuthorityEksDrainIntentAuthenticatedHandler
   , lifecycleAuthorityEksDrainReadBackReceiptAuthenticatedHandler
@@ -710,6 +715,7 @@ import Prodbox.Lifecycle.Lease
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( mkProviderRevision
   , mkRegisteredProviderResources
+  , productionRegisteredProviderResources
   )
 import Prodbox.Lifecycle.PulumiCheckpoint
   ( canonicalPulumiCheckpointDigest
@@ -1391,6 +1397,14 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
               lifecycleAuthorityLocalRke2HostObservationEndpointHandlerInternal
                 localRke2HostObservationRepository
                 cleanupRunProvider
+            cascadeRetainedSlotHandler =
+              lifecycleAuthorityCascadeRetainedSlotEndpointHandlerInternal
+                authority
+                ( inClusterAuthorityModelBCasAdapter
+                    store
+                    authority
+                    cascadeRetainedSlotModelBCodec
+                )
             baseAuthenticatedHandler =
               lifecycleAuthorityAdmissionAuthenticatedHandler
                 controlPlaneMaximumBodyBytes
@@ -1692,7 +1706,10 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                                       ownershipManifestRepository
                                       ( lifecycleAuthorityLocalRke2HostObservationAuthenticatedHandler
                                           localRke2HostObservationHandler
-                                          baseAuthenticatedHandler
+                                          ( lifecycleAuthorityCascadeRetainedSlotAuthenticatedHandler
+                                              cascadeRetainedSlotHandler
+                                              baseAuthenticatedHandler
+                                          )
                                       )
                                   )
                               )
@@ -2806,24 +2823,7 @@ providerWorkerRuntimeHandler vaultSession clusterId trustRegistry clientSigner =
   revision <- mkProviderRevision 1
   fenceFloor <- mapLeft (Text.pack . show) (mkFencingToken 1)
   let resources =
-        mkRegisteredProviderResources
-          [ "stack:aws-eks"
-          , "stack:aws-eks-subzone"
-          , "stack:aws-test"
-          , "checkpoint:pulumi-scratch"
-          , "ses:sending-identity"
-          , "ses:dkim"
-          , "ses:dns"
-          , "ses:receipt-rules"
-          , "ses:capture-bucket"
-          , "ebs-reaper:test-scoped"
-          , "spot-price:ec2"
-          , "operational-identity"
-          , "readiness:sts"
-          , "readiness:route53"
-          , "public-edge:a"
-          , "eks-client-auth"
-          ]
+        mkRegisteredProviderResources productionRegisteredProviderResources
       authorityTransport =
         mkAuthenticatedClientTransport
           transportBounds

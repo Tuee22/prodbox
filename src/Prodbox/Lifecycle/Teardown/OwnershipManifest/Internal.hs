@@ -15,6 +15,13 @@ module Prodbox.Lifecycle.Teardown.OwnershipManifest.Internal
   , ownershipManifestDigestText
   , LegacyAdoptionPlanDigest (..)
   , legacyAdoptionPlanDigestText
+  , RegisteredOwnershipEdge
+  , ownershipEdgeStackKey
+  , ownershipEdgeResourceKey
+  , registeredOwnershipEdges
+  , controllerOwnedFamilies
+  , registeredStackClusters
+  , controllerOwnedFamiliesWithoutRegisteredStack
   , CompleteOwnershipManifest
   , completeOwnershipManifestStackKey
   , completeOwnershipManifestScope
@@ -68,9 +75,13 @@ import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.Registry
   ( RegisteredIdentity
+  , SomeManagedResourceDescriptor (SomeManagedResourceDescriptor)
   , cleanupTargetKind
   , lifecycleRegistryRevision
   , lookupRegisteredIdentity
+  , managedResourceCoordinate
+  , managedResourceKey
+  , managedResourceRegistry
   , projectCleanupTarget
   , registeredIdentityCoordinateDigest
   , registeredIdentityKind
@@ -138,6 +149,84 @@ completeOwnershipManifestLegacyPlanDigest
   :: CompleteOwnershipManifest surface -> Maybe LegacyAdoptionPlanDigest
 completeOwnershipManifestLegacyPlanDigest
   (CompleteOwnershipManifestInternal _ _ _ _ _ _ _ planDigest) = planDigest
+
+data RegisteredOwnershipEdge = RegisteredOwnershipEdge
+  { internalOwnershipEdgeStackKey :: !RegisteredResourceKey
+  , internalOwnershipEdgeResourceKey :: !RegisteredResourceKey
+  }
+  deriving (Eq, Show)
+
+ownershipEdgeStackKey :: RegisteredOwnershipEdge -> RegisteredResourceKey
+ownershipEdgeStackKey = internalOwnershipEdgeStackKey
+
+ownershipEdgeResourceKey :: RegisteredOwnershipEdge -> RegisteredResourceKey
+ownershipEdgeResourceKey = internalOwnershipEdgeResourceKey
+
+-- | Which registered stack's controllers own each registered resource family.
+--
+-- __Derived, not authored.__ This was a one-element literal naming
+-- @AwsTestKey@ as the owner of the per-run test EBS family, and it was wrong.
+-- That family's registered coordinate is keyed on
+-- @kubernetes.io\/cluster\/aws-eks-test-cluster=owned@ — the ownership tag AWS
+-- applies to volumes an EKS cluster's controllers provision — and
+-- @pulumi\/aws-test\/Main.yaml@ declares no cluster at all, while
+-- @pulumi\/aws-eks\/Main.yaml@ declares the cluster __and__ installs the EBS
+-- CSI driver that creates them.
+--
+-- The consequence was not cosmetic. 'initialManifestEntries' seeds a stack's
+-- write-ahead ownership manifest with its owned resources, and
+-- 'projectRegisteredOwnershipEdge' is what admits a discovered resource into
+-- that manifest. So the @aws-eks@ manifest could not record the EBS volumes
+-- its own cluster created — the exact recovery evidence the manifest exists to
+-- carry when both checkpoint copies are unusable — while the @aws-test@
+-- manifest could legally adopt volumes that stack never creates.
+--
+-- Two registry coordinates already contain the answer, so the relation is
+-- computed from them rather than restated beside them: the family names the
+-- cluster that owns it, and a stack's Pulumi stack name determines the cluster
+-- name its program would give an EKS cluster. A family whose cluster matches
+-- no registered stack yields no edge, and @prodbox dev check@ fails on that
+-- rather than letting it read as "no owner".
+registeredOwnershipEdges :: [RegisteredOwnershipEdge]
+registeredOwnershipEdges =
+  [ RegisteredOwnershipEdge stackKey resourceKey
+  | (resourceKey, ownerCluster) <- controllerOwnedFamilies
+  , (stackKey, candidateCluster) <- registeredStackClusters
+  , ownerCluster == candidateCluster
+  ]
+
+-- | Every registered managed resource that declares a controller owner, with
+-- the cluster name it names.
+controllerOwnedFamilies :: [(RegisteredResourceKey, Text)]
+controllerOwnedFamilies =
+  [ (managedResourceKey descriptor, ownerCluster)
+  | SomeManagedResourceDescriptor descriptor <- managedResourceRegistry
+  , Just ownerCluster <-
+      [coordinateControllerOwnerCluster (managedResourceCoordinate descriptor)]
+  ]
+
+-- | Every registered stack, with the cluster name its provisioning program
+-- would give an EKS cluster.
+registeredStackClusters :: [(RegisteredResourceKey, Text)]
+registeredStackClusters =
+  [ (managedResourceKey descriptor, candidateCluster)
+  | SomeManagedResourceDescriptor descriptor <- managedResourceRegistry
+  , Just candidateCluster <-
+      [coordinateProvisionedClusterName (managedResourceCoordinate descriptor)]
+  ]
+
+-- | A controller-owned family whose cluster matches no registered stack.
+--
+-- Reported rather than silently dropped: an unmatched family has no owning
+-- stack, so no write-ahead manifest may contain it and no destroy order can be
+-- derived for it — which is indistinguishable, at the edge list, from a family
+-- that genuinely has no controller owner.
+controllerOwnedFamiliesWithoutRegisteredStack :: [(RegisteredResourceKey, Text)]
+controllerOwnedFamiliesWithoutRegisteredStack =
+  [ family
+  | family@(_, ownerCluster) <- controllerOwnedFamilies
+  , ownerCluster `notElem` map snd registeredStackClusters
+  ]
 
 mkCompleteOwnershipManifestInternal
   :: CleanupSurfaceWitness surface

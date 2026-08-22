@@ -21,6 +21,11 @@ import Prodbox.Lifecycle.CleanupRun
 import Prodbox.Lifecycle.Teardown.Execution
 import Prodbox.Lifecycle.Teardown.Graph
 import Prodbox.Lifecycle.Teardown.Model
+import Prodbox.Lifecycle.Teardown.OwnershipManifest
+  ( ownershipEdgeResourceKey
+  , ownershipEdgeStackKey
+  , registeredOwnershipEdges
+  )
 import Prodbox.Lifecycle.Teardown.Program
 import Prodbox.Lifecycle.Teardown.Registry (lifecycleRegistryRevision)
 import Prodbox.Lifecycle.Teardown.Report
@@ -30,6 +35,20 @@ import TestSupport
 
 lifecycleTeardownProgramSuite :: SuiteBuilder ()
 lifecycleTeardownProgramSuite = do
+  describe "Sprint 4.89 checkpoint retirement waits on its dependant set" $ do
+    it "retires a stack's checkpoint only after every resource it reaches is absent" $ do
+      -- Retiring the checkpoint reference ends this run's custody of the
+      -- capability that made the stack's resources destroyable at all.  Before
+      -- this sprint the node waited only on the stack's own read-back, so
+      -- custody could end while a controller-owned family that stack owns was
+      -- still present and nothing afterwards named it — the shape that
+      -- stranded two AWS resources.
+      --
+      -- Measured against the ownership edges rather than against a second copy
+      -- of the derivation: a newly registered controller-owned family joins
+      -- this ordering without editing either side.
+      forM_ nonLocalSurfaceCases assertRetirementWaitsOnDependants
+
   describe "Sprint 4.84 closed lifecycle teardown program" $ do
     it "compiles the exact operation surface for every cleanup authority" $ do
       let checkSurface (SurfaceCase surface expectedCount expectedTargets) =
@@ -157,7 +176,10 @@ lifecycleTeardownProgramSuite = do
         , ("target/aws-eks/read-back-checkpoint-recovery", CleanupRequiresSuccess)
         , ("target/aws-eks/read-back-aws-stack-reader-bundle", CleanupRequiresSuccess)
         , ("target/aws-eks/read-back-eks-kubernetes-drain", CleanupRequiresSuccess)
-        , ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresSuccess)
+        , -- Only the controller-owned families the EKS stack owns appear here.
+          -- The validation hosted zone is created by a suite validation rather
+          -- than by a cluster's controllers, so it is deliberately absent.
+          ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresSuccess)
         ]
       assertProgramDependencies
         cascade
@@ -168,7 +190,13 @@ lifecycleTeardownProgramSuite = do
       assertProgramDependencies
         cascade
         "retire-checkpoint-pair/aws-eks"
-        [("target/aws-eks/read-back-absent", CleanupRequiresSuccess)]
+        -- Sprint 4.89: the retirement waits on the absence read-back of every
+        -- resource its checkpoint reaches, not only its own stack.  Retiring
+        -- the reference ends this run's custody of the capability that made
+        -- those resources destroyable.
+        [ ("target/aws-eks/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresSuccess)
+        ]
       assertProgramDependencies
         cascade
         "read-back-checkpoint-retirement/aws-eks"
@@ -181,6 +209,8 @@ lifecycleTeardownProgramSuite = do
         , ("target/aws-eks-subzone/read-back-checkpoint-retirement", CleanupRequiresTerminal)
         , ("target/aws-test/read-back-checkpoint-retirement", CleanupRequiresTerminal)
         , ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresTerminal)
+        , ("target/dns-aws-validation-hosted-zone/read-back-absent", CleanupRequiresTerminal)
+        , ("target/dns-aws-dns01-challenge-records/read-back-absent", CleanupRequiresTerminal)
         ]
       assertProgramDependencies
         cascade
@@ -190,6 +220,11 @@ lifecycleTeardownProgramSuite = do
         , ("target/aws-eks-subzone/read-back-checkpoint-retirement", CleanupRequiresSuccess)
         , ("target/aws-test/read-back-checkpoint-retirement", CleanupRequiresSuccess)
         , ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresSuccess)
+        , -- Sprint 7.36: the registered validation hosted-zone family. Every
+          -- registered target's completion gates the surface report, so
+          -- registering the zone put its absence read-back here.
+          ("target/dns-aws-validation-hosted-zone/read-back-absent", CleanupRequiresSuccess)
+        , ("target/dns-aws-dns01-challenge-records/read-back-absent", CleanupRequiresSuccess)
         ]
       assertProgramDependencies
         cascade
@@ -435,6 +470,23 @@ lifecycleTeardownProgramSuite = do
       desiredAbsenceRegressionOperationalSurfaceMismatchRefused regression
         `shouldBe` True
 
+    it "Sprint 7.36 explicit long-lived mints completion over its permit" $ do
+      -- The last ordinary surface with no minter. Two things had to be true
+      -- and neither was: its mandatory absence read-back had to be
+      -- dischargeable (the retained EBS family had no production executor, so
+      -- completion was structurally unreachable), and the aggregate operator
+      -- permit its deliverable names had to have a type.
+      regression <- expectReportRegression
+      desiredAbsenceRegressionLongLivedCompletes regression `shouldBe` True
+      -- The permit is not a formality. A permit naming fewer keys than the
+      -- surface projects is refused, so it cannot authorize a partial
+      -- destruction the surface then reports as complete.
+      desiredAbsenceRegressionLongLivedNeedsExactAggregate regression
+        `shouldBe` True
+      -- And it authorizes one destruction rather than standing open: a permit
+      -- issued for another run cannot complete this one.
+      desiredAbsenceRegressionLongLivedRunBound regression `shouldBe` True
+
     it "Sprint 4.85 explicit per-run completion refuses a plane-less or wrong-surface value" $ do
       -- These two arms belong to the minter rather than to classification: an
       -- ordinary classification cannot produce either, so only a mis-minted
@@ -634,8 +686,10 @@ assertTopologicallyOrdered nodes =
 surfaceCases :: [SurfaceCase]
 surfaceCases =
   [ SurfaceCase LocalOnlySurface 4 []
-  , SurfaceCase CascadeSurface 47 perRunTargetKeys
-  , SurfaceCase ExplicitPerRunSurface 42 perRunTargetKeys
+  , -- Sprint 7.36: 53 rather than 50 — the registered DNS01 challenge record
+    -- family adds its observe, reconcile, and mandatory read-back triple.
+    SurfaceCase CascadeSurface 53 perRunTargetKeys
+  , SurfaceCase ExplicitPerRunSurface 48 perRunTargetKeys
   , -- Sprint 4.85 (2026-08-18): the operational surface gained its credential
     -- revocation and that revocation's own read-back, which is what
     -- OrdinaryLifecycleProviderRevocationUnavailable named as missing.
@@ -645,7 +699,7 @@ surfaceCases =
     -- and its read-back are ordered strictly between the terminal audit and the
     -- home uninstall, which is the audit-then-dispose order the disposition
     -- blockers said no surface could express.
-    SurfaceCase TotalDecommissionSurface 50 allManagedTargetKeys
+    SurfaceCase TotalDecommissionSurface 56 allManagedTargetKeys
   ]
 
 nonLocalSurfaceCases :: [SurfaceCase]
@@ -657,6 +711,8 @@ perRunTargetKeys =
   , AwsEksSubzoneKey
   , AwsTestKey
   , AwsEbsPerRunTestKey
+  , AwsDnsValidationZoneKey
+  , AwsDns01ChallengeRecordKey
   ]
 
 allManagedTargetKeys :: [RegisteredResourceKey]
@@ -1156,3 +1212,66 @@ mustRight :: (Show err) => Either err value -> value
 mustRight result = case result of
   Left err -> error (show err)
   Right value -> value
+
+-- | Sprint 4.89: every stack's checkpoint-retirement node waits on a successful
+-- absence read-back for each resource that checkpoint reaches.
+--
+-- Measured against the ownership edges rather than against a second copy of the
+-- derivation, so a newly registered controller-owned family joins the ordering
+-- without editing either side.
+assertRetirementWaitsOnDependants :: SurfaceCase -> Expectation
+assertRetirementWaitsOnDependants (SurfaceCase surface _ _) =
+  case compileDesiredAbsenceProgram surface of
+    Left err -> expectationFailure (show err)
+    Right program -> do
+      let retirementNodes = retirementNodesOf program
+      forM_ retirementNodes assertNodeWaits
+      -- Not vacuous where there is anything to retire: a surface with a
+      -- registered stack has one whose controllers own a family, so it waits on
+      -- a read-back that is not its own.  Without this the case would pass
+      -- unchanged against the pre-sprint one-dependency list.  Surfaces with no
+      -- stack target retire nothing and are skipped.
+      let distinctSuccesses =
+            length
+              ( nub
+                  (concatMap (requiredSuccessesOf . snd) retirementNodes)
+              )
+      (null retirementNodes || distinctSuccesses > length retirementNodes)
+        `shouldBe` True
+
+retirementNodesOf
+  :: DesiredAbsenceProgram surface
+  -> [(RegisteredTargetBinding, ProgramNode surface)]
+retirementNodesOf program =
+  [ (target, node)
+  | node <- desiredAbsenceProgramNodes program
+  , RetireStackCheckpointPair target <- [programNodeOperation node]
+  ]
+
+requiredSuccessesOf :: ProgramNode surface -> [Text]
+requiredSuccessesOf node =
+  sort
+    [ programNodeNameText (programDependencyNode dependency)
+    | dependency <- programNodeDependencies node
+    , programDependencyKind dependency == CleanupRequiresSuccess
+    ]
+
+assertNodeWaits
+  :: (RegisteredTargetBinding, ProgramNode surface) -> Expectation
+assertNodeWaits (target, node) =
+  requiredSuccessesOf node `shouldBe` expectedReadBacks
+ where
+  stackKey = registeredTargetKey target
+  expectedReadBacks =
+    sort
+      ( readBackNodeName stackKey
+          : [ readBackNodeName (ownershipEdgeResourceKey edge)
+            | edge <- registeredOwnershipEdges
+            , ownershipEdgeStackKey edge == stackKey
+            ]
+      )
+
+-- | The absence read-back node one registered key's target owns.
+readBackNodeName :: RegisteredResourceKey -> Text
+readBackNodeName key =
+  "target/" <> registeredResourceKeyText key <> "/read-back-absent"

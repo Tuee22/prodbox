@@ -42,6 +42,8 @@ module Prodbox.Lifecycle.Teardown.EksDrainInterpreter
   , EksDrainSessionAcquisition (..)
   , EksDrainInterpreter
   , mkEksDrainInterpreter
+  , EksDrainSessionArms
+  , mkEksDrainSessionArms
   , VerifiedEksDrainSelection
   , verifiedEksDrainSelectionObservation
   , observeVerifiedEksDrainSelection
@@ -56,31 +58,17 @@ module Prodbox.Lifecycle.Teardown.EksDrainInterpreter
   )
 where
 
-import Control.Concurrent.Async (withAsync)
-import Control.Exception (IOException, try)
-import Control.Monad (forever)
-import Data.Aeson (Value, encode, object, (.=))
-import Data.ByteString (ByteString)
-import Data.ByteString qualified as ByteString
-import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Kind (Type)
 import Data.List (group, sort)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.ControlPlane.EksClientAuthClient
   ( EksClientAuthClientError (..)
   , withEksClientAuthProjectionForTeardownExecution
   )
-import Prodbox.ControlPlane.EksClientAuthProjection
-  ( EksClientAuthProjection
-  , eksClientAuthBearerToken
-  , eksClientAuthCertificateAuthorityData
-  , eksClientAuthClusterName
-  , eksClientAuthEndpoint
-  )
+import Prodbox.ControlPlane.EksClientAuthProjection (EksClientAuthProjection)
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller
   )
@@ -108,6 +96,12 @@ import Prodbox.Lifecycle.Teardown.Decision
   )
 import Prodbox.Lifecycle.Teardown.EksDrainIntent
 import Prodbox.Lifecycle.Teardown.EksDrainSession
+import Prodbox.Lifecycle.Teardown.EphemeralKubectl
+  ( EphemeralKubectl
+  , EphemeralKubectlUnavailable (..)
+  , runEphemeralKubectl
+  , withEphemeralKubectlForProjection
+  )
 import Prodbox.Lifecycle.Teardown.Execution
   ( TeardownExecutionContext
   , teardownExecutionAttemptId
@@ -144,31 +138,6 @@ import Prodbox.Lifecycle.Teardown.Registry
   , registeredIdentityKind
   , registeredIdentityLifecycleClass
   )
-import Prodbox.Subprocess
-  ( BoundedSubprocessLimits (..)
-  , ProcessOutput (..)
-  , Subprocess (..)
-  , captureSubprocessBounded
-  )
-import System.Exit (ExitCode (..))
-import System.FilePath ((</>))
-import System.IO.Temp (withSystemTempDirectory)
-import System.Posix.Files
-  ( createNamedPipe
-  , ownerReadMode
-  , ownerWriteMode
-  , unionFileModes
-  )
-import System.Posix.IO
-  ( OpenFileFlags (..)
-  , OpenMode (WriteOnly)
-  , closeFd
-  , defaultFileFlags
-  , openFd
-  )
-import System.Posix.IO.ByteString qualified as PosixByteString
-import System.Posix.Types (Fd)
-import System.Posix.Unistd (fileSynchronise)
 
 -- | A complete list is positive evidence about the whole queried class.
 -- Partial and unobservable results are intentionally distinct and can never
@@ -456,19 +425,40 @@ data EksDrainSessionAcquisition
   | EksDrainSessionAcquisitionUnobservable !ObservationFailure
   deriving (Eq, Show)
 
-data EksDrainInterpreter m = EksDrainInterpreter
+-- | Everything the interpreter itself owns: liveness, and nothing else.
+--
+-- Sprint @4.86@: this record used to carry a session-acquisition arm and the
+-- ephemeral-client boundary that arm's session opens.  Neither was reachable
+-- from the descriptor-bound path — the three entry points
+-- 'Prodbox.Lifecycle.Teardown.EksTeardownExecutor.executeEksTeardownOperation'
+-- uses go through the commit-selection and attempt boundaries, which issue
+-- their own Provider auth and build their own session — and the acquisition arm
+-- was moreover /unproducible/ in production: the session it must return needs a
+-- fresh 'VerifiedAwsEksObservation' that 'EksDrainInvocationBinding' does not
+-- carry.  A production composition therefore had no honest value to put there.
+-- The arms now belong to 'EksDrainSessionArms', which only the session-driven
+-- entry points below take, so a production cloud runtime names exactly the
+-- clock it uses.
+newtype EksDrainInterpreter m = EksDrainInterpreter
   { internalEksDrainCurrentEpochSeconds :: m Integer
-  , internalEksDrainAcquireSession
+  }
+
+mkEksDrainInterpreter :: m Integer -> EksDrainInterpreter m
+mkEksDrainInterpreter = EksDrainInterpreter
+
+-- | The session-driven half, taken explicitly by the entry points that need
+-- it rather than carried by every interpreter.
+data EksDrainSessionArms m = EksDrainSessionArms
+  { internalEksDrainAcquireSession
       :: EksDrainInvocationBinding -> m EksDrainSessionAcquisition
   , internalEksDrainClientBoundary :: EksDrainClientBoundary m
   }
 
-mkEksDrainInterpreter
-  :: m Integer
-  -> (EksDrainInvocationBinding -> m EksDrainSessionAcquisition)
+mkEksDrainSessionArms
+  :: (EksDrainInvocationBinding -> m EksDrainSessionAcquisition)
   -> EksDrainClientBoundary m
-  -> EksDrainInterpreter m
-mkEksDrainInterpreter = EksDrainInterpreter
+  -> EksDrainSessionArms m
+mkEksDrainSessionArms = EksDrainSessionArms
 
 -- | Opaque complete pre-mutation selection.  The intent is prepared while
 -- the projection is still inside its rank-2 continuation, so the value that
@@ -499,17 +489,18 @@ verifiedEksDrainSelectionObservation =
 observeVerifiedEksDrainSelection
   :: (Monad m)
   => EksDrainInterpreter m
+  -> EksDrainSessionArms m
   -> EksDrainOperationBinding
   -> ObservationRevision
   -> EksDrainSession
   -> m (Either EksDrainTargetSelectionObservation VerifiedEksDrainSelection)
-observeVerifiedEksDrainSelection interpreter binding revision session = do
+observeVerifiedEksDrainSelection interpreter arms binding revision session = do
   now <- internalEksDrainCurrentEpochSeconds interpreter
   case validateSessionEnvelope now expectedScope expectedOperation session of
     Left detail -> pure (incomplete (singletonFailure detail))
     Right () ->
       internalWithEksDrainClient
-        (internalEksDrainClientBoundary interpreter)
+        (internalEksDrainClientBoundary arms)
         session
         selectWithCreatedClient
  where
@@ -826,10 +817,11 @@ verifiedSelection binding session observation = do
 executeCommittedEksDrainIntent
   :: (Monad m)
   => EksDrainInterpreter m
+  -> EksDrainSessionArms m
   -> EksDrainInvocationBinding
   -> CommittedEksDrainIntent
   -> m (Either EksDrainIntentError EksDrainAttemptEvidence)
-executeCommittedEksDrainIntent interpreter invocation committed = do
+executeCommittedEksDrainIntent interpreter arms invocation committed = do
   let intent = committedEksDrainIntent committed
       attempt = beginEksDrainAttempt committed (eksDrainInvocationAttemptId invocation)
   case validateInvocation
@@ -841,7 +833,7 @@ executeCommittedEksDrainIntent interpreter invocation committed = do
       EksDrainNoKubernetesTarget {} ->
         pure (recordOutcome attempt EksDrainSkippedNoKubernetesTarget)
       target@EksDrainExactKubernetesTarget {} -> do
-        acquired <- internalEksDrainAcquireSession interpreter invocation
+        acquired <- internalEksDrainAcquireSession arms invocation
         case acquired of
           EksDrainSessionAcquisitionRefused failure ->
             pure (recordOutcome attempt (EksDrainMutationFailed failure))
@@ -859,7 +851,7 @@ executeCommittedEksDrainIntent interpreter invocation committed = do
                 case validateSessionForTarget now invocation target session of
                   Left detail -> pure (recordOutcome attempt (failedOutcome detail))
                   Right () -> do
-                    outcome <- mutateWithSession interpreter target session
+                    outcome <- mutateWithSession arms target session
                     pure (recordOutcome attempt outcome)
 
 -- | Production-safe effect entry point.  The sealed execution context is
@@ -1012,10 +1004,11 @@ executeCommittedEksDrainIntentWithContext
 observeEksDrainTargetsReadBack
   :: (Monad m)
   => EksDrainInterpreter m
+  -> EksDrainSessionArms m
   -> EksDrainInvocationBinding
   -> EksDrainAttemptEvidence
   -> m EksDrainTargetReadBackObservation
-observeEksDrainTargetsReadBack interpreter invocation attempt = do
+observeEksDrainTargetsReadBack interpreter arms invocation attempt = do
   let intent = eksDrainAttemptIntent attempt
       binding = eksDrainIntentBinding intent
       refuse detail =
@@ -1035,7 +1028,7 @@ observeEksDrainTargetsReadBack interpreter invocation attempt = do
               EksDrainObservedNoKubernetesTarget
           )
       target@EksDrainExactKubernetesTarget {} -> do
-        acquired <- internalEksDrainAcquireSession interpreter invocation
+        acquired <- internalEksDrainAcquireSession arms invocation
         case acquired of
           EksDrainSessionAcquisitionRefused failure ->
             pure (unobservableReadBack attempt (failure :| []))
@@ -1051,7 +1044,7 @@ observeEksDrainTargetsReadBack interpreter invocation attempt = do
                 now <- internalEksDrainCurrentEpochSeconds interpreter
                 case validateSessionForTarget now invocation target session of
                   Left detail -> pure (refuse detail)
-                  Right () -> readBackWithSession interpreter attempt target session
+                  Right () -> readBackWithSession arms attempt target session
 
 -- | Production-safe mandatory read-back.  It performs its own auth issuance
 -- under the sealed read-back attempt and queries the exact durable intent PVC
@@ -1189,22 +1182,24 @@ observeEksDrainTargetsReadBackWithContext
 executeEksDrainReadBack
   :: (Monad m)
   => EksDrainInterpreter m
+  -> EksDrainSessionArms m
   -> EksDrainInvocationBinding
   -> EksDrainAttemptEvidence
   -> m (Either EksDrainIntentError EksDrainTargetsAbsentEvidence)
-executeEksDrainReadBack interpreter invocation attempt = do
-  observation <- observeEksDrainTargetsReadBack interpreter invocation attempt
+executeEksDrainReadBack interpreter arms invocation attempt = do
+  observation <-
+    observeEksDrainTargetsReadBack interpreter arms invocation attempt
   pure (confirmEksDrainTargetsAbsent attempt observation)
 
 mutateWithSession
   :: (Monad m)
-  => EksDrainInterpreter m
+  => EksDrainSessionArms m
   -> EksDrainIntentTarget
   -> EksDrainSession
   -> m EksDrainAttemptOutcome
-mutateWithSession interpreter target session =
+mutateWithSession arms target session =
   internalWithEksDrainClient
-    (internalEksDrainClientBoundary interpreter)
+    (internalEksDrainClientBoundary arms)
     session
     mutateWithCreatedClient
  where
@@ -1247,14 +1242,14 @@ mutateWithClient target session effects = do
 
 readBackWithSession
   :: (Monad m)
-  => EksDrainInterpreter m
+  => EksDrainSessionArms m
   -> EksDrainAttemptEvidence
   -> EksDrainIntentTarget
   -> EksDrainSession
   -> m EksDrainTargetReadBackObservation
-readBackWithSession interpreter attempt target session =
+readBackWithSession arms attempt target session =
   internalWithEksDrainClient
-    (internalEksDrainClientBoundary interpreter)
+    (internalEksDrainClientBoundary arms)
     session
     readBackWithCreatedClient
  where
@@ -1770,7 +1765,7 @@ productionEksDrainCommitSelectionBoundary caller repoRoot kubectl environment wo
         ( \projection ->
             withProductionEksDrainClientProjection
               kubectl
-              safeEnvironment
+              environment
               workingDirectory
               projection
               ( \created ->
@@ -1784,8 +1779,6 @@ productionEksDrainCommitSelectionBoundary caller repoRoot kubectl environment wo
     case acquired of
       Left err -> consume (Left (eksClientAuthAccessFailure err))
       Right result -> pure result
- where
-  safeEnvironment = filter (not . forbiddenEnvironmentKey . fst) environment
 
 -- | Production effect/read-back boundary.  Provider issuance is keyed by the
 -- current sealed node and fenced attempt, and the projection is consumed by
@@ -1810,7 +1803,7 @@ productionEksDrainAttemptBoundary caller repoRoot kubectl environment workingDir
         ( \projection ->
             withProductionEksDrainClientProjection
               kubectl
-              safeEnvironment
+              environment
               workingDirectory
               projection
               ( \created ->
@@ -1824,8 +1817,6 @@ productionEksDrainAttemptBoundary caller repoRoot kubectl environment workingDir
     case acquired of
       Left err -> consume (Left (eksClientAuthAccessFailure err))
       Right result -> pure result
- where
-  safeEnvironment = filter (not . forbiddenEnvironmentKey . fst) environment
 
 -- | Production kubectl boundary with an explicit executable, environment,
 -- and working directory.  Ambient Kubernetes and AWS credential variables
@@ -1841,13 +1832,19 @@ productionEksDrainClientBoundary kubectl environment workingDirectory =
     withEksDrainClientProjection session $ \projection ->
       withProductionEksDrainClientProjection
         kubectl
-        safeEnvironment
+        environment
         workingDirectory
         projection
         consume
- where
-  safeEnvironment = filter (not . forbiddenEnvironmentKey . fst) environment
 
+-- | The drain's Kubernetes effects, over the shared ephemeral client.
+--
+-- Sprint 7.36 moved the private-kubeconfig, FIFO-token, and
+-- ambient-credential-scrub machinery to
+-- "Prodbox.Lifecycle.Teardown.EphemeralKubectl" when the DNS01 challenge family
+-- became the second teardown path that reaches Kubernetes.  What stays here is
+-- the drain's own vocabulary: which classes it observes, which it deletes, and
+-- how an unusable client is classified.
 withProductionEksDrainClientProjection
   :: FilePath
   -> [(String, String)]
@@ -1856,53 +1853,17 @@ withProductionEksDrainClientProjection
   -> (Either EksDrainClientAccessFailure (EksDrainClientEffects IO) -> IO result)
   -> IO result
 withProductionEksDrainClientProjection kubectl environment workingDirectory projection consume =
-  withSystemTempDirectory "prodbox-eks-drain-interpreter-" $ \directory -> do
-    let kubeconfigPath = directory </> "kubeconfig.json"
-        tokenFifoPath = directory </> "bearer-token"
-    prepared <-
-      try
-        ( do
-            createNamedPipe tokenFifoPath privateMode
-            writePrivateFile
-              kubeconfigPath
-              ( LazyByteString.toStrict
-                  (encode (eksDrainKubeconfig projection tokenFifoPath))
-              )
-        )
-        :: IO (Either IOException ())
-    case prepared of
-      Left err ->
-        consume
-          ( Left
-              ( EksDrainClientAccessUnobservable
-                  ( ObservationFailure
-                      ("could not prepare ephemeral EKS client: " <> Text.pack (show err))
-                  )
-              )
-          )
-      Right () ->
-        withAsync
-          ( forever
-              ( ByteString.writeFile
-                  tokenFifoPath
-                  (TextEncoding.encodeUtf8 (eksClientAuthBearerToken projection))
-              )
-          )
-          ( \_ ->
-              consume
-                ( Right
-                    ( productionClientEffects
-                        ( ProductionClient
-                            kubectl
-                            environment
-                            workingDirectory
-                            kubeconfigPath
-                        )
-                    )
-                )
-          )
- where
-  privateMode = ownerReadMode `unionFileModes` ownerWriteMode
+  withEphemeralKubectlForProjection
+    kubectl
+    environment
+    workingDirectory
+    projection
+    ( \acquired ->
+        consume $ case acquired of
+          Left (EphemeralKubectlUnavailable failure) ->
+            Left (EksDrainClientAccessUnobservable failure)
+          Right client -> Right (productionClientEffects client)
+    )
 
 eksClientAuthAccessFailure
   :: EksClientAuthClientError -> EksDrainClientAccessFailure
@@ -1921,14 +1882,7 @@ eksClientAuthAccessFailure err = case err of
   refused = EksDrainClientAccessRefused detail
   unobservable = EksDrainClientAccessUnobservable detail
 
-data ProductionClient = ProductionClient
-  { productionKubectl :: !FilePath
-  , productionEnvironment :: ![(String, String)]
-  , productionWorkingDirectory :: !(Maybe FilePath)
-  , productionKubeconfig :: !FilePath
-  }
-
-productionClientEffects :: ProductionClient -> EksDrainClientEffects IO
+productionClientEffects :: EphemeralKubectl -> EksDrainClientEffects IO
 productionClientEffects client =
   EksDrainClientEffects
     { eksDrainClientObserveKubernetesUid = observeProductionUid client
@@ -1987,7 +1941,7 @@ productionClientEffects client =
     }
 
 observeProductionUid
-  :: ProductionClient -> IO EksDrainKubernetesUidObservation
+  :: EphemeralKubectl -> IO EksDrainKubernetesUidObservation
 observeProductionUid client = do
   observed <-
     runProductionKubectl
@@ -2008,7 +1962,7 @@ observeProductionUid client = do
           (ObservationFailure "Kubernetes UID response was empty or ambiguous" :| [])
 
 observeNamespacedClass
-  :: ProductionClient
+  :: EphemeralKubectl
   -> [String]
   -> IO (EksDrainInventoryResult EksNamespacedName)
 observeNamespacedClass client arguments = do
@@ -2018,7 +1972,7 @@ observeNamespacedClass client arguments = do
     Right output -> parseNamespacedRows (Text.pack output)
 
 observeDeletePolicyPvcs
-  :: ProductionClient -> IO (EksDrainInventoryResult EksNamespacedName)
+  :: EphemeralKubectl -> IO (EksDrainInventoryResult EksNamespacedName)
 observeDeletePolicyPvcs client = do
   observed <-
     runProductionKubectl
@@ -2033,7 +1987,7 @@ observeDeletePolicyPvcs client = do
     Right output -> parseDeletePolicyPvcRows (Text.pack output)
 
 observeProductionPvc
-  :: ProductionClient
+  :: EphemeralKubectl
   -> EksNamespacedName
   -> IO EksDrainPvcObservation
 observeProductionPvc client target = do
@@ -2066,7 +2020,7 @@ observeProductionPvc client target = do
               (ObservationFailure "exact PVC read-back was malformed or cross-target" :| [])
 
 runProductionMutation
-  :: ProductionClient -> [String] -> IO EksDrainMutationResponse
+  :: EphemeralKubectl -> [String] -> IO EksDrainMutationResponse
 runProductionMutation client arguments = do
   result <- runProductionKubectl client arguments
   pure $ case result of
@@ -2076,49 +2030,8 @@ runProductionMutation client arguments = do
         (combineObservationFailures "kubectl mutation result unknown" failures)
 
 runProductionKubectl
-  :: ProductionClient -> [String] -> IO (Either (NonEmpty ObservationFailure) String)
-runProductionKubectl client arguments = do
-  result <-
-    captureSubprocessBounded
-      kubectlLimits
-      Subprocess
-        { subprocessPath = productionKubectl client
-        , subprocessArguments =
-            ["--kubeconfig", productionKubeconfig client] <> arguments
-        , subprocessEnvironment = Just (productionEnvironment client)
-        , subprocessWorkingDirectory = productionWorkingDirectory client
-        }
-  pure $ case result of
-    Left err ->
-      Left
-        ( ObservationFailure
-            ("failed to execute bounded kubectl: " <> Text.pack (show err))
-            :| []
-        )
-    Right output -> case processExitCode output of
-      ExitSuccess -> Right (processStdout output)
-      ExitFailure code ->
-        Left
-          ( ObservationFailure
-              ( Text.take
-                  4096
-                  ( "bounded kubectl exited with code "
-                      <> Text.pack (show code)
-                      <> ": "
-                      <> Text.pack (processStderr output <> processStdout output)
-                  )
-              )
-              :| []
-          )
-
-kubectlLimits :: BoundedSubprocessLimits
-kubectlLimits =
-  BoundedSubprocessLimits
-    { boundedSubprocessMaximumInputBytes = 1
-    , boundedSubprocessMaximumStdoutBytes = 2 * 1024 * 1024
-    , boundedSubprocessMaximumStderrBytes = 128 * 1024
-    , boundedSubprocessTimeoutMicros = 30 * 1000 * 1000
-    }
+  :: EphemeralKubectl -> [String] -> IO (Either (NonEmpty ObservationFailure) String)
+runProductionKubectl = runEphemeralKubectl
 
 namespacedJsonPath :: String
 namespacedJsonPath =
@@ -2170,76 +2083,3 @@ inventoryFromParsedRows rows =
 
 nonemptyLines :: Text -> [Text]
 nonemptyLines = filter (not . Text.null) . map Text.strip . Text.lines
-
-forbiddenEnvironmentKey :: String -> Bool
-forbiddenEnvironmentKey key =
-  key == "KUBECONFIG"
-    || key == "AWS_ACCESS_KEY_ID"
-    || key == "AWS_SECRET_ACCESS_KEY"
-    || key == "AWS_SESSION_TOKEN"
-    || key == "AWS_PROFILE"
-    || key == "AWS_DEFAULT_PROFILE"
-    || key == "AWS_SHARED_CREDENTIALS_FILE"
-    || key == "AWS_CONFIG_FILE"
-
-eksDrainKubeconfig :: EksClientAuthProjection -> FilePath -> Value
-eksDrainKubeconfig projection tokenFifoPath =
-  object
-    [ "apiVersion" .= ("v1" :: String)
-    , "kind" .= ("Config" :: String)
-    , "current-context" .= ("prodbox-eks" :: String)
-    , "clusters"
-        .= [ object
-               [ "name" .= eksClientAuthClusterName projection
-               , "cluster"
-                   .= object
-                     [ "server" .= eksClientAuthEndpoint projection
-                     , "certificate-authority-data"
-                         .= eksClientAuthCertificateAuthorityData projection
-                     ]
-               ]
-           ]
-    , "users"
-        .= [ object
-               [ "name" .= ("prodbox-provider" :: String)
-               , "user" .= object ["tokenFile" .= tokenFifoPath]
-               ]
-           ]
-    , "contexts"
-        .= [ object
-               [ "name" .= ("prodbox-eks" :: String)
-               , "context"
-                   .= object
-                     [ "cluster" .= eksClientAuthClusterName projection
-                     , "user" .= ("prodbox-provider" :: String)
-                     ]
-               ]
-           ]
-    ]
-
-writePrivateFile :: FilePath -> ByteString -> IO ()
-writePrivateFile path bytes = do
-  fd <-
-    openFd
-      path
-      WriteOnly
-      defaultFileFlags
-        { exclusive = True
-        , creat = Just privateMode
-        , nofollow = True
-        , cloexec = True
-        }
-  written <- try (writeAll fd bytes >> fileSynchronise fd)
-  closeFd fd
-  either (\err -> ioError (err :: IOException)) pure written
- where
-  privateMode = ownerReadMode `unionFileModes` ownerWriteMode
-
-writeAll :: Fd -> ByteString -> IO ()
-writeAll fd remaining
-  | ByteString.null remaining = pure ()
-  | otherwise = do
-      written <- PosixByteString.fdWrite fd remaining
-      if written <= 0
-        then ioError (userError "short write while creating ephemeral EKS kubeconfig")
-        else writeAll fd (ByteString.drop (fromIntegral written) remaining)

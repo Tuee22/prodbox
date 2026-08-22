@@ -60,10 +60,33 @@ module Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch.Internal
   , freezeRegressionGenerationBindIdempotent
   , freezeRegressionRebindDifferentGenerationRefused
   , freezeRegressionFrozenAdmitsOnlyReservation
+  , CascadeTerminalAuditReceipt
+  , CascadeTerminalAuditVerdict (..)
+  , mkCascadeTerminalAuditReceipt
+  , cascadeTerminalAuditReceiptScopeDigest
+  , cascadeTerminalAuditReceiptQueryDigest
+  , cascadeTerminalAuditReceiptRetainedSetDigest
+  , cascadeTerminalAuditReceiptVerdict
+  , cascadeAuditFreezeBindingScopeDigest
+  , ProviderAdmissionAuditRecordRefusal (..)
+  , ProviderAdmissionAuditReadBackRefusal (..)
+  , recordCascadeTerminalAuditReceiptInternal
+  , observedCascadeTerminalAuditReceiptInternal
+  , confirmCascadeTerminalAuditReceipt
+  , CascadeTerminalAuditReceiptRegression (..)
+  , fixedCascadeTerminalAuditReceiptRegression
+  , ProviderCredentialRevocationReceipt
+  , mkProviderCredentialRevocationReceipt
+  , ProviderAdmissionRevokeRefusal (..)
+  , revokeCascadeProviderCredentialInternal
+  , revokedCascadeTerminalAuditReceiptInternal
+  , CascadeCredentialRevocationRegression (..)
+  , fixedCascadeCredentialRevocationRegression
   )
 where
 
 import Codec.Serialise (Serialise)
+import Control.Monad (void)
 import Data.Bifunctor (first)
 import Data.List (nub, sort)
 import Data.Text (Text)
@@ -117,16 +140,116 @@ data ProviderCredentialRevocationReceipt
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- | Sprint 7.36: the durable record of one taken terminal escape audit.
+--
+-- It lives in the retained admission epoch rather than in the provider
+-- operation record the audit's own submissions produce, and that placement is
+-- the whole point.  Compaction deletes a settled submission's ledger entry, its
+-- epoch binding, and its provider operation together, so a proof kept there is
+-- a proof the Authority may discard under capacity pressure.  The audit's
+-- verdict is what a later credential revocation is entitled to rely on, so it
+-- has to outlive the record of the request that produced it.
+--
+-- The three digests are the audit's own identity: the scope it was taken in,
+-- which must equal the reservation's; the query catalog it asked, so a clean
+-- verdict claims nothing about what it did not ask; and the retained set it
+-- classified against.
+data CascadeTerminalAuditReceipt
+  = CascadeTerminalAuditReceipt
+      !Text
+      !Text
+      !Text
+      !CascadeTerminalAuditVerdict
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- | What the audit found.  All three are recordable: a receipt says what
+-- happened, and refusing to record an escape or a blind spot would leave the
+-- run with no durable statement of the very outcomes that must block what
+-- follows.
+data CascadeTerminalAuditVerdict
+  = CascadeTerminalAuditReceiptClean
+  | CascadeTerminalAuditReceiptEscaped !Natural
+  | CascadeTerminalAuditReceiptUnobservable !Natural
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+mkCascadeTerminalAuditReceipt
+  :: Text
+  -> Text
+  -> Text
+  -> CascadeTerminalAuditVerdict
+  -> Either ProviderAdmissionEpochError CascadeTerminalAuditReceipt
+mkCascadeTerminalAuditReceipt scopeDigest queryDigest retainedDigest verdict = do
+  requireDigest scopeDigest
+  requireDigest queryDigest
+  requireDigest retainedDigest
+  case verdict of
+    CascadeTerminalAuditReceiptClean -> Right ()
+    CascadeTerminalAuditReceiptEscaped count
+      | count == 0 -> Left (ProviderAdmissionAuditReceiptCountInvalid count)
+      | otherwise -> Right ()
+    CascadeTerminalAuditReceiptUnobservable count
+      | count == 0 -> Left (ProviderAdmissionAuditReceiptCountInvalid count)
+      | otherwise -> Right ()
+  Right
+    ( CascadeTerminalAuditReceipt
+        scopeDigest
+        queryDigest
+        retainedDigest
+        verdict
+    )
+ where
+  requireDigest digest
+    | isLowerHexSha256 digest = Right ()
+    | otherwise = Left (ProviderAdmissionAuditReceiptDigestInvalid digest)
+
+cascadeTerminalAuditReceiptScopeDigest :: CascadeTerminalAuditReceipt -> Text
+cascadeTerminalAuditReceiptScopeDigest
+  (CascadeTerminalAuditReceipt scopeDigest _ _ _) = scopeDigest
+
+cascadeTerminalAuditReceiptQueryDigest :: CascadeTerminalAuditReceipt -> Text
+cascadeTerminalAuditReceiptQueryDigest
+  (CascadeTerminalAuditReceipt _ queryDigest _ _) = queryDigest
+
+cascadeTerminalAuditReceiptRetainedSetDigest
+  :: CascadeTerminalAuditReceipt -> Text
+cascadeTerminalAuditReceiptRetainedSetDigest
+  (CascadeTerminalAuditReceipt _ _ retainedDigest _) = retainedDigest
+
+cascadeTerminalAuditReceiptVerdict
+  :: CascadeTerminalAuditReceipt -> CascadeTerminalAuditVerdict
+cascadeTerminalAuditReceiptVerdict
+  (CascadeTerminalAuditReceipt _ _ _ verdict) = verdict
+
+cascadeAuditFreezeBindingScopeDigest :: CascadeAuditFreezeBinding -> Text
+cascadeAuditFreezeBindingScopeDigest
+  (CascadeAuditFreezeBinding _ _ _ scopeDigest _ _ _ _) = scopeDigest
+
 data ProviderAdmissionEpoch
   = ProviderAdmissionLegacyServingUnboundInternal
   | ProviderAdmissionServingInternal !ProviderCredentialGeneration
   | ProviderAdmissionCascadeAuditFrozenInternal
       !ProviderCredentialGeneration
       !CascadeAuditFreezeBinding
-  | ProviderAdmissionCascadeCredentialRevokedInternal
+  | -- | Sprint 7.36: the revoked state carries the audit receipt that licensed
+    -- it as well as the revocation's own. Dropping the audit's verdict at the
+    -- moment the credential goes away would discard the durable statement that
+    -- the surface was clean, which is the one thing nothing after this point
+    -- can re-establish.
+    ProviderAdmissionCascadeCredentialRevokedInternal
       !ProviderCredentialGeneration
       !CascadeAuditFreezeBinding
+      !CascadeTerminalAuditReceipt
       !ProviderCredentialRevocationReceipt
+  | -- | Sprint 7.36: the audit named by the reservation has been taken and its
+    -- receipt is durable.  Appended, so every earlier constructor keeps its
+    -- @Serialise@ index and no retained aggregate re-decodes as a different
+    -- state.
+    ProviderAdmissionCascadeAuditRecordedInternal
+      !ProviderCredentialGeneration
+      !CascadeAuditFreezeBinding
+      !CascadeTerminalAuditReceipt
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -137,6 +260,7 @@ data ProviderAdmissionEpochView
   | ProviderAdmissionServing !Natural
   | ProviderAdmissionCascadeAuditFrozen !Natural
   | ProviderAdmissionCascadeCredentialRevoked !Natural
+  | ProviderAdmissionCascadeAuditRecorded !Natural
   deriving stock (Eq, Show)
 
 data ProviderAdmissionEpochError
@@ -145,6 +269,12 @@ data ProviderAdmissionEpochError
   | ProviderAdmissionFreezeExpectedSubmissionsEmpty
   | ProviderAdmissionFreezeExpectedSubmissionsExceedMaximum !Int !Int
   | ProviderAdmissionFreezeExpectedSubmissionsNonCanonical
+  | ProviderAdmissionAuditReceiptDigestInvalid !Text
+  | -- | A verdict counting zero escapes or zero blind spots is the clean
+    -- verdict wearing another constructor.
+    ProviderAdmissionAuditReceiptCountInvalid !Natural
+  | -- | One read-back digest standing for both proofs a revocation must bind.
+    ProviderAdmissionRevocationProofsNotIndependent
   deriving stock (Eq, Show)
 
 data ProviderAdmissionFreshSubmissionRefusal
@@ -169,8 +299,11 @@ providerAdmissionEpochView epoch = case epoch of
   ProviderAdmissionCascadeAuditFrozenInternal generation _ ->
     ProviderAdmissionCascadeAuditFrozen
       (providerCredentialGenerationValue generation)
-  ProviderAdmissionCascadeCredentialRevokedInternal generation _ _ ->
+  ProviderAdmissionCascadeCredentialRevokedInternal generation _ _ _ ->
     ProviderAdmissionCascadeCredentialRevoked
+      (providerCredentialGenerationValue generation)
+  ProviderAdmissionCascadeAuditRecordedInternal generation _ _ ->
+    ProviderAdmissionCascadeAuditRecorded
       (providerCredentialGenerationValue generation)
 
 validateProviderAdmissionEpochInternal
@@ -181,9 +314,14 @@ validateProviderAdmissionEpochInternal epoch = case epoch of
   ProviderAdmissionCascadeAuditFrozenInternal generation binding -> do
     validateGeneration generation
     validateCascadeAuditFreezeBinding binding
-  ProviderAdmissionCascadeCredentialRevokedInternal generation binding _ -> do
+  ProviderAdmissionCascadeCredentialRevokedInternal generation binding receipt _ -> do
     validateGeneration generation
     validateCascadeAuditFreezeBinding binding
+    validateCascadeTerminalAuditReceipt receipt
+  ProviderAdmissionCascadeAuditRecordedInternal generation binding receipt -> do
+    validateGeneration generation
+    validateCascadeAuditFreezeBinding binding
+    validateCascadeTerminalAuditReceipt receipt
 
 -- | Whether a fresh Provider submission is fenced by the current epoch.
 --
@@ -204,6 +342,14 @@ providerAdmissionFreshSubmissionRefusalInternal epoch submissionKey = case epoch
   ProviderAdmissionLegacyServingUnboundInternal -> Nothing
   ProviderAdmissionServingInternal _ -> Nothing
   ProviderAdmissionCascadeAuditFrozenInternal _ binding
+    | submissionKey `elem` cascadeAuditFreezeBindingExpectedSubmissions binding ->
+        Nothing
+    | otherwise -> Just ProviderAdmissionFreshSubmissionCascadeAuditFrozen
+  -- Sprint 7.36: recording the receipt does not lift the fence. The reservation
+  -- keeps admitting exactly its own submissions, because the audit's read-back
+  -- and any response-loss retry are still that same reserved work; what lifts
+  -- the fence is the revocation, which ends the credential outright.
+  ProviderAdmissionCascadeAuditRecordedInternal _ binding _
     | submissionKey `elem` cascadeAuditFreezeBindingExpectedSubmissions binding ->
         Nothing
     | otherwise -> Just ProviderAdmissionFreshSubmissionCascadeAuditFrozen
@@ -269,7 +415,12 @@ bindProviderAdmissionServingGenerationInternal epoch generation = do
         ( ProviderAdmissionCredentialGenerationInvalid
             (providerCredentialGenerationValue existing)
         )
-    ProviderAdmissionCascadeCredentialRevokedInternal existing _ _ ->
+    ProviderAdmissionCascadeCredentialRevokedInternal existing _ _ _ ->
+      Left
+        ( ProviderAdmissionCredentialGenerationInvalid
+            (providerCredentialGenerationValue existing)
+        )
+    ProviderAdmissionCascadeAuditRecordedInternal existing _ _ ->
       Left
         ( ProviderAdmissionCredentialGenerationInvalid
             (providerCredentialGenerationValue existing)
@@ -299,11 +450,206 @@ freezeProviderAdmissionForCascadeAuditInternal epoch binding pending = do
     ProviderAdmissionCascadeAuditFrozenInternal _ existing
       | existing == binding -> Right epoch
       | otherwise -> Left ProviderAdmissionFreezeAlreadyFrozenDifferently
+    -- Sprint 7.36: a lost freeze response retried after the receipt was
+    -- recorded returns the recorded epoch unchanged. Re-entering the frozen
+    -- state would discard a durable audit result, which is exactly the thing
+    -- this record exists so nothing can do.
+    ProviderAdmissionCascadeAuditRecordedInternal _ existing _
+      | existing == binding -> Right epoch
+      | otherwise -> Left ProviderAdmissionFreezeAlreadyFrozenDifferently
     ProviderAdmissionServingInternal generation -> case pending of
       PendingProviderWork count ->
         Left (ProviderAdmissionFreezePendingWorkPresent count)
       NoPendingProviderWork ->
         Right (ProviderAdmissionCascadeAuditFrozenInternal generation binding)
+
+-- | Mint the revocation's two-sided proof.
+--
+-- The two digests are independent read-backs — the joint IAM family disposition
+-- and the retained Target generation's revocation — and they may not be the
+-- same value: one proof standing for both is precisely the substitution this
+-- receipt exists to prevent.
+mkProviderCredentialRevocationReceipt
+  :: CleanupDigest
+  -> CleanupDigest
+  -> Either ProviderAdmissionEpochError ProviderCredentialRevocationReceipt
+mkProviderCredentialRevocationReceipt iamDigest targetDigest
+  | iamDigest == targetDigest =
+      Left ProviderAdmissionRevocationProofsNotIndependent
+  | otherwise =
+      Right (ProviderCredentialRevocationReceipt iamDigest targetDigest)
+
+-- | Why the cascade credential could not be revoked.
+data ProviderAdmissionRevokeRefusal
+  = -- | Nothing fenced this credential, so there is no cascade whose audit
+    -- could have licensed the revocation.
+    ProviderAdmissionRevokeNotFrozen
+  | -- | The fence is in place but the audit's verdict is not durable. Revoking
+    -- here would destroy the only credential that could re-run the audit, with
+    -- no record of what it found.
+    ProviderAdmissionRevokeAuditNotRecorded
+  | ProviderAdmissionRevokeBindingMismatch
+  | -- | The audit ran and did not come back clean. The credential is what a
+    -- retry or an operator investigation needs, so an escape or a blind spot
+    -- withholds the revocation rather than being overridden by it.
+    ProviderAdmissionRevokeAuditNotClean !CascadeTerminalAuditVerdict
+  | ProviderAdmissionRevokeAlreadyRevokedDifferently
+  deriving stock (Eq, Show)
+
+-- | Revoke the cascade's Provider credential.
+--
+-- It is reachable only from the recorded state, and only over a clean verdict,
+-- so the ordering \"fence, audit, record, revoke\" is a property of the type
+-- rather than of the caller. Idempotent on the identical receipt.
+revokeCascadeProviderCredentialInternal
+  :: ProviderAdmissionEpoch
+  -> CascadeAuditFreezeBinding
+  -> ProviderCredentialRevocationReceipt
+  -> Either ProviderAdmissionRevokeRefusal ProviderAdmissionEpoch
+revokeCascadeProviderCredentialInternal epoch binding revocation = case epoch of
+  ProviderAdmissionLegacyServingUnboundInternal ->
+    Left ProviderAdmissionRevokeNotFrozen
+  ProviderAdmissionServingInternal _ -> Left ProviderAdmissionRevokeNotFrozen
+  ProviderAdmissionCascadeAuditFrozenInternal _ existing
+    | existing /= binding -> Left ProviderAdmissionRevokeBindingMismatch
+    | otherwise -> Left ProviderAdmissionRevokeAuditNotRecorded
+  ProviderAdmissionCascadeAuditRecordedInternal generation existing recorded
+    | existing /= binding -> Left ProviderAdmissionRevokeBindingMismatch
+    | otherwise -> case cascadeTerminalAuditReceiptVerdict recorded of
+        CascadeTerminalAuditReceiptClean ->
+          Right
+            ( ProviderAdmissionCascadeCredentialRevokedInternal
+                generation
+                existing
+                recorded
+                revocation
+            )
+        verdict -> Left (ProviderAdmissionRevokeAuditNotClean verdict)
+  ProviderAdmissionCascadeCredentialRevokedInternal _ existing _ recordedRevocation
+    | existing /= binding -> Left ProviderAdmissionRevokeBindingMismatch
+    | recordedRevocation == revocation -> Right epoch
+    | otherwise -> Left ProviderAdmissionRevokeAlreadyRevokedDifferently
+
+-- | The audit receipt a revoked epoch still carries.
+--
+-- Revocation ends the credential, not the record of why it was allowed to.
+revokedCascadeTerminalAuditReceiptInternal
+  :: ProviderAdmissionEpoch -> Maybe CascadeTerminalAuditReceipt
+revokedCascadeTerminalAuditReceiptInternal epoch = case epoch of
+  ProviderAdmissionCascadeCredentialRevokedInternal _ _ receipt _ -> Just receipt
+  _ -> Nothing
+
+-- | Why a terminal-audit receipt could not be recorded.
+data ProviderAdmissionAuditRecordRefusal
+  = -- | Nothing reserved this audit, so there is no reservation the receipt
+    -- could be the result of.
+    ProviderAdmissionAuditRecordNotFrozen
+  | -- | A receipt for a reservation this epoch does not hold. Recording it
+    -- would attribute one run's audit to another's fence.
+    ProviderAdmissionAuditRecordBindingMismatch
+  | -- | The audit was taken in a different scope than the one reserved, so it
+    -- does not answer the question the fence was raised for.
+    ProviderAdmissionAuditRecordScopeDigestMismatch !Text !Text
+  | -- | A different receipt is already durable for this reservation. The first
+    -- one stands: overwriting it would let a second, differently scoped or
+    -- differently answered audit replace a result the run may already have
+    -- acted on.
+    ProviderAdmissionAuditRecordAlreadyRecordedDifferently
+  | ProviderAdmissionAuditRecordCredentialRevoked
+  | ProviderAdmissionAuditRecordReceiptInvalid !ProviderAdmissionEpochError
+  deriving stock (Eq, Show)
+
+-- | Record the audit's verdict against the reservation that admitted it.
+--
+-- Idempotent on the identical receipt, because a lost response must not be
+-- distinguishable from a repeat; a /different/ receipt for the same reservation
+-- is refused rather than replacing the durable one.
+recordCascadeTerminalAuditReceiptInternal
+  :: ProviderAdmissionEpoch
+  -> CascadeAuditFreezeBinding
+  -> CascadeTerminalAuditReceipt
+  -> Either ProviderAdmissionAuditRecordRefusal ProviderAdmissionEpoch
+recordCascadeTerminalAuditReceiptInternal epoch binding receipt = do
+  case validateCascadeTerminalAuditReceipt receipt of
+    Left err -> Left (ProviderAdmissionAuditRecordReceiptInvalid err)
+    Right () -> Right ()
+  let reservedScope = cascadeAuditFreezeBindingScopeDigest binding
+      auditedScope = cascadeTerminalAuditReceiptScopeDigest receipt
+  if reservedScope == auditedScope
+    then Right ()
+    else
+      Left
+        ( ProviderAdmissionAuditRecordScopeDigestMismatch
+            reservedScope
+            auditedScope
+        )
+  case epoch of
+    ProviderAdmissionLegacyServingUnboundInternal ->
+      Left ProviderAdmissionAuditRecordNotFrozen
+    ProviderAdmissionServingInternal _ ->
+      Left ProviderAdmissionAuditRecordNotFrozen
+    ProviderAdmissionCascadeCredentialRevokedInternal {} ->
+      Left ProviderAdmissionAuditRecordCredentialRevoked
+    ProviderAdmissionCascadeAuditFrozenInternal generation existing
+      | existing /= binding -> Left ProviderAdmissionAuditRecordBindingMismatch
+      | otherwise ->
+          Right
+            ( ProviderAdmissionCascadeAuditRecordedInternal
+                generation
+                existing
+                receipt
+            )
+    ProviderAdmissionCascadeAuditRecordedInternal _ existing recorded
+      | existing /= binding -> Left ProviderAdmissionAuditRecordBindingMismatch
+      | recorded == receipt -> Right epoch
+      | otherwise -> Left ProviderAdmissionAuditRecordAlreadyRecordedDifferently
+
+-- | Why an independently re-read epoch does not confirm a committed receipt.
+data ProviderAdmissionAuditReadBackRefusal
+  = ProviderAdmissionAuditReadBackAbsent
+  | ProviderAdmissionAuditReadBackBindingMismatch
+  | ProviderAdmissionAuditReadBackReceiptMismatch
+  deriving stock (Eq, Show)
+
+-- | The receipt this epoch carries, if it carries one.
+observedCascadeTerminalAuditReceiptInternal
+  :: ProviderAdmissionEpoch -> Maybe CascadeTerminalAuditReceipt
+observedCascadeTerminalAuditReceiptInternal epoch = case epoch of
+  ProviderAdmissionCascadeAuditRecordedInternal _ _ receipt -> Just receipt
+  _ -> Nothing
+
+-- | Confirm a committed receipt against an independently re-read epoch.
+--
+-- The write returns its own decision; this reads the durable object again and
+-- checks that what is there is the receipt that was committed, under the
+-- reservation it was committed against. A commit whose response was lost is
+-- confirmed here rather than re-committed, and a commit that silently landed
+-- somewhere else is not confirmed at all.
+confirmCascadeTerminalAuditReceipt
+  :: ProviderAdmissionEpoch
+  -> CascadeAuditFreezeBinding
+  -> CascadeTerminalAuditReceipt
+  -> Either ProviderAdmissionAuditReadBackRefusal ()
+confirmCascadeTerminalAuditReceipt epoch binding committed =
+  case epoch of
+    ProviderAdmissionCascadeAuditRecordedInternal _ existing recorded
+      | existing /= binding ->
+          Left ProviderAdmissionAuditReadBackBindingMismatch
+      | recorded /= committed ->
+          Left ProviderAdmissionAuditReadBackReceiptMismatch
+      | otherwise -> Right ()
+    _ -> Left ProviderAdmissionAuditReadBackAbsent
+
+validateCascadeTerminalAuditReceipt
+  :: CascadeTerminalAuditReceipt -> Either ProviderAdmissionEpochError ()
+validateCascadeTerminalAuditReceipt receipt =
+  void
+    ( mkCascadeTerminalAuditReceipt
+        (cascadeTerminalAuditReceiptScopeDigest receipt)
+        (cascadeTerminalAuditReceiptQueryDigest receipt)
+        (cascadeTerminalAuditReceiptRetainedSetDigest receipt)
+        (cascadeTerminalAuditReceiptVerdict receipt)
+    )
 
 providerCredentialGeneration
   :: Natural
@@ -441,6 +787,7 @@ fixedProviderAdmissionEpochRegression = do
         ProviderAdmissionCascadeCredentialRevokedInternal
           generation
           binding
+          fixedCleanAuditReceipt
           (ProviderCredentialRevocationReceipt iamDigest targetDigest)
       nonCanonicalBinding = replaceFreezeBindingKeys [keyB, keyA] binding
   pure
@@ -575,6 +922,7 @@ fixedProviderAdmissionFreezeRegression = do
         ProviderAdmissionCascadeCredentialRevokedInternal
           generation
           binding
+          fixedCleanAuditReceipt
           (ProviderCredentialRevocationReceipt iamDigest targetDigest)
       freeze epoch pending =
         freezeProviderAdmissionForCascadeAuditInternal epoch binding pending
@@ -618,6 +966,254 @@ fixedProviderAdmissionFreezeRegression = do
 -- | A second freeze binding that differs only in its scope digest and reserved
 -- submission, so "a different binding is refused" is a real comparison rather
 -- than a comparison against a value that differs in every field.
+-- | Decided facts about recording and reading back a terminal-audit receipt,
+-- exposed without exporting a way to perform either transition.
+data CascadeTerminalAuditReceiptRegression = CascadeTerminalAuditReceiptRegression
+  { auditReceiptRegressionRecordedFromFrozen :: !Bool
+  , auditReceiptRegressionServingRefused :: !Bool
+  , auditReceiptRegressionOtherBindingRefused :: !Bool
+  , auditReceiptRegressionScopeMismatchRefused :: !Bool
+  , auditReceiptRegressionIdenticalRecordIdempotent :: !Bool
+  , auditReceiptRegressionDifferentReceiptRefused :: !Bool
+  , auditReceiptRegressionRevokedRefused :: !Bool
+  , auditReceiptRegressionFreezeAfterRecordPreservesIt :: !Bool
+  , auditReceiptRegressionReadBackConfirms :: !Bool
+  , auditReceiptRegressionReadBackRefusesOther :: !Bool
+  , auditReceiptRegressionReadBackRefusesUnrecorded :: !Bool
+  , auditReceiptRegressionRecordedAdmitsOnlyReservation :: !Bool
+  , auditReceiptRegressionEmptyCountRefused :: !Bool
+  , auditReceiptRegressionNonDigestRefused :: !Bool
+  }
+  deriving stock (Eq, Show)
+
+fixedCascadeTerminalAuditReceiptRegression
+  :: Either Text CascadeTerminalAuditReceiptRegression
+fixedCascadeTerminalAuditReceiptRegression = do
+  binding <- fixedCascadeAuditFreezeBinding
+  otherBinding <- fixedAlternateCascadeAuditFreezeBinding
+  reserved <- case cascadeAuditFreezeBindingExpectedSubmissions binding of
+    firstKey : _ -> Right firstKey
+    [] -> Left "the fixed freeze binding reserves no submission"
+  unrelated <-
+    first (Text.pack . show) (mkClientSubmissionKey "provider-epoch/unrelated")
+  generation <- first (Text.pack . show) (providerCredentialGeneration 7)
+  iamDigest <- mkCleanupDigest (Text.replicate 64 "c")
+  targetDigest <- mkCleanupDigest (Text.replicate 64 "d")
+  clean <- firstShow (receiptFor CascadeTerminalAuditReceiptClean)
+  escaped <- firstShow (receiptFor (CascadeTerminalAuditReceiptEscaped 2))
+  foreignScope <-
+    firstShow
+      ( mkCascadeTerminalAuditReceipt
+          (Text.replicate 64 "f")
+          queryDigest
+          retainedDigest
+          CascadeTerminalAuditReceiptClean
+      )
+  let serving = ProviderAdmissionServingInternal generation
+      frozen = ProviderAdmissionCascadeAuditFrozenInternal generation binding
+      recorded =
+        ProviderAdmissionCascadeAuditRecordedInternal generation binding clean
+      revoked =
+        ProviderAdmissionCascadeCredentialRevokedInternal
+          generation
+          binding
+          clean
+          (ProviderCredentialRevocationReceipt iamDigest targetDigest)
+      record epoch bound value =
+        recordCascadeTerminalAuditReceiptInternal epoch bound value
+  pure
+    CascadeTerminalAuditReceiptRegression
+      { auditReceiptRegressionRecordedFromFrozen =
+          record frozen binding clean == Right recorded
+      , auditReceiptRegressionServingRefused =
+          record serving binding clean
+            == Left ProviderAdmissionAuditRecordNotFrozen
+      , auditReceiptRegressionOtherBindingRefused =
+          record frozen otherBinding clean
+            == Left
+              ( ProviderAdmissionAuditRecordScopeDigestMismatch
+                  (cascadeAuditFreezeBindingScopeDigest otherBinding)
+                  (cascadeTerminalAuditReceiptScopeDigest clean)
+              )
+      , auditReceiptRegressionScopeMismatchRefused =
+          record frozen binding foreignScope
+            == Left
+              ( ProviderAdmissionAuditRecordScopeDigestMismatch
+                  (cascadeAuditFreezeBindingScopeDigest binding)
+                  (Text.replicate 64 "f")
+              )
+      , auditReceiptRegressionIdenticalRecordIdempotent =
+          record recorded binding clean == Right recorded
+      , auditReceiptRegressionDifferentReceiptRefused =
+          record recorded binding escaped
+            == Left ProviderAdmissionAuditRecordAlreadyRecordedDifferently
+      , auditReceiptRegressionRevokedRefused =
+          record revoked binding clean
+            == Left ProviderAdmissionAuditRecordCredentialRevoked
+      , auditReceiptRegressionFreezeAfterRecordPreservesIt =
+          freezeProviderAdmissionForCascadeAuditInternal
+            recorded
+            binding
+            NoPendingProviderWork
+            == Right recorded
+      , auditReceiptRegressionReadBackConfirms =
+          confirmCascadeTerminalAuditReceipt recorded binding clean
+            == Right ()
+            && observedCascadeTerminalAuditReceiptInternal recorded == Just clean
+      , auditReceiptRegressionReadBackRefusesOther =
+          confirmCascadeTerminalAuditReceipt recorded binding escaped
+            == Left ProviderAdmissionAuditReadBackReceiptMismatch
+            && confirmCascadeTerminalAuditReceipt
+              recorded
+              otherBinding
+              clean
+              == Left ProviderAdmissionAuditReadBackBindingMismatch
+      , auditReceiptRegressionReadBackRefusesUnrecorded =
+          confirmCascadeTerminalAuditReceipt frozen binding clean
+            == Left ProviderAdmissionAuditReadBackAbsent
+            && observedCascadeTerminalAuditReceiptInternal frozen == Nothing
+      , auditReceiptRegressionRecordedAdmitsOnlyReservation =
+          providerAdmissionFreshSubmissionRefusalInternal recorded reserved
+            == Nothing
+            && providerAdmissionFreshSubmissionRefusalInternal recorded unrelated
+              == Just ProviderAdmissionFreshSubmissionCascadeAuditFrozen
+      , auditReceiptRegressionEmptyCountRefused =
+          receiptFor (CascadeTerminalAuditReceiptEscaped 0)
+            == Left (ProviderAdmissionAuditReceiptCountInvalid 0)
+            && receiptFor (CascadeTerminalAuditReceiptUnobservable 0)
+              == Left (ProviderAdmissionAuditReceiptCountInvalid 0)
+      , auditReceiptRegressionNonDigestRefused =
+          mkCascadeTerminalAuditReceipt
+            "not-a-digest"
+            queryDigest
+            retainedDigest
+            CascadeTerminalAuditReceiptClean
+            == Left (ProviderAdmissionAuditReceiptDigestInvalid "not-a-digest")
+      }
+ where
+  queryDigest = Text.replicate 64 "1"
+  retainedDigest = Text.replicate 64 "2"
+  receiptFor =
+    mkCascadeTerminalAuditReceipt
+      (Text.replicate 64 "e")
+      queryDigest
+      retainedDigest
+
+-- | The clean receipt the freeze regression's revoked fixture carries.
+fixedCleanAuditReceipt :: CascadeTerminalAuditReceipt
+fixedCleanAuditReceipt =
+  CascadeTerminalAuditReceipt
+    (Text.replicate 64 "e")
+    (Text.replicate 64 "1")
+    (Text.replicate 64 "2")
+    CascadeTerminalAuditReceiptClean
+
+-- | Decided facts about the revocation transition, exposed without exporting a
+-- way to perform one.
+data CascadeCredentialRevocationRegression = CascadeCredentialRevocationRegression
+  { revocationRegressionServingRefused :: !Bool
+  , revocationRegressionFrozenRefusedUnrecorded :: !Bool
+  , revocationRegressionOtherBindingRefused :: !Bool
+  , revocationRegressionCleanRecordRevokes :: !Bool
+  , revocationRegressionEscapeVerdictRefused :: !Bool
+  , revocationRegressionUnobservableVerdictRefused :: !Bool
+  , revocationRegressionIdenticalRevokeIdempotent :: !Bool
+  , revocationRegressionDifferentReceiptRefused :: !Bool
+  , revocationRegressionAuditReceiptSurvives :: !Bool
+  , revocationRegressionRevokedRefusesFresh :: !Bool
+  , revocationRegressionSharedProofRefused :: !Bool
+  }
+  deriving stock (Eq, Show)
+
+fixedCascadeCredentialRevocationRegression
+  :: Either Text CascadeCredentialRevocationRegression
+fixedCascadeCredentialRevocationRegression = do
+  binding <- fixedCascadeAuditFreezeBinding
+  otherBinding <- fixedAlternateCascadeAuditFreezeBinding
+  reserved <- case cascadeAuditFreezeBindingExpectedSubmissions binding of
+    firstKey : _ -> Right firstKey
+    [] -> Left "the fixed freeze binding reserves no submission"
+  generation <- first (Text.pack . show) (providerCredentialGeneration 7)
+  iamDigest <- mkCleanupDigest (Text.replicate 64 "c")
+  targetDigest <- mkCleanupDigest (Text.replicate 64 "d")
+  revocation <-
+    firstShow (mkProviderCredentialRevocationReceipt iamDigest targetDigest)
+  otherRevocation <-
+    firstShow
+      ( mkProviderCredentialRevocationReceipt
+          targetDigest
+          iamDigest
+      )
+  escapedReceipt <-
+    firstShow
+      ( mkCascadeTerminalAuditReceipt
+          (Text.replicate 64 "e")
+          (Text.replicate 64 "1")
+          (Text.replicate 64 "2")
+          (CascadeTerminalAuditReceiptEscaped 2)
+      )
+  unobservableReceipt <-
+    firstShow
+      ( mkCascadeTerminalAuditReceipt
+          (Text.replicate 64 "e")
+          (Text.replicate 64 "1")
+          (Text.replicate 64 "2")
+          (CascadeTerminalAuditReceiptUnobservable 1)
+      )
+  let serving = ProviderAdmissionServingInternal generation
+      frozen = ProviderAdmissionCascadeAuditFrozenInternal generation binding
+      recordedWith receipt =
+        ProviderAdmissionCascadeAuditRecordedInternal generation binding receipt
+      revoked =
+        ProviderAdmissionCascadeCredentialRevokedInternal
+          generation
+          binding
+          fixedCleanAuditReceipt
+          revocation
+      revoke epoch bound proof =
+        revokeCascadeProviderCredentialInternal epoch bound proof
+  pure
+    CascadeCredentialRevocationRegression
+      { revocationRegressionServingRefused =
+          revoke serving binding revocation
+            == Left ProviderAdmissionRevokeNotFrozen
+      , revocationRegressionFrozenRefusedUnrecorded =
+          revoke frozen binding revocation
+            == Left ProviderAdmissionRevokeAuditNotRecorded
+      , revocationRegressionOtherBindingRefused =
+          revoke frozen otherBinding revocation
+            == Left ProviderAdmissionRevokeBindingMismatch
+      , revocationRegressionCleanRecordRevokes =
+          revoke (recordedWith fixedCleanAuditReceipt) binding revocation
+            == Right revoked
+      , revocationRegressionEscapeVerdictRefused =
+          revoke (recordedWith escapedReceipt) binding revocation
+            == Left
+              ( ProviderAdmissionRevokeAuditNotClean
+                  (CascadeTerminalAuditReceiptEscaped 2)
+              )
+      , revocationRegressionUnobservableVerdictRefused =
+          revoke (recordedWith unobservableReceipt) binding revocation
+            == Left
+              ( ProviderAdmissionRevokeAuditNotClean
+                  (CascadeTerminalAuditReceiptUnobservable 1)
+              )
+      , revocationRegressionIdenticalRevokeIdempotent =
+          revoke revoked binding revocation == Right revoked
+      , revocationRegressionDifferentReceiptRefused =
+          revoke revoked binding otherRevocation
+            == Left ProviderAdmissionRevokeAlreadyRevokedDifferently
+      , revocationRegressionAuditReceiptSurvives =
+          revokedCascadeTerminalAuditReceiptInternal revoked
+            == Just fixedCleanAuditReceipt
+      , revocationRegressionRevokedRefusesFresh =
+          providerAdmissionFreshSubmissionRefusalInternal revoked reserved
+            == Just ProviderAdmissionFreshSubmissionCredentialRevoked
+      , revocationRegressionSharedProofRefused =
+          mkProviderCredentialRevocationReceipt iamDigest iamDigest
+            == Left ProviderAdmissionRevocationProofsNotIndependent
+      }
+
 fixedAlternateCascadeAuditFreezeBinding
   :: Either Text CascadeAuditFreezeBinding
 fixedAlternateCascadeAuditFreezeBinding = do

@@ -19,10 +19,24 @@
 --   1. dispatch @ObserveProviderAwsScope@ and keep the operation that carried
 --      it, so the account and region behind the generation key are ones the
 --      Provider Worker observed under an admitted operation;
---   2. dispatch the caller's create intent and keep /its/ operation; and
---   3. present both to the Authority's registered-stack creation route, which
---      reserves the cycle, commits the run-invariant generation, and only then
---      commits the run-scoped creation binding.
+--   2. __admit__ the caller\'s create intent without executing it, and keep
+--      /its/ operation;
+--   3. present both to the Authority\'s registered-stack creation route, which
+--      reserves the cycle, commits the run-invariant generation settled by an
+--      independent read-back, and only then commits the run-scoped creation
+--      binding; and
+--   4. execute the already-admitted create on the same submission key.
+--
+-- __The generation is durable before the stack exists.__  Sprint @7.36@ split
+-- steps 2 and 4, which the route ran as one call.  The old order created the
+-- stack first and committed its generation afterwards, so an Authority that
+-- became unreachable in between left a stack whose cycle no later cleanup run
+-- could name — a hazard the code named in
+-- @RegisteredStackCreationAuthorityUnreachable@ and could not avoid, because the
+-- 'OperationId' the generation binds did not exist until the create had already
+-- run.  With admission separated, every failure before step 4 leaves an
+-- addressable record and no AWS resource, and the only failure that can leave an
+-- AWS resource is one whose generation is already committed and read back.
 --
 -- __The foundation is the retained cluster, not an invented value.__  The
 -- foundation id is part of the run-invariant generation /key/, so a later
@@ -74,7 +88,10 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   )
 import Prodbox.ControlPlane.ProviderCaller
   ( ProviderCallerError
+  , admitAuthenticatedProviderIntentAt
   , dispatchAuthenticatedProviderIntentFreshWithOperation
+  , executeAdmittedProviderIntentAt
+  , freshProviderSubmissionKey
   , renderProviderCallerError
   )
 import Prodbox.Lifecycle.Authority.Submission (OperationId)
@@ -107,6 +124,11 @@ data RegisteredStackCreationSubmission = RegisteredStackCreationSubmission
   }
   deriving (Eq, Show)
 
+-- | Every way one submission can fail, ordered as the lane runs.
+--
+-- Sprint @7.36@: only the last arm can leave an AWS resource behind, and its
+-- generation is committed and independently read back before it is reachable.
+-- Every earlier arm fails with nothing created.
 data RegisteredStackCreationSubmitError
   = -- | The retained local control plane's identity could not be read, so the
     -- foundation the generation key is built on is unknown.  Creation refuses
@@ -115,18 +137,30 @@ data RegisteredStackCreationSubmitError
   | -- | The @ObserveProviderAwsScope@ dispatch failed.  Without it the account
     -- and region would have to be asserted, which the producer refuses.
     RegisteredStackCreationScopeDispatchFailed !ProviderCallerError
-  | -- | The create dispatch itself failed.  No generation is committed.
-    RegisteredStackCreationDispatchFailed !ProviderCallerError
-  | -- | The stack was created but the Authority could not be reached to commit
-    -- its generation, so the stack exists and no later run can name its cycle.
+  | -- | The create could not be admitted.  Nothing was executed and no
+    -- generation was committed, so nothing exists to be addressed.
+    RegisteredStackCreationAdmissionFailed !ProviderCallerError
+  | -- | The create is admitted and Pending and the Authority could not be
+    -- reached to commit its generation.  The create is /not/ executed, so no
+    -- stack exists; the Pending operation expires with the submission key.
     RegisteredStackCreationAuthorityUnreachable
-      !Text
       !LifecycleAuthorityAuthenticationError
-  | -- | The Authority refused or could not settle the generation commit.
-    -- Carries the create evidence, because the stack may well exist.
-    RegisteredStackCreationGenerationRefused !Text !AwsStackCreationBindingError
-  | -- | The commit was reached and did not settle as committed.
-    RegisteredStackCreationGenerationUnsettled !Text !AwsStackCreationCommitResult
+  | -- | The Authority refused or could not settle the generation commit.  The
+    -- create stays Pending and unexecuted.
+    RegisteredStackCreationGenerationRefused !AwsStackCreationBindingError
+  | -- | The commit was reached and did not settle as committed.  The create
+    -- stays Pending and unexecuted.
+    RegisteredStackCreationGenerationUnsettled !AwsStackCreationCommitResult
+  | -- | The generation is committed and read back, and executing the admitted
+    -- create failed.  This is the one arm under which an AWS resource may
+    -- exist — and it is addressable, because its cycle is already durable.
+    RegisteredStackCreationDispatchFailed
+      !AwsStackCreationCommitResult
+      !ProviderCallerError
+  | -- | The execute step ran under a different operation from the admitted one,
+    -- so the effect is not the one the committed generation names.  Carries the
+    -- admitted operation first and the executed one second.
+    RegisteredStackCreationOperationDiverged !OperationId !OperationId
   deriving (Eq, Show)
 
 renderRegisteredStackCreationSubmitError
@@ -139,26 +173,32 @@ renderRegisteredStackCreationSubmitError err = case err of
   RegisteredStackCreationScopeDispatchFailed detail ->
     "observe the Provider AWS scope before creating a registered stack: "
       ++ renderProviderCallerError detail
-  RegisteredStackCreationDispatchFailed detail ->
-    "dispatch the registered stack create: " ++ renderProviderCallerError detail
-  RegisteredStackCreationAuthorityUnreachable evidence detail ->
-    "the registered stack was created but its lifecycle generation could not \
-    \be committed, so no later cleanup run can name its cycle: "
+  RegisteredStackCreationAdmissionFailed detail ->
+    "admit the registered stack create: " ++ renderProviderCallerError detail
+  RegisteredStackCreationAuthorityUnreachable detail ->
+    "the registered stack create is admitted and was not executed, because its \
+    \lifecycle generation could not be committed: "
       ++ renderLifecycleAuthorityAuthenticationError detail
-      ++ withEvidence evidence
-  RegisteredStackCreationGenerationRefused evidence detail ->
-    "the registered stack was created but the Authority refused its lifecycle \
-    \generation: "
+  RegisteredStackCreationGenerationRefused detail ->
+    "the registered stack create is admitted and was not executed, because the \
+    \Authority refused its lifecycle generation: "
       ++ show detail
-      ++ withEvidence evidence
-  RegisteredStackCreationGenerationUnsettled evidence disposition ->
-    "the registered stack was created but its lifecycle generation did not \
-    \settle as committed: "
+  RegisteredStackCreationGenerationUnsettled disposition ->
+    "the registered stack create is admitted and was not executed, because its \
+    \lifecycle generation did not settle as committed: "
       ++ show disposition
-      ++ withEvidence evidence
- where
-  withEvidence evidence =
-    " (Provider receipt: " ++ Text.unpack evidence ++ ")"
+  RegisteredStackCreationDispatchFailed disposition detail ->
+    "the registered stack lifecycle generation is committed ("
+      ++ show disposition
+      ++ ") and executing the admitted create failed, so a stack may exist \
+         \under that cycle: "
+      ++ renderProviderCallerError detail
+  RegisteredStackCreationOperationDiverged admitted executed ->
+    "the registered stack create executed under an operation the committed \
+    \lifecycle generation does not name; admitted "
+      ++ show admitted
+      ++ " and executed "
+      ++ show executed
 
 -- | The foundation id every generation key for this host is built on.
 --
@@ -195,14 +235,20 @@ registeredStackCreationScope foundation runScope =
     Nothing
     ReconcileDesiredPresent
 
--- | Submit one registered-stack creation through the Authority and commit its
--- lifecycle generation.
+-- | Submit one registered-stack creation through the Authority, commit its
+-- lifecycle generation, and only then execute it.
 --
 -- The order is the producer's, and it matters: the scope observation precedes
--- the create so the generation can be committed immediately after, and the
--- generation precedes the run-scoped binding so a failure midway leaves the
--- addressable record present rather than a stack whose cycle no later run can
--- name.
+-- the create's admission so the generation can be committed against a proven
+-- account and region; the generation precedes the run-scoped binding so a
+-- failure midway leaves the addressable record present rather than the
+-- run-scoped one alone; and the whole commit precedes execution so no AWS
+-- resource can exist under a cycle no later run can name.
+--
+-- The create is admitted and executed at __one__ submission key.  A fresh key
+-- per call would make the execute step a different operation from the admitted
+-- one, which is the property that makes the generation's binding meaningful at
+-- all.
 submitRegisteredStackCreation
   :: LifecycleAuthorityAuthentication
   -> FilePath
@@ -225,21 +271,19 @@ submitRegisteredStackCreation authentication repoRoot prefix revision intent = d
       case scopeDispatch of
         Left err -> pure (Left (RegisteredStackCreationScopeDispatchFailed err))
         Right (scopeOperation, _) -> do
-          createDispatch <-
-            dispatchAuthenticatedProviderIntentFreshWithOperation
-              authentication
-              prefix
-              intent
-          case createDispatch of
-            Left err -> pure (Left (RegisteredStackCreationDispatchFailed err))
-            Right (createOperation, evidence) ->
-              commitGeneration
+          createKey <- freshProviderSubmissionKey prefix
+          admitted <-
+            admitAuthenticatedProviderIntentAt authentication createKey intent
+          case admitted of
+            Left err -> pure (Left (RegisteredStackCreationAdmissionFailed err))
+            Right createOperation ->
+              commitGenerationThenExecute
                 (basicsClusterId identity)
+                createKey
                 scopeOperation
                 createOperation
-                evidence
  where
-  commitGeneration clusterId scopeOperation createOperation evidence = do
+  commitGenerationThenExecute clusterId createKey scopeOperation createOperation = do
     micros <- currentMicros
     let scope =
           registeredStackCreationScope
@@ -253,13 +297,38 @@ submitRegisteredStackCreation authentication repoRoot prefix revision intent = d
           scopeOperation
           revision
           scope
-    pure $ case committed of
+    case committed of
       Left err ->
-        Left (RegisteredStackCreationAuthorityUnreachable evidence err)
+        pure (Left (RegisteredStackCreationAuthorityUnreachable err))
       Right (Left err) ->
-        Left (RegisteredStackCreationGenerationRefused evidence err)
+        pure (Left (RegisteredStackCreationGenerationRefused err))
       Right (Right disposition)
         | settled disposition ->
+            executeAdmittedCreate createKey scopeOperation createOperation disposition
+        | otherwise ->
+            pure (Left (RegisteredStackCreationGenerationUnsettled disposition))
+
+  -- The generation is durable and read back before this runs, so a failure here
+  -- leaves an addressable cycle rather than an anonymous stack.
+  --
+  -- The executed operation must be the admitted one.  Same key, same digest,
+  -- same intent means the admission ledger hands back the operation it already
+  -- admitted; anything else means the effect ran under an operation the
+  -- committed generation does not name, which is the exact condition this lane
+  -- exists to prevent and is reported rather than returned as a success.
+  executeAdmittedCreate createKey scopeOperation createOperation disposition = do
+    executed <- executeAdmittedProviderIntentAt authentication createKey intent
+    pure $ case executed of
+      Left err ->
+        Left (RegisteredStackCreationDispatchFailed disposition err)
+      Right (executedOperation, evidence)
+        | executedOperation /= createOperation ->
+            Left
+              ( RegisteredStackCreationOperationDiverged
+                  createOperation
+                  executedOperation
+              )
+        | otherwise ->
             Right
               RegisteredStackCreationSubmission
                 { submittedCreateOperation = createOperation
@@ -267,8 +336,6 @@ submitRegisteredStackCreation authentication repoRoot prefix revision intent = d
                 , submittedCreateEvidence = evidence
                 , submittedGenerationDisposition = disposition
                 }
-        | otherwise ->
-            Left (RegisteredStackCreationGenerationUnsettled evidence disposition)
 
   -- A replay is a settled outcome: the retried create was recognized as the
   -- same admitted operation and handed back its own cycle, which is the

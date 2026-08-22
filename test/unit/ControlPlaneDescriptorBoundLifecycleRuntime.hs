@@ -78,8 +78,15 @@ controlPlaneDescriptorBoundLifecycleRuntimeSuite =
         sourceImporters
           "src"
           "import Prodbox.ControlPlane.DescriptorBoundLifecycleRuntime.Internal"
+      -- Sprint 4.86: the non-public cascade candidate entrypoint is the
+      -- dispatcher's first caller, recorded here deliberately.  Driving the
+      -- total dispatcher over a durable run is precisely what that entrypoint
+      -- is, and it is itself package-private, so the action still cannot
+      -- escape the library.
       importers
-        `shouldBe` ["src/Prodbox/ControlPlane/DescriptorBoundLifecycleRuntime.hs"]
+        `shouldBe` [ "src/Prodbox/ControlPlane/DescriptorBoundLifecycleRuntime.hs"
+                   , "src/Prodbox/Lifecycle/Teardown/CascadeCandidate/Internal.hs"
+                   ]
 
       cabal <- readFile "prodbox.cabal"
       let exposedLibrary =

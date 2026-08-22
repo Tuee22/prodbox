@@ -50,6 +50,34 @@ module Prodbox.Config.OrdinaryTeardownRepair
   , retainedArtifactPolicy
   , requiredRetainedArtifacts
 
+    -- * Pinned acquisition sources
+  , RetainedArtifactLocator (..)
+  , retainedArtifactLocatorText
+  , RetainedArtifactSourceEntry (..)
+  , RetainedArtifactSource
+  , retainedArtifactSourceKind
+  , retainedArtifactSourceArchitecture
+  , retainedArtifactSourceDigest
+  , retainedArtifactSourceLocator
+  , RetainedArtifactSourceCatalog
+  , retainedArtifactSourceCatalogArchitecture
+  , retainedArtifactSourceCatalogKinds
+  , RetainedArtifactSourceError (..)
+  , renderRetainedArtifactSourceError
+  , retainedArtifactSourceCatalog
+  , lookupRetainedArtifactSource
+
+    -- * The operator-declared Tier-0 section
+  , RetainedArtifactDeclaration (..)
+  , RetainedArtifactsSection (..)
+  , emptyRetainedArtifactsSection
+  , DeclaredRetainedArtifacts
+  , declaredRetainedArtifactInventory
+  , declaredRetainedArtifactCatalog
+  , RetainedArtifactDeclarationError (..)
+  , renderRetainedArtifactDeclarationError
+  , declaredRetainedArtifacts
+
     -- * The stopped/absent/healthy repair matrix
   , OrdinaryTeardownRepairStep (..)
   , OrdinaryTeardownRepairPlan
@@ -75,12 +103,9 @@ module Prodbox.Config.OrdinaryTeardownRepair
   )
 where
 
-import Data.Char (isHexDigit, isSpace)
 import Data.List (nub)
 import Data.List.NonEmpty (NonEmpty)
 import Data.List.NonEmpty qualified as NonEmpty
-import Data.Map.Strict (Map)
-import Data.Map.Strict qualified as Map
 import Prodbox.Config.ComponentGraph
   ( ComponentId (..)
   , chartNameForComponent
@@ -98,245 +123,7 @@ import Prodbox.Config.OrdinaryTeardownRecovery
   , ordinaryTeardownRecoveryComponentIds
   , ordinaryTeardownRecoveryComponents
   )
-
--- ---------------------------------------------------------------------------
--- Versioned retained artifact inventory
--- ---------------------------------------------------------------------------
-
--- | Retained artifacts are architecture-specific.  A repair plan is rendered
--- for exactly one architecture, and an entry declaring a different one is
--- refused rather than coerced.
-data RetainedArtifactArchitecture
-  = RetainedArtifactAmd64
-  | RetainedArtifactArm64
-  deriving (Bounded, Enum, Eq, Ord, Show)
-
-retainedArtifactArchitectureText :: RetainedArtifactArchitecture -> String
-retainedArtifactArchitectureText = \case
-  RetainedArtifactAmd64 -> "amd64"
-  RetainedArtifactArm64 -> "arm64"
-
--- | The closed set of artifact kinds an ordinary-teardown repair may consume.
--- The set is closed so that admitting a new recovery component without also
--- declaring where its bytes come from is a compile-time or refusal event, never
--- a silent network fetch.
-data RetainedArtifactKind
-  = -- | The pinned local substrate installer.
-    RetainedSubstrateInstaller
-  | -- | The pinned local substrate system-images archive.
-    RetainedSubstrateSystemImages
-  | -- | The retained object-store (MinIO) runtime image.
-    RetainedObjectStoreImage
-  | -- | The retained secret-store (Vault) runtime image.
-    RetainedSecretStoreImage
-  | -- | The retained prodbox runtime image every control-plane chart runs.
-    RetainedProdboxRuntimeImage
-  deriving (Bounded, Enum, Eq, Ord, Show)
-
-retainedArtifactKindText :: RetainedArtifactKind -> String
-retainedArtifactKindText = \case
-  RetainedSubstrateInstaller -> "substrate_installer"
-  RetainedSubstrateSystemImages -> "substrate_system_images"
-  RetainedObjectStoreImage -> "object_store_image"
-  RetainedSecretStoreImage -> "secret_store_image"
-  RetainedProdboxRuntimeImage -> "prodbox_runtime_image"
-
--- | How a kind participates in a repair.  Substrate artifacts reinstall the
--- local substrate itself; image artifacts are loaded into the node's content
--- store because the recovery closure has no image Registry to pull from.
-data RetainedArtifactRole
-  = RetainedSubstrateArtifact
-  | RetainedImageArtifact
-  deriving (Bounded, Enum, Eq, Ord, Show)
-
-retainedArtifactRole :: RetainedArtifactKind -> RetainedArtifactRole
-retainedArtifactRole = \case
-  RetainedSubstrateInstaller -> RetainedSubstrateArtifact
-  RetainedSubstrateSystemImages -> RetainedSubstrateArtifact
-  RetainedObjectStoreImage -> RetainedImageArtifact
-  RetainedSecretStoreImage -> RetainedImageArtifact
-  RetainedProdboxRuntimeImage -> RetainedImageArtifact
-
--- | An operator-declared inventory entry, before validation.
-data RetainedArtifactEntry = RetainedArtifactEntry
-  { retainedArtifactEntryKind :: !RetainedArtifactKind
-  , retainedArtifactEntryArchitecture :: !RetainedArtifactArchitecture
-  , retainedArtifactEntryVersion :: !String
-  , retainedArtifactEntryDigest :: !String
-  , retainedArtifactEntryRelativePath :: !FilePath
-  -- ^ Location under the retained root.  Deliberately relative: the retained
-  -- root itself is bound by "Prodbox.Config.LocalRetainedRoot", so an entry
-  -- cannot name a second storage root.
-  }
-  deriving (Eq, Show)
-
--- | A validated reference to one retained artifact.  Opaque: the only way to
--- obtain one is through a validated inventory, so a repair step cannot name an
--- artifact whose version, digest, and location were never checked.
-data RetainedArtifactRef = RetainedArtifactRef
-  { retainedArtifactRefKind :: !RetainedArtifactKind
-  , retainedArtifactRefArchitecture :: !RetainedArtifactArchitecture
-  , retainedArtifactRefVersion :: !String
-  , retainedArtifactRefDigest :: !String
-  , retainedArtifactRefRelativePath :: !FilePath
-  }
-  deriving (Eq, Ord, Show)
-
--- | Opaque, validated inventory.  Construction proves the declared
--- architecture is uniform, every kind appears at most once, and every version,
--- digest, and retained location is well formed.
-data RetainedArtifactInventory = RetainedArtifactInventory
-  { retainedArtifactInventoryArchitecture :: !RetainedArtifactArchitecture
-  , inventoryEntries :: !(Map RetainedArtifactKind RetainedArtifactRef)
-  }
-  deriving (Eq, Show)
-
--- | The kinds this inventory retains, in canonical kind order.
-retainedArtifactInventoryKinds :: RetainedArtifactInventory -> [RetainedArtifactKind]
-retainedArtifactInventoryKinds = Map.keys . inventoryEntries
-
-data RetainedArtifactInventoryError
-  = RetainedArtifactInventoryDuplicateKind !RetainedArtifactKind
-  | RetainedArtifactInventoryForeignArchitecture
-      !RetainedArtifactKind
-      !RetainedArtifactArchitecture
-      !RetainedArtifactArchitecture
-  | RetainedArtifactInventoryUnversioned !RetainedArtifactKind !String
-  | RetainedArtifactInventoryMalformedDigest !RetainedArtifactKind !String
-  | RetainedArtifactInventoryUnsafeRetainedPath !RetainedArtifactKind !FilePath
-  deriving (Eq, Show)
-
-renderRetainedArtifactInventoryError :: RetainedArtifactInventoryError -> String
-renderRetainedArtifactInventoryError = \case
-  RetainedArtifactInventoryDuplicateKind kind ->
-    "Retained artifact inventory declares `"
-      ++ retainedArtifactKindText kind
-      ++ "` more than once; exactly one retained artifact may answer a kind."
-  RetainedArtifactInventoryForeignArchitecture kind expected declared ->
-    "Retained artifact `"
-      ++ retainedArtifactKindText kind
-      ++ "` declares architecture `"
-      ++ retainedArtifactArchitectureText declared
-      ++ "` in an inventory rendered for `"
-      ++ retainedArtifactArchitectureText expected
-      ++ "`."
-  RetainedArtifactInventoryUnversioned kind version ->
-    "Retained artifact `"
-      ++ retainedArtifactKindText kind
-      ++ "` carries no usable pinned version (`"
-      ++ version
-      ++ "`); a floating or empty version cannot identify retained bytes."
-  RetainedArtifactInventoryMalformedDigest kind digest ->
-    "Retained artifact `"
-      ++ retainedArtifactKindText kind
-      ++ "` carries digest `"
-      ++ digest
-      ++ "`, which is not a canonical `sha256:` hex digest."
-  RetainedArtifactInventoryUnsafeRetainedPath kind path ->
-    "Retained artifact `"
-      ++ retainedArtifactKindText kind
-      ++ "` declares retained location `"
-      ++ path
-      ++ "`, which is not a normalized location under the retained root."
-
--- | Validate an operator-declared inventory for one architecture.  An empty
--- declaration is a valid inventory: it says the repository retains nothing,
--- and the refusal then lands where it belongs, on the repair plan that needed
--- an artifact.
-retainedArtifactInventory
-  :: RetainedArtifactArchitecture
-  -> [RetainedArtifactEntry]
-  -> Either RetainedArtifactInventoryError RetainedArtifactInventory
-retainedArtifactInventory architecture entries = do
-  indexed <- foldl' step (Right Map.empty) entries
-  pure
-    RetainedArtifactInventory
-      { retainedArtifactInventoryArchitecture = architecture
-      , inventoryEntries = indexed
-      }
- where
-  step acc entry = do
-    indexed <- acc
-    ref <- validateEntry architecture entry
-    if Map.member (retainedArtifactRefKind ref) indexed
-      then Left (RetainedArtifactInventoryDuplicateKind (retainedArtifactRefKind ref))
-      else Right (Map.insert (retainedArtifactRefKind ref) ref indexed)
-
-validateEntry
-  :: RetainedArtifactArchitecture
-  -> RetainedArtifactEntry
-  -> Either RetainedArtifactInventoryError RetainedArtifactRef
-validateEntry architecture entry
-  | declaredArchitecture /= architecture =
-      Left
-        ( RetainedArtifactInventoryForeignArchitecture
-            kind
-            architecture
-            declaredArchitecture
-        )
-  | not (isPinnedVersion version) =
-      Left (RetainedArtifactInventoryUnversioned kind version)
-  | not (isCanonicalSha256Digest digest) =
-      Left (RetainedArtifactInventoryMalformedDigest kind digest)
-  | not (isNormalizedRetainedPath path) =
-      Left (RetainedArtifactInventoryUnsafeRetainedPath kind path)
-  | otherwise =
-      Right
-        RetainedArtifactRef
-          { retainedArtifactRefKind = kind
-          , retainedArtifactRefArchitecture = declaredArchitecture
-          , retainedArtifactRefVersion = version
-          , retainedArtifactRefDigest = digest
-          , retainedArtifactRefRelativePath = path
-          }
- where
-  kind = retainedArtifactEntryKind entry
-  declaredArchitecture = retainedArtifactEntryArchitecture entry
-  version = retainedArtifactEntryVersion entry
-  digest = retainedArtifactEntryDigest entry
-  path = retainedArtifactEntryRelativePath entry
-
--- | A pinned version is non-empty and contains no whitespace.  A moving tag is
--- not excluded here by name; the digest is what makes an entry immutable, and
--- the version exists so an operator can read the inventory.
-isPinnedVersion :: String -> Bool
-isPinnedVersion version =
-  not (null version) && not (any isSpace version)
-
-isCanonicalSha256Digest :: String -> Bool
-isCanonicalSha256Digest digest = case splitAt 7 digest of
-  ("sha256:", hex) ->
-    length hex == 64 && all isLowerHexDigit hex
-  _ -> False
-
-isLowerHexDigit :: Char -> Bool
-isLowerHexDigit character =
-  isHexDigit character && character `notElem` ['A' .. 'F']
-
--- | A retained location is relative, non-empty, and free of empty, current-,
--- or parent-directory segments, so it cannot escape the retained root or
--- depend on path normalization at execution time.
-isNormalizedRetainedPath :: FilePath -> Bool
-isNormalizedRetainedPath path = case path of
-  [] -> False
-  '/' : _ -> False
-  _ ->
-    not (any isSpace path)
-      && not (null segments)
-      && all usableSegment segments
- where
-  segments = splitOnSlash path
-  usableSegment segment =
-    not (null segment) && segment /= "." && segment /= ".."
-
-splitOnSlash :: FilePath -> [String]
-splitOnSlash path = case break (== '/') path of
-  (segment, []) -> [segment]
-  (segment, _ : remaining) -> segment : splitOnSlash remaining
-
-lookupRetainedArtifact
-  :: RetainedArtifactKind -> RetainedArtifactInventory -> Maybe RetainedArtifactRef
-lookupRetainedArtifact kind = Map.lookup kind . inventoryEntries
+import Prodbox.Config.RetainedArtifacts
 
 -- ---------------------------------------------------------------------------
 -- Artifact obligations derived from the recovery closure
@@ -374,12 +161,23 @@ retainedArtifactPolicy state = \case
     _ -> Nothing
 
 -- | Reinstalling the local substrate is required exactly when it is absent.
+--
+-- All four substrate kinds, because the offline install reads them as one
+-- artifact directory: the installer script, the release tarball it unpacks, the
+-- checksum file it verifies that tarball against, and the system-images archive
+-- the node loads instead of pulling. An obligation naming fewer of them would
+-- render a plan that admits against the store and then refuses at its first
+-- step on a real host.
 substrateObligation :: LocalRke2RecoveryStateView -> [RetainedArtifactKind]
 substrateObligation = \case
   LocalRke2RecoveryHealthy -> []
   LocalRke2RecoveryStopped -> []
   LocalRke2RecoveryAbsent ->
-    [RetainedSubstrateInstaller, RetainedSubstrateSystemImages]
+    [ RetainedSubstrateInstaller
+    , RetainedSubstrateReleaseTarball
+    , RetainedSubstrateChecksum
+    , RetainedSubstrateSystemImages
+    ]
 
 -- | The artifact obligation of a whole recovery closure, in derived dependency
 -- order with duplicates collapsed at first occurrence.

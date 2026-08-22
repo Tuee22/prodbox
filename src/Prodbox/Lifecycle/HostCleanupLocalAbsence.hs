@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -83,7 +84,8 @@ import Prodbox.Lifecycle.Teardown.Execution
   , LocalFoundationObservationResult (..)
   )
 import Prodbox.Lifecycle.Teardown.Model
-  ( ObservationEvidenceScope
+  ( CleanupSurface (Cascade)
+  , ObservationEvidenceScope
   , ObservationFailure (ObservationFailure)
   )
 import Prodbox.Lifecycle.Teardown.Observation (AbsenceEvidence (AbsenceEvidence))
@@ -120,7 +122,7 @@ renderLocalAbsenceReadBackRefusal = \case
 
 -- | What one exact host observation established.
 data LocalAbsenceReadBack
-  = LocalAbsenceObserved !LocalUninstallEvidence
+  = LocalAbsenceObserved !(LocalUninstallEvidence 'Cascade)
   | -- | At least one canonical marker is present, so the foundation has not
     -- converged.  The markers are carried because the caller reports them.
     LocalFoundationStillInstalled !(NonEmpty LocalRke2InstallMarker)
@@ -183,7 +185,7 @@ readBackLocalRke2Absence scope ready observation =
 -- middle case is deliberately not a failure — the runner acts on it by issuing
 -- the uninstall — and the third deliberately is.
 localAbsenceReadBackEffect
-  :: LocalAbsenceReadBack -> Either Text (Maybe LocalUninstallEvidence)
+  :: LocalAbsenceReadBack -> Either Text (Maybe (LocalUninstallEvidence 'Cascade))
 localAbsenceReadBackEffect = \case
   LocalAbsenceObserved evidence -> Right (Just evidence)
   LocalFoundationStillInstalled _ -> Right Nothing
@@ -195,7 +197,7 @@ productionHostCleanupLocalAbsenceReadBack
   :: LocalRke2TerminalAdapter IO
   -> HostCleanupRunnerContext
   -> ReadyToUninstallEvidence
-  -> IO (Either Text (Maybe LocalUninstallEvidence))
+  -> IO (Either Text (Maybe (LocalUninstallEvidence 'Cascade)))
 productionHostCleanupLocalAbsenceReadBack adapter context ready = do
   observation <- observeLocalRke2Install adapter
   pure
@@ -287,12 +289,12 @@ isEvidenceRefusal = \case
   LocalAbsenceRefused (LocalAbsenceEvidenceRefused _) -> True
   _ -> False
 
-isRightJust :: Either Text (Maybe LocalUninstallEvidence) -> Bool
+isRightJust :: Either Text (Maybe (LocalUninstallEvidence 'Cascade)) -> Bool
 isRightJust = \case
   Right (Just _) -> True
   _ -> False
 
-isLeftEffect :: Either Text (Maybe LocalUninstallEvidence) -> Bool
+isLeftEffect :: Either Text (Maybe (LocalUninstallEvidence 'Cascade)) -> Bool
 isLeftEffect = \case
   Left _ -> True
   Right _ -> False

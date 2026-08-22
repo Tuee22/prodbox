@@ -72,6 +72,9 @@ import Prodbox.Lifecycle.PulumiCheckpoint
   , pulumiCheckpointMaximumBytes
   , registeredPulumiCheckpointName
   )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CustodyDispositionRecord
+  )
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 
 data PulumiCheckpointAuthority m = PulumiCheckpointAuthority
@@ -93,6 +96,7 @@ data PulumiCheckpointAuthority m = PulumiCheckpointAuthority
   , retirePulumiCheckpoint
       :: !( OperationId
             -> Maybe PulumiCheckpointDigest
+            -> CustodyDispositionRecord
             -> m
                  ( Either
                      PulumiCheckpointClientError
@@ -112,6 +116,7 @@ data PulumiCheckpointAuthority m = PulumiCheckpointAuthority
   , attemptPulumiCheckpointRetirement
       :: !( OperationId
             -> Maybe PulumiCheckpointDigest
+            -> CustodyDispositionRecord
             -> Maybe VerifiedPulumiCheckpointRef
             -> m
                  ( Either
@@ -208,7 +213,7 @@ pulumiCheckpointClientWith callAuthenticated registered =
               validateRegistration echoed
               decodePublication publication
             other -> Left (unexpected other)
-    , retirePulumiCheckpoint = \operation expected -> do
+    , retirePulumiCheckpoint = \operation expected disposition -> do
         response <-
           call
             ( RetirePulumiCheckpoint
@@ -217,6 +222,7 @@ pulumiCheckpointClientWith callAuthenticated registered =
                   { pulumiCheckpointTicketOperation = operation
                   , pulumiCheckpointTicketExpectedDigest = expected
                   }
+                disposition
             )
         pure $ do
           decoded <- response
@@ -258,7 +264,7 @@ pulumiCheckpointClientWith callAuthenticated registered =
               Right result
             other -> Left (unexpected other)
     , attemptPulumiCheckpointRetirement =
-        \operation expected expectedReference -> do
+        \operation expected disposition expectedReference -> do
           response <-
             call
               ( AttemptPulumiCheckpointRetirement
@@ -267,6 +273,7 @@ pulumiCheckpointClientWith callAuthenticated registered =
                     { pulumiCheckpointTicketOperation = operation
                     , pulumiCheckpointTicketExpectedDigest = expected
                     }
+                  disposition
                   expectedReference
               )
           pure $ do

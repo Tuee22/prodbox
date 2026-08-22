@@ -107,6 +107,12 @@ import Prodbox.Lifecycle.PulumiCheckpoint
   , decodeCanonicalPulumiCheckpoint
   , pulumiCheckpointMaximumBytes
   , registeredPulumiCheckpointByName
+  , registeredPulumiCheckpointName
+  )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CustodyDispositionKind (DispositionDischargedByAbsence)
+  , CustodyDispositionRecord (..)
+  , renderedCheckpointCapability
   )
 import TestSupport
 
@@ -300,6 +306,7 @@ controlPlanePulumiCheckpointRepositorySuite =
             , pulumiCheckpointTicketExpectedDigest =
                 Just (canonicalPulumiCheckpointDigest (fixtureCheckpoint fixture))
             }
+          (fixtureRetirementDispositionFor (fixtureRegistration fixture))
           (fixtureRegistration fixture)
       retired `shouldBe` PulumiCheckpointRetiredAndReadBack
       observed <-
@@ -337,6 +344,7 @@ controlPlanePulumiCheckpointRepositorySuite =
               (fixtureRegistration restoreFixture)
               RestoreCheckpoint
               (Just (canonicalPulumiCheckpointDigest (fixtureCheckpoint restoreFixture)))
+              Nothing
               restoreAdmitted
           )
       (unrelatedOperation, restoreWithUnrelated) <-
@@ -378,6 +386,7 @@ controlPlanePulumiCheckpointRepositorySuite =
               (fixtureRegistration retirementFixture)
               RetireCheckpoint
               (Just (canonicalPulumiCheckpointDigest (fixtureCheckpoint retirementFixture)))
+              Nothing
               retirementAdmitted
           )
       (unrelatedRetirementOperation, retirementWithUnrelated) <-
@@ -645,3 +654,17 @@ mustRight :: (Show err) => Either err value -> value
 mustRight result = case result of
   Left err -> error (show err)
   Right value -> value
+
+-- | Sprint 4.89: the disposition a retirement states for the checkpoint it
+-- retires.
+fixtureRetirementDispositionFor
+  :: RegisteredPulumiCheckpoint -> CustodyDispositionRecord
+fixtureRetirementDispositionFor registered =
+  CustodyDispositionRecord
+    { custodyDispositionCapability =
+        renderedCheckpointCapability (registeredPulumiCheckpointName registered)
+    , custodyDispositionKind = DispositionDischargedByAbsence
+    , custodyDispositionDetail = "fixture discharge"
+    , custodyDispositionDependants =
+        [registeredPulumiCheckpointName registered]
+    }

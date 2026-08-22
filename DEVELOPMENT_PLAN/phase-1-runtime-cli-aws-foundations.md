@@ -11,6 +11,26 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-08-19 on Sprint `1.91`** — own-surface reopen (Standard A/N) on the Tier-0
+coordinate surface Sprint `1.89` parsed and Sprint `1.90` began clearing. The phase recloses when
+`1.91` reaches `Done`; until then this entry records an open reopen, not a closure. Three fail-closed rules
+already existed and none could fire: `requireOperationalAwsRegion` and
+`validateOperationalAwsCredentials` in `src/Prodbox/Settings.hs`, and
+`validateLifecycleProviderAwsRegion` in `src/Prodbox/CLI/Vault.hs`. `defaultConfigFile` seeded
+`aws.region` with a literal region while seeding `route53.zone_id`, `aws_substrate.*`, `ses.*`, and
+`pulumi_state_backend.region` empty, so the one coordinate deciding which AWS region every provider
+call lands in was the one coordinate an operator never had to choose. Sprint `1.91` empties the seed, which makes the
+three refusals reachable, and removes in the same change the prompt default that would otherwise
+re-invent the value one layer up. Alongside it: the IAM policy `prodbox aws policy` prints
+comes to name the configured SES capture bucket instead of a compiled one; the three constants
+stating one MinIO signing region collapse to one; and a register-or-fail AWS-coordinate scanner
+joins `prodbox dev check`, measured at 22 matches over `src/` and `app/` with zero false positives and
+carrying no pinned region list. **This is a behaviour change and that is the point**: a deployment
+relying on the implicit region begins refusing at startup instead of provisioning where nobody
+chose. The Pulumi resource envelope — instance types, EBS class and size, node counts, and every
+VPC/subnet CIDR — is explicitly **not** in this reopen; Sprint `7.37` owns it, because
+substrate provision is Phase 7's surface (Standard E).
+
 ✅ **Reclosed 2026-08-04 on Sprint `1.75`** — own-surface reopen (Standard A/N) implementing the
 § 20.5 mechanical outer ring in the quality gate this phase owns. `prodbox dev check` now fails on any
 tracked file carrying a scanned provider credential shape its own exclusions do not cover, scoped to
@@ -2060,7 +2080,7 @@ forbidden now fails to load instead of loading.
 **Independent Validation**: pure, no live infrastructure — a named `-p` filter with an exact count,
 plus a mutation exercise that adds a `SecretRef` field to the config record and confirms the build
 objects at the enumerator, restored byte-exactly.
-**Docs to update**: `documents/engineering/config_doctrine.md`,
+**Docs updated**: `documents/engineering/config_doctrine.md`,
 `documents/engineering/vault_doctrine.md` (§ 20.3 asserted this guard was "enforced today" while it
 had zero call sites; the claim is corrected in place rather than quietly made true)
 
@@ -6585,6 +6605,252 @@ None; the row moves to `Completed`.
 - Record the Phase `1` own-surface reopen in [README.md](README.md) and
   [00-overview.md](00-overview.md). Engineering docs name owning sprints sparingly and link the
   Development Plan; sprint status lives only in the plan suite.
+
+## Sprint 1.91: The Region Rule a Default Disarmed ✅
+
+**Status**: ✅ **Done (2026-08-20)** — Phase `1` own-surface reopen (Standard A/N) on the Tier-0
+coordinate and `dev check` surfaces this phase owns.
+**Implementation**: `src/Prodbox/Settings.hs` (the `defaultConfigFile` `aws.region` seed),
+`src/Prodbox/Aws.hs` (`currentRegionDefault`, `defaultAwsRegion`, `extraPolicyStatements`,
+`buildIamPolicyDocument`), `src/Prodbox/Infra/MinioBackend.hs`,
+`src/Prodbox/Minio/ObjectStoreNative.hs`, `src/Prodbox/CLI/Rke2.hs`,
+`src/Prodbox/Lifecycle/Teardown/CascadeTerminalAudit.hs`, `src/Prodbox/CheckCode.hs`.
+**Blocked by**: none.
+**Live-proof**: pending and non-blocking. The refusals are exercised locally; observing a live AWS
+flow refuse under an unconfigured region needs no new infrastructure and adds no evidence the unit
+and integration suites do not already carry.
+**Deployment qualification**: pending — **not** invalidated on a Standard-P listed surface. No
+process topology, capability wiring, deadline, queue, resource envelope, persistence protocol,
+lifecycle orchestration, destructive cleanup, or substrate route moves; a refusal is not a route.
+The **generated non-secret config identity does change**, because the emitted `aws.region` default
+moves. **Correction (Standard C).** This block said that change superseded "Sprint `1.90`'s pinned
+`prodbox.dhall` digest". No such pin existed: Sprint `1.90` pinned no digest, and the Tier-0
+surface carries no pinned digest at all — Sprint `0.24`'s gate (`checkTier0SiblingDrift`) compares
+the sibling file against what the canonical generator re-emits for the record it decodes to, which
+is a re-derivation rather than a stored constant. Nothing had to be superseded; the regenerated file
+is compared the same way it always was. The generated identity is recorded below as a measured
+digest rather than as a pin.
+**Independent Validation**: compiler, `prodbox dev check`, `prodbox test unit`, and
+`prodbox test integration cli` / `env` on the home substrate. Every deliverable is a refusal, a
+constant collapse, or a compiled scan; none needs AWS, a deployed cluster, or a later phase.
+**Docs to update**: `documents/engineering/config_doctrine.md`,
+`documents/engineering/code_quality.md`, `documents/engineering/cli_command_surface.md`,
+`documents/engineering/local_registry_pipeline.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`, `README.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/substrates.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Three fail-closed rules about the operational AWS region already exist and none of them can fire.
+`requireOperationalAwsRegion` refuses an absent region with an operator remedy;
+`validateOperationalAwsCredentials` refuses an empty one; `validateLifecycleProviderAwsRegion`
+refuses it again on the Vault path. `defaultConfigFile` seeds the field with a literal region, that
+seed propagates into the generated schema default and therefore into every `prodbox config
+generate` output, and the field is consequently never absent. In the same record `route53.zone_id`,
+`aws_substrate.hosted_zone_id`, `ses.sender_domain`, and `pulumi_state_backend.region` are all
+seeded empty. The lone exception is the field that decides which AWS region every provider call
+lands in.
+
+Seed it empty. **This is a behaviour change and it is the deliverable, not a side effect**: a
+deployment that has been relying on the implicit region begins refusing at startup instead of
+provisioning somewhere nobody chose. The change is subtractive — it deletes a value rather than
+adding a check — and the three refusals it activates are already written, already have their
+messages, and are already the supported behaviour on every sibling coordinate.
+
+### The scope rule this sprint applies
+
+A value whose namespace AWS owns, and on which two correct deployments could legitimately differ,
+is operator-supplied Dhall. A value AWS fixes, a value that is not AWS at all, a name prodbox
+chooses for something it creates, and a compiled regression fixture are compiled — each for a
+stated reason, recorded at the definition site. The rule and its four classes are doctrine and live
+in [config_doctrine.md](../documents/engineering/config_doctrine.md) § 0; this sprint applies it and
+does not restate it.
+
+### Deliverables
+
+- `defaultConfigFile` seeds `aws.region` empty, and `prodbox-config-types.dhall` is regenerated
+  through `prodbox config schema` rather than hand-edited. The three refusals become reachable.
+- **The prompt default goes with it.** `currentRegionDefault` substitutes a compiled region when
+  the configured one is empty. That branch is unreachable today precisely *because* the seed is
+  non-empty; emptying the seed makes it the normal first-run path, so this sprint would otherwise
+  move the invented region one layer up rather than remove it. The admin-credential prompt takes a
+  `Maybe AwsRegion` and offers no invented pre-fill when the config carries none — the same move
+  Sprint `1.90` made at its one call site. **Measured first, and it bounds the change to one site.**
+  Four of the five interactive entry points reach `promptAdminCredentialsWithRegionChoice`, which
+  immediately overwrites the pre-fill from a live `aws ec2 describe-regions` selection; with no
+  configured region that selection simply opens on the first row of a list the operator is reading,
+  which is a cursor position rather than a value nobody chose. The one site where the compiled
+  literal actually survives into a credential is the `prodbox aws teardown` prompt, which calls
+  `promptAdminCredentials` directly.
+- The IAM policy `prodbox aws policy` **prints** names the configured SES capture bucket. Today
+  `extraPolicyStatements` compiles `arn:aws:s3:::prodbox-ses-capture` into both capture statements
+  while `buildIamPolicyDocumentForAccountAndCaptureBucket` — which threads the validated
+  `ses.capture_bucket` — is reached only from the unit suite. The printed copy is the one an
+  operator pastes into IAM, so the config-aware builder is the one nobody uses at the moment the
+  grant is created. Route the printed path through it, fail closed on an unconfigured bucket rather
+  than substituting a name, delete both literals, and update the unit assertions that pin them.
+- One MinIO signing-region constant. `minioBackendRegion`, `objectStoreRegion`, and
+  `harborRegistryStorageRegion` state the same fact about the same store; the subprocess arm and
+  the native arm are meant to be substitutable, and a signing-region divergence between them
+  presents as a signature mismatch naming neither. Collapse to one exported constant. **It is
+  explicitly not an AWS coordinate** and does not move to Dhall.
+- One global-service tagging-region constant. `globalTaggingRegion` in the terminal cascade audit
+  restates `globalServiceTaggingRegion` in the reach table without importing it — and the reach
+  table exists specifically so that the provisioning-time join and the audit-time verdict "decide
+  reach from one table rather than from two agreeing statements". Import the leaf and delete the
+  copy. **Bound**: this sprint touches that module only to collapse a duplicated compiled constant;
+  it changes no observation, no verdict, and no teardown behaviour, and teardown ownership does not
+  move.
+- `checkAwsCoordinateLiterals` in `src/Prodbox/CheckCode.hs`, register-or-fail in the idiom of the
+  coverage layer in `src/Prodbox/Legacy/EscapeRegistry.hs` and the bijection in
+  `productionEnvVarRegistry`: each entry names a typed reason, the source symbol, and the exact
+  file set allowed to mention it; an unregistered literal fails, and so does an entry whose symbol
+  is gone. The matcher requires a two-letter geography and a non-zero ordinal — measured at 22
+  matches with zero false positives against 37 with 15 for the loose form — and carries no pinned
+  region list, so `us-gov-west-1`, `cn-northwest-1`, and `us-iso-east-1` match by shape.
+- The 22 matches are registered as 2 configuration defects (both closed by this sprint), 6
+  protocol-fixed, 3 MinIO signing scopes (collapsed to one entry), and 11 compiled regression
+  fixtures. The duplications above are **removed, not registered**: registering both spellings
+  would freeze the duplication inside the gate, which is the enforcing-nothing shape Sprints
+  `1.82`, `4.68`, and `4.72` each had to close.
+
+### What the measurement returned
+
+The 22 is the pre-sprint measurement and it held exactly: the scanner counts **(file, value)
+pairs**, and it found 22 across `src/` and `app/` with zero false positives. The sprint's own
+deletions remove five of those pairs — the `defaultConfigFile` seed, `defaultAwsRegion`, and two of
+the three MinIO spellings — and the collapsed constant's new home adds one, so **18 pairs survive**
+and are the registry's exact size.
+
+One thing the pre-sprint categorisation did not name, and the implementation had to: two of the 22
+are a region inside **operator-facing prose** rather than a value the program uses — the example in
+`renderCoordinateError`'s malformed-region refusal, and the override example in the generated
+schema's own header comment. Neither is any of
+[config_doctrine.md](../documents/engineering/config_doctrine.md) § 0's four compiled classes, and
+filing them as "compiled regression fixture" would have been false. The registry carries a fifth
+typed disposition, `documentation example`, which the doctrine defines as explicitly **not** a fifth
+compiled class. They are registered rather than exempted, because a scanner that skipped prose would
+be one string concatenation away from skipping a real coordinate.
+- Two comments that reason about a prompt default as though it were the deployed region are
+  corrected in place: the module Haddock in `src/Prodbox/Lifecycle/Teardown/TaggingApiReach.hs` and
+  the fixture comment in `test/unit/LifecycleTeardownRetainedInventory.hs`.
+
+### What this sprint does not claim
+
+It makes no claim about the AWS resource envelope. The node-group instance types, node disk size,
+node counts, EC2 instance types, root-volume class and size, and every VPC and subnet CIDR remain
+literals inside `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Main.yaml`, and the operator CIDR
+those programs consume is still fetched at run time rather than authored. Sprint `7.37` owns all of
+it; substrate provision is Phase 7's surface. It also makes no claim about
+`cluster_topology.Eks.node_group_size`, which is declared, decoded, and read by nothing — the
+scanner's region is `src/` and `app/`, so no literal in a Pulumi program is even visible to it.
+
+### Validation
+
+1. `prodbox dev check` exit 0, warning-clean, with `checkAwsCoordinateLiterals` active and its
+   registry complete. ✅ The gate is additionally proven to **refuse** against the live binary
+   rather than only to pass: an unregistered `eu-west-3` added to `src/Prodbox/Repo.hs` fails
+   `prodbox dev lint files` exit 1, naming the file, the value, and the remedy; removing it returns
+   exit 0. ✅
+2. Injection cases in the unit suite: an unregistered AWS-coordinate literal in a scanned module
+   fails; a registered entry whose symbol has been deleted fails; a registered literal in a file
+   outside its declared set fails. The scan is proven to fail in both directions rather than only
+   on a value it has already seen. ✅ Eight cases under "Sprint 1.91 compiled AWS-coordinate
+   registry" in `test/unit/Main.hs`, over the pure `awsCoordinateFindings` core, which takes the
+   registry as a parameter so a mutated registry can be injected. Two more directions are covered
+   beyond the three named here: a declared owner absent from the scanned set fails (so a rename
+   cannot silently empty the region), and the shipped registry may not register one (value, file)
+   pair twice.
+3. **The migration is exercised where the owned surface can decide it.** Each of the three refusals
+   is reached with the region absent and asserts its exact message, and the same three accept a
+   configured one — `requireOperationalAwsRegion`, `validateOperationalAwsCredentials`, and
+   `validateLifecycleProviderAwsRegion`, in `test/unit/Main.hs` under "Sprint 1.91 the three region
+   refusals a seeded default disarmed". ✅
+
+   **Re-scoped (Standard N).** This item was written as an end-to-end `prodbox config validate` run
+   over a generated file. That command resolves a home kubeconfig for Lifecycle Authority
+   authentication before it reaches config validation, so on a host with no running RKE2 cluster it
+   exits 1 naming the kubeconfig and never reaches the field — the item as written was satisfiable
+   only with a deployed cluster, which is a live-infra dependency Standard N forbids a validation
+   item from carrying. The refusals themselves are pure functions on this phase's own surface and
+   are exercised directly. The end-to-end run stays available on the non-blocking `Live-proof` axis
+   and adds no evidence the direct exercise does not already carry.
+4. Every test fixture that consumes `defaultConfigFile` is **enumerated rather than estimated** and
+   updated. `test/integration/CliSuite.hs` already overrides the `aws` section; the enumeration establishes
+   whether any other fixture depends on the seeded value. ✅ The enumeration found **one** other
+   consumer that inherited the seed: `envFixtureConfig` in `test/integration/EnvSuite.hs`, which
+   overrode the session token and nothing else and so described an AWS-capable host with no region.
+   It now states its own region. Two further `defaultConfigFile` consumers were examined and
+   deliberately left inheriting: `topologyConfigSetupInput` in `src/Prodbox/TestRunner.hs`, which
+   derives *every* field from the default on purpose and should carry an empty region exactly as a
+   generated config does, and `resolveGenerateConfigFile` in `src/Prodbox/Native.hs`, which is the
+   generator itself.
+5. `prodbox aws policy` output names the configured capture bucket for both the `core` and `full`
+   tiers, and refuses when the bucket is unconfigured. The unit assertions that pinned the literal
+   are updated rather than deleted. ✅ `buildIamPolicyDocument` and `buildIamPolicyJson` take an
+   `S3BucketName`, so there is no unconfigured inhabitant to substitute; the command arm resolves
+   `requireSesCaptureBucket` and refuses with the field name and its remedy. The `core` tier emits
+   no capture statements at all, so the parameter is threaded and unused there rather than absent.
+6. `prodbox config generate` is **run rather than asserted**: it exits 0, the emitted `aws.region`
+   is empty, and the new file digest is recorded. Sprint `0.24`'s drift gate holds on the
+   regenerated file. ✅ `prodbox config schema` regenerated `prodbox-config-types.dhall`
+   (`aws.region` default now `""`); `prodbox config generate` exited 0 and emitted
+   `, region = ""`; the generated `.build/prodbox.dhall` digests to
+   `0c7a9b54157ae3df435d708ba3fde1b8fa9c9c8cee92b8f216436dac4db23e84`, and `prodbox dev check`
+   passed with that file in place, which is the drift gate comparing it against the generator's
+   canonical rendering. The file is generated and git-ignored, so it is not retained in the
+   worktree afterwards — a present sibling makes a test run fail fast by design
+   ([test_topology_doctrine.md](../documents/engineering/test_topology_doctrine.md)).
+7. `prodbox test unit`, `prodbox test integration cli`, and `prodbox test integration env` pass
+   from a clean post-sprint run. ✅ Unit 4301/4301 (4287 before, +14 this sprint).
+
+### Remaining Work
+
+None. Three residuals are recorded rather than absorbed, and none is sprint-owned work. The AWS
+substrate resource envelope and the run-time-fetched operator CIDR are a provisioning surface and
+are re-owned to Sprint `7.37`. `cluster_topology.Eks.node_group_size` is wired by that sprint rather
+than deleted here, because removing the field changes the committed Dhall wire format that Sprints
+`1.88`-`1.90` deliberately preserved. And the AWS account id stays out of scope by operator
+decision: runtime discovery through `sts get-caller-identity` remains the supported source, and no
+pinning is attempted.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/config_doctrine.md` — § 0's classification rule, the seeded-default clause,
+  § 10's two prohibitions, and the `Intent Ownership` block were authored ahead of this sprint and
+  needed no change. What this sprint changed: § 0's `**Target.**` marker on the register-or-fail
+  rule is retired, because the gate exists — the passage now names `checkAwsCoordinateLiterals`,
+  states the three directions of the bijection, states its `src/`+`app/` region, and defines the
+  fifth `documentation example` disposition as explicitly not a fifth compiled class. § 4's
+  honest-limits list gains the decoded-but-unreached limit, with
+  `cluster_topology.Eks.node_group_size` as the standing instance. `Intent Ownership`'s linked
+  dependents drop the word "scheduled".
+- `documents/engineering/code_quality.md` — § 3 Guard Coverage documents the register-or-fail
+  AWS-coordinate scanner, the measurement that justifies its shape, and its `src/`+`app/` bound. An
+  adjacent sentence that counted "all four families" over a list of six was reworded to carry no
+  count rather than to carry a second unverified one.
+- `documents/engineering/cli_command_surface.md` — the `config` notes record what `config generate`
+  emits and that a freshly generated file is deliberately not deployable; the `aws` notes record
+  that `aws setup` is named by the refusal without becoming a config author.
+- `documents/engineering/local_registry_pipeline.md` — the MinIO signing-region constant is
+  classified in place as a non-AWS compiled value.
+- `documents/engineering/aws_integration_environment_doctrine.md` — § 2.1 defers the
+  compiled-versus-supplied decision to the config doctrine and points at the new § 2.4 inventory.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `1` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md); add the AWS-coordinate registry to
+  [system-components.md](system-components.md); and open the ledger rows in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

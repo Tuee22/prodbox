@@ -40,6 +40,16 @@ import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
 import Prodbox.Lifecycle.CleanupRun (CleanupOperationId)
 import Prodbox.Lifecycle.PulumiCheckpoint
 import Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal
+  ( CapabilityCustodyError
+  , capabilityDependants
+  , dischargeBySucceededAbsenceReadBack
+  , rotateOntoRetiredReference
+  )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CustodialCapability (CheckpointCapability)
+  , recordCapabilityDisposition
+  )
 import Prodbox.Lifecycle.Teardown.Checkpoint
 import Prodbox.Lifecycle.Teardown.CheckpointAuthority
 import Prodbox.Lifecycle.Teardown.Execution
@@ -97,6 +107,9 @@ data AwsCheckpointInterpreterError
   | AwsCheckpointTargetObservationIncomplete !ExactObservationResult
   | AwsCheckpointRestoreInvalid !CheckpointRestoreError
   | AwsCheckpointRetirementInvalid !CheckpointRetirementError
+  | -- | Sprint 4.89: this run cannot show it still holds what makes the stack's
+    -- resources destroyable, so it may not end custody of the checkpoint.
+    AwsCheckpointCustodyUndischarged !CapabilityCustodyError
   | AwsCheckpointAuthorityInvalid !CheckpointAuthorityError
   | AwsCheckpointAuthorityOperationIdMissing
   | AwsCheckpointClientRefused !PulumiCheckpointClientError
@@ -352,11 +365,35 @@ retireAwsStackCheckpointReference interpreter context target = do
   key = registeredTargetKey target
   scope = teardownExecutionObservationScope context
 
+  -- Sprint 4.89: the absences this run already read back, kept rather than
+  -- discarded.  The retirement node waits on a successful
+  -- @ReadBackRegisteredTargetAbsent@ for every resource the checkpoint reaches,
+  -- so the run holds a provider-observed absence for each one; before this
+  -- sprint the interpreter re-observed only its own stack and ended custody of
+  -- a capability reaching families nobody had asked about.
+  succeededAbsenceReadBacks =
+    [ registeredTargetKey readBackTarget
+    | predecessor <- teardownExecutionSuccessfulPredecessors context
+    , ReadBackRegisteredTargetAbsent readBackTarget <-
+        [teardownSucceededPredecessorOperation predecessor]
+    ]
+
+  capability = CheckpointCapability key
+
   retireBound authority exact bound =
+    case dischargeBySucceededAbsenceReadBack
+      capability
+      (capabilityDependants capability)
+      succeededAbsenceReadBacks of
+      Left err -> pure (Left (AwsCheckpointCustodyUndischarged err))
+      Right disposition -> retireDisposed authority exact bound disposition
+
+  retireDisposed authority exact bound disposition =
     case authorizeCheckpointRetirement
       operationId
       RetireActiveCheckpointReference
       scope
+      disposition
       exact
       (boundCheckpointPairObservation bound) of
       Left err -> pure (Left (AwsCheckpointRetirementInvalid err))
@@ -388,6 +425,7 @@ retireAwsStackCheckpointReference interpreter context target = do
                   ( verifiedPulumiCheckpointDigest
                       <$> boundCheckpointPairReference bound
                   )
+                  (recordCapabilityDisposition disposition)
                   (boundCheckpointPairReference bound)
               pure
                 ( Right
@@ -426,6 +464,7 @@ readBackAwsStackCheckpointRetirement interpreter context target =
  where
   key = registeredTargetKey target
   scope = teardownExecutionObservationScope context
+  capability = CheckpointCapability key
 
   readBackRetirement authority attemptOperation exact = do
     observed <-
@@ -470,12 +509,24 @@ readBackAwsStackCheckpointRetirement interpreter context target =
   confirmRetiredReference attemptOperation exact recovered retiredReference = do
     _ <- bindRecovered recovered retiredReference
     pair <- exactPairForReference key scope retiredReference
+    -- Sprint 4.89: the read-back's own discharge.  It has just observed the
+    -- Lifecycle Authority holding the reference in its retired set, which is
+    -- the evidence that the capability moved rather than ceased — so it
+    -- reconstructs the authorization against a rotation onto that retained
+    -- reference rather than re-deriving the retirement's absence discharge from
+    -- an ordering it deliberately does not wait on.
+    custody <-
+      either
+        (Left . AwsCheckpointCustodyUndischarged)
+        Right
+        (rotateOntoRetiredReference capability)
     authorization <-
       mapRetirement
         ( authorizeCheckpointRetirement
             attemptOperation
             RetireActiveCheckpointReference
             scope
+            custody
             exact
             pair
         )

@@ -26,7 +26,6 @@ module Prodbox.Minio.ObjectStoreNative
   , ensureObjectStoreBucket
   , S3Timestamp (..)
   , signS3Request
-  , objectStoreRegion
   , objectStoreService
   )
 where
@@ -55,9 +54,6 @@ import Network.HTTP.Types.Status (statusCode)
 import Prodbox.Aws.SigV4
 import Prodbox.Http.Client (sharedTlsManager)
 import Prodbox.Minio.ObjectStoreTypes
-
-objectStoreRegion :: ByteString
-objectStoreRegion = "us-east-1"
 
 objectStoreService :: ByteString
 objectStoreService = "s3"
@@ -110,7 +106,7 @@ signS3Request credentials hostHeader httpMethod rawPath rawQuery body extraHeade
   scope =
     SigV4Scope
       { sigV4DateStamp = s3DateStamp timestamp
-      , sigV4Region = objectStoreRegion
+      , sigV4Region = minioSigningRegionBytes
       , sigV4Service = objectStoreService
       }
   request =

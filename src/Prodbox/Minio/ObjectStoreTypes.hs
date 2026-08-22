@@ -12,11 +12,34 @@ module Prodbox.Minio.ObjectStoreTypes
   , ConditionalPutResult (..)
   , ConditionalDeleteResult (..)
   , defaultObjectStoreBucket
+  , minioSigningRegion
+  , minioSigningRegionBytes
   )
 where
 
 import Data.ByteString (ByteString)
+import Data.ByteString.Char8 qualified as BS8
 import Data.Text (Text)
+
+-- | Sprint 1.91: the one SigV4 signing scope the Model-B object store is
+-- addressed under.
+--
+-- Three constants stated this same fact — the subprocess backend's, the native
+-- client's, and the container registry's storage backend — and the subprocess
+-- and native arms are deliberately substitutable. A signing-region divergence
+-- between two substitutable arms presents as a signature mismatch that names
+-- neither of them, so agreeing today is not the same as being one value.
+--
+-- __It is not an AWS coordinate.__ MinIO requires a region in the SigV4 scope
+-- string and ignores which one; no AWS account is reached and no AWS namespace
+-- is consulted. It is @config_doctrine.md@ § 0's second compiled class ("not
+-- AWS"), not a deployment choice, and it does not move to Dhall.
+minioSigningRegion :: String
+minioSigningRegion = "us-east-1"
+
+-- | 'minioSigningRegion' in the encoding the signing algebra consumes.
+minioSigningRegionBytes :: ByteString
+minioSigningRegionBytes = BS8.pack minioSigningRegion
 
 data ObjectStoreConfig = ObjectStoreConfig
   { objectStoreEndpoint :: String

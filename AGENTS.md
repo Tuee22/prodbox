@@ -39,8 +39,12 @@ bounded workers/adapters remain available for every AWS-targeted operation.
   `prodbox charts reconcile ...`, `prodbox gateway ...`, `prodbox cluster delete --yes`
   and `prodbox cluster delete --cascade --yes`. Running these on this host is the supported,
   expected operation, not an unauthorized state change. The current cascade is a pre-cutover
-  implementation: a non-zero result is unresolved and is not evidence that per-run AWS resources
-  are absent. Target behavior and rollout status live in
+  implementation, and **neither exit code is evidence about AWS**: a non-zero result is unresolved,
+  and a zero result is not a completion receipt. The no-install short-circuit belongs to local-only
+  delete alone — a cascade with no RKE2 install reaches no phase and exits non-zero — so no cascade
+  exit reports a success it did not observe. Neither exit licenses deleting the retained root — see
+  [Retained Storage Lifecycle Doctrine § 7](documents/engineering/storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root)
+  rule 10 for what does. Target behavior and rollout status live in
   [DEVELOPMENT_PLAN/README.md → Resume Here](DEVELOPMENT_PLAN/README.md#resume-here).
 - AWS substrate + end-to-end: `prodbox test all`, `prodbox test all --substrate aws`,
   `prodbox test integration <name> --substrate aws`, and `prodbox aws stack <cli-verb>

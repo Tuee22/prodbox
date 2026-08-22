@@ -1255,8 +1255,10 @@ rke2DeleteFlagsParser =
                 ++ "sweep — as one atomic operator action. Every phase runs "
                 ++ "even when an earlier one fails, and the run reports "
                 ++ "success only if each phase could confirm its own outcome. "
-                ++ "Without --cascade, `cluster delete` is a pure local "
-                ++ "uninstall and leaves per-run AWS stacks untouched."
+                ++ "With no RKE2 install present the cascade reaches no phase "
+                ++ "and exits non-zero: local absence is not per-run AWS "
+                ++ "absence. Without --cascade, `cluster delete` is a pure "
+                ++ "local uninstall and leaves per-run AWS stacks untouched."
             )
       )
 
@@ -2296,7 +2298,7 @@ clusterGroup =
     , leaf
         "delete"
         "Delete the local cluster"
-        "Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (including the MinIO-backed per-run Pulumi state and the durable Vault PV) without querying, gating on, or destroying the per-run AWS Pulumi backend — so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable."
+        "Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (including the MinIO-backed per-run Pulumi state and the durable Vault PV) without querying, gating on, or destroying the per-run AWS Pulumi backend — so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. With no RKE2 install present the default mode exits 0 having done nothing. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully within a reachable run, but a cascade with no RKE2 install present reaches no phase at all and exits non-zero rather than reporting a success it did not observe. No cascade exit authorizes deleting the retained root."
         [ flagOption "yes" (Just 'y') Nothing "Confirm full cluster deletion"
         , flagOption
             "cascade"

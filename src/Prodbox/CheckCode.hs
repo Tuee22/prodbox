@@ -16,6 +16,7 @@ module Prodbox.CheckCode
   , untypedLifecycleInventoryViolations
   , legacyOperationalResourceParityViolations
   , registeredTargetExecutorViolations
+  , capabilityDependantDerivationViolations
   , ownershipEdgeDerivationViolations
   , codeCreatedResourceFieldOfViewViolations
   , checkRegisteredStackProvisioningPrograms
@@ -30,6 +31,15 @@ module Prodbox.CheckCode
   , checkWorkerImagePullReferenceOwner
   , checkForbidDotProdboxState
   , checkLegacyEscapeRegistry
+  , checkAwsCoordinateLiterals
+  , awsCoordinateLiteralRegistry
+  , awsCoordinateLiteralsIn
+  , awsCoordinateFindings
+  , awsCoordinateRegistered
+  , awsCoordinateRegistryOwners
+  , AwsCoordinateLiteral (..)
+  , AwsCoordinateReason (..)
+  , isAwsRegionShapedToken
   , checkProductionEnvVarReads
   , productionEnvVarRegistry
   , ProductionEnvVarRead (..)
@@ -58,6 +68,7 @@ module Prodbox.CheckCode
   , developmentPlanResumeViolations
   , sprintBlockMissingFields
   , sprintDependencyDirectionViolations
+  , executionOrderViolations
   , sprintDependencyFields
   , sprintLiveDependencyIds
   , compareSprintIds
@@ -124,7 +135,7 @@ where
 import Control.Exception (evaluate)
 import Control.Monad (filterM, forM)
 import Data.ByteString.Char8 qualified as ByteStringChar8
-import Data.Char (isAlpha, isAlphaNum, isAsciiUpper, isDigit, isSpace, toLower)
+import Data.Char (isAlpha, isAlphaNum, isAsciiLower, isAsciiUpper, isDigit, isSpace, toLower)
 import Data.Either (rights)
 import Data.List
   ( dropWhileEnd
@@ -208,6 +219,9 @@ import Prodbox.Lifecycle.Teardown.AuditFieldOfView
   ( auditFieldOfViewViolations
   , parseProvisioningProgram
   , renderProvisioningProgramParseError
+  )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal
+  ( capabilityDependantDerivationViolations
   )
 import Prodbox.Lifecycle.Teardown.Model
   ( CleanupSurface
@@ -1814,6 +1828,10 @@ runDoctrineAlignmentCheck repoRoot = do
   -- create-site coverage gate because it is the same shape — a registry the
   -- worktree must agree with, rather than a claim about it.
   productionEnvVarViolations <- checkProductionEnvVarReads repoRoot
+  -- Sprint 1.91: the compiled-AWS-coordinate registry. Same register-or-fail
+  -- shape as the read registry above, over the partition config_doctrine.md § 0
+  -- draws between a value AWS fixes and a value an operator chooses.
+  awsCoordinateViolations <- checkAwsCoordinateLiterals repoRoot
   -- Sprint 7.12: substrate equivalence is a structural invariant — a shared
   -- platform component's chart version / image must come from the single
   -- 'Prodbox.ContainerImage' pin, never be re-pinned on a per-substrate
@@ -1829,6 +1847,7 @@ runDoctrineAlignmentCheck repoRoot = do
     ++ map ("- " ++) legacyOperationalResourceParityViolations
     ++ map ("- " ++) registeredTargetExecutorViolations
     ++ map ("- " ++) ownershipEdgeDerivationViolations
+    ++ map ("- " ++) capabilityDependantDerivationViolations
     ++ map ("- " ++) codeCreatedResourceFieldOfViewViolations
     ++ map ("- " ++) decommissionProgramTagParityViolations
     ++ map ("- " ++) decommissionInterpreterIdentityViolations
@@ -1836,6 +1855,7 @@ runDoctrineAlignmentCheck repoRoot = do
     ++ map ("- " ++) effectRegistryLifecycleClassViolations
     ++ map ("- " ++) operationalCredentialCoverageViolations
     ++ map ("- " ++) productionEnvVarViolations
+    ++ map ("- " ++) awsCoordinateViolations
     ++ map ("- " ++) substrateImagePinningViolations' of
     [] -> pure ExitSuccess
     violations ->
@@ -1856,7 +1876,7 @@ runDoctrineAlignmentCheck repoRoot = do
                   ++ "disagrees with the compiled program or the manifest node "
                   ++ "universe, and operational-credential "
                   ++ "consumers the compiled cascade program does not order before its "
-                  ++ "terminal audit:"
+                  ++ "terminal audit, and unregistered compiled AWS coordinates:"
               )
                 : violations
                 ++ ["Rerun `./.build/prodbox dev check` after addressing the listed items."]
@@ -5171,6 +5191,350 @@ checkProductionEnvVarReads repoRoot = do
         ]
   pure (unregistered ++ outsideOwner ++ orphanEntries)
 
+-- | Sprint 1.91: why one compiled AWS-coordinate literal is not a value an
+-- operator should have chosen.
+--
+-- The first four are @config_doctrine.md@ § 0's four compiled classes, in
+-- order. 'AwsCoordinateDocumentationExample' is deliberately __not__ a fifth
+-- compiled class: it marks a coordinate that appears inside operator-facing
+-- prose (a refusal message, a generated schema header) and is never a value the
+-- program uses. It is registered rather than exempted because a scanner that
+-- skipped prose would be one string-concatenation away from skipping a real
+-- coordinate.
+data AwsCoordinateReason
+  = AwsCoordinateProtocolFixed
+  | AwsCoordinateNotAws
+  | AwsCoordinateProdboxIdentity
+  | AwsCoordinateRegressionFixture
+  | AwsCoordinateDocumentationExample
+  deriving (Eq, Show)
+
+-- | The reason as it appears in a refusal.
+renderAwsCoordinateReason :: AwsCoordinateReason -> String
+renderAwsCoordinateReason reason = case reason of
+  AwsCoordinateProtocolFixed -> "protocol-fixed"
+  AwsCoordinateNotAws -> "not AWS"
+  AwsCoordinateProdboxIdentity -> "prodbox-chosen identity"
+  AwsCoordinateRegressionFixture -> "compiled regression fixture"
+  AwsCoordinateDocumentationExample -> "documentation example"
+
+-- | Sprint 1.91: one registered compiled AWS-coordinate literal.
+data AwsCoordinateLiteral = AwsCoordinateLiteral
+  { awsCoordinateValue :: String
+  -- ^ The exact region-shaped token, as it appears inside the literal.
+  , awsCoordinateSymbol :: String
+  -- ^ The top-level source symbol that holds or decides it. The gate refuses
+  -- when this symbol is gone, so a registry entry cannot outlive the code it
+  -- describes.
+  , awsCoordinateOwners :: [FilePath]
+  -- ^ The exact repo-relative file set permitted to mention the value.
+  , awsCoordinateReason :: AwsCoordinateReason
+  , awsCoordinateNote :: String
+  -- ^ Why this reason covers this value, in one sentence.
+  }
+
+-- | Sprint 1.91: every AWS-region-shaped literal a scanned module may compile
+-- in, with the symbol that holds it and the reason it is not a deployment
+-- choice.
+--
+-- @config_doctrine.md@ § 0 states the partition and refuses to let "the
+-- deployment we happen to run uses this one" be a reason. This is the
+-- enforcement, in the register-or-fail idiom of 'productionEnvVarRegistry' and
+-- "Prodbox.Legacy.EscapeRegistry": an unregistered literal fails, a literal in
+-- a file outside its declared set fails, and an entry whose symbol no longer
+-- exists fails.
+--
+-- __Measured, not asserted.__ The matcher was run against @src\/@ and @app\/@
+-- before the sprint's own deletions and found __22__ (file, value) pairs with
+-- zero false positives: 2 configuration defects (the seeded @aws.region@ and
+-- the prompt default, both closed by Sprint 1.91), 3 MinIO signing scopes
+-- (collapsed to one constant), 6 protocol-fixed, and 11 values that are
+-- fixtures or prose. The loose form that drops the two-letter-geography rule
+-- found 37 with 15 false positives, which is why the shape is the strict one.
+-- __18__ pairs survive; Sprint @4.86@ registered a nineteenth when the cascade
+-- candidate entrypoint's fixed regression gained the same fixture scope.
+awsCoordinateLiteralRegistry :: [AwsCoordinateLiteral]
+awsCoordinateLiteralRegistry =
+  [ AwsCoordinateLiteral
+      globalSigningRegion
+      "iamScope"
+      ["src/Prodbox/Aws/Native/Iam.hs"]
+      AwsCoordinateProtocolFixed
+      "IAM is a global service and signs in one region; a deployment cannot choose otherwise."
+  , AwsCoordinateLiteral
+      globalSigningRegion
+      "route53Scope"
+      ["src/Prodbox/Aws/Native/Route53.hs"]
+      AwsCoordinateProtocolFixed
+      "Route 53 is a global service and signs in one region."
+  , AwsCoordinateLiteral
+      globalSigningRegion
+      "renderCreateBucketXml"
+      ["src/Prodbox/Aws/Native/S3.hs"]
+      AwsCoordinateProtocolFixed
+      "S3 requires `CreateBucket` in this one region to omit `LocationConstraint` entirely."
+  , AwsCoordinateLiteral
+      globalSigningRegion
+      "applySesCaptureBucket"
+      ["src/Prodbox/ControlPlane/ProviderProduction.hs"]
+      AwsCoordinateProtocolFixed
+      "The same `CreateBucket` rule, on the subprocess arm; the configured region is the input."
+  , AwsCoordinateLiteral
+      globalSigningRegion
+      "globalServiceTaggingRegion"
+      ["src/Prodbox/Lifecycle/Teardown/TaggingApiReach.hs"]
+      AwsCoordinateProtocolFixed
+      "The Resource Groups Tagging API answers for global services from one region only."
+  , AwsCoordinateLiteral
+      globalSigningRegion
+      "minioSigningRegion"
+      ["src/Prodbox/Minio/ObjectStoreTypes.hs"]
+      AwsCoordinateNotAws
+      "MinIO requires a SigV4 signing scope and ignores which; no AWS account is reached."
+  , AwsCoordinateLiteral
+      globalSigningRegion
+      "renderCoordinateError"
+      ["src/Prodbox/Settings/Coordinate.hs"]
+      AwsCoordinateDocumentationExample
+      "An example inside the refusal a malformed `aws.region` produces."
+  , AwsCoordinateLiteral
+      "us-west-2"
+      "configTypesHeader"
+      ["src/Prodbox/Config/SchemaDhall.hs"]
+      AwsCoordinateDocumentationExample
+      "An override example in the generated schema's own header comment."
+  , AwsCoordinateLiteral
+      globalSigningRegion
+      "fixedAuditScenario"
+      ["src/Prodbox/Lifecycle/Teardown/CascadeTerminalAudit.hs"]
+      AwsCoordinateRegressionFixture
+      "The escapee cluster ARN the terminal-audit verdict fixtures classify."
+  , AwsCoordinateLiteral
+      fixtureRegion
+      "regressionAwsScope"
+      ["src/Prodbox/ControlPlane/CleanupProgramDescriptorRepository/Internal.hs"]
+      AwsCoordinateRegressionFixture
+      fixtureRegionNote
+  , AwsCoordinateLiteral
+      fixtureRegion
+      "regressionAwsScope"
+      ["src/Prodbox/ControlPlane/DescriptorBoundLifecycleRuntime/Internal.hs"]
+      AwsCoordinateRegressionFixture
+      fixtureRegionNote
+  , AwsCoordinateLiteral
+      fixtureRegion
+      "regressionInputs"
+      ["src/Prodbox/Lifecycle/Teardown/CascadeCandidate/Internal.hs"]
+      AwsCoordinateRegressionFixture
+      fixtureRegionNote
+  , AwsCoordinateLiteral
+      fixtureRegion
+      "fixedProviderCredentialSessionRegression"
+      ["src/Prodbox/ControlPlane/ProviderCredentialSession/Internal.hs"]
+      AwsCoordinateRegressionFixture
+      fixtureRegionNote
+  , AwsCoordinateLiteral
+      fixtureRegion
+      "fixedCascadeAwsScope"
+      ["src/Prodbox/Lifecycle/Teardown/CascadeEvidence/Internal.hs"]
+      AwsCoordinateRegressionFixture
+      fixtureRegionNote
+  , AwsCoordinateLiteral
+      fixtureRegion
+      "fixtureAwsScope"
+      ["src/Prodbox/Lifecycle/Teardown/RecoveryPlane/Internal.hs"]
+      AwsCoordinateRegressionFixture
+      fixtureRegionNote
+  , AwsCoordinateLiteral
+      fixtureRegion
+      "regressionAwsScope"
+      ["src/Prodbox/Lifecycle/Teardown/RecoveryPlaneInterpreter/Internal.hs"]
+      AwsCoordinateRegressionFixture
+      fixtureRegionNote
+  , AwsCoordinateLiteral
+      fixtureRegion
+      "fixedAwsScope"
+      ["src/Prodbox/Lifecycle/Teardown/RecoveryRequirement/Internal.hs"]
+      AwsCoordinateRegressionFixture
+      fixtureRegionNote
+  , AwsCoordinateLiteral
+      fixtureRegion
+      "fixedReportAwsScope"
+      ["src/Prodbox/Lifecycle/Teardown/Report/Internal.hs"]
+      AwsCoordinateRegressionFixture
+      fixtureRegionNote
+  , AwsCoordinateLiteral
+      fixtureRegion
+      "canonicalTeardownEvidenceScope"
+      ["src/Prodbox/Test/Qualification/TeardownCounterexample.hs"]
+      AwsCoordinateRegressionFixture
+      fixtureRegionNote
+  ]
+ where
+  -- Spelled once so the registry does not become the duplication it exists to
+  -- forbid.
+  globalSigningRegion = "us-" ++ "east-1"
+  fixtureRegion = "ca-" ++ "central-1"
+  fixtureRegionNote =
+    "A fixture scope, deliberately not the global signing region, so a test can \
+    \distinguish an audit taken inside it from one taken outside."
+
+-- | Sprint 1.91 (pure). Whether a token has the shape of an AWS region name.
+--
+-- A two-letter geography, one or more lowercase words, and a non-zero ordinal.
+-- Deliberately a shape and not a pinned list, for the reason
+-- "Prodbox.Settings.Coordinate" gives at 'Prodbox.Settings.Coordinate.mkAwsRegion':
+-- a repository-pinned region list refuses a legitimate value the day after AWS
+-- launches one. @us-gov-west-1@, @cn-northwest-1@, and @us-iso-east-1@ match by
+-- shape without appearing anywhere here.
+--
+-- The two-letter geography is what makes the scan usable: without it the same
+-- scan matches @x-amz-content-sha256@-shaped protocol tokens and every other
+-- hyphenated identifier ending in a digit.
+isAwsRegionShapedToken :: String -> Bool
+isAwsRegionShapedToken token =
+  case splitOnHyphen token of
+    (geography : rest@(_ : _ : _)) ->
+      isLowerWordOfLength 2 geography
+        && all isLowerWord (init rest)
+        && isNonZeroOrdinal (last rest)
+    _ -> False
+ where
+  isLowerWord segment = not (null segment) && all isAsciiLower segment
+  isLowerWordOfLength len segment = length segment == len && isLowerWord segment
+  isNonZeroOrdinal segment = case segment of
+    [] -> False
+    (leading : _) ->
+      all isDigit segment && length segment <= 2 && leading /= '0'
+
+-- | Sprint 1.91 (pure). Split on @-@, keeping empty segments so a malformed
+-- token cannot pass by collapsing them.
+splitOnHyphen :: String -> [String]
+splitOnHyphen value =
+  case break (== '-') value of
+    (segment, []) -> [segment]
+    (segment, _ : rest) -> segment : splitOnHyphen rest
+
+-- | Sprint 1.91 (pure). The maximal @[a-z0-9-]@ runs of a string. A region
+-- inside a larger literal (@arn:aws:eks:us-east-1:...@) is one such run,
+-- because every ARN and URL delimiter breaks the run.
+coordinateTokens :: String -> [String]
+coordinateTokens = filter (not . null) . foldr step [[]]
+ where
+  step character (current : rest)
+    | isCoordinateCharacter character = (character : current) : rest
+    | otherwise = [] : current : rest
+  step _ [] = [[]]
+  isCoordinateCharacter character =
+    isAsciiLower character || isDigit character || character == '-'
+
+-- | Sprint 1.91 (pure). The AWS-region-shaped values a source file compiles,
+-- read from its string literals only. Comments are excluded because a comment
+-- is not a value; the two that reasoned about a prompt default as though it
+-- were the deployed region were corrected in place instead. Exposed for unit
+-- tests.
+awsCoordinateLiteralsIn :: String -> [String]
+awsCoordinateLiteralsIn contents =
+  dedupeSorted
+    [ token
+    | literal <- extractStringLiterals contents
+    , token <- coordinateTokens literal
+    , isAwsRegionShapedToken token
+    ]
+
+-- | Sprint 1.91 (pure). Whether a registry admits this value in this file.
+-- Exposed for unit tests.
+awsCoordinateRegistered :: [AwsCoordinateLiteral] -> FilePath -> String -> Bool
+awsCoordinateRegistered registry path value =
+  any
+    (\entry -> awsCoordinateValue entry == value && path `elem` awsCoordinateOwners entry)
+    registry
+
+-- | Sprint 1.91 (pure). Every file a registry declares, for the
+-- symbol-survival half of the bijection. Exposed for unit tests.
+awsCoordinateRegistryOwners :: [AwsCoordinateLiteral] -> [FilePath]
+awsCoordinateRegistryOwners = dedupeSorted . concatMap awsCoordinateOwners
+
+-- | Sprint 1.91 (pure). The bijection, expressed over observations rather than
+-- over the filesystem, so all three directions are injection-testable: an
+-- unregistered literal, a registered literal observed outside its declared file
+-- set, and a registry entry whose symbol no longer exists.
+--
+-- The registry is a parameter rather than a global for exactly that reason. A
+-- gate that can only be exercised against the tree it already passes on has
+-- been observed to pass, not to refuse.
+awsCoordinateFindings
+  :: [AwsCoordinateLiteral]
+  -- ^ The registry under test.
+  -> [FilePath]
+  -- ^ Every scanned path.
+  -> [(FilePath, [String])]
+  -- ^ The AWS-coordinate literals observed per scanned path.
+  -> [(FilePath, [String])]
+  -- ^ The source identifiers of each registry-declared path that was scanned.
+  -> [String]
+awsCoordinateFindings registry scanned observedByPath symbolsByOwner =
+  unregistered ++ missingOwners ++ orphanEntries
+ where
+  observed = [(path, value) | (path, values) <- observedByPath, value <- values]
+  unregistered =
+    [ path
+        ++ " compiles the AWS-coordinate literal `"
+        ++ value
+        ++ "`, which `awsCoordinateLiteralRegistry` does not admit here. Register "
+        ++ "it with the symbol that holds it and exactly one of the compiled "
+        ++ "reasons, or make the value operator-supplied Tier-0 Dhall "
+        ++ "(config_doctrine.md § 0)."
+    | (path, value) <- observed
+    , not (awsCoordinateRegistered registry path value)
+    ]
+  missingOwners =
+    [ scopedPathMissingViolation "`awsCoordinateLiteralRegistry`" relativePath
+    | relativePath <- awsCoordinateRegistryOwners registry
+    , relativePath `notElem` scanned
+    ]
+  orphanEntries =
+    [ "`awsCoordinateLiteralRegistry` registers `"
+        ++ awsCoordinateValue entry
+        ++ "` ("
+        ++ renderAwsCoordinateReason (awsCoordinateReason entry)
+        ++ ") against the symbol `"
+        ++ awsCoordinateSymbol entry
+        ++ "`, which no longer exists in "
+        ++ intercalate ", " (awsCoordinateOwners entry)
+        ++ ". Remove the entry so the registry stays a description of the "
+        ++ "worktree rather than a memory of it."
+    | entry <- registry
+    , not (any (symbolPresentIn entry) (awsCoordinateOwners entry))
+    ]
+  symbolPresentIn entry owner =
+    maybe False (awsCoordinateSymbol entry `elem`) (lookup owner symbolsByOwner)
+
+-- | Sprint 1.91 (IO). The compiled-AWS-coordinate register-or-fail bijection.
+--
+-- Scoped to @src\/@ and @app\/@, which is the region in which a literal can
+-- reach a live AWS call. A literal in a Pulumi program under @pulumi\/@ is not
+-- visible to this gate and is not claimed to be: the AWS substrate resource
+-- envelope is a provisioning surface owned elsewhere.
+checkAwsCoordinateLiterals :: FilePath -> IO [String]
+checkAwsCoordinateLiterals repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let scanPath path =
+        (".hs" `isSuffixOf` path)
+          && any (`isPrefixOf` path) ["src/", "app/"]
+          && path /= forbidLintSelfPath
+      scanned = [path | path <- repoPaths, scanPath path]
+      registry = awsCoordinateLiteralRegistry
+  observedByPath <-
+    forM scanned $ \relativePath -> do
+      contents <- readFileStrict (repoRoot </> relativePath)
+      pure (relativePath, awsCoordinateLiteralsIn contents)
+  symbolsByOwner <-
+    forM (filter (`elem` scanned) (awsCoordinateRegistryOwners registry)) $ \relativePath -> do
+      contents <- readFileStrict (repoRoot </> relativePath)
+      pure (relativePath, sourceIdentifiers contents)
+  pure (awsCoordinateFindings registry scanned observedByPath symbolsByOwner)
+
 -- | Sprint 0.28 (pure). The violation a path-scoped gate emits when one of its
 -- scoped files is not in the worktree.
 --
@@ -5381,7 +5745,7 @@ developmentPlanResumeViolations planDocuments =
   queueIds = [sprintId | (_, sprintId, _, _, _) <- resumeRows]
   queueShapeViolations =
     sequentialOrderViolations resumeRows
-      ++ numericOrderViolations resumeRows
+      ++ executionOrderViolations resumeRows
       ++ nextEntryViolations resumeRows
       ++ rowPhaseViolations resumeRows
       ++ rowStateViolations openSprints resumeRows
@@ -5390,6 +5754,41 @@ developmentPlanResumeViolations planDocuments =
          | sprintId <- nub queueIds
          , length (filter (== sprintId) queueIds) > 1
          ]
+      ++ queueProjectionViolations
+  -- Sprint 0.32: the declared fields and the queue cells were two unrelated
+  -- channels — 'checkPlanDependencyDirection' reads only phase docs and never
+  -- opens the queue, and this ledger reads only the queue and never opens a
+  -- dependency field.  A dependency declared in a field but absent from its
+  -- queue cell therefore contributed nothing to the ordering proof, which is
+  -- what makes 'executionOrderViolations' a derivation over the real graph
+  -- rather than over whatever the author chose to restate.
+  --
+  -- Scoped to open sprints: a dependency on a `Done` sprint is not a queue row
+  -- and has nothing to project onto.
+  queueProjectionViolations =
+    [ "The Resume Here row for Sprint `"
+        ++ sprintId
+        ++ "` omits dependency `"
+        ++ dependencyId
+        ++ "`, which its phase block declares under `**"
+        ++ fieldName
+        ++ "**`. The queue's order proves workability only when it carries "
+        ++ "every declared dependency (Standards J/N.2)."
+    | (_, heading, body) <- sprintBlocks
+    , Just sprintId <- [sprintIdFromHeading heading]
+    , sprintId `elem` queueIds
+    , (fieldName, fieldText) <- sprintDependencyFields body
+    , fieldName `elem` planDependencyFieldNames
+    , dependencyId <- nub (sprintLiveDependencyIds fieldText)
+    , dependencyId `elem` openIds
+    , dependencyId `notElem` queueDependenciesOf sprintId
+    ]
+  queueDependenciesOf sprintId =
+    concat
+      [ dependencyIds
+      | (_, rowId, _, _, dependencyIds) <- resumeRows
+      , rowId == sprintId
+      ]
   openIds = map fst openSprints
   queueCoverageViolations =
     [ "Open Sprint `"
@@ -5538,16 +5937,61 @@ sequentialOrderViolations rows =
  where
   firstOfFive (value, _, _, _, _) = value
 
-numericOrderViolations :: [(Int, String, String, String, [String])] -> [String]
-numericOrderViolations rows =
-  [ "Resume Here sprint ids must be in strict numerical order; found `"
-      ++ intercalate " -> " sprintIds
-      ++ "`."
-  | not (and (zipWith (<) numericKeys (drop 1 numericKeys)))
-  ]
+-- | Sprint 0.32: the queue's order is a /derivation/ over the declared
+-- dependency graph, not an authored sequence (Standards J and N.2).
+--
+-- Strict numerical order was the rule until 2026-08-21.  It was doing three
+-- jobs: spelling Standard J's "in numerical order"; making the positional rule
+-- in 'rowDependencyViolations' coincide with Standard N's numeric direction
+-- rule; and making the order a function of the queue's contents, so nobody can
+-- hand-promote a row to @Next@ or reorder until a dependency looks satisfied.
+-- Standard N.2 gives up the second job deliberately.  This keeps the third,
+-- which simply deleting the rule would have lost.
+--
+-- The order is: repeatedly emit the numerically smallest open sprint all of
+-- whose declared dependencies are already emitted.  With no backward
+-- dependency declared that is exactly ascending numerical order, so this
+-- strictly generalises the rule it replaces rather than relaxing it.  A cycle
+-- is the case in which no complete order exists, and is reported as itself.
+executionOrderViolations :: [(Int, String, String, String, [String])] -> [String]
+executionOrderViolations rows
+  | length canonical /= length rows =
+      [ "The Resume Here dependencies contain a cycle among `"
+          ++ intercalate ", " unresolvable
+          ++ "`; no row in that set can be worked first."
+      ]
+  | canonical /= sprintIds =
+      [ "Resume Here must list open sprints in execution order, which is "
+          ++ "derived from the declared dependencies rather than authored "
+          ++ "(Standard J). Expected `"
+          ++ intercalate " -> " canonical
+          ++ "`; found `"
+          ++ intercalate " -> " sprintIds
+          ++ "`."
+      ]
+  | otherwise = []
  where
   sprintIds = [sprintId | (_, sprintId, _, _, _) <- rows]
-  numericKeys = [key | sprintId <- sprintIds, Just key <- [numericSprintKey sprintId]]
+  dependenciesOf sprintId =
+    [ dependencyId
+    | (_, rowId, _, _, dependencyIds) <- rows
+    , rowId == sprintId
+    , dependencyId <- dependencyIds
+    , dependencyId `elem` sprintIds
+    ]
+  canonical = emit [] sprintIds
+  unresolvable = filter (`notElem` canonical) sprintIds
+  emit _ [] = []
+  emit done pending =
+    case filter ready pending of
+      [] -> []
+      candidates ->
+        let next = foldr1 smallest candidates
+         in next : emit (next : done) (filter (/= next) pending)
+   where
+    ready sprintId = all (`elem` done) (dependenciesOf sprintId)
+    smallest left right =
+      if compareSprintIds left right == GT then right else left
 
 nextEntryViolations :: [(Int, String, String, String, [String])] -> [String]
 nextEntryViolations rows =
@@ -5864,6 +6308,57 @@ checkSprintRequiredFields repoRoot = do
 planDependencyFieldNames :: [String]
 planDependencyFieldNames = ["Blocked by", "Closure dependency"]
 
+-- | Sprint 0.31: the field in which a sprint /admits/ a backward dependency
+-- already recorded in one of the two above (Standard N.2).
+--
+-- It records no dependency of its own.  Its whole job is to make a physical
+-- backward dependency sayable: the 2026-08-21 audit found that forbidding the
+-- declaration had not removed a single real dependency, it had moved four of
+-- them into prose where no gate could see them — including one on the queue
+-- head.  The two directions must agree, so neither an unadmitted backward
+-- dependency nor an orphan admission can survive this gate.
+planBackwardDependencyFieldName :: String
+planBackwardDependencyFieldName = "Backward dependency"
+
+-- | The minimum non-identifier text a `**Backward dependency**` field must
+-- carry.
+--
+-- Standard N.2 requires one sentence naming what would be stranded.  This
+-- checks that a justification was /written/, not that it is true — a bound
+-- worth stating rather than implying, in the idiom of the other declaration
+-- proofs in this module.
+minimumBackwardDependencyJustificationChars :: Int
+minimumBackwardDependencyJustificationChars = 40
+
+-- | The sprint ids a `**Backward dependency**` field admits.
+--
+-- Deliberately not 'sprintLiveDependencyIds'. That function suppresses a whole
+-- field when it reads as a historical resolution note, which is right for a
+-- dependency field and wrong here: this field is /required/ to carry a
+-- justification sentence in the same line, and a justification is ordinary
+-- prose that may legitimately contain a word like @unresolved@. Running the
+-- resolution scan over it would silently void the admission and let the
+-- unadmitted dependency through — the same shape as the prose hole this whole
+-- rule exists to close.
+backwardDependencyAdmittedIds :: String -> [String]
+backwardDependencyAdmittedIds = nub . sprintIdsInText . dropStruckSpans
+
+-- | What is left of an admission once its sprint references are removed.
+--
+-- This proves a justification was written, not that it is true — a bound worth
+-- stating rather than implying.
+backwardDependencyJustification :: String -> String
+backwardDependencyJustification fieldText =
+  filter
+    (\character -> isAlphaNum character || character == ' ')
+    (foldr removeToken fieldText tokens)
+ where
+  tokens = "Sprints" : "Sprint" : backwardDependencyAdmittedIds fieldText
+  removeToken _ [] = []
+  removeToken token text@(character : rest) = case stripPrefix token text of
+    Just remainder -> removeToken token remainder
+    Nothing -> character : removeToken token rest
+
 -- | Field names that look like a dependency but are not the two Standard-H
 -- ones.  Named rather than pattern-matched loosely so a new spelling is a
 -- deliberate addition here instead of a silent bypass.
@@ -5914,7 +6409,10 @@ sprintDependencyFields body =
  where
   dependencyFieldOnLine lineText =
     case [ (name, rest)
-         | name <- planDependencyFieldNames ++ planRejectedDependencyFieldNames
+         | name <-
+             planDependencyFieldNames
+               ++ [planBackwardDependencyFieldName]
+               ++ planRejectedDependencyFieldNames
          , Just rest <- [stripPrefix ("**" ++ name ++ "**:") lineText]
          ] of
       -- Longest match wins so `Closure dependency` never shadows
@@ -5991,10 +6489,19 @@ sprintDependencyDirectionViolations planDocuments =
  where
   fieldViolations path sprintId body =
     concat
-      [ fieldViolation path sprintId name fieldText
-      | (name, fieldText) <- sprintDependencyFields body
+      [ fieldViolation path sprintId admitted name fieldText
+      | (name, fieldText) <- dependencyFields
       ]
-  fieldViolation path sprintId name fieldText
+      ++ admissionViolations path sprintId dependencyFields backwardFields
+   where
+    allFields = sprintDependencyFields body
+    dependencyFields =
+      [field | field@(name, _) <- allFields, name /= planBackwardDependencyFieldName]
+    backwardFields =
+      [field | field@(name, _) <- allFields, name == planBackwardDependencyFieldName]
+    admitted = concatMap (backwardDependencyAdmittedIds . snd) backwardFields
+
+  fieldViolation path sprintId admitted name fieldText
     | name `elem` planRejectedDependencyFieldNames =
         [ path
             ++ " Sprint `"
@@ -6014,14 +6521,82 @@ sprintDependencyDirectionViolations planDocuments =
             ++ name
             ++ "**: Sprint `"
             ++ dependencyId
-            ++ "``, which is a later sprint. Standard N forbids a backward "
-            ++ "dependency: re-scope this sprint so its owned surface is "
-            ++ "validatable now and re-own the later-dependent work to Sprint `"
+            ++ "``, which is a later sprint, and does not admit it under `**"
+            ++ planBackwardDependencyFieldName
+            ++ "**`. Standard N.2 permits a backward dependency only when it is "
+            ++ "physical — the deliverable would destroy, strand, or leave "
+            ++ "unreplaced something only Sprint `"
             ++ dependencyId
-            ++ "`, or state it as a disclaimer instead of a dependency."
+            ++ "` supplies — and only when this block says so in that field. "
+            ++ "Otherwise re-scope this sprint so its owned surface is validatable "
+            ++ "now, or state the later work as a disclaimer rather than a "
+            ++ "dependency."
         | dependencyId <- sprintLiveDependencyIds fieldText
         , compareSprintIds dependencyId sprintId == GT
+        , dependencyId `notElem` admitted
         ]
+
+  -- The other direction of the bijection: an admission with nothing to admit,
+  -- an admission of a sprint that is not later, and an admission carrying no
+  -- justification are each their own defect.
+  admissionViolations path sprintId dependencyFields backwardFields =
+    concat
+      [ orphanViolation path sprintId declaredId
+      | declaredId <- concatMap (backwardDependencyAdmittedIds . snd) backwardFields
+      , declaredId `notElem` declaredDependencyIds
+      ]
+      ++ concat
+        [ notLaterViolation path sprintId declaredId
+        | declaredId <- concatMap (backwardDependencyAdmittedIds . snd) backwardFields
+        , compareSprintIds declaredId sprintId /= GT
+        ]
+      ++ concat
+        [ justificationViolation path sprintId
+        | (_, fieldText) <- backwardFields
+        , not (null (backwardDependencyAdmittedIds fieldText))
+        , length (backwardDependencyJustification fieldText)
+            < minimumBackwardDependencyJustificationChars
+        ]
+   where
+    declaredDependencyIds =
+      concatMap (sprintLiveDependencyIds . snd) dependencyFields
+
+  orphanViolation path sprintId declaredId =
+    [ path
+        ++ " Sprint `"
+        ++ sprintId
+        ++ "` admits Sprint `"
+        ++ declaredId
+        ++ "` under `**"
+        ++ planBackwardDependencyFieldName
+        ++ "**`, but no `**Blocked by**` or `**Closure dependency**` field names "
+        ++ "it. An admission with nothing to admit is a claim nothing can "
+        ++ "consume (Standard N.2)."
+    ]
+
+  notLaterViolation path sprintId declaredId =
+    [ path
+        ++ " Sprint `"
+        ++ sprintId
+        ++ "` admits Sprint `"
+        ++ declaredId
+        ++ "` under `**"
+        ++ planBackwardDependencyFieldName
+        ++ "**`, which is not a later sprint. Only a backward dependency needs "
+        ++ "admitting; a forward one is the default and must not be declared "
+        ++ "here (Standard N.2)."
+    ]
+
+  justificationViolation path sprintId =
+    [ path
+        ++ " Sprint `"
+        ++ sprintId
+        ++ "` admits a backward dependency under `**"
+        ++ planBackwardDependencyFieldName
+        ++ "**` without a justification. Standard N.2 requires one sentence "
+        ++ "naming what would be destroyed, stranded, or left unreplaced without "
+        ++ "the later sprint."
+    ]
 
 -- | Sprint 0.30 (pure). The ledger's declarable prerequisite direction
 -- (Standard I).
@@ -6105,14 +6680,14 @@ checkPlanDependencyDirection repoRoot = do
 checkPlanCitedSourcePaths :: FilePath -> IO [String]
 checkPlanCitedSourcePaths repoRoot = do
   repoPaths <- listRepoOwnedPaths repoRoot
-  let planPaths =
+  let governedPaths =
         [ path
         | path <- repoPaths
-        , "DEVELOPMENT_PLAN/" `isPrefixOf` path
+        , citedSourcePathRegion path
         , ".md" `isSuffixOf` path
         ]
   fmap concat $
-    forM planPaths $ \relativePath -> do
+    forM governedPaths $ \relativePath -> do
       contents <- readFileStrict (repoRoot </> relativePath)
       let candidates =
             [ cited
@@ -6126,10 +6701,34 @@ checkPlanCitedSourcePaths repoRoot = do
             ++ " cites source path `"
             ++ missingPath
             ++ "`, which does not exist in the worktree. Correct the citation, or add "
-            ++ "the path to `retiredCitedSourcePaths` naming the sprint that removed it "
-            ++ "(development_plan_standards.md Standard C: status must describe reality)."
+            ++ "the path to `retiredCitedSourcePaths` naming the sprint that removed it ("
+            ++ citedSourcePathStandard relativePath
+            ++ ")."
         | missingPath <- missingPaths
         ]
+
+-- | Sprint 0.31. The region this check guarantees over. It was
+-- @DEVELOPMENT_PLAN/@ only from Sprint 0.21 until 2026-08-20, which left the
+-- 44 governed documents under @documents/@ free to cite modules that do not
+-- exist -- and two of them did. A gate guarantees things over a region, and
+-- the region is what the enumeration selects.
+citedSourcePathRegion :: FilePath -> Bool
+citedSourcePathRegion path =
+  "DEVELOPMENT_PLAN/" `isPrefixOf` path || "documents/" `isPrefixOf` path
+
+-- | The standard a citation refusal cites, which differs by region: the plan
+-- suite answers to Standard C, and a governed document to the revision-scoped
+-- claims rule.
+citedSourcePathStandard :: FilePath -> String
+citedSourcePathStandard relativePath
+  | "documents/" `isPrefixOf` relativePath =
+      "documentation_standards.md " ++ sectionTwelveLabel ++ ": a cited artifact must resolve"
+  | otherwise =
+      "development_plan_standards.md Standard C: status must describe reality"
+
+-- | Spelled once so the section number is not restated at each refusal site.
+sectionTwelveLabel :: String
+sectionTwelveLabel = "section 12"
 
 -- | Sprint 0.22 (pure). The section numbers a document actually defines, read
 -- from its headings. The grammar is uniform across the doctrine set:
@@ -6351,14 +6950,6 @@ untypedLifecycleInventoryExemptions =
     ( "public-edge-tls"
     , "retained S3 object material rather than a provider resource; destroyed "
         ++ "transitively by the long-lived bucket destroy"
-    )
-  ,
-    ( "dns-aws-validation-hosted-zone"
-    , "a billable Route 53 hosted zone with no Provider intent that can list "
-        ++ "or delete one, so a typed descriptor would compile a mandatory "
-        ++ "absence read-back no production executor can discharge; Sprint "
-        ++ "7.36 registers it with its adapter, and the harness sweep stays "
-        ++ "until then"
     )
   ,
     ( "operational-aws-ses-lease-role"

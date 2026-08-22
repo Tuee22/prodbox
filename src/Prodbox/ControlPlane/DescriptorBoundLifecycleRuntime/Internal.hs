@@ -1173,6 +1173,9 @@ regressionRegisteredInterpreter providerCalls =
     , awsRegisteredTargetPresentEksDestroyBoundary =
         mkAwsEksPresentDestroyBoundary $ \_ _ _ ->
           pure (Left AwsRegisteredTargetEksDrainProofRequired)
+    , awsRegisteredTargetDns01ChallengeOwnerDeleteBoundary =
+        refusingDns01ChallengeOwnerDeleteBoundary
+          "fixed dispatcher DNS01 owner-delete refusal"
     }
 
 regressionAuthorityOperationClient :: AuthorityOperationClient IO
@@ -1203,10 +1206,10 @@ refusedCheckpointAuthority name = do
       , observePulumiCheckpoint = checkpointRefusal
       , observePulumiCheckpointPair = checkpointRefusal
       , publishPulumiCheckpoint = \_ _ _ -> checkpointRefusal
-      , retirePulumiCheckpoint = \_ _ -> checkpointRefusal
+      , retirePulumiCheckpoint = \_ _ _ -> checkpointRefusal
       , restorePulumiCheckpointPrimary = \_ _ _ -> checkpointRefusal
       , readBackPulumiCheckpointRestore = \_ -> checkpointRefusal
-      , attemptPulumiCheckpointRetirement = \_ _ _ -> checkpointRefusal
+      , attemptPulumiCheckpointRetirement = \_ _ _ _ -> checkpointRefusal
       , readBackPulumiCheckpointRetirement = \_ -> checkpointRefusal
       }
 
@@ -1220,23 +1223,7 @@ regressionEksExecutor
 regressionEksExecutor registered =
   EksTeardownExecutor
     { eksTeardownRegisteredTargetInterpreter = registered
-    , eksTeardownDrainInterpreter =
-        mkEksDrainInterpreter
-          (pure 1000)
-          ( \_ ->
-              pure
-                ( EksDrainSessionAcquisitionUnobservable
-                    (ObservationFailure "fixed session refusal")
-                )
-          )
-          ( mkEksDrainClientBoundary $ \_ consume ->
-              consume
-                ( Left
-                    ( EksDrainClientAccessUnobservable
-                        (ObservationFailure "fixed Kubernetes refusal")
-                    )
-                )
-          )
+    , eksTeardownDrainInterpreter = mkEksDrainInterpreter (pure 1000)
     , eksTeardownCommitSelectionBoundary =
         mkEksDrainCommitSelectionBoundary $ \_ _ consume ->
           consume

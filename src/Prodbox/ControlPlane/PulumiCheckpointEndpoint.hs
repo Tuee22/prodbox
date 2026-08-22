@@ -71,6 +71,9 @@ import Prodbox.Lifecycle.PulumiCheckpoint
   , registeredPulumiCheckpointByName
   , registeredPulumiCheckpointName
   )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CustodyDispositionRecord
+  )
 
 data PulumiCheckpointRequest
   = ObservePulumiCheckpoint !Text
@@ -79,9 +82,15 @@ data PulumiCheckpointRequest
       !Text
       !PulumiCheckpointMutationTicket
       !ByteString
-  | RetirePulumiCheckpoint
+  | -- | Sprint 4.89: a retirement carries the disposition its caller consumed.
+    --
+    -- The Lifecycle Authority cannot observe AWS and so cannot check the proof;
+    -- what it refuses is a retirement for which no disposition was ever stated,
+    -- which is the failure that stranded two AWS resources.
+    RetirePulumiCheckpoint
       !Text
       !PulumiCheckpointMutationTicket
+      !CustodyDispositionRecord
   | RestorePulumiCheckpointPrimary
       !Text
       !PulumiCheckpointMutationTicket
@@ -92,6 +101,7 @@ data PulumiCheckpointRequest
   | AttemptPulumiCheckpointRetirement
       !Text
       !PulumiCheckpointMutationTicket
+      !CustodyDispositionRecord
       !(Maybe VerifiedPulumiCheckpointRef)
   | ReadBackPulumiCheckpointRetirement
       !Text
@@ -260,6 +270,7 @@ data PulumiCheckpointRepository m = PulumiCheckpointRepository
   , retireRegisteredPulumiCheckpoint
       :: VerifiedCallerSlot
       -> PulumiCheckpointMutationTicket
+      -> CustodyDispositionRecord
       -> RegisteredPulumiCheckpoint
       -> m PulumiCheckpointRetirementResult
   , restoreRegisteredPulumiCheckpointPrimary
@@ -276,6 +287,7 @@ data PulumiCheckpointRepository m = PulumiCheckpointRepository
   , attemptRegisteredPulumiCheckpointRetirement
       :: VerifiedCallerSlot
       -> PulumiCheckpointMutationTicket
+      -> CustodyDispositionRecord
       -> RegisteredPulumiCheckpoint
       -> Maybe VerifiedPulumiCheckpointRef
       -> m PulumiCheckpointRetirementAttemptResult
@@ -337,13 +349,14 @@ servePulumiCheckpoint repository callerSlot request =
       withRegistration
         rawName
         (publishPulumiCheckpoint repository callerSlot rawName ticket bytes)
-    RetirePulumiCheckpoint rawName ticket ->
+    RetirePulumiCheckpoint rawName ticket disposition ->
       withRegistration rawName $ \registered ->
         PulumiCheckpointRetirement rawName . encodeRetirement
           <$> retireRegisteredPulumiCheckpoint
             repository
             callerSlot
             ticket
+            disposition
             registered
     RestorePulumiCheckpointPrimary rawName ticket predecessor ->
       withRegistration rawName $ \registered ->
@@ -362,13 +375,14 @@ servePulumiCheckpoint repository callerSlot request =
             callerSlot
             operation
             registered
-    AttemptPulumiCheckpointRetirement rawName ticket expectedReference ->
+    AttemptPulumiCheckpointRetirement rawName ticket disposition expectedReference ->
       withRegistration rawName $ \registered ->
         PulumiCheckpointRetirementAttempted rawName
           <$> attemptRegisteredPulumiCheckpointRetirement
             repository
             callerSlot
             ticket
+            disposition
             registered
             expectedReference
     ReadBackPulumiCheckpointRetirement rawName operation ->

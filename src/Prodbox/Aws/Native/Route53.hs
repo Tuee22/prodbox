@@ -26,6 +26,10 @@ module Prodbox.Aws.Native.Route53
   , parseChangeInfoResponse
   , parseGetChangeResponse
   , parseListResourceRecordSetsResponse
+  , scanRecordSetsQuery
+  , parseScannedResourceRecordSetsResponse
+  , ScannedRecordSetPage (..)
+  , maximumScannedRecordSetPages
   )
 where
 
@@ -88,6 +92,19 @@ data Route53Client = Route53Client
       -> Text
       -> RecordType
       -> IO (Either AwsClientError (Maybe ResourceRecordSet))
+  , scanResourceRecordSetsByPrefix
+      :: Text
+      -> Text
+      -> RecordType
+      -> IO (Either AwsClientError [ResourceRecordSet])
+  -- ^ Sprint 7.36: the bounded name-prefix scan a registered DNS record
+  -- __family__ needs.  'listExactResourceRecordSet' answers about one known
+  -- coordinate; a family's members are not known before the scan, and a
+  -- cleanup that must prove a family absent cannot ask about records it has
+  -- no name for.  Pagination is bounded by 'maximumScannedRecordSetPages',
+  -- and exhausting the bound is an error rather than a truncated answer --
+  -- a truncated scan would read as a smaller family, which is exactly the
+  -- shape that lets residue report as absence.
   }
 
 newRoute53Client :: CredentialHandle origin -> NativeAwsSender -> Route53Client
@@ -96,6 +113,7 @@ newRoute53Client handle sender =
     { changeResourceRecordSets = runChangeRecordSets handle sender
     , getChange = runGetChange handle sender
     , listExactResourceRecordSet = runListExactResourceRecordSet handle sender
+    , scanResourceRecordSetsByPrefix = runScanRecordSetsByPrefix handle sender
     }
 
 route53Endpoint :: AwsEndpoint
@@ -218,8 +236,8 @@ parseListResourceRecordSetsResponse requestedName requestedType body = do
     _ -> Left "Route53: bounded exact-record response returned multiple record sets"
  where
   parseExact record = do
-    returnedName <- decodeUtf8 <$> element "Name" record
-    returnedType <- element "Type" record >>= parseRecordType
+    returnedName <- decodeUtf8 <$> recordElement "Name" record
+    returnedType <- recordElement "Type" record >>= parseRecordType
     if normalizeRecordName returnedName /= normalizeRecordName requestedName
       || returnedType /= requestedType
       then Right Nothing
@@ -227,7 +245,7 @@ parseListResourceRecordSetsResponse requestedName requestedType body = do
         if "<AliasTarget>" `BS.isInfixOf` record || "<SetIdentifier>" `BS.isInfixOf` record
           then Left "Route53: exact record uses an unsupported alias or routing policy"
           else Right ()
-        ttlBytes <- element "TTL" record
+        ttlBytes <- recordElement "TTL" record
         ttl <-
           case readMaybe (BS8.unpack ttlBytes) of
             Just value | value > (0 :: Int) -> Right value
@@ -250,10 +268,14 @@ parseListResourceRecordSetsResponse requestedName requestedType body = do
                     }
               )
 
-  element name hay =
-    note
-      ("Route53: exact record is missing <" ++ name ++ ">")
-      (extractFirst (BS8.pack ("<" ++ name ++ ">")) (BS8.pack ("</" ++ name ++ ">")) hay)
+-- | One required child element of a @\<ResourceRecordSet\>@.  Shared by the
+-- exact lookup and the family scan so the two cannot disagree about what a
+-- record set must carry.
+recordElement :: String -> ByteString -> Either String ByteString
+recordElement name hay =
+  note
+    ("Route53: record set is missing <" ++ name ++ ">")
+    (extractFirst (BS8.pack ("<" ++ name ++ ">")) (BS8.pack ("</" ++ name ++ ">")) hay)
 
 normalizeRecordName :: Text -> Text
 normalizeRecordName = Text.toLower . Text.dropWhileEnd (== '.') . Text.strip
@@ -366,3 +388,157 @@ signRoute53 handle ts method path query body =
 
 note :: String -> Maybe a -> Either String a
 note message = maybe (Left message) Right
+
+-- | The bound on a family scan.  Route 53 pages record sets, and an unbounded
+-- follow loop is an unbounded AWS call from a cleanup path.  A hosted zone
+-- prodbox owns holds tens of records, not thousands, so this is far above any
+-- real answer; reaching it means the query was wrong, and saying so is the
+-- point.
+maximumScannedRecordSetPages :: Int
+maximumScannedRecordSetPages = 16
+
+-- | One page of a scan, with the cursor Route 53 returns when truncated.
+data ScannedRecordSetPage = ScannedRecordSetPage
+  { scannedRecordSets :: ![ResourceRecordSet]
+  , scannedNextRecordName :: !(Maybe Text)
+  , scannedNextRecordType :: !(Maybe Text)
+  }
+  deriving (Eq, Show)
+
+-- | The scan query.  Unlike 'listRecordSetsQuery' it does not pin @maxitems@ to
+-- one: a family answer is every member, and asking for one record at a time
+-- would make the page bound the family bound.
+scanRecordSetsQuery
+  :: Text -> RecordType -> Maybe (Text, Text) -> [(ByteString, ByteString)]
+scanRecordSetsQuery startName recordType cursor =
+  case cursor of
+    Nothing ->
+      [ ("name", ensureTrailingDot (encodeUtf8 startName))
+      , ("type", renderRecordType recordType)
+      ]
+    Just (nextName, nextType) ->
+      [ ("name", encodeUtf8 nextName)
+      , ("type", encodeUtf8 nextType)
+      ]
+
+-- | Parse one scan page.  Records that fail to parse are __not__ silently
+-- dropped: a family answer that quietly omits a member reads as a smaller
+-- family, so an unparseable record set is an error.
+parseScannedResourceRecordSetsResponse
+  :: RecordType -> ByteString -> Either String ScannedRecordSetPage
+parseScannedResourceRecordSetsResponse requestedType body = do
+  if "<ListResourceRecordSetsResponse" `BS.isInfixOf` body
+    then Right ()
+    else Left "Route53: missing <ListResourceRecordSetsResponse>"
+  let hasEmptyCollection = "<ResourceRecordSets/>" `BS.isInfixOf` body
+      hasCollection = "<ResourceRecordSets>" `BS.isInfixOf` body
+  if hasEmptyCollection || hasCollection
+    then Right ()
+    else Left "Route53: missing <ResourceRecordSets>"
+  parsed <- traverse parseScanned (extractAll "<ResourceRecordSet>" "</ResourceRecordSet>" body)
+  truncatedText <- case extractFirst "<IsTruncated>" "</IsTruncated>" body of
+    Nothing -> Right "false"
+    Just raw -> Right (decodeUtf8 raw)
+  truncated <- case truncatedText of
+    "true" -> Right True
+    "false" -> Right False
+    _ -> Left "Route53: scan response has an invalid <IsTruncated>"
+  let nextName = decodeUtf8 <$> extractFirst "<NextRecordName>" "</NextRecordName>" body
+      nextType = decodeUtf8 <$> extractFirst "<NextRecordType>" "</NextRecordType>" body
+  if truncated && (nextName == Nothing || nextType == Nothing)
+    then Left "Route53: truncated scan response carries no continuation cursor"
+    else Right ()
+  Right
+    ScannedRecordSetPage
+      { scannedRecordSets = [record | Just record <- parsed]
+      , scannedNextRecordName = if truncated then nextName else Nothing
+      , scannedNextRecordType = if truncated then nextType else Nothing
+      }
+ where
+  parseScanned record = do
+    returnedName <- decodeUtf8 <$> recordElement "Name" record
+    returnedType <- recordElement "Type" record >>= parseRecordType
+    if returnedType /= requestedType
+      then Right Nothing
+      else do
+        if "<AliasTarget>" `BS.isInfixOf` record || "<SetIdentifier>" `BS.isInfixOf` record
+          then Left "Route53: scanned record uses an unsupported alias or routing policy"
+          else Right ()
+        ttlBytes <- recordElement "TTL" record
+        ttl <-
+          case readMaybe (BS8.unpack ttlBytes) of
+            Just value | value > (0 :: Int) -> Right value
+            _ -> Left "Route53: scanned record has an invalid TTL"
+        valuesContainer <-
+          note
+            "Route53: scanned record is missing <ResourceRecords>"
+            (extractFirst "<ResourceRecords>" "</ResourceRecords>" record)
+        let values = map decodeUtf8 (extractAll "<Value>" "</Value>" valuesContainer)
+        if null values
+          then Left "Route53: scanned record has no resource-record values"
+          else
+            Right
+              ( Just
+                  ResourceRecordSet
+                    { rrsName = normalizeRecordName returnedName
+                    , rrsType = returnedType
+                    , rrsTtl = ttl
+                    , rrsRecords = values
+                    }
+              )
+
+-- | Follow the cursor until the scan leaves the prefix or the page bound is
+-- reached.  Route 53 returns records in sorted order, so the first record whose
+-- name is outside the prefix ends the family: continuing past it would return
+-- records the family does not contain.
+runScanRecordSetsByPrefix
+  :: CredentialHandle origin
+  -> NativeAwsSender
+  -> Text
+  -> Text
+  -> RecordType
+  -> IO (Either AwsClientError [ResourceRecordSet])
+runScanRecordSetsByPrefix handle sender zoneId namePrefix recordType =
+  go maximumScannedRecordSetPages Nothing []
+ where
+  normalizedPrefix = normalizeRecordName namePrefix
+  go remaining cursor acc
+    | remaining <= (0 :: Int) =
+        pure
+          ( Left
+              ( AwsResponseParseFailure
+                  "Route53: record-set scan exceeded its page bound"
+              )
+          )
+    | otherwise = do
+        raw <-
+          performAwsRequest
+            sender
+            ( \ts ->
+                signRoute53
+                  handle
+                  ts
+                  "GET"
+                  (changeRecordSetsPath zoneId)
+                  (scanRecordSetsQuery namePrefix recordType cursor)
+                  ""
+            )
+            "route53:ListResourceRecordSets"
+            Idempotent
+            XmlErrorFormat
+        case raw >>= first AwsResponseParseFailure . parseScannedResourceRecordSetsResponse recordType of
+          Left err -> pure (Left err)
+          Right page -> do
+            let matched =
+                  [ record
+                  | record <- scannedRecordSets page
+                  , normalizedPrefix `Text.isPrefixOf` rrsName record
+                  ]
+                leftPrefix =
+                  any
+                    (not . (normalizedPrefix `Text.isPrefixOf`) . rrsName)
+                    (scannedRecordSets page)
+            case (leftPrefix, scannedNextRecordName page, scannedNextRecordType page) of
+              (False, Just nextName, Just nextType) ->
+                go (remaining - 1) (Just (nextName, nextType)) (acc ++ matched)
+              _ -> pure (Right (acc ++ matched))

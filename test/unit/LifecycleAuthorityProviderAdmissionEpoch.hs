@@ -10,6 +10,9 @@ import Control.Monad (filterM)
 import Data.ByteString qualified as ByteString
 import Data.Either (isLeft)
 import Data.List (isInfixOf, isPrefixOf, sort)
+import Data.Map.Strict qualified as Map
+import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Word (Word8)
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   ( authorityAdmissionStateCodec
@@ -17,13 +20,22 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
 import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal (CallerService))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
-  , AuthorityAdmissionCommand (ApplyAuthorityGenesis)
+  , AuthorityAdmissionCommand (..)
+  , AuthorityAdmissionCommandTag (..)
+  , AuthorityAdmissionDecision (..)
+  , AuthorityControlRoute (..)
   , AuthorityProviderSettlementDecision (..)
   , AuthorityProviderSubmissionDecision (..)
   , ProviderOperationCleanupOwner (ProviderOperationUnownedByCleanupRun)
+  , authorityAggregateCascadeTerminalAuditReceipt
   , authorityAggregateProviderAdmissionEpochView
+  , authorityAggregateProviderOperations
+  , authorityControlRouteIssuedCommandTag
+  , authorityControlRouteTag
+  , confirmAggregateCascadeTerminalAuditReceipt
   , initialCleanInstallAuthority
   , initialCleanInstallAuthorityWithRegisteredClients
+  , providerOperationKey
   , stepAuthorityAdmission
   , stepRegisteredProviderSettlement
   , stepRegisteredProviderSubmission
@@ -52,6 +64,13 @@ import Prodbox.Lifecycle.Authority.Submission
   )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( ModelBCodec (decodeModelBValue, encodeModelBValue)
+  )
+import Prodbox.Lifecycle.CleanupRun
+  ( mkCleanupAttemptId
+  , mkCleanupDigest
+  , mkCleanupNodeId
+  , mkCleanupOperationId
+  , mkCleanupRunId
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (ObserveOperationalIdentity)
@@ -182,6 +201,143 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
       -- Fencing that one too would fence the audit the freeze exists to run.
       freezeRegressionFrozenAdmitsOnlyReservation regression `shouldBe` True
 
+    -- Sprint 7.36: the durable terminal-audit receipt.
+    it "Sprint 7.36 decides the terminal-audit receipt matrix" $ do
+      regression <- expectRightIO fixedCascadeTerminalAuditReceiptRegression
+      -- A receipt is the result of a reservation, so there must be one.
+      auditReceiptRegressionRecordedFromFrozen regression `shouldBe` True
+      auditReceiptRegressionServingRefused regression `shouldBe` True
+      -- An audit taken in another scope does not answer the question this
+      -- fence was raised for, from either direction.
+      auditReceiptRegressionOtherBindingRefused regression `shouldBe` True
+      auditReceiptRegressionScopeMismatchRefused regression `shouldBe` True
+      -- A lost response must not be distinguishable from a repeat; a second,
+      -- different answer must not replace a result the run may have acted on.
+      auditReceiptRegressionIdenticalRecordIdempotent regression `shouldBe` True
+      auditReceiptRegressionDifferentReceiptRefused regression `shouldBe` True
+      auditReceiptRegressionRevokedRefused regression `shouldBe` True
+      -- A freeze retried after the record must not re-enter the frozen state,
+      -- which would discard the durable result.
+      auditReceiptRegressionFreezeAfterRecordPreservesIt regression `shouldBe` True
+      -- The read-back confirms what is durable rather than what was returned.
+      auditReceiptRegressionReadBackConfirms regression `shouldBe` True
+      auditReceiptRegressionReadBackRefusesOther regression `shouldBe` True
+      auditReceiptRegressionReadBackRefusesUnrecorded regression `shouldBe` True
+      -- Recording does not lift the fence: the audit's read-back and any
+      -- response-loss retry are still that same reserved work.
+      auditReceiptRegressionRecordedAdmitsOnlyReservation regression `shouldBe` True
+      -- Zero escapes and zero blind spots are the clean verdict wearing
+      -- another constructor.
+      auditReceiptRegressionEmptyCountRefused regression `shouldBe` True
+      auditReceiptRegressionNonDigestRefused regression `shouldBe` True
+
+    it "Sprint 7.36 keeps the receipt when the audit's own submission is compacted" $ do
+      -- The placement is the point. Compaction deletes a settled submission's
+      -- ledger record, its epoch binding, and its provider operation together,
+      -- so a verdict kept in the provider operation is a verdict the Authority
+      -- may discard under capacity pressure. This drives real compaction and
+      -- measures that the operation record goes while the receipt stays.
+      closed <-
+        expectRightIO
+          (initialCleanInstallAuthorityWithRegisteredClients 1 1 registry)
+      let opened = openAdmission closed
+      bound <- decidedAggregate opened (BindProviderAdmissionGeneration 7)
+      frozen <-
+        decidedAggregate
+          bound
+          (FreezeProviderAdmissionForCascadeAudit auditFreezeBinding)
+      (firstAccepted, firstPending) <-
+        expectRightIO
+          ( stepRegisteredProviderSubmission
+              frozen
+              providerCaller
+              providerGeneration
+              auditSubmissionKeyOne
+              providerDigest
+              ObserveOperationalIdentity
+              ProviderOperationUnownedByCleanupRun
+          )
+      firstOperation <- acceptedOperation firstAccepted
+      (_, firstSettled) <-
+        expectRightIO
+          ( stepRegisteredProviderSettlement
+              providerCaller
+              providerGeneration
+              firstOperation
+              ObserveOperationalIdentity
+              "canonical-terminal-evidence"
+              firstPending
+          )
+      recorded <-
+        decidedAggregate
+          firstSettled
+          (RecordCascadeTerminalAuditReceipt auditFreezeBinding auditReceipt)
+      Map.size (authorityAggregateProviderOperations recorded) `shouldBe` 1
+      (secondAccepted, compacted) <-
+        expectRightIO
+          ( stepRegisteredProviderSubmission
+              recorded
+              providerCaller
+              providerGeneration
+              auditSubmissionKeyTwo
+              providerDigest
+              ObserveOperationalIdentity
+              ProviderOperationUnownedByCleanupRun
+          )
+      -- The second reserved submission was admitted, so compaction ran to make
+      -- room for it rather than the capacity refusal being the outcome.
+      secondOperation <- acceptedOperation secondAccepted
+      Map.member
+        (providerOperationKey secondOperation)
+        (authorityAggregateProviderOperations compacted)
+        `shouldBe` True
+      -- The first operation's durable record is gone.
+      Map.member
+        (providerOperationKey firstOperation)
+        (authorityAggregateProviderOperations compacted)
+        `shouldBe` False
+      -- The receipt is not, and an independent read of the compacted object
+      -- still confirms exactly what was committed.
+      authorityAggregateCascadeTerminalAuditReceipt compacted
+        `shouldBe` Just auditReceipt
+      confirmAggregateCascadeTerminalAuditReceipt
+        compacted
+        auditFreezeBinding
+        auditReceipt
+        `shouldBe` Right ()
+
+    it "Sprint 7.36 orders the revocation strictly after a clean recorded audit" $ do
+      regression <- expectRightIO fixedCascadeCredentialRevocationRegression
+      -- Nothing fenced the credential, so no cascade's audit could license it.
+      revocationRegressionServingRefused regression `shouldBe` True
+      -- The fence is up but the verdict is not durable. Revoking here destroys
+      -- the only credential that could re-run the audit, with no record of what
+      -- it found.
+      revocationRegressionFrozenRefusedUnrecorded regression `shouldBe` True
+      revocationRegressionOtherBindingRefused regression `shouldBe` True
+      revocationRegressionCleanRecordRevokes regression `shouldBe` True
+      -- An escape or a blind spot withholds the revocation rather than being
+      -- overridden by it: the credential is what an investigation needs.
+      revocationRegressionEscapeVerdictRefused regression `shouldBe` True
+      revocationRegressionUnobservableVerdictRefused regression `shouldBe` True
+      revocationRegressionIdenticalRevokeIdempotent regression `shouldBe` True
+      revocationRegressionDifferentReceiptRefused regression `shouldBe` True
+      -- Revocation ends the credential, not the record of why it was allowed to.
+      revocationRegressionAuditReceiptSurvives regression `shouldBe` True
+      -- After revocation nothing is admitted, including the reservation: there
+      -- is no credential left to execute it with.
+      revocationRegressionRevokedRefusesFresh regression `shouldBe` True
+      -- One read-back digest may not stand for both proofs.
+      revocationRegressionSharedProofRefused regression `shouldBe` True
+
+    it "Sprint 7.36 reaches the revocation through an authenticated control route" $ do
+      -- A transition no route issues is the defect this repository has found
+      -- twice; the route relation is a projection rather than a claim.
+      map authorityControlRouteIssuedCommandTag [minBound .. maxBound]
+        `shouldContain` [RevokeCascadeProviderCredentialTag]
+      authorityControlRouteTag AuthorityControlCascadeCredentialRevokeRoute
+        `shouldBe` "authority-control/revoke-cascade-provider-credential"
+
     it "exports no generation, reservation, freeze transition, or receipt minter" $ do
       facade <-
         readFile
@@ -193,7 +349,6 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
             [ "ProviderAdmissionEpoch (.."
             , "ProviderCredentialGeneration"
             , "ReservedCascadeAuditSubmission"
-            , "ProviderCredentialRevocationReceipt"
             , "servingProviderAdmissionEpoch"
             , "stepProviderAdmissionCascade"
             , "credentialRevokedProviderAdmissionEpoch"
@@ -207,6 +362,14 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
       -- the reservation it owns and cannot transition the epoch itself.
       header `shouldContain` "CascadeAuditFreezeBinding"
       header `shouldContain` "mkCascadeAuditFreezeBinding"
+      -- Sprint 7.36 (2026-08-22): the revocation receipt and its minter leave
+      -- the facade for exactly the reason the freeze binding did -- an
+      -- authenticated control route now carries one. What stays private is the
+      -- transition that applies it, so a caller can state the two read-backs it
+      -- performed and still cannot revoke the credential itself.
+      header `shouldContain` "mkProviderCredentialRevocationReceipt"
+      header `shouldNotContain` "revokeCascadeProviderCredentialInternal"
+      header `shouldNotContain` "recordCascadeTerminalAuditReceiptInternal"
       admission `shouldNotContain` "stepProviderAdmissionCascade"
       admission `shouldNotContain` "ReservedCascadeAuditSubmission"
       admission `shouldContain` "RegisteredSubmissionFresh"
@@ -237,6 +400,52 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
 
 fixtureCodec :: ModelBCodec AuthorityAdmissionAggregate
 fixtureCodec = authorityAdmissionStateCodec 4096 1 1
+
+decidedAggregate
+  :: AuthorityAdmissionAggregate
+  -> AuthorityAdmissionCommand
+  -> IO AuthorityAdmissionAggregate
+decidedAggregate aggregate command =
+  case stepAuthorityAdmission aggregate command of
+    (AuthorityAdmissionCommandRefused refusal, _) ->
+      expectationFailure ("unexpected authority refusal: " <> show refusal)
+        >> fail "unreachable"
+    (_, next) -> pure next
+
+auditSubmissionKeyOne :: ClientSubmissionKey
+auditSubmissionKeyOne =
+  expectRight (mkClientSubmissionKey "provider-epoch/audit-one")
+
+auditSubmissionKeyTwo :: ClientSubmissionKey
+auditSubmissionKeyTwo =
+  expectRight (mkClientSubmissionKey "provider-epoch/audit-two")
+
+auditScopeDigest :: Text
+auditScopeDigest = Text.replicate 64 "e"
+
+auditFreezeBinding :: CascadeAuditFreezeBinding
+auditFreezeBinding =
+  expectRight
+    ( mkCascadeAuditFreezeBinding
+        (expectRight (mkCleanupRunId "provider-epoch-audit-run"))
+        (expectRight (mkCleanupDigest (Text.replicate 64 "a")))
+        (expectRight (mkCleanupDigest (Text.replicate 64 "b")))
+        auditScopeDigest
+        (expectRight (mkCleanupNodeId "provider-epoch-audit-node"))
+        (expectRight (mkCleanupOperationId "provider-epoch-audit-operation"))
+        (expectRight (mkCleanupAttemptId "provider-epoch-audit-attempt"))
+        (sort [auditSubmissionKeyOne, auditSubmissionKeyTwo])
+    )
+
+auditReceipt :: CascadeTerminalAuditReceipt
+auditReceipt =
+  expectRight
+    ( mkCascadeTerminalAuditReceipt
+        auditScopeDigest
+        (Text.replicate 64 "1")
+        (Text.replicate 64 "2")
+        CascadeTerminalAuditReceiptClean
+    )
 
 legacyV6Fixture :: ByteString.ByteString
 legacyV6Fixture =

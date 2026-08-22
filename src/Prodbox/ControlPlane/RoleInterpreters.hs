@@ -35,6 +35,7 @@ module Prodbox.ControlPlane.RoleInterpreters
   , lifecycleAuthorityOwnershipManifestAuthenticatedHandler
   , lifecycleAuthorityRecoveryPlaneAuthenticatedHandler
   , lifecycleAuthorityLocalRke2HostObservationAuthenticatedHandler
+  , lifecycleAuthorityCascadeRetainedSlotAuthenticatedHandler
   , LifecycleAuthorityDecommissionInputs (..)
   , lifecycleAuthorityDecommissionAuthenticatedHandler
   , lifecycleAuthorityTlsRetentionAuthenticatedHandler
@@ -122,6 +123,12 @@ import Prodbox.ControlPlane.AwsStackReaderRepository
   )
 import Prodbox.ControlPlane.CallerPrincipal
   ( CallerPrincipal (CallerAdminActionRunner)
+  )
+import Prodbox.ControlPlane.CascadeRetainedSlotEndpoint
+  ( CascadeRetainedSlotEndpointHandler
+  , cascadeRetainedSlotEndpointBody
+  , cascadeRetainedSlotEndpointStatus
+  , serveCascadeRetainedSlotEndpointRequest
   )
 import Prodbox.ControlPlane.CleanupRunEndpoint
   ( CleanupRunRepositoryProvider
@@ -231,6 +238,7 @@ import Prodbox.ControlPlane.Route
       , LifecycleAuthorityObserve
       , LifecycleAwsStackCreationBinding
       , LifecycleAwsStackReader
+      , LifecycleCascadeRetainedSlot
       , LifecycleCleanupRun
       , LifecycleConfigObserve
       , LifecycleConfigProposeCas
@@ -778,6 +786,35 @@ lifecycleAuthorityLocalRke2HostObservationAuthenticatedHandler handler inner =
         ( Just
             ( localRke2HostObservationEndpointStatus result
             , localRke2HostObservationEndpointBody result
+            )
+        )
+    _ -> authenticatedHandlerHandle inner callerSlot route body
+
+-- | Add the closed cascade retained-slot endpoint.  The abstract handler
+-- reaches exactly the three run-keyed cascade namespaces through the
+-- Authority's own Model-B adapter; this dispatch layer holds no coordinate,
+-- adapter, or slot bytes of its own.
+lifecycleAuthorityCascadeRetainedSlotAuthenticatedHandler
+  :: (Monad m)
+  => CascadeRetainedSlotEndpointHandler m
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityCascadeRetainedSlotAuthenticatedHandler handler inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
+    , authenticatedHandlerHandle = handle
+    }
+ where
+  handle callerSlot route body = case route of
+    LifecycleCascadeRetainedSlot -> do
+      result <-
+        serveCascadeRetainedSlotEndpointRequest
+          handler
+          (LazyByteString.fromStrict body)
+      pure
+        ( Just
+            ( cascadeRetainedSlotEndpointStatus result
+            , cascadeRetainedSlotEndpointBody result
             )
         )
     _ -> authenticatedHandlerHandle inner callerSlot route body

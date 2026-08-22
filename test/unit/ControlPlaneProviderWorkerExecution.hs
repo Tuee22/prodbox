@@ -674,6 +674,20 @@ fixtureCapabilities fixture =
         mutation fixture ("ebs-reap:" <> clusterName)
     , observeTestEbsVolumesCapability = \clusterName ->
         readOnly fixture ("ebs-observe:" <> clusterName)
+    , observeValidationHostedZonesCapability = \namePrefix ->
+        readOnly fixture ("validation-zone-observe:" <> namePrefix)
+    , reapValidationHostedZonesCapability = \namePrefix ->
+        mutation fixture ("validation-zone-reap:" <> namePrefix)
+    , observeRetainedEbsVolumesCapability = \lifecycleValue ->
+        readOnly fixture ("retained-ebs-observe:" <> lifecycleValue)
+    , observeDns01ChallengeRecordsCapability = \zoneId recordNamePrefix ->
+        readOnly
+          fixture
+          ("dns01-challenge-observe:" <> zoneId <> ":" <> recordNamePrefix)
+    , observeOwnedResourceTagsCapability = \query ->
+        readOnly fixture ("owned-resource-tags:" <> providerOwnedTagQueryKey query)
+    , reapRetainedEbsVolumesCapability = \lifecycleValue ->
+        mutation fixture ("retained-ebs-reap:" <> lifecycleValue)
     , observeSpotPriceCapability = \query ->
         readOnly
           fixture
@@ -1038,7 +1052,19 @@ labelFor intent = case intent of
   ObserveProviderReadiness probe -> readinessLabel probe
   IssueEksClientAuth _ -> "eks-client-auth"
   ObserveTestEbsVolumes clusterName -> "ebs-observe:" <> clusterName
+  ObserveValidationHostedZones namePrefix ->
+    "validation-zone-observe:" <> namePrefix
+  ReapValidationHostedZones namePrefix ->
+    "validation-zone-reap:" <> namePrefix
+  ObserveRetainedEbsVolumes lifecycleValue ->
+    "retained-ebs-observe:" <> lifecycleValue
+  ReapRetainedEbsVolumes lifecycleValue ->
+    "retained-ebs-reap:" <> lifecycleValue
   ObserveEksClusterIdentity _ -> "eks-cluster-identity"
+  ObserveOwnedResourceTags query ->
+    "owned-resource-tags:" <> providerOwnedTagQueryKey query
+  ObserveDns01ChallengeRecords zoneId recordNamePrefix ->
+    "dns01-challenge-observe:" <> zoneId <> ":" <> recordNamePrefix
 
 readinessLabel :: ProviderReadinessProbe -> Text
 readinessLabel probe = case probe of

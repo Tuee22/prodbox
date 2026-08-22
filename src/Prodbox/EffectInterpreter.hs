@@ -55,7 +55,6 @@ import Prodbox.Infra.AwsSesStack (ensureAwsSesStackResources)
 import Prodbox.Infra.MinioBackend
   ( ensureMinioBackendBucket
   , hostDirectEndpointPort
-  , minioBackendRegion
   , pulumiBackendLoginTimeoutSeconds
   , pulumiBackendUrl
   , readMinioCredentials
@@ -65,6 +64,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (ObserveProviderReadiness)
   , ProviderReadinessProbe (ProviderReadinessRoute53Zone, ProviderReadinessStsIdentity)
   )
+import Prodbox.Minio.ObjectStoreTypes (minioSigningRegion)
 import Prodbox.PrerequisiteId
   ( PrerequisiteId
   , prerequisiteIdText
@@ -687,8 +687,8 @@ pulumiPrerequisiteEnvironment localPort accessKey secretKey = do
   pure
     [ ("AWS_ACCESS_KEY_ID", accessKey)
     , ("AWS_SECRET_ACCESS_KEY", secretKey)
-    , ("AWS_REGION", minioBackendRegion)
-    , ("AWS_DEFAULT_REGION", minioBackendRegion)
+    , ("AWS_REGION", minioSigningRegion)
+    , ("AWS_DEFAULT_REGION", minioSigningRegion)
     , ("AWS_EC2_METADATA_DISABLED", "true")
     , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
     , ("PULUMI_CONFIG_PASSPHRASE", "")

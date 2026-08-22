@@ -255,6 +255,15 @@ flowchart TB
 - BAD: `See the old Python settings module`
 - GOOD: `See ../DEVELOPMENT_PLAN/README.md for sprint status and cleanup ownership`
 
+### Targets Stated As Current Fact
+
+- BAD: "an unregistered literal fails `prodbox dev check`" — when the gate is scheduled, not built
+- GOOD: the same sentence inside a `> **Target.**` region, or qualified "is to fail"
+
+See [Section 12](#12-revision-scoped-claims). This is the most common defect in this repository's
+governed documents, and the only one that reads as correct to every reviewer who does not check the
+source.
+
 ---
 
 ## 10. Intent Ownership
@@ -364,6 +373,69 @@ such as timestamps, random IDs, locale-dependent ordering, terminal-width state,
 environment-derived paths.
 
 ---
+
+## 12. Revision-Scoped Claims
+
+Every claim in a governed document describes some revision of the repository. When a document does
+not say which, a reader assumes the current one. A claim about a scheduled but unbuilt thing,
+written in the present indicative, is therefore false — and it is false in the way that is hardest
+to catch, because it reads as correct to every reviewer who does not open the source.
+
+This section owns *which revision a claim describes*. It does not own sprint status, which is
+[Development Plan Standard C](../DEVELOPMENT_PLAN/development_plan_standards.md), nor
+deployment-qualification claims about the composed running system, which are Standard P. Neither of
+those reaches an ordinary claim about a schema field or a lint.
+
+### 12.1 Declared target regions
+
+A `> **Target.**` blockquote declares that the region it opens describes an accepted end state
+rather than the current revision. The declaration attaches to the **smallest named region that is
+wholly target** — a document, a numbered section, or a subsection — and sets the default for every
+claim inside it. A document whose entire subject is a target architecture declares once at the top
+and is then written as ordinary declarative prose; it does not carry a banner per sentence.
+
+Every declaration names where status lives, which is always
+[Development Plan → Resume Here](../DEVELOPMENT_PLAN/README.md#resume-here). A declaration does not
+name a sprint id: ids move between sprints, and a stale id inside doctrine is the drift this rule
+exists to prevent.
+
+`**Current revision.**` is the counter-marker. It opens a passage describing what the shipped binary
+does inside an otherwise-target region — the shape a current/target split takes when both halves
+belong together.
+
+The defect is a target claim in an **undeclared** region.
+
+### 12.2 Four claim kinds a declaration never covers
+
+A region declaration is necessary and not sufficient. These four are read as claims about the
+current revision no matter what encloses them, because a reader checks them against the tree rather
+than against the roadmap:
+
+1. **Enforcement** — that something is checked, refused, or gated. Name the violation function; a
+   bare "fails `prodbox dev check`" is unverifiable and has been wrong before.
+2. **Measurement** — counts, rates, digests, "zero false positives".
+3. **Another document's contents** — "see § 3 for the gate", when § 3 does not carry one.
+4. **Generated output** — what a command emits, what a generated file contains.
+
+Each must be true of the current revision, or explicitly qualified in the sentence itself. A
+document that lists an unbuilt guard as enforced states the defect it was written to prevent; see
+[code_quality.md](./engineering/code_quality.md), which records exactly that correction against
+itself.
+
+### 12.3 What can and cannot be gated
+
+"A present-tense claim that is false" is undecidable, and no gate will be built for it. Three
+properties are decidable and are the whole of the mechanical surface: that a cited artifact
+resolves, that a declaration carries its status pointer, and that no retired marker spelling
+survives. Everything else in this section is a review obligation.
+
+A future change may not describe this section as enforced beyond those three, and may not claim a
+gate it has not built — which is § 12.2 rule 1 applied to this section.
+
+### 12.4 Out of scope
+
+Dated narrative — a session checkpoint, a phase-status entry, a ledger record — states what was true
+on a date and is governed by Standard C, not by this section. It carries no marker and needs none.
 
 ## Cross-References
 

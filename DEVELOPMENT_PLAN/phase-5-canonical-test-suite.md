@@ -3475,11 +3475,26 @@ phases, and Standard P respectively. The frozen oracle may carry the legacy envi
 as an explicitly ignored negative fixture, never as observation evidence; removal from the old
 integration/`TestRunner` composition is owned by Sprint `5.36`.
 
-## Sprint 5.36: TestRunner Lifecycle Cleanup Client [🔄 Active]
+## Sprint 5.36: TestRunner Lifecycle Cleanup Client [⏸️ Blocked]
 
-**Status**: Active (opened 2026-08-15; updated 2026-08-16). The descriptor-bound client seam is
-landed and focused-green; `TestRunner` still uses the old graph/executor. Execution is parked by
-[README.md → Resume Here](README.md#resume-here) until the earlier queue entries close.
+**Status**: Blocked (opened 2026-08-15; updated 2026-08-21). The descriptor-bound client seam is
+landed and focused-green, and as of 2026-08-21 its entry protocol is indexed by cleanup surface, so
+the harness's `ExplicitPerRun` cleanup has a descriptor it can bind at all. `TestRunner` still uses
+the old graph/executor, and the deletion half of this sprint waits on Sprint `7.36` — see
+`**Blocked by**` below.
+**Blocked by**: Sprint `7.36`.
+**Backward dependency**: Sprint `7.36`. Deleting the harness cleanup graph removes the
+`aws-dns-validation-zones` node, which `destroyValidationHostedZones` makes the only thing in the
+repository that deletes a leaked billable Route 53 validation hosted zone; no compiled program could
+replace it, because `RegisteredResourceKey` had no hosted-zone key and no `ProviderIntent` listed,
+created, or deleted a zone, so the sweep would have been stranded with nothing taking it over until
+Sprint `7.36` landed the Route 53 desired-absence adapter and its registration. Declared under
+[Standard N.2](development_plan_standards.md#n-phase-independence-and-execution-order); the queue
+runs `7.36` first. **The named artifact landed on 2026-08-21** —
+`Prodbox.Lifecycle.Teardown.AwsRoute53ZoneAdapter`, `AwsDnsValidationZoneKey`, and
+`ValidationHostedZoneFamilyExecutor` — so the compiled program can now express the deletion and this
+sprint may delete the harness node without stranding it. The field stays declared because Sprint
+`7.36` is still open and the queue still runs it to closure first.
 **Closure dependency**: the remaining Sprint-`4.85` operation/proof coverage. Sprint `5.35`'s
 frozen oracle is complete and remains the acceptance oracle rather than an open dependency.
 **Deployment qualification**: pending; this changes suite cleanup composition, while live
@@ -3490,13 +3505,18 @@ Client”](../documents/engineering/integration_fixture_doctrine.md#4-validation
 graph”](../documents/engineering/lifecycle_reconciliation_doctrine.md#33-result-indexed-programs-and-the-durable-cleanup-graph),
 and [Unit Testing Policy § 10, “Always-Run Cleanup
 Validation”](../documents/engineering/unit_testing_policy.md#10-always-run-cleanup-validation).
-**Implementation**: `src/Prodbox/Test/LifecycleCleanupClient.hs` now owns the validated descriptor-
-bound client seam over `Prodbox.ControlPlane.CleanupRunClient`; `src/Prodbox/TestRunner.hs` and
-`src/Prodbox/Test/DurableCleanupComposition.hs` remain to be migrated and deleted/narrowed.
+**Implementation**: `src/Prodbox/Lifecycle/CleanupRunEntry.hs` owns the validated descriptor-bound
+entry protocol over `Prodbox.ControlPlane.CleanupRunClient` — Sprint `4.86` moved it out of the
+`Prodbox.Test.*` validation-harness namespace, because none of that protocol is validation-specific
+and its first production caller could not reach it there;
+`src/Prodbox/TestRunner.hs` and `src/Prodbox/Test/DurableCleanupComposition.hs` remain to be
+migrated and deleted/narrowed.
 **Live-proof**: pending; no live substrate is required for code-local closure.
-**Independent Validation**: fake Lifecycle Authority/kernel endpoint, response-loss and restart
-tables, the installed `prodbox test integration teardown-recovery` command,
-`prodbox test unit`, and `prodbox dev check`; no Phase 6 or 7 implementation is required.
+**Independent Validation** (Standard N.1): fake Lifecycle Authority/kernel endpoint, response-loss
+and restart tables, the installed `prodbox test integration teardown-recovery` command,
+`prodbox test unit`, and `prodbox dev check`. Every validation item is exercised against fakes on
+this sprint's own surface, with no Phase 6 or 7 implementation required — that is N.1, and it stays
+true. Sprint `7.36` is an *execution* prerequisite declared under N.2, not a validation one.
 **Docs to update**: `documents/engineering/integration_fixture_doctrine.md`,
 `documents/engineering/unit_testing_policy.md`, `DEVELOPMENT_PLAN/README.md`,
 `DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, and
@@ -3545,6 +3565,19 @@ executor, operation-ID allocator, or success interpretation in the validation la
 - **Received from Sprint `4.85` on the same re-scope.** Delete `CapabilityBoundCleanupAction` and the
   `TestRunner` composition around it. They are the validation harness's live cleanup path, so their
   removal is this sprint's client migration and belongs nowhere earlier.
+- **Received from Sprint `7.36` on 2026-08-21 with the Route 53 adapter.** Delete
+  `src/Prodbox/Infra/Route53ValidationZone.hs` and its `TestRunner` sweep call site as part of the
+  cutover. Sprint `7.36`'s registered `dns-aws-validation-hosted-zone` family now expresses the same
+  deletion in the compiled program, so the host-direct `aws` CLI owner is a duplicate rather than the
+  only sweep — but until this cutover runs, deleting it would remove a live sweep the harness still
+  depends on, so the two must go together.
+- **Registered 2026-08-21, found while landing Sprint `7.36`'s adapter.**
+  `nativeMayProvisionPerRunAwsStacks` in `src/Prodbox/TestRunner.hs` omits `ValidationDnsAws`, the
+  validation that *creates* the validation hosted zone. A plan containing only that validation
+  therefore provisions a billable zone while the sweep node is excluded from the normal action set;
+  the recovery action set is built unconditionally, so recovery still covers it, which is why this is
+  a narrow window rather than a guaranteed leak. The cutover must not carry the omission forward: the
+  compiled program's node selection has to admit the zone whenever the plan can create one.
 
 ### Validation
 
@@ -3558,6 +3591,55 @@ executor, operation-ID allocator, or success interpretation in the validation la
 4. Source/gate proof finds no validation-owned generic graph runner, mutation callback, or second
    operation-ID allocator on the supported composition.
 5. The installed named validation, unit suite, docs checks, and `prodbox dev check` pass.
+
+### Current Implementation Checkpoint (2026-08-21, the entry protocol admits an ordinary surface)
+
+- **The harness could not bind a descriptor at all, and that was the first thing in its way.**
+  `LifecycleCleanupDescriptor` was fixed to `'Cascade`, so there was no value the per-run cleanup
+  could construct to become a client of the lifecycle-owned run. It is now indexed by cleanup
+  surface, with `mkOrdinaryCleanupDescriptor` as the `ExplicitPerRun` instantiation.
+- **Both surfaces share one binding.** `requireCleanupBinding` holds the run-id, graph, digest, and
+  program-descriptor checks, so a second surface cannot be admitted by a weaker prefix of the
+  cascade's checks — the same reason Sprint `4.89` unified the surface-indexed proof binding rather
+  than keeping two structurally identical records validated by different rules.
+- **An ordinary run has no host record, and that is a fact about the record rather than a gap.**
+  `mkHostCleanupScope` refuses any surface but the cascade, deliberately: the host cleanup record is
+  what licenses uninstalling the retained local foundation. A per-run cleanup mutates registered
+  targets and never the host, so it has no local-uninstall operation to bind a record to and no
+  business holding the record that authorizes one. `CleanupHostIntent` and `CleanupHostPreparation`
+  make that a constructor rather than a `Maybe`, so an ordinary caller cannot reach the cascade's
+  record and cannot supply a store it does not use.
+
+### Validation Result (2026-08-21, the entry protocol admits an ordinary surface)
+
+- One further case in `test/unit/LifecycleCleanupClient.hs` measures the ordinary binding: it
+  admits the compiled `ExplicitPerRun` program and its initial run, carries `NoHostIntent`, and
+  refuses a foreign initial run through the same shared binding the cascade uses. The cascade's
+  host-record accessor does not typecheck against an ordinary descriptor, which is why the case has
+  no negative arm for it.
+- `prodbox dev check` 0, `prodbox dev lint docs` 0, `prodbox dev docs check` 0, `prodbox test unit`
+  4410/4411, `prodbox test integration cli` 0, `prodbox test integration env` 0.
+
+### Measured Bounds on the Remaining Cutover (2026-08-21)
+
+Two facts were measured while opening this sprint's execution, and both change what its remaining
+deliverables can mean. Recording them here rather than discovering them again mid-migration:
+
+- **"Submit the descriptor before config regeneration" cannot mean a host-durable commit for this
+  surface.** The durable pre-mutation record the cascade commits is the host cleanup intent, and
+  that record is cascade-only by the design above. An ordinary run's durable record is its
+  Authority-registered run — and the Authority is in the cluster the bootstrapping prefix has not
+  built yet. What the prefix actually mutates before the harness reaches the Authority is the
+  generated config, the local RKE2 cluster, and Vault; the first AWS mutation is the IAM setup
+  already inside the cleanup body. The deliverable's safety content is therefore satisfied where it
+  is satisfiable, and a per-run host record is a distinct artifact this sprint does not invent.
+- **The exact-keyed selection cannot gate a destroy on its own.**
+  `selectRegisteredStackGenerationForCleanup` deliberately never degrades any refusal into "nothing
+  is there" — an unopened series, an unobservable store, a slot collision, and a surface that may
+  not select are distinct refusals behind one arm. Wiring it in front of the harness's existing
+  destroys would therefore fail cleanup for every run that never created the stack. This confirms
+  the received deliverable's own sequencing note: the conversion lands *with* the composition
+  migration, which knows whether the run created the stack, and not in front of it.
 
 ### Remaining Work
 
@@ -3580,9 +3662,12 @@ unexpressible, and both are gated mechanically rather than only recorded here.
   `ProviderIntent` that lists or deletes one — so registering it made the `Cascade` and
   `ExplicitPerRun` programs unsatisfiable rather than making the zone swept.
   `Prodbox.CheckCode.registeredTargetExecutorViolations` now fails the build on that shape. The
-  registration lands with its adapter in Sprint `7.36`; until then the only thing removing a billable
-  zone is the harness's own always-run node over
-  `src/Prodbox/Infra/Route53ValidationZone.hs`, so this sprint must not delete it.
+  registration landed with its adapter in Sprint `7.36` on 2026-08-21, so the typed descriptor and
+  its executor now both exist; until this sprint cuts the harness over, the harness's own always-run
+  node over `src/Prodbox/Infra/Route53ValidationZone.hs` is a second, duplicate owner of the same
+  sweep rather than the only one.
+  **That is the measurement behind this sprint's declared `**Backward dependency**` on Sprint
+  `7.36`; the dependency itself is stated only in that field.**
 - **The `aws-operational-teardown` node.** Its `CleanupRequiresSuccess` edges implement Sprint
   `7.10`'s credential-preservation rule. `OperationalTeardown` still projects zero registered targets
   — the three operational rows are the pre-cutover identity, superseded rather than pending

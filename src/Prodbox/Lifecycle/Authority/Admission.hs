@@ -32,9 +32,12 @@ module Prodbox.Lifecycle.Authority.Admission
   , authorityAggregateConfig
   , authorityAggregateDecommission
   , authorityAggregateProviderAdmissionEpochView
+  , authorityAggregateCascadeTerminalAuditReceipt
+  , confirmAggregateCascadeTerminalAuditReceipt
   , authorityAggregateSubmissionEpoch
   , authorityAggregateSubmissionEpochBindings
   , authorityAggregateProviderOperations
+  , providerOperationKey
   , ProviderOperationCleanupOwner (..)
   , authorityProviderOperationCleanupOwner
   , validateAuthorityAdmissionAggregate
@@ -174,16 +177,25 @@ import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
   )
 import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch.Internal
   ( CascadeAuditFreezeBinding
+  , CascadeTerminalAuditReceipt
+  , ProviderAdmissionAuditReadBackRefusal
+  , ProviderAdmissionAuditRecordRefusal
   , ProviderAdmissionEpoch
   , ProviderAdmissionEpochError
   , ProviderAdmissionFreezeRefusal
   , ProviderAdmissionFreshSubmissionRefusal (..)
+  , ProviderAdmissionRevokeRefusal
+  , ProviderCredentialRevocationReceipt
   , ProviderPendingWork (NoPendingProviderWork, PendingProviderWork)
   , bindProviderAdmissionServingGenerationInternal
+  , confirmCascadeTerminalAuditReceipt
   , freezeProviderAdmissionForCascadeAuditInternal
   , initialLegacyProviderAdmissionEpochInternal
+  , observedCascadeTerminalAuditReceiptInternal
   , providerAdmissionEpochView
   , providerAdmissionFreshSubmissionRefusalInternal
+  , recordCascadeTerminalAuditReceiptInternal
+  , revokeCascadeProviderCredentialInternal
   , validateProviderAdmissionEpochInternal
   )
 import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
@@ -229,6 +241,9 @@ import Prodbox.Lifecycle.PulumiCheckpoint
   , PulumiCheckpointOperationRefError
   , RegisteredPulumiCheckpoint
   , mkPulumiCheckpointOperationRef
+  )
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CustodyDispositionRecord
   )
 
 -- | Whether this authority is a clean install or participates in the explicit
@@ -567,6 +582,36 @@ authorityAggregateProviderAdmissionEpochView =
   providerAdmissionEpochView
     . internalAuthorityAggregateProviderAdmissionEpoch
 
+-- | Sprint 7.36: the terminal-audit receipt this retained object carries.
+--
+-- This is the read half of the independent read-back: a caller that committed
+-- a receipt re-reads the durable object and confirms what is actually there
+-- against what it committed, rather than trusting the write's own response.
+-- It is a projection, not an authorization: the receipt it returns cannot
+-- transition the epoch.
+authorityAggregateCascadeTerminalAuditReceipt
+  :: AuthorityAdmissionAggregate -> Maybe CascadeTerminalAuditReceipt
+authorityAggregateCascadeTerminalAuditReceipt =
+  observedCascadeTerminalAuditReceiptInternal
+    . internalAuthorityAggregateProviderAdmissionEpoch
+
+-- | Confirm a committed terminal-audit receipt against an independently
+-- re-read retained object.
+--
+-- This is the read-back a caller performs after committing: it reads the
+-- durable object again and checks that what is there is the receipt it
+-- committed, under the reservation it committed against, rather than trusting
+-- the write's own response. It authorizes nothing; it only answers whether the
+-- commit is durable.
+confirmAggregateCascadeTerminalAuditReceipt
+  :: AuthorityAdmissionAggregate
+  -> CascadeAuditFreezeBinding
+  -> CascadeTerminalAuditReceipt
+  -> Either ProviderAdmissionAuditReadBackRefusal ()
+confirmAggregateCascadeTerminalAuditReceipt aggregate =
+  confirmCascadeTerminalAuditReceipt
+    (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+
 -- | Validate the retained object against runtime-pinned capacity.  In
 -- particular, an epoch entry may neither be absent for a known submission nor
 -- survive compaction after the corresponding ledger record is gone.
@@ -816,6 +861,21 @@ data AuthorityAdmissionCommand
     -- same aggregate in this same step, so no submission can be accepted
     -- between the proof and the fence.
     FreezeProviderAdmissionForCascadeAudit !CascadeAuditFreezeBinding
+  | -- | Sprint 7.36: make the audit's verdict durable against the reservation
+    -- that admitted it. It is a separate command from the freeze because the
+    -- audit runs between them, and separate from the revocation because a run
+    -- that recorded an escape or a blind spot must be able to say so durably
+    -- without that statement authorizing anything.
+    RecordCascadeTerminalAuditReceipt
+      !CascadeAuditFreezeBinding
+      !CascadeTerminalAuditReceipt
+  | -- | Sprint 7.36: end the cascade's Provider credential once its audit's
+    -- clean verdict is durable. It is a third command rather than part of the
+    -- record because the two independent read-backs it binds happen between
+    -- them.
+    RevokeCascadeProviderCredential
+      !CascadeAuditFreezeBinding
+      !ProviderCredentialRevocationReceipt
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -834,6 +894,8 @@ data AuthorityAdmissionCommandTag
   | ApplyAuthorityForwardMigrationTag
   | BindProviderAdmissionGenerationTag
   | FreezeProviderAdmissionForCascadeAuditTag
+  | RecordCascadeTerminalAuditReceiptTag
+  | RevokeCascadeProviderCredentialTag
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
 -- | Total over the closed command universe, so a new command is an
@@ -850,6 +912,10 @@ authorityAdmissionCommandTag command = case command of
   BindProviderAdmissionGeneration _ -> BindProviderAdmissionGenerationTag
   FreezeProviderAdmissionForCascadeAudit _ ->
     FreezeProviderAdmissionForCascadeAuditTag
+  RecordCascadeTerminalAuditReceipt _ _ ->
+    RecordCascadeTerminalAuditReceiptTag
+  RevokeCascadeProviderCredential _ _ ->
+    RevokeCascadeProviderCredentialTag
 
 -- | Sprint 4.85: the closed vocabulary of control transitions an authenticated
 -- caller may issue, as data.
@@ -870,6 +936,8 @@ data AuthorityControlRoute
   | AuthorityControlForwardMigrationRoute
   | AuthorityControlProviderGenerationBindingRoute
   | AuthorityControlCascadeAuditFreezeRoute
+  | AuthorityControlCascadeAuditReceiptRoute
+  | AuthorityControlCascadeCredentialRevokeRoute
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
 authorityControlRouteTag :: AuthorityControlRoute -> Text
@@ -882,6 +950,10 @@ authorityControlRouteTag route = case route of
     "authority-control/bind-provider-generation"
   AuthorityControlCascadeAuditFreezeRoute ->
     "authority-control/freeze-provider-admission-for-cascade-audit"
+  AuthorityControlCascadeAuditReceiptRoute ->
+    "authority-control/record-cascade-terminal-audit-receipt"
+  AuthorityControlCascadeCredentialRevokeRoute ->
+    "authority-control/revoke-cascade-provider-credential"
 
 -- | Which aggregate command one externally admissible route issues.
 authorityControlRouteIssuedCommandTag
@@ -895,6 +967,10 @@ authorityControlRouteIssuedCommandTag route = case route of
     BindProviderAdmissionGenerationTag
   AuthorityControlCascadeAuditFreezeRoute ->
     FreezeProviderAdmissionForCascadeAuditTag
+  AuthorityControlCascadeAuditReceiptRoute ->
+    RecordCascadeTerminalAuditReceiptTag
+  AuthorityControlCascadeCredentialRevokeRoute ->
+    RevokeCascadeProviderCredentialTag
 
 -- | Does any externally admissible control route issue the Cascade-audit
 -- freeze?
@@ -910,6 +986,9 @@ authorityControlRoutesIssueCascadeAuditFreeze =
 data AuthorityAdmissionCommandRefusal
   = AuthorityProviderGenerationBindingRefused !ProviderAdmissionEpochError
   | AuthorityProviderAdmissionFreezeRefused !ProviderAdmissionFreezeRefusal
+  | AuthorityCascadeTerminalAuditRecordRefused
+      !ProviderAdmissionAuditRecordRefusal
+  | AuthorityCascadeCredentialRevokeRefused !ProviderAdmissionRevokeRefusal
   | AuthorityMigrationAlreadyStarted
   | AuthorityMigrationNotStarted
   | AuthorityMigrationBeforeGenesis
@@ -920,6 +999,8 @@ data AuthorityAdmissionCommandRefusal
 data AuthorityAdmissionDecision
   = AuthorityProviderGenerationBound !Natural
   | AuthorityProviderAdmissionFrozenForCascadeAudit
+  | AuthorityCascadeTerminalAuditReceiptRecorded
+  | AuthorityCascadeProviderCredentialRevoked
   | AuthorityGenesisDecided !GenesisDecision
   | AuthorityBackupRepairDecided !BackupRepairDecision
   | AuthorityMigrationStarted
@@ -1003,6 +1084,30 @@ stepAuthorityAdmission aggregate command = case command of
       Left refusal -> refuse (AuthorityProviderAdmissionFreezeRefused refusal)
       Right nextEpoch ->
         ( AuthorityProviderAdmissionFrozenForCascadeAudit
+        , aggregate
+            { internalAuthorityAggregateProviderAdmissionEpoch = nextEpoch
+            }
+        )
+  RecordCascadeTerminalAuditReceipt binding receipt ->
+    case recordCascadeTerminalAuditReceiptInternal
+      (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+      binding
+      receipt of
+      Left refusal -> refuse (AuthorityCascadeTerminalAuditRecordRefused refusal)
+      Right nextEpoch ->
+        ( AuthorityCascadeTerminalAuditReceiptRecorded
+        , aggregate
+            { internalAuthorityAggregateProviderAdmissionEpoch = nextEpoch
+            }
+        )
+  RevokeCascadeProviderCredential binding revocation ->
+    case revokeCascadeProviderCredentialInternal
+      (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+      binding
+      revocation of
+      Left refusal -> refuse (AuthorityCascadeCredentialRevokeRefused refusal)
+      Right nextEpoch ->
+        ( AuthorityCascadeProviderCredentialRevoked
         , aggregate
             { internalAuthorityAggregateProviderAdmissionEpoch = nextEpoch
             }
@@ -1476,11 +1581,12 @@ stepAuthorityCheckpointPermit
   -> RegisteredPulumiCheckpoint
   -> CheckpointOperationKind
   -> Maybe PulumiCheckpointDigest
+  -> Maybe CustodyDispositionRecord
   -> AuthorityAdmissionAggregate
   -> Either
        AuthorityAdmissionInvariantError
        (CheckpointPermitDecision, AuthorityAdmissionAggregate)
-stepAuthorityCheckpointPermit caller generation operationId registered kind expected aggregate = do
+stepAuthorityCheckpointPermit caller generation operationId registered kind expected disposition aggregate = do
   validateCurrentAggregate aggregate
   case admittedOperationRecord caller generation operationId aggregate of
     Left refusal -> pure (refusal, aggregate)
@@ -1496,6 +1602,7 @@ stepAuthorityCheckpointPermit caller generation operationId registered kind expe
             registered
             kind
             expected
+            disposition
             (authorityAggregatePulumiCheckpoints current)
         )
     case record of

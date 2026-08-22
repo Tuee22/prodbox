@@ -48,15 +48,16 @@ Status must describe reality, not intent.
 | ✅ | Completed and validated |
 | 🔄 | Active and partially complete |
 | 📋 | Planned and ready to start |
-| ⏸️ | Blocked by an unmet **earlier-phase or external** prerequisite (never a later phase, never a pending live-infra proof — Standards N/O) |
+| ⏸️ | Blocked by an unmet prerequisite — an earlier-or-same-phase sprint, an external prerequisite, or a **declared backward dependency** admitted under Standard N.2. Never a pending live-infra proof (Standard O) |
 | 🧪 Live-proof pending | Code-owned surface `Done` and locally validated; a live-infra proof (live AWS / deployed cluster / unsealed Vault / operator credential) is outstanding. **Non-blocking** (Standard O) |
 
 - `Done` requires passing validation on the code-owned surface, aligned docs, and no remaining
   sprint-owned code work; a pending live-infra proof does not prevent `Done` (track it as
   Live-proof pending — Standard O).
 - `Active` requires a `Remaining Work` section.
-- `Blocked` requires a `Blocked by` line naming an earlier-or-same-phase sprint or an external
-  prerequisite — never a later phase (Standard N) and never a pending live-infra proof (Standard O).
+- `Blocked` requires a `Blocked by` line naming an earlier-or-same-phase sprint, an external
+  prerequisite, or a later sprint declared under Standard N.2 — and never a pending live-infra proof
+  (Standard O).
 - `Planned` means dependencies are already satisfied; it must not list unmet blockers.
 - Status is always scoped to the sprint or phase-owned surface. A later phase may remain `Done`
   when an earlier phase reopens, but the reopened dependency must be called out explicitly in
@@ -151,8 +152,9 @@ Every sprint should use the same basic structure:
 
 **Status**: Done | Active | Planned | Blocked
 **Implementation**: `path/to/file` (required for Done, recommended otherwise)
-**Blocked by**: earlier-or-same-phase sprint id(s) or external prerequisite (required for Blocked); never a later phase or higher-numbered sprint (Standard N)
-**Closure dependency**: earlier-or-same-phase sprint id(s) (optional; for a non-`Blocked` sprint whose *closure* — not its start — waits on another sprint). Same direction rule as `Blocked by` (Standard N)
+**Blocked by**: sprint id(s) or external prerequisite (required for Blocked). Forward-only unless the same block declares the id under `**Backward dependency**` (Standard N.2)
+**Closure dependency**: sprint id(s) (optional; for a non-`Blocked` sprint whose *closure* — not its start — waits on another sprint). Same direction rule as `Blocked by` (Standard N.2)
+**Backward dependency**: the later sprint id(s) this block admits under Standard N.2, each followed by one sentence naming what would be destroyed, stranded, or left unreplaced without it (required whenever `Blocked by` or `Closure dependency` names a later sprint; forbidden otherwise)
 **Live-proof**: pending | proven (optional; the non-blocking live-infra axis — Standard O)
 **Deployment qualification**: pending | proven (required when the sprint changes a Standard-P
 production-composition surface)
@@ -172,11 +174,14 @@ Additional sections such as `Current Validation State`, `Current Blockers`, or `
 encouraged when they clarify design or closure.
 
 `**Blocked by**` and `**Closure dependency**` are the **only** fields in which a sprint may record a
-dependency on another sprint, and both carry the Standard-N direction rule. A sprint that needs to
-say something about later work states it as a *disclaimer* instead — "this sprint makes no claim
-about X; Sprint `Y` owns it" — which is a statement about ownership rather than a dependency. Any
-other dependency-shaped field name (`Closure dependencies`, `Depends on`, `Waiting on`) is a defect:
-`prodbox dev check` cannot read it, so a dependency recorded there is invisible to the queue gate.
+dependency on another sprint, and both carry the Standard-N.2 direction rule.
+`**Backward dependency**` does not record a dependency of its own — it *admits* one already recorded
+in those two, and the pair must agree in both directions (Standard N.2). A sprint that needs to say
+something about later work it does not depend on states it as a *disclaimer* instead — "this sprint
+makes no claim about X; Sprint `Y` owns it" — which is a statement about ownership rather than a
+dependency. Any other dependency-shaped field name (`Closure dependencies`, `Depends on`,
+`Waiting on`) is a defect: `prodbox dev check` cannot read it, so a dependency recorded there is
+invisible to the queue gate.
 
 ### I. Explicit Cleanup and Removal Ledger
 
@@ -206,17 +211,21 @@ The plan and governed documents must agree.
 - [README.md → Resume Here](README.md#resume-here) is the sole current-status and resumption
   ledger. `00-overview.md`, phase files, and `system-components.md` may preserve dated history or
   describe owned surfaces, but must not publish a competing current queue.
-- `Resume Here` contains exactly one simple queue table. Every open sprint appears exactly once,
-  in numerical order; exactly the first runnable row is `Next`; later partial foundations are
-  `Parked`; and `Blocked` dependencies name only earlier rows. Sprint IDs are unique across phase
-  sprint headings, and every `Pending Removal` row names an existing owning sprint or is explicitly
-  `Unowned`.
+- `Resume Here` contains exactly one simple queue table. Every open sprint appears exactly once, in
+  **execution order**; exactly the first runnable row is `Next`; later partial foundations are
+  `Parked`; and `Blocked` dependencies name only rows above them. Execution order is numerical order
+  **except where a declared backward dependency (Standard N.2) requires otherwise**: a numerically
+  out-of-order pair is admitted only when a row below depends on the higher-numbered row above it,
+  so the deviation is always licensed by a dependency a reader can see in the table. Sprint IDs are
+  unique across phase sprint headings, and every `Pending Removal` row names an existing owning
+  sprint or is explicitly `Unowned`.
 - Governed docs under `documents/engineering/` own stable target architecture. The execution plan
   schedules its adoption and must not contradict or duplicate that doctrine.
 - Root guidance docs such as `README.md`, `AGENTS.md`, and `CLAUDE.md` must point to the canonical
   development-plan entrypoint.
 - `prodbox dev lint docs` mechanically validates the unique `Resume Here` section, exact open-row
-  coverage and numerical order, dependency direction, unique phase sprint IDs, and valid or
+  coverage and licensed execution order, dependency direction and its backward-dependency
+  bijection, unique phase sprint IDs, and valid or
   explicit-`Unowned` Pending Removal ownership. A documentation change is not aligned when this
   gate fails.
 
@@ -342,15 +351,44 @@ substrate; AWS-substrate coverage of that same validation is tracked only in the
 [substrates.md](substrates.md) parity table and never marks the suite-content sprint or its phase
 `Blocked` (Standards N/O).
 
-### N. Phase Independence (No Backward Blocking)
+### N. Phase Independence and Execution Order
 
-A phase's validation never depends on another phase being complete. Forward build-order (Standard A — later phases compose earlier deliverables) remains the narrative spine, but it is **not a validation gate**.
+Two different rules lived here under one name until 2026-08-21, and conflating them is what drove
+four real dependencies into prose. They are now separate, because only one of them was ever
+defensible as an absolute.
+
+#### N.1 Validation independence (unchanged, strict)
+
+A phase's **validation** never depends on another phase being complete. Forward build-order
+(Standard A — later phases compose earlier deliverables) remains the narrative spine, but it is
+**not a validation gate**.
 
 - **Independent validation.** Each phase is validatable on its owned surface even when any other phase is incomplete. Where a validation would touch a dependency owned by another phase, it is exercised against the home/local substrate, a fake, or a stub. Every phase document must carry an **Independent Validation** line stating how the phase is validated on its owned surface with no dependency on a later phase.
-- **Forward-only blocking.** A `**Blocked by**` or `**Closure dependency**` entry may name only an **earlier-or-same-phase** sprint or an **external** prerequisite. It must **never** name a later phase or a higher-numbered sprint. A backward entry is a structural defect: re-scope the sprint so its owned surface is validatable now, and track any genuinely-later-dependent extension separately (Standard O / the [substrates.md](substrates.md) parity table) — do not record the backward block.
-- **Dependencies are declared, never narrated.** Those two fields (Standard H) and the ledger's `**Prerequisite**` marker (Standard I) are the only places a dependency may be recorded. Prose may *disclaim* later work — "this sprint makes no claim about X; Sprint `Y` owns it" — which states ownership rather than a dependency. A dependency written only in prose is invisible to `prodbox dev check`, which is how the 2026-08-17 audit found a queue in which no row could reach `Done` while the gate reported it clean. `prodbox dev check` now reads the declared fields and fails on a backward one.
-- **Validation criteria are bound by the same rule.** A sprint's `Validation` items must be satisfiable on its owned surface. An item that can only pass once a later phase lands is a backward dependency in a different field, and is re-scoped to the sprint that owns the composition it measures.
+- **Validation criteria are bound by the same rule.** A sprint's `Validation` items must be satisfiable on its owned surface. An item that can only pass once a later phase lands is re-scoped to the sprint that owns the composition it measures.
 - **No backward reopen.** An incomplete later phase never reopens or blocks an earlier phase. Reopening a closed phase (Standard A) is permitted only to expand that phase's **own** owned surface.
+
+#### N.2 Execution order (amended 2026-08-21)
+
+*Which sprint can be worked next* is a different question from *which phase can be validated*, and it
+is not required to follow sprint numbering.
+
+- **Forward-only by default.** A `**Blocked by**` or `**Closure dependency**` entry normally names an **earlier-or-same-phase** sprint or an **external** prerequisite.
+- **A backward dependency may be declared when it is physical.** It may name a **later** sprint when the earlier sprint's own deliverable would **destroy, strand, or leave unreplaced something real** that only the later sprint's capability supplies. Convenience, sequencing preference, and "it would be tidier afterwards" are not physical; re-scope those instead.
+- **A declared backward dependency requires the `**Backward dependency**` field**, naming the same later sprint id(s) and, for each, one sentence saying what would be stranded without it. The two directions must agree: a later id in `**Blocked by**`/`**Closure dependency**` that is not admitted there is a defect, and an admitted id that no dependency field names is an orphan declaration and equally a defect. `prodbox dev check` enforces the bijection.
+- **Dependencies are declared, never narrated.** Those fields (Standard H) and the ledger's `**Prerequisite**` marker (Standard I) are the only places a dependency may be recorded. Prose may *disclaim* later work — "this sprint makes no claim about X; Sprint `Y` owns it" — which states ownership rather than a dependency. A dependency written only in prose is invisible to `prodbox dev check`.
+
+**Why this replaced an outright prohibition.** The 2026-08-17 audit found a queue in which no row
+could reach `Done` while the gate reported it clean, and the 2026-08-18 remedy made the gate read the
+declared fields. The 2026-08-21 audit then found the prohibition had not removed a single real
+dependency — it had moved four of them into prose, where no gate could see them, including one on the
+queue head. Forbidding the *declaration* does not remove the *dependency*; it removes the record of
+it. A physical dependency is now sayable, gated, and visible in the queue.
+
+**The anti-deadlock property is preserved by the queue, not by the prohibition.** Standard J requires
+every `Blocked` row's dependencies to appear **above it** in `Resume Here`, so the queue stays
+acyclic and workable top-to-bottom by construction; and a numerically out-of-order pair is admitted
+only when it is licensed by exactly such a dependency. A cycle cannot be expressed, because two rows
+cannot each be above the other.
 
 ### O. Code-Local Completion vs. Live-Infra Proof
 

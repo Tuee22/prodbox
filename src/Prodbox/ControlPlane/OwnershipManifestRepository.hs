@@ -39,6 +39,7 @@ module Prodbox.ControlPlane.OwnershipManifestRepository
   , modelBOwnershipManifestRepository
   , commitOwnershipManifestWriteAheadAttempt
   , independentlyReadBackOwnershipManifestDecisionEvidence
+  , readBackOwnershipManifestDecisionForScope
   , confirmOwnershipManifestDecisionReadBack
   , OwnershipManifestClient (..)
   , lifecycleAuthorityOwnershipManifestClient
@@ -81,6 +82,7 @@ import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.OwnershipManifest
   ( DurableWriteAheadOwnershipManifestError
   , OwnershipManifestDecisionEvidence
+  , OwnershipManifestError
   , OwnershipManifestPurpose (WriteAheadOwnership)
   , OwnershipManifestTarget
   , OwnershipManifestWrite
@@ -89,6 +91,7 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest
   , durableWriteAheadOwnershipManifestScope
   , durableWriteAheadOwnershipManifestStackKey
   , maximumDurableWriteAheadOwnershipManifestBytes
+  , mkOwnershipManifestTarget
   , ownershipManifestObservationOnly
   , ownershipManifestTargetScope
   , ownershipManifestTargetStackKey
@@ -435,6 +438,34 @@ independentlyReadBackOwnershipManifestDecisionEvidence repository target =
       pure (confirmOwnershipManifestDecisionReadBack target expected observed)
  where
   targetScope = ownershipManifestTargetScope target
+
+-- | Read a manifest decision back over the host-reachable client, keyed by the
+-- stack and the scope alone.
+--
+-- Sprint @4.86@: 'OwnershipManifestClient' takes the authority identity as an
+-- argument, and that identity is derivable only inside this module — so a host
+-- holding a transport-backed client had no way to reach the record at all.
+-- The target is rebuilt here from the scope's own surface rather than supplied,
+-- because a caller reading back @forall surface@ has no witness to give and
+-- inventing one would let it name a surface the scope does not carry.
+readBackOwnershipManifestDecisionForScope
+  :: (Monad m)
+  => OwnershipManifestClient m
+  -> RegisteredResourceKey
+  -> ObservationEvidenceScope
+  -> m (Either OwnershipManifestRepositoryError OwnershipManifestDecisionEvidence)
+readBackOwnershipManifestDecisionForScope client key scope =
+  case cleanupSurfaceWitnessFor (evidenceCleanupSurface scope) of
+    SomeCleanupSurfaceWitness witness ->
+      case mkOwnershipManifestTarget witness key scope of
+        Left err -> pure (Left (targetInvalid err))
+        Right target -> case identityFor key scope of
+          Left err -> pure (Left err)
+          Right expected ->
+            readBackOwnershipManifestDecisionByIdentity client target expected
+ where
+  targetInvalid :: OwnershipManifestError -> OwnershipManifestRepositoryError
+  targetInvalid = OwnershipManifestRepositoryIdentityInvalid . Text.pack . show
 
 confirmOwnershipManifestDecisionReadBack
   :: OwnershipManifestTarget surface

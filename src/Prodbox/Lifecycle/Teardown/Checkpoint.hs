@@ -1,10 +1,15 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Crash-safe checkpoint recovery and retirement proofs for stack teardown.
 -- A restore effect never produces a verified primary checkpoint: only an
 -- exact read-back bound to the preallocated operation reference can do that.
 -- Likewise, checkpoint material can be retired only after provider absence
--- has already been observed for the same stack and cleanup scope.
+-- has already been observed for the same stack and cleanup scope, and only
+-- against a Sprint-4.89 custody disposition naming that checkpoint: retiring
+-- the reference ends this run's custody of the capability that made the stack's
+-- resources destroyable, so the retirement consumes a discharge rather than
+-- producing one.
 module Prodbox.Lifecycle.Teardown.Checkpoint
   ( CheckpointRestoreRequest
   , checkpointRestoreOperationId
@@ -72,6 +77,12 @@ module Prodbox.Lifecycle.Teardown.Checkpoint
 where
 
 import Prodbox.Lifecycle.CleanupRun (CleanupOperationId)
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CapabilityDisposition
+  , CustodialCapability (CheckpointCapability)
+  , CustodyIndex (CustodyRetire)
+  , dispositionCapability
+  )
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.Registry
@@ -760,17 +771,39 @@ data CheckpointRetirementError
   | CheckpointRetirementDispositionMismatch
       !CheckpointReferenceDisposition
       !CheckpointReferenceDisposition
+  | -- | Sprint 4.89: the custody disposition handed to the retirement names a
+    -- capability other than the checkpoint being retired.
+    CheckpointRetirementCustodyForeign
+      !CustodialCapability
+      !CustodialCapability
   deriving (Eq, Show)
 
 authorizeCheckpointRetirement
   :: CleanupOperationId
   -> CheckpointRetirementPolicy
   -> ObservationEvidenceScope
+  -> CapabilityDisposition 'CustodyRetire
   -> ExactResourceObservation
   -> CheckpointPairObservation
   -> Either CheckpointRetirementError CheckpointRetirementAuthorization
-authorizeCheckpointRetirement operationId policy scope absence pair = do
+authorizeCheckpointRetirement operationId policy scope disposition absence pair = do
   let stackKey = exactObservationResourceKey absence
+      expectedCapability = CheckpointCapability stackKey
+      disposedCapability = dispositionCapability disposition
+  -- Sprint 4.89: retiring the reference ends this run's custody of the
+  -- capability that made the stack's resources destroyable, so the retirement
+  -- consumes the disposition rather than producing one.  There is no destroy
+  -- constructor, so a caller holding a checkpoint and no discharge has nothing
+  -- to pass here at all; what this checks is that the discharge it did pass is
+  -- about this checkpoint.
+  if disposedCapability == expectedCapability
+    then Right ()
+    else
+      Left
+        ( CheckpointRetirementCustodyForeign
+            expectedCapability
+            disposedCapability
+        )
   identity <- firstRestoreError (validateStackTarget stackKey scope)
   if exactObservationCoordinateDigest absence == registeredIdentityCoordinateDigest identity
     then Right ()

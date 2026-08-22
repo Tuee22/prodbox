@@ -362,6 +362,8 @@ authorityRefusalStatus :: AuthorityAdmissionCommandRefusal -> ReplyStatus
 authorityRefusalStatus refusal = case refusal of
   AuthorityProviderGenerationBindingRefused _ -> ReplyConflict
   AuthorityProviderAdmissionFreezeRefused _ -> ReplyConflict
+  AuthorityCascadeTerminalAuditRecordRefused _ -> ReplyConflict
+  AuthorityCascadeCredentialRevokeRefused _ -> ReplyConflict
   AuthorityMigrationBeforeGenesis -> ReplyServiceUnavailable
   AuthorityMigrationDuringBackupRepair -> ReplyServiceUnavailable
   AuthorityMigrationAlreadyStarted -> ReplyConflict
@@ -372,6 +374,10 @@ authorityRefusalToken :: AuthorityAdmissionCommandRefusal -> Text
 authorityRefusalToken refusal = case refusal of
   AuthorityProviderGenerationBindingRefused _ -> "provider-generation-binding-refused"
   AuthorityProviderAdmissionFreezeRefused _ -> "provider-admission-freeze-refused"
+  AuthorityCascadeTerminalAuditRecordRefused _ ->
+    "cascade-terminal-audit-record-refused"
+  AuthorityCascadeCredentialRevokeRefused _ ->
+    "cascade-credential-revoke-refused"
   AuthorityMigrationBeforeGenesis -> "before-genesis"
   AuthorityMigrationDuringBackupRepair -> "during-backup-repair"
   AuthorityMigrationAlreadyStarted -> "already-started"

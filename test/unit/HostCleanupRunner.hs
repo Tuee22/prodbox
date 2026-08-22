@@ -4,7 +4,8 @@ module HostCleanupRunner
 where
 
 import Control.Monad (filterM)
-import Data.List (isInfixOf, sort)
+import Data.Char (isAlphaNum)
+import Data.List (sort)
 import Prodbox.Lifecycle.HostCleanupRunner
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath (takeExtension, (</>))
@@ -62,8 +63,14 @@ hostCleanupRunnerSuite =
       -- in a Cabal-hidden module, so no module outside this library can name
       -- the constructor at all.  This gate is therefore over the library, and
       -- a third producer has to be recorded here deliberately.
+      --
+      -- The match is over the name as a token rather than as a substring: a
+      -- module that only calls the production arm
+      -- `productionHostCleanupCompletionReadBack` never names the type, and a
+      -- substring match reported it as a producer -- a gate reading its own
+      -- spelling rather than the fact it exists to measure.
       sourceFiles <- haskellFiles "src"
-      producers <- filterM (fileContains "HostCleanupCompletionReadBack") sourceFiles
+      producers <- filterM (fileNames "HostCleanupCompletionReadBack") sourceFiles
       sort producers
         `shouldBe` [ "src/Prodbox/Lifecycle/HostCleanupCompletion.hs"
                    , "src/Prodbox/Lifecycle/HostCleanupRunner.hs"
@@ -96,10 +103,19 @@ haskellFiles path = do
       concat <$> traverse (haskellFiles . (path </>)) children
     else pure [path | takeExtension path == ".hs"]
 
-fileContains :: String -> FilePath -> IO Bool
-fileContains needle path = do
+-- | Does the file name this identifier, rather than merely spell it inside a
+-- longer one?
+fileNames :: String -> FilePath -> IO Bool
+fileNames needle path = do
   contents <- readFile path
-  pure (needle `isInfixOf` contents)
+  pure (needle `elem` words (map keepIdentifierCharacter contents))
+
+keepIdentifierCharacter :: Char -> Char
+keepIdentifierCharacter character
+  | isAlphaNum character = character
+  | character == '_' = character
+  | character == '\'' = character
+  | otherwise = ' '
 
 exportedHeader :: String -> IO String
 exportedHeader source = case break (== "where") (lines source) of

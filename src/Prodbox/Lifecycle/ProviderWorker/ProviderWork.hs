@@ -103,9 +103,12 @@ module Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkRegisteredProviderResources
   , registeredProviderResourceKeys
   , isProviderResourceRegistered
+  , productionRegisteredProviderResources
 
     -- * Intents and coordinates
   , ProviderIntent (..)
+  , ProviderOwnedTagQuery (..)
+  , providerOwnedTagQueryKey
   , providerIntentResourceKey
   , ProviderIntentCoordinate
   , providerIntentCoordinate
@@ -541,6 +544,45 @@ isProviderResourceRegistered key (RegisteredProviderResources keys) =
   Set.member key keys
     || any (\family -> (family <> ":") `Text.isPrefixOf` key) (Set.toList keys)
 
+-- | The resource allowlist the production Provider Worker's accepted authority
+-- carries.
+--
+-- It is deliberately an allowlist rather than a projection of the intent
+-- universe: the three stack entries name exactly the stacks the worker may
+-- touch, and deriving \"stack\" from the intent type would widen that authority
+-- to any stack reference a caller composed.  What it must not be is a *second*
+-- statement nobody joins to the first, which is what it was: Sprint @7.36@
+-- registered the validation hosted-zone and retained-EBS families as intents
+-- without adding them here, so a committed intent for either would have been
+-- refused as an unregistered resource at the one boundary that matters, while
+-- every adapter table stayed green.  A unit case now walks the exhaustive
+-- intent fixture and measures that each intent's resource key is admitted by
+-- this list, so an intent added without its family is a failing measurement
+-- rather than a live refusal.
+productionRegisteredProviderResources :: [Text]
+productionRegisteredProviderResources =
+  [ "stack:aws-eks"
+  , "stack:aws-eks-subzone"
+  , "stack:aws-test"
+  , "checkpoint:pulumi-scratch"
+  , "ses:sending-identity"
+  , "ses:dkim"
+  , "ses:dns"
+  , "ses:receipt-rules"
+  , "ses:capture-bucket"
+  , "ebs-reaper:test-scoped"
+  , "ebs-reaper:retained"
+  , "route53:validation-zone"
+  , "route53:dns01-challenge"
+  , "owned-resource-tags"
+  , "spot-price:ec2"
+  , "operational-identity"
+  , "readiness:sts"
+  , "readiness:route53"
+  , "public-edge:a"
+  , "eks-client-auth"
+  ]
+
 -- | The closed set of normal provider intents. Forbidden capabilities are
 -- unrepresentable: there is no constructor for a credential IAM identity/key, an
 -- Authority state write, a backup/TLS identity, a target secret, a Gateway/DNS
@@ -566,10 +608,53 @@ data ProviderIntent
   | ObserveProviderReadiness !ProviderReadinessProbe
   | IssueEksClientAuth !EksClientAuthRequest
   | ObserveTestEbsVolumes !Text
+  | -- | Sprint 7.36: list the @dns-aws@ validation hosted-zone family by its
+    -- owned tags.  The 'Text' is the purpose tag value that bounds the family;
+    -- a zone carrying the managed-by tag without it is a different code-created
+    -- resource and cannot enter this observation.
+    ObserveValidationHostedZones !Text
+  | -- | Sprint 7.36: delete every zone in that family, emptying its non-SOA/NS
+    -- record sets first because Route 53 refuses to delete a non-empty zone.
+    ReapValidationHostedZones !Text
+  | -- | Sprint 7.36: list the retained EBS family by its owned lifecycle tag.
+    -- The 'Text' is the retained lifecycle tag value that bounds the family.
+    ObserveRetainedEbsVolumes !Text
+  | -- | Sprint 7.36: delete every volume in that family.  Reachable only from
+    -- the registered retained target, whose surface an operator selects
+    -- explicitly; no cascade path constructs it.
+    ReapRetainedEbsVolumes !Text
+  | -- | Sprint 7.36: list the DNS01 challenge record family inside one
+    -- retained hosted zone.  The first 'Text' is the hosted-zone id the run
+    -- names, the second the record-name prefix that bounds the family.
+    --
+    -- Observation only, and deliberately so: there is no reap constructor
+    -- beside it, because the record is owned by cert-manager's solver and a
+    -- Provider delete would race the solver into rewriting it.  The absence of
+    -- the mutation is the contract, not an omission.
+    ObserveDns01ChallengeRecords !Text !Text
   | ObserveEksClusterIdentity !EksClusterIdentityRequest
   | ObserveProviderAwsScope
+  | -- | Sprint 7.36: one owned-resource tag listing for the cascade's terminal
+    -- escape audit.  Exactly one filter, because the Tagging API intersects
+    -- the filters inside a call and the audit's field of view is their union;
+    -- issuing them as one call is the defect Sprint @4.77@ found in the sweep.
+    ObserveOwnedResourceTags !ProviderOwnedTagQuery
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+-- | One terminal-audit tag filter.  A key-only query asks for the family at any
+-- value; the pair form asks for one exact value.
+data ProviderOwnedTagQuery
+  = ProviderOwnedTagKeyQuery !Text
+  | ProviderOwnedTagPairQuery !Text !Text
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- | The stable resource key of one owned-resource tag query.
+providerOwnedTagQueryKey :: ProviderOwnedTagQuery -> Text
+providerOwnedTagQueryKey query = case query of
+  ProviderOwnedTagKeyQuery key -> key
+  ProviderOwnedTagPairQuery key value -> key <> "=" <> value
 
 -- | The registered-resource key an intent draws on (the granularity at which the
 -- Authority registers what the committed provider intent authorizes).
@@ -615,8 +700,18 @@ providerIntentResourceKey intent = case intent of
     ProviderReadinessRoute53Zone zoneId -> "readiness:route53:" <> zoneId
   IssueEksClientAuth _ -> "eks-client-auth"
   ObserveTestEbsVolumes clusterName -> "ebs-reaper:test-scoped:" <> clusterName
+  ObserveValidationHostedZones purpose -> "route53:validation-zone:" <> purpose
+  ReapValidationHostedZones purpose -> "route53:validation-zone:" <> purpose
+  ObserveRetainedEbsVolumes lifecycleValue ->
+    "ebs-reaper:retained:" <> lifecycleValue
+  ReapRetainedEbsVolumes lifecycleValue ->
+    "ebs-reaper:retained:" <> lifecycleValue
+  ObserveDns01ChallengeRecords zoneId recordNamePrefix ->
+    "route53:dns01-challenge:" <> zoneId <> ":" <> recordNamePrefix
   ObserveEksClusterIdentity request ->
     "stack:" <> providerStackRefText (eksClusterIdentityRequestStackRef request)
+  ObserveOwnedResourceTags query ->
+    "owned-resource-tags:" <> providerOwnedTagQueryKey query
 
 publicARecordResourceKey :: PublicARecordRef -> Text
 publicARecordResourceKey ref =
@@ -708,6 +803,16 @@ providerIntentCoordinate intent = ProviderIntentCoordinate $ case intent of
       <> ":"
       <> publicKeyDigest (eksClientAuthRequestDestinationPublicKey request)
   ObserveTestEbsVolumes clusterName -> "observe-test-ebs:" <> clusterName
+  ObserveValidationHostedZones purpose ->
+    "observe-validation-hosted-zones:" <> purpose
+  ReapValidationHostedZones purpose ->
+    "reap-validation-hosted-zones:" <> purpose
+  ObserveRetainedEbsVolumes lifecycleValue ->
+    "observe-retained-ebs:" <> lifecycleValue
+  ReapRetainedEbsVolumes lifecycleValue ->
+    "reap-retained-ebs:" <> lifecycleValue
+  ObserveDns01ChallengeRecords zoneId recordNamePrefix ->
+    "observe-dns01-challenge-records:" <> zoneId <> ":" <> recordNamePrefix
   ObserveEksClusterIdentity request ->
     "observe-eks-cluster:"
       <> providerStackRefText (eksClusterIdentityRequestStackRef request)
@@ -717,6 +822,8 @@ providerIntentCoordinate intent = ProviderIntentCoordinate $ case intent of
       <> eksClusterIdentityRequestRegion request
       <> ":"
       <> eksClusterIdentityRequestClusterName request
+  ObserveOwnedResourceTags query ->
+    "observe-owned-resource-tags:" <> providerOwnedTagQueryKey query
 
 providerStackConfigCoordinate :: ProviderStackConfig -> Text
 providerStackConfigCoordinate config = case config of

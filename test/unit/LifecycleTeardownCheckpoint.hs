@@ -11,6 +11,12 @@ import Control.Monad (forM_, void)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text qualified as Text
 import Prodbox.Lifecycle.CleanupRun
+import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
+  ( CapabilityDisposition (CapabilityDischargedByAbsence)
+  , CustodialCapability (CheckpointCapability)
+  , CustodyIndex (CustodyRetire)
+  , DependantAbsenceProof (DependantAbsenceProof)
+  )
 import Prodbox.Lifecycle.Teardown.Checkpoint
 import Prodbox.Lifecycle.Teardown.Execution
 import Prodbox.Lifecycle.Teardown.Graph
@@ -270,6 +276,7 @@ lifecycleTeardownCheckpointSuite =
                   retirementOperation
                   RetireActiveCheckpointReference
                   scope
+                  eksCheckpointDischarged
                   exactAbsent
                   pair
               )
@@ -281,9 +288,30 @@ lifecycleTeardownCheckpointSuite =
         retirementOperation
         RetireActiveCheckpointReference
         scope
+        eksCheckpointDischarged
         exactPresent
         pair
         `shouldBe` Left (CheckpointRetirementResourceNotAbsent presentInventory)
+
+    it "refuses a retirement whose discharge names another capability" $ do
+      -- Sprint 4.89: retiring the reference ends this run's custody of the
+      -- capability that made the stack's resources destroyable, so the
+      -- authorization consumes a discharge rather than producing one. There is
+      -- no destroy constructor, so a caller holding a checkpoint and nothing
+      -- else has nothing to pass here at all; what this measures is that the
+      -- discharge it did pass is about this checkpoint.
+      authorizeCheckpointRetirement
+        retirementOperation
+        RetireActiveCheckpointReference
+        scope
+        foreignCheckpointDischarged
+        exactAbsent
+        pair
+        `shouldBe` Left
+          ( CheckpointRetirementCustodyForeign
+              (CheckpointCapability AwsEksKey)
+              (CheckpointCapability AwsTestKey)
+          )
 
     it "refuses retirement when either checkpoint copy inventory is unknown" $ do
       let damagedBackup =
@@ -296,6 +324,7 @@ lifecycleTeardownCheckpointSuite =
         retirementOperation
         RetireActiveCheckpointReference
         scope
+        eksCheckpointDischarged
         exactAbsent
         damagedPair
         `shouldBe` Left
@@ -311,6 +340,7 @@ lifecycleTeardownCheckpointSuite =
                   retirementOperation
                   RetireActiveCheckpointReference
                   scope
+                  eksCheckpointDischarged
                   exactAbsent
                   pair
               )
@@ -339,6 +369,7 @@ lifecycleTeardownCheckpointSuite =
                   retirementOperation
                   RetireActiveCheckpointReference
                   scope
+                  eksCheckpointDischarged
                   exactAbsent
                   pair
               )
@@ -359,6 +390,7 @@ lifecycleTeardownCheckpointSuite =
                   retirementOperation
                   RetireActiveCheckpointReference
                   scope
+                  eksCheckpointDischarged
                   exactAbsent
                   pair
               )
@@ -477,6 +509,7 @@ lifecycleTeardownCheckpointSuite =
                   retirementOperationId
                   RetireActiveCheckpointReference
                   compiledScope
+                  eksCheckpointDischarged
                   boundAbsent
                   boundPair
               )
@@ -762,3 +795,22 @@ isRight result = case result of
 
 fromString :: String -> Text.Text
 fromString = Text.pack
+
+-- | Sprint 4.89: the discharge the retirement path consumes.
+--
+-- Retiring the reference ends this run's custody of the capability that made
+-- the stack's resources destroyable, so the authorization takes the discharge
+-- rather than producing one.  The suite's own case below measures that a
+-- discharge naming another capability is refused.
+eksCheckpointDischarged :: CapabilityDisposition 'CustodyRetire
+eksCheckpointDischarged =
+  CapabilityDischargedByAbsence
+    (CheckpointCapability AwsEksKey)
+    (DependantAbsenceProof [AwsEksKey])
+
+-- | A discharge for a different stack's checkpoint.
+foreignCheckpointDischarged :: CapabilityDisposition 'CustodyRetire
+foreignCheckpointDischarged =
+  CapabilityDischargedByAbsence
+    (CheckpointCapability AwsTestKey)
+    (DependantAbsenceProof [AwsTestKey])

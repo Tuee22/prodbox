@@ -1353,6 +1353,12 @@ validateNodeResult
       RegisteredTargetAwsStackMutation attempt -> mutationAttemptOutcome attempt
       RegisteredTargetAwsEksMutation attempt -> mutationAttemptOutcome attempt
       RegisteredTargetAwsEbsMutation attempt -> mutationAttemptOutcome attempt
+      RegisteredTargetAwsValidationZoneMutation attempt ->
+        mutationAttemptOutcome attempt
+      RegisteredTargetAwsRetainedEbsMutation attempt ->
+        mutationAttemptOutcome attempt
+      RegisteredTargetDns01ChallengeOwnerDelete attempt ->
+        mutationAttemptOutcome attempt
       RegisteredTargetReconcileRefused detail -> CleanupNodeFailed detail
 
     mutationAttemptOutcome

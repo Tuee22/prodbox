@@ -34,6 +34,7 @@ module Prodbox.Aws.Native.Iam
   , encodeDeleteAccessKeyForm
   , encodePutUserPolicyForm
   , encodeGetUserPolicyForm
+  , encodeListUserPoliciesForm
   , encodeDeleteUserPolicyForm
   , encodeDeleteUserForm
   , encodeTagUserForm
@@ -161,6 +162,12 @@ data IamClient = IamClient
       -> Text
       -> IO (Either AwsClientError IamUserPolicyObservation)
   , deleteUserInlinePolicy :: Text -> Text -> IO (Either AwsClientError ())
+  , listUserInlinePolicies :: Text -> IO (Either AwsClientError [Text])
+  -- ^ Every inline policy attached to the principal, by name.
+  --
+  -- The destroy path enumerates rather than addressing one authored name:
+  -- a creator and a destroyer that disagree about the name leave the policy
+  -- attached, and IAM then refuses to delete the principal forever.
   , tagUser :: Text -> [IamTag] -> IO (Either AwsClientError ())
   , listUserTags :: Text -> IO (Either AwsClientError [IamTag])
   , deleteUser :: Text -> IO (Either AwsClientError ())
@@ -185,6 +192,7 @@ newIamClient handle sender =
     , putUserInlinePolicy = runPutUserPolicy handle sender
     , observeUserInlinePolicy = runObserveUserPolicy handle sender
     , deleteUserInlinePolicy = runDeleteUserPolicy handle sender
+    , listUserInlinePolicies = runListUserPolicies handle sender
     , tagUser = runTagUser handle sender
     , listUserTags = runListUserTags handle sender
     , deleteUser = runDeleteUser handle sender
@@ -225,6 +233,17 @@ encodeListAccessKeysForm userName =
   , ("Version", "2010-05-08")
   , ("UserName", encodeUtf8 userName)
   , ("MaxItems", "3")
+  ]
+
+-- | Ask for one more than IAM's documented per-user inline-policy bound, so a
+-- service-side drift becomes an explicit truncation refusal rather than a
+-- silently short list the destroy would then read as "no policies left".
+encodeListUserPoliciesForm :: Text -> [(ByteString, ByteString)]
+encodeListUserPoliciesForm userName =
+  [ ("Action", "ListUserPolicies")
+  , ("Version", "2010-05-08")
+  , ("UserName", encodeUtf8 userName)
+  , ("MaxItems", "101")
   ]
 
 encodeDeleteAccessKeyForm :: Text -> Text -> [(ByteString, ByteString)]
@@ -400,6 +419,27 @@ parseListAccessKeysResponse body = do
       _ -> Left "ListAccessKeys: unsupported key status"
     pure AccessKeyMetadata {accessKeyMetadataId = keyId, accessKeyMetadataStatus = status}
 
+-- | A truncated listing is refused rather than shortened: the destroy's whole
+-- claim is that the principal owns no inline policy, and a short list is
+-- exactly how that claim goes wrong.
+parseListUserPoliciesResponse :: ByteString -> Either String [Text]
+parseListUserPoliciesResponse body = do
+  result <-
+    note
+      "ListUserPolicies: missing <ListUserPoliciesResult>"
+      (extractFirst "<ListUserPoliciesResult>" "</ListUserPoliciesResult>" body)
+  truncated <- elementText "IsTruncated" result
+  names <-
+    note
+      "ListUserPolicies: missing <PolicyNames>"
+      (extractFirst "<PolicyNames>" "</PolicyNames>" result)
+  if truncated == "false"
+    then Right (map decodeUtf8 (extractAll "<member>" "</member>" names))
+    else
+      if truncated == "true"
+        then Left "ListUserPolicies: bounded inline-policy listing was truncated"
+        else Left "ListUserPolicies: invalid <IsTruncated> value"
+
 parseGetUserPolicyResponse :: ByteString -> Either String Text
 parseGetUserPolicyResponse body = do
   result <-
@@ -528,6 +568,25 @@ runListAccessKeys handle sender userName = do
       | isNoSuchEntity err -> Right []
       | otherwise -> Left err
     Right body -> first AwsResponseParseFailure (parseListAccessKeysResponse body)
+
+runListUserPolicies
+  :: CredentialHandle origin
+  -> NativeAwsSender
+  -> Text
+  -> IO (Either AwsClientError [Text])
+runListUserPolicies handle sender userName = do
+  raw <-
+    performAwsRequest
+      sender
+      (\ts -> signIamForm handle ts (encodeListUserPoliciesForm userName))
+      "iam:ListUserPolicies"
+      Idempotent
+      XmlErrorFormat
+  pure $ case raw of
+    Left err
+      | isNoSuchEntity err -> Right []
+      | otherwise -> Left err
+    Right body -> first AwsResponseParseFailure (parseListUserPoliciesResponse body)
 
 runDeleteAccessKey
   :: CredentialHandle origin

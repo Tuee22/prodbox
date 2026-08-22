@@ -33,17 +33,28 @@ module Prodbox.Infra.AwsSesDecommission
   , applyAwsSesSmtpIamDestroyPrimitive
   , observeAwsSesSmtpIamDestroyPrimitive
   , awsSesSmtpIamEnvironmentForCredentials
+  , awsSesSmtpJointAuthorization
+  , observeAwsSesSmtpInlinePoliciesWith
+  , parseSmtpInlinePolicyNames
+  , listInlinePolicyArguments
+  , deleteInlinePolicyArguments
+  , observeAwsSesSmtpIamWith
   , awsSesSmtpIamCapability
   )
 where
 
-import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.Except (ExceptT (ExceptT), runExceptT)
+import Data.Aeson
+  ( Value (Array, Bool, Object, String)
+  , eitherDecode
+  )
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Bifunctor (first)
+import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.List (isPrefixOf)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Vector qualified as Vector
 import Prodbox.Infra.AwsSesSmtpKey
   ( AwsSesSmtpCommandFailure (AwsSesSmtpUserNotFound)
   , classifyAwsSesSmtpCommandResult
@@ -58,6 +69,17 @@ import Prodbox.Infra.AwsSesStack
   , destroyAwsSesProviderResourcesWithCredentials
   , destroyAwsSesStack
   , observeAwsSesProviderResourcesWithCredentials
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.JointIamDisposition
+  ( IamFamilyMember (..)
+  , IamMemberObservation (..)
+  , JointIamDispositionAuthorization
+  , disposeJointIamFamily
+  , mkJointIamDispositionAuthorization
+  , renderJointIamDispositionRefusal
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
+  ( AwsCredentialClass (SesSmtpRetainedCustodyCredential)
   )
 import Prodbox.Lifecycle.Decommission.Frame
   ( frameAttemptIdForNode
@@ -77,7 +99,6 @@ import Prodbox.Lifecycle.ResidueStatus
   )
 import Prodbox.Lifecycle.SmtpKeyRepair
   ( SmtpAccessKeyId
-  , SmtpKeyCleanupResult (SmtpKeyDeleteFailed, SmtpKeyDeleted)
   , SmtpKeyInventoryObservation
     ( SmtpKeyInventoryObserved
     , SmtpKeyInventoryOverBound
@@ -276,43 +297,130 @@ observeAwsSesSmtpIamDestroyPrimitive (AwsSesDecommissionPrimitive operation) ope
   nodeId = frameNodeIdForContent (TextEncoding.encodeUtf8 ("admin-ses-smtp-iam:" <> operationId))
   attemptId = frameAttemptIdForNode nodeId
 
+-- | Sprint 7.36: destroy the SMTP principal, its inline policies, and its key
+-- family as one disposition.
+--
+-- Two defects produced the observed live residue — a retained SMTP principal
+-- present with zero access keys and an inline policy still attached — and both
+-- are closed here.
+--
+--   * The sequence abandoned its remainder on the first failure, so a partial
+--     destroy reported failure without saying what survived.
+--   * The inline policy was addressed by an authored name that the registered
+--     credential descriptor does not declare, so the delete removed nothing and
+--     IAM then refused every subsequent principal delete for as long as the
+--     real policy stayed attached.
+--
+-- Every member is now attempted, the inline policies are enumerated from IAM
+-- rather than named, and success is minted only from the joint read-back in
+-- which every member is independently absent.
 destroyAwsSesSmtpIamWith
   :: (Monad m)
   => (Subprocess -> m (Result ProcessOutput))
   -> FilePath
   -> [(String, String)]
   -> m (Either Text ())
-destroyAwsSesSmtpIamWith runProcess workingDirectory environment =
-  runExceptT $ do
-    observation <-
-      lift
-        ( observeAwsSesSmtpKeyInventoryWith
-            runProcess
+destroyAwsSesSmtpIamWith runProcess workingDirectory environment = do
+  keyObservation <-
+    observeAwsSesSmtpKeyInventoryWith runProcess workingDirectory environment
+  case smtpKeysForDestroy keyObservation of
+    Left _ -> pure ()
+    Right Nothing -> pure ()
+    Right (Just keyIds) -> mapM_ attemptKeyDelete keyIds
+  policies <-
+    observeAwsSesSmtpInlinePoliciesWith runProcess workingDirectory environment
+  case policies of
+    Left _ -> pure ()
+    Right Nothing -> pure ()
+    Right (Just names) -> mapM_ attemptPolicyDelete names
+  _ <- runProcess (awsCommand workingDirectory environment deleteUserArguments)
+  residue <- observeAwsSesSmtpIamWith runProcess workingDirectory environment
+  pure $ case residue of
+    ResidueAbsent -> Right ()
+    ResiduePresent details ->
+      Left
+        ( "SES SMTP IAM family read-back did not confirm absence: "
+            <> Text.pack (show details)
+        )
+    ResidueUnreachable reason ->
+      Left
+        ( "SES SMTP IAM family read-back did not confirm absence; it is \
+          \unobservable: "
+            <> Text.pack (show reason)
+        )
+ where
+  attemptKeyDelete keyId = do
+    _ <-
+      deleteAwsSesSmtpAccessKeyWith
+        runProcess
+        workingDirectory
+        environment
+        keyId
+    pure ()
+  attemptPolicyDelete name = do
+    _ <-
+      runProcess
+        ( awsCommand
             workingDirectory
             environment
+            (deleteInlinePolicyArguments (Text.unpack name))
         )
-    case smtpKeysForDestroy observation of
-      Left detail -> ExceptT (pure (Left detail))
-      Right Nothing -> pure ()
-      Right (Just keyIds) -> do
-        mapM_ deleteKey keyIds
-        deleteFixedIamResource deleteInlinePolicyArguments
-        deleteFixedIamResource deleteUserArguments
- where
-  deleteKey keyId =
-    ExceptT $ do
-      cleanup <-
-        deleteAwsSesSmtpAccessKeyWith
-          runProcess
-          workingDirectory
-          environment
-          keyId
-      pure (classifyKeyCleanup cleanup)
-  deleteFixedIamResource arguments =
-    ExceptT
-      ( classifyIdempotentDelete
-          <$> runProcess (awsCommand workingDirectory environment arguments)
-      )
+    pure ()
+
+-- | The SMTP principal's actual inline policies.
+--
+-- @Right Nothing@ means the principal itself is not there, so it owns no
+-- policy; @Right (Just names)@ is the enumerated family. A truncated listing is
+-- a failure rather than a short list, because a short list read as \"no policies
+-- left\" is precisely the residue this path exists to remove.
+observeAwsSesSmtpInlinePoliciesWith
+  :: (Monad m)
+  => (Subprocess -> m (Result ProcessOutput))
+  -> FilePath
+  -> [(String, String)]
+  -> m (Either Text (Maybe [Text]))
+observeAwsSesSmtpInlinePoliciesWith runProcess workingDirectory environment = do
+  result <-
+    runProcess (awsCommand workingDirectory environment listInlinePolicyArguments)
+  pure $ case classifyAwsSesSmtpCommandResult result of
+    Left (AwsSesSmtpUserNotFound _) -> Right Nothing
+    Left failure -> Left (renderAwsSesSmtpCommandFailure failure)
+    Right output -> Just <$> parseSmtpInlinePolicyNames output
+
+parseSmtpInlinePolicyNames :: String -> Either Text [Text]
+parseSmtpInlinePolicyNames payload =
+  case eitherDecode (BL8.pack payload) of
+    Left err ->
+      Left (Text.pack ("invalid IAM inline-policy listing JSON: " ++ err))
+    Right value -> case value of
+      Object obj -> do
+        truncatedFlag <- case KeyMap.lookup "IsTruncated" obj of
+          Nothing -> Right False
+          Just (Bool flag) -> Right flag
+          Just _ -> Left "IAM inline-policy listing `IsTruncated` is not a boolean"
+        if truncatedFlag
+          then Left "IAM inline-policy listing was truncated"
+          else case KeyMap.lookup "PolicyNames" obj of
+            Just (Array names) ->
+              traverse smtpInlinePolicyName (Vector.toList names)
+            Just _ -> Left "IAM inline-policy listing `PolicyNames` is not an array"
+            Nothing -> Left "IAM inline-policy listing has no `PolicyNames` key"
+      _ -> Left "IAM inline-policy listing is not a JSON object"
+
+smtpInlinePolicyName :: Value -> Either Text Text
+smtpInlinePolicyName value = case value of
+  String name -> Right name
+  _ -> Left "IAM inline-policy listing contains a non-string name"
+
+-- | The joint authorization for the retained SMTP custody credential.
+--
+-- It owns no assumed role, so the family is the key set, the inline-policy set,
+-- and the principal.
+awsSesSmtpJointAuthorization :: Either Text JointIamDispositionAuthorization
+awsSesSmtpJointAuthorization =
+  first
+    (Text.pack . show)
+    (mkJointIamDispositionAuthorization SesSmtpRetainedCustodyCredential Nothing)
 
 smtpKeysForDestroy
   :: SmtpKeyInventoryObservation
@@ -333,18 +441,14 @@ smtpKeysForDestroy observation = case observation of
           <> Text.pack (show maximumAllowed)
       )
 
-classifyKeyCleanup :: SmtpKeyCleanupResult -> Either Text ()
-classifyKeyCleanup cleanup = case cleanup of
-  SmtpKeyDeleted _ -> Right ()
-  SmtpKeyDeleteFailed _ detail -> Left detail
-
-classifyIdempotentDelete :: Result ProcessOutput -> Either Text ()
-classifyIdempotentDelete result =
-  case classifyAwsSesSmtpCommandResult result of
-    Right _ -> Right ()
-    Left (AwsSesSmtpUserNotFound _) -> Right ()
-    Left failure -> Left (renderAwsSesSmtpCommandFailure failure)
-
+-- | Sprint 7.36: the read-back is total over the SMTP IAM family.
+--
+-- It used to ask only whether the principal was there. A principal that IAM
+-- refuses to delete because an inline policy survives is present, so that
+-- narrower question happened to catch this residue; a principal deleted while
+-- its keys or policies were somehow orphaned would not have been caught at all.
+-- Absence is now minted only when every member of the family is independently
+-- absent.
 observeAwsSesSmtpIamWith
   :: (Monad m)
   => (Subprocess -> m (Result ProcessOutput))
@@ -352,29 +456,73 @@ observeAwsSesSmtpIamWith
   -> [(String, String)]
   -> m ResidueStatus
 observeAwsSesSmtpIamWith runProcess workingDirectory environment = do
-  result <-
-    runProcess
-      (awsCommand workingDirectory environment observeUserArguments)
-  pure $ case result of
-    Failure detail ->
-      ResidueUnreachable
-        (ResidueQueryFailed ("aws iam get-user: failed to start aws: " ++ detail))
-    Success output -> presenceObservationToResidue (classifyAwsSesPresenceOutput AwsSesSmtpIamUserProbe output)
-
-presenceObservationToResidue :: PresenceObservation () -> ResidueStatus
-presenceObservationToResidue observation = case observation of
-  PresenceAbsent -> ResidueAbsent
-  PresencePresent () ->
+  userResult <-
+    runProcess (awsCommand workingDirectory environment observeUserArguments)
+  keyObservation <-
+    observeAwsSesSmtpKeyInventoryWith runProcess workingDirectory environment
+  policies <-
+    observeAwsSesSmtpInlinePoliciesWith runProcess workingDirectory environment
+  pure $ case awsSesSmtpJointAuthorization of
+    Left detail -> ResidueUnreachable (ResidueQueryFailed (Text.unpack detail))
+    Right authorization ->
+      case disposeJointIamFamily
+        authorization
+        [ (IamPrincipal, principalObservation userResult)
+        , (IamAccessKeyFamily, keyFamilyObservation keyObservation)
+        , (IamInlinePolicyFamily, policyFamilyObservation policies)
+        ] of
+        Right _ -> ResidueAbsent
+        Left refusal ->
+          case ( principalObservation userResult
+               , keyFamilyObservation keyObservation
+               , policyFamilyObservation policies
+               ) of
+            (IamMemberPresent, _, _) -> presentResidue refusal
+            (_, IamMemberPresent, _) -> presentResidue refusal
+            (_, _, IamMemberPresent) -> presentResidue refusal
+            _ ->
+              ResidueUnreachable
+                (ResidueQueryFailed (Text.unpack (renderJointIamDispositionRefusal refusal)))
+ where
+  presentResidue refusal =
     ResiduePresent
-      (ResidueDetails "AWS IAM get-user confirmed prodbox-ses-smtp" "aws-ses-smtp-iam")
-  PresenceUnobservable failure ->
-    ResidueUnreachable
-      ( ResidueQueryFailed
-          ( observationFailureOperation failure
-              ++ ": "
-              ++ observationFailureDetail failure
-          )
+      ( ResidueDetails
+          (Text.unpack (renderJointIamDispositionRefusal refusal))
+          "aws-ses-smtp-iam"
       )
+  principalObservation result = case result of
+    Failure detail ->
+      IamMemberUnobservable
+        (Text.pack ("aws iam get-user: failed to start aws: " ++ detail))
+    Success output ->
+      case classifyAwsSesPresenceOutput AwsSesSmtpIamUserProbe output of
+        PresenceAbsent -> IamMemberAbsent
+        PresencePresent () -> IamMemberPresent
+        PresenceUnobservable failure ->
+          IamMemberUnobservable
+            ( Text.pack
+                ( observationFailureOperation failure
+                    ++ ": "
+                    ++ observationFailureDetail failure
+                )
+            )
+  keyFamilyObservation observation = case observation of
+    SmtpKeyInventoryObserved [] -> IamMemberAbsent
+    SmtpKeyInventoryObserved _ -> IamMemberPresent
+    SmtpKeyInventoryPending _ -> IamMemberAbsent
+    SmtpKeyInventoryUnobservable detail -> IamMemberUnobservable detail
+    SmtpKeyInventoryOverBound actual maximumAllowed ->
+      IamMemberUnobservable
+        ( "SES SMTP IAM access-key inventory exceeded the AWS bound: observed "
+            <> Text.pack (show actual)
+            <> ", maximum "
+            <> Text.pack (show maximumAllowed)
+        )
+  policyFamilyObservation observed = case observed of
+    Left detail -> IamMemberUnobservable detail
+    Right Nothing -> IamMemberAbsent
+    Right (Just []) -> IamMemberAbsent
+    Right (Just _) -> IamMemberPresent
 
 awsCommand :: FilePath -> [(String, String)] -> [String] -> Subprocess
 awsCommand workingDirectory environment arguments =
@@ -385,14 +533,27 @@ awsCommand workingDirectory environment arguments =
     , subprocessWorkingDirectory = Just workingDirectory
     }
 
-deleteInlinePolicyArguments :: [String]
-deleteInlinePolicyArguments =
+-- | Sprint 7.36: the policy name is the enumerated one, never an authored
+-- constant. The authored constant this replaced named a policy the creator does
+-- not write, so the delete removed nothing.
+deleteInlinePolicyArguments :: String -> [String]
+deleteInlinePolicyArguments policyName =
   [ "iam"
   , "delete-user-policy"
   , "--user-name"
   , "prodbox-ses-smtp"
   , "--policy-name"
-  , "prodbox-ses-smtp-policy"
+  , policyName
+  ]
+
+listInlinePolicyArguments :: [String]
+listInlinePolicyArguments =
+  [ "iam"
+  , "list-user-policies"
+  , "--user-name"
+  , "prodbox-ses-smtp"
+  , "--output"
+  , "json"
   ]
 
 deleteUserArguments :: [String]

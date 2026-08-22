@@ -15,7 +15,7 @@ where
 import Control.Monad (forM)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as BS8
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isSuffixOf)
 import Prodbox.Aws.CredentialHandle
   ( BaseCredentialHandle
@@ -58,12 +58,15 @@ import Prodbox.Aws.Native.Route53
   , RecordType (..)
   , ResourceRecordSet (..)
   , Route53Client (..)
+  , ScannedRecordSetPage (..)
   , changeRecordSetsPath
   , listRecordSetsQuery
+  , maximumScannedRecordSetPages
   , newRoute53Client
   , parseChangeInfoResponse
   , parseGetChangeResponse
   , parseListResourceRecordSetsResponse
+  , parseScannedResourceRecordSetsResponse
   , renderChangeBatchXml
   )
 import Prodbox.Aws.Native.S3
@@ -282,6 +285,48 @@ listExactAResponse =
     <> "<ResourceRecords><ResourceRecord><Value>192.0.2.1</Value></ResourceRecord>"
     <> "</ResourceRecords></ResourceRecordSet></ResourceRecordSets>"
     <> "<IsTruncated>false</IsTruncated><MaxItems>1</MaxItems>"
+    <> "</ListResourceRecordSetsResponse>"
+
+scanFirstPage :: ByteString
+scanFirstPage =
+  "<ListResourceRecordSetsResponse xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\">"
+    <> "<ResourceRecordSets><ResourceRecordSet>"
+    <> "<Name>_acme-challenge.a.example.test.</Name><Type>TXT</Type><TTL>60</TTL>"
+    <> "<ResourceRecords><ResourceRecord><Value>token-a</Value></ResourceRecord>"
+    <> "</ResourceRecords></ResourceRecordSet></ResourceRecordSets>"
+    <> "<IsTruncated>true</IsTruncated>"
+    <> "<NextRecordName>_acme-challenge.b.example.test.</NextRecordName>"
+    <> "<NextRecordType>TXT</NextRecordType>"
+    <> "</ListResourceRecordSetsResponse>"
+
+scanLastPage :: ByteString
+scanLastPage =
+  "<ListResourceRecordSetsResponse><ResourceRecordSets><ResourceRecordSet>"
+    <> "<Name>_acme-challenge.b.example.test.</Name><Type>TXT</Type><TTL>60</TTL>"
+    <> "<ResourceRecords><ResourceRecord><Value>token-b</Value></ResourceRecord>"
+    <> "</ResourceRecords></ResourceRecordSet></ResourceRecordSets>"
+    <> "<IsTruncated>false</IsTruncated></ListResourceRecordSetsResponse>"
+
+scanTruncatedNoCursor :: ByteString
+scanTruncatedNoCursor =
+  "<ListResourceRecordSetsResponse><ResourceRecordSets/>"
+    <> "<IsTruncated>true</IsTruncated></ListResourceRecordSetsResponse>"
+
+scanLeavesPrefix :: ByteString
+scanLeavesPrefix =
+  "<ListResourceRecordSetsResponse><ResourceRecordSets>"
+    <> "<ResourceRecordSet>"
+    <> "<Name>_acme-challenge.a.example.test.</Name><Type>TXT</Type><TTL>60</TTL>"
+    <> "<ResourceRecords><ResourceRecord><Value>token-a</Value></ResourceRecord>"
+    <> "</ResourceRecords></ResourceRecordSet>"
+    <> "<ResourceRecordSet>"
+    <> "<Name>other.example.test.</Name><Type>TXT</Type><TTL>60</TTL>"
+    <> "<ResourceRecords><ResourceRecord><Value>unrelated</Value></ResourceRecord>"
+    <> "</ResourceRecords></ResourceRecordSet>"
+    <> "</ResourceRecordSets>"
+    <> "<IsTruncated>true</IsTruncated>"
+    <> "<NextRecordName>zzz.example.test.</NextRecordName>"
+    <> "<NextRecordType>TXT</NextRecordType>"
     <> "</ListResourceRecordSetsResponse>"
 
 listSubsequentResponse :: ByteString
@@ -646,6 +691,59 @@ awsNativeClientsSuite =
         fmap shrUrl request
           `shouldBe` Just
             "https://route53.amazonaws.com/2013-04-01/hostedzone/Z123/rrset/?maxitems=1&name=demo.resolvefintech.com.&type=A"
+      it "Sprint 7.36 scans a record-set family by prefix and stops at its edge" $ do
+        -- The exact lookup answers about one known coordinate. A family's
+        -- members are not known before the scan, so a cleanup that must prove a
+        -- record family absent needs this instead.
+        parseScannedResourceRecordSetsResponse RecordTXT scanFirstPage
+          `shouldBe` Right
+            ( ScannedRecordSetPage
+                [ ResourceRecordSet "_acme-challenge.a.example.test" RecordTXT 60 ["token-a"]
+                ]
+                (Just "_acme-challenge.b.example.test.")
+                (Just "TXT")
+            )
+        -- A record of another type inside the page is not a family member and
+        -- is dropped rather than refused.
+        parseScannedResourceRecordSetsResponse RecordA scanFirstPage
+          `shouldBe` Right (ScannedRecordSetPage [] (Just "_acme-challenge.b.example.test.") (Just "TXT"))
+        -- An untruncated page carries no cursor, so the scan ends.
+        parseScannedResourceRecordSetsResponse RecordTXT scanLastPage
+          `shouldBe` Right
+            ( ScannedRecordSetPage
+                [ ResourceRecordSet "_acme-challenge.b.example.test" RecordTXT 60 ["token-b"]
+                ]
+                Nothing
+                Nothing
+            )
+
+      it "Sprint 7.36 refuses a truncated scan page with no continuation cursor" $
+        -- Following a truncated response with no cursor would silently end the
+        -- scan early, and a short family answer reads as absence.
+        parseScannedResourceRecordSetsResponse RecordTXT scanTruncatedNoCursor
+          `shouldBe` Left "Route53: truncated scan response carries no continuation cursor"
+
+      it "Sprint 7.36 follows the scan cursor and bounds its page count" $ do
+        pages <- newIORef (0 :: Int)
+        let sender _ = do
+              modifyIORef' pages (+ 1)
+              -- Always truncated with the same cursor: an unbounded follow loop
+              -- would never return.
+              pure (Right (HttpOutcome 200 [] scanFirstPage))
+            r53 = newRoute53Client baseHandle sender
+        result <- scanResourceRecordSetsByPrefix r53 "Z123" "_acme-challenge." RecordTXT
+        result
+          `shouldBe` Left
+            (AwsResponseParseFailure "Route53: record-set scan exceeded its page bound")
+        readIORef pages `shouldReturn` maximumScannedRecordSetPages
+
+      it "Sprint 7.36 returns only records inside the requested prefix" $ do
+        let r53 = newRoute53Client baseHandle (respond 200 scanLeavesPrefix)
+        result <- scanResourceRecordSetsByPrefix r53 "Z123" "_acme-challenge." RecordTXT
+        result
+          `shouldBe` Right
+            [ResourceRecordSet "_acme-challenge.a.example.test" RecordTXT 60 ["token-a"]]
+
       it "refuses an empty change set before signing" $ do
         let r53 = newRoute53Client baseHandle (respond 200 "")
         result <- changeResourceRecordSets r53 "Z123" []

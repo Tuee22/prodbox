@@ -75,6 +75,7 @@ module Prodbox.Lifecycle.Teardown.RetainedArtifactCustody
   , RetainedArtifactMemberDigest (..)
   , RetainedArtifactMember (..)
   , RetainedArtifactStoreObservation (..)
+  , observeRetainedArtifactStore
 
     -- * The custody plan
   , RetainedArtifactUnusable (..)
@@ -120,7 +121,6 @@ import Data.ByteString qualified as ByteString
 import Data.List (sort, sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import Data.List.NonEmpty qualified as NonEmpty
-import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -136,17 +136,32 @@ import Prodbox.Config.OrdinaryTeardownRepair
   , RetainedArtifactArchitecture
   , RetainedArtifactInventory
   , RetainedArtifactKind
+  , RetainedArtifactLocator (..)
   , RetainedArtifactRef
+  , RetainedArtifactSource
+  , RetainedArtifactSourceCatalog
+  , RetainedArtifactSourceEntry (..)
+  , RetainedArtifactSourceError (..)
   , lookupRetainedArtifact
+  , lookupRetainedArtifactSource
   , ordinaryTeardownRepairPlanSteps
+  , renderRetainedArtifactSourceError
   , retainedArtifactArchitectureText
   , retainedArtifactInventoryArchitecture
   , retainedArtifactInventoryKinds
   , retainedArtifactKindText
+  , retainedArtifactLocatorText
   , retainedArtifactRefArchitecture
   , retainedArtifactRefDigest
   , retainedArtifactRefKind
   , retainedArtifactRefRelativePath
+  , retainedArtifactSourceArchitecture
+  , retainedArtifactSourceCatalog
+  , retainedArtifactSourceCatalogArchitecture
+  , retainedArtifactSourceCatalogKinds
+  , retainedArtifactSourceDigest
+  , retainedArtifactSourceKind
+  , retainedArtifactSourceLocator
   )
 import Prodbox.Http.Client
   ( HttpConfig (..)
@@ -232,191 +247,6 @@ retainedArtifactMemberPath
   :: RetainedArtifactStore authority -> RetainedArtifactRef -> FilePath
 retainedArtifactMemberPath store ref =
   retainedArtifactStorePath store </> retainedArtifactRefRelativePath ref
-
--- ---------------------------------------------------------------------------
--- Pinned acquisition sources
--- ---------------------------------------------------------------------------
-
--- | Where bytes may be delivered from.
---
--- There is exactly one arm, and the reason is the pinned-digest rule rather
--- than a shortage of imagination.  A delivery mechanism can be admitted here
--- only if the bytes it produces are a stable stream that a digest fixed ahead
--- of time can describe.  Exporting a registry image to an archive, for
--- instance, is not such a mechanism: the image content is immutable but its
--- archive serialization is not byte-stable, so an export could only ever be
--- checked against a digest recorded from a previous export — which is a
--- transport deciding what is retained.  Retaining image bytes is therefore a
--- content-addressed mechanism this type does not yet have an arm for, and
--- declaring one is a decision that lands here rather than in a free string an
--- operator can widen.
-newtype RetainedArtifactLocator
-  = -- | An immutable archive addressed by @https@ URL.
-    RetainedArtifactPinnedArchive Text
-  deriving (Eq, Ord, Show)
-
-retainedArtifactLocatorText :: RetainedArtifactLocator -> Text
-retainedArtifactLocatorText (RetainedArtifactPinnedArchive url) = url
-
--- | An operator-declared source, before validation.
-data RetainedArtifactSourceEntry = RetainedArtifactSourceEntry
-  { retainedArtifactSourceEntryKind :: !RetainedArtifactKind
-  , retainedArtifactSourceEntryArchitecture :: !RetainedArtifactArchitecture
-  , retainedArtifactSourceEntryDigest :: !Text
-  -- ^ The digest the declaration claims the locator delivers.  It is checked
-  -- against the inventory when the catalog is bound to one, and against the
-  -- delivered bytes when the acquisition runs.
-  , retainedArtifactSourceEntryLocator :: !RetainedArtifactLocator
-  }
-  deriving (Eq, Show)
-
--- | A validated source.  Opaque, so an acquisition step cannot name a locator
--- whose shape and digest were never checked.
-data RetainedArtifactSource = RetainedArtifactSource
-  { retainedArtifactSourceKind :: !RetainedArtifactKind
-  , retainedArtifactSourceArchitecture :: !RetainedArtifactArchitecture
-  , retainedArtifactSourceDigest :: !Text
-  , retainedArtifactSourceLocator :: !RetainedArtifactLocator
-  }
-  deriving (Eq, Ord, Show)
-
--- | Sources for exactly one architecture, at most one per kind.
-data RetainedArtifactSourceCatalog = RetainedArtifactSourceCatalog
-  { catalogArchitecture :: !RetainedArtifactArchitecture
-  , catalogSources :: !(Map RetainedArtifactKind RetainedArtifactSource)
-  }
-  deriving (Eq, Show)
-
-retainedArtifactSourceCatalogKinds
-  :: RetainedArtifactSourceCatalog -> [RetainedArtifactKind]
-retainedArtifactSourceCatalogKinds = Map.keys . catalogSources
-
-data RetainedArtifactSourceError
-  = RetainedArtifactSourceDuplicateKind !RetainedArtifactKind
-  | RetainedArtifactSourceForeignArchitecture
-      !RetainedArtifactKind
-      !RetainedArtifactArchitecture
-      !RetainedArtifactArchitecture
-  | RetainedArtifactSourceMalformedDigest !RetainedArtifactKind !Text
-  | RetainedArtifactSourceMalformedLocator !RetainedArtifactKind !Text !Text
-  deriving (Eq, Show)
-
-renderRetainedArtifactSourceError :: RetainedArtifactSourceError -> String
-renderRetainedArtifactSourceError = \case
-  RetainedArtifactSourceDuplicateKind kind ->
-    "Retained artifact source catalog declares `"
-      ++ retainedArtifactKindText kind
-      ++ "` more than once; exactly one source may answer a kind."
-  RetainedArtifactSourceForeignArchitecture kind expected declared ->
-    "Retained artifact source `"
-      ++ retainedArtifactKindText kind
-      ++ "` declares architecture `"
-      ++ retainedArtifactArchitectureText declared
-      ++ "` in a catalog rendered for `"
-      ++ retainedArtifactArchitectureText expected
-      ++ "`."
-  RetainedArtifactSourceMalformedDigest kind digest ->
-    "Retained artifact source `"
-      ++ retainedArtifactKindText kind
-      ++ "` declares digest `"
-      ++ Text.unpack digest
-      ++ "`, which is not a canonical `sha256:` hex digest."
-  RetainedArtifactSourceMalformedLocator kind locator detail ->
-    "Retained artifact source `"
-      ++ retainedArtifactKindText kind
-      ++ "` declares locator `"
-      ++ Text.unpack locator
-      ++ "`, which is unusable: "
-      ++ Text.unpack detail
-      ++ "."
-
--- | Validate an operator-declared source catalog for one architecture.
-retainedArtifactSourceCatalog
-  :: RetainedArtifactArchitecture
-  -> [RetainedArtifactSourceEntry]
-  -> Either RetainedArtifactSourceError RetainedArtifactSourceCatalog
-retainedArtifactSourceCatalog architecture entries = do
-  indexed <- foldl' step (Right Map.empty) entries
-  pure
-    RetainedArtifactSourceCatalog
-      { catalogArchitecture = architecture
-      , catalogSources = indexed
-      }
- where
-  step accumulated entry = do
-    indexed <- accumulated
-    source <- validateSourceEntry architecture entry
-    if Map.member (retainedArtifactSourceKind source) indexed
-      then Left (RetainedArtifactSourceDuplicateKind (retainedArtifactSourceKind source))
-      else Right (Map.insert (retainedArtifactSourceKind source) source indexed)
-
-validateSourceEntry
-  :: RetainedArtifactArchitecture
-  -> RetainedArtifactSourceEntry
-  -> Either RetainedArtifactSourceError RetainedArtifactSource
-validateSourceEntry architecture entry
-  | declaredArchitecture /= architecture =
-      Left
-        ( RetainedArtifactSourceForeignArchitecture
-            kind
-            architecture
-            declaredArchitecture
-        )
-  | not (isCanonicalSha256Digest digest) =
-      Left (RetainedArtifactSourceMalformedDigest kind digest)
-  | otherwise = do
-      validateLocator kind locator
-      Right
-        RetainedArtifactSource
-          { retainedArtifactSourceKind = kind
-          , retainedArtifactSourceArchitecture = declaredArchitecture
-          , retainedArtifactSourceDigest = digest
-          , retainedArtifactSourceLocator = locator
-          }
- where
-  kind = retainedArtifactSourceEntryKind entry
-  declaredArchitecture = retainedArtifactSourceEntryArchitecture entry
-  digest = retainedArtifactSourceEntryDigest entry
-  locator = retainedArtifactSourceEntryLocator entry
-
--- | Check a locator's shape.
-validateLocator
-  :: RetainedArtifactKind
-  -> RetainedArtifactLocator
-  -> Either RetainedArtifactSourceError ()
-validateLocator kind (RetainedArtifactPinnedArchive url)
-  | not ("https://" `Text.isPrefixOf` url) =
-      malformed "an artifact archive must be addressed over `https`"
-  | Text.any isUnsafeLocatorCharacter url =
-      malformed "a locator may not contain whitespace or control characters"
-  | Text.isInfixOf "@" (Text.drop (Text.length "https://") url) =
-      malformed "a locator may not carry userinfo"
-  | Text.isInfixOf ".." url =
-      malformed "a locator may not contain a parent-directory segment"
-  | otherwise = Right ()
- where
-  malformed detail =
-    Left (RetainedArtifactSourceMalformedLocator kind url detail)
-
-isUnsafeLocatorCharacter :: Char -> Bool
-isUnsafeLocatorCharacter character =
-  character <= ' ' || character == '\DEL'
-
-isCanonicalSha256Digest :: Text -> Bool
-isCanonicalSha256Digest digest = case Text.splitAt 7 digest of
-  ("sha256:", hex) ->
-    Text.length hex == 64 && Text.all isLowerHexDigit hex
-  _ -> False
-
-isLowerHexDigit :: Char -> Bool
-isLowerHexDigit character =
-  (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')
-
-lookupRetainedArtifactSource
-  :: RetainedArtifactKind
-  -> RetainedArtifactSourceCatalog
-  -> Maybe RetainedArtifactSource
-lookupRetainedArtifactSource kind = Map.lookup kind . catalogSources
 
 -- ---------------------------------------------------------------------------
 -- Observing the store
@@ -584,11 +414,11 @@ planRetainedArtifactCustody
   -> RetainedArtifactStoreObservation
   -> Either RetainedArtifactCustodyError RetainedArtifactCustodyPlan
 planRetainedArtifactCustody inventory catalog observation
-  | inventoryArchitecture /= catalogArchitecture catalog =
+  | inventoryArchitecture /= retainedArtifactSourceCatalogArchitecture catalog =
       Left
         ( RetainedArtifactCustodyArchitectureMismatch
             inventoryArchitecture
-            (catalogArchitecture catalog)
+            (retainedArtifactSourceCatalogArchitecture catalog)
         )
   | otherwise = case observation of
       RetainedArtifactStoreUnobservable detail ->
@@ -832,7 +662,7 @@ productionRetainedArtifactCustodyBoundary
   -> RetainedArtifactCustodyBoundary IO
 productionRetainedArtifactCustodyBoundary store =
   RetainedArtifactCustodyBoundary
-    { custodyObserveStore = observeProductionStore store
+    { custodyObserveStore = observeRetainedArtifactStore store
     , custodyAcquire = acquireProductionArtifact store
     , custodyPlace = placeProductionArtifact store
     , custodyDiscardStaging = discardProductionStaging
@@ -844,9 +674,14 @@ productionRetainedArtifactCustodyBoundary store =
 -- An absent store directory is an empty member set rather than an
 -- observation failure: a store that was never populated is a fact the plan
 -- knows how to act on, while a listing that failed is not.
-observeProductionStore
+--
+-- Available from either root, and deliberately so: listing a store is not a
+-- mutation, and a bootstrap-located root is exactly what a recovery has while
+-- the Authority is absent.  Only the mutating boundary above requires the
+-- Authority-bound index.
+observeRetainedArtifactStore
   :: RetainedArtifactStore authority -> IO RetainedArtifactStoreObservation
-observeProductionStore store = do
+observeRetainedArtifactStore store = do
   present <- try (doesDirectoryExist root) :: IO (Either IOException Bool)
   case present of
     Left err -> pure (unobservable err)

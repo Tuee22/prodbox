@@ -169,27 +169,51 @@ awsSesDecommissionSuite =
       lookup "AWS_CA_BUNDLE" environment `shouldBe` Nothing
       fmap fst environment `shouldBe` nub (fmap fst environment)
 
-    it "deletes exact access keys, inline policy, and user before confirming absence" $ do
+    -- Sprint 7.36 (2026-08-22): this case previously pinned the authored policy
+    -- name @prodbox-ses-smtp-policy@, which the registered credential
+    -- descriptor does not declare -- so the delete removed nothing and IAM then
+    -- refused every principal delete for as long as the real inline policy
+    -- stayed attached. The destroy now enumerates the principal's actual
+    -- policies and deletes each one it is told about.
+    it "deletes the enumerated inline policies, keys, and user before confirming absence" $ do
       seenRef <- newIORef []
-      let runner spec = do
+      removedRef <- newIORef ([] :: [String])
+      let removed name = elem name <$> readIORef removedRef
+          runner spec = do
             modifyIORef' seenRef (++ [spec])
+            case subprocessArguments spec of
+              ["iam", "delete-access-key", "--user-name", "prodbox-ses-smtp", "--access-key-id", keyId] ->
+                modifyIORef' removedRef (keyId :)
+              ["iam", "delete-user-policy", "--user-name", "prodbox-ses-smtp", "--policy-name", policyName] ->
+                modifyIORef' removedRef (policyName :)
+              ["iam", "delete-user", "--user-name", "prodbox-ses-smtp"] ->
+                modifyIORef' removedRef ("user" :)
+              _ -> pure ()
+            keysGone <- removed "AKIAEXACTKEY00002"
+            policyGone <- removed "prodbox-ses-smtp-send"
+            userGone <- removed "user"
             pure $ case subprocessArguments spec of
-              ["iam", "list-access-keys", "--user-name", "prodbox-ses-smtp", "--output", "json"] ->
-                successfulProcess twoKeyInventory
+              ["iam", "list-access-keys", "--user-name", "prodbox-ses-smtp", "--output", "json"]
+                | keysGone -> successfulProcess emptyInventory
+                | otherwise -> successfulProcess twoKeyInventory
               ["iam", "delete-access-key", "--user-name", "prodbox-ses-smtp", "--access-key-id", _] ->
                 successfulProcess ""
+              ["iam", "list-user-policies", "--user-name", "prodbox-ses-smtp", "--output", "json"]
+                | policyGone -> successfulProcess emptyPolicyListing
+                | otherwise -> successfulProcess sendPolicyListing
               [ "iam"
                 , "delete-user-policy"
                 , "--user-name"
                 , "prodbox-ses-smtp"
                 , "--policy-name"
-                , "prodbox-ses-smtp-policy"
+                , "prodbox-ses-smtp-send"
                 ] ->
                   successfulProcess ""
               ["iam", "delete-user", "--user-name", "prodbox-ses-smtp"] ->
                 successfulProcess ""
-              ["iam", "get-user", "--user-name", "prodbox-ses-smtp", "--output", "json"] ->
-                noSuchEntityProcess
+              ["iam", "get-user", "--user-name", "prodbox-ses-smtp", "--output", "json"]
+                | userGone -> noSuchEntityProcess
+                | otherwise -> successfulProcess exactUser
               _ -> failedProcess "unexpected command"
           environment = [("AWS_REGION", "us-east-1")]
           operation =
@@ -198,39 +222,27 @@ awsSesDecommissionSuite =
                   (awsSesSmtpIamDestroyPrimitiveWith runner "/repo" environment)
               )
       runNodeOperation operation nodeId attemptId `shouldReturn` Right ()
-      seen <- readIORef seenRef
-      map subprocessArguments seen
-        `shouldBe` [ ["iam", "list-access-keys", "--user-name", "prodbox-ses-smtp", "--output", "json"]
-                   ,
-                     [ "iam"
-                     , "delete-access-key"
-                     , "--user-name"
-                     , "prodbox-ses-smtp"
-                     , "--access-key-id"
-                     , "AKIAEXACTKEY00001"
-                     ]
-                   ,
-                     [ "iam"
-                     , "delete-access-key"
-                     , "--user-name"
-                     , "prodbox-ses-smtp"
-                     , "--access-key-id"
-                     , "AKIAEXACTKEY00002"
-                     ]
-                   ,
-                     [ "iam"
-                     , "delete-user-policy"
-                     , "--user-name"
-                     , "prodbox-ses-smtp"
-                     , "--policy-name"
-                     , "prodbox-ses-smtp-policy"
-                     ]
-                   , ["iam", "delete-user", "--user-name", "prodbox-ses-smtp"]
-                   , ["iam", "get-user", "--user-name", "prodbox-ses-smtp", "--output", "json"]
-                   ]
-      map subprocessPath seen `shouldBe` replicate 6 "aws"
-      map subprocessEnvironment seen `shouldBe` replicate 6 (Just environment)
-      map subprocessWorkingDirectory seen `shouldBe` replicate 6 (Just "/repo")
+      seen <- map subprocessArguments <$> readIORef seenRef
+      -- The policy deleted is the one IAM reported, not an authored constant.
+      seen
+        `shouldContain` [
+                          [ "iam"
+                          , "delete-user-policy"
+                          , "--user-name"
+                          , "prodbox-ses-smtp"
+                          , "--policy-name"
+                          , "prodbox-ses-smtp-send"
+                          ]
+                        ]
+      -- The authored name the destroy used to send is never sent again.
+      filter (elem "prodbox-ses-smtp-policy") seen `shouldBe` []
+      seen `shouldContain` [["iam", "delete-user", "--user-name", "prodbox-ses-smtp"]]
+      seen
+        `shouldContain` [["iam", "list-user-policies", "--user-name", "prodbox-ses-smtp", "--output", "json"]]
+      specs <- readIORef seenRef
+      map subprocessPath specs `shouldBe` replicate (length specs) "aws"
+      map subprocessEnvironment specs `shouldBe` replicate (length specs) (Just environment)
+      map subprocessWorkingDirectory specs `shouldBe` replicate (length specs) (Just "/repo")
 
     it "is idempotent when the exact SMTP IAM user is already absent" $ do
       seenRef <- newIORef []
@@ -239,47 +251,49 @@ awsSesDecommissionSuite =
             pure noSuchEntityProcess
           operation = exactOperation runner
       runNodeOperation operation nodeId attemptId `shouldReturn` Right ()
-      readIORef seenRef
-        `shouldReturn` [ ["iam", "list-access-keys", "--user-name", "prodbox-ses-smtp", "--output", "json"]
-                       , ["iam", "get-user", "--user-name", "prodbox-ses-smtp", "--output", "json"]
-                       ]
+      seen <- readIORef seenRef
+      -- Every member is asked about, including the two the old sequence never
+      -- reached once the principal was absent.
+      seen
+        `shouldContain` [["iam", "list-user-policies", "--user-name", "prodbox-ses-smtp", "--output", "json"]]
+      seen
+        `shouldContain` [["iam", "get-user", "--user-name", "prodbox-ses-smtp", "--output", "json"]]
+      -- Nothing was deleted that did not need deleting, beyond the idempotent
+      -- principal delete IAM answers NoSuchEntity for.
+      filter (\arguments -> take 2 arguments == ["iam", "delete-access-key"]) seen
+        `shouldBe` []
+      filter (\arguments -> take 2 arguments == ["iam", "delete-user-policy"]) seen
+        `shouldBe` []
 
-    it "accepts an already-absent inline policy but still removes and reads back the user" $ do
+    it "accepts an empty inline-policy family but still removes and reads back the user" $ do
       seenRef <- newIORef []
       let runner spec = do
             modifyIORef' seenRef (++ [subprocessArguments spec])
             pure $ case subprocessArguments spec of
               ["iam", "list-access-keys", "--user-name", "prodbox-ses-smtp", "--output", "json"] ->
                 successfulProcess emptyInventory
-              [ "iam"
-                , "delete-user-policy"
-                , "--user-name"
-                , "prodbox-ses-smtp"
-                , "--policy-name"
-                , "prodbox-ses-smtp-policy"
-                ] ->
-                  noSuchEntityProcess
+              ["iam", "list-user-policies", "--user-name", "prodbox-ses-smtp", "--output", "json"] ->
+                successfulProcess emptyPolicyListing
               ["iam", "delete-user", "--user-name", "prodbox-ses-smtp"] ->
                 successfulProcess ""
               ["iam", "get-user", "--user-name", "prodbox-ses-smtp", "--output", "json"] ->
                 noSuchEntityProcess
               _ -> failedProcess "unexpected command"
       runNodeOperation (exactOperation runner) nodeId attemptId `shouldReturn` Right ()
-      readIORef seenRef
-        `shouldReturn` [ ["iam", "list-access-keys", "--user-name", "prodbox-ses-smtp", "--output", "json"]
-                       ,
-                         [ "iam"
-                         , "delete-user-policy"
-                         , "--user-name"
-                         , "prodbox-ses-smtp"
-                         , "--policy-name"
-                         , "prodbox-ses-smtp-policy"
-                         ]
-                       , ["iam", "delete-user", "--user-name", "prodbox-ses-smtp"]
-                       , ["iam", "get-user", "--user-name", "prodbox-ses-smtp", "--output", "json"]
-                       ]
+      seen <- readIORef seenRef
+      -- An empty enumerated family needs no delete at all, which is a different
+      -- fact from a delete that removed nothing because it named the wrong
+      -- policy.
+      filter (\arguments -> take 2 arguments == ["iam", "delete-user-policy"]) seen
+        `shouldBe` []
+      seen `shouldContain` [["iam", "delete-user", "--user-name", "prodbox-ses-smtp"]]
 
-    it "stops at an access-key failure and does not misreport an unobserved absence" $ do
+    -- Sprint 7.36 (2026-08-22): this case previously pinned *stopping* at the
+    -- first failure as the desired behaviour, which is what left a partially
+    -- destroyed principal behind. The stated intent -- never misreporting an
+    -- unobserved absence -- is unchanged and is now carried by the read-back,
+    -- while the remaining members are still attempted.
+    it "attempts every member after a key failure and refuses on the read-back" $ do
       seenRef <- newIORef []
       let runner spec = do
             modifyIORef' seenRef (++ [subprocessArguments spec])
@@ -288,33 +302,28 @@ awsSesDecommissionSuite =
                 successfulProcess oneKeyInventory
               ["iam", "delete-access-key", "--user-name", "prodbox-ses-smtp", "--access-key-id", _] ->
                 accessDeniedProcess
+              ["iam", "list-user-policies", "--user-name", "prodbox-ses-smtp", "--output", "json"] ->
+                successfulProcess emptyPolicyListing
+              ["iam", "delete-user", "--user-name", "prodbox-ses-smtp"] ->
+                accessDeniedProcess
+              ["iam", "get-user", "--user-name", "prodbox-ses-smtp", "--output", "json"] ->
+                successfulProcess exactUser
               _ -> failedProcess "unexpected command"
       result <- runNodeOperation (exactOperation runner) nodeId attemptId
-      result `shouldSatisfy` leftContains "AWS IAM access denied"
-      readIORef seenRef
-        `shouldReturn` [ ["iam", "list-access-keys", "--user-name", "prodbox-ses-smtp", "--output", "json"]
-                       ,
-                         [ "iam"
-                         , "delete-access-key"
-                         , "--user-name"
-                         , "prodbox-ses-smtp"
-                         , "--access-key-id"
-                         , "AKIAEXACTKEY00001"
-                         ]
-                       ]
+      result `shouldSatisfy` leftContains "read-back did not confirm absence"
+      seen <- readIORef seenRef
+      -- The members after the failure were still attempted rather than
+      -- abandoned.
+      seen
+        `shouldContain` [["iam", "list-user-policies", "--user-name", "prodbox-ses-smtp", "--output", "json"]]
+      seen `shouldContain` [["iam", "delete-user", "--user-name", "prodbox-ses-smtp"]]
 
     it "refuses success when authoritative read-back still observes the user" $ do
       let runner spec = pure $ case subprocessArguments spec of
             ["iam", "list-access-keys", "--user-name", "prodbox-ses-smtp", "--output", "json"] ->
               successfulProcess emptyInventory
-            [ "iam"
-              , "delete-user-policy"
-              , "--user-name"
-              , "prodbox-ses-smtp"
-              , "--policy-name"
-              , "prodbox-ses-smtp-policy"
-              ] ->
-                successfulProcess ""
+            ["iam", "list-user-policies", "--user-name", "prodbox-ses-smtp", "--output", "json"] ->
+              successfulProcess emptyPolicyListing
             ["iam", "delete-user", "--user-name", "prodbox-ses-smtp"] ->
               successfulProcess ""
             ["iam", "get-user", "--user-name", "prodbox-ses-smtp", "--output", "json"] ->
@@ -322,6 +331,13 @@ awsSesDecommissionSuite =
             _ -> failedProcess "unexpected command"
       result <- runNodeOperation (exactOperation runner) nodeId attemptId
       result `shouldSatisfy` leftContains "read-back did not confirm absence"
+
+sendPolicyListing :: String
+sendPolicyListing =
+  "{\"PolicyNames\":[\"prodbox-ses-smtp-send\"],\"IsTruncated\":false}"
+
+emptyPolicyListing :: String
+emptyPolicyListing = "{\"PolicyNames\":[],\"IsTruncated\":false}"
 
 wholeStackScopeWitness
   :: AwsSesDecommissionPrimitive 'AwsSesWholePulumiStack IO -> ()

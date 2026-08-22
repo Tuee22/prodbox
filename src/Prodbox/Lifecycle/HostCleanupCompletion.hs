@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE ImportQualifiedPost #-}
@@ -184,7 +185,7 @@ import Prodbox.Lifecycle.Teardown.Model
   ( AwsAccountId (..)
   , AwsRegion (..)
   , AwsScope (..)
-  , CleanupSurface
+  , CleanupSurface (Cascade)
   , DurableObservationRunScope (..)
   , LifecycleOperation (..)
   , LinuxRke2FoundationId (..)
@@ -404,7 +405,7 @@ preparedLocalCompletionDigest = cleanupDigestOfBytes . internalPreparedBytes
 -- scope, another permit, or another report identity could enter.
 prepareLocalCompletion
   :: HostCleanupRunnerContext
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> PreparedLocalCompletion
 prepareLocalCompletion context local =
   PreparedLocalCompletion
@@ -730,7 +731,7 @@ observeLocalCompletion journal reference = do
 -- sources.
 localCompletionReadBack
   :: ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> LocalCompletionObservation
   -> Either Text HostCleanupCompletionReadBack
 localCompletionReadBack ready local observation = case observation of
@@ -782,7 +783,7 @@ localCompletionReadBack ready local observation = case observation of
 productionHostCleanupCompletionCommit
   :: HostCleanupCompletionJournal
   -> HostCleanupRunnerContext
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> IO HostCleanupEffectOutcome
 productionHostCleanupCompletionCommit journal context local =
   localCompletionAppendOutcome
@@ -796,7 +797,7 @@ productionHostCleanupCompletionCommit journal context local =
 productionHostCleanupCompletionReadBack
   :: HostCleanupCompletionJournal
   -> ReadyToUninstallEvidence
-  -> LocalUninstallEvidence
+  -> LocalUninstallEvidence 'Cascade
   -> HostCleanupRunnerContext
   -> IO (Either Text HostCleanupCompletionReadBack)
 productionHostCleanupCompletionReadBack journal ready local context = do
@@ -910,9 +911,9 @@ fixedLocalCompletionRegression =
 data FixedLocalCompletionScenario = FixedLocalCompletionScenario
   { fixedCompletionContext :: !HostCleanupRunnerContext
   , fixedCompletionReady :: !ReadyToUninstallEvidence
-  , fixedCompletionLocal :: !LocalUninstallEvidence
+  , fixedCompletionLocal :: !(LocalUninstallEvidence 'Cascade)
   , fixedCompletionOtherContext :: !HostCleanupRunnerContext
-  , fixedCompletionOtherLocal :: !LocalUninstallEvidence
+  , fixedCompletionOtherLocal :: !(LocalUninstallEvidence 'Cascade)
   }
 
 fixedLocalCompletionScenario :: Either Text FixedLocalCompletionScenario

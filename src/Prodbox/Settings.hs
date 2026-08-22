@@ -34,6 +34,7 @@ module Prodbox.Settings
   , requireAcmeAccount
   , requireHomeZoneId
   , requireOperationalAwsRegion
+  , requireSesCaptureBucket
   , homeZoneIdTextForRendering
   , operationalAwsRegionTextForRendering
   , SeedInForceOutcome (..)
@@ -134,6 +135,12 @@ import Prodbox.Config.ComponentGraph
   , validateComponentGraph
   )
 import Prodbox.Config.FloorDhall (loadUnencryptedBasics, loadUnencryptedBasicsAtPath)
+import Prodbox.Config.RetainedArtifacts
+  ( RetainedArtifactsSection
+  , declaredRetainedArtifacts
+  , emptyRetainedArtifactsSection
+  , renderRetainedArtifactDeclarationError
+  )
 import Prodbox.ControlPlane.ConfigClient
   ( ConfigClient (..)
   , ConfigClientError
@@ -441,6 +448,10 @@ data ConfigFile = ConfigFile
   , cluster_topology :: ClusterTopology
   , storage :: StorageSection
   , pulumi_state_backend :: PulumiStateBackendSection
+  , retained_artifacts :: RetainedArtifactsSection
+  -- ^ Sprint 4.86: the operator-declared retained artifacts an
+  -- ordinary-teardown repair reinstalls the local substrate and the recovery
+  -- closure's images from. See 'RetainedArtifactsSection'.
   , components :: [ComponentNode]
   -- ^ Sprint 1.56: the Tier-0 component dependency/readiness graph that
   -- bootstrap ordering is projected from
@@ -1145,6 +1156,23 @@ requireOperationalAwsRegion settings =
     Right
     (coordinateOperationalAwsRegion (validatedCoordinates settings))
 
+-- | Sprint 1.91: the configured SES capture bucket, for a caller that needs one.
+--
+-- @prodbox aws policy@ prints the grant an operator pastes into IAM, and the
+-- capture-bucket ARNs in it were compiled. A compiled bucket name in a printed
+-- grant is worse than a missing one: the operator installs a policy that names
+-- somebody else's bucket and discovers it as an @AccessDenied@ from S3 rather
+-- than as a refusal from prodbox.
+requireSesCaptureBucket :: ValidatedSettings -> Either String S3BucketName
+requireSesCaptureBucket settings =
+  maybe
+    ( Left
+        "ses.capture_bucket must be configured. Author it in the Tier-0 \
+        \prodbox.dhall `parameters.ses` block."
+    )
+    Right
+    (coordinateSesCaptureBucket (validatedCoordinates settings))
+
 -- | Attach a field name to a coordinate refusal.
 --
 -- Every coordinate message in this module is produced here, which is why
@@ -1345,6 +1373,7 @@ validateLocalConfig
       clusterTopologySection
       storageSection
       pulumiStateBackendSection
+      retainedArtifactsSection
       componentNodes
     ) = do
     validateConfiguredCertScope domainSection awsSubstrateSection
@@ -1357,8 +1386,24 @@ validateLocalConfig
     mapLeft renderTopologyError (validateClusterTopology clusterTopologySection)
     validateStorageSection storageSection
     validatePulumiStateBackendSection pulumiStateBackendSection
+    validateRetainedArtifactsSection retainedArtifactsSection
     validateComponentNodes componentNodes
     validateLocallyOptionalCoordinates route53Section acmeSection
+
+-- | Sprint 4.86: the operator-declared retained artifacts.
+--
+-- Validated by projecting them, rather than by a second list of shape rules:
+-- the inventory and the source catalog a recovery consumes are exactly what
+-- this projection produces, so a declaration that loads here is one a repair
+-- can be rendered against. A malformed digest, an unsafe retained path, an
+-- unusable locator, a duplicate kind, or an unrecognized architecture or kind
+-- is refused at config load rather than at the moment a control plane is
+-- already gone.
+validateRetainedArtifactsSection :: RetainedArtifactsSection -> Either String ()
+validateRetainedArtifactsSection section =
+  case declaredRetainedArtifacts section of
+    Left err -> Left (renderRetainedArtifactDeclarationError err)
+    Right _ -> Right ()
 
 -- | Sprint 1.89: the two sections with no purely-local /presence/ rule.
 --
@@ -1826,13 +1871,23 @@ maskSecret value =
     then "****" <> Text.takeEnd 4 value
     else "****"
 
-operationalAwsCredentialsRef :: Text -> AwsCredentialsRef
-operationalAwsCredentialsRef regionValue =
+-- | Sprint 1.91: the generated @aws.*@ block, with @region@ emitted __empty__.
+--
+-- It took a 'Text' argument and 'defaultConfigFile' passed a literal region, so
+-- every @prodbox config generate@ output arrived pre-filled with a region
+-- nobody chose and the three refusals written against an absent one
+-- ('requireOperationalAwsRegion', 'validateOperationalAwsCredentials', and
+-- @validateLifecycleProviderAwsRegion@) were unreachable code. The argument is
+-- gone rather than passed empty, so a seeded region is not expressible here at
+-- all — the shape @config_doctrine.md@ § 0 names under "a seeded non-empty
+-- default is a compiled default".
+operationalAwsCredentialsRef :: AwsCredentialsRef
+operationalAwsCredentialsRef =
   AwsCredentialsRef
     { awsCredentialAccessKeyId = vaultRef "aws/lifecycle-provider" "access_key_id"
     , awsCredentialSecretAccessKey = vaultRef "aws/lifecycle-provider" "secret_access_key"
     , awsCredentialSessionToken = Nothing
-    , awsCredentialRegion = regionValue
+    , awsCredentialRegion = Text.empty
     }
 
 vaultRef :: Text -> Text -> SecretRef
@@ -1847,7 +1902,7 @@ vaultRef path field =
 defaultConfigFile :: ConfigFile
 defaultConfigFile =
   ConfigFile
-    { aws = operationalAwsCredentialsRef "us-east-1"
+    { aws = operationalAwsCredentialsRef
     , route53 = Route53Section {zone_id = ""}
     , aws_substrate =
         AwsSubstrateSection
@@ -1894,6 +1949,7 @@ defaultConfigFile =
           , psbRegion = ""
           , psbKeyPrefix = "pulumi/"
           }
+    , retained_artifacts = emptyRetainedArtifactsSection
     , components = defaultComponentGraph
     }
 

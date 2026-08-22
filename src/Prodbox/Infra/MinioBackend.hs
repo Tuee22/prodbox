@@ -3,7 +3,6 @@
 module Prodbox.Infra.MinioBackend
   ( minioBackendBucket
   , minioBackendLocalPort
-  , minioBackendRegion
   , pulumiBackendLoginTimeoutSeconds
   , minioNamespace
   , minioSecretName
@@ -45,6 +44,7 @@ import Data.Maybe (maybeToList)
 import Data.Text qualified as Text
 import Prodbox.CLI.Output (writeOutputLine)
 import Prodbox.Error (AppError)
+import Prodbox.Minio.ObjectStoreTypes (minioSigningRegion)
 import Prodbox.Minio.RootCredential (minioRootPassword, minioRootUser)
 import Prodbox.Result (Result (..))
 import Prodbox.Service
@@ -76,9 +76,6 @@ minioBackendBucket = "prodbox-state"
 
 minioBackendLocalPort :: Int
 minioBackendLocalPort = 39000
-
-minioBackendRegion :: String
-minioBackendRegion = "us-east-1"
 
 pulumiBackendLoginTimeoutSeconds :: Int
 pulumiBackendLoginTimeoutSeconds = 30
@@ -115,7 +112,7 @@ pulumiBackendUrl localPort =
   "s3://"
     ++ minioBackendBucket
     ++ "?region="
-    ++ minioBackendRegion
+    ++ minioSigningRegion
     ++ "&endpoint=127.0.0.1:"
     ++ show localPort
     ++ "&disableSSL=true"
@@ -584,8 +581,8 @@ minioAwsEnv :: String -> String -> [(String, String)]
 minioAwsEnv accessKey secretKey =
   [ ("AWS_ACCESS_KEY_ID", accessKey)
   , ("AWS_SECRET_ACCESS_KEY", secretKey)
-  , ("AWS_REGION", minioBackendRegion)
-  , ("AWS_DEFAULT_REGION", minioBackendRegion)
+  , ("AWS_REGION", minioSigningRegion)
+  , ("AWS_DEFAULT_REGION", minioSigningRegion)
   , ("AWS_EC2_METADATA_DISABLED", "true")
   , ("PATH", "")
   , ("HOME", "")

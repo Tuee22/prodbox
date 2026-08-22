@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | Flat external observations and the exact-keyed completeness boundary.
 -- Checkpoints, ownership manifests, and terminal audits are nominally
@@ -38,6 +39,7 @@ module Prodbox.Lifecycle.Teardown.Observation
   , terminalAuditEvidenceScope
   , terminalAuditQueryDigest
   , terminalAuditRetainedSetDigest
+  , terminalAuditEvidenceScopeDigest
   , TerminalAuditScopeError (..)
   , mkTerminalAuditScope
   , TerminalAuditResult (..)
@@ -51,7 +53,11 @@ import Data.List.NonEmpty qualified as NonEmpty
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
+import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Lifecycle.AwsInventory (AwsInventory, AwsResource)
+import Prodbox.Lifecycle.DnsRecord (hostedZoneIdText)
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Registry
 
@@ -400,6 +406,46 @@ terminalAuditQueryDigest = internalTerminalAuditQueryDigest
 terminalAuditRetainedSetDigest
   :: TerminalAuditScope surface -> TerminalAuditRetainedSetDigest
 terminalAuditRetainedSetDigest = internalTerminalAuditRetainedSetDigest
+
+-- | The canonical digest of the evidence scope one audit was taken in.
+--
+-- The reservation that fences an audit is committed before the audit runs and
+-- names the scope it expects by digest; the receipt the audit produces names
+-- the scope it was actually taken in the same way.  Both sides derive the
+-- digest here rather than composing their own, so a mismatch means the audit
+-- answered about a different run, foundation, account, region, zone, or
+-- operation — and never that two renderings of the same scope disagreed.
+--
+-- Every field participates, and an absent optional field renders distinctly
+-- from any present one, so a scope that names no AWS account cannot digest
+-- equal to one that does.
+terminalAuditEvidenceScopeDigest :: ObservationEvidenceScope -> Text
+terminalAuditEvidenceScopeDigest scope =
+  TextEncoding.decodeUtf8 (hexSha256 (TextEncoding.encodeUtf8 canonical))
+ where
+  canonical =
+    Text.intercalate
+      "\NUL"
+      [ "terminal-audit-scope/v1"
+      , Text.pack (show (evidenceCleanupSurface scope))
+      , registryRevisionText (evidenceRegistryRevision scope)
+      , durableRunScopeText (evidenceDurableRunScope scope)
+      , foundationText (evidenceLinuxRke2Foundation scope)
+      , maybe "aws:none" awsScopeText (evidenceAwsScope scope)
+      , maybe "zone:none" (("zone:" <>) . hostedZoneIdText) (evidenceAwsDnsZone scope)
+      , Text.pack (show (evidenceLifecycleOperation scope))
+      ]
+
+  registryRevisionText (RegistryRevision value) = "registry:" <> value
+  durableRunScopeText (DurableObservationRunScope value) = "run:" <> value
+  foundationText (LinuxRke2FoundationId value) = "foundation:" <> value
+  awsScopeText awsScope =
+    "aws:"
+      <> accountText (awsScopeAccountId awsScope)
+      <> "/"
+      <> regionText (awsScopeRegion awsScope)
+  accountText (AwsAccountId value) = value
+  regionText (AwsRegion value) = value
 
 data TerminalAuditScopeError
   = TerminalAuditSurfaceMismatch !CleanupSurface !CleanupSurface

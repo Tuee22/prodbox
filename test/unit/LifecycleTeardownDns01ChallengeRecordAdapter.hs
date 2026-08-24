@@ -11,6 +11,7 @@ import Data.Text (Text)
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
+import Prodbox.Lifecycle.CleanupRun (mkCleanupRunId)
 import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.OwnedResourceTags (dns01ChallengeRecordNamePrefix)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
@@ -19,6 +20,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   )
 import Prodbox.Lifecycle.Teardown.Dns01ChallengeOwnerDeleteInterpreter
 import Prodbox.Lifecycle.Teardown.Dns01ChallengeRecordAdapter
+import Prodbox.Lifecycle.Teardown.Graph
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.RegisteredTargetExecutor
@@ -57,6 +59,33 @@ lifecycleTeardownDns01ChallengeRecordAdapterSuite =
         initialRevision
         zonelessScope
         `shouldBe` Left Dns01ChallengeHostedZoneMissing
+
+    it "derives the exact provider observation from the Sprint 7.38 compiled cascade scope" $ do
+      let compiled =
+            mustRight
+              ( compileDesiredAbsenceGraph
+                  (mustRight (mkCleanupRunId "dns01-compiled-cascade"))
+                  (LinuxRke2FoundationId "home-rke2")
+                  ( Just
+                      ( AwsScope
+                          (AwsAccountId "123456789012")
+                          (AwsRegion (fixtureAwsRegion FixtureUsEast1))
+                      )
+                  )
+                  (Just challengeZone)
+                  CascadeSurface
+              )
+          request =
+            mustRight
+              ( mkExactDns01ChallengeObservationRequest
+                  CascadeSurface
+                  initialRevision
+                  (compiledDesiredAbsenceObservationScope compiled)
+              )
+      dns01ChallengeObservationRequestProviderIntent request
+        `shouldBe` ObserveDns01ChallengeRecords
+          "Z0123456789ABCDEFGHIJ"
+          dns01ChallengeRecordNamePrefix
 
     it "reads an empty family as absent and a listed record as present" $ do
       let cascade = requestFor CascadeSurface cascadeScope
@@ -221,7 +250,7 @@ cascadeScope =
     lifecycleRegistryRevision
     (DurableObservationRunScope "dns01-challenge-adapter-run")
     (LinuxRke2FoundationId "home-rke2")
-    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")))
+    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
     challengeZone
     ReconcileDesiredAbsent
 
@@ -232,7 +261,7 @@ zonelessScope =
     lifecycleRegistryRevision
     (DurableObservationRunScope "dns01-challenge-adapter-run")
     (LinuxRke2FoundationId "home-rke2")
-    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")))
+    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
     ReconcileDesiredAbsent
 
 isExactAbsent :: ExactObservationResult -> Bool

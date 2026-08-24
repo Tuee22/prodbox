@@ -328,6 +328,101 @@ password-AEAD `PreparedInitEnvelope` for the exact empty storage generation; a f
 does not satisfy that edge. A prompt, IAM create, S3 write, or TLS issuance hidden in a
 prerequisite/readiness observer is a graph violation.
 
+The post-unseal sequence has separate terminal edges. The unseal worker closes on its exact
+validated receipt and the baseline root/provisioner session closes on its exact read-back without
+contacting a not-yet-installed consumer. The native plan then reaches Target Secret Agent rollout,
+Lifecycle Authority rollout, and the explicit `reconcile_post_unseal_handoff` transition in that
+order. Only that last fixed-coordinate Broker mutation may drive Authority acceptance and exact
+read-back into the durable handoff journal. Narration and APPLY project all three post-Vault steps
+from the same step table; neither unseal nor baseline hides the later handoff effect.
+
+The generated-root ciphertext needed by first-baseline is itself secret-worker work. The controller
+mints the `BootstrapVaultSubmitGenerateRootShare` permit in the root-session scope, then drives
+`SecretWorkerCompleteGeneratedRoot` through the same fenced, attested, checkpointed one-shot
+boundary before the PGP scope may decrypt the returned ciphertext. A constructor whose
+`physicalCallSecretWorkerOperation` is present must never enter the direct physical interpreter;
+that interpreter's refusal is a guardrail, not an alternate execution lane.
+
+The generated-root PGP boundary reports failures as a closed payload-free algebra. Only the
+protected baseline-route diagnostic may render its stable cause: session/action kind, the exact
+action substage, and for core reconcile the closed Vault operation plus connection/timeout/numeric
+status/decode or typed drift/secret-bootstrap class. PKI reconciliation and observation likewise
+use separate closed operation vocabularies for issuer listing, internal-root generation, role write,
+issuer read-back, and role read-back; nested observation failure and non-exact absent/drifted/ready
+status remain explicit. The public response remains the generic state conflict, and unrelated routes
+render no PGP cause. Vault bodies, exception messages, request context text, key/path/role names,
+tokens, ciphertext, and secret-bootstrap values cannot inhabit the diagnostic type. A new PGP
+action, root-action substage, Vault reconcile/PKI error, HTTP operation, or nested CAS outcome
+therefore requires an exhaustive classifier before the build succeeds.
+
+Root-accessor absence is an explicit physical requirement, not a prose convention. Stable-zero
+transitions require the complete observed root-policy inventory to be empty; current-accessor
+transitions require only the exact journaled target accessor to be absent. The proof first requires
+the observation and target inventories to carry the same storage generation and refuses when any
+target remains. Its protected baseline diagnostic uses a closed payload-free cause for projected
+token availability, auditor login/list/lookup HTTP class, invalid bounded-batch login cleanup,
+malformed accessor/inventory observation, generation mismatch, target presence, or stable-zero
+mismatch. HTTP bodies, accessors, tokens, paths, and exception text cannot inhabit that cause. The
+public response remains the generic boundary refusal or availability class, and unrelated routes
+render no exact absence cause. Vault's LIST-accessors HTTP 404 is the one non-success response that
+denotes an empty accessor collection and therefore supplies an empty inventory; connection failure,
+timeout, every other numeric status, and decode failure remain closed refusals.
+
+Root-accessor revocation is a separate physical boundary from its later absence proof. Its
+protected baseline diagnostic carries a closed payload-free cause for projected-token availability,
+bounded auditor login and invalid-login cleanup, the revoke HTTP operation, the immediate list
+read-back HTTP operation, or the exact target still being present. Connection failure, timeout,
+numeric status, and decode failure remain distinct without retaining their bodies. The public reply
+still exposes only the generic unavailable, ambiguous, or refused class, and an unrelated route
+never renders the revocation cause.
+
+Root-accessor inventory likewise has its own closed physical-boundary cause. Its protected baseline
+diagnostic distinguishes projected-token availability, bounded auditor login and invalid-login
+cleanup, list and per-accessor policy-lookup HTTP operation/class, malformed root accessor, and
+inventory size/uniqueness refusal. Accessor and policy values, response bodies, tokens, paths, and
+arbitrary text cannot inhabit the cause. The exact cause is rendered only for the protected
+baseline route; public and unrelated-route responses retain their generic class. An inventory call
+owns its empty-collection decision independently from the absence proof: only LIST HTTP 404 supplies
+an empty inventory, while connection failure, timeout, every non-404 status, and decode failure
+retain their exact closed refusal.
+
+Provisioner-accessor cleanup is a separate stable-zero boundary with its own closed payload-free
+cause. It distinguishes projected-token and bounded-auditor login/invalid-login cleanup, the
+initial role-wide list and subject lookup, the audit's repeated list/lookup/revoke/direct-absence
+operations, visibility refusal, malformed accessor/inventory observations, and exhaustion of the
+finite stable-absence proof. The provider operation and connection/timeout/numeric-status/decode
+class are retained, but roles, subjects, accessors, tokens, paths, bodies, and arbitrary error text
+cannot inhabit the cause. A revoke response is always provisional: success, failure, or response
+loss neither closes nor fails cleanup by itself; only later authoritative observations decide the
+terminal result. The exact cause is rendered only on the protected baseline route, while public
+and unrelated-route replies retain their generic unavailable, ambiguous, or refused class. Both
+the initial and repeated role-wide LIST operations share one empty-collection decision: exact HTTP
+404 supplies an empty inventory, while connection failure, timeout, every other numeric status,
+and decode failure retain their closed cause.
+
+Provisioner-policy application is a distinct physical boundary after cleanup and login. Its
+protected baseline diagnostic carries one closed payload-free cause for a missing process-local
+provisioner token, the complete core Vault reconcile error sum, or the complete PKI reconcile and
+read-back error sum. The core and PKI projections are the same exhaustive types and classifiers
+used by the generated-root lane: every HTTP operation and
+connection/timeout/numeric-status/decode class, typed drift, nested secret-bootstrap CAS outcome,
+PKI observation failure, and non-exact PKI status remains distinguishable without duplicating a
+second interpretation. Tokens, paths, names, policy/secret material, response bodies, and
+free-form text cannot inhabit the cause. Only the protected baseline route renders it; unrelated
+routes do not, and every arm retains the pre-diagnostic generic HTTP 503
+`boundary-unavailable` response until live evidence licenses a behavior change.
+
+Provisioner-accessor revocation is distinct from cleanup, policy application, and root-accessor
+revocation. Its target protected diagnostic carries a closed payload-free cause for bounded-auditor
+login and invalid-login cleanup, the initial accessor inventory, target lookup and subject
+verification, the revoke HTTP operation, the authoritative post-revocation inventory, and exact
+target/role absence status. Connection failure, timeout, numeric status, and decode failure remain
+separate without retaining accessors, subjects, roles, tokens, paths, response bodies, or arbitrary
+text. The public response remains generic. The current production interpreter still collapses
+these outcomes; adoption is scheduled in
+[Sprint `2.75`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md#sprint-275-provisioner-accessor-revocation-needs-an-exact-cause),
+with current status owned only by the development-plan resumption ledger.
+
 Graph construction rejects cycles, dangling requirements, duplicate exclusive providers, scope
 mismatches, and missing interpreters before mutation. Substrate-specific capabilities name their
 substrate explicitly; there is no home/AWS fallback.
@@ -366,6 +461,37 @@ production boundary still reports only process liveness and keeps readiness and 
 capability closed; a deterministic fake proves composition without becoming a production selection
 path. Physical adapter activation and cutover status live only in the
 [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+Host access preserves that loopback boundary at both ends. Before minting the short-lived
+TokenRequest credential or starting `kubectl port-forward --address 127.0.0.1
+service/bootstrap-broker`, the host client observes the exact Broker Deployment rollout through the
+same explicit namespace, kubectl environment, and working directory. Starting a Service
+port-forward while its replacement Pod is still Pending can make kubectl exit immediately; retrying
+HTTP against the now-dead local socket is not a readiness wait and must not be represented as one.
+A rollout timeout or refusal is therefore a distinct pre-transport outcome.
+
+Controller image self-observation uses the chart's exact controller selector, not an application
+name shared by every Broker-owned Pod. The query requires both
+`app.kubernetes.io/name=prodbox-bootstrap-broker` and the supported release instance
+`app.kubernetes.io/instance=bootstrap-broker`. A retained or running one-shot worker deliberately
+lacks the instance label and cannot contaminate the controller PodList. The observer still refuses
+zero or multiple matching controller Pods; narrowing the selector does not license choosing an
+arbitrary replica.
+
+Expired-fence retirement distinguishes a live worker process from a terminal Pod object. Only an
+exact same-generation Pod whose API-owned UID is valid and whose phase is `Succeeded` or `Failed`
+may enter terminal-owner cleanup. The Broker deletes it with that UID as a Kubernetes precondition
+and obtains a later exact 404 before deriving owner absence. Pending, Running, Unknown, malformed,
+foreign-generation, unauthorized, or unobservable observations authorize no delete. A
+foreign-generation Pod at the one fixed coordinate still proves the queried generation absent, but
+is never deleted on that predecessor's behalf.
+
+The controller and its attested initialization worker classify the retained root journal through one
+pure observation. A missing object and a present exact `RootInitPristine` are equivalent evidence of
+the current generation's pristine state; `RootResetPristine` carries its reset provenance and admits
+only when its replacement proof is the same derived proof. No progressed or ambiguous phase is
+lowered to pristine. This classifier is shared because two independently authored predicates over
+the same journal once gave opposite answers and made the preserved root permanently unstartable.
 
 Backup state is total: established/current may admit, positive permanent loss may select only the
 visible `BackupRepairFrozen` protocol, and temporary/unreachable/malformed/stale observation keeps
@@ -426,6 +552,75 @@ exist, so a Pod carrying a *different* fence generation is itself proof that thi
 is gone. Every other answer — unparseable body, missing or non-canonical annotation, rejected
 identity, any other status, transport failure — is unobservable. Absence is the only outcome that can
 authorize a takeover, so it is the only one that must be positively proven.
+
+**A terminal worker is cleaned as terminal, not treated as live forever.** A `Succeeded` or `Failed`
+Pod carrying the queried fence generation is UID-precondition deleted and the fixed coordinate is
+read back absent before retirement consumes an absence observation. Pending, Running, Unknown,
+malformed, foreign-generation, and unobservable Pods are not deleted on that generation's behalf.
+Kubernetes' termination wire requires `exitCode` but permits the termination-log `message` to be
+absent; absence of that optional message does not make the Pod unreadable and also cannot satisfy an
+operation's exact receipt binding.
+
+**Controller self-observation distinguishes live candidates from retained terminal history.** The
+exact name/instance label conjunction defines controller membership, then positively observed
+`Succeeded` and `Failed` Pods are excluded before cardinality is enforced. Exactly one nonterminal
+candidate must remain. Pending, Running, Unknown, and deleting candidates are never inferred absent;
+their existing state checks decide whether the sole candidate is usable, and multiple such candidates
+remain an ambiguity. Decoding remains whole-list fail-closed, so a malformed historical item cannot
+be silently discarded as if it were terminal.
+
+**Worker-side effect permits require worker-side Lease observation.** Reconstructing the fixed Pod
+binding is insufficient: immediately before each Vault or retained-store effect, the worker reads
+the durable fence and the named Kubernetes Lease and authorizes the effect only when both match its
+immutable request. Its ServiceAccount therefore has `get` on exactly `bootstrap-broker-fence` in
+addition to `get` on exactly `bootstrap-secret-worker`. Lease create/update/delete, Pod mutation,
+TokenReview, exec/attach, and Secret reads remain controller-only or absent.
+
+**Ambiguity recovery is liveness-gated because readiness is the state being repaired.** Ordinary
+host clients wait for the exact Broker Deployment rollout before credential minting or
+port-forward startup. `reset-ambiguous-initialization` is the sole exception: a durable ambiguity
+intentionally withdraws `/readyz`, so requiring Deployment readiness would make the typed recovery
+route unreachable. Its closed connector skips only that rollout barrier and still reserves a
+loopback port, mints the exact custom-audience TokenRequest credential, forwards only the compiled
+Service named port on `127.0.0.1`, proves authenticated `/healthz`, bounds retries, and bracket-cleans
+the subprocess. No caller-selectable mode weakens another route.
+
+**Recovery diagnostics are closed and payload-free.** The physical ambiguity-reset interpreter
+returns a `VaultStorageResetFailure` stage algebra rather than free-form Kubernetes detail. Only
+that recovery route may append its rendered stage to the Broker diagnostic, and the renderer admits
+only constructor names plus a numeric HTTP status for a refused reset-Pod request. Kubernetes
+bodies, object values, credential detail, controller-authored bindings, and storage identities do
+not inhabit the algebra; the authenticated client still receives only the generic
+`boundary-unavailable` response.
+
+**Zero-scale recovery follows the Kubernetes Scale wire.** The fixed Vault StatefulSet is scaled
+through an exact `autoscaling/v1` Scale GET and resource-versioned PUT. Kubernetes applies Go
+`omitempty` to the desired replica field, so `"spec": {}` is the canonical observation of zero,
+not a malformed response. The decoder defaults only that omitted field to zero; API version, kind,
+name, namespace, non-empty resource version, non-negative explicit counts, and exact post-write
+read-back remain mandatory before the reset program advances.
+
+**Applied initialization ambiguity names only a closed failure class.** If Vault is already
+initialized before the worker's call, or if the call fails and a separately authorized seal-status
+read-back proves initialization was applied, the one-shot result carries exactly one of:
+already-observed, connection failure, timeout, numeric HTTP status, or response-decode failure.
+Exception strings, response bodies, prepared-recipient material, ciphertext, and credentials do not
+inhabit that algebra. The classified result is an appended durable constructor; the former nullary
+constructor retains its exact CBOR encoding and decodes as `unclassified`, so retained worker
+checkpoints stay readable. The engine carries the class only to the protected initialization-route
+diagnostic. It does not add the class to `InitAmbiguity` or otherwise reshape the durable root
+journal, and the authenticated client still receives only the generic `state-conflict` response.
+Re-entry from a journal that cannot retain the transient class is explicitly `unclassified`, never
+an invented diagnosis.
+
+**Vault initialization's redundant share encodings are one checked value, not two authorities.**
+The documented response carries `keys` plus `keys_base64` for Shamir shares, or `recovery_keys`
+plus `recovery_keys_base64` for recovery shares. The Broker admits exactly one complete family only
+when both arrays are non-empty, equal in length, canonical lowercase hexadecimal/canonical base64,
+and pointwise decode to the same encrypted bytes. A missing half, disagreement, mixed families, or
+additional field refuses. The hexadecimal projection is discarded inside the parser; only the
+existing opaque redacting share values and burn-token ciphertext cross the wire boundary or enter
+durable custody. No raw-share field gains a printable or persistent representation.
 
 **What retirement does and does not prove, stated rather than implied.** It proves the predecessor's
 worker Pod is gone. It does **not** prove that a Vault session the predecessor held is gone, and

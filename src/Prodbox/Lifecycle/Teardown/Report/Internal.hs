@@ -68,6 +68,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
 import Prodbox.ControlPlane.CleanupRunClient
   ( CleanupRunClientError
   , DescriptorBoundCleanupRun
@@ -581,6 +582,7 @@ fixedDesiredAbsenceReportRegression = do
           runId
           (LinuxRke2FoundationId "report-foundation")
           (Just fixedReportAwsScope)
+          Nothing
           CascadeSurface
       )
   otherCompiled <-
@@ -589,6 +591,7 @@ fixedDesiredAbsenceReportRegression = do
           otherRunId
           (LinuxRke2FoundationId "report-other-foundation")
           (Just fixedReportAwsScope)
+          Nothing
           CascadeSurface
       )
   run <-
@@ -720,6 +723,7 @@ fixedDesiredAbsenceReportRegression = do
           runId
           (LinuxRke2FoundationId "report-foundation")
           Nothing
+          Nothing
           LocalOnlySurface
       )
   totalCompiled <-
@@ -728,6 +732,7 @@ fixedDesiredAbsenceReportRegression = do
           runId
           (LinuxRke2FoundationId "report-foundation")
           (Just fixedReportAwsScope)
+          Nothing
           TotalDecommissionSurface
       )
   let graph = compiledDesiredAbsenceGraph compiled
@@ -923,6 +928,7 @@ fixedDesiredAbsenceReportRegression = do
           runId
           (LinuxRke2FoundationId "report-foundation")
           (Just fixedReportAwsScope)
+          Nothing
           ExplicitPerRunSurface
       )
   perRunRun <-
@@ -1054,6 +1060,7 @@ fixedDesiredAbsenceReportRegression = do
           runId
           (LinuxRke2FoundationId "report-foundation")
           (Just fixedReportAwsScope)
+          Nothing
           OperationalTeardownSurface
       )
   operationalRun <-
@@ -1179,6 +1186,7 @@ fixedDesiredAbsenceReportRegression = do
           runId
           (LinuxRke2FoundationId "report-foundation")
           (Just fixedReportAwsScope)
+          Nothing
           ExplicitLongLivedSurface
       )
   longLivedRun <-
@@ -1389,7 +1397,7 @@ fixedReportAwsScope :: AwsScope
 fixedReportAwsScope =
   AwsScope
     (AwsAccountId "111122223333")
-    (AwsRegion "ca-central-1")
+    (AwsRegion canonicalRegressionAwsRegion)
 
 fixedComponentObservations
   :: RecoveryPlaneInternal.RecoveryPlaneIdentity surface

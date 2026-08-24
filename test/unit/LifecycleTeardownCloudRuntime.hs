@@ -27,9 +27,20 @@ import Prodbox.ControlPlane.EksDrainReadBackReceiptRepository
 import Prodbox.ControlPlane.PulumiCheckpointClient
 import Prodbox.Lifecycle.CleanupRun
 import Prodbox.Lifecycle.CleanupRunRunner
-import Prodbox.Lifecycle.ProviderWorker.ProviderWork (ProviderIntent (..))
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent (..)
+  , ProviderRevision
+  , ProviderStackConfig
+  , mkAwsEksProviderStackConfig
+  , mkAwsEksSubzoneProviderStackConfig
+  , mkAwsTestProviderStackConfig
+  , mkProviderRevision
+  )
 import Prodbox.Lifecycle.PulumiCheckpoint
 import Prodbox.Lifecycle.Teardown.AwsCheckpointInterpreter
+import Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
+  ( encodeAwsNativeStackFamilyEvidence
+  )
 import Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter
 import Prodbox.Lifecycle.Teardown.AwsStackReaderInterpreter
 import Prodbox.Lifecycle.Teardown.CloudRuntime
@@ -255,7 +266,17 @@ registeredInterpreter environment owner =
     , awsRegisteredTargetReadStackDecisionInputs =
         \_ _ _ -> pure (Left "fixture decision reader refused")
     , awsRegisteredTargetReadStackProviderBinding =
-        \_ _ _ -> pure (Left "fixture Provider-binding reader refused")
+        \operationId key scope ->
+          pure
+            ( firstText
+                ( mkAwsStackProviderBinding
+                    operationId
+                    key
+                    scope
+                    providerRevision
+                    (providerConfig key)
+                )
+            )
     , awsRegisteredTargetPresentEksDestroyBoundary =
         mkAwsEksPresentDestroyBoundary $ \_ _ _ ->
           pure (Left AwsRegisteredTargetEksDrainProofRequired)
@@ -269,9 +290,20 @@ providerEvidence mode intent = case mode of
   ProviderMalformed -> "malformed Provider observation"
   ProviderExact -> case intent of
     ObserveEksClusterIdentity _ -> "registered EKS cluster is absent"
-    ObserveRegisteredStack _ -> "registered stack is absent"
-    ReadBackRegisteredStack _ -> "registered stack is absent"
+    ObserveNativeStackFamily ref _ ->
+      mustRight (encodeAwsNativeStackFamilyEvidence ref [])
     _ -> "fixture Provider operation refused by exact decoder"
+
+providerConfig :: RegisteredResourceKey -> ProviderStackConfig
+providerConfig key = case key of
+  AwsEksKey -> mustRight (mkAwsEksProviderStackConfig "127.0.0.1/32")
+  AwsEksSubzoneKey ->
+    mustRight (mkAwsEksSubzoneProviderStackConfig "ZCLOUD" "aws.example.test")
+  AwsTestKey -> mustRight (mkAwsTestProviderStackConfig "127.0.0.1/32")
+  _ -> error ("no Provider stack config for " <> show key)
+
+providerRevision :: ProviderRevision
+providerRevision = mustRight (mkProviderRevision 1)
 
 refusedAuthorityOperationClient :: AuthorityOperationClient CloudEffects
 refusedAuthorityOperationClient =
@@ -574,6 +606,7 @@ compiledFor surface =
         fixtureRunId
         fixtureFoundation
         (awsScopeFor surface)
+        Nothing
         surface
     )
 
@@ -624,12 +657,15 @@ fixtureAwsScope :: AwsScope
 fixtureAwsScope =
   AwsScope
     (AwsAccountId "123456789012")
-    (AwsRegion "ca-central-1")
+    (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
 
 isRight :: Either left right -> Bool
 isRight result = case result of
   Right _ -> True
   Left _ -> False
+
+firstText :: (Show left) => Either left right -> Either Text right
+firstText = either (Left . Text.pack . show) Right
 
 mustRight :: (Show left) => Either left right -> right
 mustRight result = case result of

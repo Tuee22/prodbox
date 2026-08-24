@@ -64,8 +64,8 @@ controlPlaneTlsRetentionEndpointSuite =
             mustRight
               ( mkTlsRetentionStoreConfig
                   "home"
-                  (awsS3EndpointForRegion "ca-central-1")
-                  "ca-central-1"
+                  (awsS3EndpointForRegion (fixtureAwsRegion FixtureCaCentral1))
+                  (fixtureAwsRegion FixtureCaCentral1)
                   "prodbox-retained"
                   "home-local"
                   "%2A.example.com%2Ctest.example.com"
@@ -77,8 +77,8 @@ controlPlaneTlsRetentionEndpointSuite =
         `shouldBe` "public-edge-tls/home-local/%2A.example.com%2Ctest.example.com"
       mkTlsRetentionStoreConfig
         "home"
-        (awsS3EndpointForRegion "ca-central-1")
-        "ca-central-1"
+        (awsS3EndpointForRegion (fixtureAwsRegion FixtureCaCentral1))
+        (fixtureAwsRegion FixtureCaCentral1)
         "prodbox-retained"
         "home-local"
         "test.example"
@@ -102,8 +102,8 @@ controlPlaneTlsRetentionEndpointSuite =
         `shouldBe` TlsSecretApplyFailed "public-edge TLS Secret already exists but is corrupt: invalid certificate"
       mkTlsRetentionStoreConfig
         "home"
-        (awsS3EndpointForRegion "ca-central-1")
-        "ca-central-1"
+        (awsS3EndpointForRegion (fixtureAwsRegion FixtureCaCentral1))
+        (fixtureAwsRegion FixtureCaCentral1)
         "prodbox-retained"
         "other"
         "test.example"

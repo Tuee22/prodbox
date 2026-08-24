@@ -17,6 +17,7 @@
 -- API.
 module Prodbox.Bootstrap.Broker.PgpBoundary
   ( PgpBoundaryError (..)
+  , pgpBoundaryErrorName
   , RecoveryRecipientPublicKey
   , mkRecoveryRecipientPublicKey
   , recoveryRecipientPublicKeyBase64
@@ -53,6 +54,18 @@ module Prodbox.Bootstrap.Broker.PgpBoundary
   , generatedChildRecoveryCiphertextFromRoot
   , GeneratedRootAction (..)
   , GeneratedRootActionKind (..)
+  , GeneratedRootCoreReconcileCause (..)
+  , GeneratedRootCoreHttpOperation (..)
+  , GeneratedRootCoreHttpFailure (..)
+  , GeneratedRootCoreSecretFailure (..)
+  , GeneratedRootPkiReconcileCause (..)
+  , GeneratedRootPkiReconcileOperation (..)
+  , GeneratedRootPkiObserveCause (..)
+  , GeneratedRootPkiObserveOperation (..)
+  , GeneratedRootPkiBaselineStatus (..)
+  , generatedRootCoreReconcileCauseName
+  , generatedRootPkiReconcileCauseName
+  , GeneratedRootActionFailureStage (..)
   , allGeneratedRootActionKinds
   , generatedRootActionKind
   , GeneratedRootWorkflow (..)
@@ -165,7 +178,10 @@ data PgpBoundaryError
       !BootstrapVaultEffect
       !BootstrapVaultEffect
   | PgpGeneratedRootSessionGenerationMismatch
+  | PgpGeneratedRootTokenRejected
   | PgpGeneratedRootActionRefused
+      !GeneratedRootActionKind
+      !GeneratedRootActionFailureStage
   | PgpGeneratedRootActionPermitMismatch
       !BootstrapVaultEffect
       !BootstrapVaultEffect
@@ -177,6 +193,7 @@ data PgpBoundaryError
       !BootstrapVaultEffect
       !BootstrapVaultEffect
   | PgpGeneratedChildRecoverySessionGenerationMismatch
+  | PgpGeneratedChildRecoveryActionRefused !GeneratedChildRecoveryActionKind
   | PgpGeneratedChildRecoveryActionPermitMismatch
       !BootstrapVaultEffect
       !BootstrapVaultEffect
@@ -185,6 +202,77 @@ data PgpBoundaryError
   | PgpGeneratedChildRecoveryActionFenceIdentityMismatch
   | PgpPasswordAeadFailed
   deriving (Eq, Show)
+
+-- | Stable secret-free diagnostic label for the closed PGP refusal algebra.
+-- Constructor payloads are deliberately ignored: the protected Broker log
+-- needs to identify the violated invariant, never reproduce an effect value
+-- or evolve into a renderer for cryptographic material.
+pgpBoundaryErrorName :: PgpBoundaryError -> String
+pgpBoundaryErrorName failure = case failure of
+  PgpCompiledBurnRecipientMismatch -> "compiled-burn-recipient-mismatch"
+  PgpCompiledBurnPublicKeyMismatch -> "compiled-burn-public-key-mismatch"
+  PgpCompiledBurnPublicKeyDigestMismatch ->
+    "compiled-burn-public-key-digest-mismatch"
+  PgpRecipientGenerationFailed -> "recipient-generation-failed"
+  PgpRecipientSealFailed -> "recipient-seal-failed"
+  PgpRecipientPublicKeyNotCanonicalBase64 ->
+    "recipient-public-key-not-canonical-base64"
+  PgpPreparedRecoveryRecipientMismatch -> "prepared-recovery-recipient-mismatch"
+  PgpPreparedBurnRecipientMismatch -> "prepared-burn-recipient-mismatch"
+  PgpEncryptedShareRejected -> "encrypted-share-rejected"
+  PgpGeneratedRootCiphertextRejected -> "generated-root-ciphertext-rejected"
+  PgpGeneratedChildRecoveryCiphertextRejected ->
+    "generated-child-recovery-ciphertext-rejected"
+  PgpGeneratedRootSessionClosed -> "generated-root-session-closed"
+  PgpGeneratedRootSessionPermitMismatch _ _ ->
+    "generated-root-session-permit-mismatch"
+  PgpGeneratedRootSessionGenerationMismatch ->
+    "generated-root-session-generation-mismatch"
+  PgpGeneratedRootTokenRejected -> "generated-root-token-rejected"
+  PgpGeneratedRootActionRefused kind stage ->
+    "generated-root-action-refused/"
+      ++ generatedRootActionKindName kind
+      ++ "/"
+      ++ generatedRootActionFailureStageName stage
+  PgpGeneratedRootActionPermitMismatch _ _ ->
+    "generated-root-action-permit-mismatch"
+  PgpGeneratedRootActionGenerationMismatch ->
+    "generated-root-action-generation-mismatch"
+  PgpGeneratedRootActionBindingMismatch -> "generated-root-action-binding-mismatch"
+  PgpGeneratedRootActionFenceIdentityMismatch ->
+    "generated-root-action-fence-identity-mismatch"
+  PgpGeneratedChildRecoverySessionClosed ->
+    "generated-child-recovery-session-closed"
+  PgpGeneratedChildRecoverySessionPermitMismatch _ _ ->
+    "generated-child-recovery-session-permit-mismatch"
+  PgpGeneratedChildRecoverySessionGenerationMismatch ->
+    "generated-child-recovery-session-generation-mismatch"
+  PgpGeneratedChildRecoveryActionRefused kind ->
+    "generated-child-recovery-action-refused/"
+      ++ generatedChildRecoveryActionKindName kind
+  PgpGeneratedChildRecoveryActionPermitMismatch _ _ ->
+    "generated-child-recovery-action-permit-mismatch"
+  PgpGeneratedChildRecoveryActionBindingMismatch ->
+    "generated-child-recovery-action-binding-mismatch"
+  PgpGeneratedChildRecoveryActionGenerationMismatch ->
+    "generated-child-recovery-action-generation-mismatch"
+  PgpGeneratedChildRecoveryActionFenceIdentityMismatch ->
+    "generated-child-recovery-action-fence-identity-mismatch"
+  PgpPasswordAeadFailed -> "password-aead-failed"
+
+generatedRootActionKindName :: GeneratedRootActionKind -> String
+generatedRootActionKindName kind = case kind of
+  GeneratedRootObserveSelfAction -> "observe-accessor"
+  GeneratedRootApplyBaselineAction -> "apply-baseline"
+  GeneratedRootReadBackBaselineAction -> "read-back-baseline"
+  GeneratedRootRevokeSelfAction -> "revoke-accessor"
+
+generatedChildRecoveryActionKindName :: GeneratedChildRecoveryActionKind -> String
+generatedChildRecoveryActionKindName kind = case kind of
+  GeneratedChildRecoveryObserveSelfAction -> "observe-accessor"
+  GeneratedChildRecoveryApplyRepairAction -> "apply-repair"
+  GeneratedChildRecoveryReadBackRepairAction -> "read-back-repair"
+  GeneratedChildRecoveryRevokeSelfAction -> "revoke-accessor"
 
 data RecoveryRecipientPublicKey = RecoveryRecipientPublicKey !Text !ArtifactDigest
   deriving (Eq)
@@ -449,6 +537,200 @@ data GeneratedRootActionKind
   | GeneratedRootReadBackBaselineAction
   | GeneratedRootRevokeSelfAction
   deriving (Eq, Ord, Show, Enum, Bounded)
+
+-- | Closed production boundary within one generated-root action.
+data GeneratedRootActionFailureStage
+  = GeneratedRootObserveAccessorRequest
+  | GeneratedRootObserveAccessorDecode
+  | GeneratedRootApplyCoreReconcile !GeneratedRootCoreReconcileCause
+  | GeneratedRootApplyPkiReconcile !GeneratedRootPkiReconcileCause
+  | GeneratedRootReadBackCoreReconcile !GeneratedRootCoreReconcileCause
+  | GeneratedRootReadBackPkiObserve !GeneratedRootPkiObserveCause
+  | GeneratedRootReadBackPkiStatus !GeneratedRootPkiBaselineStatus
+  | GeneratedRootReadBackReceipt
+  | GeneratedRootRevokeAccessorRequest
+  deriving (Eq, Ord, Show)
+
+-- | Payload-free projection of the complete baseline reconciler error sum.
+-- Names, paths, HTTP bodies, transport messages, and secret-bootstrap field
+-- values cannot inhabit this type.
+data GeneratedRootCoreReconcileCause
+  = GeneratedRootCoreHttpFailure
+      !GeneratedRootCoreHttpOperation
+      !GeneratedRootCoreHttpFailure
+  | GeneratedRootCoreMountTypeMismatch
+  | GeneratedRootCoreMountOptionMismatch
+  | GeneratedRootCoreAuthTypeMismatch
+  | GeneratedRootCoreTransitKeyTypeMismatch
+  | GeneratedRootCoreKubernetesRoleReadbackMismatch
+  | GeneratedRootCoreSecretBootstrapFailure !GeneratedRootCoreSecretFailure
+  deriving (Eq, Ord, Show)
+
+data GeneratedRootCoreHttpOperation
+  = GeneratedRootCoreListMounts
+  | GeneratedRootCoreEnableMount
+  | GeneratedRootCoreListAuthMethods
+  | GeneratedRootCoreEnableAuthMethod
+  | GeneratedRootCoreWriteKubernetesAuthConfig
+  | GeneratedRootCoreReadTransitKey
+  | GeneratedRootCoreCreateTransitKey
+  | GeneratedRootCoreWritePolicy
+  | GeneratedRootCoreWriteKubernetesRole
+  | GeneratedRootCoreReadBackKubernetesRole
+  deriving (Eq, Ord, Show, Enum, Bounded)
+
+data GeneratedRootCoreHttpFailure
+  = GeneratedRootCoreHttpConnectionFailure
+  | GeneratedRootCoreHttpTimeout
+  | GeneratedRootCoreHttpStatus !Int
+  | GeneratedRootCoreHttpDecode
+  deriving (Eq, Ord, Show)
+
+data GeneratedRootCoreSecretFailure
+  = GeneratedRootCoreSecretReadFailure !GeneratedRootCoreHttpFailure
+  | GeneratedRootCoreSecretWriteAppliedInvariant
+  | GeneratedRootCoreSecretWriteConflict
+  | GeneratedRootCoreSecretWriteRefused !Int
+  | GeneratedRootCoreSecretWriteUnobservable
+  | GeneratedRootCoreSecretExternalFieldMissing
+  deriving (Eq, Ord, Show)
+
+-- | Payload-free projection of PKI reconciliation. The nested observation
+-- cause preserves whether mutation or exact read-back failed without carrying
+-- Vault paths, names, response bodies, or transport detail.
+data GeneratedRootPkiReconcileCause
+  = GeneratedRootPkiReconcileHttpFailure
+      !GeneratedRootPkiReconcileOperation
+      !GeneratedRootCoreHttpFailure
+  | GeneratedRootPkiReconcileObserveFailure !GeneratedRootPkiObserveCause
+  | GeneratedRootPkiReconcileReadBackNotExact !GeneratedRootPkiBaselineStatus
+  deriving (Eq, Ord, Show)
+
+data GeneratedRootPkiReconcileOperation
+  = GeneratedRootPkiReconcileListIssuers
+  | GeneratedRootPkiReconcileGenerateInternalRoot
+  | GeneratedRootPkiReconcileWriteRole
+  deriving (Eq, Ord, Show, Enum, Bounded)
+
+data GeneratedRootPkiObserveCause
+  = GeneratedRootPkiObserveHttpFailure
+      !GeneratedRootPkiObserveOperation
+      !GeneratedRootCoreHttpFailure
+  deriving (Eq, Ord, Show)
+
+data GeneratedRootPkiObserveOperation
+  = GeneratedRootPkiObserveListIssuers
+  | GeneratedRootPkiObserveReadRole
+  deriving (Eq, Ord, Show, Enum, Bounded)
+
+data GeneratedRootPkiBaselineStatus
+  = GeneratedRootPkiBaselineAbsent
+  | GeneratedRootPkiBaselineDrifted
+  | GeneratedRootPkiBaselineReady
+  deriving (Eq, Ord, Show, Enum, Bounded)
+
+generatedRootActionFailureStageName :: GeneratedRootActionFailureStage -> String
+generatedRootActionFailureStageName stage = case stage of
+  GeneratedRootObserveAccessorRequest -> "accessor-request"
+  GeneratedRootObserveAccessorDecode -> "accessor-decode"
+  GeneratedRootApplyCoreReconcile cause ->
+    "core-reconcile/" ++ generatedRootCoreReconcileCauseName cause
+  GeneratedRootApplyPkiReconcile cause ->
+    "pki-reconcile/" ++ generatedRootPkiReconcileCauseName cause
+  GeneratedRootReadBackCoreReconcile cause ->
+    "core-reconcile/" ++ generatedRootCoreReconcileCauseName cause
+  GeneratedRootReadBackPkiObserve cause ->
+    "pki-observe/" ++ generatedRootPkiObserveCauseName cause
+  GeneratedRootReadBackPkiStatus status ->
+    "pki-status/" ++ generatedRootPkiBaselineStatusName status
+  GeneratedRootReadBackReceipt -> "receipt"
+  GeneratedRootRevokeAccessorRequest -> "accessor-request"
+
+generatedRootCoreReconcileCauseName :: GeneratedRootCoreReconcileCause -> String
+generatedRootCoreReconcileCauseName cause = case cause of
+  GeneratedRootCoreHttpFailure operation failure ->
+    "http/"
+      ++ generatedRootCoreHttpOperationName operation
+      ++ "/"
+      ++ generatedRootCoreHttpFailureName failure
+  GeneratedRootCoreMountTypeMismatch -> "mount-type-mismatch"
+  GeneratedRootCoreMountOptionMismatch -> "mount-option-mismatch"
+  GeneratedRootCoreAuthTypeMismatch -> "auth-type-mismatch"
+  GeneratedRootCoreTransitKeyTypeMismatch -> "transit-key-type-mismatch"
+  GeneratedRootCoreKubernetesRoleReadbackMismatch ->
+    "kubernetes-role-readback-mismatch"
+  GeneratedRootCoreSecretBootstrapFailure failure ->
+    "secret-bootstrap/" ++ generatedRootCoreSecretFailureName failure
+
+generatedRootCoreHttpOperationName :: GeneratedRootCoreHttpOperation -> String
+generatedRootCoreHttpOperationName operation = case operation of
+  GeneratedRootCoreListMounts -> "list-mounts"
+  GeneratedRootCoreEnableMount -> "enable-mount"
+  GeneratedRootCoreListAuthMethods -> "list-auth-methods"
+  GeneratedRootCoreEnableAuthMethod -> "enable-auth-method"
+  GeneratedRootCoreWriteKubernetesAuthConfig ->
+    "write-kubernetes-auth-config"
+  GeneratedRootCoreReadTransitKey -> "read-transit-key"
+  GeneratedRootCoreCreateTransitKey -> "create-transit-key"
+  GeneratedRootCoreWritePolicy -> "write-policy"
+  GeneratedRootCoreWriteKubernetesRole -> "write-kubernetes-role"
+  GeneratedRootCoreReadBackKubernetesRole ->
+    "read-back-kubernetes-role"
+
+generatedRootCoreHttpFailureName :: GeneratedRootCoreHttpFailure -> String
+generatedRootCoreHttpFailureName failure = case failure of
+  GeneratedRootCoreHttpConnectionFailure -> "connection-failure"
+  GeneratedRootCoreHttpTimeout -> "timeout"
+  GeneratedRootCoreHttpStatus status -> "status-" ++ show status
+  GeneratedRootCoreHttpDecode -> "decode"
+
+generatedRootCoreSecretFailureName :: GeneratedRootCoreSecretFailure -> String
+generatedRootCoreSecretFailureName failure = case failure of
+  GeneratedRootCoreSecretReadFailure httpFailure ->
+    "read/" ++ generatedRootCoreHttpFailureName httpFailure
+  GeneratedRootCoreSecretWriteAppliedInvariant -> "write/applied-invariant"
+  GeneratedRootCoreSecretWriteConflict -> "write/conflict"
+  GeneratedRootCoreSecretWriteRefused status ->
+    "write/refused-status-" ++ show status
+  GeneratedRootCoreSecretWriteUnobservable -> "write/unobservable"
+  GeneratedRootCoreSecretExternalFieldMissing -> "external-field-missing"
+
+generatedRootPkiReconcileCauseName :: GeneratedRootPkiReconcileCause -> String
+generatedRootPkiReconcileCauseName cause = case cause of
+  GeneratedRootPkiReconcileHttpFailure operation failure ->
+    "http/"
+      ++ generatedRootPkiReconcileOperationName operation
+      ++ "/"
+      ++ generatedRootCoreHttpFailureName failure
+  GeneratedRootPkiReconcileObserveFailure failure ->
+    "observe/" ++ generatedRootPkiObserveCauseName failure
+  GeneratedRootPkiReconcileReadBackNotExact status ->
+    "read-back-not-exact/" ++ generatedRootPkiBaselineStatusName status
+
+generatedRootPkiReconcileOperationName :: GeneratedRootPkiReconcileOperation -> String
+generatedRootPkiReconcileOperationName operation = case operation of
+  GeneratedRootPkiReconcileListIssuers -> "list-issuers"
+  GeneratedRootPkiReconcileGenerateInternalRoot -> "generate-internal-root"
+  GeneratedRootPkiReconcileWriteRole -> "write-role"
+
+generatedRootPkiObserveCauseName :: GeneratedRootPkiObserveCause -> String
+generatedRootPkiObserveCauseName cause = case cause of
+  GeneratedRootPkiObserveHttpFailure operation failure ->
+    "http/"
+      ++ generatedRootPkiObserveOperationName operation
+      ++ "/"
+      ++ generatedRootCoreHttpFailureName failure
+
+generatedRootPkiObserveOperationName :: GeneratedRootPkiObserveOperation -> String
+generatedRootPkiObserveOperationName operation = case operation of
+  GeneratedRootPkiObserveListIssuers -> "list-issuers"
+  GeneratedRootPkiObserveReadRole -> "read-role"
+
+generatedRootPkiBaselineStatusName :: GeneratedRootPkiBaselineStatus -> String
+generatedRootPkiBaselineStatusName status = case status of
+  GeneratedRootPkiBaselineAbsent -> "absent"
+  GeneratedRootPkiBaselineDrifted -> "drifted"
+  GeneratedRootPkiBaselineReady -> "ready"
 
 allGeneratedRootActionKinds :: [GeneratedRootActionKind]
 allGeneratedRootActionKinds = [minBound .. maxBound]

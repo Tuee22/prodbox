@@ -210,7 +210,7 @@ quotaRequest =
     , adminQuotaRequestAuthorityEndpoint = authorityEndpoint
     , adminQuotaRequestServiceCode = "vpc"
     , adminQuotaRequestCode = "L-F678F1CE"
-    , adminQuotaRequestRegion = "ca-central-1"
+    , adminQuotaRequestRegion = (fixtureAwsRegion FixtureCaCentral1)
     , adminQuotaRequestDesiredValue = "10"
     }
 

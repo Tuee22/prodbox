@@ -18,6 +18,7 @@ import Prodbox.ControlPlane.EksClientAuthClient
   ( eksClientAuthTeardownExecutionSubmissionKey
   )
 import Prodbox.Lifecycle.CleanupRun
+import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.Teardown.Execution
 import Prodbox.Lifecycle.Teardown.Graph
 import Prodbox.Lifecycle.Teardown.Model
@@ -50,6 +51,47 @@ lifecycleTeardownProgramSuite = do
       forM_ nonLocalSurfaceCases assertRetirementWaitsOnDependants
 
   describe "Sprint 4.84 closed lifecycle teardown program" $ do
+    it "compiles selected keys in canonical registry order and refuses invalid selections" $ do
+      let selected = [AwsDnsValidationZoneKey, AwsEksKey]
+          expected = [AwsEksKey, AwsDnsValidationZoneKey]
+      case compileDesiredAbsenceProgramForRegisteredKeys ExplicitPerRunSurface selected of
+        Left err -> expectationFailure (show err)
+        Right program ->
+          mapMaybe
+            (registeredObservationKey . programNodeOperation)
+            (desiredAbsenceProgramNodes program)
+            `shouldBe` expected
+      case compileDesiredAbsenceProgramForRegisteredKeys
+        ExplicitPerRunSurface
+        [AwsEksKey, AwsEksKey] of
+        Left err -> err `shouldBe` DesiredAbsenceSelectedTargetDuplicated AwsEksKey
+        Right _ -> expectationFailure "duplicate selected target compiled"
+      case compileDesiredAbsenceProgramForRegisteredKeys
+        ExplicitPerRunSurface
+        [LocalLinuxRke2Key] of
+        Left err ->
+          err
+            `shouldBe` DesiredAbsenceSelectedTargetUnavailable
+              ExplicitPerRun
+              LocalLinuxRke2Key
+        Right _ -> expectationFailure "unavailable selected target compiled"
+
+    it "gives equivalent selected-key sets stable graph and operation identities" $ do
+      let compile selected =
+            compileDesiredAbsenceGraphForRegisteredKeys
+              fixtureRunId
+              fixtureFoundation
+              (Just fixtureAwsScope)
+              Nothing
+              ExplicitPerRunSurface
+              selected
+      first <- expectSelectedGraph (compile [AwsDnsValidationZoneKey, AwsEksKey])
+      reordered <- expectSelectedGraph (compile [AwsEksKey, AwsDnsValidationZoneKey])
+      compiledDesiredAbsenceGraph reordered
+        `shouldBe` compiledDesiredAbsenceGraph first
+      compiledDesiredAbsenceOperations reordered
+        `shouldBe` compiledDesiredAbsenceOperations first
+
     it "compiles the exact operation surface for every cleanup authority" $ do
       let checkSurface (SurfaceCase surface expectedCount expectedTargets) =
             case compileDesiredAbsenceProgram surface of
@@ -180,6 +222,8 @@ lifecycleTeardownProgramSuite = do
           -- The validation hosted zone is created by a suite validation rather
           -- than by a cluster's controllers, so it is deliberately absent.
           ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-eks-iam-role-family/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-eks-load-balancer-controller-family/read-back-absent", CleanupRequiresSuccess)
         ]
       assertProgramDependencies
         cascade
@@ -196,6 +240,8 @@ lifecycleTeardownProgramSuite = do
         -- those resources destroyable.
         [ ("target/aws-eks/read-back-absent", CleanupRequiresSuccess)
         , ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-eks-iam-role-family/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-eks-load-balancer-controller-family/read-back-absent", CleanupRequiresSuccess)
         ]
       assertProgramDependencies
         cascade
@@ -211,6 +257,8 @@ lifecycleTeardownProgramSuite = do
         , ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresTerminal)
         , ("target/dns-aws-validation-hosted-zone/read-back-absent", CleanupRequiresTerminal)
         , ("target/dns-aws-dns01-challenge-records/read-back-absent", CleanupRequiresTerminal)
+        , ("target/aws-eks-iam-role-family/read-back-absent", CleanupRequiresTerminal)
+        , ("target/aws-eks-load-balancer-controller-family/read-back-absent", CleanupRequiresTerminal)
         ]
       assertProgramDependencies
         cascade
@@ -225,6 +273,8 @@ lifecycleTeardownProgramSuite = do
           -- registering the zone put its absence read-back here.
           ("target/dns-aws-validation-hosted-zone/read-back-absent", CleanupRequiresSuccess)
         , ("target/dns-aws-dns01-challenge-records/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-eks-iam-role-family/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-eks-load-balancer-controller-family/read-back-absent", CleanupRequiresSuccess)
         ]
       assertProgramDependencies
         cascade
@@ -273,16 +323,55 @@ lifecycleTeardownProgramSuite = do
         [("decommission/read-back-local-data-disposition", CleanupRequiresSuccess)]
 
   describe "Sprint 4.84 durable teardown graph" $ do
+    it "binds the Sprint 7.38 optional AWS DNS zone and preserves zoneless identity" $ do
+      let checkSurface (SurfaceCase surface _ _) =
+            case surface of
+              LocalOnlySurface ->
+                case compileDesiredAbsenceGraph
+                  fixtureRunId
+                  fixtureFoundation
+                  Nothing
+                  (Just fixtureAwsDnsZone)
+                  surface of
+                  Left err ->
+                    err `shouldBe` DesiredAbsenceAwsDnsZoneForbidden LocalOnly
+                  Right _ ->
+                    expectationFailure "local-only graph accepted an AWS DNS zone"
+              _ -> do
+                zoneless <- expectGraph fixtureRunId surface
+                zoned <-
+                  expectCompiledGraph
+                    ( compileDesiredAbsenceGraph
+                        fixtureRunId
+                        fixtureFoundation
+                        (Just fixtureAwsScope)
+                        (Just fixtureAwsDnsZone)
+                        surface
+                    )
+                evidenceAwsDnsZone
+                  (compiledDesiredAbsenceObservationScope zoneless)
+                  `shouldBe` Nothing
+                evidenceAwsDnsZone
+                  (compiledDesiredAbsenceObservationScope zoned)
+                  `shouldBe` Just fixtureAwsDnsZone
+                cleanupGraphDigest (compiledDesiredAbsenceGraph zoned)
+                  `shouldNotBe` cleanupGraphDigest (compiledDesiredAbsenceGraph zoneless)
+      forM_ surfaceCases checkSurface
+      cascade <- expectGraph fixtureRunId CascadeSurface
+      cleanupDigestText (cleanupGraphDigest (compiledDesiredAbsenceGraph cascade))
+        `shouldBe` "7e8c56d01e35e21d5bc56903e38ca5e64a63ba92474b56d585c38eac837d4b88"
+
     it "requires and retains the exact local foundation and AWS evidence scope" $ do
       case compileDesiredAbsenceGraph
         fixtureRunId
         fixtureFoundation
         (Just fixtureAwsScope)
+        Nothing
         LocalOnlySurface of
         Left err -> err `shouldBe` DesiredAbsenceAwsScopeForbidden LocalOnly
         Right _ -> expectationFailure "local-only graph accepted an AWS scope"
       let checkMissingAwsScope (SurfaceCase surface _ _) =
-            case compileDesiredAbsenceGraph fixtureRunId fixtureFoundation Nothing surface of
+            case compileDesiredAbsenceGraph fixtureRunId fixtureFoundation Nothing Nothing surface of
               Left err ->
                 err
                   `shouldBe` DesiredAbsenceAwsScopeRequired
@@ -364,7 +453,7 @@ lifecycleTeardownProgramSuite = do
           ( Just
               ( AwsScope
                   (AwsAccountId "999900001111")
-                  (AwsRegion "ca-central-1")
+                  (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
               )
           )
           CascadeSurface
@@ -375,7 +464,7 @@ lifecycleTeardownProgramSuite = do
           ( Just
               ( AwsScope
                   (AwsAccountId "111122223333")
-                  (AwsRegion "us-east-2")
+                  (AwsRegion (fixtureAwsRegion FixtureUsEast2))
               )
           )
           CascadeSurface
@@ -686,10 +775,10 @@ assertTopologicallyOrdered nodes =
 surfaceCases :: [SurfaceCase]
 surfaceCases =
   [ SurfaceCase LocalOnlySurface 4 []
-  , -- Sprint 7.36: 53 rather than 50 — the registered DNS01 challenge record
-    -- family adds its observe, reconcile, and mandatory read-back triple.
-    SurfaceCase CascadeSurface 53 perRunTargetKeys
-  , SurfaceCase ExplicitPerRunSurface 48 perRunTargetKeys
+  , -- Sprint 7.36: DNS01 and the two exact controller-owned families each add
+    -- an observe, reconcile, and mandatory read-back triple.
+    SurfaceCase CascadeSurface 59 perRunTargetKeys
+  , SurfaceCase ExplicitPerRunSurface 54 perRunTargetKeys
   , -- Sprint 4.85 (2026-08-18): the operational surface gained its credential
     -- revocation and that revocation's own read-back, which is what
     -- OrdinaryLifecycleProviderRevocationUnavailable named as missing.
@@ -699,7 +788,7 @@ surfaceCases =
     -- and its read-back are ordered strictly between the terminal audit and the
     -- home uninstall, which is the audit-then-dispose order the disposition
     -- blockers said no surface could express.
-    SurfaceCase TotalDecommissionSurface 56 allManagedTargetKeys
+    SurfaceCase TotalDecommissionSurface 62 allManagedTargetKeys
   ]
 
 nonLocalSurfaceCases :: [SurfaceCase]
@@ -713,6 +802,8 @@ perRunTargetKeys =
   , AwsEbsPerRunTestKey
   , AwsDnsValidationZoneKey
   , AwsDns01ChallengeRecordKey
+  , AwsEksIamRoleFamilyKey
+  , AwsEksLoadBalancerControllerFamilyKey
   ]
 
 allManagedTargetKeys :: [RegisteredResourceKey]
@@ -1070,7 +1161,8 @@ compileGraphWith
   -> Maybe AwsScope
   -> CleanupSurfaceWitness surface
   -> Either DesiredAbsenceGraphError (CompiledDesiredAbsenceProgram surface)
-compileGraphWith = compileDesiredAbsenceGraph
+compileGraphWith runId foundation awsScope surface =
+  compileDesiredAbsenceGraph runId foundation awsScope Nothing surface
 
 lowerDependency :: ProgramDependency -> CleanupDependency
 lowerDependency dependency =
@@ -1143,6 +1235,17 @@ expectGraph runId surface = case compileGraph runId surface of
     error "unreachable"
   Right compiled -> pure compiled
 
+expectCompiledGraph
+  :: Either
+       DesiredAbsenceGraphError
+       (CompiledDesiredAbsenceProgram surface)
+  -> IO (CompiledDesiredAbsenceProgram surface)
+expectCompiledGraph result = case result of
+  Left err -> do
+    expectationFailure (show err)
+    error "unreachable"
+  Right compiled -> pure compiled
+
 expectGraphWith
   :: CleanupRunId
   -> LinuxRke2FoundationId
@@ -1190,6 +1293,17 @@ expectFreshRun compiled =
       error "unreachable"
     Right run -> pure run
 
+expectSelectedGraph
+  :: Either
+       DesiredAbsenceGraphError
+       (CompiledDesiredAbsenceProgram 'ExplicitPerRun)
+  -> IO (CompiledDesiredAbsenceProgram 'ExplicitPerRun)
+expectSelectedGraph result = case result of
+  Left err -> do
+    expectationFailure (show err)
+    error "unreachable"
+  Right compiled -> pure compiled
+
 fixtureRunId :: CleanupRunId
 fixtureRunId = mustRight (mkCleanupRunId "lifecycle-teardown-run-1")
 
@@ -1206,7 +1320,10 @@ fixtureAwsScope :: AwsScope
 fixtureAwsScope =
   AwsScope
     (AwsAccountId "111122223333")
-    (AwsRegion "ca-central-1")
+    (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
+
+fixtureAwsDnsZone :: HostedZoneId
+fixtureAwsDnsZone = mustRight (mkHostedZoneId "Z0123456789ABCDEFGHIJ")
 
 mustRight :: (Show err) => Either err value -> value
 mustRight result = case result of

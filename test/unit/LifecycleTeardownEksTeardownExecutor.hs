@@ -262,7 +262,8 @@ fixtureCompiled =
     ( compileDesiredAbsenceGraph
         fixtureRunId
         (LinuxRke2FoundationId "home-rke2")
-        (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")))
+        (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
+        Nothing
         CascadeSurface
     )
 

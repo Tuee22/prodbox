@@ -31,10 +31,12 @@ module Prodbox.Lifecycle.Teardown.Program
   , programNodeRecoveryCapabilities
   , DesiredAbsenceProgramError (..)
   , compileDesiredAbsenceProgram
+  , compileDesiredAbsenceProgramForRegisteredKeys
   )
 where
 
 import Data.List (partition)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Prodbox.Lifecycle.CleanupRun (CleanupDependencyKind (..))
 import Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal
@@ -292,15 +294,61 @@ data DesiredAbsenceProgramError
   = DesiredAbsenceRegistryInvalid !RegistryValidationError
   | DesiredAbsenceLocalTargetMissing !CleanupSurface
   | DesiredAbsenceLocalTargetDuplicated !CleanupSurface
+  | DesiredAbsenceSelectedTargetDuplicated !RegisteredResourceKey
+  | DesiredAbsenceSelectedTargetUnavailable
+      !CleanupSurface
+      !RegisteredResourceKey
   deriving (Eq, Show)
 
 compileDesiredAbsenceProgram
   :: CleanupSurfaceWitness surface
   -> Either DesiredAbsenceProgramError (DesiredAbsenceProgram surface)
-compileDesiredAbsenceProgram surface = do
+compileDesiredAbsenceProgram surface =
+  compileDesiredAbsenceProgramWithTargets surface (cleanupTargetsForSurface surface)
+
+-- | Compile a canonical subset of one surface's registered targets.
+--
+-- The caller supplies keys, never target descriptors or operations.  Each key
+-- must be registered on the selected surface, duplicates are refused, and the
+-- resulting targets retain registry order.  This is the durable harness seam:
+-- a DNS-only run can name the hosted-zone family without pretending it also
+-- created three stack generations, while an aggregate AWS run still selects
+-- the complete per-run projection.
+compileDesiredAbsenceProgramForRegisteredKeys
+  :: CleanupSurfaceWitness surface
+  -> [RegisteredResourceKey]
+  -> Either DesiredAbsenceProgramError (DesiredAbsenceProgram surface)
+compileDesiredAbsenceProgramForRegisteredKeys surface selectedKeys = do
+  selected <- selectedKeySet selectedKeys
+  let available = cleanupTargetsForSurface surface
+      availableKeys = Set.fromList (cleanupTargetKey <$> available)
+  case Set.lookupMin (selected `Set.difference` availableKeys) of
+    Just unavailable ->
+      Left
+        ( DesiredAbsenceSelectedTargetUnavailable
+            (cleanupSurfaceFromWitness surface)
+            unavailable
+        )
+    Nothing ->
+      compileDesiredAbsenceProgramWithTargets
+        surface
+        [target | target <- available, cleanupTargetKey target `Set.member` selected]
+ where
+  selectedKeySet = go Set.empty
+  go observed remaining = case remaining of
+    [] -> Right observed
+    key : rest
+      | key `Set.member` observed ->
+          Left (DesiredAbsenceSelectedTargetDuplicated key)
+      | otherwise -> go (Set.insert key observed) rest
+
+compileDesiredAbsenceProgramWithTargets
+  :: CleanupSurfaceWitness surface
+  -> [CleanupTarget surface]
+  -> Either DesiredAbsenceProgramError (DesiredAbsenceProgram surface)
+compileDesiredAbsenceProgramWithTargets surface targets = do
   either (Left . DesiredAbsenceRegistryInvalid) Right lifecycleRegistryValidation
-  let targets = cleanupTargetsForSurface surface
-      (localTargets, managedTargets) =
+  let (localTargets, managedTargets) =
         partition ((== LocalSubstrate) . cleanupTargetKind) targets
       managedBindings = map targetBinding managedTargets
   nodes <- case surface of

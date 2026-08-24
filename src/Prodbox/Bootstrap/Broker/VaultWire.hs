@@ -15,7 +15,6 @@ where
 import Data.Aeson
   ( FromJSON (..)
   , withObject
-  , (.!=)
   , (.:)
   , (.:?)
   )
@@ -24,10 +23,12 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Parser)
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Word (Word8)
 import Prodbox.Bootstrap.Broker.Types
   ( BurnTokenCiphertext
   , PgpEncryptedShare
@@ -61,16 +62,27 @@ instance FromJSON EncryptedVaultInitResponse where
   parseJSON =
     withObject "EncryptedVaultInitResponse" $ \objectValue -> do
       rejectUnexpectedFields objectValue
-      shamirShares <- objectValue .:? "keys_base64" .!= []
-      recoveryShares <- objectValue .:? "recovery_keys_base64" .!= []
+      shamirHexShares <- objectValue .:? "keys"
+      shamirBase64Shares <- objectValue .:? "keys_base64"
+      recoveryHexShares <- objectValue .:? "recovery_keys"
+      recoveryBase64Shares <- objectValue .:? "recovery_keys_base64"
       encodedBurnToken <- objectValue .: "root_token"
       encodedShares <-
-        case (shamirShares, recoveryShares) of
-          ([], []) -> fail "encrypted Vault init response contains no PGP share ciphertext"
-          (_ : _, _ : _) ->
+        case ( shamirHexShares
+             , shamirBase64Shares
+             , recoveryHexShares
+             , recoveryBase64Shares
+             ) of
+          (Just hexShares, Just base64Shares, Nothing, Nothing) ->
+            parseDualEncodedShares "Shamir" hexShares base64Shares
+          (Nothing, Nothing, Just hexShares, Just base64Shares) ->
+            parseDualEncodedShares "recovery" hexShares base64Shares
+          (Just _, Just _, Just _, Just _) ->
             fail "encrypted Vault init response ambiguously contains two share families"
-          (_ : _, []) -> pure shamirShares
-          ([], _ : _) -> pure recoveryShares
+          (Nothing, Nothing, Nothing, Nothing) ->
+            fail "encrypted Vault init response contains no PGP share ciphertext"
+          _ ->
+            fail "encrypted Vault init response contains an incomplete dual share encoding"
       shares <- traverse parseEncryptedShare encodedShares
       burnToken <- parseBurnToken encodedBurnToken
       pure
@@ -91,10 +103,25 @@ rejectUnexpectedFields objectValue =
 
 encryptedResponseFields :: [Key]
 encryptedResponseFields =
-  [ "keys_base64"
+  [ "keys"
+  , "keys_base64"
+  , "recovery_keys"
   , "recovery_keys_base64"
   , "root_token"
   ]
+
+parseDualEncodedShares :: Text -> [Text] -> [Text] -> Parser [Text]
+parseDualEncodedShares family encodedHex encodedBase64
+  | null encodedHex || null encodedBase64 =
+      fail (Text.unpack family ++ " share encoding is empty")
+  | length encodedHex /= length encodedBase64 =
+      fail (Text.unpack family ++ " share encodings have different cardinality")
+  | otherwise = do
+      decodedHex <- traverse (parseCanonicalHex "PGP share ciphertext") encodedHex
+      decodedBase64 <- traverse (parseCanonicalBase64 "PGP share ciphertext") encodedBase64
+      if decodedHex == decodedBase64
+        then pure encodedBase64
+        else fail (Text.unpack family ++ " share encodings disagree")
 
 parseEncryptedShare :: Text -> Parser PgpEncryptedShare
 parseEncryptedShare encoded = do
@@ -117,3 +144,32 @@ parseCanonicalBase64 label encoded
           | otherwise -> fail (Text.unpack label ++ " must be canonical base64")
  where
   encodedBytes = TextEncoding.encodeUtf8 encoded
+
+parseCanonicalHex :: Text -> Text -> Parser ByteString
+parseCanonicalHex label encoded
+  | encoded /= Text.strip encoded = fail invalid
+  | Text.toLower encoded /= encoded = fail invalid
+  | otherwise =
+      case decodeLowerHex (Text.unpack encoded) of
+        Just decoded -> pure decoded
+        Nothing -> fail invalid
+ where
+  invalid = Text.unpack label ++ " must be canonical lowercase hexadecimal"
+
+decodeLowerHex :: String -> Maybe ByteString
+decodeLowerHex = fmap ByteString.pack . go
+ where
+  go [] = Just []
+  go (high : low : rest) = do
+    highNibble <- lowerHexNibble high
+    lowNibble <- lowerHexNibble low
+    ((highNibble * 16 + lowNibble) :) <$> go rest
+  go [_] = Nothing
+
+lowerHexNibble :: Char -> Maybe Word8
+lowerHexNibble char
+  | char >= '0' && char <= '9' =
+      Just (fromIntegral (fromEnum char - fromEnum '0'))
+  | char >= 'a' && char <= 'f' =
+      Just (fromIntegral (fromEnum char - fromEnum 'a' + 10))
+  | otherwise = Nothing

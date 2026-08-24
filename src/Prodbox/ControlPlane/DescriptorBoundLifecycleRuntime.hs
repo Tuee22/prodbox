@@ -6,6 +6,7 @@ module Prodbox.ControlPlane.DescriptorBoundLifecycleRuntime
   , fixedDescriptorBoundLifecycleRuntimeRegression
   , descriptorBoundLifecycleRuntimeCloudOperationsExact
   , descriptorBoundLifecycleRuntimeRecoveryOperationsExact
+  , descriptorBoundLifecycleRuntimeCascadePreUninstallOperationsExact
   , descriptorBoundLifecycleRuntimeCascadeHostOperationsExact
   , descriptorBoundLifecycleRuntimeUnsupportedOperationsExact
   , descriptorBoundLifecycleRuntimeUnsupportedIsRefusal

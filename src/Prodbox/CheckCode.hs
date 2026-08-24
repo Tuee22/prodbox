@@ -32,6 +32,16 @@ module Prodbox.CheckCode
   , checkForbidDotProdboxState
   , checkLegacyEscapeRegistry
   , checkAwsCoordinateLiterals
+  , checkDeploymentConfigOwnership
+  , deploymentConfigOwnershipViolations
+  , checkGatewayMinioEndpointOwnership
+  , gatewayMinioEndpointOwnershipViolations
+  , checkChartDeploymentContextOwnership
+  , chartDeploymentContextOwnershipViolations
+  , checkHostLifecycleContextOwnership
+  , hostLifecycleContextOwnershipViolations
+  , checkHarnessDeploymentConfigOwnership
+  , harnessDeploymentConfigOwnershipViolations
   , awsCoordinateLiteralRegistry
   , awsCoordinateLiteralsIn
   , awsCoordinateFindings
@@ -181,6 +191,7 @@ import Prodbox.Capacity.Config (defaultResourcePlan)
 import Prodbox.Capacity.MeasuredProfile (certifyMeasuredProfiles)
 import Prodbox.Config.Tier0
   ( decodeProjectConfigDhall
+  , defaultProjectConfig
   , renderProjectConfigDhall
   )
 import Prodbox.ControlPlane.Runtime (controlPlaneCapacityPlan)
@@ -814,7 +825,8 @@ runConformanceTierChecks repoRoot = do
         ( unlines
             ( ( "Tier-0 sibling-config drift gate failed. The binary-sibling "
                   ++ "prodbox.dhall is GENERATED and must equal what the generator "
-                  ++ "emits for the record it decodes to (config_doctrine.md § 3, "
+                  ++ "emits for the record it decodes to, or for the canonical unauthored "
+                  ++ "template (config_doctrine.md § 3, "
                   ++ "code_quality.md § 3, Sprint 0.24):"
               )
                 : map ("- " ++) tier0Violations
@@ -826,8 +838,10 @@ runConformanceTierChecks repoRoot = do
 -- git-ignored, so neither the tracked-generated-path registry nor the committed
 -- credential scan can reach it — both are deliberately scoped to
 -- version-controlled content. This gate reads the binary-sibling path directly
--- ('resolveTier0ConfigPath'), decodes it, re-renders the decoded record through
--- the one canonical generator ('renderProjectConfigDhall' — the sole writer
+-- ('resolveTier0ConfigPath'), compares the canonical unauthored template
+-- directly (it intentionally cannot cross the validating topology decoder), or
+-- decodes an authored file and re-renders that record through the one canonical
+-- generator ('renderProjectConfigDhall' — the sole writer
 -- behind @config generate@, @config setup@, the @vault init@ floor stamp, and the
 -- test harness), and compares.
 --
@@ -835,8 +849,10 @@ runConformanceTierChecks repoRoot = do
 --
 --   * __absent__ is not a finding. A fresh worktree has no sibling config until
 --     @prodbox config generate@ runs, and @dev check@ must not require one.
---   * __malformed__ is a finding that says the file does not decode, separate
---     from drift: an undecodable file has no record to re-render.
+--   * __canonical unauthored__ is compared byte-for-byte without decoding. Its
+--     empty machine id is the intended first-authoring refusal.
+--   * __malformed__ is a finding that says the file is neither that template nor
+--     a decodable authored record, separate from drift.
 --   * __drifted__ is a finding naming the record field whose canonical rendering
 --     the file does not carry.
 --
@@ -854,17 +870,21 @@ checkTier0SiblingDrift repoRoot = do
   if not present
     then pure []
     else do
+      onDisk <- readFileStrict tier0Path
       decoded <- decodeProjectConfigDhall tier0Path
       case decoded of
-        Left err -> pure [tier0MalformedFinding tier0Path err]
-        Right config -> do
-          onDisk <- readFileStrict tier0Path
+        Left err
+          | onDisk == unauthoredTemplate -> pure []
+          | otherwise -> pure [tier0MalformedFinding tier0Path err]
+        Right config ->
           pure
             ( tier0DriftFindings
                 tier0Path
                 (Text.unpack (renderProjectConfigDhall config))
                 onDisk
             )
+ where
+  unauthoredTemplate = Text.unpack (renderProjectConfigDhall defaultProjectConfig)
 
 -- | The malformed-file finding. Distinct from a drift finding because there is
 -- no decoded record to re-render, so no field can be named.
@@ -1500,7 +1520,7 @@ checkTerminalAuditFieldOfView repoRoot = do
 -- cannot see it.
 --
 -- The @dns-aws@ validation hosted zone was exactly that: billable, created by
--- @Prodbox.Infra.Route53ValidationZone@, and carrying no tag at all, so a
+-- @Prodbox.Lifecycle.ValidationHostedZone@, and carrying no tag at all, so a
 -- leaked zone was returned by no audit query while a clean verdict read like a
 -- statement that it was gone.
 --
@@ -1832,6 +1852,24 @@ runDoctrineAlignmentCheck repoRoot = do
   -- shape as the read registry above, over the partition config_doctrine.md § 0
   -- draws between a value AWS fixes and a value an operator chooses.
   awsCoordinateViolations <- checkAwsCoordinateLiterals repoRoot
+  -- Sprint 1.92: the closed audit of deployment-varying authoring fields and
+  -- prodbox-fixed protocol identities. This complements the open-ended AWS
+  -- coordinate registry with an exact, intentionally bounded field set.
+  deploymentConfigOwnershipFindings <- checkDeploymentConfigOwnership repoRoot
+  -- Sprint 2.52: Gateway object-store access consumes one validated endpoint
+  -- observation and has no compiled service-address escape.
+  gatewayMinioEndpointFindings <- checkGatewayMinioEndpointOwnership repoRoot
+  -- Sprint 3.42: chart values project the validated endpoint and served host,
+  -- and import the object-store vocabulary's one state-bucket identity.
+  chartDeploymentContextFindings <- checkChartDeploymentContextOwnership repoRoot
+  -- Sprint 4.90: host probes and lifecycle capabilities consume the context
+  -- already sealed by Tier-0, while every state-store path imports one bucket
+  -- identity.
+  hostLifecycleContextFindings <- checkHostLifecycleContextOwnership repoRoot
+  -- Sprint 5.37: harness deployment answers are explicit fixture/run inputs,
+  -- are validated before the one Tier-0 write, and contain no retired live
+  -- deployment literal compiled into Haskell.
+  harnessDeploymentConfigFindings <- checkHarnessDeploymentConfigOwnership repoRoot
   -- Sprint 7.12: substrate equivalence is a structural invariant — a shared
   -- platform component's chart version / image must come from the single
   -- 'Prodbox.ContainerImage' pin, never be re-pinned on a per-substrate
@@ -1856,6 +1894,11 @@ runDoctrineAlignmentCheck repoRoot = do
     ++ map ("- " ++) operationalCredentialCoverageViolations
     ++ map ("- " ++) productionEnvVarViolations
     ++ map ("- " ++) awsCoordinateViolations
+    ++ map ("- " ++) deploymentConfigOwnershipFindings
+    ++ map ("- " ++) gatewayMinioEndpointFindings
+    ++ map ("- " ++) chartDeploymentContextFindings
+    ++ map ("- " ++) hostLifecycleContextFindings
+    ++ map ("- " ++) harnessDeploymentConfigFindings
     ++ map ("- " ++) substrateImagePinningViolations' of
     [] -> pure ExitSuccess
     violations ->
@@ -1876,7 +1919,8 @@ runDoctrineAlignmentCheck repoRoot = do
                   ++ "disagrees with the compiled program or the manifest node "
                   ++ "universe, and operational-credential "
                   ++ "consumers the compiled cascade program does not order before its "
-                  ++ "terminal audit, and unregistered compiled AWS coordinates:"
+                  ++ "terminal audit, unregistered compiled AWS coordinates, and "
+                  ++ "deployment config fields whose declared owner/reach has drifted:"
               )
                 : violations
                 ++ ["Rerun `./.build/prodbox dev check` after addressing the listed items."]
@@ -2284,10 +2328,526 @@ validatedSettingsConstructionFields =
   , "validatedAllocatedPlan"
   , "validatedPublicEdge"
   , "validatedCoordinates"
+  , "validatedDeploymentContext"
   ]
 
 validatedSettingsMinterAllowedPaths :: [FilePath]
 validatedSettingsMinterAllowedPaths = ["src/Prodbox/Settings.hs"]
+
+-- | Sprint 1.92's bounded deployment-config ownership gate.
+--
+-- The region is exact rather than heuristic: these are the definitions and
+-- fixed-identity consumers audited by the sprint. It proves the named raw
+-- fields still reach their one validation projection, generation stays
+-- unauthored, and the two retired false fields/symbols do not return. It does
+-- not claim to classify arbitrary string literals elsewhere in the tree.
+checkDeploymentConfigOwnership :: FilePath -> IO [String]
+checkDeploymentConfigOwnership repoRoot =
+  forM
+    deploymentConfigOwnershipPaths
+    ( \path -> do
+        let absolutePath = repoRoot </> path
+        present <- doesFileExist absolutePath
+        if present
+          then do
+            contents <- readFileStrict absolutePath
+            pure [(path, contents)]
+          else pure []
+    )
+    >>= pure . deploymentConfigOwnershipViolations . concat
+
+deploymentConfigOwnershipPaths :: [FilePath]
+deploymentConfigOwnershipPaths =
+  [ "src/Prodbox/Settings.hs"
+  , "src/Prodbox/Config/Tier0.hs"
+  , "src/Prodbox/Cluster/Topology.hs"
+  , "src/Prodbox/Aws.hs"
+  , "src/Prodbox/Minio/ObjectStoreTypes.hs"
+  , "src/Prodbox/Vault/BootstrapBundle.hs"
+  , "src/Prodbox/Gateway/Daemon.hs"
+  , "src/Prodbox/Lifecycle/AuthorityConfig.hs"
+  , "prodbox-config-types.dhall"
+  ]
+
+deploymentConfigOwnershipViolations :: [(FilePath, String)] -> [String]
+deploymentConfigOwnershipViolations sources =
+  missingPaths ++ missingReach ++ retiredSymbols ++ retiredSchemaFields
+ where
+  missingPaths =
+    [ scopedPathMissingViolation "deployment config ownership gate" path
+    | path <- deploymentConfigOwnershipPaths
+    , lookup path sources == Nothing
+    ]
+  missingReach =
+    [ path
+        ++ " no longer contains the Sprint 1.92 ownership/reach witness `"
+        ++ fragment
+        ++ "`. Restore the named raw-to-validated or fixed-identity projection, "
+        ++ "or update the gate's exact audited field set with the same change."
+    | (path, fragments) <- deploymentConfigRequiredFragments
+    , Just contents <- [lookup path sources]
+    , fragment <- fragments
+    , fragment `notElemIn` contents
+    ]
+  retiredSymbols =
+    [ path
+        ++ " reintroduces retired deployment-config symbol `"
+        ++ symbol
+        ++ "`; the decoded field and a compiled answer must not coexist."
+    | (path, contents) <- sources
+    , ".hs" `isSuffixOf` path
+    , symbol <- ["supportedPublicHostname", "configSetupAcmeServerInput", "minio_bucket"]
+    , symbol `elem` sourceIdentifiers contents
+    ]
+  retiredSchemaFields =
+    [ "prodbox-config-types.dhall reintroduces retired fixed field `" ++ field ++ "`."
+    | Just schema <- [lookup "prodbox-config-types.dhall" sources]
+    , (field, fragment) <- [("acme.server", "server : Text"), ("context.minio_bucket", "minio_bucket")]
+    , fragment `isInfixOf` schema
+    ]
+  notElemIn fragment contents = not (fragment `isInfixOf` contents)
+
+deploymentConfigRequiredFragments :: [(FilePath, [String])]
+deploymentConfigRequiredFragments =
+  [
+    ( "src/Prodbox/Settings.hs"
+    ,
+      [ "configGenerationTemplate = defaultConfigFile"
+      , "{ demo_fqdn = \"\""
+      , "cluster_topology = unconfiguredClusterTopology"
+      , "contextInputClusterId"
+      , "contextInputVaultAddress"
+      , "contextInputMinioEndpoint"
+      , "validatedDeploymentContextFor"
+      , "deploymentClusterId"
+      , "deploymentVaultAddress"
+      , "deploymentMinioEndpoint"
+      , "deploymentMachineIds"
+      , "zeroSslAcmeDirectory"
+      , "mkAcmeDirectoryUrl zeroSslAcmeDirectory"
+      ]
+    )
+  ,
+    ( "src/Prodbox/Config/Tier0.hs"
+    ,
+      [ "cluster_id = \"\""
+      , "vault_address = \"\""
+      , "minio_endpoint = \"\""
+      , "writeOperatorDeploymentConfigToTier0"
+      ]
+    )
+  ,
+    ( "src/Prodbox/Cluster/Topology.hs"
+    , ["unconfiguredClusterTopology", "MachineId \"\""]
+    )
+  ,
+    ( "src/Prodbox/Aws.hs"
+    ,
+      [ "promptText \"Served public FQDN\" Nothing"
+      , "promptText \"Cluster identity\" Nothing"
+      , "promptText \"Home machine identity\" Nothing"
+      , "promptText \"Vault endpoint URL\" Nothing"
+      , "promptText \"MinIO endpoint URL\" Nothing"
+      , "writeOperatorDeploymentConfigToTier0"
+      ]
+    )
+  ,
+    ( "src/Prodbox/Minio/ObjectStoreTypes.hs"
+    , ["defaultObjectStoreBucket", "defaultObjectStoreBucket = \"prodbox-state\""]
+    )
+  , ("src/Prodbox/Vault/BootstrapBundle.hs", ["defaultObjectStoreBucket"])
+  , ("src/Prodbox/Gateway/Daemon.hs", ["defaultObjectStoreBucket"])
+  , ("src/Prodbox/Lifecycle/AuthorityConfig.hs", ["defaultObjectStoreBucket"])
+  ]
+
+-- | Sprint 2.52's closed Gateway endpoint-consumer gate. The source region is
+-- every production Gateway module plus the three exact type/decode/consumer
+-- owners. It does not classify arbitrary URLs elsewhere in the repository.
+checkGatewayMinioEndpointOwnership :: FilePath -> IO [String]
+checkGatewayMinioEndpointOwnership repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  sources <-
+    forM
+      [ path
+      | path <- repoPaths
+      , path == "src/Prodbox/Gateway.hs" || "src/Prodbox/Gateway/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      ]
+      (\path -> do contents <- readFileStrict (repoRoot </> path); pure (path, contents))
+  pure (gatewayMinioEndpointOwnershipViolations sources)
+
+gatewayMinioEndpointOwnershipViolations :: [(FilePath, String)] -> [String]
+gatewayMinioEndpointOwnershipViolations sources =
+  missingReach ++ compiledFallbacks
+ where
+  missingReach =
+    [ path
+        ++ " no longer contains the Sprint 2.52 Gateway endpoint witness `"
+        ++ fragment
+        ++ "`. Restore the typed unavailable/configured projection and exact consumer refusal."
+    | (path, fragments) <- gatewayMinioEndpointRequiredFragments
+    , Just contents <- [lookup path sources]
+    , fragment <- fragments
+    , not (fragment `isInfixOf` contents)
+    ]
+  compiledFallbacks =
+    [ path
+        ++ " contains a compiled Gateway MinIO service endpoint; consume the validated "
+        ++ "boot/context projection and refuse when it is unavailable."
+    | (path, contents) <- sources
+    , "http://minio.prodbox.svc.cluster.local:9000" `isInfixOf` contents
+    ]
+
+gatewayMinioEndpointRequiredFragments :: [(FilePath, [String])]
+gatewayMinioEndpointRequiredFragments =
+  [
+    ( "src/Prodbox/Gateway/Types.hs"
+    ,
+      [ "GatewayMinioEndpointUnavailable"
+      , "mkGatewayMinioEndpoint"
+      , "gatewayMinioEndpointUrl"
+      ]
+    )
+  ,
+    ( "src/Prodbox/Gateway/Settings.hs"
+    , ["mkGatewayMinioEndpoint (Text.unpack <$> maybeMinioEndpoint)"]
+    )
+  ,
+    ( "src/Prodbox/Gateway/Daemon.hs"
+    ,
+      [ "endpoint <- gatewayMinioEndpointUrl (daemonMinioEndpoint config)"
+      , "objectStoreEndpoint = endpoint"
+      ]
+    )
+  ]
+
+-- | Sprint 3.42's closed chart-rendering ownership gate. The bounded source
+-- region is the chart-value renderer, the public-edge inventory renderer, and
+-- the Gateway chart's generic default. Deployment-varying answers are forbidden
+-- there; the required fragments prove the validated projections and compiled
+-- bucket owner still reach every consumer.
+checkChartDeploymentContextOwnership :: FilePath -> IO [String]
+checkChartDeploymentContextOwnership repoRoot = do
+  let paths =
+        [ "src/Prodbox/Lib/ChartPlatform.hs"
+        , "src/Prodbox/PublicEdge.hs"
+        , "charts/gateway/values.yaml"
+        ]
+  sources <-
+    forM paths (\path -> do contents <- readFileStrict (repoRoot </> path); pure (path, contents))
+  pure (chartDeploymentContextOwnershipViolations sources)
+
+chartDeploymentContextOwnershipViolations :: [(FilePath, String)] -> [String]
+chartDeploymentContextOwnershipViolations sources =
+  missingReach ++ compiledDeploymentAnswers ++ duplicateBucketDeclarations
+ where
+  missingReach =
+    [ path
+        ++ " no longer contains the Sprint 3.42 chart projection witness `"
+        ++ fragment
+        ++ "`. Restore the validated context/public-host projection."
+    | (path, fragments) <- chartDeploymentContextRequiredFragments
+    , Just contents <- [lookup path sources]
+    , fragment <- fragments
+    , not (fragment `isInfixOf` contents)
+    ]
+  compiledDeploymentAnswers =
+    [ path
+        ++ " contains a compiled chart-rendering deployment answer `"
+        ++ literal
+        ++ "`; project the validated endpoint or served host instead."
+    | (path, contents) <- sources
+    , literal <-
+        [ "http://minio.prodbox.svc.cluster.local:9000"
+        , "test.resolvefintech" ++ ".com"
+        ]
+    , literal `isInfixOf` contents
+    ]
+  duplicateBucketDeclarations =
+    [ "src/Prodbox/Lib/ChartPlatform.hs contains a second `prodbox-state` declaration; import defaultObjectStoreBucket."
+    | Just contents <- [lookup "src/Prodbox/Lib/ChartPlatform.hs" sources]
+    , "\"prodbox-state\"" `isInfixOf` contents
+    ]
+
+chartDeploymentContextRequiredFragments :: [(FilePath, [String])]
+chartDeploymentContextRequiredFragments =
+  [
+    ( "src/Prodbox/Lib/ChartPlatform.hs"
+    ,
+      [ "deploymentContext = validatedDeploymentContext settings"
+      , "minioEndpoint = Text.pack minioClusterServiceEndpoint"
+      , "Tier0.minio_endpoint = minioEndpoint"
+      , "\"endpointUrl\" .= minioEndpoint"
+      , "renderBootstrapBrokerConfigDhall clusterId minioEndpoint"
+      , "valuesForLifecycleAuthority clusterId minioEndpoint"
+      , "Text.pack defaultObjectStoreBucket"
+      ]
+    )
+  ,
+    ( "src/Prodbox/PublicEdge.hs"
+    , ["# PUBLIC_FQDN={{ .Values.gateway.host }}"]
+    )
+  ,
+    ( "charts/gateway/values.yaml"
+    , ["endpointUrl: \"\""]
+    )
+  ]
+
+-- | Sprint 4.90's host/lifecycle context-binding gate. The scanned surface is
+-- the host probe, lifecycle resolution/authentication gates, retained-store
+-- gates, and the single state-bucket owner. It rejects the former address
+-- escape/fallback symbols and duplicate bucket declarations while pinning the
+-- exact validated or sealed-context projection at each consumer.
+checkHostLifecycleContextOwnership :: FilePath -> IO [String]
+checkHostLifecycleContextOwnership repoRoot = do
+  sources <-
+    forM hostLifecycleContextPaths $ \path -> do
+      contents <- readFileStrict (repoRoot </> path)
+      pure (path, contents)
+  pure (hostLifecycleContextOwnershipViolations sources)
+
+hostLifecycleContextOwnershipViolations :: [(FilePath, String)] -> [String]
+hostLifecycleContextOwnershipViolations sources =
+  missingReach ++ retiredFallbacks ++ duplicateBucketDeclarations
+ where
+  missingReach =
+    [ path
+        ++ " no longer contains the Sprint 4.90 context-binding witness `"
+        ++ fragment
+        ++ "`. Restore the sealed/validated coordinate projection."
+    | (path, fragments) <- hostLifecycleContextRequiredFragments
+    , Just contents <- [lookup path sources]
+    , fragment <- fragments
+    , not (fragment `isInfixOf` contents)
+    ]
+  retiredFallbacks =
+    [ path
+        ++ " contains retired host/lifecycle fallback `"
+        ++ retired
+        ++ "`; consume the sealed deployment context instead."
+    | (path, contents) <- sources
+    , retired <- hostLifecycleRetiredFragments
+    , not (deliberateValidationCounterexample path retired)
+    , retired `isInfixOf` contents
+    ]
+  duplicateBucketDeclarations =
+    [ path
+        ++ " contains a second `prodbox-state` declaration; import defaultObjectStoreBucket."
+    | (path, contents) <- sources
+    , path /= "src/Prodbox/Minio/ObjectStoreTypes.hs"
+    , "\"prodbox-state\"" `isInfixOf` contents
+    ]
+
+  deliberateValidationCounterexample path retired =
+    path == "src/Prodbox/TestValidation.hs"
+      && retired == "http://127.0.0.1:" ++ "31820"
+
+hostLifecycleContextPaths :: [FilePath]
+hostLifecycleContextPaths = map fst hostLifecycleContextRequiredFragments
+
+hostLifecycleContextRequiredFragments :: [(FilePath, [String])]
+hostLifecycleContextRequiredFragments =
+  [
+    ( "src/Prodbox/Vault/Host.hs"
+    ,
+      [ "vaultAddressForDeploymentContext"
+      , "VaultAddress . deploymentVaultAddress"
+      ]
+    )
+  ,
+    ( "src/Prodbox/Host.hs"
+    , ["vaultAddressForDeploymentContext (validatedDeploymentContext settings)"]
+    )
+  ,
+    ( "src/Prodbox/CLI/Rke2.hs"
+    ,
+      [ "resolveVaultLifecycle repoRoot context"
+      , "vaultLifecycleFromBasics basics >>= bindVaultLifecycleContext context"
+      , "ensureBasicsFloor repoRoot context"
+      , "defaultObjectStoreBucket"
+      ]
+    )
+  ,
+    ( "src/Prodbox/CLI/Pulumi.hs"
+    ,
+      [ "probePulumiVaultGate repoRoot"
+      , "vaultAddressForDeploymentContext (validatedDeploymentContext settings)"
+      ]
+    )
+  ,
+    ( "src/Prodbox/Config/Tier0.hs"
+    ,
+      [ "basicsClusterId basics /= Settings.deploymentClusterId context"
+      , "basicsVaultAddress basics /= Settings.deploymentVaultAddress context"
+      ]
+    )
+  ,
+    ( "src/Prodbox/ControlPlane/LifecycleAuthorityAuthentication.hs"
+    , ["VaultAddress (basicsVaultAddress basics)"]
+    )
+  ,
+    ( "src/Prodbox/Infra/LongLivedPulumiBackend.hs"
+    , ["vaultSealStatus (VaultAddress (basicsVaultAddress basics))"]
+    )
+  ,
+    ( "src/Prodbox/Lifecycle/LiveResidue.hs"
+    , ["vaultSealStatus (VaultAddress (basicsVaultAddress basics))"]
+    )
+  ,
+    ( "src/Prodbox/Infra/MinioBackend.hs"
+    , ["defaultObjectStoreBucket"]
+    )
+  ,
+    ( "src/Prodbox/ControlPlane/InClusterAuthorityStore.hs"
+    , ["mkInClusterAuthorityStoreConfig rawClusterId rawEndpoint rawBucket"]
+    )
+  ,
+    ( "src/Prodbox/TestValidation.hs"
+    , ["sealedVaultBucketNames = [defaultObjectStoreBucket]"]
+    )
+  ,
+    ( "src/Prodbox/Minio/ObjectStoreTypes.hs"
+    , ["defaultObjectStoreBucket = \"prodbox-state\""]
+    )
+  ]
+
+hostLifecycleRetiredFragments :: [String]
+hostLifecycleRetiredFragments =
+  [ "host" ++ "VaultAddress"
+  , "resolveHost" ++ "VaultAddress"
+  , "PRODBOX_TEST_HOST_" ++ "VAULT_ADDR"
+  , "PRODBOX_TEST_PULUMI_" ++ "VAULT_ADDR"
+  , "gateway" ++ "MinioBucket"
+  , "minioBackend" ++ "Bucket"
+  , "defaultInClusterAuthority" ++ "Endpoint"
+  , "defaultInClusterAuthority" ++ "Bucket"
+  , "http://127.0.0.1:" ++ "31820"
+  , "http://minio.prodbox.svc.cluster.local:" ++ "9000"
+  ]
+
+-- | Sprint 5.37's generated harness-config ownership gate. The required
+-- fragments pin the explicit fixture/run-derived source partition and its
+-- validate-before-atomic-write boundary. The tree-wide Haskell scan rejects
+-- the retired real deployment values and former fallback helpers while still
+-- permitting reserved synthetic examples.
+checkHarnessDeploymentConfigOwnership :: FilePath -> IO [String]
+checkHarnessDeploymentConfigOwnership repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  haskellSources <-
+    forM
+      [path | path <- repoPaths, ".hs" `isSuffixOf` path]
+      (\path -> do contents <- readFileStrict (repoRoot </> path); pure (path, contents))
+  requiredSources <-
+    forM harnessDeploymentConfigRequiredFragments $ \(path, _) -> do
+      let absolutePath = repoRoot </> path
+      present <- doesFileExist absolutePath
+      if present
+        then do
+          contents <- readFileStrict absolutePath
+          pure [(path, contents)]
+        else pure []
+  pure
+    ( harnessDeploymentConfigOwnershipViolations
+        (haskellSources ++ concat requiredSources)
+    )
+
+harnessDeploymentConfigOwnershipViolations :: [(FilePath, String)] -> [String]
+harnessDeploymentConfigOwnershipViolations sources =
+  missingPaths ++ missingReach ++ retiredCompiledInputs
+ where
+  missingPaths =
+    [ scopedPathMissingViolation "harness deployment config ownership gate" path
+    | (path, _) <- harnessDeploymentConfigRequiredFragments
+    , lookup path sources == Nothing
+    ]
+  missingReach =
+    [ path
+        ++ " no longer contains the Sprint 5.37 harness ownership witness `"
+        ++ fragment
+        ++ "`. Restore the explicit fixture/run projection and atomic Tier-0 write."
+    | (path, fragments) <- harnessDeploymentConfigRequiredFragments
+    , Just contents <- [lookup path sources]
+    , fragment <- fragments
+    , not (fragment `isInfixOf` contents)
+    ]
+  retiredCompiledInputs =
+    [ path
+        ++ " contains retired compiled harness deployment input `"
+        ++ retired
+        ++ "`; use a fixture field or reserved synthetic test value."
+    | (path, contents) <- sources
+    , ".hs" `isSuffixOf` path
+    , retired <- harnessDeploymentConfigRetiredFragments
+    , map toLower retired `isInfixOf` map toLower contents
+    ]
+
+harnessDeploymentConfigRequiredFragments :: [(FilePath, [String])]
+harnessDeploymentConfigRequiredFragments =
+  [
+    ( "src/Prodbox/Vault/Host.hs"
+    ,
+      [ "test_served_fqdn :: Text"
+      , "test_acme_email :: Text"
+      , "legacy_cluster_id :: Text"
+      , "legacy_machine_id :: Text"
+      , "legacy_vault_address :: Text"
+      , "legacy_minio_endpoint :: Text"
+      ]
+    )
+  ,
+    ( "src/Prodbox/Aws.hs"
+    ,
+      [ "harnessConfigSetupInputFrom"
+      , "emptyHarnessValidationCredentials"
+      , "requiredHarnessField \"test_served_fqdn\""
+      , "requiredHarnessField \"test_acme_email\""
+      , "legacyHarnessDeploymentInput"
+      , "fittedResult <- fitHarnessConfig generated"
+      , "validateConfigWithContext repoRoot contextInput fitted"
+      , "Tier0.writeOperatorDeploymentConfigToTier0"
+      , "fitted\n                        contextInput"
+      ]
+    )
+  ,
+    ( "src/Prodbox/TestRunner.hs"
+    ,
+      [ "variantCluster variant"
+      , "variantVaultAddress variant"
+      , "variantMinioEndpoint variant"
+      , "topologyRunId"
+      , "harnessGeneratedConfig"
+      , "writeOperatorDeploymentConfigToTier0 repoRoot generatedConfig contextInput"
+      ]
+    )
+  ,
+    ( "src/Prodbox/TestTopology.hs"
+    ,
+      [ "variantVaultAddress :: Text"
+      , "variantMinioEndpoint :: Text"
+      , "TestVariantVaultAddressInvalid"
+      , "TestVariantMinioEndpointInvalid"
+      ]
+    )
+  ,
+    ( "test-secrets-types.dhall"
+    ,
+      [ "test_served_fqdn : Text"
+      , "test_acme_email : Text"
+      , "legacy_cluster_id : Text"
+      , "legacy_machine_id : Text"
+      , "legacy_vault_address : Text"
+      , "legacy_minio_endpoint : Text"
+      ]
+    )
+  ]
+
+harnessDeploymentConfigRetiredFragments :: [String]
+harnessDeploymentConfigRetiredFragments =
+  [ "harness" ++ "AcmeEmail"
+  , "harnessPrefer" ++ "NonEmpty"
+  , "test.resolvefintech" ++ ".com"
+  , "matthewnowak@gmail" ++ ".com"
+  ]
 
 -- | Sprint 1.89: a module holding a 'Prodbox.Settings.ValidatedSettings' reads
 -- a Tier-0 coordinate through its parsed projection, or not at all.
@@ -4969,6 +5529,16 @@ retiredCitedSourcePaths =
          -- so it compiled and never ran. The deployed writer's coverage is
          -- unaffected — it lives on the TargetSecretWorker path.
          "test/unit/ControlPlaneTargetSecretAgentExecution.hs"
+       , -- Deleted by Sprint 7.36 after the production drain interpreter and
+         -- DNS01 owner-delete interpreter converged on EphemeralKubectl. The
+         -- paired unit module exercised only this unreachable duplicate.
+         "src/Prodbox/Lifecycle/Teardown/EksDrainRuntime.hs"
+       , "test/unit/LifecycleTeardownEksDrainRuntime.hs"
+       , -- Deleted by Sprint 5.36 when TestRunner selected the registered
+         -- ValidationHostedZone family through the closed lifecycle program.
+         -- Creation mechanics moved to Prodbox.Lifecycle.ValidationHostedZone;
+         -- the duplicate harness-owned sweep did not survive.
+         "src/Prodbox/Infra/Route53ValidationZone.hs"
        ]
 
 -- | Sprint 0.21 (pure). The inline-code spans on one line, WITHOUT their
@@ -5233,151 +5803,14 @@ data AwsCoordinateLiteral = AwsCoordinateLiteral
   -- ^ Why this reason covers this value, in one sentence.
   }
 
--- | Sprint 1.91: every AWS-region-shaped literal a scanned module may compile
--- in, with the symbol that holds it and the reason it is not a deployment
--- choice.
---
--- @config_doctrine.md@ § 0 states the partition and refuses to let "the
--- deployment we happen to run uses this one" be a reason. This is the
--- enforcement, in the register-or-fail idiom of 'productionEnvVarRegistry' and
--- "Prodbox.Legacy.EscapeRegistry": an unregistered literal fails, a literal in
--- a file outside its declared set fails, and an entry whose symbol no longer
--- exists fails.
---
--- __Measured, not asserted.__ The matcher was run against @src\/@ and @app\/@
--- before the sprint's own deletions and found __22__ (file, value) pairs with
--- zero false positives: 2 configuration defects (the seeded @aws.region@ and
--- the prompt default, both closed by Sprint 1.91), 3 MinIO signing scopes
--- (collapsed to one constant), 6 protocol-fixed, and 11 values that are
--- fixtures or prose. The loose form that drops the two-letter-geography rule
--- found 37 with 15 false positives, which is why the shape is the strict one.
--- __18__ pairs survive; Sprint @4.86@ registered a nineteenth when the cascade
--- candidate entrypoint's fixed regression gained the same fixture scope.
+-- | No Haskell source may carry a complete AWS-region literal. Deployment
+-- coordinates enter through validated configuration; AWS-fixed protocol
+-- behavior is named by "Prodbox.Aws.Region"; tests use the named constructors
+-- exported by @TestSupport@. The legacy registry type remains exposed so the
+-- refusal algebra stays injection-testable, but the production registry is
+-- deliberately empty: there is no exception arm.
 awsCoordinateLiteralRegistry :: [AwsCoordinateLiteral]
-awsCoordinateLiteralRegistry =
-  [ AwsCoordinateLiteral
-      globalSigningRegion
-      "iamScope"
-      ["src/Prodbox/Aws/Native/Iam.hs"]
-      AwsCoordinateProtocolFixed
-      "IAM is a global service and signs in one region; a deployment cannot choose otherwise."
-  , AwsCoordinateLiteral
-      globalSigningRegion
-      "route53Scope"
-      ["src/Prodbox/Aws/Native/Route53.hs"]
-      AwsCoordinateProtocolFixed
-      "Route 53 is a global service and signs in one region."
-  , AwsCoordinateLiteral
-      globalSigningRegion
-      "renderCreateBucketXml"
-      ["src/Prodbox/Aws/Native/S3.hs"]
-      AwsCoordinateProtocolFixed
-      "S3 requires `CreateBucket` in this one region to omit `LocationConstraint` entirely."
-  , AwsCoordinateLiteral
-      globalSigningRegion
-      "applySesCaptureBucket"
-      ["src/Prodbox/ControlPlane/ProviderProduction.hs"]
-      AwsCoordinateProtocolFixed
-      "The same `CreateBucket` rule, on the subprocess arm; the configured region is the input."
-  , AwsCoordinateLiteral
-      globalSigningRegion
-      "globalServiceTaggingRegion"
-      ["src/Prodbox/Lifecycle/Teardown/TaggingApiReach.hs"]
-      AwsCoordinateProtocolFixed
-      "The Resource Groups Tagging API answers for global services from one region only."
-  , AwsCoordinateLiteral
-      globalSigningRegion
-      "minioSigningRegion"
-      ["src/Prodbox/Minio/ObjectStoreTypes.hs"]
-      AwsCoordinateNotAws
-      "MinIO requires a SigV4 signing scope and ignores which; no AWS account is reached."
-  , AwsCoordinateLiteral
-      globalSigningRegion
-      "renderCoordinateError"
-      ["src/Prodbox/Settings/Coordinate.hs"]
-      AwsCoordinateDocumentationExample
-      "An example inside the refusal a malformed `aws.region` produces."
-  , AwsCoordinateLiteral
-      "us-west-2"
-      "configTypesHeader"
-      ["src/Prodbox/Config/SchemaDhall.hs"]
-      AwsCoordinateDocumentationExample
-      "An override example in the generated schema's own header comment."
-  , AwsCoordinateLiteral
-      globalSigningRegion
-      "fixedAuditScenario"
-      ["src/Prodbox/Lifecycle/Teardown/CascadeTerminalAudit.hs"]
-      AwsCoordinateRegressionFixture
-      "The escapee cluster ARN the terminal-audit verdict fixtures classify."
-  , AwsCoordinateLiteral
-      fixtureRegion
-      "regressionAwsScope"
-      ["src/Prodbox/ControlPlane/CleanupProgramDescriptorRepository/Internal.hs"]
-      AwsCoordinateRegressionFixture
-      fixtureRegionNote
-  , AwsCoordinateLiteral
-      fixtureRegion
-      "regressionAwsScope"
-      ["src/Prodbox/ControlPlane/DescriptorBoundLifecycleRuntime/Internal.hs"]
-      AwsCoordinateRegressionFixture
-      fixtureRegionNote
-  , AwsCoordinateLiteral
-      fixtureRegion
-      "regressionInputs"
-      ["src/Prodbox/Lifecycle/Teardown/CascadeCandidate/Internal.hs"]
-      AwsCoordinateRegressionFixture
-      fixtureRegionNote
-  , AwsCoordinateLiteral
-      fixtureRegion
-      "fixedProviderCredentialSessionRegression"
-      ["src/Prodbox/ControlPlane/ProviderCredentialSession/Internal.hs"]
-      AwsCoordinateRegressionFixture
-      fixtureRegionNote
-  , AwsCoordinateLiteral
-      fixtureRegion
-      "fixedCascadeAwsScope"
-      ["src/Prodbox/Lifecycle/Teardown/CascadeEvidence/Internal.hs"]
-      AwsCoordinateRegressionFixture
-      fixtureRegionNote
-  , AwsCoordinateLiteral
-      fixtureRegion
-      "fixtureAwsScope"
-      ["src/Prodbox/Lifecycle/Teardown/RecoveryPlane/Internal.hs"]
-      AwsCoordinateRegressionFixture
-      fixtureRegionNote
-  , AwsCoordinateLiteral
-      fixtureRegion
-      "regressionAwsScope"
-      ["src/Prodbox/Lifecycle/Teardown/RecoveryPlaneInterpreter/Internal.hs"]
-      AwsCoordinateRegressionFixture
-      fixtureRegionNote
-  , AwsCoordinateLiteral
-      fixtureRegion
-      "fixedAwsScope"
-      ["src/Prodbox/Lifecycle/Teardown/RecoveryRequirement/Internal.hs"]
-      AwsCoordinateRegressionFixture
-      fixtureRegionNote
-  , AwsCoordinateLiteral
-      fixtureRegion
-      "fixedReportAwsScope"
-      ["src/Prodbox/Lifecycle/Teardown/Report/Internal.hs"]
-      AwsCoordinateRegressionFixture
-      fixtureRegionNote
-  , AwsCoordinateLiteral
-      fixtureRegion
-      "canonicalTeardownEvidenceScope"
-      ["src/Prodbox/Test/Qualification/TeardownCounterexample.hs"]
-      AwsCoordinateRegressionFixture
-      fixtureRegionNote
-  ]
- where
-  -- Spelled once so the registry does not become the duplication it exists to
-  -- forbid.
-  globalSigningRegion = "us-" ++ "east-1"
-  fixtureRegion = "ca-" ++ "central-1"
-  fixtureRegionNote =
-    "A fixture scope, deliberately not the global signing region, so a test can \
-    \distinguish an audit taken inside it from one taken outside."
+awsCoordinateLiteralRegistry = []
 
 -- | Sprint 1.91 (pure). Whether a token has the shape of an AWS region name.
 --
@@ -5385,8 +5818,8 @@ awsCoordinateLiteralRegistry =
 -- Deliberately a shape and not a pinned list, for the reason
 -- "Prodbox.Settings.Coordinate" gives at 'Prodbox.Settings.Coordinate.mkAwsRegion':
 -- a repository-pinned region list refuses a legitimate value the day after AWS
--- launches one. @us-gov-west-1@, @cn-northwest-1@, and @us-iso-east-1@ match by
--- shape without appearing anywhere here.
+-- launches one. Commercial, government, China, and isolated-partition shapes
+-- all match without appearing as complete coordinates here.
 --
 -- The two-letter geography is what makes the scan usable: without it the same
 -- scan matches @x-amz-content-sha256@-shaped protocol tokens and every other
@@ -5416,7 +5849,7 @@ splitOnHyphen value =
     (segment, _ : rest) -> segment : splitOnHyphen rest
 
 -- | Sprint 1.91 (pure). The maximal @[a-z0-9-]@ runs of a string. A region
--- inside a larger literal (@arn:aws:eks:us-east-1:...@) is one such run,
+-- inside a larger ARN is one such run,
 -- because every ARN and URL delimiter breaks the run.
 coordinateTokens :: String -> [String]
 coordinateTokens = filter (not . null) . foldr step [[]]
@@ -5481,10 +5914,10 @@ awsCoordinateFindings registry scanned observedByPath symbolsByOwner =
     [ path
         ++ " compiles the AWS-coordinate literal `"
         ++ value
-        ++ "`, which `awsCoordinateLiteralRegistry` does not admit here. Register "
-        ++ "it with the symbol that holds it and exactly one of the compiled "
-        ++ "reasons, or make the value operator-supplied Tier-0 Dhall "
-        ++ "(config_doctrine.md § 0)."
+        ++ "`. Complete region coordinates are forbidden in Haskell. Move a "
+        ++ "deployment coordinate to operator-supplied Tier-0 Dhall, use the "
+        ++ "named AWS protocol role in Prodbox.Aws.Region, or use TestSupport's "
+        ++ "synthetic region constructors (config_doctrine.md § 0)."
     | (path, value) <- observed
     , not (awsCoordinateRegistered registry path value)
     ]
@@ -5510,19 +5943,18 @@ awsCoordinateFindings registry scanned observedByPath symbolsByOwner =
   symbolPresentIn entry owner =
     maybe False (awsCoordinateSymbol entry `elem`) (lookup owner symbolsByOwner)
 
--- | Sprint 1.91 (IO). The compiled-AWS-coordinate register-or-fail bijection.
+-- | Refuse every complete AWS-region literal in every repository-owned Haskell
+-- source file.
 --
--- Scoped to @src\/@ and @app\/@, which is the region in which a literal can
--- reach a live AWS call. A literal in a Pulumi program under @pulumi\/@ is not
--- visible to this gate and is not claimed to be: the AWS substrate resource
--- envelope is a provisioning surface owned elsewhere.
+-- This deliberately includes tests: a copyable fixture literal is how a test
+-- value becomes a production default during later refactoring. Non-Haskell
+-- provisioning surfaces remain outside this gate and have their own config
+-- doctrine ownership.
 checkAwsCoordinateLiterals :: FilePath -> IO [String]
 checkAwsCoordinateLiterals repoRoot = do
   repoPaths <- listRepoOwnedPaths repoRoot
   let scanPath path =
-        (".hs" `isSuffixOf` path)
-          && any (`isPrefixOf` path) ["src/", "app/"]
-          && path /= forbidLintSelfPath
+        ".hs" `isSuffixOf` path
       scanned = [path | path <- repoPaths, scanPath path]
       registry = awsCoordinateLiteralRegistry
   observedByPath <-
@@ -7289,7 +7721,7 @@ awsCreateVerbs =
   , ("put-user-policy", ["src/Prodbox/Aws.hs"])
   , ("create-role", ["src/Prodbox/Infra/AwsSesLeaseRole.hs"])
   , ("put-role-policy", ["src/Prodbox/Infra/AwsSesLeaseRole.hs"])
-  , ("create-hosted-zone", ["src/Prodbox/Infra/Route53ValidationZone.hs"])
+  , ("create-hosted-zone", ["src/Prodbox/Lifecycle/ValidationHostedZone.hs"])
   ,
     ( "create-bucket"
     ,

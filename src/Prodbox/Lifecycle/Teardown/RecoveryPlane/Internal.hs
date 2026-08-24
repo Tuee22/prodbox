@@ -118,6 +118,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import GHC.Generics (Generic)
+import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Config.ComponentGraph
   ( ComponentDependency (..)
@@ -1657,6 +1658,7 @@ dynamicProfileRestoreRegression withProfile withoutProfile = do
           fixtureRunId
           fixtureFoundation
           (Just fixtureAwsScope)
+          Nothing
           TeardownModel.CascadeSurface
       )
   withIdentity <-
@@ -1919,7 +1921,7 @@ fixtureFoundation = LinuxRke2FoundationId "foundation/home"
 
 fixtureAwsScope :: AwsScope
 fixtureAwsScope =
-  AwsScope (AwsAccountId "111122223333") (AwsRegion "ca-central-1")
+  AwsScope (AwsAccountId "111122223333") (AwsRegion canonicalRegressionAwsRegion)
 
 fixtureScope :: ObservationEvidenceScope
 fixtureScope = scopeFor fixtureRunId "foundation/home"
@@ -1934,7 +1936,7 @@ scopeFor runId foundation =
     (RegistryRevision "registry/v1")
     (DurableObservationRunScope (cleanupRunIdText runId))
     (LinuxRke2FoundationId foundation)
-    (Just (AwsScope (AwsAccountId "111122223333") (AwsRegion "ca-central-1")))
+    (Just (AwsScope (AwsAccountId "111122223333") (AwsRegion canonicalRegressionAwsRegion)))
     ReconcileDesiredAbsent
 
 registryRevisionText :: ObservationEvidenceScope -> Text

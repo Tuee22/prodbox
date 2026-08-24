@@ -84,6 +84,10 @@ import Prodbox.Lifecycle.ResidueStatus
   )
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.Result (Result (..))
+import Prodbox.Settings.AwsSubstrateProfile
+  ( AwsEbsVolumeType
+  , awsEbsVolumeTypeText
+  )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
@@ -124,6 +128,7 @@ data EbsDiscoverInput = EbsDiscoverInput
 data EbsEnsureInput = EbsEnsureInput
   { ebsEnsureEnvironment :: [(String, String)]
   , ebsEnsureWorkingDirectory :: Maybe FilePath
+  , ebsEnsureVolumeType :: AwsEbsVolumeType
   }
   deriving (Eq, Show)
 
@@ -383,8 +388,8 @@ ebsDeleteVolumeArgs volumeId =
   , unEbsVolumeId volumeId
   ]
 
-ebsCreateVolumeArgs :: EbsRequiredVolume -> [String]
-ebsCreateVolumeArgs required =
+ebsCreateVolumeArgs :: AwsEbsVolumeType -> EbsRequiredVolume -> [String]
+ebsCreateVolumeArgs volumeType required =
   [ "ec2"
   , "create-volume"
   , "--availability-zone"
@@ -392,7 +397,7 @@ ebsCreateVolumeArgs required =
   , "--size"
   , show (ebsRequiredSizeGiB required)
   , "--volume-type"
-  , "gp3"
+  , Text.unpack (awsEbsVolumeTypeText volumeType)
   , "--tag-specifications"
   , retainedVolumeTagSpecification required
   , "--output"
@@ -721,7 +726,7 @@ ensureRetainedEbsVolumes input required = do
       captureSubprocessResult
         Subprocess
           { subprocessPath = "aws"
-          , subprocessArguments = ebsCreateVolumeArgs requiredVolume
+          , subprocessArguments = ebsCreateVolumeArgs (ebsEnsureVolumeType input) requiredVolume
           , subprocessEnvironment = Just (ebsEnsureEnvironment input)
           , subprocessWorkingDirectory = ebsEnsureWorkingDirectory input
           }

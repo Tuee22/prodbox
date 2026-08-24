@@ -13,6 +13,7 @@ module Prodbox.Test.Qualification.Evidence
   , QualificationEvidenceError (..)
   , mkQualificationEvidence
   , qualificationEvidenceDigest
+  , qualificationEvidenceReplacementIdentity
   )
 where
 
@@ -62,6 +63,9 @@ data QualificationIdentity = QualificationIdentity
   , qualificationTopologyWiringDigest :: !PublicEvidenceDigest
   , qualificationResourceEnvelopeDigest :: !PublicEvidenceDigest
   , qualificationLoadFaultDigest :: !PublicEvidenceDigest
+  , qualificationInterpreterDigest :: !PublicEvidenceDigest
+  , qualificationPersistenceDigest :: !PublicEvidenceDigest
+  , qualificationCleanupSchemaDigest :: !PublicEvidenceDigest
   }
   deriving stock (Eq, Show)
 
@@ -88,6 +92,15 @@ data QualificationEvidence = QualificationEvidence
   , qualificationEvidenceDigest :: !PublicEvidenceDigest
   }
   deriving stock (Eq, Show)
+
+-- | The exact replacement identity this artifact qualified.  The full input
+-- remains opaque so a cutover consumer cannot reinterpret individual success
+-- booleans as qualification; it may only bind the already-validated artifact
+-- to the identity it is about.
+qualificationEvidenceReplacementIdentity
+  :: QualificationEvidence -> QualificationIdentity
+qualificationEvidenceReplacementIdentity =
+  evidenceReplacementIdentity . qualificationEvidenceInput
 
 data QualificationEvidenceError
   = QualificationSubstrateEmpty

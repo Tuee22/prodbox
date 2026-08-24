@@ -79,6 +79,7 @@ module Prodbox.Config.OrdinaryTeardownRepair
   , declaredRetainedArtifacts
 
     -- * The stopped/absent/healthy repair matrix
+  , RecoveryPlatformComponent (..)
   , OrdinaryTeardownRepairStep (..)
   , OrdinaryTeardownRepairPlan
   , ordinaryTeardownRepairPlanState
@@ -203,8 +204,19 @@ data OrdinaryTeardownRepairStep
   | RepairStartSubstrateService
   | RepairAwaitSubstrateApi
   | RepairLoadRetainedImage !RetainedArtifactRef
+  | RepairReconcileRecoveryPlatform !RecoveryPlatformComponent
   | RepairReconcileRecoveryChart !String
   deriving (Eq, Show)
+
+-- | Non-chart workloads in the minimal recovery closure.  Their image bytes
+-- were always retained and loaded, but before Sprint @6.5@ the repair plan had
+-- no step that recreated either workload after a vendor uninstall.  Keeping
+-- the two possibilities closed prevents a recovery caller from widening the
+-- platform it may install with an arbitrary name.
+data RecoveryPlatformComponent
+  = RecoveryPlatformMinio
+  | RecoveryPlatformVault
+  deriving (Bounded, Enum, Eq, Ord, Show)
 
 -- | Opaque rendered repair.  Construction proves the plan covers exactly the
 -- observed state's obligation out of one validated inventory.
@@ -294,6 +306,14 @@ ordinaryTeardownRepairPlan inventory recovery state = do
         LocalRke2RecoveryHealthy -> []
         LocalRke2RecoveryStopped -> [RepairStartSubstrateService, RepairAwaitSubstrateApi]
         LocalRke2RecoveryAbsent -> [RepairStartSubstrateService, RepairAwaitSubstrateApi]
+      platformSteps =
+        [ RepairReconcileRecoveryPlatform platform
+        | (component, platform) <-
+            [ (ComponentMinio, RecoveryPlatformMinio)
+            , (ComponentVaultWorkload, RecoveryPlatformVault)
+            ]
+        , component `elem` ordinaryTeardownRecoveryComponentIds recovery
+        ]
   pure
     OrdinaryTeardownRepairPlan
       { ordinaryTeardownRepairPlanState = state
@@ -303,6 +323,7 @@ ordinaryTeardownRepairPlan inventory recovery state = do
           installSteps
             ++ serviceSteps
             ++ fmap RepairLoadRetainedImage imageRefs
+            ++ platformSteps
             ++ fmap RepairReconcileRecoveryChart (ordinaryTeardownRecoveryChartNames recovery)
       }
 

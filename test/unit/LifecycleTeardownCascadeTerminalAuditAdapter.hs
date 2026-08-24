@@ -179,20 +179,24 @@ lifecycleTeardownCascadeTerminalAuditAdapterSuite =
     it "derives resource type and coordinate from the ARN" $ do
       -- A family matcher pins the resource type, so this rendering is what lets
       -- a retained volume be recognised as one.
-      identityOf "arn:aws:ec2:us-east-1:111122223333:volume/vol-0123abcd"
+      identityOf
+        ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":111122223333:volume/vol-0123abcd")
         `shouldBe` Right (AwsResourceType "ec2:volume", AwsResourceCoordinate "vol-0123abcd")
       identityOf "arn:aws:s3:::prodbox-fixed-state"
         `shouldBe` Right (AwsResourceType "s3:bucket", AwsResourceCoordinate "prodbox-fixed-state")
-      identityOf "arn:aws:eks:us-east-1:111122223333:cluster/prodbox-escapee"
+      identityOf
+        ("arn:aws:eks:" <> (fixtureAwsRegion FixtureUsEast1) <> ":111122223333:cluster/prodbox-escapee")
         `shouldBe` Right (AwsResourceType "eks:cluster", AwsResourceCoordinate "prodbox-escapee")
 
     it "refuses a row from outside the audited account or region" $ do
       -- The retained matchers are built from the audited scope. A row from
       -- another account or region would be classified against a catalog that
       -- does not describe it, in either direction.
-      identityOf "arn:aws:ec2:us-east-1:999988887777:volume/vol-0123abcd"
+      identityOf
+        ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":999988887777:volume/vol-0123abcd")
         `shouldSatisfy` isLeftResult
-      identityOf "arn:aws:ec2:eu-west-1:111122223333:volume/vol-0123abcd"
+      identityOf
+        ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureEuWest1) <> ":111122223333:volume/vol-0123abcd")
         `shouldSatisfy` isLeftResult
       -- A global service carries no region and stays admissible.
       identityOf "arn:aws:iam::111122223333:user/prodbox-operational"
@@ -403,7 +407,7 @@ untaggedVolume :: OwnedResourceTagEntry
 untaggedVolume =
   OwnedResourceTagEntry
     { ownedResourceTagEntryArn =
-        "arn:aws:ec2:us-east-1:111122223333:volume/vol-0123abcd"
+        ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":111122223333:volume/vol-0123abcd")
     , ownedResourceTagEntryTags = []
     }
 
@@ -439,7 +443,7 @@ auditedScope :: AwsScope
 auditedScope =
   AwsScope
     { awsScopeAccountId = AwsAccountId "111122223333"
-    , awsScopeRegion = AwsRegion "us-east-1"
+    , awsScopeRegion = AwsRegion (fixtureAwsRegion FixtureUsEast1)
     }
 
 stateBucketName :: Text
@@ -469,7 +473,7 @@ escapeeEntry :: OwnedResourceTagEntry
 escapeeEntry =
   OwnedResourceTagEntry
     { ownedResourceTagEntryArn =
-        "arn:aws:eks:us-east-1:111122223333:cluster/prodbox-escapee"
+        ("arn:aws:eks:" <> (fixtureAwsRegion FixtureUsEast1) <> ":111122223333:cluster/prodbox-escapee")
     , ownedResourceTagEntryTags = [("prodbox.io/managed-by", "prodbox")]
     }
 

@@ -315,7 +315,7 @@ renderHelmRouteInventory :: String
 renderHelmRouteInventory =
   unlines $
     [ "{{/* Canonical public-edge route inventory generated from `src/Prodbox/PublicEdge.hs`. */}}"
-    , "{{/* PUBLIC_FQDN=test.resolvefintech.com */}}"
+    , "# PUBLIC_FQDN={{ .Values.gateway.host }}"
     ]
       ++ map renderRouteComment canonicalPublicRouteCatalog
       ++ map renderAdminRouteComment adminPublicRoutes

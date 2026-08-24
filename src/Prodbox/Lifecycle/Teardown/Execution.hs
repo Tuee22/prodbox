@@ -1357,6 +1357,10 @@ validateNodeResult
         mutationAttemptOutcome attempt
       RegisteredTargetAwsRetainedEbsMutation attempt ->
         mutationAttemptOutcome attempt
+      RegisteredTargetAwsIamRoleFamilyMutation attempt ->
+        mutationAttemptOutcome attempt
+      RegisteredTargetAwsLoadBalancerControllerFamilyMutation attempt ->
+        mutationAttemptOutcome attempt
       RegisteredTargetDns01ChallengeOwnerDelete attempt ->
         mutationAttemptOutcome attempt
       RegisteredTargetReconcileRefused detail -> CleanupNodeFailed detail

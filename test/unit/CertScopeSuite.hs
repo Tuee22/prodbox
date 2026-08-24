@@ -27,20 +27,20 @@ zn = either (error . renderScopeError) id . mkDelegatedZone
 -- | The delegated zones the generators anchor wildcards at.
 poolZones :: [DelegatedZone]
 poolZones =
-  [ zn "resolvefintech.com"
-  , zn "test.resolvefintech.com"
-  , zn "aws.resolvefintech.com"
+  [ zn "example.test"
+  , zn "test.example.test"
+  , zn "aws.example.test"
   ]
 
 -- | Hosts spanning apex, single-label, and multi-label boundaries under the pool
 -- zones, plus a disjoint zone.
 poolHosts :: [Fqdn]
 poolHosts =
-  [ fq "resolvefintech.com" -- apex of a pool zone
-  , fq "vscode.resolvefintech.com" -- single label under the parent
-  , fq "api.test.resolvefintech.com" -- single label under a subzone
-  , fq "a.b.resolvefintech.com" -- two labels deep
-  , fq "test.resolvefintech.com" -- exact served host (also apex of a pool zone)
+  [ fq "example.test" -- apex of a pool zone
+  , fq "vscode.example.test" -- single label under the parent
+  , fq "api.test.example.test" -- single label under a subzone
+  , fq "a.b.example.test" -- two labels deep
+  , fq "test.example.test" -- exact served host (also apex of a pool zone)
   , fq "unrelated.example.org" -- disjoint
   ]
 
@@ -57,7 +57,7 @@ genScopeSet = do
   pure (either (error . renderScopeError) id (mkScopeSet poolZones scopes))
 
 parent :: DelegatedZone
-parent = zn "resolvefintech.com"
+parent = zn "example.test"
 
 certScopeSuite :: SuiteBuilder ()
 certScopeSuite =
@@ -65,38 +65,38 @@ certScopeSuite =
     describe "name smart constructors" $ do
       it "rejects an empty name" $ isLeft (mkFqdn "") `shouldBe` True
       it "rejects a wildcard in a plain name" $
-        isLeft (mkFqdn "*.resolvefintech.com") `shouldBe` True
+        isLeft (mkFqdn "*.example.test") `shouldBe` True
       it "rejects a single-label name" $ isLeft (mkFqdn "localhost") `shouldBe` True
       it "rejects a label with a leading hyphen" $
-        isLeft (mkFqdn "-bad.resolvefintech.com") `shouldBe` True
+        isLeft (mkFqdn "-bad.example.test") `shouldBe` True
       it "lowercases and accepts a valid name" $
-        (fqdnText <$> mkFqdn "VSCode.Resolvefintech.COM")
-          `shouldBe` Right "vscode.resolvefintech.com"
+        (fqdnText <$> mkFqdn "VSCode.Example.TEST")
+          `shouldBe` Right "vscode.example.test"
 
     describe "wildcard coverage boundary" $ do
       it "covers a single-label child" $
-        covers (ScopeWildcard parent) (fq "vscode.resolvefintech.com") `shouldBe` True
+        covers (ScopeWildcard parent) (fq "vscode.example.test") `shouldBe` True
       it "does NOT cover the apex" $
-        covers (ScopeWildcard parent) (fq "resolvefintech.com") `shouldBe` False
+        covers (ScopeWildcard parent) (fq "example.test") `shouldBe` False
       it "does NOT cover a two-label-deep name" $
-        covers (ScopeWildcard parent) (fq "a.b.resolvefintech.com") `shouldBe` False
+        covers (ScopeWildcard parent) (fq "a.b.example.test") `shouldBe` False
       it "an exact scope covers only itself" $ do
-        covers (ScopeExact (fq "test.resolvefintech.com")) (fq "test.resolvefintech.com")
+        covers (ScopeExact (fq "test.example.test")) (fq "test.example.test")
           `shouldBe` True
-        covers (ScopeExact (fq "test.resolvefintech.com")) (fq "x.test.resolvefintech.com")
+        covers (ScopeExact (fq "test.example.test")) (fq "x.test.example.test")
           `shouldBe` False
 
     describe "impliedBy structural cases" $ do
       it "an exact host is implied by a covering wildcard" $
-        scopeImpliedBy (ScopeExact (fq "vscode.resolvefintech.com")) (ScopeWildcard parent)
+        scopeImpliedBy (ScopeExact (fq "vscode.example.test")) (ScopeWildcard parent)
           `shouldBe` True
       it "*.a.z is NOT implied by *.z" $
         scopeImpliedBy
-          (ScopeWildcard (zn "aws.resolvefintech.com"))
+          (ScopeWildcard (zn "aws.example.test"))
           (ScopeWildcard parent)
           `shouldBe` False
       it "a wildcard is never implied by an exact scope" $
-        scopeImpliedBy (ScopeWildcard parent) (ScopeExact (fq "vscode.resolvefintech.com"))
+        scopeImpliedBy (ScopeWildcard parent) (ScopeExact (fq "vscode.example.test"))
           `shouldBe` False
 
     describe "mkScopeSet / bindListener illegal states" $ do
@@ -108,17 +108,17 @@ certScopeSuite =
       it "canonicalizes: dedup and order are input-independent" $
         mkScopeSet
           poolZones
-          [ScopeWildcard parent, ScopeExact (fq "test.resolvefintech.com"), ScopeWildcard parent]
+          [ScopeWildcard parent, ScopeExact (fq "test.example.test"), ScopeWildcard parent]
           `shouldBe` mkScopeSet
             poolZones
-            [ScopeExact (fq "test.resolvefintech.com"), ScopeWildcard parent]
+            [ScopeExact (fq "test.example.test"), ScopeWildcard parent]
       it "bindListener rejects an uncovered host" $ do
         let scopeSet = either (error . renderScopeError) id (mkScopeSet [parent] [ScopeWildcard parent])
         bindListener scopeSet (fq "unrelated.example.org")
           `shouldBe` Left (HostNotCovered "unrelated.example.org")
       it "bindListener admits a covered host" $ do
         let scopeSet = either (error . renderScopeError) id (mkScopeSet [parent] [ScopeWildcard parent])
-        bindListener scopeSet (fq "vscode.resolvefintech.com") `shouldBe` Right ()
+        bindListener scopeSet (fq "vscode.example.test") `shouldBe` Right ()
 
     describe "dnsNames / retention-key projection" $ do
       it "projects independent exacts and wildcards to a canonical dnsNames list" $ do
@@ -126,27 +126,27 @@ certScopeSuite =
               either (error . renderScopeError) id $
                 mkScopeSet
                   poolZones
-                  [ScopeWildcard (zn "aws.resolvefintech.com"), ScopeExact (fq "test.resolvefintech.com")]
+                  [ScopeWildcard (zn "aws.example.test"), ScopeExact (fq "test.example.test")]
         certScopeSetDnsNames scopeSet
-          `shouldBe` ["test.resolvefintech.com", "*.aws.resolvefintech.com"]
-        renderCertScopeSet scopeSet `shouldBe` "test.resolvefintech.com,*.aws.resolvefintech.com"
+          `shouldBe` ["test.example.test", "*.aws.example.test"]
+        renderCertScopeSet scopeSet `shouldBe` "test.example.test,*.aws.example.test"
       it "reduces a redundant exact subsumed by a wildcard (minimal SANs)" $ do
-        -- vscode.resolvefintech.com is a single-label child of resolvefintech.com,
-        -- so *.resolvefintech.com subsumes it; only the wildcard survives.
+        -- vscode.example.test is a single-label child of example.test,
+        -- so *.example.test subsumes it; only the wildcard survives.
         let scopeSet =
               either (error . renderScopeError) id $
-                mkScopeSet poolZones [ScopeWildcard parent, ScopeExact (fq "vscode.resolvefintech.com")]
-        certScopeSetDnsNames scopeSet `shouldBe` ["*.resolvefintech.com"]
+                mkScopeSet poolZones [ScopeWildcard parent, ScopeExact (fq "vscode.example.test")]
+        certScopeSetDnsNames scopeSet `shouldBe` ["*.example.test"]
       it "serializes narrower and wider SAN sets to distinct retention coordinates" $ do
         let exactSet =
               either (error . renderScopeError) id $
-                mkScopeSet poolZones [ScopeExact (fq "vscode.resolvefintech.com")]
+                mkScopeSet poolZones [ScopeExact (fq "vscode.example.test")]
             wildcardSet =
               either (error . renderScopeError) id $
                 mkScopeSet poolZones [ScopeWildcard parent]
         impliedBy exactSet wildcardSet `shouldBe` True
-        renderCertScopeSet exactSet `shouldBe` "vscode.resolvefintech.com"
-        renderCertScopeSet wildcardSet `shouldBe` "*.resolvefintech.com"
+        renderCertScopeSet exactSet `shouldBe` "vscode.example.test"
+        renderCertScopeSet wildcardSet `shouldBe` "*.example.test"
 
     describe "partial-order laws (property)" $ do
       propertyTest "impliedBy is reflexive" $

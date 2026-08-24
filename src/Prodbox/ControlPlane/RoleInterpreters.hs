@@ -33,6 +33,7 @@ module Prodbox.ControlPlane.RoleInterpreters
   , lifecycleAuthorityAwsStackReaderAuthenticatedHandler
   , lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler
   , lifecycleAuthorityOwnershipManifestAuthenticatedHandler
+  , lifecycleAuthorityControllerOwnerAuthenticatedHandler
   , lifecycleAuthorityRecoveryPlaneAuthenticatedHandler
   , lifecycleAuthorityLocalRke2HostObservationAuthenticatedHandler
   , lifecycleAuthorityCascadeRetainedSlotAuthenticatedHandler
@@ -143,6 +144,15 @@ import Prodbox.ControlPlane.ConfigEndpoint
   , serveConfigObserveRequest
   , serveConfigProposeCasRequest
   )
+import Prodbox.ControlPlane.ControllerOwnerEndpoint
+  ( controllerOwnerEndpointBody
+  , controllerOwnerEndpointStatus
+  , serveControllerOwnerEndpointRequest
+  )
+import Prodbox.ControlPlane.ControllerOwnerRepository
+  ( ControllerOwnerRepositoryError
+  , ControllerOwnerTransition
+  )
 import Prodbox.ControlPlane.EksDrainIntentClient
   ( EksDrainIntentClient
   )
@@ -242,6 +252,7 @@ import Prodbox.ControlPlane.Route
       , LifecycleCleanupRun
       , LifecycleConfigObserve
       , LifecycleConfigProposeCas
+      , LifecycleControllerOwner
       , LifecycleEksDrainIntent
       , LifecycleEksDrainReadBackReceipt
       , LifecycleLocalRke2HostObservation
@@ -317,6 +328,7 @@ import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   , tlsTargetVerifyResponseBody
   )
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
+import Prodbox.Lib.AwsControlPlaneIsolation (ControllerOwnerState)
 import Prodbox.Lifecycle.AdminAction.Authority
   ( AdminActionAuthorityRepository
   )
@@ -729,6 +741,37 @@ lifecycleAuthorityOwnershipManifestAuthenticatedHandler repository inner =
         ( Just
             ( ownershipManifestEndpointStatus result
             , ownershipManifestEndpointBody result
+            )
+        )
+    _ -> authenticatedHandlerHandle inner callerSlot route body
+
+lifecycleAuthorityControllerOwnerAuthenticatedHandler
+  :: (Monad m)
+  => ( ControllerOwnerTransition
+       -> m
+            ( Either
+                ControllerOwnerRepositoryError
+                ControllerOwnerState
+            )
+     )
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityControllerOwnerAuthenticatedHandler repository inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
+    , authenticatedHandlerHandle = handle
+    }
+ where
+  handle callerSlot route body = case route of
+    LifecycleControllerOwner -> do
+      result <-
+        serveControllerOwnerEndpointRequest
+          repository
+          (LazyByteString.fromStrict body)
+      pure
+        ( Just
+            ( controllerOwnerEndpointStatus result
+            , controllerOwnerEndpointBody result
             )
         )
     _ -> authenticatedHandlerHandle inner callerSlot route body

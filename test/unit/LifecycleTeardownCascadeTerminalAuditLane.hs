@@ -406,7 +406,7 @@ escapedAudit =
         { awsTagRowArn =
             mustRight
               ( mkArn
-                  "arn:aws:ec2:us-east-1:123456789012:instance/i-0escapee"
+                  ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123456789012:instance/i-0escapee")
               )
         , awsTagRowScope = auditScope
         , awsTagRowResourceType = AwsResourceType "ec2:instance"
@@ -419,7 +419,7 @@ unobservableAudit :: Either ObservationFailure [AwsTagRow]
 unobservableAudit = Left (ObservationFailure "tagging api unreachable")
 
 auditScope :: AwsScope
-auditScope = AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")
+auditScope = AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))
 
 compiledCascade :: CompiledDesiredAbsenceProgram 'Cascade
 compiledCascade =
@@ -428,6 +428,7 @@ compiledCascade =
         cascadeRunId
         (LinuxRke2FoundationId "home-rke2")
         (Just auditScope)
+        Nothing
         CascadeSurface
     )
 

@@ -23,6 +23,10 @@ module TestSupport
   , fixtureUnreadyRoleReadinessSource
   , fixtureReadinessNowMicros
   , fixtureRoleReadinessResolver
+  , FixtureAwsRegion (..)
+  , fixtureAwsRegion
+  , syntheticConfigFile
+  , syntheticProjectConfig
   , verifiedCallerSlotFixture
   )
 where
@@ -31,9 +35,13 @@ import Control.Concurrent.STM (atomically)
 import Data.ByteString.Char8 qualified as StrictByteString8
 import Data.ByteString.Lazy (ByteString)
 import Data.List (isInfixOf)
+import Data.String (IsString)
 import GHC.Stack (HasCallStack)
 import Numeric.Natural (Natural)
+import Prodbox.Aws.Region (awsRegionFromParts)
+import Prodbox.Cluster.Topology qualified as ClusterTopology
 import Prodbox.Config.SchemaDhall (renderDefaultComponentGraphDhall)
+import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal)
 import Prodbox.ControlPlane.Coordinate (mkAuthorityScope)
 import Prodbox.ControlPlane.RequestAuthentication
@@ -67,6 +75,7 @@ import Prodbox.Lifecycle.Lease
   )
 import Prodbox.Retry qualified as Retry
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
+import Prodbox.Settings qualified as Settings
 import System.Directory
   ( copyFile
   , getPermissions
@@ -84,6 +93,71 @@ import Test.Tasty.HUnit
   , testCase
   )
 import Test.Tasty.QuickCheck (Testable, testProperty)
+
+-- | Valid deployment-neutral fixture. Production defaults intentionally leave
+-- operator-authored identity and public-host fields empty.
+syntheticConfigFile :: Settings.ConfigFile
+syntheticConfigFile =
+  Settings.defaultConfigFile
+    { Settings.domain =
+        Settings.DomainSection
+          { Settings.demo_fqdn = "synthetic.test.invalid"
+          , Settings.demo_ttl = 60
+          , Settings.cert_scopes = []
+          }
+    , Settings.cluster_topology =
+        either
+          (error . ClusterTopology.renderTopologyError)
+          id
+          (ClusterTopology.mkSingleMachineRke2Topology "synthetic-test-machine")
+    }
+
+-- | Valid Tier-0 envelope for tests whose subject is encoding, decoding, or a
+-- non-config invariant. The production default envelope remains unauthored.
+syntheticProjectConfig :: Tier0.ProdboxProjectConfig
+syntheticProjectConfig =
+  Tier0.defaultProjectConfig
+    { Tier0.parameters = Tier0.configFileToTier0Parameters syntheticConfigFile
+    , Tier0.context =
+        (Tier0.context Tier0.defaultProjectConfig)
+          { Tier0.cluster_id = "synthetic-test-cluster"
+          , Tier0.vault_address = "http://127.0.0.1:31820"
+          , Tier0.minio_endpoint = "http://127.0.0.1:39000"
+          }
+    }
+
+-- | Named synthetic regions used by tests. Deployment configuration never
+-- imports these values; they are rendered from components so no Haskell source
+-- can accidentally become a copyable deployment-region default.
+data FixtureAwsRegion
+  = FixtureApBroker57
+  | FixtureApSoutheast2
+  | FixtureCaCentral1
+  | FixtureCnNorthwest1
+  | FixtureEuWest1
+  | FixtureEuWest2
+  | FixtureEuWest3
+  | FixtureUsEast1
+  | FixtureUsEast2
+  | FixtureUsGovWest1
+  | FixtureUsIsoEast1
+  | FixtureUsWest2
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+fixtureAwsRegion :: (IsString value) => FixtureAwsRegion -> value
+fixtureAwsRegion region = case region of
+  FixtureApBroker57 -> awsRegionFromParts "ap" "broker" 57
+  FixtureApSoutheast2 -> awsRegionFromParts "ap" "southeast" 2
+  FixtureCaCentral1 -> awsRegionFromParts "ca" "central" 1
+  FixtureCnNorthwest1 -> awsRegionFromParts "cn" "northwest" 1
+  FixtureEuWest1 -> awsRegionFromParts "eu" "west" 1
+  FixtureEuWest2 -> awsRegionFromParts "eu" "west" 2
+  FixtureEuWest3 -> awsRegionFromParts "eu" "west" 3
+  FixtureUsEast1 -> awsRegionFromParts "us" "east" 1
+  FixtureUsEast2 -> awsRegionFromParts "us" "east" 2
+  FixtureUsGovWest1 -> awsRegionFromParts "us-gov" "west" 1
+  FixtureUsIsoEast1 -> awsRegionFromParts "us-iso" "east" 1
+  FixtureUsWest2 -> awsRegionFromParts "us" "west" 2
 
 -- | An empty typed @components@ list in the schema-less inline-union style the
 -- fixtures use (Sprint 1.56).

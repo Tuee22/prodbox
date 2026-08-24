@@ -186,12 +186,14 @@ data EdgeCommand
   deriving (Eq, Show)
 
 -- | Sprint 1.36: the in-cluster Vault lifecycle surface. 'VaultStatus' probes
--- seal state; the mutating subcommands drive init / unseal / seal / reconcile
--- / key rotation / PKI inspection through the Vault CLI handlers.
+-- seal state; the mutating subcommands drive init / proven-ambiguity reset /
+-- unseal / seal / reconcile / key rotation / PKI inspection through the Vault
+-- CLI handlers. The reset Boolean is the load-bearing @--yes@ confirmation.
 -- 'VaultRotateTransitKey' carries the Transit key name.
 data VaultCommand
   = VaultStatus
   | VaultInit
+  | VaultResetAmbiguousInitialization Bool
   | VaultUnseal
   | VaultSeal
   | VaultReconcile
@@ -371,7 +373,7 @@ data AwsTeardownFlags = AwsTeardownFlags
 -- * 'BypassPerRunResidueForHarnessRefresh' — Sprint 7.34, harness-internal
 --   only, never CLI-settable. End-of-run @runAwsIamHarnessTeardown@ postflight
 --   semantics: it clears operational @aws.*@ unconditionally (per-run residue
---   is destroyed separately by @awsPostflightDestroyActions@ and never strands
+--   is reconciled first by the descriptor-bound lifecycle cleanup client and never strands
 --   @aws.*@ — the Sprint 7.9 stranding fix is retained), but it is
 --   PER-RUN-SCOPED: unlike 'BypassAllResidueForHarnessRefresh' it does not
 --   authorize destroying long-lived cross-substrate residue (@aws-ses@ / the
@@ -526,6 +528,7 @@ data IntegrationSuite
   | IntegrationTeardownRecovery
   | IntegrationCertificateScope
   | IntegrationCleanRoomHandoff
+  | IntegrationCascadeQualification
   | IntegrationHaRke2Aws
   | IntegrationLifecycle
   | IntegrationPulumi

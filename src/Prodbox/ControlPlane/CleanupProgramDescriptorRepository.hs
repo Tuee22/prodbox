@@ -11,6 +11,7 @@ module Prodbox.ControlPlane.CleanupProgramDescriptorRepository
   , committedCleanupProgramDescriptorSurface
   , committedCleanupProgramDescriptorFoundation
   , committedCleanupProgramDescriptorAwsScope
+  , committedCleanupProgramDescriptorAwsDnsZone
   , committedCleanupProgramDescriptorRegistryRevision
   , committedCleanupProgramDescriptorLifecycleOperation
   , committedCleanupProgramDescriptorGraphDigest
@@ -29,6 +30,7 @@ module Prodbox.ControlPlane.CleanupProgramDescriptorRepository
   , cleanupProgramDescriptorRegressionUnknownStatesRefused
   , cleanupProgramDescriptorRegressionWrongRunRefused
   , cleanupProgramDescriptorRegressionRestartReconstructionValidated
+  , cleanupProgramDescriptorRegressionLegacyV1RestartReadable
   )
 where
 

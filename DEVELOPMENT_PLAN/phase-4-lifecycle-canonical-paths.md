@@ -10,6 +10,20 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-23 on Sprint `4.90`.** Host and Pulumi Vault probes now project the
+validated deployment context, retained lifecycle resolution compares exact cluster/Vault identity
+before any effect, lower gates consume sealed Tier-0 basics, and every state-store consumer imports
+the one generic bucket identity. The duplicate defaults and production endpoint-changing test
+environment seams are deleted. Code-owned validation is green; Standard-P deployment
+qualification remains pending and non-blocking.
+
+🔄 **Configuration-ownership expansion registered 2026-08-22 as Sprint `4.90` (Standards A/N).**
+Host and lifecycle paths independently choose cluster, Vault, and object-store coordinates instead
+of consuming the context they seal. This phase owns those capability consumers and the collapse of
+duplicate state-bucket declarations; `4.90` follows Sprint `1.92`. The earlier teardown reopen and
+its evidence remain unchanged; execution order lives in
+[README.md → Resume Here](README.md#resume-here).
+
 🔄 **Reopened 2026-08-15 on Sprints `4.84`–`4.86` (Standards A/L/P).** The pending live proof for
 `4.82` falsified its composition claim: AWS returned one `ResourceTagMapping` for a retained S3
 bucket with its full two-tag set; Prodbox's decoder emitted two internal rows, turned them into
@@ -13242,6 +13256,111 @@ A durable custody ledger — a retained record of which disposition ended which 
 deliberately out of scope and is not scheduled here: it is worth building once a disposition has more
 than one producer, and building it now would land a recorder with a single writer to record. If it
 becomes necessary it opens as its own sprint rather than as an unstated extension of this one.
+
+## Sprint 4.90: Lifecycle Uses the Context It Sealed [✅ Done]
+
+**Status**: Done — 2026-08-23.
+**Implementation**: `src/Prodbox/Vault/Host.hs`, `src/Prodbox/Host.hs`,
+`src/Prodbox/CLI/{Rke2,Pulumi}.hs`, `src/Prodbox/Config/Tier0.hs`,
+`src/Prodbox/ControlPlane/{LifecycleAuthorityAuthentication,InClusterAuthorityStore}.hs`,
+`src/Prodbox/Infra/{LongLivedPulumiBackend,MinioBackend}.hs`,
+`src/Prodbox/Lifecycle/LiveResidue.hs`, `src/Prodbox/Minio/ObjectStoreTypes.hs`,
+`src/Prodbox/CheckCode.hs`, and focused unit/integration fixtures.
+**Deployment qualification**: pending — bootstrap capability wiring, persistence routing, and
+lifecycle orchestration change; prior aggregate evidence is invalid for this composition.
+**Independent Validation**: pure context-to-capability projections and injected fake Vault/MinIO
+clients exercise two contexts plus missing/mismatch refusals; unit/CLI tests and
+`prodbox dev check` require no live cluster or later phase.
+**Docs to update**: `documents/engineering/config_doctrine.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Make lifecycle commands consume the same cluster id, Vault address, MinIO endpoint, and state-bucket
+identity that Tier-0 names and the retained context seals. Today `hostVaultAddress`, a test
+environment override in the production module, `RootVaultLifecycle "prodbox-home"`, the in-cluster
+authority-store endpoint, and several bucket constants can independently answer those questions.
+Restoring or deleting under a different answer than the sealed context is a capability-binding
+failure, not a harmless default.
+
+### Deliverables
+
+- Host and RKE2 lifecycle entrypoints receive Sprint `1.92`'s validated context and construct
+  `RootVaultLifecycle`, Vault probes, basics-floor operations, authority-store clients, and MinIO
+  backend configuration only from it.
+- Delete `hostVaultAddress`, `resolveHostVaultAddress`,
+  `PRODBOX_TEST_HOST_VAULT_ADDR`, the `prodbox-home` fallback arm, and the default in-cluster MinIO
+  endpoint. Tests inject a typed context/client instead of changing production behavior through an
+  environment variable.
+- Collapse `minioBackendBucket`, `gatewayMinioBucket`, `defaultObjectStoreBucket`, and equivalent
+  production declarations onto the one prodbox-owned state-bucket identity introduced by Sprint
+  `1.92`; fixtures import or receive that value instead of restating it when identity matters.
+- Bind the resolved endpoint/cluster identity into the capability reference or request identity
+  used for observation and execution, so a probe against one context cannot authorize execution
+  against another.
+
+### Validation
+
+1. Two distinct valid contexts drive distinct Vault/MinIO client coordinates and lifecycle request
+   identities end to end through fakes.
+2. A probe/execution context mismatch, missing endpoint, or missing cluster id refuses before any
+   effect; no host-local address is substituted.
+3. Production source contains one state-bucket declaration and no complete host Vault or MinIO
+   endpoint literal outside the compiled chart/service identity surfaces that own them.
+4. The old environment variable has no production read and a test attempting to set it cannot
+   change the selected endpoint.
+5. Lifecycle/host unit and CLI suites plus `prodbox dev check` pass.
+
+### Remaining Work
+
+None on the sprint's code-owned surface. Deployment qualification remains pending under Standard P;
+this sprint does not claim a current live bootstrap/lifecycle composition proof.
+
+### Closure Record (2026-08-23)
+
+- Host/public-edge, RKE2 status, and Pulumi preflight project Vault only from
+  `ValidatedDeploymentContext`. The old host and Pulumi endpoint environment variables and the
+  compiled loopback fallback are gone.
+- A retained `RootVaultLifecycle` is usable only after its cluster id and Vault address match the
+  validated context. A missing Tier-0 basics floor, missing authored coordinate, or mismatch
+  refuses before an effect; authentication, retained-backend, and residue gates below settings use
+  the address already sealed in that floor.
+- `defaultObjectStoreBucket` is the only `prodbox-state` declaration. The RKE2 gateway path,
+  MinIO backend, sealed-Vault audit, charts, and role stores import or receive it; the in-cluster
+  Authority store has no endpoint or bucket default.
+- Two-context and mismatch tests cover distinct Vault/MinIO/lifecycle identities, non-rewriting
+  floor refusal, and immunity to the retired host override. The mutation-proven
+  `checkHostLifecycleContextOwnership` gate pins every consumer reach and rejects restored
+  fallbacks or duplicate bucket declarations.
+- Validation is green: focused Sprint `4.90` unit proof 5/5, the sealed-Pulumi CLI refusal 1/1,
+  Haskell lint, the complete canonical unit command (4543 primary tests plus 27/33/29 specialized
+  suites), both canonical CLI/environment integration commands (62/62 each), documentation lint,
+  HLint with `No hints`, and the warning-clean `prodbox dev check`.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` — sealed context and exact
+  capability-coordinate binding.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — observation and execution consume
+  one context identity.
+- `documents/engineering/vault_doctrine.md` — no host-address fallback and one generic state-bucket
+  identity.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `4` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md); register every surviving lifecycle fallback/duplicate in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

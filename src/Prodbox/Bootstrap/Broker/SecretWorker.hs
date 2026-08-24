@@ -99,11 +99,14 @@ module Prodbox.Bootstrap.Broker.SecretWorker
 
     -- * Typed, secret-free receipt
   , SecretWorkerOutcome (..)
+  , InitializationAmbiguityCause (..)
+  , initializationAmbiguityCauseName
   , SecretWorkerDurableResult
   , preparedInitializationWorkerResult
   , resumedInitializationWorkerResult
   , encryptedInitializationWorkerResult
   , ambiguousInitializationWorkerResult
+  , classifiedAmbiguousInitializationWorkerResult
   , finalizedInitializationWorkerResult
   , unsealWorkerResult
   , unlockRotationWorkerResult
@@ -114,6 +117,7 @@ module Prodbox.Bootstrap.Broker.SecretWorker
   , durableResumedInitialization
   , durableEncryptedInitialization
   , durableInitializationIsAmbiguous
+  , durableInitializationAmbiguityCause
   , durableFinalizedInitialization
   , durableUnsealResult
   , durableUnlockRotationResult
@@ -849,6 +853,28 @@ data SecretWorkerOutcome
   | SecretWorkerGeneratedRootCompleted
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
+-- | Secret-free reason why Vault was observed initialized without a usable
+-- initialization response. The only carried value is an HTTP status code;
+-- transport exceptions, response bodies, and decoder details are discarded
+-- before this value crosses the one-shot worker boundary.
+data InitializationAmbiguityCause
+  = InitializationObservedBeforeCall
+  | InitializationCallConnectionFailure
+  | InitializationCallTimeout
+  | InitializationCallHttpStatus !Int
+  | InitializationCallResponseDecodeFailure
+  | InitializationCauseUnclassified
+  deriving stock (Eq, Show)
+
+initializationAmbiguityCauseName :: InitializationAmbiguityCause -> String
+initializationAmbiguityCauseName cause = case cause of
+  InitializationObservedBeforeCall -> "observed-before-call"
+  InitializationCallConnectionFailure -> "connection-failure"
+  InitializationCallTimeout -> "timeout"
+  InitializationCallHttpStatus code -> "http-status-" ++ show code
+  InitializationCallResponseDecodeFailure -> "response-decode-failure"
+  InitializationCauseUnclassified -> "unclassified"
+
 -- | Closed durable output family for one-shot workers. Constructors remain
 -- private so callers can neither introduce a generic result nor confuse two
 -- operations. Every retained value is public metadata or ciphertext: prepared
@@ -859,7 +885,8 @@ data SecretWorkerDurableResult
   = InternalPreparedInitializationResult !PreparedInitRecipients
   | InternalResumedInitializationResult !PreparedInitRecipients
   | InternalEncryptedInitializationResult !EncryptedInitResponseReceipt
-  | InternalAmbiguousInitializationResult
+  | -- Retained for byte-compatible decoding of pre-Sprint-2.64 checkpoints.
+    InternalAmbiguousInitializationResult
   | InternalFinalizedInitializationResult !FinalUnlockBundle
   | InternalUnsealResult !BootstrapMutationReceipt
   | InternalUnlockRotationResult !BootstrapMutationReceipt
@@ -867,6 +894,9 @@ data SecretWorkerDurableResult
       !BootstrapMutationReceipt
       !WorkerSessionAccessor
   | InternalGeneratedRootCiphertextResult !GeneratedRootCiphertext
+  | -- Appended, rather than reshaping the retained nullary constructor above,
+    -- so all earlier constructor indices and encodings remain unchanged.
+    InternalClassifiedAmbiguousInitializationResult !InitializationAmbiguityCause
   deriving stock (Eq, Show)
 
 preparedInitializationWorkerResult
@@ -883,6 +913,13 @@ encryptedInitializationWorkerResult = InternalEncryptedInitializationResult
 
 ambiguousInitializationWorkerResult :: SecretWorkerDurableResult
 ambiguousInitializationWorkerResult = InternalAmbiguousInitializationResult
+
+classifiedAmbiguousInitializationWorkerResult
+  :: InitializationAmbiguityCause -> SecretWorkerDurableResult
+classifiedAmbiguousInitializationWorkerResult cause =
+  case cause of
+    InitializationCauseUnclassified -> InternalAmbiguousInitializationResult
+    _ -> InternalClassifiedAmbiguousInitializationResult cause
 
 finalizedInitializationWorkerResult
   :: FinalUnlockBundle -> SecretWorkerDurableResult
@@ -929,9 +966,14 @@ durableEncryptedInitialization result = case result of
   _ -> Nothing
 
 durableInitializationIsAmbiguous :: SecretWorkerDurableResult -> Bool
-durableInitializationIsAmbiguous result = case result of
-  InternalAmbiguousInitializationResult -> True
-  _ -> False
+durableInitializationIsAmbiguous = maybe False (const True) . durableInitializationAmbiguityCause
+
+durableInitializationAmbiguityCause
+  :: SecretWorkerDurableResult -> Maybe InitializationAmbiguityCause
+durableInitializationAmbiguityCause result = case result of
+  InternalAmbiguousInitializationResult -> Just InitializationCauseUnclassified
+  InternalClassifiedAmbiguousInitializationResult cause -> Just cause
+  _ -> Nothing
 
 durableFinalizedInitialization
   :: SecretWorkerDurableResult -> Maybe FinalUnlockBundle
@@ -981,6 +1023,7 @@ secretWorkerDurableResultOperation result = case result of
   InternalUnlockRotationResult _ -> SecretWorkerRotateUnlockBundle
   InternalTransitRotationResult _ _ -> SecretWorkerRotateTransitKey
   InternalGeneratedRootCiphertextResult _ -> SecretWorkerCompleteGeneratedRoot
+  InternalClassifiedAmbiguousInitializationResult _ -> SecretWorkerInitialize
 
 -- | Raw, secret-free worker-boundary receipt.  It is not trusted merely by
 -- decoding: 'captureSecretWorkerReceipt' checks every field against the
@@ -1543,6 +1586,8 @@ deriving stock instance Generic SecretFreeWorkerRequest
 deriving anyclass instance Serialise SecretFreeWorkerRequest
 deriving stock instance Generic SecretWorkerOutcome
 deriving anyclass instance Serialise SecretWorkerOutcome
+deriving stock instance Generic InitializationAmbiguityCause
+deriving anyclass instance Serialise InitializationAmbiguityCause
 deriving stock instance Generic SecretWorkerDurableResult
 deriving anyclass instance Serialise SecretWorkerDurableResult
 deriving stock instance Generic RawSecretWorkerReceipt

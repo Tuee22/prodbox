@@ -6,7 +6,6 @@ module Prodbox.TestRunner
   , TestGate (..)
   , TestDeleteTarget (..)
   , TestRefusal (..)
-  , clearOperationalCredsAfterPostflight
   , guardTestDelete
   , integrationRunbookCommandArgs
   , PublicEdgeCertificateFailure (..)
@@ -15,8 +14,8 @@ module Prodbox.TestRunner
   , awsSubstrateBootstrapRestoreSteps
   , awsSubstrateBootstrapPreMonitorSteps
   , awsSubstrateBootstrapPostMonitorSteps
-  , awsPostflightDestroyCommandArgs
-  , awsHarnessCleanupTopology
+  , lifecycleCleanupTargetsForSuite
+  , nativeMayProvisionPerRunAwsStacks
   , GatewayRuntimeValidationBoundary (..)
   , gatewayRuntimeValidationBoundary
   , publicEdgeCertificateReissueStatusPatch
@@ -48,13 +47,13 @@ import Data.Aeson (encode, object, (.=))
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char qualified as Char
 import Data.List (dropWhileEnd, find, isInfixOf, isPrefixOf)
-import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Prodbox.Aws
-  ( ConfigSetupInput (..)
-  , configFromSetupInput
+  ( HarnessDeploymentInput (..)
+  , harnessConfigSetupInputFrom
+  , harnessGeneratedConfig
   , regenerateConfigFromTestSecrets
   , runAwsIamHarnessSetup
   , runAwsIamHarnessTeardown
@@ -83,7 +82,6 @@ import Prodbox.CLI.Rke2
   ( ensureGatewayMinioBootstrap
   , reconcileAcmeEabFixture
   , rke2InstallPresent
-  , runCascadeDrainResult
   )
 import Prodbox.CheckCode (runCheckCode)
 import Prodbox.Config.Tier0 qualified as Tier0
@@ -105,7 +103,6 @@ import Prodbox.Infra.AwsEksTestStack
   ( awsEksCanonicalClusterName
   )
 import Prodbox.Infra.AwsSesStack qualified as AwsSesStack
-import Prodbox.Infra.Route53ValidationZone (destroyValidationHostedZones)
 import Prodbox.Lib.ChartPlatform
   ( renderPublicEdgePreserveOutcome
   , retainReadyPublicEdgeCertificate
@@ -119,22 +116,7 @@ import Prodbox.Lifecycle.AuthorityConfig (resolveLongLivedCheckpointAuthority)
 import Prodbox.Lifecycle.CheckpointAuthority
   ( checkpointAuthorityClusterId
   )
-import Prodbox.Lifecycle.CleanupRun
-  ( CleanupDependencyKind (..)
-  , CleanupNodeOutcome (..)
-  , CleanupNodeState (..)
-  , CleanupRunReport (..)
-  )
-import Prodbox.Lifecycle.CleanupRunRunner
-  ( CleanupRunDriverResult (..)
-  )
-import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
-import Prodbox.Lifecycle.ResourceRegistry
-  ( ManagedResource (resourceName)
-  , managedDestroyCapability
-  , perRunManagedResources
-  )
 import Prodbox.Lifecycle.RestoreGraph
   ( RestoreNodeResult (..)
   , RestoreOutcome (..)
@@ -144,6 +126,9 @@ import Prodbox.Lifecycle.RestoreGraph
   , restoreReportBlocked
   , restoreReportFailed
   , runRestoreGraphWith
+  )
+import Prodbox.Lifecycle.Teardown.Model
+  ( RegisteredResourceKey (..)
   )
 import Prodbox.Prerequisite
   ( prerequisiteRegistry
@@ -156,22 +141,14 @@ import Prodbox.Result
   ( Result (..)
   )
 import Prodbox.Settings
-  ( AcmeSection (..)
-  , AwsCredentialsRef (..)
-  , ConfigFile (..)
+  ( ConfigFile (..)
   , Credentials (..)
-  , DeploymentSection (..)
-  , DomainSection (..)
-  , Route53Section (..)
+  , DeploymentContextInput (..)
   , SeedInForceOutcome
-  , acme
-  , aws
   , defaultConfigFile
-  , deployment
-  , domain
   , loadTestTopology
   , reconcileInForceConfigFromFile
-  , route53
+  , validateConfigWithContext
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -181,13 +158,13 @@ import Prodbox.Subprocess
   , runSubprocessStreaming
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
-import Prodbox.Test.DurableCleanupComposition
-  ( runDurableCleanupComposition
-  )
-import Prodbox.Test.ManagedCleanupPlan
-  ( CapabilityBoundCleanupAction (..)
-  , ManagedCleanupEdge (..)
-  , managedResourceCleanupAction
+import Prodbox.Test.LifecycleCleanupClient
+  ( LifecycleTestHarnessCleanupInputs (..)
+  , lifecycleTestHarnessCleanupAllowsCredentialTeardown
+  , lifecycleTestHarnessCleanupExitCode
+  , lifecycleTestHarnessCleanupLifecycleResult
+  , renderLifecycleTestHarnessCleanupError
+  , runLifecycleTestHarnessCleanup
   )
 import Prodbox.TestPlan
   ( NativeSuitePlan (..)
@@ -214,7 +191,8 @@ import Prodbox.TestRestore
   , runRetainedSesPreparationWith
   )
 import Prodbox.TestTopology
-  ( TestSuite (..)
+  ( RunVariant (..)
+  , TestSuite (..)
   , TestTopology (..)
   , defaultTestTopology
   , renderTestTopologyDhall
@@ -233,6 +211,8 @@ import Prodbox.TestValidation
   , runNativeValidationWithGatewayStability
   , withGatewayRuntimeStabilityMonitor
   )
+import Prodbox.Vault.Host (TestSecrets, loadTestSecrets)
+import Prodbox.Vault.Host qualified as VaultHost
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -501,12 +481,14 @@ runTopologyVariant
   -> TestScope
   -> TestSuite
   -> ExitCode
-  -> (Int, a)
+  -> (Int, RunVariant)
   -> IO ExitCode
 runTopologyVariant _ _ _ _ _ _ failure@(ExitFailure _) _ = pure failure
-runTopologyVariant repoRoot environment coverage substrate scope suite ExitSuccess (variantIndex, _) = do
+runTopologyVariant repoRoot environment coverage substrate scope suite ExitSuccess (variantIndex, variant) = do
   let caseId = topologyCaseId (Text.unpack (suiteName suite)) variantIndex
-      testDataPath = repoRoot </> testCaseDataRoot caseId
+      testDataRoot = testCaseDataRoot caseId
+      testDataPath = repoRoot </> testDataRoot
+      runId = topologyRunId (Text.unpack (suiteName suite)) variantIndex
       variantEnvironment = topologyVariantEnvironment testDataPath coverage environment
   generatedConfigPath <- resolveTier0ConfigPath repoRoot
   let cleanupTargets =
@@ -515,7 +497,7 @@ runTopologyVariant repoRoot environment coverage substrate scope suite ExitSucce
         ]
   createDirectoryIfMissing True testDataPath
   ( do
-      configWriteResult <- writeTopologyVariantConfig repoRoot testDataPath
+      configWriteResult <- writeTopologyVariantConfig repoRoot testDataRoot runId variant
       case configWriteResult of
         Left err -> failWith err
         Right () -> do
@@ -549,50 +531,67 @@ upsertEnv :: String -> String -> [(String, String)] -> [(String, String)]
 upsertEnv name value environment =
   (name, value) : filter ((/= name) . fst) environment
 
-writeTopologyVariantConfig :: FilePath -> FilePath -> IO (Either String ())
-writeTopologyVariantConfig repoRoot testDataPath = do
-  result <- Tier0.writeOperatorParametersToTier0 repoRoot (topologyRunConfig testDataPath)
-  case result of
-    Left err -> pure (Left err)
-    Right () -> pure (Right ())
+writeTopologyVariantConfig
+  :: FilePath -> FilePath -> Text.Text -> RunVariant -> IO (Either String ())
+writeTopologyVariantConfig repoRoot testDataPath runId variant = do
+  secretsResult <- loadTestSecrets repoRoot
+  case secretsResult of
+    Nothing -> pure (Left "topology harness config generation requires test-secrets.dhall (absent).")
+    Just (Left err) ->
+      pure (Left ("topology harness config generation failed to decode test-secrets.dhall: " ++ err))
+    Just (Right secrets) ->
+      case topologyRunConfig testDataPath runId variant secrets of
+        Left err -> pure (Left err)
+        Right (generatedConfig, contextInput) -> do
+          validationResult <- validateConfigWithContext repoRoot contextInput generatedConfig
+          case validationResult of
+            Left err -> pure (Left ("generated topology config is invalid before write: " ++ err))
+            Right _ ->
+              Tier0.writeOperatorDeploymentConfigToTier0 repoRoot generatedConfig contextInput
 
-topologyRunConfig :: FilePath -> ConfigFile
-topologyRunConfig testDataPath =
-  configFromSetupInput defaultConfigFile (topologyConfigSetupInput testDataPath)
-
-topologyConfigSetupInput :: FilePath -> ConfigSetupInput
-topologyConfigSetupInput testDataPath =
-  ConfigSetupInput
-    { configSetupAdminCredentialsInput =
+-- | Pure topology-run config derivation. The topology and endpoints are read
+-- from one validated variant; cluster identity and storage root are derived
+-- from the stable suite/variant run id. Public-edge and external infra naming
+-- comes only from the explicit harness fixture.
+topologyRunConfig
+  :: FilePath
+  -> Text.Text
+  -> RunVariant
+  -> TestSecrets
+  -> Either String (ConfigFile, DeploymentContextInput)
+topologyRunConfig testDataPath runId variant secrets = do
+  let adminFixture = VaultHost.aws_admin_for_test_simulation secrets
+      credentials =
         Credentials
           { access_key_id = ""
           , secret_access_key = ""
           , session_token = Nothing
-          , region = awsCredentialRegion (aws defaultConfigFile)
+          , region = VaultHost.region adminFixture
           }
-    , configSetupRoute53ZoneIdInput = zone_id (route53 defaultConfigFile)
-    , configSetupDemoFqdnInput = demo_fqdn (domain defaultConfigFile)
-    , configSetupDemoTtlInput = demo_ttl (domain defaultConfigFile)
-    , configSetupAcmeEmailInput = email (acme defaultConfigFile)
-    , configSetupAcmeServerInput = server (acme defaultConfigFile)
-    , configSetupDevModeInput = dev_mode (deployment defaultConfigFile)
-    , configSetupBootstrapPublicIpOverrideInput =
-        bootstrap_public_ip_override (deployment defaultConfigFile)
-    , configSetupPulumiEnableDnsBootstrapInput =
-        pulumi_enable_dns_bootstrap (deployment defaultConfigFile)
-    , configSetupPublicEdgeAdvertisementModeInput =
-        public_edge_advertisement_mode (deployment defaultConfigFile)
-    , configSetupPublicEdgeBgpPeersInput =
-        public_edge_bgp_peers (deployment defaultConfigFile)
-    , configSetupEnvoyGatewayControllerScalingInput =
-        envoy_gateway_controller_scaling (deployment defaultConfigFile)
-    , configSetupEnvoyGatewayDataPlaneScalingInput =
-        envoy_gateway_data_plane_scaling (deployment defaultConfigFile)
-    , configSetupApiScalingInput = api_scaling (deployment defaultConfigFile)
-    , configSetupWebsocketScalingInput = websocket_scaling (deployment defaultConfigFile)
-    , configSetupManualPvHostRootInput = Text.pack testDataPath
-    , configSetupPolicyTierInput = PolicyFull
-    }
+      contextInput =
+        DeploymentContextInput
+          { contextInputClusterId = runId
+          , contextInputVaultAddress = variantVaultAddress variant
+          , contextInputMinioEndpoint = variantMinioEndpoint variant
+          }
+      deploymentInput =
+        HarnessDeploymentInput
+          { harnessDeploymentContext = contextInput
+          , harnessDeploymentTopology = variantCluster variant
+          , harnessDeploymentStorageRoot = testDataPath
+          }
+  input <-
+    harnessConfigSetupInputFrom
+      defaultConfigFile
+      PolicyFull
+      secrets
+      credentials
+      deploymentInput
+  Right (harnessGeneratedConfig defaultConfigFile secrets input, contextInput)
+
+topologyRunId :: String -> Int -> Text.Text
+topologyRunId suiteName variantIndex =
+  Text.pack ("test-" ++ sanitizeSegment suiteName ++ "-variant-" ++ show variantIndex)
 
 testScopeForTopologySuite :: String -> Either String TestScope
 testScopeForTopologySuite suiteName =
@@ -815,31 +814,17 @@ runNativeSuite repoRoot environment haskellSuites suitePlan = do
                                     runNativeSuiteBody repoRoot environment haskellSuites suitePlan
                         )
 
--- | Sprint 7.6 orphan-safety: run the suite body, then destroy every
--- per-run Pulumi stack the suite may have provisioned before clearing
--- operational @aws.*@ via the harness teardown. The destroys run on
--- success, failure, and async exception (Ctrl-C) alike, so no
--- `prodbox test all` exit path can strand
--- @aws-eks@ / @aws-eks-subzone@ / @aws-test@ resources in AWS. The
--- @aws-ses@ stack is explicitly excluded per the long-lived
--- cross-substrate shared-infrastructure class in
--- @DEVELOPMENT_PLAN/substrates.md@ § Resource Lifecycle Classes.
+-- | Run validation as a client of the lifecycle-owned, descriptor-bound
+-- cleanup program.  Registration and claim happen before the body can perform
+-- its first AWS mutation.  The lifecycle layer owns graph construction,
+-- operation identities, closed dispatch, durable resumption, and the exact
+-- node-state decision.
 --
--- Sprint 7.10 credential-preservation: the per-run destroys still run
--- on every exit path, but the *operational-credential teardown*
--- ('runManagedAwsHarnessTeardown', which clears @aws.*@ + deletes the
--- operational @prodbox@ IAM user) now runs **only when the per-run
--- destroy succeeded** ('clearOperationalCredsAfterPostflight'). When a
--- per-run @pulumi <stack>-destroy@ fails (e.g. the May 28/29
--- @DependencyViolation@ on subnet deletion from lagging orphan ENIs),
--- the orphaned per-run stacks still exist in AWS and need operational
--- creds to be destroyed on retry. Tearing the creds down here would
--- strand those orphans without the credentials required to delete them,
--- so the teardown is held and a diagnostic explains the recovery path.
--- This is the per-run analog of Sprint 7.9 (which made the teardown not
--- gate on admin-managed @aws-ses@): 7.9 said "don't block teardown on
--- aws-ses"; 7.10 says "DO hold the teardown when the per-run
--- auto-destroy — which needs operational creds — failed."
+-- Credential teardown remains the legacy IAM implementation until Sprint 6.5
+-- releases the closed operational-credential dispatcher.  Its gate is no
+-- longer a validation-owned success fold: only the lifecycle result decision
+-- can release it, so any unresolved per-run node preserves the credential for
+-- recovery.
 runWithAwsHarnessCleanup
   :: FilePath
   -> [(String, String)]
@@ -847,189 +832,95 @@ runWithAwsHarnessCleanup
   -> IO ExitCode
   -> IO ExitCode
 runWithAwsHarnessCleanup repoRoot environment suitePlan body = do
-  planned <- awsHarnessCleanupPlan repoRoot environment suitePlan
-  case planned of
-    Left detail -> failWith detail
-    Right (recoveryActions, actions, edges) -> do
+  if nativeValidations suitePlan == [ValidationCascadeQualification]
+    then do
+      -- The qualification body's cascade is itself the sole registered
+      -- cleanup writer.  Wrapping it in the ordinary per-run cleanup client
+      -- would create a second claimed run over the same resources.
+      candidateExit <- body
+      case candidateExit of
+        ExitSuccess -> runManagedAwsHarnessTeardown repoRoot
+        failure@(ExitFailure _) -> do
+          writeDiagnosticLine
+            "Cascade qualification did not prove exact terminal cleanup; preserving operational credentials for recovery."
+          pure failure
+    else do
       driven <-
-        runDurableCleanupComposition
-          repoRoot
-          recoveryActions
-          actions
-          edges
-          ( do
-              exitCode <- body
-              pure $ case exitCode of
-                ExitSuccess -> Right ExitSuccess
-                ExitFailure code -> Left (Text.pack ("suite exited " ++ show code))
-          )
+        runLifecycleTestHarnessCleanup
+          LifecycleTestHarnessCleanupInputs
+            { lifecycleTestHarnessRepositoryRoot = repoRoot
+            , lifecycleTestHarnessSuiteId = Text.pack (nativeSuiteId suitePlan)
+            , lifecycleTestHarnessSelectedTargets =
+                lifecycleCleanupTargetsForSuite suitePlan
+            , lifecycleTestHarnessKubectlEnvironment = environment
+            }
+          body
       case driven of
-        Left detail -> failWith ("Durable AWS harness cleanup failed: " ++ show detail)
-        Right result -> do
-          let report = cleanupDriverReport result
-              cleanupFailed = any cleanupNodeFailed (Map.elems (cleanupReportNodeStates report))
-          if cleanupFailed
-            then do
-              writeDiagnosticLine ("Durable AWS harness cleanup report: " ++ show report)
+        Left err ->
+          failWith
+            ( "Lifecycle-owned AWS harness cleanup failed: "
+                ++ renderLifecycleTestHarnessCleanupError err
+            )
+        Right outcome
+          | lifecycleTestHarnessCleanupAllowsCredentialTeardown outcome -> do
+              credentialExit <- runManagedAwsHarnessTeardown repoRoot
+              case credentialExit of
+                ExitSuccess -> pure (lifecycleTestHarnessCleanupExitCode outcome)
+                failure@(ExitFailure _) -> pure failure
+          | otherwise -> do
+              writeDiagnosticLine
+                ( "Lifecycle-owned AWS harness cleanup remains incomplete; preserving "
+                    ++ "operational credentials for recovery. Result: "
+                    ++ show (lifecycleTestHarnessCleanupLifecycleResult outcome)
+                )
               pure (ExitFailure 1)
-            else case cleanupDriverPrimaryValue result of
-              Just exitCode -> pure exitCode
-              Nothing -> pure (ExitFailure 1)
 
-cleanupNodeFailed :: CleanupNodeState -> Bool
-cleanupNodeFailed state = case state of
-  CleanupNodeCompleted _ CleanupNodeSucceeded -> False
-  CleanupNodeCompleted _ (CleanupNodeFailed _) -> True
-  CleanupNodeCompleted _ (CleanupNodeEffectUnconfirmed _) -> True
-  CleanupNodeBlocked _ -> True
-  CleanupNodePending -> True
-  CleanupNodeRunning _ -> True
-
-awsHarnessCleanupPlan
-  :: FilePath
-  -> [(String, String)]
-  -> NativeSuitePlan
-  -> IO
-       ( Either
-           String
-           ( [CapabilityBoundCleanupAction]
-           , [CapabilityBoundCleanupAction]
-           , [ManagedCleanupEdge]
-           )
-       )
-awsHarnessCleanupPlan repoRoot environment suitePlan = do
-  let includePerRun = nativeMayProvisionPerRunAwsStacks suitePlan
-  pure $ do
-    recoveryActions <- cleanupActions True
-    actions <- cleanupActions includePerRun
-    let (_, edges) = awsHarnessCleanupTopology suitePlan
-    Right (recoveryActions, actions, edges)
- where
-  cleanupActions includePerRun = do
-    let resources = if includePerRun then perRunManagedResources else []
-    managed <- traverse (either (Left . show) Right . managedResourceCleanupAction) resources
-    drain <- if includePerRun then fmap pure (cleanupAction "aws-k8s-drain" runDrain) else Right []
-    unseal <-
-      if includePerRun
-        then fmap pure (cleanupCommandAction "aws-vault-unseal" ["vault", "unseal"])
-        else Right []
-    ebs <-
-      if includePerRun
-        then fmap pure (cleanupCommandAction "aws-test-ebs" ["aws", "ebs", "reap-test", "--yes"])
-        else Right []
-    -- Sprint 5.28: sweep any dns-aws validation hosted zone. Registered as
-    -- its own always-run node rather than left to the validation's return
-    -- path, so an exception or a cancelled run cannot leak a billable zone.
-    dnsZones <-
-      if includePerRun
-        then fmap pure (cleanupAction "aws-dns-validation-zones" runDnsValidationZoneSweep)
-        else Right []
-    teardown <- fmap pure (cleanupAction "aws-operational-teardown" runManagedTeardown)
-    Right (drain ++ unseal ++ managed ++ ebs ++ dnsZones ++ teardown)
-
-  cleanupCommandAction name arguments =
-    cleanupAction name (runNativeCliCommandForExitCode repoRoot environment arguments)
-  cleanupAction name action = do
-    capability <- Right =<< managedDestroyCapability name
-    Right
-      CapabilityBoundCleanupAction
-        { capabilityBoundCleanupName = name
-        , capabilityBoundCleanupRef = capability
-        , executeCapabilityBoundCleanup = const (exitOutcome <$> action)
-        }
-  runDrain = do
-    result <- runCascadeDrainResult repoRoot SubstrateAws
-    pure $ case result of
-      K8sDrain.DrainSucceeded -> ExitSuccess
-      K8sDrain.DrainSkipped _ -> ExitFailure 1
-      -- Sprint 4.76: an undecidable cluster probe is a cleanup failure
-      -- here for the same reason a skipped drain always has been — the
-      -- EKS cluster is the source of the AWS resources this node exists
-      -- to release, and "I could not tell" is not "there was nothing".
-      K8sDrain.DrainUnobservable _ -> ExitFailure 1
-      K8sDrain.DrainTimedOut _ -> ExitFailure 1
-      K8sDrain.DrainFailed _ -> ExitFailure 1
-  runDnsValidationZoneSweep = destroyValidationHostedZones repoRoot environment
-  runManagedTeardown = runManagedAwsHarnessTeardown repoRoot
-  exitOutcome exitCode = case exitCode of
-    ExitSuccess -> CleanupNodeSucceeded
-    ExitFailure code -> CleanupNodeFailed (Text.pack ("cleanup exited " ++ show code))
-
-awsHarnessCleanupTopology :: NativeSuitePlan -> ([String], [ManagedCleanupEdge])
-awsHarnessCleanupTopology suitePlan =
-  let includePerRun = nativeMayProvisionPerRunAwsStacks suitePlan
-      names = [resourceName resource | includePerRun, resource <- perRunManagedResources]
-      actionNames =
-        (if includePerRun then ["aws-k8s-drain", "aws-vault-unseal"] else [])
-          ++ names
-          ++ ["aws-test-ebs" | includePerRun]
-          ++ ["aws-dns-validation-zones" | includePerRun]
-          ++ ["aws-operational-teardown"]
-      chain = zipWith requiresAttempt names (drop 1 names)
-      prefix = case names of
-        [] -> []
-        firstName : _ ->
-          [ ManagedCleanupEdge "aws-k8s-drain" CleanupRequiresAttempt "aws-vault-unseal"
-          , ManagedCleanupEdge "aws-vault-unseal" CleanupRequiresAttempt firstName
-          ]
-      ebsEdges = case reverse names of
-        [] -> []
-        finalName : _ -> [ManagedCleanupEdge finalName CleanupRequiresAttempt "aws-test-ebs"]
-      dnsZoneEdges =
-        [ ManagedCleanupEdge "aws-test-ebs" CleanupRequiresAttempt "aws-dns-validation-zones"
-        | includePerRun
-        ]
-      credentialEdges =
-        [ ManagedCleanupEdge resource CleanupRequiresSuccess "aws-operational-teardown"
-        | resource <-
-            names
-              ++ ["aws-test-ebs" | includePerRun]
-              ++ ["aws-dns-validation-zones" | includePerRun]
-        ]
-   in (actionNames, prefix ++ chain ++ ebsEdges ++ dnsZoneEdges ++ credentialEdges)
- where
-  requiresAttempt predecessor successor =
-    ManagedCleanupEdge predecessor CleanupRequiresAttempt successor
-
--- | Sprint 7.10 pure decision: should the operational-credential
--- teardown ('runManagedAwsHarnessTeardown') run after the per-run
--- AWS per-run cleanup postflight?
---
--- Returns 'True' iff the per-run cleanup succeeded ('ExitSuccess'). On
--- any 'ExitFailure' the orphaned per-run resources may still hold live AWS
--- resources that require operational creds to destroy on retry, so the
--- teardown is held and the operational @aws.*@ + @prodbox@ IAM user are
--- preserved. Extracted as a pure helper so the decision matrix is
--- unit-testable without harness IO.
-clearOperationalCredsAfterPostflight :: ExitCode -> Bool
-clearOperationalCredsAfterPostflight destroyExit =
-  case destroyExit of
-    ExitSuccess -> True
-    ExitFailure _ -> False
-
-awsPostflightDestroyCommandArgs :: NativeSuitePlan -> [[String]]
-awsPostflightDestroyCommandArgs suitePlan =
-  if nativeMayProvisionPerRunAwsStacks suitePlan
-    then
-      [ ["aws", "stack", "aws-subzone", "destroy", "--yes"]
-      , ["aws", "stack", "eks", "destroy", "--yes"]
-      , ["aws", "stack", "test", "destroy", "--yes"]
+-- | Exact registry keys one suite may create. A DNS-only suite selects only
+-- its hosted-zone family, so exact stack-generation selection is never asked
+-- to invent unopened stack series. Stack-capable suites select the complete
+-- per-run projection because EKS provisioning can leave storage, DNS01, IAM,
+-- and load-balancer-controller families even when a later step fails.
+lifecycleCleanupTargetsForSuite :: NativeSuitePlan -> [RegisteredResourceKey]
+lifecycleCleanupTargetsForSuite suitePlan
+  | nativeMayProvisionAwsStackGenerations suitePlan =
+      [ AwsEksKey
+      , AwsEksSubzoneKey
+      , AwsTestKey
+      , AwsEbsPerRunTestKey
+      , AwsDnsValidationZoneKey
+      , AwsDns01ChallengeRecordKey
+      , AwsEksIamRoleFamilyKey
+      , AwsEksLoadBalancerControllerFamilyKey
       ]
-    else []
+  | ValidationDnsAws `elem` nativeValidations suitePlan =
+      [AwsDnsValidationZoneKey]
+  | otherwise = []
 
 nativeMayProvisionPerRunAwsStacks :: NativeSuitePlan -> Bool
 nativeMayProvisionPerRunAwsStacks suitePlan =
+  nativeMayProvisionAwsStackGenerations suitePlan
+    || any validationMayProvisionPerRunAwsStacks (nativeValidations suitePlan)
+
+nativeMayProvisionAwsStackGenerations :: NativeSuitePlan -> Bool
+nativeMayProvisionAwsStackGenerations suitePlan =
   nativeRequiresSupportedRuntimePostflight suitePlan
     || (nativeSubstrate suitePlan == SubstrateAws && nativeRequiresSupportedRuntimeBootstrap suitePlan)
-    || any validationMayProvisionPerRunAwsStacks (nativeValidations suitePlan)
+    || any validationMayProvisionAwsStackGeneration (nativeValidations suitePlan)
 
 validationMayProvisionPerRunAwsStacks :: NativeValidation -> Bool
 validationMayProvisionPerRunAwsStacks validation =
+  case validation of
+    ValidationDnsAws -> True
+    _ -> validationMayProvisionAwsStackGeneration validation
+
+validationMayProvisionAwsStackGeneration :: NativeValidation -> Bool
+validationMayProvisionAwsStackGeneration validation =
   case validation of
     ValidationAwsEks -> True
     ValidationPulumi -> True
     ValidationHaRke2Aws -> True
     ValidationEksVolumeRebind -> True
+    ValidationCascadeQualification -> True
     _ -> False
 
 runNativeSuiteBody :: FilePath -> [(String, String)] -> [String] -> NativeSuitePlan -> IO ExitCode
@@ -1900,9 +1791,8 @@ awsSubstrateBootstrapRestoreStepCommandArgs restoreStep =
 -- | Post-success suite restore actions: reconcile the local cluster
 -- and re-deploy the canonical chart set so the operator's substrate
 -- is back to a known-good steady state after destructive tests. AWS
--- per-run-stack destroys are handled separately by
--- 'awsPostflightDestroyActions', which runs on every exit path (Sprint
--- 7.6 orphan-safety guard).
+-- per-run desired absence is handled separately by the descriptor-bound
+-- lifecycle cleanup client, which runs on every exit path.
 supportedRuntimePostflightActions
   :: FilePath
   -> [(String, String)]
@@ -2026,6 +1916,7 @@ gatewayRuntimeValidationBoundary substrate validation =
     ValidationTeardownRecovery -> GatewayRuntimeNoBoundary
     ValidationCertificateScope -> GatewayRuntimeNoBoundary
     ValidationCleanRoomHandoff -> GatewayRuntimeNoBoundary
+    ValidationCascadeQualification -> GatewayRuntimeNoBoundary
     ValidationChartsPlatform -> GatewayRuntimeNoBoundary
     ValidationResourceGuardrails -> GatewayRuntimeNoBoundary
     ValidationDaemonBootstrap -> GatewayRuntimeNoBoundary

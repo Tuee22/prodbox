@@ -54,7 +54,7 @@ where
 import Data.List (isInfixOf)
 import Data.Text qualified as Text
 import Prodbox.Config.Tier0
-  ( ProdboxContext
+  ( ProdboxContext (..)
   , ProdboxProjectConfig (..)
   , configFileToTier0Parameters
   , defaultProdboxContext
@@ -100,11 +100,11 @@ tier0Fixture :: ProdboxProjectConfig -> Tier0Fixture
 tier0Fixture = Tier0Fixture . Text.unpack . renderProjectConfigDhall
 
 -- | The common case, replacing the hand-written @wrapTier0@ envelope: operator
--- parameters projected from a 'Settings.ConfigFile', with the default context
--- and an empty witness.
+-- parameters projected from a 'Settings.ConfigFile', with an explicitly
+-- synthetic test context and an empty witness.
 --
--- The envelope this replaces was field-for-field 'defaultProdboxContext'
--- already; it simply restated it in text.
+-- Production 'defaultProdboxContext' is intentionally unauthored; using it as a
+-- fixture would make unrelated decoder tests fail on deployment identity.
 tier0FixtureWithParameters :: Settings.ConfigFile -> Tier0Fixture
 tier0FixtureWithParameters = tier0FixtureWithContext id
 
@@ -116,9 +116,20 @@ tier0FixtureWithContext adjustContext configFile =
   tier0Fixture
     ProdboxProjectConfig
       { parameters = configFileToTier0Parameters configFile
-      , context = adjustContext defaultProdboxContext
+      , context = adjustContext fixtureProdboxContext
       , witness = []
       }
+
+-- | Explicitly synthetic, valid deployment context for tests whose subject is
+-- the parameter payload rather than first-run authoring. Production defaults
+-- remain empty and fail closed.
+fixtureProdboxContext :: ProdboxContext
+fixtureProdboxContext =
+  defaultProdboxContext
+    { cluster_id = "synthetic-test-cluster"
+    , vault_address = "http://127.0.0.1:31820"
+    , minio_endpoint = "http://127.0.0.1:39000"
+    }
 
 -- | Why a fixture is hand-authored Dhall rather than a rendered value.
 --
@@ -198,4 +209,4 @@ rawTier0Parameters reason parametersExpression =
       ]
 
 renderedDefaultContext :: String
-renderedDefaultContext = Text.unpack (renderProdboxContextDhall defaultProdboxContext)
+renderedDefaultContext = Text.unpack (renderProdboxContextDhall fixtureProdboxContext)

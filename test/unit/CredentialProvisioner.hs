@@ -164,23 +164,28 @@ credentialProvisionerSuite =
 
     it "constructs only the seven closed least-privilege production IAM programs" $ do
       let programs =
-            [ must (mkLifecycleProviderIamProgram "us-west-2" "123456789012" "prodbox-provider-role")
+            [ must
+                ( mkLifecycleProviderIamProgram
+                    (fixtureAwsRegion FixtureUsWest2)
+                    "123456789012"
+                    "prodbox-provider-role"
+                )
             , must
                 ( mkAuthorityBackupIamProgram
-                    "us-west-2"
+                    (fixtureAwsRegion FixtureUsWest2)
                     "prodbox-pulumi-state-long-lived"
                     ["authority-backup-store/home"]
                 )
             , must
                 ( mkTlsRetentionIamProgram
-                    "us-west-2"
+                    (fixtureAwsRegion FixtureUsWest2)
                     "prodbox-pulumi-state-long-lived"
                     ["public-edge-tls/home-local/certificates"]
                 )
-            , must (mkGatewayDnsIamProgram "us-west-2" "Z123ABC")
-            , must (mkHomeDns01IamProgram "us-west-2" "Z123ABC")
-            , must (mkAwsRunDns01IamProgram "us-west-2" "Z123ABC")
-            , must (mkSesSmtpIamProgram "us-west-2" "123456789012" "mail.example.com")
+            , must (mkGatewayDnsIamProgram (fixtureAwsRegion FixtureUsWest2) "Z123ABC")
+            , must (mkHomeDns01IamProgram (fixtureAwsRegion FixtureUsWest2) "Z123ABC")
+            , must (mkAwsRunDns01IamProgram (fixtureAwsRegion FixtureUsWest2) "Z123ABC")
+            , must (mkSesSmtpIamProgram (fixtureAwsRegion FixtureUsWest2) "123456789012" "mail.example.com")
             ]
           documents = credentialIamProgramPolicyDocument <$> programs
           lifecycleProgram = case programs of
@@ -209,13 +214,13 @@ credentialProvisionerSuite =
       targetSecretPayloadToVaultFields
         ( sesSmtpPayloadForIdentity
             "mail.example.com"
-            "ca-central-1"
+            (fixtureAwsRegion FixtureCaCentral1)
             "AKIAEXAMPLE"
             "derived-password"
         )
         `shouldBe` Right
           ( Map.fromList
-              [ ("host", "email-smtp.ca-central-1.amazonaws.com")
+              [ ("host", ("email-smtp." <> (fixtureAwsRegion FixtureCaCentral1) <> ".amazonaws.com"))
               , ("port", "587")
               , ("from", "noreply@mail.example.com")
               , ("from_display_name", "prodbox")
@@ -227,7 +232,7 @@ credentialProvisionerSuite =
 
     it "rejects cross-class S3 prefixes and credential-region drift" $ do
       case mkAuthorityBackupIamProgram
-        "us-west-2"
+        (fixtureAwsRegion FixtureUsWest2)
         "prodbox-pulumi-state-long-lived"
         ["public-edge-tls/certificates"] of
         Left _ -> pure ()
@@ -235,14 +240,16 @@ credentialProvisionerSuite =
       let iamProgram =
             must
               ( mkLifecycleProviderIamProgram
-                  "us-west-2"
+                  (fixtureAwsRegion FixtureUsWest2)
                   "123456789012"
                   "prodbox-provider-role"
               )
-      case openProductionIamSession iamProgram (adminCredentials "us-east-1") of
+      case openProductionIamSession iamProgram (adminCredentials (fixtureAwsRegion FixtureUsEast1)) of
         Left err ->
           err
-            `shouldBe` ProductionIamCredentialRegionMismatch "us-west-2" "us-east-1"
+            `shouldBe` ProductionIamCredentialRegionMismatch
+              (fixtureAwsRegion FixtureUsWest2)
+              (fixtureAwsRegion FixtureUsEast1)
         Right _ -> expectationFailure "production IAM session accepted credential-region drift"
 
     it "requires the shared TLS bucket to preexist and never creates it on absence" $ do
@@ -250,7 +257,7 @@ credentialProvisionerSuite =
       let iamProgram =
             must
               ( mkTlsRetentionIamProgram
-                  "us-west-2"
+                  (fixtureAwsRegion FixtureUsWest2)
                   "prodbox-pulumi-state-long-lived"
                   ["public-edge-tls/home-local/certificates"]
               )
@@ -268,7 +275,7 @@ credentialProvisionerSuite =
             must
               ( openProductionIamSessionWithSender
                   iamProgram
-                  (adminCredentials "us-west-2")
+                  (adminCredentials (fixtureAwsRegion FixtureUsWest2))
                   sender
               )
       ensureProductionIamPrerequisites session
@@ -282,7 +289,7 @@ credentialProvisionerSuite =
       let iamProgram =
             must
               ( mkLifecycleProviderIamProgram
-                  "us-west-2"
+                  (fixtureAwsRegion FixtureUsWest2)
                   "123456789012"
                   "prodbox-lifecycle-provider"
               )
@@ -292,7 +299,7 @@ credentialProvisionerSuite =
             must
               ( openProductionIamSessionWithSender
                   iamProgram
-                  (adminCredentials "us-west-2")
+                  (adminCredentials (fixtureAwsRegion FixtureUsWest2))
                   sender
               )
       ensureProductionIamPrerequisites session `shouldReturn` Right ()
@@ -307,7 +314,7 @@ credentialProvisionerSuite =
       let iamProgram =
             must
               ( mkLifecycleProviderIamProgram
-                  "us-west-2"
+                  (fixtureAwsRegion FixtureUsWest2)
                   "123456789012"
                   "prodbox-provider-role"
               )
@@ -316,7 +323,7 @@ credentialProvisionerSuite =
             must
               ( openProductionIamSessionWithSender
                   iamProgram
-                  (adminCredentials "us-west-2")
+                  (adminCredentials (fixtureAwsRegion FixtureUsWest2))
                   sender
               )
       result <- createProductionAccessKey session
@@ -515,7 +522,7 @@ credentialProvisionerSuite =
           runGenesisBackupProvisioner
             (fakeBoundary events inventories createResults)
             (fakeTargetClient events)
-            "us-east-1"
+            (fixtureAwsRegion FixtureUsEast1)
             now
             genesisPermit
             framed
@@ -578,7 +585,7 @@ credentialProvisionerSuite =
           runAwsOperatorMaterialProvisioner
             boundary
             client
-            "us-east-1"
+            (fixtureAwsRegion FixtureUsEast1)
             lifecyclePermit
             framed
         result `shouldSatisfy` either (const False) (const True)
@@ -614,7 +621,7 @@ credentialProvisionerSuite =
         runAwsOperatorMaterialProvisioner
           (fakeBoundary events inventories createResults)
           (fakeTargetClient events)
-          "us-east-1"
+          (fixtureAwsRegion FixtureUsEast1)
           lifecyclePermit
           awsFrame
       result `shouldBe` Left CredentialProvisionerInstallRequiresEmptyInventory
@@ -635,7 +642,7 @@ credentialProvisionerSuite =
         runAwsOperatorMaterialProvisioner
           (fakeBoundary events inventories createResults)
           (fakeTargetClient events)
-          "us-east-1"
+          (fixtureAwsRegion FixtureUsEast1)
           rotationPermit
           awsFrame
       result `shouldBe` Left CredentialProvisionerRotationRequiresRetirementProtocol
@@ -659,7 +666,7 @@ credentialProvisionerSuite =
         runAwsOperatorMaterialProvisioner
           (fakeBoundary events inventories createResults)
           (fakeTargetClient events)
-          "us-east-1"
+          (fixtureAwsRegion FixtureUsEast1)
           lifecyclePermit
           awsFrame
       result `shouldBe` Left CredentialProvisionerCreatedAccessKeyIdMismatch

@@ -949,6 +949,18 @@ Options:
 Examples:
 - prodbox test integration clean-room-handoff  # Run the `clean-room-handoff` integration suite.
 
+## prodbox test integration cascade-qualification
+prodbox test integration cascade-qualification - Run one named destructive recover-to-clean cascade qualification cycle
+
+Run one named destructive recover-to-clean cascade qualification cycle
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration cascade-qualification  # Run the `cascade-qualification` integration suite.
+
 ## prodbox test integration ha-rke2-aws
 prodbox test integration ha-rke2-aws - Run HA RKE2 AWS integration tests
 
@@ -1193,6 +1205,16 @@ prodbox vault init - Initialize Vault
 Initialize an uninitialized Vault, capturing the unseal/recovery keys and root token into the encrypted unlock bundle exactly once.
 Examples:
 - prodbox vault init  # Initialize Vault and write the encrypted unlock bundle.
+
+## prodbox vault reset-ambiguous-initialization
+prodbox vault reset-ambiguous-initialization - Reset ambiguous Vault initialization
+
+Recover only an initialization whose result is durably ambiguous. The Broker proves the exact storage generation is eligible, replaces it, and reads back a new pristine generation; the host cannot select the reset target.
+Options:
+- --yes, -y - Confirm replacement of the ambiguous Vault storage generation
+
+Examples:
+- prodbox vault reset-ambiguous-initialization --yes  # Replace the exact proven-resettable ambiguous Vault generation.
 
 ## prodbox vault unseal
 prodbox vault unseal - Unseal Vault

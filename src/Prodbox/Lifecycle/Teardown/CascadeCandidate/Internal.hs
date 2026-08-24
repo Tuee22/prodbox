@@ -17,11 +17,11 @@
 --
 -- Four properties carry the design.
 --
---   * __Everything decidable without a session is decided first, again.__ The
---     compiled program, the initial run, the canonical program descriptor, the
---     host scope, and the terminal identity are one pure value; only then are
---     the two authenticated transports opened.  A cascade that authenticated
---     first would report an operator's typo as an Authority failure.
+--   * __Caller-declared identity is validated before a session is opened.__
+--     AWS account and region are deliberately not caller fields: after the
+--     retained Authority session opens, one exact @ObserveProviderAwsScope@
+--     completion supplies them.  Only its confirmed canonical receipt may be
+--     promoted into the scope used to compile the program.
 --
 --   * __The plan is a function of the declared identity, so re-entry replays.__
 --     The program descriptor digests the initial run, and the initial run's
@@ -65,6 +65,7 @@ module Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal
   , renderCascadeCandidateError
 
     -- * The drive
+  , CascadeCandidateOutcome (..)
   , runCascadeCandidate
 
     -- * Non-authorizing diagnostics
@@ -74,20 +75,44 @@ module Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal
   , cascadeCandidateTerminalOperationIsCompiled
   , cascadeCandidateDeclaredLeaseIsRequired
   , cascadeCandidateIdentityBindsDescriptor
+  , CascadeCandidatePlanSummary (..)
+  , fixedCascadeCandidatePlanSummary
   )
 where
 
 import Data.Bifunctor (first)
+import Data.Text (Text)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Numeric.Natural (Natural)
+import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
+import Prodbox.ControlPlane.AuthorityProviderEndpoint
+  ( AuthorityProviderClientError
+  , dispatchAuthorityProviderIntentWithOperation
+  )
 import Prodbox.ControlPlane.CascadeHostRuntime.Internal
   ( mkCascadeHostRuntime
+  )
+import Prodbox.ControlPlane.CascadePreUninstallRuntime.Internal
+  ( mkCascadePreUninstallRuntime
   )
 import Prodbox.ControlPlane.CleanupRunClient
   ( descriptorBoundCleanupRunClient
   )
 import Prodbox.ControlPlane.DescriptorBoundLifecycleRuntime.Internal
   ( descriptorBoundLifecycleNodeActionInternal
+  )
+import Prodbox.ControlPlane.ProviderAwsScopeReceipt
+  ( ProviderAwsScopeReceiptError
+  , verifiedAuthorityProviderAwsScopeAccountId
+  , verifiedAuthorityProviderAwsScopeRegion
+  )
+import Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal
+  ( verifySettledAuthorityProviderAwsScopeReceipt
+  )
+import Prodbox.Lifecycle.Authority.ClientRegistry
+  ( ClientSubmissionKey
+  , ClientSubmissionKeyError
+  , mkClientSubmissionKey
   )
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDigest
@@ -96,10 +121,13 @@ import Prodbox.Lifecycle.CleanupRun
   , CleanupPrimaryOutcome (CleanupPrimarySucceeded)
   , CleanupRunError
   , CleanupRunId
+  , cleanupDigestText
   , cleanupGraphDigest
   , cleanupGraphNodes
   , cleanupNodeId
   , cleanupNodeOperationId
+  , cleanupOperationIdText
+  , cleanupRunIdText
   , mkCleanupOwnerId
   , mkCleanupRunId
   , newCleanupRun
@@ -123,6 +151,7 @@ import Prodbox.Lifecycle.CleanupRunRunner
   ( CleanupRunDriverError
   , resumeDescriptorBoundDurableCleanupWithContext
   )
+import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.HostCleanupCompositionRoot
   ( HostCleanupCompositionError
   , HostCleanupCompositionInputs (..)
@@ -135,6 +164,9 @@ import Prodbox.Lifecycle.HostCleanupIntent
   , hostCleanupTerminalIdentity
   , hostCleanupTerminalOperationId
   , mkHostTerminalPermitId
+  )
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent (ObserveProviderAwsScope)
   )
 import Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor
   ( cleanupProgramDescriptorDigest
@@ -164,6 +196,12 @@ import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Program
   ( TeardownOperation (UninstallCascadeLocalFoundation)
   )
+import Prodbox.Lifecycle.Teardown.ProviderDispatch
+  ( productionTeardownProviderBoundary
+  )
+import Prodbox.Lifecycle.Teardown.RetainedInventory
+  ( RetainedNameBinding
+  )
 
 -- ---------------------------------------------------------------------------
 -- What the caller supplies
@@ -175,7 +213,7 @@ data CascadeCandidateInputs = CascadeCandidateInputs
   { cascadeCandidateRunId :: !CleanupRunId
   , cascadeCandidateOwner :: !CleanupOwnerId
   , cascadeCandidateFoundation :: !LinuxRke2FoundationId
-  , cascadeCandidateAwsScope :: !AwsScope
+  , cascadeCandidateAwsDnsZone :: !(Maybe HostedZoneId)
   , cascadeCandidateTerminalPermitId :: !HostTerminalPermitId
   , cascadeCandidateDeclaredLeaseMicros :: !Natural
   -- ^ The initial run's declared lease window.  It is digested into the
@@ -190,6 +228,7 @@ data CascadeCandidateInputs = CascadeCandidateInputs
 -- cannot name different identities.
 data CascadeCandidateEnvironment = CascadeCandidateEnvironment
   { cascadeCandidateComposition :: !HostCleanupCompositionInputs
+  , cascadeCandidateRetainedNameBinding :: !RetainedNameBinding
   , cascadeCandidateKubectlPath :: !FilePath
   , cascadeCandidateKubectlEnvironment :: ![(String, String)]
   , cascadeCandidateKubectlWorkingDirectory :: !(Maybe FilePath)
@@ -199,6 +238,18 @@ data CascadeCandidateEnvironment = CascadeCandidateEnvironment
   , cascadeCandidateReportRetentionMicros :: !Natural
   -- ^ The retention the terminal compaction is asked for.
   }
+
+-- | The observed production identity and exact plan digests returned beside
+-- the terminal lifecycle result.  Keeping this package-private lets the
+-- qualification recorder bind its artifact to the scope the Authority
+-- actually signed without giving a public caller a way to author that scope.
+data CascadeCandidateOutcome = CascadeCandidateOutcome
+  { cascadeCandidateOutcomeAwsScope :: !AwsScope
+  , cascadeCandidateOutcomeGraphDigest :: !CleanupDigest
+  , cascadeCandidateOutcomeDescriptorDigest :: !CleanupDigest
+  , cascadeCandidateOutcomeLifecycleResult :: !LifecycleCleanupResult
+  }
+  deriving stock (Eq, Show)
 
 -- ---------------------------------------------------------------------------
 -- The transport-free half
@@ -238,16 +289,18 @@ cascadeCandidatePlanTerminalOperationId =
     . internalCandidateDescriptor
 
 resolveCascadeCandidatePlan
-  :: CascadeCandidateInputs
+  :: AwsScope
+  -> CascadeCandidateInputs
   -> Either CascadeCandidateError CascadeCandidatePlan
-resolveCascadeCandidatePlan inputs = do
+resolveCascadeCandidatePlan awsScope inputs = do
   compiled <-
     first
       CascadeCandidateProgramUncompilable
       ( compileDesiredAbsenceGraph
           runId
           (cascadeCandidateFoundation inputs)
-          (Just (cascadeCandidateAwsScope inputs))
+          (Just awsScope)
+          (cascadeCandidateAwsDnsZone inputs)
           CascadeSurface
       )
   let graph = compiledDesiredAbsenceGraph compiled
@@ -289,6 +342,9 @@ data CascadeCandidateError
   | CascadeCandidateInitialRunInvalid !CleanupRunError
   | CascadeCandidateDescriptorInvalid !LifecycleCleanupDescriptorError
   | CascadeCandidateCompositionFailed !HostCleanupCompositionError
+  | CascadeCandidateScopeSubmissionKeyInvalid !ClientSubmissionKeyError
+  | CascadeCandidateScopeDispatchFailed !AuthorityProviderClientError
+  | CascadeCandidateScopeReceiptInvalid !ProviderAwsScopeReceiptError
   | CascadeCandidateCloudRuntimeInvalid !ProductionCloudRuntimeError
   | CascadeCandidateRegistrationFailed !LifecycleCleanupClientError
   | CascadeCandidateClaimFailed !LifecycleCleanupClientError
@@ -306,6 +362,14 @@ renderCascadeCandidateError = \case
     "the cascade program descriptor could not be captured: " ++ show err
   CascadeCandidateCompositionFailed err ->
     renderHostCleanupCompositionError err
+  CascadeCandidateScopeSubmissionKeyInvalid err ->
+    "the cascade AWS-scope submission key was invalid: " ++ show err
+  CascadeCandidateScopeDispatchFailed err ->
+    "the Lifecycle Authority could not observe the cascade AWS scope: "
+      ++ show err
+  CascadeCandidateScopeReceiptInvalid err ->
+    "the Lifecycle Authority returned an invalid cascade AWS-scope receipt: "
+      ++ show err
   CascadeCandidateCloudRuntimeInvalid err ->
     renderProductionCloudRuntimeError err
   CascadeCandidateRegistrationFailed err ->
@@ -330,26 +394,64 @@ renderCascadeCandidateError = \case
 runCascadeCandidate
   :: CascadeCandidateInputs
   -> CascadeCandidateEnvironment
-  -> IO (Either CascadeCandidateError LifecycleCleanupResult)
+  -> IO (Either CascadeCandidateError CascadeCandidateOutcome)
 runCascadeCandidate inputs environment =
-  case resolveCascadeCandidatePlan inputs of
+  -- Resolve once against the non-authorizing regression scope before opening
+  -- a session. Scope changes identity, not input validity, so this is the one
+  -- total prevalidation path for zero leases and every other malformed input.
+  case resolveCascadeCandidatePlan regressionAwsScope inputs of
     Left err -> pure (Left err)
-    Right plan -> do
+    Right _ -> do
       composed <-
         withHostCleanupProductionSources
           (cascadeCandidateComposition environment)
-          (drive plan)
+          driveAfterScopeObservation
       pure $ case composed of
         Left err -> Left (CascadeCandidateCompositionFailed err)
         Right result -> result
  where
-  drive plan runtime = do
+  driveAfterScopeObservation runtime = do
+    let transport = hostCleanupProductionAuthorityTransport runtime
+    case cascadeScopeSubmissionKey inputs of
+      Left err -> pure (Left (CascadeCandidateScopeSubmissionKeyInvalid err))
+      Right submissionKey -> do
+        observed <-
+          dispatchAuthorityProviderIntentWithOperation
+            transport
+            submissionKey
+            ObserveProviderAwsScope
+        case observed of
+          Left err -> pure (Left (CascadeCandidateScopeDispatchFailed err))
+          Right (operationId, receipt) ->
+            case verifySettledAuthorityProviderAwsScopeReceipt operationId receipt of
+              Left err -> pure (Left (CascadeCandidateScopeReceiptInvalid err))
+              Right proof ->
+                let awsScope =
+                      AwsScope
+                        (verifiedAuthorityProviderAwsScopeAccountId proof)
+                        (verifiedAuthorityProviderAwsScopeRegion proof)
+                 in case resolveCascadeCandidatePlan awsScope inputs of
+                      Left err -> pure (Left err)
+                      Right plan -> drive awsScope plan runtime
+
+  drive awsScope plan runtime = do
     let transport = hostCleanupProductionAuthorityTransport runtime
         store = hostCleanupProductionIntentStore runtime
         cascadeHost =
           mkCascadeHostRuntime store (hostCleanupProductionEffects runtime)
+        cascadePreUninstall =
+          mkCascadePreUninstallRuntime
+            (cascadeCandidateRetainedNameBinding environment)
+            (hostCleanupProductionCascadeReportAuthority runtime)
+            (hostCleanupProductionCleanupReportBackup runtime)
+            ( productionTeardownProviderBoundary
+                (hostCleanupCaller composition)
+                (hostCleanupRepositoryRoot composition)
+            )
+            store
         client = descriptorBoundCleanupRunClient transport
         descriptor = internalCandidateDescriptor plan
+        composition = cascadeCandidateComposition environment
     case productionCloudRuntime
       (cloudInputsFor environment)
       transport
@@ -395,6 +497,7 @@ runCascadeCandidate inputs environment =
                         ( descriptorBoundLifecycleNodeActionInternal
                             cloudRuntime
                             transport
+                            cascadePreUninstall
                             cascadeHost
                         )
                         (registeredLifecycleCleanupBoundRun ready)
@@ -402,12 +505,23 @@ runCascadeCandidate inputs environment =
                       Left err -> pure (Left (CascadeCandidateDriveFailed err))
                       Right _ -> do
                         terminalNow <- currentEpochMicros
-                        Right
-                          <$> observeLifecycleCleanupResult
+                        result <-
+                          observeLifecycleCleanupResult
                             client
                             terminalNow
                             (cascadeCandidateReportRetentionMicros environment)
                             ready
+                        pure
+                          ( Right
+                              CascadeCandidateOutcome
+                                { cascadeCandidateOutcomeAwsScope = awsScope
+                                , cascadeCandidateOutcomeGraphDigest =
+                                    internalCandidateGraphDigest plan
+                                , cascadeCandidateOutcomeDescriptorDigest =
+                                    cascadeCandidatePlanDescriptorDigest plan
+                                , cascadeCandidateOutcomeLifecycleResult = result
+                                }
+                          )
 
   owner = cascadeCandidateOwner inputs
 
@@ -433,6 +547,15 @@ currentEpochMicros = do
   seconds <- getPOSIXTime
   pure (floor (seconds * 1_000_000))
 
+-- | Stable across resume for one declared run.  The Authority therefore
+-- replays the same retained observation instead of allocating a new identity.
+cascadeScopeSubmissionKey
+  :: CascadeCandidateInputs
+  -> Either ClientSubmissionKeyError ClientSubmissionKey
+cascadeScopeSubmissionKey inputs =
+  mkClientSubmissionKey
+    ("cascade-scope:" <> cleanupRunIdText (cascadeCandidateRunId inputs))
+
 -- ---------------------------------------------------------------------------
 -- Non-authorizing diagnostics
 -- ---------------------------------------------------------------------------
@@ -451,8 +574,8 @@ fixedCascadeCandidateRegression =
     leaseRequired
     identityBinds
  where
-  first' = resolveCascadeCandidatePlan regressionInputs
-  second' = resolveCascadeCandidatePlan regressionInputs
+  first' = resolveCascadeCandidatePlan regressionAwsScope regressionInputs
+  second' = resolveCascadeCandidatePlan regressionAwsScope regressionInputs
 
   -- Two resolutions of one declared identity produce one program descriptor.
   -- This is what lets a resumed cascade re-enter through the same call: the
@@ -481,6 +604,7 @@ fixedCascadeCandidateRegression =
   -- identity no resume could reproduce for a reason the operator never sees.
   leaseRequired =
     case resolveCascadeCandidatePlan
+      regressionAwsScope
       regressionInputs {cascadeCandidateDeclaredLeaseMicros = 0} of
       Left (CascadeCandidateInitialRunInvalid _) -> True
       _ -> False
@@ -491,6 +615,7 @@ fixedCascadeCandidateRegression =
   identityBinds =
     case ( first'
          , resolveCascadeCandidatePlan
+             regressionAwsScope
              regressionInputs {cascadeCandidateRunId = regressionOtherRunId}
          ) of
       (Right left, Right other) ->
@@ -515,6 +640,36 @@ cascadeCandidateIdentityBindsDescriptor :: CascadeCandidateRegression -> Bool
 cascadeCandidateIdentityBindsDescriptor
   (CascadeCandidateRegression _ _ _ value) = value
 
+-- | Secret-free identities from the fixed qualification trace.  It contains
+-- no plan, descriptor, runtime, permit, or callable effect and therefore
+-- cannot authorize a cascade; the installed validation renders it to prove
+-- that its fake traces are bound to a real compiled candidate identity.
+data CascadeCandidatePlanSummary = CascadeCandidatePlanSummary
+  { cascadeCandidateSummaryRunId :: !Text
+  , cascadeCandidateSummaryGraphDigest :: !Text
+  , cascadeCandidateSummaryDescriptorDigest :: !Text
+  , cascadeCandidateSummaryTerminalOperationId :: !Text
+  }
+  deriving stock (Eq, Show)
+
+fixedCascadeCandidatePlanSummary
+  :: Either String CascadeCandidatePlanSummary
+fixedCascadeCandidatePlanSummary =
+  first renderCascadeCandidateError $ do
+    plan <- resolveCascadeCandidatePlan regressionAwsScope regressionInputs
+    Right
+      CascadeCandidatePlanSummary
+        { cascadeCandidateSummaryRunId =
+            cleanupRunIdText (cascadeCandidatePlanRunId plan)
+        , cascadeCandidateSummaryGraphDigest =
+            cleanupDigestText (cascadeCandidatePlanGraphDigest plan)
+        , cascadeCandidateSummaryDescriptorDigest =
+            cleanupDigestText (cascadeCandidatePlanDescriptorDigest plan)
+        , cascadeCandidateSummaryTerminalOperationId =
+            cleanupOperationIdText
+              (cascadeCandidatePlanTerminalOperationId plan)
+        }
+
 -- | The operation id the compiled program gave its local-uninstall node.
 compiledLocalUninstallOperationId
   :: CompiledDesiredAbsenceProgram 'Cascade -> Maybe CleanupOperationId
@@ -534,11 +689,15 @@ regressionInputs =
     { cascadeCandidateRunId = regressionRunId
     , cascadeCandidateOwner = regressionOwner
     , cascadeCandidateFoundation = LinuxRke2FoundationId "foundation/home"
-    , cascadeCandidateAwsScope =
-        AwsScope (AwsAccountId "111122223333") (AwsRegion "ca-central-1")
+    , cascadeCandidateAwsDnsZone =
+        Just (unsafeFixed (mkHostedZoneId "Z0123456789ABCDEFGHIJ"))
     , cascadeCandidateTerminalPermitId = regressionPermitId
     , cascadeCandidateDeclaredLeaseMicros = 1_000_000
     }
+
+regressionAwsScope :: AwsScope
+regressionAwsScope =
+  AwsScope (AwsAccountId "111122223333") (AwsRegion canonicalRegressionAwsRegion)
 
 regressionRunId :: CleanupRunId
 regressionRunId = unsafeFixed (mkCleanupRunId "cascade-candidate-regression")

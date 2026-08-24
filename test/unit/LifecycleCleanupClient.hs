@@ -124,6 +124,7 @@ import Prodbox.Lifecycle.Teardown.Program
   , teardownOperationTag
   )
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
+import System.Directory (doesFileExist)
 import System.IO.Temp (withSystemTempDirectory)
 import TestSupport
 
@@ -523,6 +524,32 @@ lifecycleCleanupClientSuite =
       source
         `shouldNotContain` ("CleanupProgramDescriptor." <> "Internal")
       source `shouldContain` "prepareHostCleanupRunner"
+      validationClient <-
+        readFile "src/Prodbox/Test/LifecycleCleanupClient.hs"
+      validationClient `shouldNotContain` "mkCleanupGraph"
+      validationClient `shouldNotContain` "mkCleanupOperationId"
+      validationClient `shouldNotContain` "CapabilityBoundCleanupAction"
+      validationClient `shouldNotContain` "CleanupNodeCompleted"
+      validationClient `shouldContain` "compileDesiredAbsenceGraphForRegisteredKeys"
+      validationClient `shouldContain` "descriptorBoundOrdinaryLifecycleNodeActionInternal"
+      validationClient `shouldContain` "adoptExplicitPerRunLifecycleCleanup"
+      testRunner <- readFile "src/Prodbox/TestRunner.hs"
+      testRunner `shouldNotContain` "Prodbox.Test.ManagedCleanupPlan"
+      testRunner `shouldNotContain` "Prodbox.Test.DurableCleanupComposition"
+      testRunner `shouldNotContain` "mkCleanupGraph"
+      testRunner `shouldNotContain` "CleanupNodeState"
+      testRunner `shouldNotContain` "cleanupNodeFailed"
+      testRunner `shouldContain` "runLifecycleTestHarnessCleanup"
+      testRunner `shouldNotContain` "awsPostflightDestroyCommandArgs"
+      cloudRuntime <-
+        readFile "src/Prodbox/Lifecycle/Teardown/CloudRuntimeProduction.hs"
+      cloudRuntime `shouldContain` "selectRegisteredStackGenerationForCleanup"
+      cloudRuntime `shouldNotContain` "queryPerRunResidueStatuses"
+      oldManagedPlan <- doesFileExist "src/Prodbox/Test/ManagedCleanupPlan.hs"
+      oldComposition <- doesFileExist "src/Prodbox/Test/DurableCleanupComposition.hs"
+      oldRoute53Owner <- doesFileExist "src/Prodbox/Infra/Route53ValidationZone.hs"
+      (oldManagedPlan, oldComposition, oldRoute53Owner)
+        `shouldBe` (False, False, False)
       testSource <- readFile "test/unit/LifecycleCleanupClient.hs"
       testSource
         `shouldNotContain` ("CleanupProgramDescriptor." <> "Internal")
@@ -1025,7 +1052,7 @@ fixtureAwsScope :: AwsScope
 fixtureAwsScope =
   AwsScope
     (AwsAccountId "123456789012")
-    (AwsRegion "us-east-1")
+    (AwsRegion (fixtureAwsRegion FixtureUsEast1))
 
 fixtureCompiled :: CompiledDesiredAbsenceProgram 'Cascade
 fixtureCompiled =
@@ -1034,6 +1061,7 @@ fixtureCompiled =
         fixtureRunId
         fixtureFoundation
         (Just fixtureAwsScope)
+        Nothing
         CascadeSurface
     )
 
@@ -1067,6 +1095,7 @@ otherFoundationRun =
               fixtureRunId
               otherFoundation
               (Just fixtureAwsScope)
+              Nothing
               CascadeSurface
           )
    in mustRight
@@ -1101,6 +1130,7 @@ descriptorFor runId =
               runId
               fixtureFoundation
               (Just fixtureAwsScope)
+              Nothing
               CascadeSurface
           )
       run =
@@ -1278,6 +1308,7 @@ ordinaryCompiled =
         fixtureRunId
         fixtureFoundation
         (Just fixtureAwsScope)
+        Nothing
         ExplicitPerRunSurface
     )
 

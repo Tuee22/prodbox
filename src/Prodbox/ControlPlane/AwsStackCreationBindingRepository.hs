@@ -108,14 +108,18 @@ import Prodbox.Lifecycle.CheckpointAuthority
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (ReconcileRegisteredStack)
   , ProviderRevision
-  , ProviderStackConfig (..)
+  , ProviderStackConfig
+  , ProviderStackConfigView (..)
   , ProviderStackRef
+  , mkAwsEksProfileProviderStackConfig
   , mkAwsEksProviderStackConfig
   , mkAwsEksSubzoneProviderStackConfig
+  , mkAwsTestProfileProviderStackConfig
   , mkAwsTestProviderStackConfig
   , mkProviderRevision
   , mkProviderStackRef
   , providerRevisionNatural
+  , providerStackConfigView
   , providerStackRefText
   , validateProviderStackConfig
   )
@@ -127,6 +131,7 @@ import Prodbox.Lifecycle.Teardown.Registry
   , registeredIdentityCoordinateDigest
   , registeredIdentityKind
   )
+import Prodbox.Settings.AwsSubstrateProfile (AwsSubstrateProfile)
 
 data ObservedAwsStackCreationOperation = ObservedAwsStackCreationOperation
   { internalObservedAwsStackCreationOperationId :: !OperationId
@@ -477,6 +482,8 @@ data ProviderConfigWire
   = AwsEksProviderConfigWire !Text
   | AwsTestProviderConfigWire !Text
   | AwsEksSubzoneProviderConfigWire !Text !Text
+  | AwsEksProfileProviderConfigWire !AwsSubstrateProfile !Natural
+  | AwsTestProfileProviderConfigWire !AwsSubstrateProfile
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -986,11 +993,14 @@ validateCanonicalBytes bytes = do
   Right bytes
 
 providerConfigToWire :: ProviderStackConfig -> ProviderConfigWire
-providerConfigToWire config = case config of
-  AwsEksProviderStackConfig operatorCidr -> AwsEksProviderConfigWire operatorCidr
-  AwsTestProviderStackConfig operatorCidr -> AwsTestProviderConfigWire operatorCidr
-  AwsEksSubzoneProviderStackConfig parentZone subzone ->
+providerConfigToWire config = case providerStackConfigView config of
+  AwsEksLegacyConfig operatorCidr -> AwsEksProviderConfigWire operatorCidr
+  AwsTestLegacyConfig operatorCidr -> AwsTestProviderConfigWire operatorCidr
+  AwsEksSubzoneConfig parentZone subzone ->
     AwsEksSubzoneProviderConfigWire parentZone subzone
+  AwsEksProfileConfig profile desiredSize ->
+    AwsEksProfileProviderConfigWire profile desiredSize
+  AwsTestProfileConfig profile -> AwsTestProfileProviderConfigWire profile
 
 providerConfigFromWire
   :: ProviderConfigWire -> Either AwsStackCreationBindingError ProviderStackConfig
@@ -1002,6 +1012,10 @@ providerConfigFromWire wire =
       mkAwsTestProviderStackConfig operatorCidr
     AwsEksSubzoneProviderConfigWire parentZone subzone ->
       mkAwsEksSubzoneProviderStackConfig parentZone subzone
+    AwsEksProfileProviderConfigWire profile desiredSize ->
+      mkAwsEksProfileProviderStackConfig profile desiredSize
+    AwsTestProfileProviderConfigWire profile ->
+      mkAwsTestProfileProviderStackConfig profile
 
 decodeBoundedKey
   :: Int -> Either AwsStackCreationBindingError RegisteredResourceKey

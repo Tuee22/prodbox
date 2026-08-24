@@ -524,6 +524,7 @@ fixtureCompiled =
         fixtureRunId
         fixtureFoundation
         (Just fixtureAwsScope)
+        Nothing
         CascadeSurface
     )
 
@@ -597,7 +598,7 @@ fixtureOtherRunScope =
     ReconcileDesiredAbsent
 
 fixtureAwsScope :: AwsScope
-fixtureAwsScope = AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")
+fixtureAwsScope = AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))
 
 fixtureFoundation :: LinuxRke2FoundationId
 fixtureFoundation = LinuxRke2FoundationId "home-linux-rke2"
@@ -616,7 +617,7 @@ fixtureProjection =
   mustRight
     ( testEksClientAuthProjection
         "123456789012"
-        "us-east-1"
+        (fixtureAwsRegion FixtureUsEast1)
         "aws-eks-test-cluster"
         fixtureArn
         "https://example.eks.amazonaws.com"
@@ -627,7 +628,7 @@ fixtureProjection =
 
 fixtureArn, fixtureUid :: Text
 fixtureArn =
-  "arn:aws:eks:us-east-1:123456789012:cluster/aws-eks-test-cluster"
+  ("arn:aws:eks:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123456789012:cluster/aws-eks-test-cluster")
 fixtureUid = "eks-kube-system-uid-recovery"
 
 fixturePvc :: EksNamespacedName

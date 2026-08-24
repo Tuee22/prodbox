@@ -96,6 +96,7 @@ impossible by *shape* where possible, and by *assert* only where shape cannot re
 | **e** | more than one compute worker per machine | `Machine.computeWorker` is one field, not a list — a second worker is unconstructible |
 | **f** | a worker for the wrong substrate | `mkMachine` / `contractOK` require `workerSubstrate == machineSubstrate` |
 | **i** | mixed-substrate `kind`/`eks`; wrong-substrate placement | only the `Rke2` arm is substrate-plural; `Kind`/`Eks` are single-substrate by shape; placement is the `Placement` projection (capacity half → [resource_scaling_doctrine.md](./resource_scaling_doctrine.md)) |
+| **EKS desired size** | an empty EKS node group or an authored count that provisioning ignores | `mkEksTopology`, its `FromDhall` narrowing seam, `validateClusterTopology`, and Dhall `eksOK` reject zero; `eksNodeGroupSize` supplies the signed Pulumi `nodeDesiredSize` input |
 
 ### 2.1 Structural shape (rules c, d, e, i)
 
@@ -134,6 +135,12 @@ there is no scalar node count to inflate past the machine set.
 **MixedSubstrate is admissible only for `rke2`**: only the `Rke2` arm is substrate-plural, so a
 mixed-substrate kind or eks cluster (rule i) is unconstructible.
 
+`EksTopology.node_group_size` is the operator-authored desired size, not an informational field.
+It must be positive before an `EksTopology` exists, and provider-intent construction compares it
+with `aws_substrate.profile`'s positive minimum and maximum before rendering the EKS stack keys.
+The profile owns the account-specific bounds; the topology owns the desired cluster shape. This
+keeps the existing Dhall wire field load-bearing without duplicating desired size in the profile.
+
 ### 2.2 Assert-carried relational invariants (rules f, i)
 
 Dhall lacks built-in union equality, so the static invariants ride on `assert`, exactly as jitML's
@@ -143,6 +150,7 @@ is enforced by a Haskell smart constructor — an ill-typed `Machine` cannot be 
 ```haskell
 -- Example: rule f as a smart constructor (mirrors jitML's mkAbsExe / prodbox newtype constructors)
 data TopologyError = WorkerSubstrateMismatch WorkerSubstrate WorkerSubstrate  -- machine vs worker
+                   | EksNodeGroupSizeZero
   deriving (Eq, Show)
 
 mkMachine :: MachineId -> WorkerSubstrate -> ComputeWorker -> Either TopologyError Machine
@@ -184,7 +192,10 @@ EKS, then the generated `prodbox` topology closes with the lemma so an ill-typed
 -- Example: the static topology lemma (rule f per machine + rule i: EKS has no host-resident worker)
 let workerMatchesMachine = \(m : Machine) -> substrateEq m.machineSubstrate m.computeWorker.workerSubstrate
 let eksIsInCluster =
-      \(e : EksCluster) -> merge { InCluster = True, HostResident = False } (residencyOf e.eksSubstrate)
+      \(e : EksCluster) ->
+          if Natural/isZero e.node_group_size
+          then False
+          else merge { InCluster = True, HostResident = False } (residencyOf e.eksSubstrate)
 let _ = assert : contractOK self === True   -- inlined beside the topology data in the generated config
 ```
 

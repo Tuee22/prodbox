@@ -43,6 +43,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Config.OrdinaryTeardownRecovery
   ( OrdinaryTeardownTargetAgent (..)
@@ -631,6 +632,7 @@ fixedCurrentProgramTargetAgents =
             runId
             (LinuxRke2FoundationId "linux-rke2-foundation")
             maybeAwsScope
+            Nothing
             surface
         )
     run <-
@@ -661,7 +663,7 @@ fixedAwsScope :: AwsScope
 fixedAwsScope =
   AwsScope
     (AwsAccountId "111122223333")
-    (AwsRegion "ca-central-1")
+    (AwsRegion canonicalRegressionAwsRegion)
 
 fixedFixtureCoordinate :: Either Text CapabilityCoordinate
 fixedFixtureCoordinate = do

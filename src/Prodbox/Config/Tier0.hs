@@ -51,6 +51,7 @@ module Prodbox.Config.Tier0
   , defaultProdboxParameters
   , configFileToTier0Parameters
   , writeOperatorParametersToTier0
+  , writeOperatorDeploymentConfigToTier0
   , writeTier0FloorPreservingParameters
 
     -- * In-cluster daemon binary context (Sprint 1.40)
@@ -204,7 +205,6 @@ data ProdboxContext = ProdboxContext
   , cluster_id :: Text
   , vault_address :: Text
   , minio_endpoint :: Text
-  , minio_bucket :: Text
   , topology :: ProdboxTopology
   , capabilities :: [Capability]
   }
@@ -247,21 +247,18 @@ data ProdboxProjectConfig = ProdboxProjectConfig
 basicsFormatVersionV1 :: Int
 basicsFormatVersionV1 = 1
 
--- | The host CLI's default binary context: a 'HostOrchestrator' frame that may
--- reach the durable store and authenticate to Vault. The cluster id mirrors the
--- former hard-coded @prodbox-home@ default until an operator authors a real
--- @prodbox.dhall@; the MinIO coordinates default to the in-cluster Service DNS
--- + the @prodbox-state@ bucket.
+-- | The host CLI's unauthored binary context. Capability shape is compiled;
+-- deployment identity and endpoints stay empty until @config setup@ authors
+-- them.
 defaultProdboxContext :: ProdboxContext
 defaultProdboxContext =
   ProdboxContext
     { project = "prodbox"
     , binary = "prodbox"
     , context_kind = HostOrchestrator
-    , cluster_id = "prodbox-home"
-    , vault_address = "http://127.0.0.1:31820"
-    , minio_endpoint = "http://minio.prodbox.svc.cluster.local:9000"
-    , minio_bucket = "prodbox-state"
+    , cluster_id = ""
+    , vault_address = ""
+    , minio_endpoint = ""
     , topology =
         ProdboxTopology
           { seal_mode = Tier0Shamir
@@ -343,6 +340,32 @@ writeOperatorParametersToTier0 repoRoot config = do
       merged = base {parameters = configFileToTier0Parameters config}
   writeTier0 repoRoot merged
 
+-- | Author parameters and deployment-varying context in one Tier-0 write.
+-- Used by interactive @config setup@ so validation never observes freshly
+-- authored parameters beside compiled or stale context coordinates.
+writeOperatorDeploymentConfigToTier0
+  :: FilePath
+  -> Settings.ConfigFile
+  -> Settings.DeploymentContextInput
+  -> IO (Either String ())
+writeOperatorDeploymentConfigToTier0 repoRoot config contextInput = do
+  tier0Path <- resolveTier0ConfigPath repoRoot
+  existing <- decodeProjectConfigDhall tier0Path
+  let base = either (const defaultProjectConfig) id existing
+      currentContext = context base
+      authoredContext =
+        currentContext
+          { cluster_id = Settings.contextInputClusterId contextInput
+          , vault_address = Settings.contextInputVaultAddress contextInput
+          , minio_endpoint = Settings.contextInputMinioEndpoint contextInput
+          }
+      merged =
+        base
+          { parameters = configFileToTier0Parameters config
+          , context = authoredContext
+          }
+  writeTier0 repoRoot merged
+
 -- | Sprint 1.42 Part B / Sprint 7.25: establish the Tier-0 floor at first-ever
 -- bring-up (@vault init@) by stamping the cluster identity (cluster id + Vault
 -- address) into the @context@ of the EXISTING @prodbox.dhall@, PRESERVING its
@@ -379,13 +402,10 @@ writeTier0FloorPreservingParameters repoRoot clusterId vaultAddress = do
               }
       writeTier0 repoRoot projectConfig
 
--- | The in-cluster gateway daemon's default binary context — the 'Daemon'-frame
--- variant of 'defaultProdboxContext'. This is the context a freshly started
--- prodbox\/gateway container has /before/ any ConfigMap is mounted: the binary
--- is the @gateway@ daemon frame, it still reaches the durable store and
--- authenticates to Vault (via Vault Kubernetes auth in-cluster), and the
--- non-secret parameters are shared field-for-field with the host default so the
--- two surfaces cannot drift (Sprint 1.40, config_doctrine.md §0).
+-- | The unauthored in-cluster gateway rendering template: the 'Daemon'-frame
+-- variant of 'defaultProdboxContext'. It supplies only capability shape.
+-- Deployment identity and endpoints remain empty until chart/config rendering
+-- projects an authored context; this value is never a missing-file fallback.
 defaultDaemonContext :: ProdboxContext
 defaultDaemonContext =
   defaultProdboxContext
@@ -393,13 +413,10 @@ defaultDaemonContext =
     , context_kind = Daemon
     }
 
--- | The Tier-0 binary-context record baked into the prodbox\/gateway container
--- as the default @prodbox.dhall@ (config_doctrine.md §0, §3). It reuses the
--- shared non-secret 'defaultProdboxParameters' (so the @aws.*@ /
--- @acme.eab_*@ fields stay 'SecretRef.Vault' pointers — asserted secret-free by
--- 'tier0CarriesNoSecretValues') and the 'Daemon'-frame 'defaultDaemonContext'.
--- The cluster daemon OVERWRITES this default from the @gateway-config-<nodeId>@
--- ConfigMap mount at startup; see 'loadDaemonBinaryContext'.
+-- | The Tier-0 gateway rendering template (config_doctrine.md §0, §3). It
+-- reuses the shared non-secret 'defaultProdboxParameters' and the unauthored
+-- 'defaultDaemonContext'. A rendered file must exist at one of the explicit
+-- paths accepted by 'loadDaemonBinaryContext'; absence refuses.
 defaultDaemonProjectConfig :: ProdboxProjectConfig
 defaultDaemonProjectConfig =
   defaultProjectConfig
@@ -408,17 +425,13 @@ defaultDaemonProjectConfig =
 
 -- | Where the daemon's Tier-0 binary context comes from on a given start — the
 -- provenance the daemon logs. The ConfigMap mount OVERWRITES the container
--- default (config_doctrine.md §0); the compiled-in default is the last-resort
--- fallback when neither file is present (e.g. a smoke run with no image asset).
+-- file; no compiled deployment identity exists when neither file is present.
 data Tier0Source
   = -- | Decoded from the @gateway-config-<nodeId>@ ConfigMap-mounted
     -- @prodbox.dhall@ (the overwrite path).
     Tier0FromConfigMap FilePath
   | -- | Decoded from the baked-in container default @prodbox.dhall@.
     Tier0FromContainerDefault FilePath
-  | -- | No on-disk file present; fell back to the compiled-in
-    -- 'defaultDaemonProjectConfig'.
-    Tier0FromCompiledDefault
   deriving (Eq, Show)
 
 -- | The Tier-0 @prodbox.dhall@ path inside the existing @gateway-config-<nodeId>@
@@ -485,9 +498,8 @@ tier0SecretValueRefusal path fields =
 --      sibling next to the runtime @config.dhall@, decode it — the ConfigMap
 --      OVERWRITES the container default.
 --   2. Otherwise decode the baked-in container-default @prodbox.dhall@.
---   3. If neither file is present, fall back to the compiled-in
---      'defaultDaemonProjectConfig' so a freshly started container always has a
---      valid binary context.
+--   3. If neither file is present, refuse and name the authoring remedy. An
+--      unauthored template is not a deployment context.
 --
 -- The returned 'Tier0Source' is the provenance the daemon logs. This decode
 -- carries NO secrets — the parameters' sensitive fields are 'SecretRef.Vault'
@@ -511,7 +523,17 @@ loadDaemonBinaryContext configMapDir containerDefaultPath = do
       containerDefaultPresent <- doesFileExist containerDefaultPath
       if containerDefaultPresent
         then decodeFrom (Tier0FromContainerDefault containerDefaultPath) containerDefaultPath
-        else pure (Right (Tier0FromCompiledDefault, defaultDaemonProjectConfig))
+        else
+          pure
+            ( Left
+                ( "gateway Tier-0 deployment context is missing: neither `"
+                    ++ configMapPath
+                    ++ "` nor `"
+                    ++ containerDefaultPath
+                    ++ "` exists. Author deployment configuration with `prodbox config setup` "
+                    ++ "and reconcile the gateway ConfigMap."
+                )
+            )
  where
   decodeFrom source path = do
     decoded <- decodeProjectConfigDhall path
@@ -909,59 +931,55 @@ writeTier0AtPath tier0Path config = do
 --
 --   1. If a valid floor already loads ('loadUnencryptedBasics' projects it off
 --      @prodbox.dhall@'s @context@ and validates), it is a NO-OP success.
---   2. Otherwise it RECONSTRUCTS @prodbox.dhall@ from the best available source,
---      preferring an existing (but unreadable-as-floor) Tier-0 @prodbox.dhall@
---      (decoded via 'decodeProjectConfigDhall') so the floor matches the
---      operator-authored binary context;
---   3. else it falls back to 'defaultProjectConfig' with the known local cluster
---      identity (cluster id, this cluster's Vault address, Shamir seal mode, no
---      parent) — the same identity @vault init@ stamps for the root cluster —
---      with the caller-supplied Vault address overriding the default so it tracks
---      'Prodbox.Vault.Host.hostVaultAddress'.
---
--- The reconstruction writes through 'writeTier0', so the floor read back by
--- 'loadUnencryptedBasics' is exactly the projection of the written record.
-ensureBasicsFloor :: FilePath -> Text -> IO (Either String ())
-ensureBasicsFloor repoRoot vaultAddress = do
+--   2. Otherwise it refuses with the missing operator fields named. A root
+--      cluster id cannot be reconstructed from the caller-supplied Vault
+--      address, and substituting one here would create a second config owner.
+ensureBasicsFloor :: FilePath -> Settings.ValidatedDeploymentContext -> IO (Either String ())
+ensureBasicsFloor repoRoot context = do
   tier0Path <- resolveTier0ConfigPath repoRoot
-  ensureBasicsFloorAtPath tier0Path vaultAddress
+  ensureBasicsFloorAtPath tier0Path context
 
 -- | Self-heal the Tier-0 floor at an EXPLICIT prodbox.dhall path.
 -- 'ensureBasicsFloor' resolves the binary-sibling path and delegates here; the
 -- path-injection seam in-process unit tests exercise directly. Sprint 1.48.
-ensureBasicsFloorAtPath :: FilePath -> Text -> IO (Either String ())
-ensureBasicsFloorAtPath tier0Path vaultAddress = do
+ensureBasicsFloorAtPath
+  :: FilePath
+  -> Settings.ValidatedDeploymentContext
+  -> IO (Either String ())
+ensureBasicsFloorAtPath tier0Path context = do
   existing <- loadUnencryptedBasicsAtPath tier0Path
   case existing of
-    Right _ -> pure (Right ())
-    Left _ -> do
-      tier0Present <- doesFileExist tier0Path
-      reconstructed <-
-        if tier0Present
-          then do
-            decoded <- decodeProjectConfigDhall tier0Path
-            pure (either (const fallbackConfig) id decoded)
-          else pure fallbackConfig
-      writeResult <- writeTier0AtPath tier0Path reconstructed
-      case writeResult of
-        Left err ->
+    Right basics
+      | basicsClusterId basics /= Settings.deploymentClusterId context ->
           pure
             ( Left
-                ("self-heal of the Tier-0 sealed-Vault basics floor failed: " ++ err)
+                ( "Tier-0 basics cluster_id does not match the validated deployment context: `"
+                    ++ Text.unpack (basicsClusterId basics)
+                    ++ "` /= `"
+                    ++ Text.unpack (Settings.deploymentClusterId context)
+                    ++ "`"
+                )
             )
-        Right () -> do
-          writeOutputLine
-            ( "Reconstructed the missing Tier-0 sealed-Vault basics floor (prodbox.dhall) for cluster `"
-                ++ Text.unpack (cluster_id (context reconstructed))
-                ++ "`."
+      | basicsVaultAddress basics /= Settings.deploymentVaultAddress context ->
+          pure
+            ( Left
+                ( "Tier-0 basics vault_address does not match the validated deployment context: `"
+                    ++ Text.unpack (basicsVaultAddress basics)
+                    ++ "` /= `"
+                    ++ Text.unpack (Settings.deploymentVaultAddress context)
+                    ++ "`"
+                )
             )
-          pure (Right ())
- where
-  baseContext = context defaultProjectConfig
-  fallbackConfig =
-    defaultProjectConfig
-      { context = baseContext {vault_address = vaultAddress}
-      }
+      | otherwise -> pure (Right ())
+    Left err ->
+      pure
+        ( Left
+            ( "cannot reconstruct the Tier-0 sealed-Vault basics floor without an "
+                ++ "operator-authored context.cluster_id and context.vault_address: "
+                ++ err
+                ++ ". Run `prodbox config setup`."
+            )
+        )
 
 -- | Sprint 1.39 (self-heal): the child-cluster analog of 'ensureBasicsFloor'.
 -- A child cluster's floor is Transit seal mode carrying its parent reference,

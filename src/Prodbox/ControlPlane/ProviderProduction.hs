@@ -37,6 +37,7 @@ import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.List (nub, sort)
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -51,6 +52,7 @@ import Numeric.Natural (Natural)
 import Prodbox.Aws.CredentialHandle (baseCredentialHandleFromSettings)
 import Prodbox.Aws.Native.Route53 qualified as NativeRoute53
 import Prodbox.Aws.Native.Wire (AwsClientError, httpSend)
+import Prodbox.Aws.Region (awsGlobalServiceRegion)
 import Prodbox.AwsEnvironment (awsCliSubprocessEnvironment)
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientTransport
@@ -79,8 +81,12 @@ import Prodbox.ControlPlane.ProviderNarrowSession
   )
 import Prodbox.Http.Client (renderHttpError)
 import Prodbox.Infra.AwsEksTestStack (pulumiAwsProviderEnv)
-import Prodbox.Infra.Route53ValidationZone qualified as Route53ValidationZone
 import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
+import Prodbox.Lifecycle.AwsNativeStackFamily
+  ( AwsNativeStackFamilyRunner (..)
+  , observeAwsNativeStackFamily
+  , reapAwsNativeStackFamilyWithin
+  )
 import Prodbox.Lifecycle.DnsRecord
   ( AwsAccountId
   , DnsCoordinateError
@@ -129,10 +135,12 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , EksClusterIdentityRequest
   , ProviderCheckpointRef
   , ProviderIntentCoordinate
+  , ProviderNativeStackFamilyRef
   , ProviderOwnedTagQuery (..)
   , ProviderReadinessProbe (..)
   , ProviderSpotPriceQuery
-  , ProviderStackConfig (..)
+  , ProviderStackConfig
+  , ProviderStackConfigView (..)
   , ProviderStackRef
   , PublicARecordRef
   , SesBucketRef
@@ -147,8 +155,11 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , eksClusterIdentityRequestClusterName
   , eksClusterIdentityRequestRegion
   , providerCheckpointRefText
+  , providerNativeStackFamilyAccountId
+  , providerNativeStackFamilyRegion
   , providerSpotPriceInstanceType
   , providerSpotPriceProductDescription
+  , providerStackConfigView
   , providerStackRefText
   , publicARecordFqdn
   , publicARecordHostedZoneId
@@ -165,9 +176,14 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   )
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.Lifecycle.TaggedResourceQuery qualified as TaggedResourceQuery
+import Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
+  ( encodeAwsNativeStackFamilyEvidence
+  )
 import Prodbox.Lifecycle.Teardown.ProviderAwsScopeAdapter.Internal
   ( encodeProviderAwsScopeEvidence
   )
+import Prodbox.Lifecycle.Teardown.Registry qualified as TeardownRegistry
+import Prodbox.Lifecycle.ValidationHostedZone qualified as Route53ValidationZone
 import Prodbox.Pulumi.EncryptedBackend
   ( EncryptedBackendError
   , PulumiStackRef (..)
@@ -180,6 +196,11 @@ import Prodbox.Runtime.Role
   ( RuntimeRole (LifecycleAuthorityRuntime, ProviderWorkerRuntime)
   )
 import Prodbox.Settings (Credentials (..))
+import Prodbox.Settings.AwsSubstrateProfile
+  ( awsEksStackConfiguration
+  , awsTestStackConfiguration
+  , renderAwsSubstrateProfileError
+  )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
@@ -261,6 +282,12 @@ providerProductionCapabilities =
     , observeDns01ChallengeRecordsCapability = dns01ChallengeRecordObservation
     , observeRetainedEbsVolumesCapability = retainedEbsObservation
     , reapRetainedEbsVolumesCapability = retainedEbsReaperMutation
+    , observeEksIamRoleFamilyCapability = eksIamRoleFamilyObservation
+    , reapEksIamRoleFamilyCapability = eksIamRoleFamilyReaperMutation
+    , observeEksLoadBalancerControllerFamilyCapability =
+        eksLoadBalancerControllerFamilyObservation
+    , reapEksLoadBalancerControllerFamilyCapability =
+        eksLoadBalancerControllerFamilyReaperMutation
     , observeOwnedResourceTagsCapability = ownedResourceTagObservation
     , observeSpotPriceCapability = spotPriceObservation
     , observeOperationalIdentityCapability = operationalIdentityObservation
@@ -268,6 +295,8 @@ providerProductionCapabilities =
     , observeProviderReadinessCapability = readinessObservation
     , issueEksClientAuthCapability = eksClientAuthObservation
     , observeEksClusterIdentityCapability = eksClusterIdentityObservation
+    , observeNativeStackFamilyCapability = nativeStackFamilyObservation
+    , reapNativeStackFamilyCapability = nativeStackFamilyReaperMutation
     }
 
 -- | Deep readiness for the production worker: the exact Provider Vault KV
@@ -288,51 +317,76 @@ providerProductionReady vaultSession = do
         Right _ -> True
 
 data DesiredState = DesiredPresent | DesiredAbsent
+  deriving (Eq)
 
 data CompiledStack = CompiledStack
   { compiledStackPulumiRef :: !PulumiStackRef
   , compiledStackProjectDirectory :: !FilePath
   , compiledStackConfiguration :: ![(String, String)]
+  , compiledStackApplication :: !CompiledStackApplication
   }
+
+data CompiledStackApplication
+  = CompiledStackApplyable
+  | CompiledStackObservationOnly
+  deriving (Eq)
 
 compiledStackFor
   :: ProviderStackRef
   -> ProviderStackConfig
   -> Either Text CompiledStack
 compiledStackFor ref config = case (providerStackRefText ref, config) of
-  ("aws-eks", AwsEksProviderStackConfig operatorCidr) ->
-    Right
-      ( stack
-          "prodbox-aws-eks-test"
-          "aws-eks-test"
-          "aws-eks"
-          [("operatorCidr", Text.unpack operatorCidr)]
-      )
-  ("aws-eks-subzone", AwsEksSubzoneProviderStackConfig parentZoneId subzoneName) ->
-    Right
-      ( stack
-          "prodbox-aws-eks-subzone"
-          "aws-eks-subzone"
-          "aws-eks-subzone"
-          [ ("parentZoneId", Text.unpack parentZoneId)
-          , ("subzoneName", Text.unpack subzoneName)
-          ]
-      )
-  ("aws-test", AwsTestProviderStackConfig operatorCidr) ->
-    Right
-      ( stack
-          "prodbox-aws-test"
-          "aws-test"
-          "aws-test"
-          [("operatorCidr", Text.unpack operatorCidr)]
-      )
+  ("aws-eks", _) -> case providerStackConfigView config of
+    AwsEksLegacyConfig _ ->
+      Right (stack "prodbox-aws-eks-test" "aws-eks-test" "aws-eks" [] CompiledStackObservationOnly)
+    AwsEksProfileConfig profile desiredSize -> do
+      configuration <-
+        first (Text.pack . renderAwsSubstrateProfileError) (awsEksStackConfiguration profile desiredSize)
+      Right
+        ( stack
+            "prodbox-aws-eks-test"
+            "aws-eks-test"
+            "aws-eks"
+            configuration
+            CompiledStackApplyable
+        )
+    _ -> Left "provider stack/config pair is not in the compiled non-SES registry"
+  ("aws-eks-subzone", _) -> case providerStackConfigView config of
+    AwsEksSubzoneConfig parentZoneId subzoneName ->
+      Right
+        ( stack
+            "prodbox-aws-eks-subzone"
+            "aws-eks-subzone"
+            "aws-eks-subzone"
+            [ ("parentZoneId", Text.unpack parentZoneId)
+            , ("subzoneName", Text.unpack subzoneName)
+            ]
+            CompiledStackApplyable
+        )
+    _ -> Left "provider stack/config pair is not in the compiled non-SES registry"
+  ("aws-test", _) -> case providerStackConfigView config of
+    AwsTestLegacyConfig _ ->
+      Right (stack "prodbox-aws-test" "aws-test" "aws-test" [] CompiledStackObservationOnly)
+    AwsTestProfileConfig profile -> do
+      configuration <-
+        first (Text.pack . renderAwsSubstrateProfileError) (awsTestStackConfiguration profile)
+      Right
+        ( stack
+            "prodbox-aws-test"
+            "aws-test"
+            "aws-test"
+            configuration
+            CompiledStackApplyable
+        )
+    _ -> Left "provider stack/config pair is not in the compiled non-SES registry"
   _ -> Left "provider stack/config pair is not in the compiled non-SES registry"
  where
-  stack project stackId subdirectory configuration =
+  stack project stackId subdirectory configuration application =
     CompiledStack
       { compiledStackPulumiRef = PulumiStackRef project stackId
       , compiledStackProjectDirectory = providerBuildRoot </> "pulumi" </> subdirectory
       , compiledStackConfiguration = configuration
+      , compiledStackApplication = application
       }
 
 providerBuildRoot :: FilePath
@@ -360,6 +414,13 @@ observeDesiredStack
 observeDesiredStack session desired ref config =
   case compiledStackFor ref config of
     Left detail -> pure (ProviderEffectUnobservable detail)
+    Right compiled
+      | desired == DesiredPresent
+      , compiledStackApplication compiled == CompiledStackObservationOnly ->
+          pure
+            ( ProviderEffectUnobservable
+                "retained stack config predates the required authored AWS substrate profile"
+            )
     Right compiled -> do
       environment <- pulumiEnvironment (productionSessionCredentials session)
       observed <-
@@ -443,55 +504,61 @@ runPulumiMutation
   -> [(String, String)]
   -> IO (Either String ())
 runPulumiMutation desired compiled environment = do
-  login <- runPulumi compiled environment ["login", backendUrl environment]
-  case commandSuccess login of
-    Left detail -> pure (Left detail)
-    Right _ -> case desired of
-      DesiredPresent -> do
-        selected <-
-          runPulumi
-            compiled
-            environment
-            ["stack", "select", "--stack", stackName compiled, "--create", "--non-interactive"]
-        case commandSuccess selected of
-          Left detail -> pure (Left detail)
-          Right _ -> do
-            configured <- setPulumiConfiguration compiled environment
-            case configured of
-              Left detail -> pure (Left detail)
-              Right () ->
-                do
-                  updated <-
-                    runPulumi
-                      compiled
-                      environment
-                      ["up", "--stack", stackName compiled, "--yes", "--skip-preview", "--non-interactive"]
-                  pure (Control.Monad.void (commandSuccess updated))
-      DesiredAbsent -> do
-        selected <-
-          runPulumi
-            compiled
-            environment
-            ["stack", "select", "--stack", stackName compiled, "--non-interactive"]
-        if missingStack selected
-          then pure (Right ())
-          else case commandSuccess selected of
+  case (desired, compiledStackApplication compiled) of
+    (DesiredPresent, CompiledStackObservationOnly) ->
+      pure (Left "retained stack config predates the required authored AWS substrate profile")
+    _ -> run
+ where
+  run = do
+    login <- runPulumi compiled environment ["login", backendUrl environment]
+    case commandSuccess login of
+      Left detail -> pure (Left detail)
+      Right _ -> case desired of
+        DesiredPresent -> do
+          selected <-
+            runPulumi
+              compiled
+              environment
+              ["stack", "select", "--stack", stackName compiled, "--create", "--non-interactive"]
+          case commandSuccess selected of
             Left detail -> pure (Left detail)
             Right _ -> do
-              destroyed <-
-                runPulumi
-                  compiled
-                  environment
-                  ["destroy", "--stack", stackName compiled, "--yes", "--skip-preview", "--non-interactive"]
-              case commandSuccess destroyed of
+              configured <- setPulumiConfiguration compiled environment
+              case configured of
                 Left detail -> pure (Left detail)
-                Right _ -> do
-                  removed <-
-                    runPulumi
-                      compiled
-                      environment
-                      ["stack", "rm", "--stack", stackName compiled, "--yes", "--non-interactive"]
-                  pure (Control.Monad.void (commandSuccess removed))
+                Right () ->
+                  do
+                    updated <-
+                      runPulumi
+                        compiled
+                        environment
+                        ["up", "--stack", stackName compiled, "--yes", "--skip-preview", "--non-interactive"]
+                    pure (Control.Monad.void (commandSuccess updated))
+        DesiredAbsent -> do
+          selected <-
+            runPulumi
+              compiled
+              environment
+              ["stack", "select", "--stack", stackName compiled, "--non-interactive"]
+          if missingStack selected
+            then pure (Right ())
+            else case commandSuccess selected of
+              Left detail -> pure (Left detail)
+              Right _ -> do
+                destroyed <-
+                  runPulumi
+                    compiled
+                    environment
+                    ["destroy", "--stack", stackName compiled, "--yes", "--skip-preview", "--non-interactive"]
+                case commandSuccess destroyed of
+                  Left detail -> pure (Left detail)
+                  Right _ -> do
+                    removed <-
+                      runPulumi
+                        compiled
+                        environment
+                        ["stack", "rm", "--stack", stackName compiled, "--yes", "--non-interactive"]
+                    pure (Control.Monad.void (commandSuccess removed))
 
 setPulumiConfiguration
   :: CompiledStack
@@ -531,11 +598,20 @@ observeStackRef session ref =
 
 defaultCompiledStack :: ProviderStackRef -> Either Text CompiledStack
 defaultCompiledStack ref = case providerStackRefText ref of
-  "aws-eks" -> compiledStackFor ref (AwsEksProviderStackConfig "127.0.0.1/32")
+  "aws-eks" -> observationStack "prodbox-aws-eks-test" "aws-eks-test" "aws-eks"
   "aws-eks-subzone" ->
-    compiledStackFor ref (AwsEksSubzoneProviderStackConfig "observation" "observation.invalid")
-  "aws-test" -> compiledStackFor ref (AwsTestProviderStackConfig "127.0.0.1/32")
+    observationStack "prodbox-aws-eks-subzone" "aws-eks-subzone" "aws-eks-subzone"
+  "aws-test" -> observationStack "prodbox-aws-test" "aws-test" "aws-test"
   _ -> Left "stack is not in the compiled non-SES registry"
+ where
+  observationStack project stackId subdirectory =
+    Right
+      CompiledStack
+        { compiledStackPulumiRef = PulumiStackRef project stackId
+        , compiledStackProjectDirectory = providerBuildRoot </> "pulumi" </> subdirectory
+        , compiledStackConfiguration = []
+        , compiledStackApplication = CompiledStackObservationOnly
+        }
 
 readPulumiStack
   :: CompiledStack
@@ -721,6 +797,792 @@ testEbsObservation clusterName = ProviderReadOnly $ \session _ -> do
                 volumes
             )
         )
+
+-- | Checkpoint-independent observation of one closed registered stack family.
+-- The Provider credential is independently checked against the account and
+-- region signed into the intent before any family query runs.
+nativeStackFamilyObservation
+  :: ProviderNativeStackFamilyRef
+  -> ProviderStackConfig
+  -> ProviderReadOnly IO ProviderProductionSession
+nativeStackFamilyObservation ref config = ProviderReadOnly $ \session _ -> do
+  observed <- observeNativeStackFamilyForSession session ref config
+  pure $ do
+    identities <- observed
+    firstShow (encodeAwsNativeStackFamilyEvidence ref identities)
+
+nativeStackFamilyReaperMutation
+  :: ProviderNativeStackFamilyRef
+  -> ProviderStackConfig
+  -> [Text]
+  -> ProviderMutation IO ProviderProductionSession
+nativeStackFamilyReaperMutation ref config admittedIdentities =
+  ProviderMutation
+    { observeProviderMutation = \session _ -> do
+        observed <- observeNativeStackFamilyForSession session ref config
+        pure $ case observed of
+          Left detail -> ProviderEffectUnobservable detail
+          Right [] -> ProviderEffectSatisfied "registered native stack family is absent"
+          Right identities
+            | all (`elem` admittedIdentities) identities ->
+                ProviderEffectNeedsApply "registered native stack family remains"
+            | otherwise ->
+                ProviderEffectUnobservable
+                  "registered native stack family exceeded its manifest allowlist"
+    , applyProviderMutation = \session _ -> do
+        environment <-
+          awsCliSubprocessEnvironment (productionSessionCredentials session)
+        binding <- validateNativeStackFamilySession environment ref
+        case binding of
+          Left detail -> pure (Left detail)
+          Right () ->
+            reapAwsNativeStackFamilyWithin
+              (AwsNativeStackFamilyRunner (runAws environment))
+              ref
+              config
+              admittedIdentities
+    }
+
+observeNativeStackFamilyForSession
+  :: ProviderProductionSession
+  -> ProviderNativeStackFamilyRef
+  -> ProviderStackConfig
+  -> IO (Either Text [Text])
+observeNativeStackFamilyForSession session ref config = do
+  environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+  binding <- validateNativeStackFamilySession environment ref
+  case binding of
+    Left detail -> pure (Left detail)
+    Right () ->
+      observeAwsNativeStackFamily
+        (AwsNativeStackFamilyRunner (runAws environment))
+        ref
+        config
+
+validateNativeStackFamilySession
+  :: [(String, String)]
+  -> ProviderNativeStackFamilyRef
+  -> IO (Either Text ())
+validateNativeStackFamilySession environment ref = do
+  account <- providerSessionAccountId environment
+  pure $ do
+    accountId <- account
+    region <- providerSessionRegion environment
+    if accountId == providerNativeStackFamilyAccountId ref
+      then Right ()
+      else Left "Provider credential account does not equal the native stack-family account"
+    if region == providerNativeStackFamilyRegion ref
+      then Right ()
+      else Left "Provider credential region does not equal the native stack-family region"
+
+-- | Sprint 7.36 exact IAM family. The signed intent carries the canonical
+-- registry projections, and this boundary independently checks them before it
+-- reaches IAM. An Authority submission therefore cannot widen the family by
+-- composing another role name under the same allowlist key.
+eksIamRoleFamilyObservation
+  :: Text
+  -> Text
+  -> ProviderReadOnly IO ProviderProductionSession
+eksIamRoleFamilyObservation roleNames policyNames =
+  ProviderReadOnly $ \session _ -> do
+    observed <- observeEksIamRoleFamily session roleNames policyNames
+    pure (fst <$> observed)
+
+eksIamRoleFamilyReaperMutation
+  :: Text
+  -> Text
+  -> ProviderMutation IO ProviderProductionSession
+eksIamRoleFamilyReaperMutation roleNames policyNames =
+  ProviderMutation
+    { observeProviderMutation = \session _ -> do
+        observed <- observeEksIamRoleFamily session roleNames policyNames
+        pure $ case observed of
+          Left detail -> ProviderEffectUnobservable detail
+          Right (_, True) -> ProviderEffectSatisfied "registered EKS IAM family is absent"
+          Right (_, False) -> ProviderEffectNeedsApply "registered EKS IAM family remains"
+    , applyProviderMutation = \session _ ->
+        reapEksIamRoleFamily session roleNames policyNames
+    }
+
+observeEksIamRoleFamily
+  :: ProviderProductionSession
+  -> Text
+  -> Text
+  -> IO (Either Text (Text, Bool))
+observeEksIamRoleFamily session roleNames policyNames =
+  case validateEksIamFamilyProjection roleNames policyNames of
+    Left detail -> pure (Left detail)
+    Right (roles, policies) -> do
+      environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+      account <- providerSessionAccountId environment
+      case account of
+        Left detail -> pure (Left detail)
+        Right accountId -> do
+          roleRows <- traverse (observeRole environment) roles
+          policyRows <- traverse (observePolicy environment accountId) policies
+          pure $ do
+            exactRoles <- sequence roleRows
+            exactPolicies <- sequence policyRows
+            let rows = exactRoles ++ exactPolicies
+            Right
+              ( Text.intercalate "\n" ("prodbox-eks-iam-family/v1" : map fst rows)
+              , all snd rows
+              )
+ where
+  observeRole environment roleName = do
+    output <-
+      runAws
+        environment
+        ["iam", "get-role", "--role-name", Text.unpack roleName, "--output", "json"]
+    pure $ case processExitCode output of
+      ExitSuccess -> do
+        root <- decodeObject (processStdout output)
+        role <- requireObjectField "Role" root
+        returnedName <- requireTextField "RoleName" role
+        arn <- requireTextField "Arn" role
+        if returnedName == roleName
+          then Right ("role|" <> roleName <> "|present|" <> arn, False)
+          else Left "IAM get-role returned another role name"
+      ExitFailure _
+        | awsOutputIsNoSuchEntity output ->
+            Right ("role|" <> roleName <> "|absent", True)
+        | otherwise -> Left (awsOutputFailure "IAM get-role" output)
+
+  observePolicy environment accountId policyName = do
+    let arn = iamManagedPolicyArn accountId policyName
+    output <-
+      runAws
+        environment
+        ["iam", "get-policy", "--policy-arn", Text.unpack arn, "--output", "json"]
+    pure $ case processExitCode output of
+      ExitSuccess -> do
+        root <- decodeObject (processStdout output)
+        policy <- requireObjectField "Policy" root
+        returnedName <- requireTextField "PolicyName" policy
+        returnedArn <- requireTextField "Arn" policy
+        if returnedName == policyName && returnedArn == arn
+          then Right ("policy|" <> policyName <> "|present|" <> arn, False)
+          else Left "IAM get-policy returned another managed policy"
+      ExitFailure _
+        | awsOutputIsNoSuchEntity output ->
+            Right ("policy|" <> policyName <> "|absent", True)
+        | otherwise -> Left (awsOutputFailure "IAM get-policy" output)
+
+reapEksIamRoleFamily
+  :: ProviderProductionSession
+  -> Text
+  -> Text
+  -> IO (Either Text ())
+reapEksIamRoleFamily session roleNames policyNames =
+  case validateEksIamFamilyProjection roleNames policyNames of
+    Left detail -> pure (Left detail)
+    Right (roles, policies) -> do
+      environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+      roleResults <- traverse (deleteRoleAndAttachments environment) roles
+      case sequence roleResults of
+        Left detail -> pure (Left detail)
+        Right _ -> do
+          account <- providerSessionAccountId environment
+          case account of
+            Left detail -> pure (Left detail)
+            Right accountId -> do
+              policyResults <-
+                traverse (deleteManagedPolicy environment accountId) policies
+              pure (sequence_ policyResults)
+
+deleteRoleAndAttachments :: [(String, String)] -> Text -> IO (Either Text ())
+deleteRoleAndAttachments environment roleName = do
+  attached <-
+    listIamObjectTextFieldAllowMissing
+      environment
+      ["iam", "list-attached-role-policies", "--role-name", Text.unpack roleName]
+      "AttachedPolicies"
+      "PolicyArn"
+  inline <-
+    listIamTextFieldAllowMissing
+      environment
+      ["iam", "list-role-policies", "--role-name", Text.unpack roleName]
+      "PolicyNames"
+  profiles <-
+    listIamObjectTextFieldAllowMissing
+      environment
+      ["iam", "list-instance-profiles-for-role", "--role-name", Text.unpack roleName]
+      "InstanceProfiles"
+      "InstanceProfileName"
+  case (attached, inline, profiles) of
+    (Right policyArns, Right inlineNames, Right profileNames) -> do
+      detached <-
+        traverse
+          ( \policyArn ->
+              runIamVoidAllowMissing
+                environment
+                [ "iam"
+                , "detach-role-policy"
+                , "--role-name"
+                , Text.unpack roleName
+                , "--policy-arn"
+                , Text.unpack policyArn
+                ]
+          )
+          policyArns
+      deletedInline <-
+        traverse
+          ( \policyName ->
+              runIamVoidAllowMissing
+                environment
+                [ "iam"
+                , "delete-role-policy"
+                , "--role-name"
+                , Text.unpack roleName
+                , "--policy-name"
+                , Text.unpack policyName
+                ]
+          )
+          inlineNames
+      removedProfiles <-
+        traverse
+          ( \profileName ->
+              runIamVoidAllowMissing
+                environment
+                [ "iam"
+                , "remove-role-from-instance-profile"
+                , "--instance-profile-name"
+                , Text.unpack profileName
+                , "--role-name"
+                , Text.unpack roleName
+                ]
+          )
+          profileNames
+      case sequence (detached ++ deletedInline ++ removedProfiles) of
+        Left detail -> pure (Left detail)
+        Right _ ->
+          runIamVoidAllowMissing
+            environment
+            ["iam", "delete-role", "--role-name", Text.unpack roleName]
+    (Left detail, _, _) -> pure (Left detail)
+    (_, Left detail, _) -> pure (Left detail)
+    (_, _, Left detail) -> pure (Left detail)
+
+deleteManagedPolicy
+  :: [(String, String)] -> Text -> Text -> IO (Either Text ())
+deleteManagedPolicy environment accountId policyName = do
+  let arn = iamManagedPolicyArn accountId policyName
+  versions <-
+    listIamPolicyVersionsAllowMissing environment arn
+  case versions of
+    Left detail -> pure (Left detail)
+    Right versionIds -> do
+      deleted <-
+        traverse
+          ( \versionId ->
+              runIamVoidAllowMissing
+                environment
+                [ "iam"
+                , "delete-policy-version"
+                , "--policy-arn"
+                , Text.unpack arn
+                , "--version-id"
+                , Text.unpack versionId
+                ]
+          )
+          versionIds
+      case sequence deleted of
+        Left detail -> pure (Left detail)
+        Right _ ->
+          runIamVoidAllowMissing
+            environment
+            ["iam", "delete-policy", "--policy-arn", Text.unpack arn]
+
+validateEksIamFamilyProjection
+  :: Text -> Text -> Either Text ([Text], [Text])
+validateEksIamFamilyProjection roleNames policyNames = do
+  let expectedRoles = TeardownRegistry.awsEksIamRoleNames
+      expectedPolicies = TeardownRegistry.awsEksIamManagedPolicyNames
+      actualRoles = Text.splitOn "|" roleNames
+      actualPolicies = Text.splitOn "|" policyNames
+  if actualRoles == expectedRoles
+    then Right ()
+    else Left "EKS IAM role family does not equal the registered coordinate"
+  if actualPolicies == expectedPolicies
+    then Right ()
+    else Left "EKS IAM managed-policy family does not equal the registered coordinate"
+  if length actualRoles == length (nub actualRoles)
+    && length actualPolicies == length (nub actualPolicies)
+    && all (not . Text.null) (actualRoles ++ actualPolicies)
+    then Right (actualRoles, actualPolicies)
+    else Left "EKS IAM family contains an empty or duplicate member"
+
+-- | Exact controller-family observation. The deterministic name prevents a
+-- family scan, while the complete registered tag projection is verified on
+-- the load balancer and every attached security group before any ARN is
+-- returned as lifecycle evidence.
+eksLoadBalancerControllerFamilyObservation
+  :: Text
+  -> Text
+  -> ProviderReadOnly IO ProviderProductionSession
+eksLoadBalancerControllerFamilyObservation loadBalancerName tags =
+  ProviderReadOnly $ \session _ -> do
+    observed <-
+      observeEksLoadBalancerControllerFamily session loadBalancerName tags
+    pure (fst <$> observed)
+
+eksLoadBalancerControllerFamilyReaperMutation
+  :: Text
+  -> Text
+  -> ProviderMutation IO ProviderProductionSession
+eksLoadBalancerControllerFamilyReaperMutation loadBalancerName tags =
+  ProviderMutation
+    { observeProviderMutation = \session _ -> do
+        observed <-
+          observeEksLoadBalancerControllerFamily session loadBalancerName tags
+        pure $ case observed of
+          Left detail -> ProviderEffectUnobservable detail
+          Right (_, True) ->
+            ProviderEffectSatisfied
+              "registered EKS load-balancer controller family is absent"
+          Right (_, False) ->
+            ProviderEffectNeedsApply
+              "registered EKS load-balancer controller family remains"
+    , applyProviderMutation = \session _ ->
+        reapEksLoadBalancerControllerFamily session loadBalancerName tags
+    }
+
+observeEksLoadBalancerControllerFamily
+  :: ProviderProductionSession
+  -> Text
+  -> Text
+  -> IO (Either Text (Text, Bool))
+observeEksLoadBalancerControllerFamily session loadBalancerName tags =
+  case validateEksLoadBalancerControllerFamilyProjection loadBalancerName tags of
+    Left detail -> pure (Left detail)
+    Right expectedTags -> do
+      environment <-
+        awsCliSubprocessEnvironment (productionSessionCredentials session)
+      output <-
+        runAws
+          environment
+          [ "elbv2"
+          , "describe-load-balancers"
+          , "--names"
+          , Text.unpack loadBalancerName
+          , "--output"
+          , "json"
+          ]
+      case processExitCode output of
+        ExitFailure _
+          | awsOutputIsElbv2NotFound output -> pure (Right (lbcFamilyHeader, True))
+          | otherwise ->
+              pure (Left (awsOutputFailure "ELBv2 describe-load-balancers" output))
+        ExitSuccess -> case decodeLoadBalancerRoot (processStdout output) of
+          Left detail -> pure (Left detail)
+          Right (loadBalancerArn, securityGroupIds) -> do
+            tagsMatch <-
+              observeElbv2Tags environment loadBalancerArn expectedTags
+            listeners <-
+              observeElbv2ArnArray
+                environment
+                [ "elbv2"
+                , "describe-listeners"
+                , "--load-balancer-arn"
+                , Text.unpack loadBalancerArn
+                ]
+                "Listeners"
+                "ListenerArn"
+            targetGroups <-
+              observeElbv2ArnArray
+                environment
+                [ "elbv2"
+                , "describe-target-groups"
+                , "--load-balancer-arn"
+                , Text.unpack loadBalancerArn
+                ]
+                "TargetGroups"
+                "TargetGroupArn"
+            securityGroups <-
+              traverse
+                (observeOwnedSecurityGroup environment expectedTags)
+                securityGroupIds
+            account <- providerSessionAccountId environment
+            pure $ do
+              exactTagsMatch <- tagsMatch
+              if exactTagsMatch
+                then Right ()
+                else Left "load balancer omitted its registered ownership tags"
+              exactListeners <- listeners
+              exactTargetGroups <- targetGroups
+              exactSecurityGroups <- sequence securityGroups
+              accountId <- account
+              region <- providerSessionRegion environment
+              let securityGroupArns =
+                    map (securityGroupArn accountId region) exactSecurityGroups
+                  rows =
+                    ["load-balancer|" <> loadBalancerArn]
+                      ++ map ("listener|" <>) exactListeners
+                      ++ map ("target-group|" <>) exactTargetGroups
+                      ++ map ("security-group|" <>) securityGroupArns
+              Right
+                (Text.intercalate "\n" (lbcFamilyHeader : sort rows), False)
+
+reapEksLoadBalancerControllerFamily
+  :: ProviderProductionSession
+  -> Text
+  -> Text
+  -> IO (Either Text ())
+reapEksLoadBalancerControllerFamily session loadBalancerName tags = do
+  observed <-
+    observeEksLoadBalancerControllerFamily session loadBalancerName tags
+  case observed of
+    Left detail -> pure (Left detail)
+    Right (_, True) -> pure (Right ())
+    Right (evidence, False) -> do
+      environment <-
+        awsCliSubprocessEnvironment (productionSessionCredentials session)
+      case parseLbcFamilyRows evidence of
+        Left detail -> pure (Left detail)
+        Right rows -> do
+          listeners <-
+            traverse
+              (runElbv2VoidAllowMissing environment . deleteListenerArguments)
+              (membersOfKind "listener" rows)
+          case sequence listeners of
+            Left detail -> pure (Left detail)
+            Right _ -> do
+              loadBalancers <-
+                traverse
+                  (runElbv2VoidAllowMissing environment . deleteLoadBalancerArguments)
+                  (membersOfKind "load-balancer" rows)
+              case sequence loadBalancers of
+                Left detail -> pure (Left detail)
+                Right _ -> do
+                  targetGroups <-
+                    traverse
+                      (runElbv2VoidAllowMissing environment . deleteTargetGroupArguments)
+                      (membersOfKind "target-group" rows)
+                  case sequence targetGroups of
+                    Left detail -> pure (Left detail)
+                    Right _ ->
+                      deleteSecurityGroupsWithRetry
+                        environment
+                        (map securityGroupIdFromArn (membersOfKind "security-group" rows))
+ where
+  deleteListenerArguments arn =
+    ["elbv2", "delete-listener", "--listener-arn", Text.unpack arn]
+  deleteLoadBalancerArguments arn =
+    ["elbv2", "delete-load-balancer", "--load-balancer-arn", Text.unpack arn]
+  deleteTargetGroupArguments arn =
+    ["elbv2", "delete-target-group", "--target-group-arn", Text.unpack arn]
+
+lbcFamilyHeader :: Text
+lbcFamilyHeader = "prodbox-eks-lbc-family/v1"
+
+validateEksLoadBalancerControllerFamilyProjection
+  :: Text -> Text -> Either Text [(Text, Text)]
+validateEksLoadBalancerControllerFamilyProjection loadBalancerName rawTags = do
+  if loadBalancerName == TeardownRegistry.awsEksLoadBalancerControllerName
+    then Right ()
+    else
+      Left
+        "EKS load-balancer name does not equal the registered coordinate"
+  actualTags <- traverse parseTag (Text.splitOn "|" rawTags)
+  if actualTags == TeardownRegistry.awsEksLoadBalancerControllerTags
+    && actualTags == sort actualTags
+    && length (map fst actualTags) == length (nub (map fst actualTags))
+    then Right actualTags
+    else
+      Left
+        "EKS load-balancer tags do not equal the registered coordinate"
+ where
+  parseTag raw = case Text.breakOn "=" raw of
+    (key, valueWithSeparator)
+      | Just value <- Text.stripPrefix "=" valueWithSeparator
+      , not (Text.null key)
+      , not (Text.null value) ->
+          Right (key, value)
+    _ -> Left "EKS load-balancer tag projection was malformed"
+
+decodeLoadBalancerRoot :: String -> Either Text (Text, [Text])
+decodeLoadBalancerRoot payload = do
+  root <- decodeObject payload
+  values <- requireArrayField "LoadBalancers" root
+  case values of
+    [Object loadBalancer] -> do
+      arn <- requireTextField "LoadBalancerArn" loadBalancer
+      securityGroups <- requireTextArrayField "SecurityGroups" loadBalancer
+      Right (arn, securityGroups)
+    _ -> Left "ELBv2 exact-name observation did not return exactly one load balancer"
+
+observeElbv2Tags
+  :: [(String, String)] -> Text -> [(Text, Text)] -> IO (Either Text Bool)
+observeElbv2Tags environment resourceArn expected = do
+  output <-
+    runAws
+      environment
+      [ "elbv2"
+      , "describe-tags"
+      , "--resource-arns"
+      , Text.unpack resourceArn
+      , "--output"
+      , "json"
+      ]
+  pure $ case processExitCode output of
+    ExitFailure _ -> Left (awsOutputFailure "ELBv2 describe-tags" output)
+    ExitSuccess -> do
+      root <- decodeObject (processStdout output)
+      descriptions <- requireArrayField "TagDescriptions" root
+      case descriptions of
+        [Object description] -> do
+          returnedArn <- requireTextField "ResourceArn" description
+          tagValues <- requireArrayField "Tags" description
+          parsed <- traverse parseAwsTag tagValues
+          if returnedArn == resourceArn
+            then Right (all (`elem` parsed) expected)
+            else Left "ELBv2 tag observation returned another resource ARN"
+        _ -> Left "ELBv2 tag observation did not return exactly one description"
+
+observeElbv2ArnArray
+  :: [(String, String)]
+  -> [String]
+  -> Text
+  -> Text
+  -> IO (Either Text [Text])
+observeElbv2ArnArray environment arguments arrayName arnField = do
+  output <- runAws environment (arguments ++ ["--output", "json"])
+  pure $ case processExitCode output of
+    ExitFailure _ -> Left (awsOutputFailure "ELBv2 family observation" output)
+    ExitSuccess -> do
+      root <- decodeObject (processStdout output)
+      values <- requireArrayField arrayName root
+      traverse requireMemberArn values
+ where
+  requireMemberArn value = case value of
+    Object member -> requireTextField (Key.fromText arnField) member
+    _ -> Left "ELBv2 family member was not an object"
+
+observeOwnedSecurityGroup
+  :: [(String, String)]
+  -> [(Text, Text)]
+  -> Text
+  -> IO (Either Text Text)
+observeOwnedSecurityGroup environment expectedTags groupId = do
+  output <-
+    runAws
+      environment
+      [ "ec2"
+      , "describe-security-groups"
+      , "--group-ids"
+      , Text.unpack groupId
+      , "--output"
+      , "json"
+      ]
+  pure $ case processExitCode output of
+    ExitFailure _ -> Left (awsOutputFailure "EC2 describe-security-groups" output)
+    ExitSuccess -> do
+      root <- decodeObject (processStdout output)
+      values <- requireArrayField "SecurityGroups" root
+      case values of
+        [Object securityGroup] -> do
+          returnedId <- requireTextField "GroupId" securityGroup
+          tagValues <- requireArrayField "Tags" securityGroup
+          parsed <- traverse parseAwsTag tagValues
+          if returnedId == groupId && all (`elem` parsed) expectedTags
+            then Right returnedId
+            else
+              Left
+                "load-balancer security group omitted its exact identity or ownership tags"
+        _ -> Left "EC2 exact security-group observation returned another cardinality"
+
+parseAwsTag :: Value -> Either Text (Text, Text)
+parseAwsTag value = case value of
+  Object tag -> (,) <$> requireTextField "Key" tag <*> requireTextField "Value" tag
+  _ -> Left "AWS tag row was not an object"
+
+providerSessionRegion :: [(String, String)] -> Either Text Text
+providerSessionRegion environment =
+  case lookup "AWS_REGION" environment of
+    Just region | not (null region) -> Right (Text.pack region)
+    _ -> Left "Provider session omitted its exact AWS region"
+
+securityGroupArn :: Text -> Text -> Text -> Text
+securityGroupArn accountId region groupId =
+  "arn:aws:ec2:"
+    <> region
+    <> ":"
+    <> accountId
+    <> ":security-group/"
+    <> groupId
+
+securityGroupIdFromArn :: Text -> Text
+securityGroupIdFromArn arn =
+  maybe arn id (Text.stripPrefix "security-group/" (snd (Text.breakOnEnd ":" arn)))
+
+parseLbcFamilyRows :: Text -> Either Text [(Text, Text)]
+parseLbcFamilyRows evidence = case Text.lines evidence of
+  header : rows | header == lbcFamilyHeader -> traverse parseRow rows
+  _ -> Left "EKS load-balancer controller evidence omitted its header"
+ where
+  parseRow row = case Text.splitOn "|" row of
+    [kind, arn]
+      | kind `elem` ["load-balancer", "listener", "target-group", "security-group"]
+      , not (Text.null arn) ->
+          Right (kind, arn)
+    _ -> Left "EKS load-balancer controller evidence row was malformed"
+
+membersOfKind :: Text -> [(Text, Text)] -> [Text]
+membersOfKind expected = map snd . filter ((== expected) . fst)
+
+runElbv2VoidAllowMissing
+  :: [(String, String)] -> [String] -> IO (Either Text ())
+runElbv2VoidAllowMissing environment arguments = do
+  output <- runAws environment arguments
+  pure $ case processExitCode output of
+    ExitSuccess -> Right ()
+    ExitFailure _
+      | awsOutputIsElbv2NotFound output -> Right ()
+      | otherwise -> Left (awsOutputFailure "ELBv2 mutation" output)
+
+deleteSecurityGroupsWithRetry
+  :: [(String, String)] -> [Text] -> IO (Either Text ())
+deleteSecurityGroupsWithRetry environment = go (10 :: Int)
+ where
+  go _ [] = pure (Right ())
+  go remaining groupIds = do
+    results <- traverse deleteOne groupIds
+    let failures = [detail | Left detail <- results]
+    if null failures
+      then pure (Right ())
+      else
+        if remaining <= 1
+          then pure (Left (Text.intercalate "; " failures))
+          else threadDelay 1000000 >> go (remaining - 1) groupIds
+  deleteOne groupId = do
+    output <-
+      runAws
+        environment
+        ["ec2", "delete-security-group", "--group-id", Text.unpack groupId]
+    pure $ case processExitCode output of
+      ExitSuccess -> Right ()
+      ExitFailure _
+        | awsOutputIsEc2SecurityGroupNotFound output -> Right ()
+        | otherwise -> Left (awsOutputFailure "EC2 delete-security-group" output)
+
+awsOutputIsElbv2NotFound :: ProcessOutput -> Bool
+awsOutputIsElbv2NotFound output =
+  containsAny
+    ["loadbalancernotfound", "listenernotfound", "targetgroupnotfound"]
+    (processStderr output <> processStdout output)
+
+awsOutputIsEc2SecurityGroupNotFound :: ProcessOutput -> Bool
+awsOutputIsEc2SecurityGroupNotFound output =
+  containsAny
+    ["invalidgroup.notfound", "does not exist"]
+    (processStderr output <> processStdout output)
+
+providerSessionAccountId :: [(String, String)] -> IO (Either Text Text)
+providerSessionAccountId environment = do
+  output <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
+  pure $ do
+    root <-
+      first
+        (const (awsOutputFailure "STS get-caller-identity" output))
+        (decodeObject (processStdout output))
+    requireTextField "Account" root
+
+iamManagedPolicyArn :: Text -> Text -> Text
+iamManagedPolicyArn accountId policyName =
+  "arn:aws:iam::" <> accountId <> ":policy/" <> policyName
+
+listIamTextFieldAllowMissing
+  :: [(String, String)] -> [String] -> Text -> IO (Either Text [Text])
+listIamTextFieldAllowMissing environment arguments fieldName = do
+  output <- runAws environment (arguments ++ ["--output", "json"])
+  pure $ case processExitCode output of
+    ExitFailure _
+      | awsOutputIsNoSuchEntity output -> Right []
+      | otherwise -> Left (awsOutputFailure "IAM list" output)
+    ExitSuccess -> do
+      root <- decodeObject (processStdout output)
+      values <- requireArrayField fieldName root
+      traverse requireString values
+
+listIamObjectTextFieldAllowMissing
+  :: [(String, String)]
+  -> [String]
+  -> Text
+  -> Text
+  -> IO (Either Text [Text])
+listIamObjectTextFieldAllowMissing environment arguments arrayName fieldName = do
+  output <- runAws environment (arguments ++ ["--output", "json"])
+  pure $ case processExitCode output of
+    ExitFailure _
+      | awsOutputIsNoSuchEntity output -> Right []
+      | otherwise -> Left (awsOutputFailure "IAM list" output)
+    ExitSuccess -> do
+      root <- decodeObject (processStdout output)
+      values <- requireArrayField arrayName root
+      traverse requireRowField values
+ where
+  requireRowField value = case value of
+    Object objectValue -> requireTextField (Key.fromText fieldName) objectValue
+    _ -> Left ("IAM " <> arrayName <> " row was not an object")
+
+listIamPolicyVersionsAllowMissing
+  :: [(String, String)] -> Text -> IO (Either Text [Text])
+listIamPolicyVersionsAllowMissing environment policyArn = do
+  output <-
+    runAws
+      environment
+      ["iam", "list-policy-versions", "--policy-arn", Text.unpack policyArn, "--output", "json"]
+  pure $ case processExitCode output of
+    ExitFailure _
+      | awsOutputIsNoSuchEntity output -> Right []
+      | otherwise -> Left (awsOutputFailure "IAM list-policy-versions" output)
+    ExitSuccess -> do
+      root <- decodeObject (processStdout output)
+      values <- requireArrayField "Versions" root
+      fmap concat $ traverse nonDefaultVersion values
+ where
+  nonDefaultVersion value = case value of
+    Object objectValue -> do
+      versionId <- requireTextField "VersionId" objectValue
+      case KeyMap.lookup "IsDefaultVersion" objectValue of
+        Just (Bool True) -> Right []
+        Just (Bool False) -> Right [versionId]
+        _ -> Left "IAM policy version omitted IsDefaultVersion"
+    _ -> Left "IAM policy version row was not an object"
+
+requireArrayField :: Text -> KeyMap.KeyMap Value -> Either Text [Value]
+requireArrayField fieldName objectValue =
+  case KeyMap.lookup (Key.fromText fieldName) objectValue of
+    Just (Array values) -> Right (Vector.toList values)
+    _ -> Left ("AWS response omitted array field " <> fieldName)
+
+requireString :: Value -> Either Text Text
+requireString value = case value of
+  String textValue -> Right textValue
+  _ -> Left "AWS response array contained a non-string value"
+
+runIamVoidAllowMissing
+  :: [(String, String)] -> [String] -> IO (Either Text ())
+runIamVoidAllowMissing environment arguments = do
+  output <- runAws environment arguments
+  pure $ case processExitCode output of
+    ExitSuccess -> Right ()
+    ExitFailure _
+      | awsOutputIsNoSuchEntity output -> Right ()
+      | otherwise -> Left (awsOutputFailure "IAM mutation" output)
+
+awsOutputIsNoSuchEntity :: ProcessOutput -> Bool
+awsOutputIsNoSuchEntity output =
+  "NoSuchEntity" `Text.isInfixOf` Text.pack (processStderr output <> processStdout output)
+
+awsOutputFailure :: Text -> ProcessOutput -> Text
+awsOutputFailure label output =
+  Text.take
+    1024
+    ( label
+        <> " failed: "
+        <> Text.pack (processStderr output <> processStdout output)
+    )
 
 -- | Sprint 7.36: read-only observation of the @dns-aws@ validation hosted-zone
 -- family, through the Provider Worker's own session credentials.
@@ -2229,7 +3091,7 @@ applySesCaptureBucket session ref = do
       bucket = Text.unpack (sesBucketRefText ref)
       createArguments =
         ["s3api", "create-bucket", "--bucket", bucket]
-          <> if awsRegion == "us-east-1"
+          <> if awsRegion == awsGlobalServiceRegion
             then []
             else ["--create-bucket-configuration", "LocationConstraint=" <> awsRegion]
   environment <- awsCliSubprocessEnvironment credentials

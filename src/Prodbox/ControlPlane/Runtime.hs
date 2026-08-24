@@ -233,6 +233,10 @@ import Prodbox.ControlPlane.ConfigPayload
 import Prodbox.ControlPlane.ConfigProductionStore
   ( productionConfigBlobStore
   )
+import Prodbox.ControlPlane.ControllerOwnerRepository
+  ( controllerOwnerModelBCodec
+  , modelBControllerOwnerRepository
+  )
 import Prodbox.ControlPlane.Coordinate (mkAuthorityScope)
 import Prodbox.ControlPlane.Coordinate qualified as Coordinate
 import Prodbox.ControlPlane.Deadline
@@ -438,6 +442,7 @@ import Prodbox.ControlPlane.RoleInterpreters
   , lifecycleAuthorityAwsStackCreationBindingAuthenticatedHandler
   , lifecycleAuthorityAwsStackReaderAuthenticatedHandler
   , lifecycleAuthorityCascadeRetainedSlotAuthenticatedHandler
+  , lifecycleAuthorityControllerOwnerAuthenticatedHandler
   , lifecycleAuthorityDecommissionAuthenticatedHandler
   , lifecycleAuthorityEksDrainIntentAuthenticatedHandler
   , lifecycleAuthorityEksDrainReadBackReceiptAuthenticatedHandler
@@ -1393,6 +1398,14 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                     authority
                     ownershipManifestModelBCodec
                 )
+            controllerOwnerRepository =
+              modelBControllerOwnerRepository
+                authority
+                ( inClusterAuthorityModelBCasAdapter
+                    store
+                    authority
+                    controllerOwnerModelBCodec
+                )
             localRke2HostObservationHandler =
               lifecycleAuthorityLocalRke2HostObservationEndpointHandlerInternal
                 localRke2HostObservationRepository
@@ -1704,11 +1717,14 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                                   awsStackCreationBindingRepository
                                   ( lifecycleAuthorityOwnershipManifestAuthenticatedHandler
                                       ownershipManifestRepository
-                                      ( lifecycleAuthorityLocalRke2HostObservationAuthenticatedHandler
-                                          localRke2HostObservationHandler
-                                          ( lifecycleAuthorityCascadeRetainedSlotAuthenticatedHandler
-                                              cascadeRetainedSlotHandler
-                                              baseAuthenticatedHandler
+                                      ( lifecycleAuthorityControllerOwnerAuthenticatedHandler
+                                          controllerOwnerRepository
+                                          ( lifecycleAuthorityLocalRke2HostObservationAuthenticatedHandler
+                                              localRke2HostObservationHandler
+                                              ( lifecycleAuthorityCascadeRetainedSlotAuthenticatedHandler
+                                                  cascadeRetainedSlotHandler
+                                                  baseAuthenticatedHandler
+                                              )
                                           )
                                       )
                                   )

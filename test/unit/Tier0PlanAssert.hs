@@ -30,7 +30,6 @@ import Prodbox.Capacity.Config
 import Prodbox.Config.Tier0
   ( ProdboxParameters (..)
   , ProdboxProjectConfig (..)
-  , defaultProjectConfig
   , renderProjectConfigDhall
   , stampTier0Witness
   )
@@ -44,14 +43,14 @@ tier0PlanAssertSuite =
       -- trip is `decode . render == stampTier0Witness` rather than `== id`.
       -- The Ring-1 assert this suite covers is unaffected: the witness is a
       -- `List Text` the lemma preamble never reads.
-      Dhall.input Dhall.auto (renderProjectConfigDhall defaultProjectConfig)
-        `shouldReturn` stampTier0Witness defaultProjectConfig
+      Dhall.input Dhall.auto (renderProjectConfigDhall syntheticProjectConfig)
+        `shouldReturn` stampTier0Witness syntheticProjectConfig
     it "rejects a host-shrinking hand-edit at the Dhall assert (Ring 1)" $ do
       let corrupted =
             Text.replace
               "durable_storage_mib = 180000"
               "durable_storage_mib = 1000"
-              (renderProjectConfigDhall defaultProjectConfig)
+              (renderProjectConfigDhall syntheticProjectConfig)
       decoded <-
         try (Dhall.input Dhall.auto corrupted)
           :: IO (Either SomeException ProdboxProjectConfig)
@@ -67,4 +66,4 @@ overCommittedPlan :: ResourcePlan
 overCommittedPlan =
   plan {host_capacity = (host_capacity plan) {durable_storage_mib = 1000}}
  where
-  plan = resource_plan (capacity (parameters defaultProjectConfig))
+  plan = resource_plan (capacity (parameters syntheticProjectConfig))

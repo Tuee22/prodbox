@@ -396,6 +396,7 @@ compiledFor surface =
         fixtureRunId
         fixtureFoundation
         (Just fixtureAwsScope)
+        Nothing
         surface
     )
 
@@ -416,7 +417,7 @@ fixtureAwsScope :: AwsScope
 fixtureAwsScope =
   AwsScope
     (AwsAccountId "123456789012")
-    (AwsRegion "ca-central-1")
+    (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
 
 isFailedNode :: CleanupNodeOutcome -> Bool
 isFailedNode outcome = case outcome of

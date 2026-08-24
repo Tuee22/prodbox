@@ -241,6 +241,17 @@ tombstone. Gateway and host-direct generic secret-write routes are absent.
     went. Release is a typed decision with no unstated arm and no destroy-alone constructor; the
     term, the constructor set, and the derivation are owned by
     [§3.4](#34-custodial-capability-and-the-disposition-rule).
+18. Cluster id and Vault/MinIO endpoints are one validated deployment-context binding. Observation,
+    admission, execution, recovery, and read-back consume that same binding; a host-local constant,
+    environment override, or separately defaulted endpoint cannot authorize a capability. The
+    compiled generic state-bucket name remains product identity and is not a deployment coordinate.
+    Field ownership is defined by
+    [Config Doctrine §0](./config_doctrine.md#compiled-protocol-constants-versus-operator-supplied-deployment-values).
+    The host implementation projects Vault only through `vaultAddressForDeploymentContext`, binds a
+    loaded root lifecycle only after exact cluster-id/Vault-address comparison, and makes the
+    Pulumi gate load the same validated context. Lower authentication, retained-backend, and
+    residue gates read the already sealed Tier-0 basics. Tests replace the typed coordinate or the
+    client boundary; no production endpoint override participates in selection.
 
 ## 3. Pure Capability Algebra
 

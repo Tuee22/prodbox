@@ -711,7 +711,7 @@ authority =
     )
 
 leaseKey :: LeaseKey
-leaseKey = expectRight (mkLeaseKey "123456789012" "ca-central-1" "aws-ses")
+leaseKey = expectRight (mkLeaseKey "123456789012" (fixtureAwsRegion FixtureCaCentral1) "aws-ses")
 
 intentCoordinate :: TargetIntentCoordinate
 intentCoordinate = expectRight (mkTargetIntentCoordinate authority leaseKey)
@@ -927,7 +927,7 @@ unrecoverableCommitted =
 secretFields :: Map Text Text
 secretFields =
   Map.fromList
-    [ ("host", "email-smtp.ca-central-1.amazonaws.com")
+    [ ("host", ("email-smtp." <> (fixtureAwsRegion FixtureCaCentral1) <> ".amazonaws.com"))
     , ("password", "smtp-secret")
     , ("username", "AKIACOMMITTED0001")
     ]

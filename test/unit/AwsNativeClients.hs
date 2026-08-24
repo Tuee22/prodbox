@@ -150,7 +150,10 @@ refuseConnect _ = pure (Left (TransportFailure "connection refused" DefinitelyNo
 
 baseHandle :: BaseCredentialHandle
 baseHandle =
-  either (error . show) id (mkBaseCredentialHandle "AKIABASE" "baseSecret" Nothing "us-east-1")
+  either
+    (error . show)
+    id
+    (mkBaseCredentialHandle "AKIABASE" "baseSecret" Nothing (fixtureAwsRegion FixtureUsEast1))
 
 fixedTs :: AwsTimestamp
 fixedTs = AwsTimestamp "20260718T000000Z" "20260718"
@@ -252,7 +255,7 @@ singleAExpected =
   "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
     <> "<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\">"
     <> "<ChangeBatch><Changes><Change><Action>UPSERT</Action><ResourceRecordSet>"
-    <> "<Name>demo.resolvefintech.com.</Name><Type>A</Type><TTL>60</TTL>"
+    <> "<Name>demo.example.test.</Name><Type>A</Type><TTL>60</TTL>"
     <> "<ResourceRecords><ResourceRecord><Value>192.0.2.1</Value></ResourceRecord></ResourceRecords>"
     <> "</ResourceRecordSet></Change></Changes></ChangeBatch></ChangeResourceRecordSetsRequest>"
 
@@ -261,7 +264,7 @@ multiAExpected =
   "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
     <> "<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\">"
     <> "<ChangeBatch><Changes><Change><Action>UPSERT</Action><ResourceRecordSet>"
-    <> "<Name>demo.resolvefintech.com.</Name><Type>A</Type><TTL>60</TTL><ResourceRecords>"
+    <> "<Name>demo.example.test.</Name><Type>A</Type><TTL>60</TTL><ResourceRecords>"
     <> "<ResourceRecord><Value>192.0.2.1</Value></ResourceRecord>"
     <> "<ResourceRecord><Value>192.0.2.2</Value></ResourceRecord>"
     <> "</ResourceRecords></ResourceRecordSet></Change></Changes></ChangeBatch>"
@@ -272,7 +275,7 @@ txtExpected =
   "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
     <> "<ChangeResourceRecordSetsRequest xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\">"
     <> "<ChangeBatch><Changes><Change><Action>UPSERT</Action><ResourceRecordSet>"
-    <> "<Name>demo.resolvefintech.com.</Name><Type>TXT</Type><TTL>300</TTL><ResourceRecords>"
+    <> "<Name>demo.example.test.</Name><Type>TXT</Type><TTL>300</TTL><ResourceRecords>"
     <> "<ResourceRecord><Value>&quot;v=spf1 -all&quot;</Value></ResourceRecord>"
     <> "</ResourceRecords></ResourceRecordSet></Change></Changes></ChangeBatch>"
     <> "</ChangeResourceRecordSetsRequest>"
@@ -281,7 +284,7 @@ listExactAResponse :: ByteString
 listExactAResponse =
   "<ListResourceRecordSetsResponse xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\">"
     <> "<ResourceRecordSets><ResourceRecordSet>"
-    <> "<Name>Demo.ResolveFintech.com.</Name><Type>A</Type><TTL>60</TTL>"
+    <> "<Name>Demo.Example.TEST.</Name><Type>A</Type><TTL>60</TTL>"
     <> "<ResourceRecords><ResourceRecord><Value>192.0.2.1</Value></ResourceRecord>"
     <> "</ResourceRecords></ResourceRecordSet></ResourceRecordSets>"
     <> "<IsTruncated>false</IsTruncated><MaxItems>1</MaxItems>"
@@ -332,7 +335,7 @@ scanLeavesPrefix =
 listSubsequentResponse :: ByteString
 listSubsequentResponse =
   "<ListResourceRecordSetsResponse><ResourceRecordSets><ResourceRecordSet>"
-    <> "<Name>next.resolvefintech.com.</Name><Type>A</Type><AliasTarget>"
+    <> "<Name>next.example.test.</Name><Type>A</Type><AliasTarget>"
     <> "<HostedZoneId>ZALIAS</HostedZoneId><DNSName>target.example.com.</DNSName>"
     <> "</AliasTarget></ResourceRecordSet></ResourceRecordSets>"
     <> "</ListResourceRecordSetsResponse>"
@@ -593,7 +596,10 @@ awsNativeClientsSuite =
         let sts = newStsClient baseHandle (respond 200 assumeRoleBody)
         result <- assumeRole sts (AssumeRoleRequest "arn:aws:iam::123:role/r" "sess" 900)
         let reference =
-              either (error . show) id (mkSessionCredentialHandle "ASIAFAKE" "tmpSecret" "tmpToken" "us-east-1")
+              either
+                (error . show)
+                id
+                (mkSessionCredentialHandle "ASIAFAKE" "tmpSecret" "tmpToken" (fixtureAwsRegion FixtureUsEast1))
         case result of
           Left err -> expectationFailure ("assumeRole failed: " <> show err)
           Right session -> do
@@ -620,15 +626,15 @@ awsNativeClientsSuite =
     describe "Route 53 change-batch XML is a deterministic function of the desired records" $ do
       it "renders a single A UPSERT with a trailing dot" $
         renderChangeBatchXml
-          [(Upsert, ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["192.0.2.1"])]
+          [(Upsert, ResourceRecordSet "demo.example.test" RecordA 60 ["192.0.2.1"])]
           `shouldBe` singleAExpected
       it "renders multiple values in list order" $
         renderChangeBatchXml
-          [(Upsert, ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["192.0.2.1", "192.0.2.2"])]
+          [(Upsert, ResourceRecordSet "demo.example.test" RecordA 60 ["192.0.2.1", "192.0.2.2"])]
           `shouldBe` multiAExpected
       it "escapes quotes in a TXT value" $
         renderChangeBatchXml
-          [(Upsert, ResourceRecordSet "demo.resolvefintech.com" RecordTXT 300 ["\"v=spf1 -all\""])]
+          [(Upsert, ResourceRecordSet "demo.example.test" RecordTXT 300 ["\"v=spf1 -all\""])]
           `shouldBe` txtExpected
       it "renders the exact regional SES MX value" $ do
         let rendered =
@@ -639,13 +645,13 @@ awsNativeClientsSuite =
                       "inbox.example.test"
                       RecordMX
                       300
-                      ["10 inbound-smtp.us-west-2.amazonaws.com."]
+                      [("10 inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com.")]
                   )
                 ]
         rendered `shouldSatisfy` (BS8.isInfixOf "<Type>MX</Type>")
         rendered
           `shouldSatisfy` ( BS8.isInfixOf
-                              "<Value>10 inbound-smtp.us-west-2.amazonaws.com.</Value>"
+                              ("<Value>10 inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com.</Value>")
                           )
       it "normalizes a hosted-zone path with or without the /hostedzone/ prefix" $ do
         changeRecordSetsPath "/hostedzone/Z123" `shouldBe` "/2013-04-01/hostedzone/Z123/rrset/"
@@ -659,20 +665,20 @@ awsNativeClientsSuite =
           "<GetChangeResponse><ChangeInfo><Id>/change/C123</Id><Status>INSYNC</Status></ChangeInfo></GetChangeResponse>"
           `shouldBe` Right ChangeInsync
       it "builds a one-record authoritative lookup query" $
-        listRecordSetsQuery "demo.resolvefintech.com" RecordA
-          `shouldBe` [("name", "demo.resolvefintech.com."), ("type", "A"), ("maxitems", "1")]
+        listRecordSetsQuery "demo.example.test" RecordA
+          `shouldBe` [("name", "demo.example.test."), ("type", "A"), ("maxitems", "1")]
       it "uses the MX selector for an SES receive lookup" $
         listRecordSetsQuery "inbox.example.test" RecordMX
           `shouldBe` [("name", "inbox.example.test."), ("type", "MX"), ("maxitems", "1")]
       it "parses only an exact name/type record with TTL and values" $
-        parseListResourceRecordSetsResponse "demo.resolvefintech.com" RecordA listExactAResponse
-          `shouldBe` Right (Just (ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["192.0.2.1"]))
+        parseListResourceRecordSetsResponse "demo.example.test" RecordA listExactAResponse
+          `shouldBe` Right (Just (ResourceRecordSet "demo.example.test" RecordA 60 ["192.0.2.1"]))
       it "reports a lexicographically subsequent first record as exact absence" $
-        parseListResourceRecordSetsResponse "demo.resolvefintech.com" RecordA listSubsequentResponse
+        parseListResourceRecordSetsResponse "demo.example.test" RecordA listSubsequentResponse
           `shouldBe` Right Nothing
       it "fails closed on an exact alias record" $
         parseListResourceRecordSetsResponse
-          "next.resolvefintech.com"
+          "next.example.test"
           RecordA
           listSubsequentResponse
           `shouldBe` Left "Route53: exact record uses an unsupported alias or routing policy"
@@ -682,15 +688,15 @@ awsNativeClientsSuite =
               writeIORef captured (Just request)
               pure (Right (HttpOutcome 200 [] listExactAResponse))
             r53 = newRoute53Client baseHandle sender
-        result <- listExactResourceRecordSet r53 "Z123" "demo.resolvefintech.com" RecordA
+        result <- listExactResourceRecordSet r53 "Z123" "demo.example.test" RecordA
         result
           `shouldBe` Right
-            (Just (ResourceRecordSet "demo.resolvefintech.com" RecordA 60 ["192.0.2.1"]))
+            (Just (ResourceRecordSet "demo.example.test" RecordA 60 ["192.0.2.1"]))
         request <- readIORef captured
         fmap shrMethod request `shouldBe` Just "GET"
         fmap shrUrl request
           `shouldBe` Just
-            "https://route53.amazonaws.com/2013-04-01/hostedzone/Z123/rrset/?maxitems=1&name=demo.resolvefintech.com.&type=A"
+            "https://route53.amazonaws.com/2013-04-01/hostedzone/Z123/rrset/?maxitems=1&name=demo.example.test.&type=A"
       it "Sprint 7.36 scans a record-set family by prefix and stops at its edge" $ do
         -- The exact lookup answers about one known coordinate. A family's
         -- members are not known before the scan, so a cleanup that must prove a
@@ -751,9 +757,12 @@ awsNativeClientsSuite =
 
     describe "S3 long-lived bucket hardening is exact and read back" $ do
       it "renders region-correct create bodies and the five fixed hardening documents" $ do
-        renderCreateBucketXml "us-east-1" `shouldBe` ""
-        renderCreateBucketXml "ca-central-1"
-          `shouldBe` "<CreateBucketConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><LocationConstraint>ca-central-1</LocationConstraint></CreateBucketConfiguration>"
+        renderCreateBucketXml (fixtureAwsRegion FixtureUsEast1) `shouldBe` ""
+        renderCreateBucketXml (fixtureAwsRegion FixtureCaCentral1)
+          `shouldBe` ( "<CreateBucketConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><LocationConstraint>"
+                         <> (fixtureAwsRegion FixtureCaCentral1)
+                         <> "</LocationConstraint></CreateBucketConfiguration>"
+                     )
         renderBucketVersioningXml `shouldSatisfy` BS8.isInfixOf "<Status>Enabled</Status>"
         renderBucketEncryptionXml `shouldSatisfy` BS8.isInfixOf "<SSEAlgorithm>AES256</SSEAlgorithm>"
         renderPublicAccessBlockXml
@@ -851,7 +860,7 @@ awsNativeClientsSuite =
               buildSignedRequest
                 (toSigV4Credentials baseHandle)
                 (credentialHandleSecurityToken baseHandle)
-                (AwsScope "us-east-1" "iam")
+                (AwsScope (fixtureAwsRegion FixtureUsEast1) "iam")
                 (AwsEndpoint "https://iam.amazonaws.com" "iam.amazonaws.com")
                 fixedTs
                 "POST"
@@ -860,7 +869,8 @@ awsNativeClientsSuite =
                 (renderFormBody (encodeCreateAccessKeyForm "prodbox"))
                 formContentType
             authorization = maybe "" BS8.unpack (lookup "Authorization" (shrHeaders signed))
-        ("/20260718/us-east-1/iam/aws4_request" `isInfixOf` authorization) `shouldBe` True
+        (("/20260718/" <> (fixtureAwsRegion FixtureUsEast1) <> "/iam/aws4_request") `isInfixOf` authorization)
+          `shouldBe` True
         ("SignedHeaders=content-type;host;x-amz-date" `isInfixOf` authorization) `shouldBe` True
 
     describe "no native module carries a credential seam" $
@@ -880,8 +890,11 @@ probeSign handle =
   buildSignedRequest
     (toSigV4Credentials handle)
     (credentialHandleSecurityToken handle)
-    (AwsScope "us-east-1" "sts")
-    (AwsEndpoint "https://sts.us-east-1.amazonaws.com" "sts.us-east-1.amazonaws.com")
+    (AwsScope (fixtureAwsRegion FixtureUsEast1) "sts")
+    ( AwsEndpoint
+        ("https://sts." <> (fixtureAwsRegion FixtureUsEast1) <> ".amazonaws.com")
+        ("sts." <> (fixtureAwsRegion FixtureUsEast1) <> ".amazonaws.com")
+    )
     fixedTs
     "POST"
     "/"

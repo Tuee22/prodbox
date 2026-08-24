@@ -129,7 +129,7 @@ lifecycleTeardownAuditFieldOfViewSuite =
           (ReachableWhenTaggedFromGlobalRegion "iam")
           `shouldBe` Nothing
         unreachedGlobalService
-          (AwsRegion "eu-west-2")
+          (AwsRegion (fixtureAwsRegion FixtureEuWest2))
           (ReachableWhenTaggedFromGlobalRegion "iam")
           `shouldBe` Just "iam"
 
@@ -138,21 +138,21 @@ lifecycleTeardownAuditFieldOfViewSuite =
       -- region for an untaggable or non-AWS type would misattribute why it is
       -- outside the field of view.
       it "attributes only global-service exclusion to the region" $ do
-        unreachedGlobalService (AwsRegion "eu-west-2") ReachableWhenTagged
+        unreachedGlobalService (AwsRegion (fixtureAwsRegion FixtureEuWest2)) ReachableWhenTagged
           `shouldBe` Nothing
         unreachedGlobalService
-          (AwsRegion "eu-west-2")
+          (AwsRegion (fixtureAwsRegion FixtureEuWest2))
           (UntaggableByTaggingApi "no tags")
           `shouldBe` Nothing
         unreachedGlobalService
-          (AwsRegion "eu-west-2")
+          (AwsRegion (fixtureAwsRegion FixtureEuWest2))
           (NotAnAwsResource "a provider")
           `shouldBe` Nothing
 
       it "has a blind spot exactly outside the global-service region" $ do
         unreachedGlobalServicesFrom (AwsRegion globalServiceTaggingRegion)
           `shouldBe` []
-        unreachedGlobalServicesFrom (AwsRegion "eu-west-2")
+        unreachedGlobalServicesFrom (AwsRegion (fixtureAwsRegion FixtureEuWest2))
           `shouldBe` globalServicesRequiringGlobalRegion
 
     describe "query coverage" $ do

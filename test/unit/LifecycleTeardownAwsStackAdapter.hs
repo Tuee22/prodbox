@@ -16,7 +16,7 @@ import Prodbox.ControlPlane.ProviderWorkerExecution
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
   , ProviderRevision
-  , ProviderStackConfig (..)
+  , ProviderStackConfig
   , ProviderStackConfigError (..)
   , mkAwsEksProviderStackConfig
   , mkAwsEksSubzoneProviderStackConfig
@@ -25,6 +25,9 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , providerIntentCoordinate
   , providerStackConfigRef
   , providerStackRefText
+  )
+import Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
+  ( encodeAwsNativeStackFamilyEvidence
   )
 import Prodbox.Lifecycle.Teardown.AwsStackAdapter
 import Prodbox.Lifecycle.Teardown.Decision
@@ -145,7 +148,10 @@ lifecycleTeardownAwsStackAdapterSuite =
             StackDestroyFromVerifiedManifest AwsTestKey manifestAuthority
       forM_
         [ (primaryDecision, AwsStackDestroyFromPrimaryCheckpoint)
-        , (manifestDecision, AwsStackDestroyFromCompleteManifest)
+        ,
+          ( manifestDecision
+          , AwsStackDestroyFromCompleteManifest ["vpc/vpc-1", exactPresentIdentity]
+          )
         ]
         $ \(decision, expectedKind) -> do
           let authorization =
@@ -222,12 +228,42 @@ lifecycleTeardownAwsStackAdapterSuite =
                   (providerStackConfigRef eksConfig)
               )
           )
-      let malformedConfig = AwsTestProviderStackConfig "0.0.0.0/0"
-      mkAwsStackDestroyRequest authorization providerRevision malformedConfig
-        `shouldBe` Left
-          ( AwsStackDestroyConfigInvalid
-              (ProviderStackConfigFieldInvalid "operator-cidr")
-          )
+      mkAwsTestProviderStackConfig "0.0.0.0/0"
+        `shouldBe` Left (ProviderStackConfigFieldInvalid "operator-cidr")
+
+    it "selects the provider-native reaper only for complete-manifest authority" $ do
+      let nativeObserve =
+            mustRight
+              ( mkAwsNativeStackObserveRequest
+                  AwsTestKey
+                  exactScope
+                  initialRevision
+                  testConfig
+              )
+          nativeRef = case awsStackObservationRequestIntent nativeObserve of
+            ObserveNativeStackFamily ref _ -> ref
+            _ -> error "expected native stack-family observation"
+          presentEvidence =
+            mustRight (encodeAwsNativeStackFamilyEvidence nativeRef ["vpc/vpc-1"])
+          verified = decodedVerified nativeObserve presentEvidence
+          authorization =
+            mustRight
+              ( authorizeAwsStackDestroy
+                  providerRevision
+                  verified
+                  (StackDestroyFromVerifiedManifest AwsTestKey manifestAuthority)
+              )
+          request =
+            mustRight
+              (mkAwsStackDestroyRequest authorization providerRevision testConfig)
+      awsStackDestroyRequestIntent request
+        `shouldBe` ReapNativeStackFamily
+          nativeRef
+          testConfig
+          ["vpc/vpc-1", exactPresentIdentity]
+      awsStackObservationRequestIntent
+        (mkAwsStackDestroyReadBackRequest request readBackRevision)
+        `shouldBe` ObserveNativeStackFamily nativeRef testConfig
 
     it "requires a separately coordinated exact-absence read-back to close destroy" $ do
       let destroy = destroyRequestFor AwsTestKey testConfig providerRevision
@@ -325,7 +361,7 @@ invalidAccountScope =
   scopeFor
     Cascade
     lifecycleRegistryRevision
-    (Just (AwsScope (AwsAccountId "123") (AwsRegion "us-east-1")))
+    (Just (AwsScope (AwsAccountId "123") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
     ReconcileDesiredAbsent
 
 invalidRegionScope :: ObservationEvidenceScope
@@ -353,7 +389,7 @@ scopeFor surface registryRevision awsScope operation =
 
 validAwsScope :: Maybe AwsScope
 validAwsScope =
-  Just (AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1"))
+  Just (AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1)))
 
 staleRegistryRevision :: RegistryRevision
 staleRegistryRevision = RegistryRevision "lifecycle-registry/stale"
@@ -466,6 +502,9 @@ manifestAuthority =
   VerifiedOwnershipManifest
     (OwnershipManifestProvenance "manifest://aws-eks")
     (OwnershipManifestVersion "manifest-v1")
+    [ ObservedResourceIdentity "vpc/vpc-1"
+    , ObservedResourceIdentity exactPresentIdentity
+    ]
 
 decisionFailures :: NonEmpty StackDecisionRefusal
 decisionFailures = StackOwnershipManifestAbsent :| []

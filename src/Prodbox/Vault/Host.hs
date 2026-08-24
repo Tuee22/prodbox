@@ -6,13 +6,12 @@
 -- Production Vault effects use role-scoped in-cluster identities. The host
 -- helpers below never recover an initial root token or read/write Vault KV.
 module Prodbox.Vault.Host
-  ( hostVaultAddress
-  , loadAndDecryptBundle
+  ( loadAndDecryptBundle
   , loadReadyVaultRootToken
   , obtainNewOperatorPassword
   , obtainOperatorPassword
   , requireReadyVault
-  , resolveHostVaultAddress
+  , vaultAddressForDeploymentContext
 
     -- * Sprint 7.19 P3: pure bootstrap-bundle unseal-source classification
   , BootstrapMinioRead (..)
@@ -42,6 +41,10 @@ import Prodbox.Infra.MinioBackend
   ( hostDirectEndpointPort
   , withMinioPortForward
   )
+import Prodbox.Settings
+  ( ValidatedDeploymentContext
+  , deploymentVaultAddress
+  )
 import Prodbox.Vault.BootstrapBundle
   ( bootstrapObjectStoreConfig
   , bootstrapUnlockBundleKey
@@ -68,17 +71,12 @@ import System.IO
   , stdin
   )
 
--- | The host-reachable in-cluster Vault endpoint (the NodePort-on-127.0.0.1
--- pattern the gateway daemon also uses). The chart exposes the Vault API on the
--- host NodePort 31820 (@charts/vault/values.yaml@); the in-pod API is 8200.
--- Sourcing the NodePort from a @vault.node_port@ Dhall field is a follow-up.
-hostVaultAddress :: VaultAddress
-hostVaultAddress = VaultAddress "http://127.0.0.1:31820"
-
-resolveHostVaultAddress :: IO VaultAddress
-resolveHostVaultAddress = do
-  override <- lookupEnv "PRODBOX_TEST_HOST_VAULT_ADDR"
-  pure (VaultAddress (Text.pack (maybe "http://127.0.0.1:31820" id override)))
+-- | Project the host Vault capability from the same validated deployment
+-- context that lifecycle reconciliation seals. There is deliberately no
+-- compiled address or environment override on this boundary: tests construct
+-- another validated context or inject a client at the effect boundary.
+vaultAddressForDeploymentContext :: ValidatedDeploymentContext -> VaultAddress
+vaultAddressForDeploymentContext = VaultAddress . deploymentVaultAddress
 
 -- | Temporary source-compatible refusal for callers being migrated by the
 -- Authority/checkpoint cutovers. It cannot construct or recover a token and
@@ -280,6 +278,19 @@ testSecretsPath repoRoot = repoRoot </> "test-secrets.dhall"
 -- there is no non-secret @test-config.dhall@ (it would carry no fields).
 data TestSecrets = TestSecrets
   { vault_operator_password :: Text
+  , -- Sprint 5.37: externally chosen, non-secret test-deployment inputs. They
+    -- live beside the harness's secret fixture because this is the one
+    -- operator-authored harness input; they never enter production config by
+    -- default and are required before a generated run config may be written.
+    test_served_fqdn :: Text
+  , test_acme_email :: Text
+  , -- The legacy aggregate has not yet moved onto @prodbox.test.dhall@. Until
+    -- that cutover, it receives the same explicit identity/endpoint facts here
+    -- instead of reconstructing them from production defaults.
+    legacy_cluster_id :: Text
+  , legacy_machine_id :: Text
+  , legacy_vault_address :: Text
+  , legacy_minio_endpoint :: Text
   , -- Sprint 5.10: the cleartext Route 53 hosted-zone id the harness injects into
     -- the generated @prodbox.dhall@'s @route53.zone_id@ (the @demoTestConfig@
     -- idiom). @test-secrets.dhall@ is the one file where cleartext operator ids
@@ -448,6 +459,12 @@ defaultTestSecrets :: TestSecrets
 defaultTestSecrets =
   TestSecrets
     { vault_operator_password = ""
+    , test_served_fqdn = ""
+    , test_acme_email = ""
+    , legacy_cluster_id = ""
+    , legacy_machine_id = ""
+    , legacy_vault_address = ""
+    , legacy_minio_endpoint = ""
     , route53_zone_id = ""
     , ses_sender_domain = ""
     , ses_receive_subdomain = ""

@@ -23,6 +23,9 @@ module Prodbox.Bootstrap.Broker.KubernetesWorker
   , controllerImageObservationDetail
   , VaultStorageIdentity
   , renderVaultStorageIdentity
+  , VaultStorageResetFailure (..)
+  , renderVaultStorageResetFailure
+  , vaultScaleDesiredReplicasFromResponse
   , productionKubernetesWorkerBoundary
   , readProjectedServiceAccountToken
   , workerContainerName
@@ -45,6 +48,8 @@ module Prodbox.Bootstrap.Broker.KubernetesWorker
   , workerDeletionFromResponse
   , workerAbsenceFromResponse
   , fenceOwnerWorkerFromResponse
+  , FenceOwnerWorkerCleanupDecision (..)
+  , fenceOwnerWorkerCleanupFromResponse
   , bootstrapLeaseFromResponse
   , kubernetesTransportFailureLabel
   , unobservableReason
@@ -246,14 +251,14 @@ data KubernetesWorkerBoundary = KubernetesWorkerBoundary
       :: Deadline
       -> SecretWorkerCleanupBinding
       -> IO SecretWorkerLifecycleObservation
-  , kubernetesObserveFenceOwnerWorker
+  , kubernetesReconcileFenceOwnerWorker
       :: Deadline
       -> BootstrapFenceGeneration
       -> IO BootstrapFenceOwnerWorkerObservation
-  -- ^ Sprint 2.47.  Keyed by fence generation rather than by
+  -- ^ Sprints 2.47/2.56. Keyed by fence generation rather than by
   -- 'SecretWorkerCleanupBinding', because a successor holding only a stale
-  -- durable fence cannot construct one of those.  This is the sole production
-  -- producer of 'BootstrapFenceOwnerWorkerObservation'.
+  -- durable fence cannot construct one of those. A terminal matching owner is
+  -- UID-precondition deleted and read back absent before this returns.
   , kubernetesObserveBootstrapLease
       :: Deadline
       -> IO BootstrapLeaseObservation
@@ -277,7 +282,7 @@ data KubernetesWorkerBoundary = KubernetesWorkerBoundary
   , kubernetesResetVaultStorage
       :: Deadline
       -> PristineResetProof
-      -> IO (Either Text VaultStorageIdentity)
+      -> IO (Either VaultStorageResetFailure VaultStorageIdentity)
   }
 
 -- | API-owned identity of the exact Vault PVC.  The constructor remains
@@ -287,6 +292,52 @@ newtype VaultStorageIdentity = VaultStorageIdentity Text
 
 renderVaultStorageIdentity :: VaultStorageIdentity -> Text
 renderVaultStorageIdentity (VaultStorageIdentity identity) = identity
+
+-- | Payload-free failure stages for the destructive pristine-reset program.
+-- No Kubernetes body, object value, credential, or controller-authored binding
+-- can enter this type; the only payload is an HTTP status code.
+data VaultStorageResetFailure
+  = VaultResetIdentityUnavailable
+  | VaultResetControllerImageUnavailable
+  | VaultResetScaleDownUnavailable
+  | VaultResetVaultPodAbsenceUnavailable
+  | VaultResetPodCreateUnavailable
+  | VaultResetPodCreateRefused !Int
+  | VaultResetPodRecoveryUnavailable
+  | VaultResetPodRecoveryRefused !Int
+  | VaultResetPodResponseInvalid
+  | VaultResetPodFailed
+  | VaultResetPodDeadlineElapsed
+  | VaultResetPodObservationUnavailable
+  | VaultResetPodObservationRefused !Int
+  | VaultResetPodDeleteUnavailable
+  | VaultResetPodAbsenceUnavailable
+  | VaultResetIdentityReadBackUnavailable
+  | VaultResetIdentityChanged
+  | VaultResetScaleUpUnavailable
+  deriving stock (Eq, Show)
+
+renderVaultStorageResetFailure :: VaultStorageResetFailure -> Text
+renderVaultStorageResetFailure failure = case failure of
+  VaultResetIdentityUnavailable -> "identity-unavailable"
+  VaultResetControllerImageUnavailable -> "controller-image-unavailable"
+  VaultResetScaleDownUnavailable -> "scale-down-unavailable"
+  VaultResetVaultPodAbsenceUnavailable -> "vault-pod-absence-unavailable"
+  VaultResetPodCreateUnavailable -> "reset-pod-create-unavailable"
+  VaultResetPodCreateRefused status -> "reset-pod-create-http-" <> Text.pack (show status)
+  VaultResetPodRecoveryUnavailable -> "reset-pod-recovery-unavailable"
+  VaultResetPodRecoveryRefused status -> "reset-pod-recovery-http-" <> Text.pack (show status)
+  VaultResetPodResponseInvalid -> "reset-pod-response-invalid"
+  VaultResetPodFailed -> "reset-pod-failed"
+  VaultResetPodDeadlineElapsed -> "reset-pod-deadline-elapsed"
+  VaultResetPodObservationUnavailable -> "reset-pod-observation-unavailable"
+  VaultResetPodObservationRefused status ->
+    "reset-pod-observation-http-" <> Text.pack (show status)
+  VaultResetPodDeleteUnavailable -> "reset-pod-delete-unavailable"
+  VaultResetPodAbsenceUnavailable -> "reset-pod-absence-unavailable"
+  VaultResetIdentityReadBackUnavailable -> "identity-read-back-unavailable"
+  VaultResetIdentityChanged -> "identity-changed"
+  VaultResetScaleUpUnavailable -> "scale-up-unavailable"
 
 workerContainerName :: Text
 workerContainerName = "bootstrap-secret-worker"
@@ -406,17 +457,40 @@ productionKubernetesWorkerBoundary = do
                 SecretWorkerLifecycleUnobservable
                   (unobservableReason "Kubernetes Pod absence observation unavailable" detail)
               Right (code, body) -> workerAbsenceFromResponse namespace binding code body
-        , kubernetesObserveFenceOwnerWorker = \deadline fenceGeneration -> do
+        , kubernetesReconcileFenceOwnerWorker = \deadline fenceGeneration -> do
             response <- requestKubernetes manager deadline "GET" (workerPodUrl namespace) Nothing
-            pure $ case response of
+            case response of
               Left detail ->
-                BootstrapFenceOwnerWorkerUnobservable
-                  ( unobservableReason
-                      "Kubernetes worker Pod observation unavailable"
-                      detail
+                pure
+                  ( BootstrapFenceOwnerWorkerUnobservable
+                      ( unobservableReason
+                          "Kubernetes worker Pod observation unavailable"
+                          detail
+                      )
                   )
               Right (code, body) ->
-                fenceOwnerWorkerFromResponse namespace fenceGeneration code body
+                case fenceOwnerWorkerCleanupFromResponse namespace fenceGeneration code body of
+                  FenceOwnerWorkerObserved observation -> pure observation
+                  FenceOwnerWorkerDeleteTerminated uid -> do
+                    deleted <- deleteNamedPod manager deadline (workerPodUrl namespace) uid
+                    case deleted of
+                      Left detail ->
+                        pure
+                          ( BootstrapFenceOwnerWorkerUnobservable
+                              (unobservableReason "terminal worker Pod deletion unavailable" detail)
+                          )
+                      Right () -> do
+                        absent <- awaitNamedPodAbsence manager deadline (workerPodUrl namespace)
+                        pure $ case absent of
+                          Left detail ->
+                            BootstrapFenceOwnerWorkerUnobservable
+                              (unobservableReason "terminal worker Pod absence unavailable" detail)
+                          Right () ->
+                            fenceOwnerWorkerFromResponse
+                              namespace
+                              fenceGeneration
+                              404
+                              ByteString.empty
         , kubernetesObserveBootstrapLease = \deadline -> do
             response <- requestKubernetes manager deadline "GET" (bootstrapLeaseUrl namespace) Nothing
             case response of
@@ -567,7 +641,7 @@ resetVaultStorage
   -> Text
   -> Deadline
   -> PristineResetProof
-  -> IO (Either Text VaultStorageIdentity)
+  -> IO (Either VaultStorageResetFailure VaultStorageIdentity)
 resetVaultStorage manager brokerNamespace deadline proof = do
   identityResult <- observeVaultStorageIdentity manager deadline
   digestObservation <-
@@ -585,16 +659,16 @@ resetVaultStorage manager brokerNamespace deadline proof = do
         ControllerImageUnobservable detail -> Left detail
         ControllerImageIdentityRejected detail -> Left detail
   case (identityResult, pullResult) of
-    (Left detail, _) -> pure (Left detail)
-    (_, Left detail) -> pure (Left detail)
+    (Left _, _) -> pure (Left VaultResetIdentityUnavailable)
+    (_, Left _) -> pure (Left VaultResetControllerImageUnavailable)
     (Right identity, Right pullReference) -> do
       scaledDown <- setVaultScale manager deadline 0
       case scaledDown of
-        Left detail -> pure (Left detail)
+        Left _ -> pure (Left VaultResetScaleDownUnavailable)
         Right () -> do
           absent <- awaitNamedPodAbsence manager deadline vaultPodUrl
           case absent of
-            Left detail -> pure (Left detail)
+            Left _ -> pure (Left VaultResetVaultPodAbsenceUnavailable)
             Right () -> do
               resetPod <-
                 ensureVaultResetPod
@@ -604,7 +678,7 @@ resetVaultStorage manager brokerNamespace deadline proof = do
                   pullReference
                   proof
               case resetPod of
-                Left detail -> pure (Left detail)
+                Left failure -> pure (Left failure)
                 Right resetPodUid -> do
                   deleted <-
                     deleteNamedPod
@@ -613,7 +687,7 @@ resetVaultStorage manager brokerNamespace deadline proof = do
                       vaultResetPodUrl
                       resetPodUid
                   case deleted of
-                    Left detail -> pure (Left detail)
+                    Left _ -> pure (Left VaultResetPodDeleteUnavailable)
                     Right () -> do
                       resetAbsent <-
                         awaitNamedPodAbsence
@@ -621,7 +695,7 @@ resetVaultStorage manager brokerNamespace deadline proof = do
                           deadline
                           vaultResetPodUrl
                       case resetAbsent of
-                        Left detail -> pure (Left detail)
+                        Left _ -> pure (Left VaultResetPodAbsenceUnavailable)
                         Right () -> do
                           identityReadBack <-
                             observeVaultStorageIdentity manager deadline
@@ -629,11 +703,12 @@ resetVaultStorage manager brokerNamespace deadline proof = do
                             Right observedIdentity
                               | observedIdentity == identity -> do
                                   scaledUp <- setVaultScale manager deadline 1
-                                  pure (identity <$ scaledUp)
+                                  pure $ case scaledUp of
+                                    Left _ -> Left VaultResetScaleUpUnavailable
+                                    Right () -> Right identity
                             Right _ ->
-                              pure
-                                (Left "Vault data PVC identity changed during pristine reset")
-                            Left detail -> pure (Left detail)
+                              pure (Left VaultResetIdentityChanged)
+                            Left _ -> pure (Left VaultResetIdentityReadBackUnavailable)
 
 observeControllerImage
   :: ControllerSelfObservationScope
@@ -695,7 +770,7 @@ ensureVaultResetPod
   -> VaultStorageIdentity
   -> WorkerImagePullReference
   -> PristineResetProof
-  -> IO (Either Text Text)
+  -> IO (Either VaultStorageResetFailure Text)
 ensureVaultResetPod manager deadline identity pullReference proof = do
   created <-
     requestKubernetes
@@ -705,36 +780,36 @@ ensureVaultResetPod manager deadline identity pullReference proof = do
       vaultPodsUrl
       (Just (vaultResetPodManifest identity pullReference proof))
   case created of
-    Left detail -> pure (Left detail)
+    Left _ -> pure (Left VaultResetPodCreateUnavailable)
     Right (201, body) -> awaitResetPod body
     Right (409, _) -> do
       observed <-
         requestKubernetes manager deadline "GET" vaultResetPodUrl Nothing
       case observed of
-        Left detail -> pure (Left detail)
+        Left _ -> pure (Left VaultResetPodRecoveryUnavailable)
         Right (200, body) -> awaitResetPod body
-        Right _ -> pure (Left "Vault reset Pod recovery observation was refused")
-    Right _ -> pure (Left "Vault reset Pod creation was refused")
+        Right (status, _) -> pure (Left (VaultResetPodRecoveryRefused status))
+    Right (status, _) -> pure (Left (VaultResetPodCreateRefused status))
  where
   awaitResetPod initialBody =
     case validateResetPod identity pullReference proof initialBody of
-      Left detail -> pure (Left detail)
+      Left _ -> pure (Left VaultResetPodResponseInvalid)
       Right (uid, "Succeeded", Just 0) -> pure (Right uid)
-      Right (_, "Failed", _) -> pure (Left "Vault reset Pod failed")
+      Right (_, "Failed", _) -> pure (Left VaultResetPodFailed)
       Right _ -> poll
 
   poll = do
     now <- realMonotonicNow
     if deadlineExpired now deadline
-      then pure (Left "Vault reset Pod deadline elapsed")
+      then pure (Left VaultResetPodDeadlineElapsed)
       else do
         threadDelay 100000
         observed <-
           requestKubernetes manager deadline "GET" vaultResetPodUrl Nothing
         case observed of
-          Left detail -> pure (Left detail)
+          Left _ -> pure (Left VaultResetPodObservationUnavailable)
           Right (200, body) -> awaitResetPod body
-          Right _ -> pure (Left "Vault reset Pod observation was refused")
+          Right (status, _) -> pure (Left (VaultResetPodObservationRefused status))
 
 awaitNamedPodAbsence
   :: Manager
@@ -947,13 +1022,13 @@ brokerPodsUrl namespace =
   secretApiBaseUrl
     ++ "/api/v1/namespaces/"
     ++ Text.unpack namespace
-    -- The chart labels every Broker object `prodbox-bootstrap-broker`
-    -- (charts/bootstrap-broker/templates/_helpers.tpl), matching the
-    -- repo-wide `prodbox-<component>` convention that the Broker's own
-    -- NetworkPolicy peers (`prodbox-vault`, `prodbox-minio`) also use.
-    -- Selecting the unprefixed name matched no Pod, so the controller-image
-    -- self-observation read an empty PodList and readiness never cleared.
+    -- The application-name label is shared with the one-shot worker. The
+    -- supported chart release and namespace have the same identity, and the
+    -- instance label is present only on the controller selector, so their
+    -- conjunction keeps retained workers out of controller self-observation.
     ++ "/pods?labelSelector=app.kubernetes.io%2Fname%3Dprodbox-bootstrap-broker"
+    ++ "%2Capp.kubernetes.io%2Finstance%3D"
+    ++ Text.unpack namespace
 
 workerPodAnnotationsForRequest :: SecretFreeWorkerRequest -> Map Text Text
 workerPodAnnotationsForRequest =
@@ -1506,7 +1581,7 @@ fenceOwnerWorkerFromResponse namespace fenceGeneration code body
       Left _ ->
         BootstrapFenceOwnerWorkerUnobservable
           "worker Pod fence-owner response is invalid"
-      Right (observedUid, observedGeneration)
+      Right (observedUid, observedGeneration, _)
         | observedGeneration == queriedGeneration ->
             BootstrapFenceOwnerWorkerPresent fenceGeneration
         | otherwise ->
@@ -1523,6 +1598,46 @@ fenceOwnerWorkerFromResponse namespace fenceGeneration code body
       occupantGeneration of
       Left detail -> BootstrapFenceOwnerWorkerUnobservable detail
       Right receipt -> BootstrapFenceOwnerWorkerAbsent fenceGeneration receipt
+
+-- | Pure decision at the only point an expired owner can authorize deletion.
+-- A terminal phase is not itself absence: it authorizes an exact UID delete,
+-- whose later 404 is what becomes the absence receipt. A foreign-generation
+-- occupant is observed through the pre-existing fixed-coordinate rule and is
+-- never deleted on behalf of the queried predecessor.
+data FenceOwnerWorkerCleanupDecision
+  = FenceOwnerWorkerObserved !BootstrapFenceOwnerWorkerObservation
+  | FenceOwnerWorkerDeleteTerminated !Text
+  deriving stock (Eq, Show)
+
+fenceOwnerWorkerCleanupFromResponse
+  :: Text
+  -> BootstrapFenceGeneration
+  -> Int
+  -> ByteString
+  -> FenceOwnerWorkerCleanupDecision
+fenceOwnerWorkerCleanupFromResponse namespace fenceGeneration code body
+  | code /= 200 =
+      FenceOwnerWorkerObserved
+        (fenceOwnerWorkerFromResponse namespace fenceGeneration code body)
+  | otherwise = case decodePodFenceOwner namespace body of
+      Left _ -> unobservable
+      Right (uid, observedGeneration, maybePhase)
+        | observedGeneration /= queriedGeneration ->
+            FenceOwnerWorkerObserved
+              (fenceOwnerWorkerFromResponse namespace fenceGeneration code body)
+        | otherwise -> case maybePhase of
+            Just "Succeeded" -> FenceOwnerWorkerDeleteTerminated uid
+            Just "Failed" -> FenceOwnerWorkerDeleteTerminated uid
+            Just "Pending" -> present
+            Just "Running" -> present
+            Just "Unknown" -> present
+            _ -> unobservable
+ where
+  queriedGeneration = bootstrapFenceGenerationValue fenceGeneration
+  present = FenceOwnerWorkerObserved (BootstrapFenceOwnerWorkerPresent fenceGeneration)
+  unobservable =
+    FenceOwnerWorkerObserved
+      (BootstrapFenceOwnerWorkerUnobservable "worker Pod terminal-owner response is invalid")
 
 -- | Receipt of the exact read-back that justified an absence claim.
 --
@@ -1652,7 +1767,7 @@ instance FromJSON ScaleWire where
       <*> metadata .: "name"
       <*> metadata .: "namespace"
       <*> metadata .: "resourceVersion"
-      <*> spec .: "replicas"
+      <*> spec .:? "replicas" .!= 0
 
 decodeScale :: ByteString -> Either Text ScaleWire
 decodeScale body = do
@@ -1671,6 +1786,12 @@ decodeScale body = do
   firstCreateString
     (requireBoundedText "metadata.resourceVersion" 1024 (scaleWireResourceVersion wire))
   Right wire
+
+-- | Decode the desired replica count from the exact Vault Scale observation.
+-- Kubernetes' autoscaling/v1 wire omits the Go zero value, so an absent
+-- spec.replicas is the canonical zero encoding rather than an invalid body.
+vaultScaleDesiredReplicasFromResponse :: ByteString -> Either Text Natural
+vaultScaleDesiredReplicasFromResponse = fmap scaleWireReplicas . decodeScale
 
 data VaultPvcIdentityWire = VaultPvcIdentityWire
   { vaultPvcApiVersion :: !Text
@@ -1927,7 +2048,7 @@ data ContainerStatusWire = ContainerStatusWire
 
 data ContainerTerminationWire = ContainerTerminationWire
   { terminationWireExitCode :: !Int
-  , terminationWireMessage :: !Text
+  , terminationWireMessage :: !(Maybe Text)
   }
 
 instance FromJSON PodWire where
@@ -1985,7 +2106,10 @@ instance FromJSON ContainerTerminationWire where
   parseJSON = withObject "Kubernetes terminated container" $ \value ->
     ContainerTerminationWire
       <$> value .: "exitCode"
-      <*> value .: "message"
+      -- Kubernetes omits @message@ when the container wrote no termination-log
+      -- receipt.  That is a readable terminal state, but 'validateExitedPod'
+      -- still requires @Just exactReceipt@ before it can mint exit evidence.
+      <*> value .:? "message"
 
 -- | Whether an observation of the broker's own controller Pod may require that
 -- Pod to already be Ready.
@@ -2127,9 +2251,13 @@ controllerImageFromResponse scope namespace code body
         (eitherDecodeStrict' body)
     requireCreateEqual "apiVersion" "v1" (podListApiVersion listing)
     requireCreateEqual "kind" "PodList" (podListKind listing)
-    wire <- case podListItems listing of
+    -- A Deployment may retain evicted/completed Pod objects with its exact
+    -- selector labels.  They are controller history, not live candidates.
+    -- Exclude only positively terminal phases; Pending/Running/Unknown and
+    -- deleting Pods stay in the set and must satisfy the checks below.
+    wire <- case filter (not . controllerPodTerminal) (podListItems listing) of
       [sole] -> Right sole
-      _ -> Left "Bootstrap Broker PodList did not contain exactly one controller"
+      _ -> Left "Bootstrap Broker PodList did not contain exactly one live controller"
     requireCreateEqual "metadata.namespace" namespace (podWireNamespace wire)
     requireCreateEqual
       "controller ServiceAccount"
@@ -2165,6 +2293,9 @@ controllerImageFromResponse scope namespace code body
         { controllerImageRuntimeDigest = runtimeDigest
         , controllerImagePullReference = pullReference
         }
+
+  controllerPodTerminal wire =
+    podWirePhase wire == "Succeeded" || podWirePhase wire == "Failed"
 
 -- | Why a worker Pod observation could not be projected.
 --
@@ -2403,7 +2534,7 @@ validateExitedPod binding snapshot = do
   requireEqual "Pod phase" expectedPhase (observedWorkerPhase observed)
   requireEqual
     "termination receipt digest"
-    (renderArtifactDigest (cleanupWorkerReceiptDigest binding))
+    (Just (renderArtifactDigest (cleanupWorkerReceiptDigest binding)))
     (terminationWireMessage termination)
   Right exitCode
 
@@ -2445,7 +2576,16 @@ data PodFenceOwnerWire = PodFenceOwnerWire
   , podFenceOwnerNamespace :: !Text
   , podFenceOwnerUid :: !Text
   , podFenceOwnerAnnotations :: !(Map Text Text)
+  , podFenceOwnerStatus :: !(Maybe PodFenceOwnerStatusWire)
   }
+
+newtype PodFenceOwnerStatusWire = PodFenceOwnerStatusWire
+  { podFenceOwnerPhase :: Text
+  }
+
+instance FromJSON PodFenceOwnerStatusWire where
+  parseJSON = withObject "Kubernetes Pod fence-owner status" $ \status ->
+    PodFenceOwnerStatusWire <$> status .: "phase"
 
 instance FromJSON PodFenceOwnerWire where
   parseJSON = withObject "Kubernetes Pod fence owner" $ \root -> do
@@ -2457,8 +2597,9 @@ instance FromJSON PodFenceOwnerWire where
       <*> metadata .: "namespace"
       <*> metadata .: "uid"
       <*> metadata .:? "annotations" .!= Map.empty
+      <*> root .:? "status"
 
-decodePodFenceOwner :: Text -> ByteString -> Either String (Text, Natural)
+decodePodFenceOwner :: Text -> ByteString -> Either String (Text, Natural, Maybe Text)
 decodePodFenceOwner namespace body = do
   wire <- eitherDecodeStrict' body
   requireEqual "apiVersion" "v1" (podFenceOwnerApiVersion wire)
@@ -2468,7 +2609,11 @@ decodePodFenceOwner namespace body = do
   requireBoundedText "metadata.uid" 128 (podFenceOwnerUid wire)
   observedGeneration <-
     requireNaturalAnnotation workerFenceGenerationAnnotation (podFenceOwnerAnnotations wire)
-  Right (podFenceOwnerUid wire, observedGeneration)
+  Right
+    ( podFenceOwnerUid wire
+    , observedGeneration
+    , podFenceOwnerPhase <$> podFenceOwnerStatus wire
+    )
 
 data BootstrapLeaseWire = BootstrapLeaseWire
   { leaseWireApiVersion :: !Text

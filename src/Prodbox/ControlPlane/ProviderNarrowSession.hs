@@ -28,6 +28,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderCheckpointRef
   , ProviderIntent (..)
   , ProviderIntentCoordinate
+  , ProviderNativeStackFamilyRef
   , ProviderOwnedTagQuery
   , ProviderReadinessProbe
   , ProviderRevision
@@ -130,6 +131,22 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
   , reapRetainedEbsVolumesCapability
       :: Text
       -> ProviderMutation m session
+  , observeEksIamRoleFamilyCapability
+      :: Text
+      -> Text
+      -> ProviderReadOnly m session
+  , reapEksIamRoleFamilyCapability
+      :: Text
+      -> Text
+      -> ProviderMutation m session
+  , observeEksLoadBalancerControllerFamilyCapability
+      :: Text
+      -> Text
+      -> ProviderReadOnly m session
+  , reapEksLoadBalancerControllerFamilyCapability
+      :: Text
+      -> Text
+      -> ProviderMutation m session
   , observeDns01ChallengeRecordsCapability
       :: Text
       -> Text
@@ -159,6 +176,15 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
   , observeEksClusterIdentityCapability
       :: EksClusterIdentityRequest
       -> ProviderReadOnly m session
+  , observeNativeStackFamilyCapability
+      :: ProviderNativeStackFamilyRef
+      -> ProviderStackConfig
+      -> ProviderReadOnly m session
+  , reapNativeStackFamilyCapability
+      :: ProviderNativeStackFamilyRef
+      -> ProviderStackConfig
+      -> [Text]
+      -> ProviderMutation m session
   }
 
 -- | Rank-2 scoping prevents an assumed-role/session handle from escaping the
@@ -226,6 +252,26 @@ operationForProviderIntent capabilities intent = case intent of
   ReapRetainedEbsVolumes lifecycleValue ->
     ProviderIntentMutation
       (reapRetainedEbsVolumesCapability capabilities lifecycleValue)
+  ObserveEksIamRoleFamily roleNames policyNames ->
+    ProviderIntentReadOnly
+      (observeEksIamRoleFamilyCapability capabilities roleNames policyNames)
+  ReapEksIamRoleFamily roleNames policyNames ->
+    ProviderIntentMutation
+      (reapEksIamRoleFamilyCapability capabilities roleNames policyNames)
+  ObserveEksLoadBalancerControllerFamily loadBalancerName tags ->
+    ProviderIntentReadOnly
+      ( observeEksLoadBalancerControllerFamilyCapability
+          capabilities
+          loadBalancerName
+          tags
+      )
+  ReapEksLoadBalancerControllerFamily loadBalancerName tags ->
+    ProviderIntentMutation
+      ( reapEksLoadBalancerControllerFamilyCapability
+          capabilities
+          loadBalancerName
+          tags
+      )
   ObserveOwnedResourceTags query ->
     ProviderIntentReadOnly
       (observeOwnedResourceTagsCapability capabilities query)
@@ -243,3 +289,9 @@ operationForProviderIntent capabilities intent = case intent of
     ProviderIntentReadOnly (observeTestEbsVolumesCapability capabilities clusterName)
   ObserveEksClusterIdentity request ->
     ProviderIntentReadOnly (observeEksClusterIdentityCapability capabilities request)
+  ObserveNativeStackFamily ref config ->
+    ProviderIntentReadOnly
+      (observeNativeStackFamilyCapability capabilities ref config)
+  ReapNativeStackFamily ref config admittedIdentities ->
+    ProviderIntentMutation
+      (reapNativeStackFamilyCapability capabilities ref config admittedIdentities)

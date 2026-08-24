@@ -17,6 +17,7 @@ module BootstrapBrokerEnginePhysical
   )
 where
 
+import Codec.Serialise (serialise)
 import Control.Exception
   ( AsyncException (ThreadKilled)
   , SomeException
@@ -29,12 +30,14 @@ import Control.Monad (forM_, void)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef
   ( IORef
   , modifyIORef'
   , newIORef
   , readIORef
   )
+import Data.List (nub)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -58,7 +61,9 @@ import Prodbox.Bootstrap.Broker.Client qualified as Client
 import Prodbox.Bootstrap.Broker.Custody
 import Prodbox.Bootstrap.Broker.Engine
 import Prodbox.Bootstrap.Broker.EngineAdapter
-  ( engineBrokerInterpreter
+  ( brokerEngineErrorDiagnostic
+  , engineBrokerInterpreter
+  , engineErrorReply
   , runEngineBrokerRequest
   )
 import Prodbox.Bootstrap.Broker.EngineSecretWorker
@@ -66,6 +71,28 @@ import Prodbox.Bootstrap.Broker.Fake qualified as Fake
 import Prodbox.Bootstrap.Broker.Fence
 import Prodbox.Bootstrap.Broker.Model
 import Prodbox.Bootstrap.Broker.PgpBoundary qualified as Pgp
+import Prodbox.Bootstrap.Broker.PristineJournal
+  ( PristineJournalRefusal (..)
+  , classifyPristineJournal
+  )
+import Prodbox.Bootstrap.Broker.ProductionCryptoParameters
+  ( productionPristineStorageProof
+  )
+import Prodbox.Bootstrap.Broker.ProductionEngine
+  ( classifyProvisionerAccessorCleanupHttpFailure
+  , classifyProvisionerAccessorCleanupListing
+  , classifyProvisionerPolicyCoreReconcileFailure
+  , classifyProvisionerPolicyPkiReconcileFailure
+  , classifyRootAccessorAbsenceHttpFailure
+  , classifyRootAccessorAbsenceListing
+  , classifyRootAccessorInventoryHttpFailure
+  , classifyRootAccessorInventoryListing
+  , classifyRootAccessorRevocationHttpFailure
+  , decideRootAccessorAbsenceProof
+  )
+import Prodbox.Bootstrap.Broker.ProductionSecretWorker
+  ( classifyInitializationAmbiguity
+  )
 import Prodbox.Bootstrap.Broker.Program
 import Prodbox.Bootstrap.Broker.Protocol
 import Prodbox.Bootstrap.Broker.Readiness (BrokerReadinessState (..))
@@ -110,12 +137,16 @@ import Prodbox.ControlPlane.Deadline
   , monotonicInstantFromMicros
   , monotonicInstantMicros
   )
+import Prodbox.Http.Client (HttpError (..))
 import Prodbox.Lifecycle.Lease
   ( OwnerNonce
   , authorityTimeFromMicros
   , mkOwnerNonce
   )
 import Prodbox.Lifecycle.TargetCommitIntent (mkCredentialGeneration)
+import Prodbox.Secret.VaultInventory qualified as VaultInventory
+import Prodbox.Vault.Client qualified as Vault
+import Prodbox.Vault.Reconcile qualified as VaultReconcile
 import System.Timeout (timeout)
 import TestSupport
 
@@ -125,6 +156,1091 @@ main = mainWithSuite "BootstrapBrokerEnginePhysical" enginePhysicalSuite
 enginePhysicalSuite :: SuiteBuilder ()
 enginePhysicalSuite =
   describe "Sprint 2.33 physical Bootstrap Broker composition" $ do
+    it "Sprint 2.67 renders only the closed baseline stage at the protected route" $ do
+      let stages = [minBound .. maxBound] :: [BaselinePhysicalStage]
+          rendered = map renderBaselinePhysicalStage stages
+          secret = "vault-body-and-token-must-not-be-rendered"
+          failure =
+            EngineBaselinePhysicalCallRefused
+              BaselineInventoryStaleRootAccessors
+              (EngineBoundaryRefused secret)
+          protected = brokerEngineErrorDiagnostic BrokerVaultBaselineReconcile failure
+          unrelated = brokerEngineErrorDiagnostic BrokerVaultStatus failure
+      length stages `shouldBe` 16
+      length (nub rendered) `shouldBe` length rendered
+      protected `shouldContain` "baseline-stage=inventory-stale-root-accessors"
+      protected `shouldContain` "boundary-refused"
+      protected `shouldNotContain` Text.unpack secret
+      unrelated `shouldNotContain` "baseline-stage="
+      unrelated `shouldNotContain` Text.unpack secret
+      engineErrorReply failure
+        `shouldBe` (Server.BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+
+    it "Sprint 2.70 exhausts the payload-free root-accessor absence proof causes" $ do
+      let operations = [minBound .. maxBound] :: [RootAccessorAbsenceProofHttpOperation]
+          httpFailures =
+            [ RootAccessorAbsenceHttpConnectionFailure
+            , RootAccessorAbsenceHttpTimeout
+            , RootAccessorAbsenceHttpStatus 503
+            , RootAccessorAbsenceHttpDecode
+            ]
+          causes =
+            [ RootAccessorAbsenceProjectedTokenUnavailable
+            , RootAccessorAbsenceAuditorLoginInvalid
+            , RootAccessorAbsenceAuditorCleanupUnavailable
+            , RootAccessorAbsenceAuditorCleanupRefused
+            , RootAccessorAbsenceAuditorCleanupAmbiguous
+            , RootAccessorAbsenceObservedAccessorInvalid
+            , RootAccessorAbsenceObservedInventoryTooLarge
+            , RootAccessorAbsenceObservedInventoryDuplicate
+            , RootAccessorAbsenceGenerationMismatch
+            , RootAccessorAbsenceTargetPresent
+            , RootAccessorAbsenceStableZeroMismatch
+            ]
+              ++ [ RootAccessorAbsenceHttpFailure operation httpFailure
+                 | operation <- operations
+                 , httpFailure <- httpFailures
+                 ]
+          rendered = map rootAccessorAbsenceProofCauseName causes
+          failure cause =
+            EngineBaselinePhysicalCallRefused
+              BaselineProveCurrentRootAccessorAbsent
+              (EngineBoundaryRootAccessorAbsenceProof cause)
+          protected cause =
+            brokerEngineErrorDiagnostic BrokerVaultBaselineReconcile (failure cause)
+          unrelated cause = brokerEngineErrorDiagnostic BrokerVaultStatus (failure cause)
+      length operations `shouldBe` 3
+      length causes `shouldBe` 23
+      length (nub rendered) `shouldBe` length rendered
+      forM_ causes $ \cause -> do
+        protected cause
+          `shouldContain` ("root-accessor-absence-cause=" <> rootAccessorAbsenceProofCauseName cause)
+        unrelated cause `shouldNotContain` "root-accessor-absence-cause="
+      protected
+        ( RootAccessorAbsenceHttpFailure
+            RootAccessorAbsenceListAccessors
+            (RootAccessorAbsenceHttpStatus 503)
+        )
+        `shouldBe` "bootstrap-broker refused /v1/bootstrap/vault/baseline/reconcile: EngineBaselinePhysicalCallRefused (baseline-stage=prove-current-root-accessor-absent; root-accessor-absence-cause=http/list-accessors/status-503)"
+      engineErrorReply (failure RootAccessorAbsenceStableZeroMismatch)
+        `shouldBe` (Server.BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+      engineErrorReply
+        ( failure
+            ( RootAccessorAbsenceHttpFailure
+                RootAccessorAbsenceAuditorLogin
+                RootAccessorAbsenceHttpTimeout
+            )
+        )
+        `shouldBe` (Server.BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
+
+    it "Sprint 2.71 exhausts the payload-free root-accessor revocation causes" $ do
+      let operations = [minBound .. maxBound] :: [RootAccessorRevocationHttpOperation]
+          httpFailures =
+            [ RootAccessorRevocationHttpConnectionFailure
+            , RootAccessorRevocationHttpTimeout
+            , RootAccessorRevocationHttpStatus 503
+            , RootAccessorRevocationHttpDecode
+            ]
+          causes =
+            [ RootAccessorRevocationProjectedTokenUnavailable
+            , RootAccessorRevocationAuditorLoginInvalid
+            , RootAccessorRevocationAuditorCleanupUnavailable
+            , RootAccessorRevocationAuditorCleanupRefused
+            , RootAccessorRevocationAuditorCleanupAmbiguous
+            , RootAccessorRevocationTargetStillPresent
+            ]
+              ++ [ RootAccessorRevocationHttpFailure operation httpFailure
+                 | operation <- operations
+                 , httpFailure <- httpFailures
+                 ]
+          rendered = map rootAccessorRevocationCauseName causes
+          failure cause =
+            EngineBaselinePhysicalCallRefused
+              BaselineRevokePostBaselineRootAccessor
+              (EngineBoundaryRootAccessorRevocation cause)
+          protected cause =
+            brokerEngineErrorDiagnostic BrokerVaultBaselineReconcile (failure cause)
+          unrelated cause = brokerEngineErrorDiagnostic BrokerVaultStatus (failure cause)
+      length operations `shouldBe` 3
+      length causes `shouldBe` 18
+      length (nub rendered) `shouldBe` length rendered
+      forM_ causes $ \cause -> do
+        protected cause
+          `shouldContain` ("root-accessor-revocation-cause=" <> rootAccessorRevocationCauseName cause)
+        unrelated cause `shouldNotContain` "root-accessor-revocation-cause="
+      protected
+        ( RootAccessorRevocationHttpFailure
+            RootAccessorRevocationRequest
+            (RootAccessorRevocationHttpStatus 503)
+        )
+        `shouldBe` "bootstrap-broker refused /v1/bootstrap/vault/baseline/reconcile: EngineBaselinePhysicalCallRefused (baseline-stage=revoke-post-baseline-root-accessor; root-accessor-revocation-cause=http/revoke-accessor/status-503)"
+      engineErrorReply (failure RootAccessorRevocationTargetStillPresent)
+        `shouldBe` (Server.BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+      engineErrorReply
+        ( failure
+            ( RootAccessorRevocationHttpFailure
+                RootAccessorRevocationListReadBack
+                RootAccessorRevocationHttpTimeout
+            )
+        )
+        `shouldBe` (Server.BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
+
+    it "Sprint 2.71 classifies revocation HTTP failures without retaining payloads" $ do
+      let secret = "accessor-and-vault-body-must-not-cross"
+      map
+        classifyRootAccessorRevocationHttpFailure
+        [ HttpConnectionFailure secret
+        , HttpTimeout secret
+        , HttpStatus 503 secret
+        , HttpDecode secret
+        ]
+        `shouldBe` [ RootAccessorRevocationHttpConnectionFailure
+                   , RootAccessorRevocationHttpTimeout
+                   , RootAccessorRevocationHttpStatus 503
+                   , RootAccessorRevocationHttpDecode
+                   ]
+
+    it "Sprint 2.72 exhausts the payload-free root-accessor inventory causes" $ do
+      let operations = [minBound .. maxBound] :: [RootAccessorInventoryHttpOperation]
+          httpFailures =
+            [ RootAccessorInventoryHttpConnectionFailure
+            , RootAccessorInventoryHttpTimeout
+            , RootAccessorInventoryHttpStatus 503
+            , RootAccessorInventoryHttpDecode
+            ]
+          causes =
+            [ RootAccessorInventoryProjectedTokenUnavailable
+            , RootAccessorInventoryAuditorLoginInvalid
+            , RootAccessorInventoryAuditorCleanupUnavailable
+            , RootAccessorInventoryAuditorCleanupRefused
+            , RootAccessorInventoryAuditorCleanupAmbiguous
+            , RootAccessorInventoryObservedAccessorInvalid
+            , RootAccessorInventoryObservedInventoryTooLarge
+            , RootAccessorInventoryObservedInventoryDuplicate
+            ]
+              ++ [ RootAccessorInventoryHttpFailure operation httpFailure
+                 | operation <- operations
+                 , httpFailure <- httpFailures
+                 ]
+          rendered = map rootAccessorInventoryCauseName causes
+          failure cause =
+            EngineBaselinePhysicalCallRefused
+              BaselineInventoryPostBaselineRootAccessors
+              (EngineBoundaryRootAccessorInventory cause)
+          protected cause =
+            brokerEngineErrorDiagnostic BrokerVaultBaselineReconcile (failure cause)
+          unrelated cause = brokerEngineErrorDiagnostic BrokerVaultStatus (failure cause)
+      length operations `shouldBe` 3
+      length causes `shouldBe` 20
+      length (nub rendered) `shouldBe` length rendered
+      forM_ causes $ \cause -> do
+        protected cause
+          `shouldContain` ("root-accessor-inventory-cause=" <> rootAccessorInventoryCauseName cause)
+        unrelated cause `shouldNotContain` "root-accessor-inventory-cause="
+      protected
+        ( RootAccessorInventoryHttpFailure
+            RootAccessorInventoryListAccessors
+            (RootAccessorInventoryHttpStatus 503)
+        )
+        `shouldBe` "bootstrap-broker refused /v1/bootstrap/vault/baseline/reconcile: EngineBaselinePhysicalCallRefused (baseline-stage=inventory-post-baseline-root-accessors; root-accessor-inventory-cause=http/list-accessors/status-503)"
+      engineErrorReply (failure RootAccessorInventoryObservedAccessorInvalid)
+        `shouldBe` (Server.BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+      engineErrorReply
+        ( failure
+            ( RootAccessorInventoryHttpFailure
+                RootAccessorInventoryAuditorLogin
+                RootAccessorInventoryHttpTimeout
+            )
+        )
+        `shouldBe` (Server.BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
+      engineErrorReply (failure RootAccessorInventoryAuditorCleanupAmbiguous)
+        `shouldBe` (Server.BrokerReplyGatewayTimeout, "{\"status\":\"boundary-ambiguous\"}")
+
+    it "Sprint 2.72 classifies inventory HTTP failures without retaining payloads" $ do
+      let secret = "accessor-policy-and-vault-body-must-not-cross"
+      map
+        classifyRootAccessorInventoryHttpFailure
+        [ HttpConnectionFailure secret
+        , HttpTimeout secret
+        , HttpStatus 503 secret
+        , HttpDecode secret
+        ]
+        `shouldBe` [ RootAccessorInventoryHttpConnectionFailure
+                   , RootAccessorInventoryHttpTimeout
+                   , RootAccessorInventoryHttpStatus 503
+                   , RootAccessorInventoryHttpDecode
+                   ]
+
+    it "Sprint 2.72 treats only inventory-list 404 as an empty inventory" $ do
+      let secret = "inventory-list-body-must-not-cross"
+      classifyRootAccessorInventoryListing
+        (Right (Vault.TokenAccessorListing ["accessor-a"]))
+        `shouldBe` Right ["accessor-a"]
+      classifyRootAccessorInventoryListing (Left (HttpStatus 404 secret))
+        `shouldBe` Right []
+      map
+        classifyRootAccessorInventoryListing
+        [ Left (HttpConnectionFailure secret)
+        , Left (HttpTimeout secret)
+        , Left (HttpStatus 503 secret)
+        , Left (HttpDecode secret)
+        ]
+        `shouldBe` map
+          ( Left
+              . RootAccessorInventoryHttpFailure
+                RootAccessorInventoryListAccessors
+          )
+          [ RootAccessorInventoryHttpConnectionFailure
+          , RootAccessorInventoryHttpTimeout
+          , RootAccessorInventoryHttpStatus 503
+          , RootAccessorInventoryHttpDecode
+          ]
+
+    it "Sprint 2.73 exhausts the payload-free provisioner-accessor cleanup causes" $ do
+      let operations = [minBound .. maxBound] :: [ProvisionerAccessorCleanupHttpOperation]
+          httpFailures =
+            [ ProvisionerAccessorCleanupHttpConnectionFailure
+            , ProvisionerAccessorCleanupHttpTimeout
+            , ProvisionerAccessorCleanupHttpStatus 503
+            , ProvisionerAccessorCleanupHttpDecode
+            ]
+          causes =
+            [ ProvisionerAccessorCleanupProjectedTokenUnavailable
+            , ProvisionerAccessorCleanupAuditorLoginInvalid
+            , ProvisionerAccessorCleanupAuditorCleanupUnavailable
+            , ProvisionerAccessorCleanupAuditorCleanupRefused
+            , ProvisionerAccessorCleanupAuditorCleanupAmbiguous
+            , ProvisionerAccessorCleanupAuditIdentityInvalid
+            , ProvisionerAccessorCleanupVisibilityUnavailable
+            , ProvisionerAccessorCleanupVisibilityRefused
+            , ProvisionerAccessorCleanupVisibilityAmbiguous
+            , ProvisionerAccessorCleanupStableAbsenceFailed
+            , ProvisionerAccessorCleanupObservedAccessorInvalid
+            , ProvisionerAccessorCleanupObservedInventoryTooLarge
+            , ProvisionerAccessorCleanupObservedInventoryDuplicate
+            ]
+              ++ [ ProvisionerAccessorCleanupHttpFailure operation httpFailure
+                 | operation <- operations
+                 , httpFailure <- httpFailures
+                 ]
+          rendered = map provisionerAccessorCleanupCauseName causes
+          failure cause =
+            EngineBaselinePhysicalCallRefused
+              BaselineCleanupProvisionerAccessors
+              (EngineBoundaryProvisionerAccessorCleanup cause)
+          protected cause =
+            brokerEngineErrorDiagnostic BrokerVaultBaselineReconcile (failure cause)
+          unrelated cause = brokerEngineErrorDiagnostic BrokerVaultStatus (failure cause)
+      length operations `shouldBe` 7
+      length causes `shouldBe` 41
+      length (nub rendered) `shouldBe` length rendered
+      forM_ causes $ \cause -> do
+        protected cause
+          `shouldContain` ("provisioner-accessor-cleanup-cause=" <> provisionerAccessorCleanupCauseName cause)
+        unrelated cause `shouldNotContain` "provisioner-accessor-cleanup-cause="
+      protected
+        ( ProvisionerAccessorCleanupHttpFailure
+            ProvisionerAccessorCleanupInitialListAccessors
+            (ProvisionerAccessorCleanupHttpStatus 503)
+        )
+        `shouldBe` "bootstrap-broker refused /v1/bootstrap/vault/baseline/reconcile: EngineBaselinePhysicalCallRefused (baseline-stage=cleanup-provisioner-accessors; provisioner-accessor-cleanup-cause=http/initial-list-accessors/status-503)"
+      engineErrorReply (failure ProvisionerAccessorCleanupStableAbsenceFailed)
+        `shouldBe` (Server.BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+      engineErrorReply
+        ( failure
+            ( ProvisionerAccessorCleanupHttpFailure
+                ProvisionerAccessorCleanupAuditLookupAccessor
+                ProvisionerAccessorCleanupHttpTimeout
+            )
+        )
+        `shouldBe` (Server.BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
+      engineErrorReply (failure ProvisionerAccessorCleanupVisibilityAmbiguous)
+        `shouldBe` (Server.BrokerReplyGatewayTimeout, "{\"status\":\"boundary-ambiguous\"}")
+
+    it "Sprint 2.73 treats only cleanup LIST 404 as empty without retaining HTTP payloads" $ do
+      let secret = "provisioner-accessor-and-vault-body-must-not-cross"
+          operation = ProvisionerAccessorCleanupInitialListAccessors
+      map
+        classifyProvisionerAccessorCleanupHttpFailure
+        [ HttpConnectionFailure secret
+        , HttpTimeout secret
+        , HttpStatus 503 secret
+        , HttpDecode secret
+        ]
+        `shouldBe` [ ProvisionerAccessorCleanupHttpConnectionFailure
+                   , ProvisionerAccessorCleanupHttpTimeout
+                   , ProvisionerAccessorCleanupHttpStatus 503
+                   , ProvisionerAccessorCleanupHttpDecode
+                   ]
+      classifyProvisionerAccessorCleanupListing
+        operation
+        (Right (Vault.TokenAccessorListing ["accessor-a"]))
+        `shouldBe` Right ["accessor-a"]
+      classifyProvisionerAccessorCleanupListing
+        operation
+        (Left (HttpStatus 404 secret))
+        `shouldBe` Right []
+      classifyProvisionerAccessorCleanupListing
+        ProvisionerAccessorCleanupAuditListAccessors
+        (Left (HttpStatus 404 secret))
+        `shouldBe` Right []
+      map
+        (classifyProvisionerAccessorCleanupListing operation)
+        [ Left (HttpConnectionFailure secret)
+        , Left (HttpTimeout secret)
+        , Left (HttpStatus 503 secret)
+        , Left (HttpDecode secret)
+        ]
+        `shouldBe` map
+          (Left . ProvisionerAccessorCleanupHttpFailure operation)
+          [ ProvisionerAccessorCleanupHttpConnectionFailure
+          , ProvisionerAccessorCleanupHttpTimeout
+          , ProvisionerAccessorCleanupHttpStatus 503
+          , ProvisionerAccessorCleanupHttpDecode
+          ]
+
+    it "Sprint 2.74 exhausts the payload-free provisioner-policy application causes" $ do
+      let httpFailures =
+            [ Pgp.GeneratedRootCoreHttpConnectionFailure
+            , Pgp.GeneratedRootCoreHttpTimeout
+            , Pgp.GeneratedRootCoreHttpStatus 503
+            , Pgp.GeneratedRootCoreHttpDecode
+            ]
+          coreHttpCauses =
+            [ Pgp.GeneratedRootCoreHttpFailure operation httpFailure
+            | operation <- [minBound .. maxBound]
+            , httpFailure <- httpFailures
+            ]
+          coreOtherCauses =
+            [ Pgp.GeneratedRootCoreMountTypeMismatch
+            , Pgp.GeneratedRootCoreMountOptionMismatch
+            , Pgp.GeneratedRootCoreAuthTypeMismatch
+            , Pgp.GeneratedRootCoreTransitKeyTypeMismatch
+            , Pgp.GeneratedRootCoreKubernetesRoleReadbackMismatch
+            , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                (Pgp.GeneratedRootCoreSecretReadFailure Pgp.GeneratedRootCoreHttpConnectionFailure)
+            , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                (Pgp.GeneratedRootCoreSecretReadFailure Pgp.GeneratedRootCoreHttpTimeout)
+            , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                (Pgp.GeneratedRootCoreSecretReadFailure (Pgp.GeneratedRootCoreHttpStatus 503))
+            , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                (Pgp.GeneratedRootCoreSecretReadFailure Pgp.GeneratedRootCoreHttpDecode)
+            , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                Pgp.GeneratedRootCoreSecretWriteAppliedInvariant
+            , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                Pgp.GeneratedRootCoreSecretWriteConflict
+            , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                (Pgp.GeneratedRootCoreSecretWriteRefused 403)
+            , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                Pgp.GeneratedRootCoreSecretWriteUnobservable
+            , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                Pgp.GeneratedRootCoreSecretExternalFieldMissing
+            ]
+          pkiHttpCauses =
+            [ Pgp.GeneratedRootPkiReconcileHttpFailure operation httpFailure
+            | operation <- [minBound .. maxBound]
+            , httpFailure <- httpFailures
+            ]
+          pkiObserveCauses =
+            [ Pgp.GeneratedRootPkiReconcileObserveFailure
+                (Pgp.GeneratedRootPkiObserveHttpFailure operation httpFailure)
+            | operation <- [minBound .. maxBound]
+            , httpFailure <- httpFailures
+            ]
+          pkiStatusCauses =
+            map
+              Pgp.GeneratedRootPkiReconcileReadBackNotExact
+              [minBound .. maxBound]
+          causes =
+            ProvisionerPolicyApplicationTokenUnavailable
+              : map ProvisionerPolicyApplicationCoreReconcile (coreHttpCauses ++ coreOtherCauses)
+              ++ map
+                ProvisionerPolicyApplicationPkiReconcile
+                (pkiHttpCauses ++ pkiObserveCauses ++ pkiStatusCauses)
+          rendered = map provisionerPolicyApplicationCauseName causes
+          failure cause =
+            EngineBaselinePhysicalCallRefused
+              BaselineApplyProvisionerPolicy
+              (EngineBoundaryProvisionerPolicyApplication cause)
+          protected cause =
+            brokerEngineErrorDiagnostic BrokerVaultBaselineReconcile (failure cause)
+          unrelated cause = brokerEngineErrorDiagnostic BrokerVaultStatus (failure cause)
+      length coreHttpCauses `shouldBe` 40
+      length coreOtherCauses `shouldBe` 14
+      length pkiHttpCauses `shouldBe` 12
+      length pkiObserveCauses `shouldBe` 8
+      length pkiStatusCauses `shouldBe` 3
+      length causes `shouldBe` 78
+      length (nub rendered) `shouldBe` length rendered
+      forM_ causes $ \cause -> do
+        protected cause
+          `shouldContain` ("provisioner-policy-application-cause=" <> provisionerPolicyApplicationCauseName cause)
+        unrelated cause `shouldNotContain` "provisioner-policy-application-cause="
+        engineErrorReply (failure cause)
+          `shouldBe` (Server.BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
+      protected
+        ( ProvisionerPolicyApplicationCoreReconcile
+            ( Pgp.GeneratedRootCoreHttpFailure
+                Pgp.GeneratedRootCoreWritePolicy
+                (Pgp.GeneratedRootCoreHttpStatus 403)
+            )
+        )
+        `shouldBe` "bootstrap-broker refused /v1/bootstrap/vault/baseline/reconcile: EngineBaselinePhysicalCallRefused (baseline-stage=apply-provisioner-policy; provisioner-policy-application-cause=core-reconcile/http/write-policy/status-403)"
+
+    it "Sprint 2.74 classifies every core and PKI failure without retaining payloads" $ do
+      let secretText = "policy-and-vault-body-must-not-cross"
+          secretString = Text.unpack secretText
+          httpFailures =
+            [ (HttpConnectionFailure secretString, Pgp.GeneratedRootCoreHttpConnectionFailure)
+            , (HttpTimeout secretString, Pgp.GeneratedRootCoreHttpTimeout)
+            , (HttpStatus 503 secretString, Pgp.GeneratedRootCoreHttpStatus 503)
+            , (HttpDecode secretString, Pgp.GeneratedRootCoreHttpDecode)
+            ]
+          coreOperations =
+            [ (VaultReconcile.VaultReconcileListMounts, Pgp.GeneratedRootCoreListMounts)
+            , (VaultReconcile.VaultReconcileEnableMount, Pgp.GeneratedRootCoreEnableMount)
+            , (VaultReconcile.VaultReconcileListAuthMethods, Pgp.GeneratedRootCoreListAuthMethods)
+            , (VaultReconcile.VaultReconcileEnableAuthMethod, Pgp.GeneratedRootCoreEnableAuthMethod)
+            ,
+              ( VaultReconcile.VaultReconcileWriteKubernetesAuthConfig
+              , Pgp.GeneratedRootCoreWriteKubernetesAuthConfig
+              )
+            , (VaultReconcile.VaultReconcileReadTransitKey, Pgp.GeneratedRootCoreReadTransitKey)
+            , (VaultReconcile.VaultReconcileCreateTransitKey, Pgp.GeneratedRootCoreCreateTransitKey)
+            , (VaultReconcile.VaultReconcileWritePolicy, Pgp.GeneratedRootCoreWritePolicy)
+            , (VaultReconcile.VaultReconcileWriteKubernetesRole, Pgp.GeneratedRootCoreWriteKubernetesRole)
+            , (VaultReconcile.VaultReconcileReadBackKubernetesRole, Pgp.GeneratedRootCoreReadBackKubernetesRole)
+            ]
+          path = VaultInventory.VaultSecretPath "secret" secretText
+          coreOtherFailures =
+            [
+              ( VaultReconcile.VaultReconcileMountTypeMismatch secretText secretText secretText
+              , Pgp.GeneratedRootCoreMountTypeMismatch
+              )
+            ,
+              ( VaultReconcile.VaultReconcileMountOptionMismatch secretText secretText secretText (Just secretText)
+              , Pgp.GeneratedRootCoreMountOptionMismatch
+              )
+            ,
+              ( VaultReconcile.VaultReconcileAuthTypeMismatch secretText secretText secretText
+              , Pgp.GeneratedRootCoreAuthTypeMismatch
+              )
+            ,
+              ( VaultReconcile.VaultReconcileTransitKeyTypeMismatch secretText secretText secretText
+              , Pgp.GeneratedRootCoreTransitKeyTypeMismatch
+              )
+            ,
+              ( VaultReconcile.VaultReconcileKubernetesRoleReadbackMismatch secretText
+              , Pgp.GeneratedRootCoreKubernetesRoleReadbackMismatch
+              )
+            ,
+              ( VaultReconcile.VaultReconcileSecretBootstrapFailed
+                  (VaultInventory.VaultSecretBootstrapReadFailed path (HttpDecode secretString))
+              , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                  (Pgp.GeneratedRootCoreSecretReadFailure Pgp.GeneratedRootCoreHttpDecode)
+              )
+            ,
+              ( VaultReconcile.VaultReconcileSecretBootstrapFailed
+                  (VaultInventory.VaultSecretBootstrapWriteFailed path (Vault.VaultCasApplied 1))
+              , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                  Pgp.GeneratedRootCoreSecretWriteAppliedInvariant
+              )
+            ,
+              ( VaultReconcile.VaultReconcileSecretBootstrapFailed
+                  (VaultInventory.VaultSecretBootstrapWriteFailed path (Vault.VaultCasConflict secretText))
+              , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                  Pgp.GeneratedRootCoreSecretWriteConflict
+              )
+            ,
+              ( VaultReconcile.VaultReconcileSecretBootstrapFailed
+                  (VaultInventory.VaultSecretBootstrapWriteFailed path (Vault.VaultCasRefused 403 secretText))
+              , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                  (Pgp.GeneratedRootCoreSecretWriteRefused 403)
+              )
+            ,
+              ( VaultReconcile.VaultReconcileSecretBootstrapFailed
+                  (VaultInventory.VaultSecretBootstrapWriteFailed path (Vault.VaultCasUnobservable secretText))
+              , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                  Pgp.GeneratedRootCoreSecretWriteUnobservable
+              )
+            ,
+              ( VaultReconcile.VaultReconcileSecretBootstrapFailed
+                  (VaultInventory.VaultSecretBootstrapExternalFieldMissing path secretText)
+              , Pgp.GeneratedRootCoreSecretBootstrapFailure
+                  Pgp.GeneratedRootCoreSecretExternalFieldMissing
+              )
+            ]
+          pkiOperations =
+            [ (VaultReconcile.VaultPkiReconcileListIssuers, Pgp.GeneratedRootPkiReconcileListIssuers)
+            ,
+              ( VaultReconcile.VaultPkiReconcileGenerateInternalRoot
+              , Pgp.GeneratedRootPkiReconcileGenerateInternalRoot
+              )
+            , (VaultReconcile.VaultPkiReconcileWriteRole, Pgp.GeneratedRootPkiReconcileWriteRole)
+            ]
+          pkiObserveOperations =
+            [ (VaultReconcile.VaultPkiObserveListIssuers, Pgp.GeneratedRootPkiObserveListIssuers)
+            , (VaultReconcile.VaultPkiObserveReadRole, Pgp.GeneratedRootPkiObserveReadRole)
+            ]
+          pkiStatuses =
+            [ (VaultReconcile.VaultPkiBaselineAbsent, Pgp.GeneratedRootPkiBaselineAbsent)
+            , (VaultReconcile.VaultPkiBaselineDrifted, Pgp.GeneratedRootPkiBaselineDrifted)
+            , (VaultReconcile.VaultPkiBaselineReady, Pgp.GeneratedRootPkiBaselineReady)
+            ]
+      forM_ coreOperations $ \(operation, expectedOperation) ->
+        forM_ httpFailures $ \(httpFailure, expectedHttpFailure) ->
+          classifyProvisionerPolicyCoreReconcileFailure
+            (VaultReconcile.VaultReconcileHttpError operation secretText httpFailure)
+            `shouldBe` ProvisionerPolicyApplicationCoreReconcile
+              (Pgp.GeneratedRootCoreHttpFailure expectedOperation expectedHttpFailure)
+      forM_ coreOtherFailures $ \(failure, expected) ->
+        classifyProvisionerPolicyCoreReconcileFailure failure
+          `shouldBe` ProvisionerPolicyApplicationCoreReconcile expected
+      forM_ pkiOperations $ \(operation, expectedOperation) ->
+        forM_ httpFailures $ \(httpFailure, expectedHttpFailure) ->
+          classifyProvisionerPolicyPkiReconcileFailure
+            (VaultReconcile.VaultPkiReconcileHttpError operation httpFailure)
+            `shouldBe` ProvisionerPolicyApplicationPkiReconcile
+              (Pgp.GeneratedRootPkiReconcileHttpFailure expectedOperation expectedHttpFailure)
+      forM_ pkiObserveOperations $ \(operation, expectedOperation) ->
+        forM_ httpFailures $ \(httpFailure, expectedHttpFailure) ->
+          classifyProvisionerPolicyPkiReconcileFailure
+            ( VaultReconcile.VaultPkiReconcileObserveFailed
+                (VaultReconcile.VaultPkiObserveHttpError operation httpFailure)
+            )
+            `shouldBe` ProvisionerPolicyApplicationPkiReconcile
+              ( Pgp.GeneratedRootPkiReconcileObserveFailure
+                  (Pgp.GeneratedRootPkiObserveHttpFailure expectedOperation expectedHttpFailure)
+              )
+      forM_ pkiStatuses $ \(status, expectedStatus) ->
+        classifyProvisionerPolicyPkiReconcileFailure
+          (VaultReconcile.VaultPkiReconcileReadBackNotExact status)
+          `shouldBe` ProvisionerPolicyApplicationPkiReconcile
+            (Pgp.GeneratedRootPkiReconcileReadBackNotExact expectedStatus)
+
+    it "Sprint 2.70 classifies HTTP payloads and distinguishes exact target absence from stable zero" $ do
+      let secret = "token-and-vault-body-must-not-cross"
+          generation = mustRight (mkVaultStorageGeneration "absence-proof-generation")
+          otherGeneration = mustRight (mkVaultStorageGeneration "other-generation")
+          targetAccessor = mustRight (mkRootPolicyAccessor "target-accessor")
+          unrelatedAccessor = mustRight (mkRootPolicyAccessor "unrelated-accessor")
+          target = mustRight (mkRootAccessorInventory generation [targetAccessor])
+          absent = mustRight (mkRootAccessorInventory generation [])
+          unrelated = mustRight (mkRootAccessorInventory generation [unrelatedAccessor])
+          present = mustRight (mkRootAccessorInventory generation [targetAccessor])
+          wrongGeneration = mustRight (mkRootAccessorInventory otherGeneration [])
+      map
+        classifyRootAccessorAbsenceHttpFailure
+        [ HttpConnectionFailure secret
+        , HttpTimeout secret
+        , HttpStatus 503 secret
+        , HttpDecode secret
+        ]
+        `shouldBe` [ RootAccessorAbsenceHttpConnectionFailure
+                   , RootAccessorAbsenceHttpTimeout
+                   , RootAccessorAbsenceHttpStatus 503
+                   , RootAccessorAbsenceHttpDecode
+                   ]
+      decideRootAccessorAbsenceProof RootAccessorStableZeroRequired target absent
+        `shouldBe` Right ()
+      decideRootAccessorAbsenceProof RootAccessorStableZeroRequired target unrelated
+        `shouldBe` Left RootAccessorAbsenceStableZeroMismatch
+      decideRootAccessorAbsenceProof RootAccessorTargetsAbsentRequired target unrelated
+        `shouldBe` Right ()
+      decideRootAccessorAbsenceProof RootAccessorTargetsAbsentRequired target present
+        `shouldBe` Left RootAccessorAbsenceTargetPresent
+      decideRootAccessorAbsenceProof RootAccessorTargetsAbsentRequired target wrongGeneration
+        `shouldBe` Left RootAccessorAbsenceGenerationMismatch
+
+    it "Sprint 2.70 treats only accessor-list 404 as an empty inventory" $ do
+      let secret = "accessor-list-body-must-not-cross"
+      classifyRootAccessorAbsenceListing
+        (Right (Vault.TokenAccessorListing ["accessor-a"]))
+        `shouldBe` Right ["accessor-a"]
+      classifyRootAccessorAbsenceListing (Left (HttpStatus 404 secret))
+        `shouldBe` Right []
+      map
+        classifyRootAccessorAbsenceListing
+        [ Left (HttpConnectionFailure secret)
+        , Left (HttpTimeout secret)
+        , Left (HttpStatus 403 secret)
+        , Left (HttpDecode secret)
+        ]
+        `shouldBe` [ Left
+                       ( RootAccessorAbsenceHttpFailure
+                           RootAccessorAbsenceListAccessors
+                           RootAccessorAbsenceHttpConnectionFailure
+                       )
+                   , Left
+                       ( RootAccessorAbsenceHttpFailure
+                           RootAccessorAbsenceListAccessors
+                           RootAccessorAbsenceHttpTimeout
+                       )
+                   , Left
+                       ( RootAccessorAbsenceHttpFailure
+                           RootAccessorAbsenceListAccessors
+                           (RootAccessorAbsenceHttpStatus 403)
+                       )
+                   , Left
+                       ( RootAccessorAbsenceHttpFailure
+                           RootAccessorAbsenceListAccessors
+                           RootAccessorAbsenceHttpDecode
+                       )
+                   ]
+
+    it "Sprint 2.68 renders every closed PGP cause only at the protected baseline route" $ do
+      let causes =
+            [ Pgp.PgpCompiledBurnRecipientMismatch
+            , Pgp.PgpCompiledBurnPublicKeyMismatch
+            , Pgp.PgpCompiledBurnPublicKeyDigestMismatch
+            , Pgp.PgpRecipientGenerationFailed
+            , Pgp.PgpRecipientSealFailed
+            , Pgp.PgpRecipientPublicKeyNotCanonicalBase64
+            , Pgp.PgpPreparedRecoveryRecipientMismatch
+            , Pgp.PgpPreparedBurnRecipientMismatch
+            , Pgp.PgpEncryptedShareRejected
+            , Pgp.PgpGeneratedRootCiphertextRejected
+            , Pgp.PgpGeneratedChildRecoveryCiphertextRejected
+            , Pgp.PgpGeneratedRootSessionClosed
+            , Pgp.PgpGeneratedRootSessionPermitMismatch
+                BootstrapVaultSubmitUnsealShare
+                BootstrapVaultInitialize
+            , Pgp.PgpGeneratedRootSessionGenerationMismatch
+            , Pgp.PgpGeneratedRootTokenRejected
+            , Pgp.PgpGeneratedRootActionRefused
+                Pgp.GeneratedRootObserveSelfAction
+                Pgp.GeneratedRootObserveAccessorRequest
+            , Pgp.PgpGeneratedRootActionPermitMismatch
+                BootstrapVaultSubmitUnsealShare
+                BootstrapVaultInitialize
+            , Pgp.PgpGeneratedRootActionGenerationMismatch
+            , Pgp.PgpGeneratedRootActionBindingMismatch
+            , Pgp.PgpGeneratedRootActionFenceIdentityMismatch
+            , Pgp.PgpGeneratedChildRecoverySessionClosed
+            , Pgp.PgpGeneratedChildRecoverySessionPermitMismatch
+                BootstrapVaultSubmitUnsealShare
+                BootstrapVaultInitialize
+            , Pgp.PgpGeneratedChildRecoverySessionGenerationMismatch
+            , Pgp.PgpGeneratedChildRecoveryActionRefused
+                Pgp.GeneratedChildRecoveryObserveSelfAction
+            , Pgp.PgpGeneratedChildRecoveryActionPermitMismatch
+                BootstrapVaultSubmitUnsealShare
+                BootstrapVaultInitialize
+            , Pgp.PgpGeneratedChildRecoveryActionBindingMismatch
+            , Pgp.PgpGeneratedChildRecoveryActionGenerationMismatch
+            , Pgp.PgpGeneratedChildRecoveryActionFenceIdentityMismatch
+            , Pgp.PgpPasswordAeadFailed
+            ]
+          rendered = map Pgp.pgpBoundaryErrorName causes
+          failure = EnginePgpBoundaryRefused Pgp.PgpGeneratedRootActionFenceIdentityMismatch
+          protected = brokerEngineErrorDiagnostic BrokerVaultBaselineReconcile failure
+          unrelated = brokerEngineErrorDiagnostic BrokerVaultStatus failure
+          renderCoreCause cause =
+            Pgp.pgpBoundaryErrorName
+              ( Pgp.PgpGeneratedRootActionRefused
+                  Pgp.GeneratedRootApplyBaselineAction
+                  (Pgp.GeneratedRootApplyCoreReconcile cause)
+              )
+          corePrefix =
+            "generated-root-action-refused/apply-baseline/core-reconcile/"
+      length causes `shouldBe` 29
+      length (nub rendered) `shouldBe` length rendered
+      protected `shouldContain` "pgp-cause=generated-root-action-fence-identity-mismatch"
+      unrelated `shouldNotContain` "pgp-cause="
+      engineErrorReply failure
+        `shouldBe` (Server.BrokerReplyConflict, "{\"status\":\"state-conflict\"}")
+      map
+        ( \(kind, stage) ->
+            Pgp.pgpBoundaryErrorName
+              (Pgp.PgpGeneratedRootActionRefused kind stage)
+        )
+        [ (Pgp.GeneratedRootObserveSelfAction, Pgp.GeneratedRootObserveAccessorRequest)
+        ,
+          ( Pgp.GeneratedRootApplyBaselineAction
+          , Pgp.GeneratedRootApplyCoreReconcile
+              Pgp.GeneratedRootCoreMountTypeMismatch
+          )
+        ,
+          ( Pgp.GeneratedRootReadBackBaselineAction
+          , Pgp.GeneratedRootReadBackPkiObserve
+              ( Pgp.GeneratedRootPkiObserveHttpFailure
+                  Pgp.GeneratedRootPkiObserveListIssuers
+                  Pgp.GeneratedRootCoreHttpConnectionFailure
+              )
+          )
+        , (Pgp.GeneratedRootRevokeSelfAction, Pgp.GeneratedRootRevokeAccessorRequest)
+        ]
+        `shouldBe` [ "generated-root-action-refused/observe-accessor/accessor-request"
+                   , "generated-root-action-refused/apply-baseline/core-reconcile/mount-type-mismatch"
+                   , "generated-root-action-refused/read-back-baseline/pki-observe/http/list-issuers/connection-failure"
+                   , "generated-root-action-refused/revoke-accessor/accessor-request"
+                   ]
+      map
+        (Pgp.pgpBoundaryErrorName . Pgp.PgpGeneratedChildRecoveryActionRefused)
+        Pgp.allGeneratedChildRecoveryActionKinds
+        `shouldBe` [ "generated-child-recovery-action-refused/observe-accessor"
+                   , "generated-child-recovery-action-refused/apply-repair"
+                   , "generated-child-recovery-action-refused/read-back-repair"
+                   , "generated-child-recovery-action-refused/revoke-accessor"
+                   ]
+      forM_
+        [ (Pgp.GeneratedRootCoreListMounts, "list-mounts")
+        , (Pgp.GeneratedRootCoreEnableMount, "enable-mount")
+        , (Pgp.GeneratedRootCoreListAuthMethods, "list-auth-methods")
+        , (Pgp.GeneratedRootCoreEnableAuthMethod, "enable-auth-method")
+        ,
+          ( Pgp.GeneratedRootCoreWriteKubernetesAuthConfig
+          , "write-kubernetes-auth-config"
+          )
+        , (Pgp.GeneratedRootCoreReadTransitKey, "read-transit-key")
+        , (Pgp.GeneratedRootCoreCreateTransitKey, "create-transit-key")
+        , (Pgp.GeneratedRootCoreWritePolicy, "write-policy")
+        , (Pgp.GeneratedRootCoreWriteKubernetesRole, "write-kubernetes-role")
+        ,
+          ( Pgp.GeneratedRootCoreReadBackKubernetesRole
+          , "read-back-kubernetes-role"
+          )
+        ]
+        $ \(operation, expected) ->
+          renderCoreCause
+            ( Pgp.GeneratedRootCoreHttpFailure
+                operation
+                Pgp.GeneratedRootCoreHttpConnectionFailure
+            )
+            `shouldBe` ( corePrefix
+                           <> "http/"
+                           <> expected
+                           <> "/connection-failure"
+                       )
+      map
+        ( renderCoreCause
+            . Pgp.GeneratedRootCoreHttpFailure Pgp.GeneratedRootCoreListMounts
+        )
+        [ Pgp.GeneratedRootCoreHttpConnectionFailure
+        , Pgp.GeneratedRootCoreHttpTimeout
+        , Pgp.GeneratedRootCoreHttpStatus 403
+        , Pgp.GeneratedRootCoreHttpDecode
+        ]
+        `shouldBe` map
+          (corePrefix <>)
+          [ "http/list-mounts/connection-failure"
+          , "http/list-mounts/timeout"
+          , "http/list-mounts/status-403"
+          , "http/list-mounts/decode"
+          ]
+      map
+        renderCoreCause
+        [ Pgp.GeneratedRootCoreMountTypeMismatch
+        , Pgp.GeneratedRootCoreMountOptionMismatch
+        , Pgp.GeneratedRootCoreAuthTypeMismatch
+        , Pgp.GeneratedRootCoreTransitKeyTypeMismatch
+        , Pgp.GeneratedRootCoreKubernetesRoleReadbackMismatch
+        , Pgp.GeneratedRootCoreSecretBootstrapFailure
+            ( Pgp.GeneratedRootCoreSecretReadFailure
+                (Pgp.GeneratedRootCoreHttpStatus 403)
+            )
+        , Pgp.GeneratedRootCoreSecretBootstrapFailure
+            Pgp.GeneratedRootCoreSecretWriteAppliedInvariant
+        , Pgp.GeneratedRootCoreSecretBootstrapFailure
+            Pgp.GeneratedRootCoreSecretWriteConflict
+        , Pgp.GeneratedRootCoreSecretBootstrapFailure
+            (Pgp.GeneratedRootCoreSecretWriteRefused 403)
+        , Pgp.GeneratedRootCoreSecretBootstrapFailure
+            Pgp.GeneratedRootCoreSecretWriteUnobservable
+        , Pgp.GeneratedRootCoreSecretBootstrapFailure
+            Pgp.GeneratedRootCoreSecretExternalFieldMissing
+        ]
+        `shouldBe` map
+          (corePrefix <>)
+          [ "mount-type-mismatch"
+          , "mount-option-mismatch"
+          , "auth-type-mismatch"
+          , "transit-key-type-mismatch"
+          , "kubernetes-role-readback-mismatch"
+          , "secret-bootstrap/read/status-403"
+          , "secret-bootstrap/write/applied-invariant"
+          , "secret-bootstrap/write/conflict"
+          , "secret-bootstrap/write/refused-status-403"
+          , "secret-bootstrap/write/unobservable"
+          , "secret-bootstrap/external-field-missing"
+          ]
+
+    it "Sprint 2.69 exhausts payload-free PKI operation, HTTP, observe, and status causes" $ do
+      let applyPrefix = "generated-root-action-refused/apply-baseline/pki-reconcile/"
+          readBackPrefix =
+            "generated-root-action-refused/read-back-baseline/pki-observe/"
+          renderApply cause =
+            Pgp.pgpBoundaryErrorName
+              ( Pgp.PgpGeneratedRootActionRefused
+                  Pgp.GeneratedRootApplyBaselineAction
+                  (Pgp.GeneratedRootApplyPkiReconcile cause)
+              )
+          renderObserve cause =
+            Pgp.pgpBoundaryErrorName
+              ( Pgp.PgpGeneratedRootActionRefused
+                  Pgp.GeneratedRootReadBackBaselineAction
+                  (Pgp.GeneratedRootReadBackPkiObserve cause)
+              )
+          observeReadRole =
+            Pgp.GeneratedRootPkiObserveHttpFailure
+              Pgp.GeneratedRootPkiObserveReadRole
+      forM_
+        [ (Pgp.GeneratedRootPkiReconcileListIssuers, "list-issuers")
+        , (Pgp.GeneratedRootPkiReconcileGenerateInternalRoot, "generate-internal-root")
+        , (Pgp.GeneratedRootPkiReconcileWriteRole, "write-role")
+        ]
+        $ \(operation, expected) ->
+          renderApply
+            ( Pgp.GeneratedRootPkiReconcileHttpFailure
+                operation
+                Pgp.GeneratedRootCoreHttpConnectionFailure
+            )
+            `shouldBe` (applyPrefix <> "http/" <> expected <> "/connection-failure")
+      map
+        ( renderApply
+            . Pgp.GeneratedRootPkiReconcileHttpFailure
+              Pgp.GeneratedRootPkiReconcileListIssuers
+        )
+        [ Pgp.GeneratedRootCoreHttpConnectionFailure
+        , Pgp.GeneratedRootCoreHttpTimeout
+        , Pgp.GeneratedRootCoreHttpStatus 403
+        , Pgp.GeneratedRootCoreHttpDecode
+        ]
+        `shouldBe` map
+          (applyPrefix <>)
+          [ "http/list-issuers/connection-failure"
+          , "http/list-issuers/timeout"
+          , "http/list-issuers/status-403"
+          , "http/list-issuers/decode"
+          ]
+      forM_
+        [ (Pgp.GeneratedRootPkiObserveListIssuers, "list-issuers")
+        , (Pgp.GeneratedRootPkiObserveReadRole, "read-role")
+        ]
+        $ \(operation, expected) ->
+          renderObserve
+            ( Pgp.GeneratedRootPkiObserveHttpFailure
+                operation
+                Pgp.GeneratedRootCoreHttpDecode
+            )
+            `shouldBe` (readBackPrefix <> "http/" <> expected <> "/decode")
+      renderApply
+        ( Pgp.GeneratedRootPkiReconcileObserveFailure
+            (observeReadRole (Pgp.GeneratedRootCoreHttpStatus 500))
+        )
+        `shouldBe` (applyPrefix <> "observe/http/read-role/status-500")
+      map
+        ( renderApply
+            . Pgp.GeneratedRootPkiReconcileReadBackNotExact
+        )
+        [ Pgp.GeneratedRootPkiBaselineAbsent
+        , Pgp.GeneratedRootPkiBaselineDrifted
+        , Pgp.GeneratedRootPkiBaselineReady
+        ]
+        `shouldBe` map
+          (applyPrefix <>)
+          [ "read-back-not-exact/absent"
+          , "read-back-not-exact/drifted"
+          , "read-back-not-exact/ready"
+          ]
+      map
+        ( \status ->
+            Pgp.pgpBoundaryErrorName
+              ( Pgp.PgpGeneratedRootActionRefused
+                  Pgp.GeneratedRootReadBackBaselineAction
+                  (Pgp.GeneratedRootReadBackPkiStatus status)
+              )
+        )
+        [ Pgp.GeneratedRootPkiBaselineAbsent
+        , Pgp.GeneratedRootPkiBaselineDrifted
+        , Pgp.GeneratedRootPkiBaselineReady
+        ]
+        `shouldBe` [ "generated-root-action-refused/read-back-baseline/pki-status/absent"
+                   , "generated-root-action-refused/read-back-baseline/pki-status/drifted"
+                   , "generated-root-action-refused/read-back-baseline/pki-status/ready"
+                   ]
+
+    it "Sprint 2.64 classifies Vault ambiguity without retaining error payloads" $ do
+      let secret = "credential-and-vault-body-must-not-survive"
+          cases =
+            [ (HttpConnectionFailure secret, InitializationCallConnectionFailure)
+            , (HttpTimeout secret, InitializationCallTimeout)
+            , (HttpStatus 503 secret, InitializationCallHttpStatus 503)
+            , (HttpDecode secret, InitializationCallResponseDecodeFailure)
+            ]
+      forM_ cases $ \(httpFailure, expected) -> do
+        let cause = classifyInitializationAmbiguity httpFailure
+        cause `shouldBe` expected
+        initializationAmbiguityCauseName cause `shouldNotContain` secret
+
+    it "Sprint 2.64 appends classified ambiguity without changing the retained legacy wire" $ do
+      LazyByteString.unpack (serialise ambiguousInitializationWorkerResult)
+        `shouldBe` [129, 3]
+      forM_
+        [ InitializationObservedBeforeCall
+        , InitializationCallConnectionFailure
+        , InitializationCallTimeout
+        , InitializationCallHttpStatus 409
+        , InitializationCallResponseDecodeFailure
+        , InitializationCauseUnclassified
+        ]
+        $ \cause -> do
+          let durable = classifiedAmbiguousInitializationWorkerResult cause
+          durableInitializationAmbiguityCause durable `shouldBe` Just cause
+          secretWorkerDurableResultOperation durable
+            `shouldBe` SecretWorkerInitialize
+
+    it "Sprint 2.64 carries the cause to a protected diagnostic while the HTTP body stays generic" $
+      withFixture $ \fixture -> do
+        harness <-
+          newHarness
+            fixture
+            ( ReturnClassifiedAppliedWithoutResponse
+                (InitializationCallHttpStatus 502)
+            )
+            NoCrash
+        engine <- requireEngine fixture harness
+        let settings = requireSettings 30_455
+        outcome <-
+          invokeAdapter fixture settings engine BrokerVaultInitialize
+        case outcome of
+          Left (EngineInitializationAmbiguous _ cause) -> do
+            cause `shouldBe` InitializationCallHttpStatus 502
+            brokerEngineErrorDiagnostic
+              BrokerVaultInitialize
+              (EngineInitializationAmbiguous (fixtureAmbiguity fixture) cause)
+              `shouldContain` "initialization-cause=http-status-502"
+            brokerEngineErrorDiagnostic
+              BrokerVaultResetAmbiguousInitialization
+              (EngineInitializationAmbiguous (fixtureAmbiguity fixture) cause)
+              `shouldNotContain` "initialization-cause="
+          _ -> expectationFailure "expected classified initialization ambiguity"
+
+        wireHarness <-
+          newHarness
+            fixture
+            ( ReturnClassifiedAppliedWithoutResponse
+                (InitializationCallHttpStatus 502)
+            )
+            NoCrash
+        wireEngine <- requireEngine fixture wireHarness
+        withPhysicalServer fixture wireEngine $ \wireSettings -> do
+          let endpoint = Client.brokerEndpointFromSettings wireSettings
+              context =
+                Client.mkBrokerCallContext
+                  (fixtureServiceIdentity fixture)
+                  (mustRight (Request.mkIdempotencyKey "classified-init-ambiguity"))
+                  (fixtureClientCredential fixture)
+          response <-
+            Client.initializeVault
+              endpoint
+              context
+              (fixtureActions fixture BrokerVaultInitialize)
+          response
+            `shouldBe` Left
+              ( Client.BrokerTransport
+                  (HttpStatus 409 "{\"status\":\"state-conflict\"}")
+              )
+
+    it "Sprint 2.54 classifies absent, exact retained, foreign, and progressed journals identically" $
+      withFixture $ \fixture -> do
+        let originalBinding = pristineStorageBinding (fixturePristine fixture)
+            replacementBinding =
+              pristineStorageBinding
+                (resetReplacementPristine (fixtureResetProof fixture))
+            originalExpected = productionPristineStorageProof originalBinding
+            replacementExpected = productionPristineStorageProof replacementBinding
+            oldBinding = ambiguousInitBinding (fixtureAmbiguity fixture)
+            exactReset =
+              mustRight
+                ( mkPristineResetProof
+                    (fixtureAmbiguity fixture)
+                    replacementExpected
+                    (mkEstablishedStateAbsence oldBinding (digestOf 'a'))
+                    (mkDurableInitResponseAbsence oldBinding (digestOf 'b'))
+                    (mkBaselineStateAbsence oldBinding (digestOf 'c'))
+                )
+            present state =
+              StoreObjectPresent (StoreVersion 4) (digestOf 'd') state
+            exactPristine = newRootInitState originalExpected
+            exactResetPristine =
+              (newRootInitState replacementExpected)
+                { rootInitStatePhase = RootResetPristine exactReset
+                }
+            foreignProof =
+              mkPristineStorageProof originalBinding (digestOf 'e')
+            foreignPristine = newRootInitState foreignProof
+            progressed =
+              exactPristine
+                { rootInitStatePhase =
+                    RootPreparedWritePending (fixturePrepared fixture)
+                }
+            anotherBinding = newRootInitState replacementExpected
+            cases =
+              [
+                ( "absent" :: Text
+                , originalBinding
+                , StoreObjectAbsent
+                , Right originalExpected
+                )
+              ,
+                ( "exact pristine"
+                , originalBinding
+                , present exactPristine
+                , Right originalExpected
+                )
+              ,
+                ( "exact reset pristine"
+                , replacementBinding
+                , present exactResetPristine
+                , Right replacementExpected
+                )
+              ,
+                ( "foreign proof"
+                , originalBinding
+                , present foreignPristine
+                , Left PristineJournalProofMismatch
+                )
+              ,
+                ( "progressed phase"
+                , originalBinding
+                , present progressed
+                , Left PristineJournalPhaseAdvanced
+                )
+              ,
+                ( "foreign binding"
+                , originalBinding
+                , present anotherBinding
+                , Left PristineJournalBindingMismatch
+                )
+              ]
+        forM_ cases $ \(label, binding, observation, expected) ->
+          (label, classifyPristineJournal binding observation)
+            `shouldBe` (label, expected)
+    it "Sprint 2.54 keeps both pristine consumers on the shared classifier" $ do
+      controller <-
+        Text.pack
+          <$> readFile "src/Prodbox/Bootstrap/Broker/ProductionEngine.hs"
+      worker <-
+        Text.pack
+          <$> readFile "src/Prodbox/Bootstrap/Broker/ProductionSecretWorker.hs"
+      let functionRegion start finish source =
+            fst (Text.breakOn finish (snd (Text.breakOn start source)))
+          controllerRegion =
+            functionRegion
+              "\npristineEvidence settings store action = do"
+              "\nresetEvidence"
+              controller
+          workerRegion =
+            functionRegion
+              "\nprepareInitialization settings store kubernetes binding request payload = do"
+              "\nresumeInitialization"
+              worker
+      Text.count "classifyPristineJournal binding observation" controllerRegion
+        `shouldBe` 1
+      Text.count "classifyPristineJournal binding observation" workerRegion
+        `shouldBe` 1
+      Text.isInfixOf "StoreObjectPresent" workerRegion `shouldBe` False
     it "resumes root initialization under the same fence and durably completes exact PGP custody" $
       withFixture $ \fixture -> do
         harness <-
@@ -392,7 +1508,7 @@ enginePhysicalSuite =
           `shouldSatisfy` notElem (StoreMutated BootstrapStoreCasRootInitJournal)
         assertCleanHarness state
 
-    it "uses a real bounded loopback request for unseal and completes worker cleanup before handoff" $
+    it "closes unseal and baseline before the separately fenced Authority handoff" $
       withFixture $ \fixture -> do
         harness <- newHarness fixture ReturnEncryptedInitResponse NoCrash
         engine <- requireEngine fixture harness
@@ -419,10 +1535,43 @@ enginePhysicalSuite =
                      , WorkerDeleted
                      , WorkerAbsent
                      ]
-        postUnsealIsComplete fixture state `shouldBe` True
+        postUnsealIsComplete fixture state `shouldBe` False
         workerCheckpointIsComplete state `shouldBe` True
         assertCleanHarness state
         assertCapabilityEvents fixture BrokerVaultUnseal 1 state
+        let adapterSettings = requireSettings 30_445
+        baseline <-
+          invokeAdapter fixture adapterSettings engine BrokerVaultBaselineReconcile
+        baseline `shouldBeRouteSuccess` BrokerVaultBaselineReconcile
+        afterBaseline <- readIORef harness
+        postUnsealIsComplete fixture afterBaseline `shouldBe` False
+        workerExecutionEvents (harnessEvents afterBaseline)
+          `shouldSatisfy` elem SecretWorkerCompleteGeneratedRoot
+        workerLifecycleEvents (harnessEvents afterBaseline)
+          `shouldSatisfy` elem (WorkerAllocated SecretWorkerCompleteGeneratedRoot)
+        workerLifecycleEvents (harnessEvents afterBaseline)
+          `shouldSatisfy` elem (WorkerAbsent)
+        handoff <-
+          invokeAdapter fixture adapterSettings engine BrokerPostUnsealHandoffReconcile
+        handoff `shouldBeRouteSuccess` BrokerPostUnsealHandoffReconcile
+        afterHandoff <- readIORef harness
+        postUnsealIsComplete fixture afterHandoff `shouldBe` True
+        assertCleanHarness afterHandoff
+
+    it "refuses the handoff mutation before durable baseline and never contacts Authority" $
+      withFixture $ \fixture -> do
+        harness <- newHarness fixture ReturnEncryptedInitResponse NoCrash
+        engine <- requireEngine fixture harness
+        early <-
+          invokeAdapter
+            fixture
+            (requireSettings 30_446)
+            engine
+            BrokerPostUnsealHandoffReconcile
+        early `shouldSatisfy` isStoreReadBackMismatch
+        state <- readIORef harness
+        postUnsealIsComplete fixture state `shouldBe` False
+        harnessEvents state `shouldSatisfy` all (not . isPostUnsealConsumerCall)
 
     it "recovers a lost generated-root scope with a new identity and finishes through provisioner login" $
       withFixture $ \fixture -> do
@@ -473,6 +1622,7 @@ enginePhysicalSuite =
         first <-
           invokeAdapter fixture settings engine BrokerVaultBaselineReconcile
         first `shouldSatisfy` isPhysicalUnavailable
+        first `shouldSatisfy` isBaselinePhysicalStage BaselineLoginProvisioner
         afterLoss <- readIORef harness
         harnessLiveProvisionerAccessors afterLoss
           `shouldBe` [provisionerLoginAccessor (fixtureProvisionerReceipt fixture)]
@@ -606,6 +1756,7 @@ enginePhysicalSuite =
           proveAccessorTargetsAbsent
             harness
             expectedGeneration
+            RootAccessorTargetsAbsentRequired
             target
             observationDigest
         observed
@@ -617,6 +1768,7 @@ enginePhysicalSuite =
           proveAccessorTargetsAbsent
             harness
             expectedGeneration
+            RootAccessorTargetsAbsentRequired
             target
             observationDigest
         present
@@ -627,6 +1779,7 @@ enginePhysicalSuite =
           proveAccessorTargetsAbsent
             harness
             expectedGeneration
+            RootAccessorTargetsAbsentRequired
             wrongGenerationTarget
             observationDigest
         wrongGeneration
@@ -639,6 +1792,7 @@ enginePhysicalSuite =
           proveAccessorTargetsAbsent
             harness
             expectedGeneration
+            RootAccessorTargetsAbsentRequired
             target
             observationDigest
         unobservable
@@ -701,10 +1855,30 @@ isStoreUnavailable outcome = case outcome of
   Left (EngineStoreRefused BootstrapStoreUnavailable) -> True
   _ -> False
 
+isStoreReadBackMismatch
+  :: Either BrokerEngineError SomeBrokerResponse -> Bool
+isStoreReadBackMismatch outcome = case outcome of
+  Left EngineStoreReadBackMismatch -> True
+  _ -> False
+
+isPostUnsealConsumerCall :: PhysicalEvent -> Bool
+isPostUnsealConsumerCall event = case event of
+  PhysicalObserved "post-unseal-consumer" -> True
+  _ -> False
+
 isPhysicalUnavailable
   :: Either BrokerEngineError SomeBrokerResponse -> Bool
 isPhysicalUnavailable outcome = case outcome of
   Left (EnginePhysicalCallRefused (EngineBoundaryUnavailable _)) -> True
+  Left (EngineBaselinePhysicalCallRefused _ (EngineBoundaryUnavailable _)) -> True
+  _ -> False
+
+isBaselinePhysicalStage
+  :: BaselinePhysicalStage
+  -> Either BrokerEngineError SomeBrokerResponse
+  -> Bool
+isBaselinePhysicalStage expected outcome = case outcome of
+  Left (EngineBaselinePhysicalCallRefused observed _) -> observed == expected
   _ -> False
 
 provisionerLoginAttemptIsJournaled :: RootSessionState -> Bool
@@ -724,7 +1898,7 @@ provisionerSessionIsDurablyClosed state =
 isInitializationAmbiguous
   :: Either BrokerEngineError SomeBrokerResponse -> Bool
 isInitializationAmbiguous outcome = case outcome of
-  Left (EngineInitializationAmbiguous _) -> True
+  Left (EngineInitializationAmbiguous _ _) -> True
   _ -> False
 
 isFenceUseRefused
@@ -1269,6 +2443,7 @@ routeDigest route =
         BrokerVaultRotateUnlockBundle -> '6'
         BrokerVaultRotateTransitKey -> '7'
         BrokerVaultBaselineReconcile -> '8'
+        BrokerPostUnsealHandoffReconcile -> '8'
         BrokerVaultPkiStatus -> '9'
         BrokerVaultPkiIssueTestCertificate -> 'a'
         BrokerVaultResetAmbiguousInitialization -> 'b'
@@ -1305,6 +2480,7 @@ data Versioned value = Versioned
 data InitPhysicalMode
   = ReturnEncryptedInitResponse
   | ReturnAppliedWithoutResponse
+  | ReturnClassifiedAppliedWithoutResponse !InitializationAmbiguityCause
   deriving (Eq, Show)
 
 data CrashPoint
@@ -2567,6 +3743,7 @@ runRootPgpAction fixture harness token action = do
             then pure (Left Pgp.PgpGeneratedRootActionBindingMismatch)
             else do
               removeRootAccessor harness accessor
+              addRootAccessor harness (fixtureStaleAccessor fixture)
               modifyIORef' harness $ \current ->
                 current
                   { harnessRevokedRootTokens =
@@ -2593,7 +3770,26 @@ runRootPgpAction fixture harness token action = do
         authorized <- authorizePhysicalMutation harness effect permit
         if authorized
           then physical
-          else pure (Left Pgp.PgpGeneratedRootActionRefused)
+          else
+            pure
+              ( Left
+                  ( Pgp.PgpGeneratedRootActionRefused
+                      (Pgp.generatedRootActionKind action)
+                      (rootActionFailureStage action)
+                  )
+              )
+  rootActionFailureStage
+    :: Pgp.GeneratedRootAction actionResult
+    -> Pgp.GeneratedRootActionFailureStage
+  rootActionFailureStage current = case current of
+    Pgp.GeneratedRootObserveAccessor {} -> Pgp.GeneratedRootObserveAccessorRequest
+    Pgp.GeneratedRootApplyAllowlistedBaseline {} ->
+      Pgp.GeneratedRootApplyCoreReconcile
+        Pgp.GeneratedRootCoreMountTypeMismatch
+    Pgp.GeneratedRootReadBackAllowlistedBaseline {} ->
+      Pgp.GeneratedRootReadBackCoreReconcile
+        Pgp.GeneratedRootCoreMountTypeMismatch
+    Pgp.GeneratedRootRevokeAccessor {} -> Pgp.GeneratedRootRevokeAccessorRequest
 
 runChildPgpAction
   :: Fixture
@@ -2872,7 +4068,10 @@ runPhysicalCall fixture harness call = case call of
             else pure . Right $ case harnessInitMode state of
               ReturnEncryptedInitResponse ->
                 RootInitEncryptedResponse (fixtureEncryptedResponse fixture)
-              ReturnAppliedWithoutResponse -> RootInitAppliedWithoutResponse
+              ReturnAppliedWithoutResponse ->
+                RootInitAppliedWithoutResponse InitializationCauseUnclassified
+              ReturnClassifiedAppliedWithoutResponse cause ->
+                RootInitAppliedWithoutResponse cause
   PhysicalSealFinalUnlockBundle _ permit recipients response ->
     mutate permit BootstrapVaultInitialize $ do
       if recipientsEnvelope recipients /= fixturePrepared fixture
@@ -2938,13 +4137,14 @@ runPhysicalCall fixture harness call = case call of
     mutate permit BootstrapVaultRevokeRootAccessor $ do
       removeRootAccessor harness accessor
       pure (Right ())
-  PhysicalProveRootAccessorsAbsent _ permit inventory ->
+  PhysicalProveRootAccessorsAbsent _ permit requirement inventory ->
     mutate permit BootstrapVaultInventoryRootAccessors $ do
       proveAccessorTargetsAbsent
         harness
         ( rootInitStorageGeneration
             (recoveryCustodyBinding (fixtureRecovery fixture))
         )
+        requirement
         inventory
         (digestOf 'a')
   PhysicalStartGenerateRoot _ permit binding publicKey ->
@@ -3112,11 +4312,12 @@ runPhysicalCall fixture harness call = case call of
     mutate permit BootstrapVaultRevokeRootAccessor $ do
       removeRootAccessor harness accessor
       pure (Right ())
-  PhysicalProveChildRootAccessorsAbsent _ permit inventory ->
+  PhysicalProveChildRootAccessorsAbsent _ permit requirement inventory ->
     mutate permit BootstrapVaultInventoryRootAccessors $ do
       proveAccessorTargetsAbsent
         harness
         (childCustodyStorageGeneration (fixtureChildBinding fixture))
+        requirement
         inventory
         (digestOf 'b')
   PhysicalStartChildGenerateRoot _ permit delivery publicKey ->
@@ -3170,22 +4371,26 @@ runPhysicalCall fixture harness call = case call of
 proveAccessorTargetsAbsent
   :: Harness
   -> VaultStorageGeneration
+  -> RootAccessorAbsenceProofRequirement
   -> RootAccessorInventory
   -> ArtifactDigest
   -> IO (Either EngineBoundaryError AccessorAbsenceAttestation)
-proveAccessorTargetsAbsent harness expectedGeneration proofTarget digestValue = do
+proveAccessorTargetsAbsent harness expectedGeneration requirement proofTarget digestValue = do
   state <- readIORef harness
-  let targetAccessors = rootAccessorInventoryAccessors proofTarget
-      liveAccessors = harnessLiveRootAccessors state
   if not (harnessAccessorObservationAvailable state)
     then unavailable "accessor-absence inventory unavailable"
-    else
-      if rootAccessorInventoryGeneration proofTarget /= expectedGeneration
-        then refused "accessor-absence generation mismatch"
-        else
-          if any (`elem` liveAccessors) targetAccessors
-            then refused "accessor-absence target is still present"
-            else pure (Right (mkAccessorAbsenceAttestation proofTarget digestValue))
+    else case mkRootAccessorInventory expectedGeneration (harnessLiveRootAccessors state) of
+      Left _ -> refused "accessor-absence inventory invalid"
+      Right current ->
+        case decideRootAccessorAbsenceProof requirement proofTarget current of
+          Right () -> pure (Right (mkAccessorAbsenceAttestation proofTarget digestValue))
+          Left RootAccessorAbsenceGenerationMismatch ->
+            refused "accessor-absence generation mismatch"
+          Left RootAccessorAbsenceTargetPresent ->
+            refused "accessor-absence target is still present"
+          Left RootAccessorAbsenceStableZeroMismatch ->
+            refused "accessor-absence stable zero mismatch"
+          Left _ -> refused "accessor-absence proof refused"
  where
   unavailable = pure . Left . EngineBoundaryUnavailable
   refused = pure . Left . EngineBoundaryRefused
@@ -3205,6 +4410,7 @@ runLocalCall fixture harness call = case call of
         ReturnEncryptedInitResponse ->
           RootInitRecoveredResponse (fixtureEncryptedResponse fixture)
         ReturnAppliedWithoutResponse -> RootInitRecoveredAmbiguity
+        ReturnClassifiedAppliedWithoutResponse _ -> RootInitRecoveredAmbiguity
   LocalAcknowledgeRecoveryCustody bundle -> do
     recordEvent harness (LocalExecuted "acknowledge-recovery-custody")
     if bundle == fixtureFinalBundle fixture

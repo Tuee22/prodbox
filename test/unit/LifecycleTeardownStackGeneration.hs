@@ -327,12 +327,12 @@ lifecycleTeardownStackGenerationSuite =
         attempt
           base
             { selectorAwsScope =
-                fixtureAwsScope {awsScopeRegion = AwsRegion "eu-west-1"}
+                fixtureAwsScope {awsScopeRegion = AwsRegion (fixtureAwsRegion FixtureEuWest1)}
             }
           `shouldBe` Left
             ( StackGenerationAwsRegionMismatch
                 (AwsRegion fixtureRegion)
-                (AwsRegion "eu-west-1")
+                (AwsRegion (fixtureAwsRegion FixtureEuWest1))
             )
         let otherOrdinal =
               mustRight (succeedingStackGenerationOrdinal initialStackGenerationOrdinal)
@@ -1303,6 +1303,10 @@ scopeCapabilities =
     , observeValidationHostedZonesCapability = const unavailableReadOnly
     , reapValidationHostedZonesCapability = const unavailableMutation
     , observeRetainedEbsVolumesCapability = const unavailableReadOnly
+    , observeEksIamRoleFamilyCapability = \_ _ -> unavailableReadOnly
+    , reapEksIamRoleFamilyCapability = \_ _ -> unavailableMutation
+    , observeEksLoadBalancerControllerFamilyCapability = \_ _ -> unavailableReadOnly
+    , reapEksLoadBalancerControllerFamilyCapability = \_ _ -> unavailableMutation
     , observeDns01ChallengeRecordsCapability = \_ _ -> unavailableReadOnly
     , observeOwnedResourceTagsCapability = const unavailableReadOnly
     , reapRetainedEbsVolumesCapability = const unavailableMutation
@@ -1313,6 +1317,8 @@ scopeCapabilities =
     , observeProviderReadinessCapability = const unavailableReadOnly
     , issueEksClientAuthCapability = const unavailableReadOnly
     , observeEksClusterIdentityCapability = const unavailableReadOnly
+    , observeNativeStackFamilyCapability = \_ _ -> unavailableReadOnly
+    , reapNativeStackFamilyCapability = \_ _ _ -> unavailableMutation
     }
 
 unavailableReadOnly :: ProviderReadOnly IO ()
@@ -1404,7 +1410,7 @@ fixtureAccount :: Text
 fixtureAccount = "123456789012"
 
 fixtureRegion :: Text
-fixtureRegion = "ca-central-1"
+fixtureRegion = (fixtureAwsRegion FixtureCaCentral1)
 
 fixtureProviderOperation :: Text
 fixtureProviderOperation = Text.replicate 64 "a"

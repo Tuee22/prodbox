@@ -26,7 +26,7 @@ import Prodbox.Config.Tier0
   , ProdboxProjectConfig (..)
   , defaultProjectConfig
   )
-import Prodbox.Settings (defaultConfigFile, loadConfigFileAtPath)
+import Prodbox.Settings (loadConfigFileAtPath)
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -41,8 +41,8 @@ tier0FixtureSuite =
       -- decoder are the same record, so they cannot drift apart without the
       -- build saying so.
       withSystemTempDirectory "prodbox-tier0-fixture" $ \tmpDir -> do
-        writeTier0Fixture tmpDir (tier0FixtureWithParameters defaultConfigFile)
-        loadConfigFileAtPath (tier0FixturePath tmpDir) `shouldReturn` Right defaultConfigFile
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters syntheticConfigFile)
+        loadConfigFileAtPath (tier0FixturePath tmpDir) `shouldReturn` Right syntheticConfigFile
 
     it "writes at the binary-sibling filename, which is named in exactly one place" $
       withSystemTempDirectory "prodbox-tier0-fixture" $ \tmpDir -> do
@@ -54,7 +54,7 @@ tier0FixtureSuite =
       -- only variation from the shared envelope was the Vault address.
       withSystemTempDirectory "prodbox-tier0-fixture" $ \tmpDir -> do
         let adjusted context = context {vault_address = "http://10.0.0.99:8200"}
-        writeTier0Fixture tmpDir (tier0FixtureWithContext adjusted defaultConfigFile)
+        writeTier0Fixture tmpDir (tier0FixtureWithContext adjusted syntheticConfigFile)
         basics <- loadUnencryptedBasicsAtPath (tier0FixturePath tmpDir)
         case basics of
           Left err -> expectationFailure ("floor read failed: " ++ err)
@@ -157,13 +157,13 @@ schemaImportBody = "let Config = ./prodbox-config-types.dhall\nin  Config.defaul
 -- dropped and the refusal falls to Haskell.
 overCommittedProjectConfig :: ProdboxProjectConfig
 overCommittedProjectConfig =
-  defaultProjectConfig
+  syntheticProjectConfig
     { parameters =
-        (parameters defaultProjectConfig)
+        (parameters syntheticProjectConfig)
           { capacity =
-              (capacity (parameters defaultProjectConfig))
+              (capacity (parameters syntheticProjectConfig))
                 { resource_plan =
-                    (resource_plan (capacity (parameters defaultProjectConfig)))
+                    (resource_plan (capacity (parameters syntheticProjectConfig)))
                       { rke2_reserved = ResourceVector 64000 131072 1000000 1000000
                       }
                 }

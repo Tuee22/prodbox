@@ -42,6 +42,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , EksClusterIdentityRequest
   , ProviderCheckpointRef
   , ProviderIntent (..)
+  , ProviderNativeStackFamilyRef
   , ProviderOwnedTagQuery (..)
   , ProviderReadinessProbe (..)
   , ProviderRevision
@@ -58,6 +59,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkEksClientAuthRequest
   , mkEksClusterIdentityRequest
   , mkProviderCheckpointRef
+  , mkProviderNativeStackFamilyRef
   , mkProviderRevision
   , mkProviderSpotPriceQuery
   , mkProviderStackRef
@@ -408,6 +410,16 @@ providerIntents =
   , ReapRetainedEbsVolumes "retained-ebs"
   , ObserveOwnedResourceTags (ProviderOwnedTagKeyQuery "prodbox.io/managed-by")
   , ObserveDns01ChallengeRecords "Z0123456789ABCDEFGHIJ" "_acme-challenge."
+  , ObserveEksIamRoleFamily "role-a|role-b" "policy-a"
+  , ReapEksIamRoleFamily "role-a|role-b" "policy-a"
+  , ObserveEksLoadBalancerControllerFamily
+      "prodbox-public-edge"
+      "prodbox.io/cluster=prodbox-aws-eks-test|prodbox.io/managed-by=prodbox|prodbox.io/resource=public-edge"
+  , ReapEksLoadBalancerControllerFamily
+      "prodbox-public-edge"
+      "prodbox.io/cluster=prodbox-aws-eks-test|prodbox.io/managed-by=prodbox|prodbox.io/resource=public-edge"
+  , ObserveNativeStackFamily nativeStackFamilyRef stackConfig
+  , ReapNativeStackFamily nativeStackFamilyRef stackConfig ["vpc/vpc-fixture"]
   ]
 
 stackRef :: ProviderStackRef
@@ -421,6 +433,16 @@ revision = mustRight (mkProviderRevision 1)
 
 stackConfig :: ProviderStackConfig
 stackConfig = mustRight (mkAwsEksProviderStackConfig "127.0.0.1/32")
+
+nativeStackFamilyRef :: ProviderNativeStackFamilyRef
+nativeStackFamilyRef =
+  mustRight
+    ( mkProviderNativeStackFamilyRef
+        stackRef
+        "111122223333"
+        (fixtureAwsRegion FixtureCaCentral1)
+        Nothing
+    )
 
 checkpointRef :: ProviderCheckpointRef
 checkpointRef = mustRight (mkProviderCheckpointRef "aws-eks-checkpoint")
@@ -451,7 +473,7 @@ eksClientAuth =
   mustRight
     ( mkEksClientAuthRequest
         "111122223333"
-        "ca-central-1"
+        (fixtureAwsRegion FixtureCaCentral1)
         "prodbox"
         (ByteString.replicate 32 7)
     )
@@ -462,7 +484,7 @@ eksIdentity =
     ( mkEksClusterIdentityRequest
         stackRef
         "111122223333"
-        "ca-central-1"
+        (fixtureAwsRegion FixtureCaCentral1)
         "prodbox"
     )
 

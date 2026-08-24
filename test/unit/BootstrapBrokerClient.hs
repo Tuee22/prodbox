@@ -98,6 +98,7 @@ bootstrapBrokerClientSuite =
           , Routes.BrokerVaultRotateUnlockBundle
           , Routes.BrokerVaultRotateTransitKey
           , Routes.BrokerVaultBaselineReconcile
+          , Routes.BrokerPostUnsealHandoffReconcile
           , Routes.BrokerVaultPkiStatus
           , Routes.BrokerVaultPkiIssueTestCertificate
           , Routes.BrokerChildCustodyPrepare
@@ -308,6 +309,8 @@ invokeClientRoute runtime fake route = do
       Client.rotateVaultTransitKey endpoint context action
     Routes.BrokerVaultBaselineReconcile ->
       Client.reconcileVaultBaseline endpoint context action
+    Routes.BrokerPostUnsealHandoffReconcile ->
+      Client.reconcilePostUnsealHandoff endpoint context action
     Routes.BrokerVaultPkiStatus -> Client.queryVaultPkiStatus endpoint context
     Routes.BrokerVaultPkiIssueTestCertificate ->
       Client.issueVaultPkiTestCert

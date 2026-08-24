@@ -8,6 +8,7 @@ module Prodbox.Settings
   ( AcmeSection (..)
   , AwsCredentialsRef (..)
   , AwsSubstrateSection (..)
+  , AwsSubstrateProfile
   , CapacityBudget (..)
   , CapacitySection (..)
   , ClusterTopology
@@ -27,6 +28,12 @@ module Prodbox.Settings
   , TestSuite (..)
   , TestTopology (..)
   , TestTopologyError (..)
+  , DeploymentContextInput (..)
+  , ValidatedDeploymentContext
+  , deploymentClusterId
+  , deploymentVaultAddress
+  , deploymentMinioEndpoint
+  , deploymentMachineIds
   , ValidatedSettings (..)
   , ValidatedCoordinates (..)
   , AcmeAccount (..)
@@ -34,11 +41,13 @@ module Prodbox.Settings
   , requireAcmeAccount
   , requireHomeZoneId
   , requireOperationalAwsRegion
+  , requireAwsSubstrateProfile
   , requireSesCaptureBucket
   , homeZoneIdTextForRendering
   , operationalAwsRegionTextForRendering
   , SeedInForceOutcome (..)
   , defaultConfigFile
+  , configGenerationTemplate
   , defaultTestTopology
   , decodeConfigDhallBytes
   , loadConfigFile
@@ -53,7 +62,7 @@ module Prodbox.Settings
   , reconcileInForceConfigFromFile
   , renderSettingsDisplay
   , resolveLifecycleProviderCredentials
-  , supportedPublicHostname
+  , zeroSslAcmeDirectory
   , renderTestTopologyError
   , validateAwsBootstrapConfig
   , validateAwsSubstrateSection
@@ -66,6 +75,8 @@ module Prodbox.Settings
   , certScopeSetForServedHost
   , validateConfiguredCertScope
   , validateConfig
+  , validateConfigWithContext
+  , validatedDeploymentContextFor
   , ValidatedServedHost (..)
   , ValidatedPublicEdge (..)
   , validatedPublicEdgeFor
@@ -119,10 +130,14 @@ import Prodbox.Capacity.Config
   )
 import Prodbox.Cluster.Topology
   ( ClusterTopology
+  , ClusterType (..)
+  , MachineId
+  , clusterTopologyMachines
   , clusterType
-  , defaultClusterTopology
+  , machine_id
   , renderClusterType
   , renderTopologyError
+  , unconfiguredClusterTopology
   , validateClusterTopology
   )
 import Prodbox.Config.Basics
@@ -173,6 +188,9 @@ import Prodbox.Repo
   , canonicalConfigPaths
   , resolveTestTopologyConfigPath
   , resolveTier0ConfigPath
+  )
+import Prodbox.Settings.AwsSubstrateProfile
+  ( AwsSubstrateProfile
   )
 import Prodbox.Settings.Coordinate
   ( AcmeDirectoryUrl
@@ -292,6 +310,7 @@ data Route53Section = Route53Section
 data AwsSubstrateSection = AwsSubstrateSection
   { hosted_zone_id :: Text
   , subzone_name :: Text
+  , profile :: Maybe AwsSubstrateProfile
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
@@ -326,7 +345,6 @@ data MetallbBgpPeer = MetallbBgpPeer
 
 data AcmeSection = AcmeSection
   { email :: Text
-  , server :: Text
   , eab_key_id :: Maybe SecretRef
   , eab_hmac_key :: Maybe SecretRef
   }
@@ -460,6 +478,46 @@ data ConfigFile = ConfigFile
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
+-- | The deployment-varying coordinates carried by Tier-0's @context@ record.
+-- The projection is intentionally narrower than 'ProdboxContext': Settings
+-- owns validation without importing the Tier-0 envelope module (which imports
+-- Settings for @parameters@). The Dhall loader projects exactly these fields.
+data DeploymentContextInput = DeploymentContextInput
+  { contextInputClusterId :: Text
+  , contextInputVaultAddress :: Text
+  , contextInputMinioEndpoint :: Text
+  }
+  deriving (Eq, Show, Generic)
+
+instance FromDhall DeploymentContextInput where
+  autoWith _ =
+    genericAutoWith
+      defaultInterpretOptions {fieldModifier = deploymentContextFieldModifier}
+
+instance ToDhall DeploymentContextInput where
+  injectWith _ =
+    genericToDhallWith
+      defaultInterpretOptions {fieldModifier = deploymentContextFieldModifier}
+
+deploymentContextFieldModifier :: Text -> Text
+deploymentContextFieldModifier value =
+  case Text.stripPrefix "contextInput" value of
+    Just stripped -> haskellCamelToDhallSnake stripped
+    Nothing -> value
+
+-- | The one narrowed deployment context carried by every validated command.
+-- Its constructor is private: the only minting path is
+-- 'validatedDeploymentContextFor'. Machine identifiers have already crossed
+-- 'ClusterTopology''s validating Dhall decoder and are retained here beside
+-- the context coordinates they must agree with.
+data ValidatedDeploymentContext = ValidatedDeploymentContext
+  { deploymentClusterId :: !Text
+  , deploymentVaultAddress :: !Text
+  , deploymentMinioEndpoint :: !Text
+  , deploymentMachineIds :: ![MachineId]
+  }
+  deriving (Eq, Show)
+
 data ValidatedSettings = ValidatedSettings
   { validatedConfig :: ConfigFile
   , resolvedManualPvHostRoot :: FilePath
@@ -473,6 +531,9 @@ data ValidatedSettings = ValidatedSettings
   -- validation. Sprint 1.83 did this for the public edge and stopped there;
   -- this is the rest of the surface that row described. See
   -- 'ValidatedCoordinates'.
+  , validatedDeploymentContext :: ValidatedDeploymentContext
+  -- ^ Sprint 1.92: the Tier-0 context and topology identities narrowed once,
+  -- carried beside every other validated projection.
   }
   deriving (Eq, Show)
 
@@ -532,8 +593,8 @@ data ValidatedCoordinates = ValidatedCoordinates
   -- root. 'resolvedManualPvHostRoot' carries the joined absolute result; this
   -- carries the proof that joining it cannot escape.
   , coordinateAcmeAccount :: !(Maybe AcmeAccount)
-  -- ^ @acme.email@ and @acme.server@ as one value, because a half-configured
-  -- ACME account is not a usable one.
+  -- ^ Operator-authored @acme.email@ paired with the one compiled ZeroSSL
+  -- directory.
   }
   deriving (Eq, Show)
 
@@ -550,6 +611,12 @@ data AcmeAccount = AcmeAccount
   , acmeAccountDirectoryUrl :: !AcmeDirectoryUrl
   }
   deriving (Eq, Show)
+
+-- | The one ACME directory supported by prodbox. This is vendor protocol
+-- identity, not a deployment choice, so it is compiled once and is absent from
+-- the Tier-0 authoring schema.
+zeroSslAcmeDirectory :: Text
+zeroSslAcmeDirectory = "https://acme.zerossl.com/v2/DV90"
 
 -- | A served public host together with the certificate scope set it projects.
 --
@@ -587,21 +654,6 @@ validatedResourcePlan settings =
   case validatedAllocatedPlan settings of
     Allocation.SomeAllocatedPlan _ plan -> Allocation.allocatedPlanSource plan
 
--- | The single supported served public hostname.
---
--- This value is REAL, and must be: certificates are issued for it, Route 53
--- answers for it, and the public edge routes on it. A reserved or synthetic
--- name here would break serving outright, so arms (a) and (b) of
--- @vault_doctrine.md@ §20.1 do not apply. It is non-secret — it is a public DNS
--- name, discoverable by anyone who resolves it — and this Haddock is its
--- declaration site under the registered-real-values table in §20.1. Its
--- subdomains inherit the same declaration.
---
--- Every other occurrence of this hostname across charts, goldens, and fixtures
--- is a projection of this constant, not an independent value.
-supportedPublicHostname :: Text
-supportedPublicHostname = "test.resolvefintech.com"
-
 validateAndLoadSettings :: FilePath -> IO (Either String ValidatedSettings)
 validateAndLoadSettings repoRoot = do
   configResult <- loadConfigForSettingsWith (loadRuntimeInForceConfig repoRoot) repoRoot
@@ -620,7 +672,11 @@ validateAndLoadSettingsAtPath configPath repoRoot = do
   configResult <- loadConfigFileAtPath configPath
   case configResult of
     Left err -> pure (Left err)
-    Right config -> validateConfig repoRoot config
+    Right config -> do
+      contextResult <- loadDeploymentContextInputAtPath configPath
+      case contextResult of
+        Left err -> pure (Left err)
+        Right contextInput -> validateConfigWithContext repoRoot contextInput config
 
 -- | Lifecycle bootstrap settings are the repository Dhall seed/propose input.
 -- Use this only for the Tier-0 bootstrap steps that run before the frozen
@@ -843,13 +899,14 @@ renderSettingsDisplay settings =
     , "route53.zone_id=" ++ renderText (zone_id (route53 config))
     , "aws_substrate.hosted_zone_id=" ++ renderText (hosted_zone_id (aws_substrate config))
     , "aws_substrate.subzone_name=" ++ renderText (subzone_name (aws_substrate config))
+    , "aws_substrate.profile="
+        ++ maybe "<unauthored>" (const "<authored>") (profile (aws_substrate config))
     , "ses.sender_domain=" ++ renderText (sender_domain (ses config))
     , "ses.receive_subdomain=" ++ renderText (receive_subdomain (ses config))
     , "ses.capture_bucket=" ++ renderText (capture_bucket (ses config))
     , "domain.demo_fqdn=" ++ renderText (demo_fqdn (domain config))
     , "domain.demo_ttl=" ++ show (demo_ttl (domain config))
     , "acme.email=" ++ renderSensitive (email (acme config))
-    , "acme.server=" ++ renderText (server (acme config))
     , "acme.eab_key_id=" ++ renderMaybeSecretRefDisplay (eab_key_id (acme config))
     , "acme.eab_hmac_key=" ++ renderMaybeSecretRefDisplay (eab_hmac_key (acme config))
     , "deployment.dev_mode=" ++ renderBool (dev_mode (deployment config))
@@ -988,6 +1045,32 @@ loadConfigFileAtPath tier0Path = do
             )
         Right config -> Right config
 
+-- | Decode only the deployment-varying context coordinates from Tier-0. The
+-- explicit projection avoids a Settings ↔ Tier0 module cycle while keeping the
+-- full envelope's @parameters@ and @context@ values in one Dhall document.
+loadDeploymentContextInputAtPath
+  :: FilePath -> IO (Either String DeploymentContextInput)
+loadDeploymentContextInputAtPath tier0Path = do
+  tier0Exists <- doesFileExist tier0Path
+  if not tier0Exists
+    then pure (Left (missingConfigMessage tier0Path))
+    else do
+      absPath <- makeAbsolute tier0Path
+      let expr =
+            "let context = ( "
+              <> Text.pack absPath
+              <> " ).context in context.{ cluster_id, vault_address, minio_endpoint }"
+      result <- try (input auto expr)
+      pure $ case result of
+        Left (e :: SomeException) ->
+          Left
+            ( "Failed to decode Tier-0 prodbox.dhall `context` from `"
+                ++ tier0Path
+                ++ "`: "
+                ++ displayException e
+            )
+        Right contextInput -> Right contextInput
+
 -- | Decode in-force config payload bytes as Dhall, preserving the repository
 -- import contract by materializing the payload beside
 -- @prodbox-config-types.dhall@ before calling the same Dhall decoder as
@@ -1023,6 +1106,22 @@ decodeConfigDhallBytes repoRoot payload =
 
 validateConfig :: FilePath -> ConfigFile -> IO (Either String ValidatedSettings)
 validateConfig repoRoot config = do
+  tier0Path <- resolveTier0ConfigPath repoRoot
+  contextResult <- loadDeploymentContextInputAtPath tier0Path
+  case contextResult of
+    Left err -> pure (Left err)
+    Right contextInput -> validateConfigWithContext repoRoot contextInput config
+
+-- | Validate a config against an explicitly supplied Tier-0 context. Production
+-- reaches this through 'validateConfig'; tests and generated-config checks use
+-- the explicit seam so no filesystem or environment fallback can answer a
+-- deployment-coordinate question.
+validateConfigWithContext
+  :: FilePath
+  -> DeploymentContextInput
+  -> ConfigFile
+  -> IO (Either String ValidatedSettings)
+validateConfigWithContext repoRoot contextInput config = do
   resolvedManualRoot <- makeAbsolute (repoRoot </> Text.unpack (manual_pv_host_root (storage config)))
   pure $ do
     -- Local commands (cluster, charts, host, config, gateway) decode and
@@ -1043,6 +1142,7 @@ validateConfig repoRoot config = do
     -- coordinate surface. `validateLocalConfig` refuses on exactly these rules;
     -- this is the value it refused on.
     coordinates <- validatedCoordinatesFor config
+    deploymentContext <- validatedDeploymentContextFor contextInput (cluster_topology config)
     pure
       ValidatedSettings
         { validatedConfig = config
@@ -1050,7 +1150,51 @@ validateConfig repoRoot config = do
         , validatedAllocatedPlan = allocatedPlan
         , validatedPublicEdge = publicEdge
         , validatedCoordinates = coordinates
+        , validatedDeploymentContext = deploymentContext
         }
+
+-- | Narrow every Tier-0 deployment-context coordinate exactly once.
+validatedDeploymentContextFor
+  :: DeploymentContextInput
+  -> ClusterTopology
+  -> Either String ValidatedDeploymentContext
+validatedDeploymentContextFor contextInput topologyInput = do
+  mapLeft renderTopologyError (validateClusterTopology topologyInput)
+  clusterIdentity <- contextField "context.cluster_id" (contextInputClusterId contextInput)
+  vaultEndpoint <- httpEndpointField "context.vault_address" (contextInputVaultAddress contextInput)
+  minioEndpoint <- httpEndpointField "context.minio_endpoint" (contextInputMinioEndpoint contextInput)
+  let machineIds = map machine_id (clusterTopologyMachines topologyInput)
+  case (clusterType topologyInput, machineIds) of
+    (ClusterTypeEks, []) -> pure ()
+    (_, []) -> Left "cluster_topology must name at least one machine for this deployment context"
+    _ -> pure ()
+  Right
+    ValidatedDeploymentContext
+      { deploymentClusterId = clusterIdentity
+      , deploymentVaultAddress = vaultEndpoint
+      , deploymentMinioEndpoint = minioEndpoint
+      , deploymentMachineIds = machineIds
+      }
+
+contextField :: String -> Text -> Either String Text
+contextField fieldName raw
+  | Text.null value = Left (fieldName ++ " must not be empty")
+  | Text.any Char.isSpace value = Left (fieldName ++ " must not contain whitespace")
+  | otherwise = Right value
+ where
+  value = Text.strip raw
+
+httpEndpointField :: String -> Text -> Either String Text
+httpEndpointField fieldName raw = do
+  value <- contextField fieldName raw
+  let lower = Text.toLower value
+      authority
+        | "http://" `Text.isPrefixOf` lower = Text.drop 7 value
+        | "https://" `Text.isPrefixOf` lower = Text.drop 8 value
+        | otherwise = Text.empty
+  if Text.null authority || "/" `Text.isPrefixOf` authority
+    then Left (fieldName ++ " must be an http:// or https:// endpoint with an authority")
+    else Right value
 
 -- | Sprint 1.89: build every Tier-0 coordinate, or refuse naming the field.
 --
@@ -1101,7 +1245,7 @@ validatedCoordinatesFor config = do
 requireAcmeAccount :: ValidatedSettings -> Either String AcmeAccount
 requireAcmeAccount settings =
   maybe
-    (Left "acme.email and acme.server must be configured to issue certificates")
+    (Left "acme.email must be configured to issue certificates")
     Right
     (coordinateAcmeAccount (validatedCoordinates settings))
 
@@ -1280,33 +1424,20 @@ homeZoneIdCoordinateFor :: Route53Section -> Either String (Maybe Route53ZoneId)
 homeZoneIdCoordinateFor section =
   optionalCoordinateField "route53.zone_id" mkRoute53ZoneId (zone_id section)
 
--- | Sprint 1.89: the ACME contact and directory, both or neither.
---
--- Before this the pair was checked for emptiness on the AWS tier and for
--- external-account-binding consistency by 'validateAcmeBinding'; neither looked
--- at the shape of either value, so @acme.email = \"operator\"@ and
--- @acme.server = \"acme.zerossl.com\"@ both decoded and both failed later at the
--- ACME registration.
--- __The half-set pair is not an error, and measuring the repository is what
--- established that.__ This function was first written to refuse a config with
--- one half set, on the reasoning that a half-configured account is not a usable
--- one. That rule refuses @prodbox config generate@'s own output:
--- 'defaultConfigFile' ships @acme.server@ as the ZeroSSL directory and
--- @acme.email@ as @\"\"@, so /every/ home-only config is half-set by
--- construction. The two halves are not symmetric — the directory has a
--- compiled-in default and the contact is the operator's to supply — so the
--- account is configured exactly when the contact is. Each half is still
--- shape-checked independently whenever it is non-empty, which is what catches a
--- malformed default server or a contact that is not an address.
+-- | The optional operator-authored ACME contact paired with the one compiled
+-- ZeroSSL directory. The directory is protocol vocabulary rather than a Dhall
+-- choice, so absence is decided solely by whether @acme.email@ is authored.
 acmeAccountCoordinateFor :: AcmeSection -> Either String (Maybe AcmeAccount)
 acmeAccountCoordinateFor section = do
   parsedEmail <- optionalCoordinateField "acme.email" mkEmailAddress (email section)
-  parsedServer <- optionalCoordinateField "acme.server" mkAcmeDirectoryUrl (server section)
-  Right
-    ( AcmeAccount
-        <$> parsedEmail
-        <*> parsedServer
-    )
+  case parsedEmail of
+    Nothing -> Right Nothing
+    Just parsed -> do
+      directory <-
+        coordinateField
+          "compiled ZeroSSL ACME directory"
+          (mkAcmeDirectoryUrl zeroSslAcmeDirectory)
+      Right (Just (AcmeAccount parsed directory))
 
 -- | Sprint 1.89: @aws.region@ gains a shape rule.
 --
@@ -1431,6 +1562,17 @@ validateLocallyOptionalCoordinates route53Section acmeSection = do
 validateAwsSubstrateSection :: AwsSubstrateSection -> Either String ()
 validateAwsSubstrateSection = void . awsSubstrateCoordinatesFor
 
+-- | Require the fully narrowed AWS resource envelope at the AWS mutation
+-- boundary. Home-only config keeps @profile = None@; no AWS flow may turn that
+-- absence into a compiled deployment shape.
+requireAwsSubstrateProfile :: ValidatedSettings -> Either String AwsSubstrateProfile
+requireAwsSubstrateProfile settings =
+  case profile (aws_substrate (validatedConfig settings)) of
+    Nothing ->
+      Left
+        "aws_substrate.profile is required for AWS substrate provisioning; author every profile field in Tier-0 Dhall"
+    Just authored -> Right authored
+
 -- | Sprint 1.81: the SES identity coordinates. Empty is the correct state for a
 -- host with no SES workflow, so each field is checked only when set.
 validateSesSection :: SesSection -> Either String ()
@@ -1474,7 +1616,6 @@ validateAwsBootstrapConfig config = do
   validateLocalConfig config
   requireNonEmpty "route53.zone_id" (zone_id (route53 config))
   requireNonEmpty "acme.email" (email (acme config))
-  requireNonEmpty "acme.server" (server (acme config))
   validateAcmeBinding (acme config)
   -- Sprint 1.81: the AWS-substrate public hostname is required on THIS tier and
   -- only on this tier. It used to be checked by a partial `error` at its point of
@@ -1705,11 +1846,8 @@ validateDemoTtl ttl =
 -- through the same 'validateVaultRef' discipline used for @aws.*@.
 validateAcmeBinding :: AcmeSection -> Either String ()
 validateAcmeBinding acmeSection
-  | isZeroSslServer (server acmeSection)
-      && (eab_key_id acmeSection == Nothing || eab_hmac_key acmeSection == Nothing) =
+  | eab_key_id acmeSection == Nothing || eab_hmac_key acmeSection == Nothing =
       Left "acme.eab_key_id and acme.eab_hmac_key are required for ZeroSSL ACME"
-  | hasExactlyOne (eab_key_id acmeSection) (eab_hmac_key acmeSection) =
-      Left "acme.eab_key_id and acme.eab_hmac_key must either both be set or both be empty"
   | otherwise = do
       mapM_ (validateVaultRef "acme.eab_key_id") (eab_key_id acmeSection)
       mapM_ (validateVaultRef "acme.eab_hmac_key") (eab_hmac_key acmeSection)
@@ -1735,17 +1873,6 @@ validateVaultRef fieldName ref =
 -- ('normalizeCoordinateText'); this lifts it over an already-optional field.
 normalizeMaybeText :: Maybe Text -> Maybe Text
 normalizeMaybeText maybeValue = maybeValue >>= normalizeCoordinateText
-
-isZeroSslServer :: Text -> Bool
-isZeroSslServer serverUrl =
-  "https://acme.zerossl.com" `Text.isPrefixOf` Text.toLower serverUrl
-
-hasExactlyOne :: Maybe a -> Maybe b -> Bool
-hasExactlyOne left right =
-  case (left, right) of
-    (Just _, Nothing) -> True
-    (Nothing, Just _) -> True
-    _ -> False
 
 -- | Sprint 1.61: a sensitive field is ALWAYS masked. The former
 -- @config show --show-secrets@ unrestricted secret-reveal path is removed;
@@ -1908,6 +2035,7 @@ defaultConfigFile =
         AwsSubstrateSection
           { hosted_zone_id = ""
           , subzone_name = ""
+          , profile = Nothing
           }
     , ses =
         SesSection
@@ -1917,14 +2045,13 @@ defaultConfigFile =
           }
     , domain =
         DomainSection
-          { demo_fqdn = supportedPublicHostname
+          { demo_fqdn = ""
           , demo_ttl = 60
           , cert_scopes = []
           }
     , acme =
         AcmeSection
           { email = ""
-          , server = "https://acme.zerossl.com/v2/DV90"
           , eab_key_id = Just (vaultRef "acme/eab" "key_id")
           , eab_hmac_key = Just (vaultRef "acme/eab" "hmac_key")
           }
@@ -1941,7 +2068,7 @@ defaultConfigFile =
           , websocket_scaling = fixedScalingPolicyBySubstrate 2
           }
     , capacity = defaultCapacitySection
-    , cluster_topology = defaultClusterTopology
+    , cluster_topology = unconfiguredClusterTopology
     , storage = StorageSection {manual_pv_host_root = ".data"}
     , pulumi_state_backend =
         PulumiStateBackendSection
@@ -1952,6 +2079,14 @@ defaultConfigFile =
     , retained_artifacts = emptyRetainedArtifactsSection
     , components = defaultComponentGraph
     }
+
+-- | The unauthored value emitted by @prodbox config generate@.
+--
+-- Keep this distinct from 'defaultConfigFile': the latter is a valid value used
+-- by pure tests and builders, while generated operator input must never acquire
+-- a compiled deployment identity, public hostname, or machine identity.
+configGenerationTemplate :: ConfigFile
+configGenerationTemplate = defaultConfigFile
 
 -- | Render the canonical in-force config payload from the Haskell record.
 --

@@ -16,7 +16,9 @@ module Prodbox.Lifecycle.Teardown.AwsStackAdapter
   , awsStackObservationRequestIntent
   , awsStackObservationRequestCoordinate
   , mkAwsStackObserveRequest
+  , mkAwsNativeStackObserveRequest
   , mkAwsStackDesiredAbsenceReadBackRequest
+  , mkAwsNativeStackDesiredAbsenceReadBackRequest
   , VerifiedAwsStackObservation
   , verifiedAwsStackExactObservation
   , AwsStackExecutionResultKind (..)
@@ -67,6 +69,13 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkProviderStackRef
   , providerIntentCoordinate
   , validateProviderStackConfig
+  )
+import Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
+  ( AwsNativeStackFamilyAdapterError
+  , awsNativeStackFamilyObservationRequestCoordinate
+  , awsNativeStackFamilyObservationRequestIntent
+  , decodeAwsNativeStackFamilyEvidence
+  , mkAwsNativeStackFamilyObservationRequest
   )
 import Prodbox.Lifecycle.Teardown.Decision
   ( StackCleanupAuthority (..)
@@ -144,6 +153,29 @@ mkAwsStackObserveRequest key scope revision = do
         Nothing
     )
 
+mkAwsNativeStackObserveRequest
+  :: RegisteredResourceKey
+  -> ObservationEvidenceScope
+  -> ObservationRevision
+  -> ProviderStackConfig
+  -> Either
+       AwsStackBindingError
+       (AwsStackObservationRequest 'ObserveStackForDecision)
+mkAwsNativeStackObserveRequest key scope revision config = do
+  binding <- mkAwsStackBinding key scope revision
+  native <-
+    either
+      (Left . AwsStackNativeFamilyInvalid)
+      Right
+      (mkAwsNativeStackFamilyObservationRequest key scope revision config)
+  Right
+    ( AwsStackObservationRequest
+        binding
+        (awsNativeStackFamilyObservationRequestIntent native)
+        (awsNativeStackFamilyObservationRequestCoordinate native)
+        Nothing
+    )
+
 -- | Build the independent desired-absence read-back used by the durable
 -- graph.  It is deliberately not a destroy-completion witness: an already
 -- absent target needs the same final observation, and the graph's stable
@@ -166,6 +198,29 @@ mkAwsStackDesiredAbsenceReadBackRequest key scope revision = do
         binding
         intent
         (providerIntentCoordinate intent)
+        Nothing
+    )
+
+mkAwsNativeStackDesiredAbsenceReadBackRequest
+  :: RegisteredResourceKey
+  -> ObservationEvidenceScope
+  -> ObservationRevision
+  -> ProviderStackConfig
+  -> Either
+       AwsStackBindingError
+       (AwsStackObservationRequest 'ReadBackDesiredAbsentStack)
+mkAwsNativeStackDesiredAbsenceReadBackRequest key scope revision config = do
+  binding <- mkAwsStackBinding key scope revision
+  native <-
+    either
+      (Left . AwsStackNativeFamilyInvalid)
+      Right
+      (mkAwsNativeStackFamilyObservationRequest key scope revision config)
+  Right
+    ( AwsStackObservationRequest
+        binding
+        (awsNativeStackFamilyObservationRequestIntent native)
+        (awsNativeStackFamilyObservationRequestCoordinate native)
         Nothing
     )
 
@@ -226,7 +281,7 @@ decodeAwsStackExecutionResult request executionResult
         )
   | otherwise = case executionResult of
       ProviderIntentExecutionObserved _ evidence ->
-        case decodeObservationEvidence evidence of
+        case decodeRequestObservationEvidence request evidence of
           Just result ->
             AwsStackObservationDecoded
               (VerifiedAwsStackObservation request (exactObservation result))
@@ -267,11 +322,12 @@ data AwsStackBindingError
   | AwsStackAwsScopeMissing
   | AwsStackAwsAccountInvalid !AwsAccountId
   | AwsStackAwsRegionInvalid !AwsRegion
+  | AwsStackNativeFamilyInvalid !AwsNativeStackFamilyAdapterError
   deriving (Eq, Show)
 
 data AwsStackDestroyAuthorityKind
   = AwsStackDestroyFromPrimaryCheckpoint
-  | AwsStackDestroyFromCompleteManifest
+  | AwsStackDestroyFromCompleteManifest ![Text]
   deriving (Eq, Show)
 
 -- | Opaque destroy capability.  It binds the successful initial provider
@@ -327,8 +383,13 @@ authorizeAwsStackDestroy providerRevision verified decision = do
         Right (key, AwsStackDestroyFromPrimaryCheckpoint)
       _ -> Left (AwsStackDestroyDecisionAuthorityMismatch authority)
     StackDestroyFromVerifiedManifest key authority -> case authority of
-      VerifiedOwnershipManifest {} ->
-        Right (key, AwsStackDestroyFromCompleteManifest)
+      VerifiedOwnershipManifest _ _ manifestIdentities -> do
+        let admitted = map observedIdentityText manifestIdentities
+            observed = exactPresentIdentities observation
+        if all (`elem` admitted) observed
+          then Right ()
+          else Left (AwsStackDestroyManifestIdentityMismatch admitted observed)
+        Right (key, AwsStackDestroyFromCompleteManifest admitted)
       _ -> Left (AwsStackDestroyDecisionAuthorityMismatch authority)
     StackAlreadyAbsent {} -> Left AwsStackDestroyDecisionAlreadyAbsent
     StackRestoreBackupThenDestroy {} ->
@@ -347,6 +408,15 @@ authorizeAwsStackDestroy providerRevision verified decision = do
  where
   observation = verifiedAwsStackExactObservation verified
   observationKey = exactObservationResourceKey observation
+
+observedIdentityText :: ObservedResourceIdentity -> Text
+observedIdentityText (ObservedResourceIdentity identity) = identity
+
+exactPresentIdentities :: ExactResourceObservation -> [Text]
+exactPresentIdentities observation = case exactObservationResult observation of
+  ExactResourcePresent (ExactResourceInventory (first :| remaining)) ->
+    map observedIdentityText (first : remaining)
+  _ -> []
 
 data AwsStackDestroyRequest = AwsStackDestroyRequest
   { internalDestroyRequestAuthorization :: !AwsStackDestroyAuthorization
@@ -395,7 +465,14 @@ mkAwsStackDestroyRequest authorization requestedRevision config = do
   case validateProviderStackConfig ref config of
     Left err -> Left (AwsStackDestroyConfigInvalid err)
     Right () -> Right ()
-  let intent = DestroyRegisteredStack ref requestedRevision config
+  intent <- case awsStackDestroyAuthorizationKind authorization of
+    AwsStackDestroyFromPrimaryCheckpoint ->
+      Right (DestroyRegisteredStack ref requestedRevision config)
+    AwsStackDestroyFromCompleteManifest admitted -> case awsStackObservationRequestIntent
+      (destroyAuthorizationObservationRequest authorization) of
+      ObserveNativeStackFamily nativeRef _ ->
+        Right (ReapNativeStackFamily nativeRef config admitted)
+      _ -> Left AwsStackDestroyNativeFamilyObservationRequired
   Right
     AwsStackDestroyRequest
       { internalDestroyRequestAuthorization = authorization
@@ -420,7 +497,9 @@ mkAwsStackDestroyReadBackRequest destroyRequest revision =
   initialRequest = destroyAuthorizationObservationRequest authorization
   initialBinding = observationRequestBinding initialRequest
   binding = initialBinding {awsStackBindingRevision = revision}
-  intent = ReadBackRegisteredStack (awsStackBindingRef binding)
+  intent = case awsStackDestroyRequestIntent destroyRequest of
+    ReapNativeStackFamily ref config _ -> ObserveNativeStackFamily ref config
+    _ -> ReadBackRegisteredStack (awsStackBindingRef binding)
 
 data CompleteAwsStackDestroy = CompleteAwsStackDestroy
   { internalCompleteAwsStackDestroyKey :: !RegisteredResourceKey
@@ -502,6 +581,8 @@ data AwsStackDestroyRefusal
   = AwsStackDestroyObservationAlreadyAbsent
   | AwsStackDestroyObservationNotExact
   | AwsStackDestroyEksDrainAuthorizationRequired
+  | AwsStackDestroyNativeFamilyObservationRequired
+  | AwsStackDestroyManifestIdentityMismatch ![Text] ![Text]
   | AwsStackDestroyDecisionAlreadyAbsent
   | AwsStackDestroyCheckpointRestoreRequired
   | AwsStackDestroyDecisionRefused !(NonEmpty StackDecisionRefusal)
@@ -675,6 +756,27 @@ exactObservationForRequest request =
 
 registeredStackAbsentEvidence :: Text
 registeredStackAbsentEvidence = "registered stack is absent"
+
+decodeRequestObservationEvidence
+  :: AwsStackObservationRequest purpose
+  -> Text
+  -> Maybe ExactObservationResult
+decodeRequestObservationEvidence request evidence =
+  case awsStackObservationRequestIntent request of
+    ObserveNativeStackFamily ref _ ->
+      case decodeAwsNativeStackFamilyEvidence ref evidence of
+        Left _ -> Nothing
+        Right [] -> Just (ExactResourceAbsent (AbsenceEvidence evidence))
+        Right (firstIdentity : remaining) ->
+          Just
+            ( ExactResourcePresent
+                ( ExactResourceInventory
+                    ( ObservedResourceIdentity firstIdentity
+                        :| map ObservedResourceIdentity remaining
+                    )
+                )
+            )
+    _ -> decodeObservationEvidence evidence
 
 decodeObservationEvidence :: Text -> Maybe ExactObservationResult
 decodeObservationEvidence evidence

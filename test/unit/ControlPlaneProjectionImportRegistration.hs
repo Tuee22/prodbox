@@ -46,10 +46,10 @@ controlPlaneProjectionImportRegistrationSuite =
       fmap
         (modelBObjectLogicalName . migrationProjectionCoordinate replacement)
         [minBound .. maxBound]
-        `shouldBe` [ "leases/123456789012/ca-central-1/aws-ses"
+        `shouldBe` [ ("leases/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
                    , "pulumi-stack/aws-ses"
-                   , "target-commit-intents/123456789012/ca-central-1/aws-ses"
-                   , "smtp-commit/123456789012/ca-central-1/aws-ses"
+                   , ("target-commit-intents/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
+                   , ("smtp-commit/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
                    ]
       coordinate <-
         expectRight $
@@ -128,7 +128,7 @@ validWire :: ProjectionImportRegistrationWire
 validWire =
   ProjectionImportRegistrationWire
     { projectionImportAwsAccountId = "123456789012"
-    , projectionImportAwsRegion = "ca-central-1"
+    , projectionImportAwsRegion = (fixtureAwsRegion FixtureCaCentral1)
     , projectionImportTargetCapacity = 2
     , projectionImportTargets = [homeTarget, awsTarget]
     }

@@ -26,7 +26,7 @@ import Control.Concurrent.STM
   , writeTVar
   )
 import Control.Exception (bracket, throwIO)
-import Control.Monad (forM_, unless, void)
+import Control.Monad (forM_, unless, void, when)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
@@ -508,8 +508,8 @@ parseStatusLine headerBlock =
 routeConformanceSuite :: SuiteBuilder ()
 routeConformanceSuite =
   describe "Sprint 2.33 Bootstrap Broker real-loopback route conformance" $ do
-    it "covers the closed sixteen-route registry" $
-      length Routes.allBrokerRoutes `shouldBe` 16
+    it "covers the closed seventeen-route registry" $
+      length Routes.allBrokerRoutes `shouldBe` 17
     forM_ Routes.allBrokerRoutes $ \route ->
       it ("projects exact method, path, body, and authentication for " ++ show route) $
         exerciseRouteConformance route
@@ -539,7 +539,17 @@ exerciseRouteConformance route =
       responseStatus methodResponse `shouldBe` 405
       responseStatus pathResponse `shouldBe` 404
       responseStatus bodyResponse `shouldBe` 400
-      responseStatus response `shouldBe` routeExpectedStatus route
+      let expectedStatus = routeExpectedStatus route
+      when (responseStatus response /= expectedStatus) $ do
+        actions <- Fake.readFakeBrokerActions fake
+        expectationFailure
+          ( "expected route status "
+              ++ show expectedStatus
+              ++ ", got "
+              ++ show (responseStatus response)
+              ++ "; fake actions="
+              ++ show actions
+          )
       invocations <- readRuntimeInvocations capture
       authentications <- readRuntimeAuthentications capture
       assertCanonicalInvocation route body invocations authentications
@@ -553,6 +563,8 @@ prepareRoutePrerequisites
   -> IO ()
 prepareRoutePrerequisites runtime fake route =
   case route of
+    Routes.BrokerPostUnsealHandoffReconcile ->
+      sendSuccessfulSetup runtime fake "setup-vault-baseline" Routes.BrokerVaultBaselineReconcile
     Routes.BrokerChildRecoveryDeliver ->
       prepareAndFinalizeChildCustody
     Routes.BrokerChildRecoveryObserve -> do
@@ -590,6 +602,7 @@ routeInitialState route = case route of
   Routes.BrokerVaultRotateUnlockBundle -> Fake.FakeInitializedSealed
   Routes.BrokerVaultRotateTransitKey -> Fake.FakeUnsealed
   Routes.BrokerVaultBaselineReconcile -> Fake.FakeUnsealed
+  Routes.BrokerPostUnsealHandoffReconcile -> Fake.FakeUnsealed
   Routes.BrokerVaultPkiStatus -> Fake.FakeUnsealed
   Routes.BrokerVaultPkiIssueTestCertificate -> Fake.FakeUnsealed
   Routes.BrokerVaultResetAmbiguousInitialization -> Fake.FakeAmbiguousInitialization
@@ -609,6 +622,7 @@ routeExpectedStatus route = case route of
   Routes.BrokerVaultRotateUnlockBundle -> 200
   Routes.BrokerVaultRotateTransitKey -> 200
   Routes.BrokerVaultBaselineReconcile -> 202
+  Routes.BrokerPostUnsealHandoffReconcile -> 202
   Routes.BrokerVaultPkiStatus -> 200
   Routes.BrokerVaultPkiIssueTestCertificate -> 200
   Routes.BrokerVaultResetAmbiguousInitialization -> 202

@@ -10,11 +10,13 @@
 
 ## Phase Status
 
-⏸️ **Reopened and Blocked 2026-08-15 on Sprint `6.5` (Standards A/L/P), blocked by Sprints `4.86`
-and `5.36`.** Phase 6 owns the generic/home single-writer cutover, installed-binary clean-room handoff, rollback
-rule, and legacy-absence proof for the replacement teardown. The prior clean-room proof exercised
-the superseded cascade and cannot qualify this production-composition change. Deployment
-qualification remains pending.
+🔄 **Reopened and active on Sprint `6.5` (Standards A/L/P).** Sprints `4.86`, `4.89`, `5.36`,
+`7.36`, and `7.38` have completed the replacement program, custody disposition, validation client,
+exact AWS adapters, and compiled DNS-zone binding this cutover consumes. Phase 6 owns the
+generic/home single-writer cutover, installed-binary clean-room handoff, rollback rule, and
+legacy-absence proof for the replacement teardown. The prior clean-room proof exercised the
+superseded cascade and cannot qualify this production-composition change. Deployment qualification
+remains pending.
 
 ✅ **Reclosed 2026-08-02 on Sprint `6.4`.** The clean-room handoff covers authority-epoch
 migration, restart-resume behavior, rollback refusal after cutover, complete home restoration, and
@@ -382,29 +384,13 @@ transport before handoff.
   emits the governed dry-run plan.
 - The real home clean-room run remains deployment qualification; Sprint `7.33` owns AWS parity.
 
-## Sprint 6.5: Typed Teardown Single-Writer Cutover and Clean-Room Handoff [⏸️ Blocked]
+## Sprint 6.5: Typed Teardown Single-Writer Cutover and Clean-Room Handoff [📋 Planned]
 
-**Status**: Blocked by Sprints `5.36`, `7.36`, and `7.38` (opened 2026-08-15; Sprints `4.86` and
-`4.89` closed 2026-08-20 and 2026-08-21 and their entries are gone).
-**Blocked by**: Sprint `5.36` for the lifecycle-kernel `TestRunner` client, Sprint `7.36` for
-the exact AWS desired-absence adapters its convergence runs over, and Sprint `7.38` for the run's
-DNS hosted zone in the compiled program's observation scope. Sprint `4.89` closed on
-2026-08-21, so the custodial-capability disposition this sprint's uninstall node consumes is
-landed. The complete replacement program Sprint `4.86` owed landed on 2026-08-20: the non-public
-candidate entrypoint drives the total dispatcher over a durable descriptor-bound run, and this
-sprint activates it.
-**Backward dependency**: Sprints `7.36` and `7.38`. `7.36`: the single-writer cutover makes the
-compiled desired-absence program and the signed `DecommissionNode` manifest one universe, and every
-tag can only become two-sided over the exact AWS desired-absence adapters Sprint `7.36` supplies;
-performing the cutover first would activate a public writer whose convergence could not be observed,
-leaving the superseded cascade deleted and its replacement unable to prove absence. `7.38`: Sprint
-`7.36` registered the DNS01 challenge record family, whose coordinate is a record-name prefix and is
-not complete without a hosted zone, and the compiled program's observation scope has no producer for
-one — so activating the compiled cascade before `7.38` would delete the superseded writer and leave
-the replacement unable to converge on a family it is now obliged to prove absent. Both declared
-under
-[Standard N.2](../DEVELOPMENT_PLAN/development_plan_standards.md#n-phase-independence-and-execution-order);
-the queue runs `7.36` and `7.38` first.
+**Status**: Planned and next (opened 2026-08-15). The former gates are complete: Sprint `5.36`
+landed the lifecycle-kernel `TestRunner` client, Sprint `7.38` sealed the run's DNS hosted zone into
+the compiled observation scope, Sprint `4.89` landed the custodial-capability disposition, and
+Sprint `4.86` landed the non-public candidate entrypoint that drives the total dispatcher over a
+durable descriptor-bound run. This sprint activates that replacement.
 **Deployment qualification**: pending — clean-room/destructive evidence from the superseded
 cascade is invalid for the replacement composition.
 **Doctrine**: [Lifecycle Control-Plane Architecture § 12, “Cutover and
@@ -440,8 +426,8 @@ cascade to the typed recover-to-clean graph, with one writer, one durable cleanu
 type-indexed rollback legality. Before qualification, the legacy route remains the sole public
 writer and the replacement is callable only by the qualification-only runner. After Standard-P
 evidence authorizes activation, consume that evidence to make the replacement the sole public writer
-and remove the legacy generic/home path. The AWS adapter slot refuses as unavailable until Sprint
-`7.36`; this sprint makes no AWS parity claim.
+and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS adapter and Sprint
+`7.38` the complete DNS scope; this sprint makes no live AWS parity claim.
 
 ### Deliverables
 

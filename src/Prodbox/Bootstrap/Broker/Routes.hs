@@ -41,6 +41,7 @@ data BrokerRoute
   | BrokerVaultRotateUnlockBundle
   | BrokerVaultRotateTransitKey
   | BrokerVaultBaselineReconcile
+  | BrokerPostUnsealHandoffReconcile
   | BrokerVaultPkiStatus
   | BrokerVaultPkiIssueTestCertificate
   | BrokerVaultResetAmbiguousInitialization
@@ -118,6 +119,8 @@ brokerRouteSpec route = case route of
     mutationSpec BrokerBootstrapMutate "/v1/bootstrap/vault/rotate-transit-key"
   BrokerVaultBaselineReconcile ->
     mutationSpec BrokerBaselineReconcile "/v1/bootstrap/vault/baseline/reconcile"
+  BrokerPostUnsealHandoffReconcile ->
+    mutationSpec BrokerBootstrapMutate "/v1/bootstrap/handoff/reconcile"
   BrokerVaultPkiStatus ->
     readOnlySpec
       BrokerGet

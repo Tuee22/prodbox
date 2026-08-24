@@ -59,6 +59,7 @@ import Prodbox.Aws.Native.Wire
   , performAwsRequest
   )
 import Prodbox.Aws.Native.Xml (extractAll, extractFirst, xmlEscape)
+import Prodbox.Aws.Region (awsGlobalServiceRegion)
 import Text.Read (readMaybe)
 
 data RecordType = RecordA | RecordAAAA | RecordCNAME | RecordTXT | RecordMX
@@ -119,9 +120,9 @@ newRoute53Client handle sender =
 route53Endpoint :: AwsEndpoint
 route53Endpoint = AwsEndpoint "https://route53.amazonaws.com" "route53.amazonaws.com"
 
--- | Route 53 is a global service; sign under the fixed @us-east-1@ region.
+-- | Route 53 signs under AWS's fixed global-service region.
 route53Scope :: AwsScope
-route53Scope = AwsScope "us-east-1" "route53"
+route53Scope = AwsScope awsGlobalServiceRegion "route53"
 
 changeRecordSetsPath :: Text -> ByteString
 changeRecordSetsPath zoneId =

@@ -1276,7 +1276,12 @@ newtype TransitKeyRequest = TransitKeyRequest
 
 instance ToJSON TransitKeyRequest where
   toJSON req =
-    object ["type" .= transitKeyRequestType req]
+    object
+      ( ("type" .= transitKeyRequestType req)
+          : [ "key_size" .= (32 :: Int)
+            | transitKeyRequestType req == "hmac"
+            ]
+      )
 
 -- | @POST \/v1\/pki\/issue\/\<role\>@ request.
 data PkiIssueCertificateRequest = PkiIssueCertificateRequest

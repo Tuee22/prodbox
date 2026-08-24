@@ -1401,7 +1401,7 @@ workerPayload =
     , awsCredentialMaterialAccessKeyId = "AKIAEXAMPLE"
     , awsCredentialMaterialSecretAccessKey = "target-secret-value"
     , awsCredentialMaterialSessionToken = ""
-    , awsCredentialMaterialRegion = "ca-central-1"
+    , awsCredentialMaterialRegion = (fixtureAwsRegion FixtureCaCentral1)
     }
 
 workerTarget :: TargetSecretId

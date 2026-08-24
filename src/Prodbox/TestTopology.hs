@@ -95,6 +95,8 @@ instance ToDhall TestBudget where
 
 data RunVariant = RunVariant
   { variantCluster :: ClusterTopology
+  , variantVaultAddress :: Text
+  , variantMinioEndpoint :: Text
   , variantReplicas :: Natural
   , variantFailover :: Maybe FailoverScenario
   }
@@ -154,6 +156,8 @@ data TestTopologyError
   | TestVariantReplicasZero Text
   | TestVariantReplicasExceedBudget Text Natural Natural
   | TestVariantClusterInvalid Text String
+  | TestVariantVaultAddressInvalid Text
+  | TestVariantMinioEndpointInvalid Text
   | TestFixtureNotDeclared Text FixtureId
   deriving (Eq, Show)
 
@@ -166,6 +170,8 @@ defaultTestTopology =
             , suiteVariants =
                 [ RunVariant
                     { variantCluster = defaultClusterTopology
+                    , variantVaultAddress = "http://127.0.0.1:31820"
+                    , variantMinioEndpoint = "http://127.0.0.1:39000"
                     , variantReplicas = 1
                     , variantFailover = Nothing
                     }
@@ -234,7 +240,25 @@ validateVariant suiteName' budget variant = do
     else pure ()
   case validateClusterTopology (variantCluster variant) of
     Left err -> Left (TestVariantClusterInvalid suiteName' (renderTopologyError err))
-    Right () -> Right ()
+    Right () -> pure ()
+  if validHttpEndpoint (variantVaultAddress variant)
+    then pure ()
+    else Left (TestVariantVaultAddressInvalid suiteName')
+  if validHttpEndpoint (variantMinioEndpoint variant)
+    then Right ()
+    else Left (TestVariantMinioEndpointInvalid suiteName')
+
+validHttpEndpoint :: Text -> Bool
+validHttpEndpoint raw =
+  let value = Text.strip raw
+      lower = Text.toLower value
+      authority
+        | "http://" `Text.isPrefixOf` lower = Text.drop 7 value
+        | "https://" `Text.isPrefixOf` lower = Text.drop 8 value
+        | otherwise = Text.empty
+   in not (Text.null authority)
+        && not ("/" `Text.isPrefixOf` authority)
+        && not (Text.any Char.isSpace value)
 
 renderTestTopologyError :: TestTopologyError -> String
 renderTestTopologyError err =
@@ -264,6 +288,14 @@ renderTestTopologyError err =
         ++ show maxNodes
     TestVariantClusterInvalid name clusterErr ->
       "test topology suite `" ++ Text.unpack name ++ "` has invalid cluster topology: " ++ clusterErr
+    TestVariantVaultAddressInvalid name ->
+      "test topology suite `"
+        ++ Text.unpack name
+        ++ "` variant vault_address must be an http:// or https:// endpoint with an authority"
+    TestVariantMinioEndpointInvalid name ->
+      "test topology suite `"
+        ++ Text.unpack name
+        ++ "` variant minio_endpoint must be an http:// or https:// endpoint with an authority"
     TestFixtureNotDeclared name fixture ->
       "test topology suite `"
         ++ Text.unpack name

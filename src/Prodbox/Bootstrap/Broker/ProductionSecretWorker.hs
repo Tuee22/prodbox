@@ -8,6 +8,7 @@
 -- revalidated fence permit.
 module Prodbox.Bootstrap.Broker.ProductionSecretWorker
   ( runProductionSecretWorker
+  , classifyInitializationAmbiguity
   )
 where
 
@@ -64,9 +65,11 @@ import Prodbox.Bootstrap.Broker.PgpBoundary
   , verifyCompiledBurnRecipient
   , withPgpSecretPayloadBytes
   )
+import Prodbox.Bootstrap.Broker.PristineJournal
+  ( classifyPristineJournal
+  )
 import Prodbox.Bootstrap.Broker.ProductionCryptoParameters
-  ( productionPristineStorageProof
-  , productionRootInitCryptoParameters
+  ( productionRootInitCryptoParameters
   )
 import Prodbox.Bootstrap.Broker.ProductionPgp
   ( openFinalUnlockPayload
@@ -92,12 +95,13 @@ import Prodbox.Bootstrap.Broker.SecretIngress
   ( readSecretIngressFrame
   )
 import Prodbox.Bootstrap.Broker.SecretWorker
-  ( RawSecretWorkerReceipt (..)
+  ( InitializationAmbiguityCause (..)
+  , RawSecretWorkerReceipt (..)
   , SecretFreeWorkerRequest
   , SecretWorkerDurableResult
   , SecretWorkerOperation (..)
   , SecretWorkerOutcome (..)
-  , ambiguousInitializationWorkerResult
+  , classifiedAmbiguousInitializationWorkerResult
   , durableWorkerSessionAccessor
   , encryptedInitializationWorkerResult
   , finalizedInitializationWorkerResult
@@ -166,6 +170,7 @@ import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( isBoundedBatchAuditorLogin
   )
+import Prodbox.Http.Client (HttpError (..))
 import Prodbox.Lifecycle.Lease
   ( authorityTimeFromMicros
   )
@@ -285,39 +290,46 @@ prepareInitialization settings store kubernetes binding request payload = do
     Left failure -> pure (Left failure)
     Right _ ->
       mapVaultFailure "Vault seal status is unavailable" <$> Vault.vaultSealStatus (vaultAddress settings)
-  case (journal, status) of
-    (Right StoreObjectAbsent, Right observed)
-      | not (Vault.sealStatusInitialized observed) -> do
-          let proof = productionPristineStorageProof binding
-          case productionRootInitCryptoParameters settings proof of
-            Left failure -> pure (Left failure)
-            Right parameters -> do
-              verified <- verifyCompiledBurnRecipient productionPgpBoundary (brokerBurnRecipient settings)
-              case verified of
-                Left _ -> pure (Left "Compiled burn recipient verification failed")
-                Right burn -> do
-                  prepared <-
-                    prepareRecoveryRecipient
-                      productionPgpBoundary
-                      payload
-                      proof
-                      (rootInitCryptoSchemaVersion parameters)
-                      burn
-                      (rootInitCryptoShareCount parameters)
-                      (rootInitCryptoThreshold parameters)
-                      (rootInitCryptoEnvelopeDigest parameters)
-                  pure
-                    ( either
-                        (const (Left "Recovery recipient preparation failed"))
-                        (Right . preparedInitializationWorkerResult)
-                        prepared
-                    )
-    (Right StoreObjectPresent {}, _) ->
-      pure (Left "Root initialization journal is not pristine")
-    (_, Right observed)
+  case status of
+    Right observed
       | Vault.sealStatusInitialized observed ->
           pure (Left "Vault is already initialized")
-    _ -> pure (Left "Pristine initialization evidence is unavailable")
+      | otherwise ->
+          case journal of
+            Right observation ->
+              case classifyPristineJournal binding observation of
+                Right proof -> prepare proof
+                Left _ -> pure (Left "Root initialization journal is not pristine")
+            Left _ -> pure (Left "Pristine initialization evidence is unavailable")
+    Left _ -> pure (Left "Pristine initialization evidence is unavailable")
+ where
+  prepare proof =
+    case productionRootInitCryptoParameters settings proof of
+      Left failure -> pure (Left failure)
+      Right parameters -> do
+        verified <-
+          verifyCompiledBurnRecipient
+            productionPgpBoundary
+            (brokerBurnRecipient settings)
+        case verified of
+          Left _ -> pure (Left "Compiled burn recipient verification failed")
+          Right burn -> do
+            prepared <-
+              prepareRecoveryRecipient
+                productionPgpBoundary
+                payload
+                proof
+                (rootInitCryptoSchemaVersion parameters)
+                burn
+                (rootInitCryptoShareCount parameters)
+                (rootInitCryptoThreshold parameters)
+                (rootInitCryptoEnvelopeDigest parameters)
+            pure
+              ( either
+                  (const (Left "Recovery recipient preparation failed"))
+                  (Right . preparedInitializationWorkerResult)
+                  prepared
+              )
 
 resumeInitialization
   :: BootstrapBrokerSettings
@@ -355,33 +367,55 @@ initializeVault settings store kubernetes binding request payload = do
           case before of
             Right observed
               | Vault.sealStatusInitialized observed ->
-                  pure (Right ambiguousInitializationWorkerResult)
+                  pure
+                    ( Right
+                        ( classifiedAmbiguousInitializationWorkerResult
+                            InitializationObservedBeforeCall
+                        )
+                    )
             Left _ -> pure (Left "Vault initialization status is unavailable")
             Right _ -> do
-              initialized <-
-                authorizedVaultCall
+              authorized <-
+                authorizeWorkerVaultEffect
+                  store
+                  kubernetes
+                  request
                   BootstrapVaultInitialize
-                  (Vault.vaultInitEncrypted (vaultAddress settings) recipients)
-              case initialized of
-                Right response ->
-                  pure
-                    ( encryptedInitializationWorkerResult
-                        <$> encryptedReceipt envelope response
-                    )
-                Left _ -> do
-                  after <-
-                    authorizedVaultCall BootstrapVaultInitialize (Vault.vaultSealStatus (vaultAddress settings))
-                  pure $ case after of
-                    Right observed
-                      | Vault.sealStatusInitialized observed ->
-                          Right ambiguousInitializationWorkerResult
-                    _ -> Left "Vault initialization failed before application was observed"
+              case authorized of
+                Left failure -> pure (Left failure)
+                Right _ -> do
+                  initialized <-
+                    Vault.vaultInitEncrypted (vaultAddress settings) recipients
+                  case initialized of
+                    Right response ->
+                      pure
+                        ( encryptedInitializationWorkerResult
+                            <$> encryptedReceipt envelope response
+                        )
+                    Left httpFailure -> do
+                      after <-
+                        authorizedVaultCall BootstrapVaultInitialize (Vault.vaultSealStatus (vaultAddress settings))
+                      pure $ case after of
+                        Right observed
+                          | Vault.sealStatusInitialized observed ->
+                              Right
+                                ( classifiedAmbiguousInitializationWorkerResult
+                                    (classifyInitializationAmbiguity httpFailure)
+                                )
+                        _ -> Left "Vault initialization failed before application was observed"
  where
   authorizedVaultCall effect action = do
     authorized <- authorizeWorkerVaultEffect store kubernetes request effect
     case authorized of
       Left failure -> pure (Left failure)
       Right _ -> mapVaultFailure "Vault initialization call failed" <$> action
+
+classifyInitializationAmbiguity :: HttpError -> InitializationAmbiguityCause
+classifyInitializationAmbiguity httpFailure = case httpFailure of
+  HttpConnectionFailure _ -> InitializationCallConnectionFailure
+  HttpTimeout _ -> InitializationCallTimeout
+  HttpStatus code _ -> InitializationCallHttpStatus code
+  HttpDecode _ -> InitializationCallResponseDecodeFailure
 
 finalizeInitialization
   :: BootstrapBrokerSettings

@@ -230,6 +230,7 @@ controlPlaneRouteCallerTopology =
   , row LifecycleAwsStackReader [authority]
   , row LifecycleAwsStackCreationBinding [authority]
   , row LifecycleOwnershipManifest [authority]
+  , row LifecycleControllerOwner [authority]
   , row LifecycleRecoveryPlane [authority]
   , (LifecycleLocalRke2HostObservation, [CallerOperatorCli])
   , (LifecycleCascadeRetainedSlot, [CallerOperatorCli])

@@ -1,6 +1,32 @@
 config:
   operatorCidr:
     type: string
+  node0InstanceType:
+    type: string
+  node1InstanceType:
+    type: string
+  node2InstanceType:
+    type: string
+  node0RootVolumeType:
+    type: string
+  node1RootVolumeType:
+    type: string
+  node2RootVolumeType:
+    type: string
+  node0RootVolumeSizeGiB:
+    type: integer
+  node1RootVolumeSizeGiB:
+    type: integer
+  node2RootVolumeSizeGiB:
+    type: integer
+  vpcCidr:
+    type: string
+  subnet0Cidr:
+    type: string
+  subnet1Cidr:
+    type: string
+  subnet2Cidr:
+    type: string
 
 variables:
   stackName: ${pulumi.stack}
@@ -63,7 +89,7 @@ resources:
   vpc:
     type: aws:ec2:Vpc
     properties:
-      cidrBlock: "10.90.0.0/16"
+      cidrBlock: ${vpcCidr}
       tags:
         Name: ${stackName}-vpc
         prodbox.io/managed-by: prodbox
@@ -91,7 +117,7 @@ resources:
     type: aws:ec2:Subnet
     properties:
       vpcId: ${vpc.id}
-      cidrBlock: "10.90.0.0/24"
+      cidrBlock: ${subnet0Cidr}
       availabilityZone: ${availabilityZones[0]}
       mapPublicIpOnLaunch: true
       tags:
@@ -102,7 +128,7 @@ resources:
     type: aws:ec2:Subnet
     properties:
       vpcId: ${vpc.id}
-      cidrBlock: "10.90.1.0/24"
+      cidrBlock: ${subnet1Cidr}
       availabilityZone: ${availabilityZones[1]}
       mapPublicIpOnLaunch: true
       tags:
@@ -113,7 +139,7 @@ resources:
     type: aws:ec2:Subnet
     properties:
       vpcId: ${vpc.id}
-      cidrBlock: "10.90.2.0/24"
+      cidrBlock: ${subnet2Cidr}
       availabilityZone: ${availabilityZones[2]}
       mapPublicIpOnLaunch: true
       tags:
@@ -172,15 +198,15 @@ resources:
     type: aws:ec2:Instance
     properties:
       ami: ${ubuntuAmi}
-      instanceType: t3.large
+      instanceType: ${node0InstanceType}
       subnetId: ${publicSubnet0.id}
       vpcSecurityGroupIds:
         - ${securityGroup.id}
       associatePublicIpAddress: true
       userData: ${userData}
       rootBlockDevice:
-        volumeType: gp3
-        volumeSize: 30
+        volumeType: ${node0RootVolumeType}
+        volumeSize: ${node0RootVolumeSizeGiB}
         deleteOnTermination: true
       tags:
         Name: ${stackName}-node-0
@@ -190,15 +216,15 @@ resources:
     type: aws:ec2:Instance
     properties:
       ami: ${ubuntuAmi}
-      instanceType: t3.large
+      instanceType: ${node1InstanceType}
       subnetId: ${publicSubnet1.id}
       vpcSecurityGroupIds:
         - ${securityGroup.id}
       associatePublicIpAddress: true
       userData: ${userData}
       rootBlockDevice:
-        volumeType: gp3
-        volumeSize: 30
+        volumeType: ${node1RootVolumeType}
+        volumeSize: ${node1RootVolumeSizeGiB}
         deleteOnTermination: true
       tags:
         Name: ${stackName}-node-1
@@ -208,15 +234,15 @@ resources:
     type: aws:ec2:Instance
     properties:
       ami: ${ubuntuAmi}
-      instanceType: t3.large
+      instanceType: ${node2InstanceType}
       subnetId: ${publicSubnet2.id}
       vpcSecurityGroupIds:
         - ${securityGroup.id}
       associatePublicIpAddress: true
       userData: ${userData}
       rootBlockDevice:
-        volumeType: gp3
-        volumeSize: 30
+        volumeType: ${node2RootVolumeType}
+        volumeSize: ${node2RootVolumeSizeGiB}
         deleteOnTermination: true
       tags:
         Name: ${stackName}-node-2

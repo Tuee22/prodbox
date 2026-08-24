@@ -326,6 +326,7 @@ data CleanupPrimaryOutcome
   | CleanupPrimaryFailed !Text
   | CleanupPrimaryCancelled
   | CleanupPrimaryRunnerLost
+  | CleanupPrimaryExitFailure !Int
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 

@@ -341,6 +341,21 @@ This is a recover-to-clean reconciler, not a best-effort phase list. The effectf
 observe external systems and interpret a closed program, but it may not decide resource identity,
 scope, cardinality, lifecycle class, dependency order, or what constitutes completion.
 
+The deployment context is part of that identity. Cluster id, Vault address, and provider/object
+store endpoints are narrowed once from Tier-0 (or explicitly derived for a test run) and bound into
+the descriptor/capability path used by observation and execution. A compiled host address,
+environment override, or independently defaulted endpoint cannot answer for an admitted context;
+the product-owned generic state-bucket name is instead one compiled registry identity. The source
+partition is canonical in
+[Config Doctrine §0](./config_doctrine.md#compiled-protocol-constants-versus-operator-supplied-deployment-values).
+
+This identity rule is enforced at both host entry and retained-floor re-entry. A root lifecycle
+loaded from durable basics is usable only when its cluster id and Vault address equal the validated
+context; a missing floor or either mismatch is a refusal before observation or mutation. Boundaries
+that necessarily operate below validated settings use the address in that sealed basics value,
+never a compiled loopback address. The Pulumi preflight, host public-edge probe, long-lived backend
+gate, and residue gates therefore cannot probe one deployment and authorize work for another.
+
 ### Why not a global state machine
 
 AWS, Kubernetes, Vault, checkpoint storage, and the retained Authority are independent external
@@ -484,7 +499,8 @@ data LifecycleProgramScope
   | CleanupScope CleanupSurface
 
 data ObservationEvidenceScope (scope :: LifecycleProgramScope)
-  -- abstract; binds run, registry revision, substrate, account, region, and operation
+  -- abstract; binds run, registry revision, substrate, account, region,
+  -- optional DNS hosted zone, and operation
 
 data ObservationResult resource kind a
   = ObservedAbsent (AbsenceEvidence resource kind)
@@ -556,6 +572,20 @@ exact observer must return the same indexed scope it received. Checkpoint-pair a
 manifest wrappers retain that value rather than relying on an ambient caller or a later string
 comparison.
 
+The optional DNS hosted zone is a durable coordinate, not observer input. Graph compilation takes
+it beside the AWS account/region scope and, when present, seals it into every operation identity,
+the graph digest, and cleanup-program descriptor wire. A zoneless program appends no identity
+field, so its pre-zone graph digest remains stable. A descriptor with a present zone recompiles only
+under that exact zone; changing the descriptor text without changing the declared initial run is a
+graph mismatch. The current descriptor wire is versioned separately from the compiler identity, and
+the retained zoneless predecessor wire is restart-readable only through exact decode, canonical-byte
+comparison, recompile, and initial-run validation.
+
+A registered record family whose coordinate is incomplete without a zone refuses a zoneless scope.
+It never infers a zone from the account, region, FQDN, provider result, ambient AWS configuration, or
+another observation. Conversely, resources whose coordinates do not need DNS remain valid in a
+zoneless program; absence of the optional field is not itself a cleanup failure.
+
 A private `CompleteObservationSet` constructor admits a decision only when all of the following are
 true:
 
@@ -563,8 +593,8 @@ true:
 2. every observation carries that key's exact coordinate digest and required authority;
 3. no unregistered or wrong-lifecycle key appears;
 4. every bounded family reports complete membership or an explicit partial/unobservable result; and
-5. the durable run descriptor supplies the substrate, account, region, operation, and ownership
-   scope. None is inferred from residue.
+5. the durable run descriptor supplies the substrate, account, region, optional DNS hosted zone,
+   operation, and ownership scope. None is inferred from residue.
 
 AWS discovery normalizes provider responses before cardinality or ownership decisions:
 
@@ -835,6 +865,13 @@ escape hatch recovers known pre-manifest `aws-eks`, `aws-eks-subzone`, and `aws-
 does not claim that arbitrary unregistered resources can always be recovered. Observation remains
 inside the read-only Provider Worker capability and authorization uses the permit-bounded Admin
 Action Runner; neither exposes host AWS credentials or creates a generic provider fallback.
+
+The independently read-back manifest supplies an exact identity allowlist to native cleanup; a
+complete-manifest constructor without its entry identities is not cleanup authority. The Provider
+Worker re-observes the registered family at the mutation boundary and refuses before its first
+effect if any present identity is outside that allowlist. Already-absent admitted identities are
+harmless. This keeps confirmation stable under provider drift: a resource created after the plan was
+confirmed cannot enter the same operation merely because it later matches a bounded family query.
 
 Checkpoint promotion is crash-safe before provider work is acknowledged: immutable encrypted bytes
 and their aggregate reference are read back from primary and independent backup under the same
@@ -1877,25 +1914,22 @@ materialized kubeconfigs.
 
 ### 5d. Historical Shared-Credential Postflight Record (Sprint 7.10)
 
-The `prodbox test ...` harness postflight (`Prodbox.TestRunner.runWithAwsHarnessCleanup`)
-runs the per-run Pulumi destroys on every exit path (Sprint 7.6 orphan-safety) and
-then, historically, always cleared operational `aws.*` and deleted the operational
-`prodbox` IAM user via `runManagedAwsHarnessTeardown`. As of Sprint 7.10 the operational-credential teardown runs **only when the per-run destroy
-succeeded**. *Corrected 2026-08-19:* the pure decision this record named,
-`clearOperationalCredsAfterPostflight :: ExitCode -> Bool`, is no longer the mechanism — it survives
-as an exported, Haddock-referenced, unit-tested value that nothing consumes. The rule itself still
-holds and is now enforced structurally, by a `CleanupRequiresSuccess` graph edge from every per-run
-resource to the operational-teardown node, which is the Standard-I "replacement done, helper
-survives" case rather than a lost rule. The surviving helper and its removal owner are recorded in
-the [deletion ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md#pending-removal). When a per-run destroy fails (e.g. the §5c
-`DependencyViolation` before Sprint 4.23 fully closes it), the orphaned per-run
-stacks still hold live AWS resources whose destroy path requires operational creds;
-clearing those creds would strand the orphans. The postflight therefore **holds**
-the teardown, preserves operational `aws.*` + the operational user, and emits a
-diagnostic naming the recovery path: resolve the destroy failure (e.g. wait out /
-clean up the orphan ENIs), then `prodbox aws stack <stack> destroy --yes` for each
-remaining per-run stack, then `prodbox aws teardown`. The per-run destroy failure is
-still surfaced as a non-zero exit.
+The `prodbox test ...` harness postflight (`Prodbox.TestRunner.runWithAwsHarnessCleanup`) is now an
+authenticated client of the descriptor-bound `ExplicitPerRun` program. `TestRunner` selects exact
+registered keys; lifecycle core compiles their canonical graph and operation IDs, the Lifecycle
+Authority durably registers and resumes the run, the closed ordinary dispatcher performs the
+effects, and the lifecycle result decides whether every selected node succeeded. The retired
+`clearOperationalCredsAfterPostflight` helper and the validation-authored callback graph have no
+surviving caller.
+
+Operational credential revocation is the remaining pre-cutover tail: until Sprint `6.5` releases
+the closed `OperationalTeardown` dispatcher, `runManagedAwsHarnessTeardown` runs only when
+`lifecycleCleanupNodesSucceeded` permits it. A failed, blocked, unobservable, or otherwise
+incomplete per-run node preserves operational `aws.*` and the operational user, emits the stable
+cleanup result for recovery, and makes the suite exit non-zero. This gate is deliberately a
+lifecycle-owned exact-node decision rather than a validation-side exit-code fold. It prevents
+stranding live AWS resources whose recovery still requires those credentials while making no false
+claim that the legacy IAM tail itself is already descriptor-bound.
 
 This is the per-run analog of §5's Sprint 7.9 change: Sprint 7.9 stopped the
 teardown from **refusing** on long-lived `aws-ses` residue. Clearing operational

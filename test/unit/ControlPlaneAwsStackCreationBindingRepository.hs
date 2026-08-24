@@ -216,7 +216,7 @@ controlPlaneAwsStackCreationBindingRepositorySuite =
                   ( scopeFor
                       "run/creation-1"
                       "foundation/other"
-                      "ca-central-1"
+                      (fixtureAwsRegion FixtureCaCentral1)
                       ReconcileDesiredPresent
                   )
               )
@@ -818,13 +818,29 @@ fixtureCreationScope
   , otherCleanupScope
     :: ObservationEvidenceScope
 fixtureCreationScope =
-  scopeFor "run/creation-1" "foundation/home" "ca-central-1" ReconcileDesiredPresent
+  scopeFor
+    "run/creation-1"
+    "foundation/home"
+    (fixtureAwsRegion FixtureCaCentral1)
+    ReconcileDesiredPresent
 fixtureCleanupScope =
-  scopeFor "run/creation-1" "foundation/home" "ca-central-1" ReconcileDesiredAbsent
+  scopeFor
+    "run/creation-1"
+    "foundation/home"
+    (fixtureAwsRegion FixtureCaCentral1)
+    ReconcileDesiredAbsent
 otherCreationScope =
-  scopeFor "run/creation-2" "foundation/home" "ca-central-1" ReconcileDesiredPresent
+  scopeFor
+    "run/creation-2"
+    "foundation/home"
+    (fixtureAwsRegion FixtureCaCentral1)
+    ReconcileDesiredPresent
 otherCleanupScope =
-  scopeFor "run/creation-2" "foundation/home" "ca-central-1" ReconcileDesiredAbsent
+  scopeFor
+    "run/creation-2"
+    "foundation/home"
+    (fixtureAwsRegion FixtureCaCentral1)
+    ReconcileDesiredAbsent
 
 scopeFor :: Text -> Text -> Text -> LifecycleOperation -> ObservationEvidenceScope
 scopeFor runScope foundation region operation =

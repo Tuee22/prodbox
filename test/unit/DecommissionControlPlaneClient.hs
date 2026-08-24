@@ -688,7 +688,7 @@ targetRecord =
     (mustRight (mkCredentialGeneration 7))
     (mustRight (mkTargetValueDigest (Text.replicate 64 "a")))
     SesSmtpMaterial
-      { sesSmtpHost = "email-smtp.ca-central-1.amazonaws.com"
+      { sesSmtpHost = ("email-smtp." <> (fixtureAwsRegion FixtureCaCentral1) <> ".amazonaws.com")
       , sesSmtpPort = "587"
       , sesSmtpFrom = "noreply@example.com"
       , sesSmtpFromDisplayName = "Prodbox"

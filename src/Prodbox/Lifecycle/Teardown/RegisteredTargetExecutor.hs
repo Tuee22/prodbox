@@ -79,6 +79,11 @@ data RegisteredTargetExecutor
     -- flag on another executor because the two arms reach different systems
     -- under different credentials.
     Dns01ChallengeRecordFamilyExecutor
+  | -- | The deterministic EKS IAM roles and managed policy.
+    EksIamRoleFamilyExecutor
+  | -- | The exact NLB/listener/target-group/security-group family produced by
+    -- the AWS Load Balancer Controller for the public-edge Service.
+    EksLoadBalancerControllerFamilyExecutor
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 registeredTargetExecutorTag :: RegisteredTargetExecutor -> Text
@@ -89,6 +94,9 @@ registeredTargetExecutorTag executor = case executor of
   ValidationHostedZoneFamilyExecutor -> "validation-hosted-zone-family"
   RetainedEbsFamilyExecutor -> "retained-ebs-family"
   Dns01ChallengeRecordFamilyExecutor -> "dns01-challenge-record-family"
+  EksIamRoleFamilyExecutor -> "eks-iam-role-family"
+  EksLoadBalancerControllerFamilyExecutor ->
+    "eks-load-balancer-controller-family"
 
 -- | Why a registered AWS key has no production executor, and what is missing.
 --
@@ -146,3 +154,6 @@ registeredTargetExecutorFor key = case key of
   AwsEbsProductionRetainedKey -> Right RetainedEbsFamilyExecutor
   AwsDnsValidationZoneKey -> Right ValidationHostedZoneFamilyExecutor
   AwsDns01ChallengeRecordKey -> Right Dns01ChallengeRecordFamilyExecutor
+  AwsEksIamRoleFamilyKey -> Right EksIamRoleFamilyExecutor
+  AwsEksLoadBalancerControllerFamilyKey ->
+    Right EksLoadBalancerControllerFamilyExecutor

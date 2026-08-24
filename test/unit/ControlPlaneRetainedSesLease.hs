@@ -110,7 +110,7 @@ controlPlaneRetainedSesLeaseSuite =
     it "refuses a valid projection for another lease key before retained CAS" $ do
       authority <- sampleAuthority
       expectedKey <- sampleKey
-      otherKey <- accepted (mkLeaseKey "999999999999" "ca-central-1" "aws-ses")
+      otherKey <- accepted (mkLeaseKey "999999999999" (fixtureAwsRegion FixtureCaCentral1) "aws-ses")
       otherProjection <- sampleProjection authority otherKey
       (serverAdapter, _, writes) <- memoryAdapter
       handler <-
@@ -238,7 +238,7 @@ sampleAuthority =
     )
 
 sampleKey :: IO LeaseKey
-sampleKey = accepted (mkLeaseKey "123456789012" "ca-central-1" "aws-ses")
+sampleKey = accepted (mkLeaseKey "123456789012" (fixtureAwsRegion FixtureCaCentral1) "aws-ses")
 
 sampleProjection
   :: LongLivedCheckpointAuthority

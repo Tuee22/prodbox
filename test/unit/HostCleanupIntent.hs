@@ -108,7 +108,7 @@ hostCleanupIntentSuite =
             Cascade
             ReconcileDesiredAbsent
             fixtureRunId
-            (Just (AwsScope (AwsAccountId "not-an-account") (AwsRegion "us-east-1")))
+            (Just (AwsScope (AwsAccountId "not-an-account") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
         )
         `shouldSatisfy` isIdentityInvalid
 
@@ -319,7 +319,7 @@ mkEvidence surface operation runId awsScope =
     operation
 
 fixtureAwsScope :: Maybe AwsScope
-fixtureAwsScope = Just (AwsScope (AwsAccountId "111122223333") (AwsRegion "ca-central-1"))
+fixtureAwsScope = Just (AwsScope (AwsAccountId "111122223333") (AwsRegion (fixtureAwsRegion FixtureCaCentral1)))
 
 fixtureTerminal :: HostCleanupTerminalIdentity
 fixtureTerminal =

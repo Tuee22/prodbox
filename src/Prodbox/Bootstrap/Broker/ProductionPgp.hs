@@ -16,6 +16,8 @@ module Prodbox.Bootstrap.Broker.ProductionPgp
   , productionPgpBoundaryAt
   , productionPgpReady
   , openFinalUnlockPayload
+  , classifyVaultCoreReconcileFailure
+  , classifyVaultPkiReconcileFailure
   )
 where
 
@@ -94,6 +96,8 @@ import Prodbox.Bootstrap.Broker.Types
   )
 import Prodbox.Bootstrap.Broker.Types qualified as Types
 import Prodbox.Crypto.Aead (aeadNonceBytes, openAead, sealAead)
+import Prodbox.Http.Client (HttpError (..))
+import Prodbox.Secret.VaultInventory qualified as VaultInventory
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , ProcessOutput (..)
@@ -102,7 +106,13 @@ import Prodbox.Subprocess
   )
 import Prodbox.Vault.Client qualified as Vault
 import Prodbox.Vault.Reconcile
-  ( VaultPkiBaselineStatus (VaultPkiBaselineReady)
+  ( VaultPkiBaselineStatus (..)
+  , VaultPkiObserveError (..)
+  , VaultPkiObserveOperation (..)
+  , VaultPkiReconcileError (..)
+  , VaultPkiReconcileOperation (..)
+  , VaultReconcileError (..)
+  , VaultReconcileHttpOperation (..)
   , defaultVaultReconcilePlan
   , observeVaultPkiBaseline
   , reconcileVaultPkiBaseline
@@ -146,8 +156,12 @@ productionPgpBoundary :: PgpBoundary IO
 productionPgpBoundary =
   mkPgpBoundary
     productionPgpCustodyPrimitive
-    (mkGeneratedRootPrimitiveBoundary (\_ -> pure (Left PgpGeneratedRootActionRefused)))
-    (mkGeneratedChildRecoveryPrimitiveBoundary (\_ -> pure (Left PgpGeneratedRootActionRefused)))
+    ( mkGeneratedRootPrimitiveBoundary
+        (\_ -> pure (Left PgpGeneratedRootTokenRejected))
+    )
+    ( mkGeneratedChildRecoveryPrimitiveBoundary
+        (\_ -> pure (Left PgpGeneratedRootTokenRejected))
+    )
 
 -- | Production generated-root interpreter. The GPG private key and decrypted
 -- token live only inside the callback bracket; the only token-consuming
@@ -206,36 +220,72 @@ runGeneratedRootAction address live token action = do
       GeneratedRootObserveAccessor _ _ -> do
         observed <- Vault.vaultLookupSelfAccessor address token
         pure $ do
-          raw <- mapHttpFailure observed
-          mapValueError PgpGeneratedRootActionRefused (mkRootPolicyAccessor raw)
+          raw <-
+            mapActionFailure
+              action
+              Pgp.GeneratedRootObserveAccessorRequest
+              observed
+          mapValueError
+            (rootActionRefused action Pgp.GeneratedRootObserveAccessorDecode)
+            (mkRootPolicyAccessor raw)
       GeneratedRootApplyAllowlistedBaseline {} -> do
         applied <- runVaultReconcile address token defaultVaultReconcilePlan
-        case mapReconcileFailure applied of
+        case mapCoreActionFailure
+          action
+          Pgp.GeneratedRootApplyCoreReconcile
+          applied of
           Left failure -> pure (Left failure)
           Right _ -> do
             pki <- reconcileVaultPkiBaseline address token
-            pure (mapReconcileFailure pki >> Right ())
+            pure
+              ( mapPkiReconcileActionFailure action pki
+                  >> Right ()
+              )
       GeneratedRootReadBackAllowlistedBaseline binding _ _ -> do
         observed <- runVaultReconcile address token defaultVaultReconcilePlan
         pki <- observeVaultPkiBaseline address token
         pure $ do
-          steps <- mapReconcileFailure observed
-          status <- mapReconcileFailure pki
-          if status /= VaultPkiBaselineReady
-            then Left PgpGeneratedRootActionRefused
-            else
+          steps <-
+            mapCoreActionFailure
+              action
+              Pgp.GeneratedRootReadBackCoreReconcile
+              observed
+          status <-
+            mapPkiObserveActionFailure action pki
+          case status of
+            VaultPkiBaselineReady ->
               mapValueError
-                PgpGeneratedRootActionRefused
+                (rootActionRefused action Pgp.GeneratedRootReadBackReceipt)
                 ( mkBaselineReadBackReceipt
                     (rootSessionBindingId binding)
                     (rootSessionStorageGeneration binding)
                     requiredRootBaselineTargets
                     (digestArtifact (TextEncoding.encodeUtf8 (Text.pack (show (steps, status)))))
                 )
+            VaultPkiBaselineAbsent ->
+              Left
+                ( rootActionRefused
+                    action
+                    ( Pgp.GeneratedRootReadBackPkiStatus
+                        Pgp.GeneratedRootPkiBaselineAbsent
+                    )
+                )
+            VaultPkiBaselineDrifted ->
+              Left
+                ( rootActionRefused
+                    action
+                    ( Pgp.GeneratedRootReadBackPkiStatus
+                        Pgp.GeneratedRootPkiBaselineDrifted
+                    )
+                )
       GeneratedRootRevokeAccessor {} -> do
         revoked <- Vault.vaultRevokeSelf address token
         case revoked of
-          Left _ -> pure (Left PgpGeneratedRootActionRefused)
+          Left _ ->
+            pure
+              ( Left
+                  (rootActionRefused action Pgp.GeneratedRootRevokeAccessorRequest)
+              )
           Right () -> do
             writeIORef live False
             pure (Right ())
@@ -282,28 +332,28 @@ runGeneratedChildRecoveryAction
 runGeneratedChildRecoveryAction address live token action = do
   isLive <- readIORef live
   if not isLive
-    then pure (Left PgpGeneratedRootSessionClosed)
+    then pure (Left PgpGeneratedChildRecoverySessionClosed)
     else case action of
       GeneratedChildRecoveryObserveAccessor _ _ -> do
         observed <- Vault.vaultLookupSelfAccessor address token
         pure $ do
-          raw <- mapHttpFailure observed
-          mapValueError PgpGeneratedRootActionRefused (mkRootPolicyAccessor raw)
+          raw <- mapChildActionFailure action observed
+          mapValueError (childActionRefused action) (mkRootPolicyAccessor raw)
       GeneratedChildRecoveryApplyAllowlistedRepair {} -> do
         applied <- runVaultReconcile address token defaultVaultReconcilePlan
-        case mapReconcileFailure applied of
+        case mapChildActionFailure action applied of
           Left failure -> pure (Left failure)
           Right _ -> do
             pki <- reconcileVaultPkiBaseline address token
-            pure (mapReconcileFailure pki >> Right ())
+            pure (mapChildActionFailure action pki >> Right ())
       GeneratedChildRecoveryReadBackAllowlistedRepair delivery _ _ -> do
         observed <- runVaultReconcile address token defaultVaultReconcilePlan
         pki <- observeVaultPkiBaseline address token
         pure $ do
-          steps <- mapReconcileFailure observed
-          status <- mapReconcileFailure pki
+          steps <- mapChildActionFailure action observed
+          status <- mapChildActionFailure action pki
           if status /= VaultPkiBaselineReady
-            then Left PgpGeneratedRootActionRefused
+            then Left (childActionRefused action)
             else
               Right
                 ( mkChildRecoveryRepairReceipt
@@ -313,7 +363,7 @@ runGeneratedChildRecoveryAction address live token action = do
       GeneratedChildRecoveryRevokeAccessor {} -> do
         revoked <- Vault.vaultRevokeSelf address token
         case revoked of
-          Left _ -> pure (Left PgpGeneratedRootActionRefused)
+          Left _ -> pure (Left (childActionRefused action))
           Right () -> do
             writeIORef live False
             pure (Right ())
@@ -322,19 +372,183 @@ generatedVaultToken :: ByteString -> Either PgpBoundaryError Vault.VaultToken
 generatedVaultToken bytes = do
   decoded <-
     either
-      (const (Left PgpGeneratedRootActionRefused))
+      (const (Left PgpGeneratedRootTokenRejected))
       Right
       (TextEncoding.decodeUtf8' bytes)
   let token = Text.strip decoded
   if Text.null token || Text.length token > 4096 || Text.any (`elem` [' ', '\t', '\r', '\n']) token
-    then Left PgpGeneratedRootActionRefused
+    then Left PgpGeneratedRootTokenRejected
     else Right (Vault.VaultToken token)
 
-mapHttpFailure :: Either error value -> Either PgpBoundaryError value
-mapHttpFailure = either (const (Left PgpGeneratedRootActionRefused)) Right
+rootActionRefused
+  :: GeneratedRootAction result
+  -> Pgp.GeneratedRootActionFailureStage
+  -> PgpBoundaryError
+rootActionRefused action =
+  PgpGeneratedRootActionRefused (Pgp.generatedRootActionKind action)
 
-mapReconcileFailure :: Either error value -> Either PgpBoundaryError value
-mapReconcileFailure = mapHttpFailure
+mapActionFailure
+  :: GeneratedRootAction result
+  -> Pgp.GeneratedRootActionFailureStage
+  -> Either error value
+  -> Either PgpBoundaryError value
+mapActionFailure action stage =
+  either (const (Left (rootActionRefused action stage))) Right
+
+mapCoreActionFailure
+  :: GeneratedRootAction result
+  -> ( Pgp.GeneratedRootCoreReconcileCause
+       -> Pgp.GeneratedRootActionFailureStage
+     )
+  -> Either VaultReconcileError value
+  -> Either PgpBoundaryError value
+mapCoreActionFailure action stage =
+  either
+    (Left . rootActionRefused action . stage . classifyVaultCoreReconcileFailure)
+    Right
+
+mapPkiReconcileActionFailure
+  :: GeneratedRootAction result
+  -> Either VaultPkiReconcileError value
+  -> Either PgpBoundaryError value
+mapPkiReconcileActionFailure action =
+  either
+    ( Left
+        . rootActionRefused action
+        . Pgp.GeneratedRootApplyPkiReconcile
+        . classifyVaultPkiReconcileFailure
+    )
+    Right
+
+mapPkiObserveActionFailure
+  :: GeneratedRootAction result
+  -> Either VaultPkiObserveError value
+  -> Either PgpBoundaryError value
+mapPkiObserveActionFailure action =
+  either
+    ( Left
+        . rootActionRefused action
+        . Pgp.GeneratedRootReadBackPkiObserve
+        . generatedRootPkiObserveCause
+    )
+    Right
+
+classifyVaultCoreReconcileFailure
+  :: VaultReconcileError -> Pgp.GeneratedRootCoreReconcileCause
+classifyVaultCoreReconcileFailure failure = case failure of
+  VaultReconcileHttpError operation _ httpFailure ->
+    Pgp.GeneratedRootCoreHttpFailure
+      (generatedRootCoreHttpOperation operation)
+      (generatedRootCoreHttpFailure httpFailure)
+  VaultReconcileMountTypeMismatch {} ->
+    Pgp.GeneratedRootCoreMountTypeMismatch
+  VaultReconcileMountOptionMismatch {} ->
+    Pgp.GeneratedRootCoreMountOptionMismatch
+  VaultReconcileAuthTypeMismatch {} ->
+    Pgp.GeneratedRootCoreAuthTypeMismatch
+  VaultReconcileTransitKeyTypeMismatch {} ->
+    Pgp.GeneratedRootCoreTransitKeyTypeMismatch
+  VaultReconcileKubernetesRoleReadbackMismatch {} ->
+    Pgp.GeneratedRootCoreKubernetesRoleReadbackMismatch
+  VaultReconcileSecretBootstrapFailed secretFailure ->
+    Pgp.GeneratedRootCoreSecretBootstrapFailure
+      (generatedRootCoreSecretFailure secretFailure)
+
+generatedRootCoreHttpOperation
+  :: VaultReconcileHttpOperation -> Pgp.GeneratedRootCoreHttpOperation
+generatedRootCoreHttpOperation operation = case operation of
+  VaultReconcileListMounts -> Pgp.GeneratedRootCoreListMounts
+  VaultReconcileEnableMount -> Pgp.GeneratedRootCoreEnableMount
+  VaultReconcileListAuthMethods -> Pgp.GeneratedRootCoreListAuthMethods
+  VaultReconcileEnableAuthMethod -> Pgp.GeneratedRootCoreEnableAuthMethod
+  VaultReconcileWriteKubernetesAuthConfig ->
+    Pgp.GeneratedRootCoreWriteKubernetesAuthConfig
+  VaultReconcileReadTransitKey -> Pgp.GeneratedRootCoreReadTransitKey
+  VaultReconcileCreateTransitKey -> Pgp.GeneratedRootCoreCreateTransitKey
+  VaultReconcileWritePolicy -> Pgp.GeneratedRootCoreWritePolicy
+  VaultReconcileWriteKubernetesRole ->
+    Pgp.GeneratedRootCoreWriteKubernetesRole
+  VaultReconcileReadBackKubernetesRole ->
+    Pgp.GeneratedRootCoreReadBackKubernetesRole
+
+generatedRootCoreHttpFailure :: HttpError -> Pgp.GeneratedRootCoreHttpFailure
+generatedRootCoreHttpFailure failure = case failure of
+  HttpConnectionFailure _ -> Pgp.GeneratedRootCoreHttpConnectionFailure
+  HttpTimeout _ -> Pgp.GeneratedRootCoreHttpTimeout
+  HttpStatus status _ -> Pgp.GeneratedRootCoreHttpStatus status
+  HttpDecode _ -> Pgp.GeneratedRootCoreHttpDecode
+
+generatedRootCoreSecretFailure
+  :: VaultInventory.VaultSecretBootstrapError
+  -> Pgp.GeneratedRootCoreSecretFailure
+generatedRootCoreSecretFailure failure = case failure of
+  VaultInventory.VaultSecretBootstrapReadFailed _ httpFailure ->
+    Pgp.GeneratedRootCoreSecretReadFailure
+      (generatedRootCoreHttpFailure httpFailure)
+  VaultInventory.VaultSecretBootstrapWriteFailed _ writeFailure ->
+    case writeFailure of
+      Vault.VaultCasApplied _ -> Pgp.GeneratedRootCoreSecretWriteAppliedInvariant
+      Vault.VaultCasConflict _ -> Pgp.GeneratedRootCoreSecretWriteConflict
+      Vault.VaultCasRefused status _ ->
+        Pgp.GeneratedRootCoreSecretWriteRefused status
+      Vault.VaultCasUnobservable _ ->
+        Pgp.GeneratedRootCoreSecretWriteUnobservable
+  VaultInventory.VaultSecretBootstrapExternalFieldMissing {} ->
+    Pgp.GeneratedRootCoreSecretExternalFieldMissing
+
+classifyVaultPkiReconcileFailure
+  :: VaultPkiReconcileError -> Pgp.GeneratedRootPkiReconcileCause
+classifyVaultPkiReconcileFailure failure = case failure of
+  VaultPkiReconcileHttpError operation httpFailure ->
+    Pgp.GeneratedRootPkiReconcileHttpFailure
+      (generatedRootPkiReconcileOperation operation)
+      (generatedRootCoreHttpFailure httpFailure)
+  VaultPkiReconcileObserveFailed observeFailure ->
+    Pgp.GeneratedRootPkiReconcileObserveFailure
+      (generatedRootPkiObserveCause observeFailure)
+  VaultPkiReconcileReadBackNotExact status ->
+    Pgp.GeneratedRootPkiReconcileReadBackNotExact
+      (generatedRootPkiBaselineStatus status)
+
+generatedRootPkiReconcileOperation
+  :: VaultPkiReconcileOperation -> Pgp.GeneratedRootPkiReconcileOperation
+generatedRootPkiReconcileOperation operation = case operation of
+  VaultPkiReconcileListIssuers -> Pgp.GeneratedRootPkiReconcileListIssuers
+  VaultPkiReconcileGenerateInternalRoot ->
+    Pgp.GeneratedRootPkiReconcileGenerateInternalRoot
+  VaultPkiReconcileWriteRole -> Pgp.GeneratedRootPkiReconcileWriteRole
+
+generatedRootPkiObserveCause
+  :: VaultPkiObserveError -> Pgp.GeneratedRootPkiObserveCause
+generatedRootPkiObserveCause failure = case failure of
+  VaultPkiObserveHttpError operation httpFailure ->
+    Pgp.GeneratedRootPkiObserveHttpFailure
+      (generatedRootPkiObserveOperation operation)
+      (generatedRootCoreHttpFailure httpFailure)
+
+generatedRootPkiObserveOperation
+  :: VaultPkiObserveOperation -> Pgp.GeneratedRootPkiObserveOperation
+generatedRootPkiObserveOperation operation = case operation of
+  VaultPkiObserveListIssuers -> Pgp.GeneratedRootPkiObserveListIssuers
+  VaultPkiObserveReadRole -> Pgp.GeneratedRootPkiObserveReadRole
+
+generatedRootPkiBaselineStatus
+  :: VaultPkiBaselineStatus -> Pgp.GeneratedRootPkiBaselineStatus
+generatedRootPkiBaselineStatus status = case status of
+  VaultPkiBaselineAbsent -> Pgp.GeneratedRootPkiBaselineAbsent
+  VaultPkiBaselineDrifted -> Pgp.GeneratedRootPkiBaselineDrifted
+  VaultPkiBaselineReady -> Pgp.GeneratedRootPkiBaselineReady
+
+childActionRefused :: Pgp.GeneratedChildRecoveryAction result -> PgpBoundaryError
+childActionRefused =
+  PgpGeneratedChildRecoveryActionRefused . Pgp.generatedChildRecoveryActionKind
+
+mapChildActionFailure
+  :: Pgp.GeneratedChildRecoveryAction result
+  -> Either error value
+  -> Either PgpBoundaryError value
+mapChildActionFailure action =
+  either (const (Left (childActionRefused action))) Right
 
 verifyBurnRecipient
   :: Settings.CompiledBurnRecipient

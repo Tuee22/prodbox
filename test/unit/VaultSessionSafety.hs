@@ -28,10 +28,13 @@ import Prodbox.ControlPlane.ServiceSessionLifecycle
   , withFencedServiceSession
   )
 import Prodbox.ControlPlane.VaultAccessorAudit
-  ( VaultAccessorAuditOps (..)
+  ( VaultAccessorAuditDetailedError (..)
+  , VaultAccessorAuditDetailedOps (..)
+  , VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
   , isBoundedBatchAuditorLogin
   , revokeAndProveVaultAccessorSubjectAbsent
+  , revokeAndProveVaultAccessorSubjectAbsentDetailed
   )
 import Prodbox.Lifecycle.AdminAction.Runner
   ( AdminActionRunnerError (..)
@@ -152,6 +155,59 @@ vaultSessionSafetySuite =
           Nothing
       result `shouldBe` Right ()
       readIORef waits `shouldReturn` 2
+
+    it
+      "Sprint 2.73 retains authoritative detailed audit failures and keeps revoke responses provisional"
+      $ do
+        let successfulOps :: VaultAccessorAuditDetailedOps IO Text
+            successfulOps =
+              VaultAccessorAuditDetailedOps
+                { detailedAuditListAccessors = pure (Right [])
+                , detailedAuditLookupAccessor = \_ -> pure (Right matchingAccessorInfo)
+                , detailedAuditRevokeAccessor = \_ -> pure (Right ())
+                , detailedAuditObserveAccessorAbsent = \_ -> pure (Right True)
+                , detailedAuditWaitVisibilityGrace = pure (Right ())
+                }
+            run ops known =
+              revokeAndProveVaultAccessorSubjectAbsentDetailed ops accessorSubject known
+        run
+          successfulOps {detailedAuditListAccessors = pure (Left "list")}
+          Nothing
+          `shouldReturn` Left (VaultAccessorAuditDetailedObservationFailed "list")
+        run
+          successfulOps
+            { detailedAuditListAccessors = pure (Right ["accessor"])
+            , detailedAuditLookupAccessor = \_ -> pure (Left "lookup")
+            }
+          Nothing
+          `shouldReturn` Left (VaultAccessorAuditDetailedClassificationFailed "lookup")
+        run
+          successfulOps {detailedAuditObserveAccessorAbsent = \_ -> pure (Left "absence")}
+          (Just "known-accessor")
+          `shouldReturn` Left (VaultAccessorAuditDetailedObservationFailed "absence")
+        run
+          successfulOps {detailedAuditWaitVisibilityGrace = pure (Left "visibility")}
+          Nothing
+          `shouldReturn` Left (VaultAccessorAuditDetailedVisibilityWaitFailed "visibility")
+        run successfulOps (Just " ")
+          `shouldReturn` Left VaultAccessorAuditDetailedIdentityInvalid
+
+        inventories <- newIORef [["accessor"], [], []]
+        run
+          successfulOps
+            { detailedAuditListAccessors = popInventory inventories
+            , detailedAuditRevokeAccessor = \_ -> pure (Left "lost-revoke-response")
+            }
+          Nothing
+          `shouldReturn` Right ()
+
+        run
+          successfulOps
+            { detailedAuditListAccessors = pure (Right ["still-visible"])
+            , detailedAuditRevokeAccessor = \_ -> pure (Left "lost-revoke-response")
+            }
+          Nothing
+          `shouldReturn` Left VaultAccessorAuditDetailedStableAbsenceFailed
 
     it "runs both cleanup effects after a thrown worker effect" $ do
       events <- newIORef ([] :: [Text])

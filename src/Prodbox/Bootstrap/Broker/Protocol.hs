@@ -339,7 +339,7 @@ firstProtocolError
   -> Either BrokerProtocolError value
 firstProtocolError protocolError = either (const (Left protocolError)) Right
 
--- | Stable operation vocabulary for the complete fifteen-route registry.
+-- | Stable operation vocabulary for the complete seventeen-route registry.
 -- Keeping this projection exhaustive makes a newly added route fail to build
 -- until its wire identity is explicitly chosen.
 brokerRouteOperationName :: BrokerRoute -> Text
@@ -353,6 +353,7 @@ brokerRouteOperationName route = case route of
   BrokerVaultRotateUnlockBundle -> "vault_rotate_unlock_bundle"
   BrokerVaultRotateTransitKey -> "vault_rotate_transit_key"
   BrokerVaultBaselineReconcile -> "vault_baseline_reconcile"
+  BrokerPostUnsealHandoffReconcile -> "post_unseal_handoff_reconcile"
   BrokerVaultPkiStatus -> "vault_pki_status"
   BrokerVaultPkiIssueTestCertificate -> "vault_pki_issue_test_certificate"
   BrokerVaultResetAmbiguousInitialization -> "vault_reset_ambiguous_initialization"

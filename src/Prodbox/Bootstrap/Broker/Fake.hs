@@ -189,6 +189,7 @@ import Prodbox.Bootstrap.Broker.Types
   , ParentCustodyAcknowledgement
   , PasswordAeadCiphertext
   , PgpEncryptedShare
+  , PostUnsealConsumer (..)
   , PreparedInitEnvelope
   , PristineResetProof
   , PristineStorageProof
@@ -223,6 +224,7 @@ import Prodbox.Bootstrap.Broker.Types
   , mkParentCustodyAcknowledgement
   , mkPasswordAeadCiphertext
   , mkPgpEncryptedShare
+  , mkPostUnsealHandoffReceipt
   , mkPreparedInitEnvelope
   , mkPristineResetProof
   , mkPristineStorageProof
@@ -337,6 +339,7 @@ data FakeBrokerSnapshot = FakeBrokerSnapshot
   , fakeSnapshotRootInit :: !RootInitState
   , fakeSnapshotVaultSeal :: !VaultSealState
   , fakeSnapshotBaselineApplied :: !Bool
+  , fakeSnapshotHandoffObserved :: !Bool
   , fakeSnapshotChildCustody :: !(Maybe ChildCustodyState)
   , fakeSnapshotChildRecovery :: !(Maybe ChildRecoveryState)
   , fakeSnapshotActions :: ![FakeBrokerAction]
@@ -350,6 +353,7 @@ data FakeBrokerRecord = FakeBrokerRecord
   , recordRootInit :: !RootInitState
   , recordVaultSeal :: !VaultSealState
   , recordBaselineApplied :: !Bool
+  , recordHandoffObserved :: !Bool
   , recordChildCustody :: !(Maybe ChildCustodyState)
   , recordChildRecovery :: !(Maybe ChildRecoveryState)
   , recordActionsNewestFirst :: ![FakeBrokerAction]
@@ -615,10 +619,12 @@ fakeFailureForEngine :: BrokerEngineError -> FakeBrokerFailure
 fakeFailureForEngine engineFailure = case engineFailure of
   EnginePhysicalCallRefused (EngineBoundaryRefused detail) ->
     fakeFailureForName detail
+  EngineBaselinePhysicalCallRefused _ (EngineBoundaryRefused detail) ->
+    fakeFailureForName detail
   EngineProgramEvidenceRefused (EngineBoundaryRefused detail) ->
     fakeFailureForName detail
   EngineStoreRefused _ -> FakeBootstrapStoreUnavailable
-  EngineInitializationAmbiguous _ -> FakeInitializationAmbiguous
+  EngineInitializationAmbiguous _ _ -> FakeInitializationAmbiguous
   EngineEvidenceGenerationMismatch _ -> FakeStorageGenerationMismatch
   EngineFenceBindingMismatch -> FakeActionBindingMismatch
   EngineMutationReceiptMismatch -> FakeActionBindingMismatch
@@ -819,6 +825,7 @@ fakeInMemoryRoute call = case call of
   InMemoryVaultRotateUnlockBundle {} -> BrokerVaultRotateUnlockBundle
   InMemoryVaultRotateTransitKey {} -> BrokerVaultRotateTransitKey
   InMemoryVaultBaselineReconcile {} -> BrokerVaultBaselineReconcile
+  InMemoryPostUnsealHandoffReconcile {} -> BrokerPostUnsealHandoffReconcile
   InMemoryVaultPkiStatus _ -> BrokerVaultPkiStatus
   InMemoryVaultPkiIssueTestCertificate {} -> BrokerVaultPkiIssueTestCertificate
   InMemoryVaultResetAmbiguousInitialization {} ->
@@ -854,6 +861,13 @@ fakeInMemoryResult call record replyStatus = case call of
           requiredRootBaselineTargets
           (fakeDigest 'd')
       )
+  InMemoryPostUnsealHandoffReconcile _ _ custody ->
+    Right
+      ( mkPostUnsealHandoffReceipt
+          (rootInitStorageGeneration (recoveryCustodyBinding custody))
+          PostUnsealLifecycleAuthority
+          (fakeDigest 'a')
+      )
   InMemoryVaultPkiStatus _ -> Right VaultPkiBaselineReady
   InMemoryVaultPkiIssueTestCertificate _ permit _ ->
     Right (fakeMutationReceipt (vaultEffectPermitActionDigest permit) replyStatus)
@@ -887,7 +901,7 @@ fakeBootstrapStatus record =
     , bootstrapStatusRecoveryCustodyDurable = rootInitIsComplete (recordRootInit record)
     , bootstrapStatusInitializationAmbiguous = rootInitIsAmbiguous (recordRootInit record)
     , bootstrapStatusRootSessionActive = False
-    , bootstrapStatusHandoffObserved = False
+    , bootstrapStatusHandoffObserved = recordHandoffObserved record
     }
 
 fakePristineForRecord :: FakeBrokerRecord -> PristineStorageProof
@@ -1010,6 +1024,10 @@ applyHealthyRoute route record = case route of
   BrokerVaultBaselineReconcile -> do
     (ready, _) <- requireUnsealed record
     succeeded BrokerReplyAccepted ready {recordBaselineApplied = True}
+  BrokerPostUnsealHandoffReconcile
+    | not (recordBaselineApplied record) -> Left FakeCustodyCorrupt
+    | otherwise ->
+        succeeded BrokerReplyAccepted record {recordHandoffObserved = True}
   BrokerVaultPkiStatus -> requireUnsealed record
   BrokerVaultPkiIssueTestCertificate -> requireUnsealed record
   BrokerVaultResetAmbiguousInitialization -> resetAmbiguousFakeVault record
@@ -1258,6 +1276,7 @@ snapshotRecord record =
     , fakeSnapshotRootInit = recordRootInit record
     , fakeSnapshotVaultSeal = recordVaultSeal record
     , fakeSnapshotBaselineApplied = recordBaselineApplied record
+    , fakeSnapshotHandoffObserved = recordHandoffObserved record
     , fakeSnapshotChildCustody = recordChildCustody record
     , fakeSnapshotChildRecovery = recordChildRecovery record
     , fakeSnapshotActions = reverse (recordActionsNewestFirst record)
@@ -1286,6 +1305,7 @@ recordForState state =
     , recordRootInit = rootState
     , recordVaultSeal = sealState
     , recordBaselineApplied = False
+    , recordHandoffObserved = False
     , recordChildCustody = Nothing
     , recordChildRecovery = Nothing
     , recordActionsNewestFirst = []

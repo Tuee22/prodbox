@@ -28,16 +28,19 @@ import TestSupport
 retainedFamilies :: [(Text, Text)]
 retainedFamilies =
   [
-    ( "leases/123456789012/ca-central-1/aws-ses"
-    , "long-lived-state/leases/123456789012/ca-central-1/aws-ses"
+    ( ("leases/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
+    , ("long-lived-state/leases/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
     )
   ,
-    ( "target-commit-intents/123456789012/ca-central-1/aws-ses"
-    , "long-lived-state/target-commit-intents/123456789012/ca-central-1/aws-ses"
+    ( ("target-commit-intents/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
+    , ( "long-lived-state/target-commit-intents/123456789012/"
+          <> (fixtureAwsRegion FixtureCaCentral1)
+          <> "/aws-ses"
+      )
     )
   ,
-    ( "smtp-commit/123456789012/ca-central-1/aws-ses"
-    , "long-lived-state/smtp-commit/123456789012/ca-central-1/aws-ses"
+    ( ("smtp-commit/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
+    , ("long-lived-state/smtp-commit/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
     )
   ]
 
@@ -58,13 +61,13 @@ authorityLogicalObjectTaxonomySuite =
       mapM_ assertRetainedFamily retainedFamilies
 
     it "derives AAD as clusterId|<stored-key> for a retained coordinate" $ do
-      let name = "leases/123456789012/ca-central-1/aws-ses"
-          expectedKey = "long-lived-state/leases/123456789012/ca-central-1/aws-ses"
+      let name = ("leases/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
+          expectedKey = ("long-lived-state/leases/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
       logicalObjectAad sampleClusterId (authorityLogicalObject name)
         `shouldBe` TextEncoding.encodeUtf8 (sampleClusterId <> "|" <> expectedKey)
 
     it "derives the opaque key identically to a directly-constructed LogicalLongLivedState" $ do
-      let name = "smtp-commit/123456789012/ca-central-1/aws-ses"
+      let name = ("smtp-commit/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
       opaqueObjectId sampleHmacKey (authorityLogicalObject name)
         `shouldBe` opaqueObjectId sampleHmacKey (LogicalLongLivedState name)
 

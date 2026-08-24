@@ -207,6 +207,10 @@ import Prodbox.Lifecycle.ReadinessObservation
   )
 import Prodbox.Lifecycle.TargetSecretAgent.ChartStatics qualified as TargetSecretAgentStatics
 import Prodbox.Lifecycle.TlsRetention.ChartStatics qualified as TlsRetentionStatics
+import Prodbox.Minio.ObjectStoreTypes
+  ( defaultObjectStoreBucket
+  , minioClusterServiceEndpoint
+  )
 import Prodbox.PostgresPlatform
   ( patroniClusterName
   , patroniCredentialsSecretName
@@ -260,9 +264,13 @@ import Prodbox.Settings
   , DeploymentSection (..)
   , ValidatedCoordinates (..)
   , ValidatedSettings (..)
+  , deploymentVaultAddress
+  , requireAwsSubstrateProfile
   , validateAndLoadSettings
+  , validatedDeploymentContext
   , validatedResourcePlan
   )
+import Prodbox.Settings.AwsSubstrateProfile (awsSubstrateStaticEbsVolumeType)
 import Prodbox.Settings.Coordinate (awsRegionText, s3BucketNameText)
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -694,7 +702,7 @@ buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
             else pure (Right Nothing)
         gatewayTier0DhallResult <-
           if "gateway" `elem` releaseOrder
-            then fmap (fmap Just) (resolveGatewayTier0DhallForSubstrate substrate repoRoot)
+            then fmap (fmap Just) (resolveGatewayTier0DhallForSubstrate substrate repoRoot settings)
             else pure (Right Nothing)
         controlPlaneClusterIdResult <-
           if "gateway" `elem` releaseOrder
@@ -2093,10 +2101,18 @@ resolveGatewayHostedZoneIdForSubstrate substrate repoRoot settings = do
 -- @context.cluster_id@, so parameters, witness, capabilities, and frame kind
 -- cannot drift from the daemon-owned schema.
 resolveGatewayTier0DhallForSubstrate
-  :: Substrate -> FilePath -> IO (Either String String)
-resolveGatewayTier0DhallForSubstrate substrate repoRoot = do
+  :: Substrate -> FilePath -> ValidatedSettings -> IO (Either String String)
+resolveGatewayTier0DhallForSubstrate substrate repoRoot settings = do
   clusterIdResult <- resolveClusterIdentityForSubstrate substrate repoRoot
-  pure (renderGatewayTier0Dhall <$> clusterIdResult)
+  let deploymentContext = validatedDeploymentContext settings
+      vaultAddress = deploymentVaultAddress deploymentContext
+      minioEndpoint = Text.pack minioClusterServiceEndpoint
+  pure
+    ( renderGatewayTier0Dhall (validatedConfig settings)
+        <$> clusterIdResult
+        <*> pure vaultAddress
+        <*> pure minioEndpoint
+    )
 
 -- | Resolve the same substrate identity for every standing control-plane role.
 -- It is mounted explicitly in schema-v3 role config; no role guesses identity
@@ -2127,14 +2143,17 @@ resolveParentRegistrationForSubstrate substrate repoRoot =
     -- than borrowing the home cluster's parent reference.
     SubstrateAws -> pure (Right Nothing)
 
-renderGatewayTier0Dhall :: Text.Text -> String
-renderGatewayTier0Dhall clusterId =
+renderGatewayTier0Dhall :: ConfigFile -> Text.Text -> Text.Text -> Text.Text -> String
+renderGatewayTier0Dhall config clusterId vaultAddress minioEndpoint =
   Text.unpack
     ( Tier0.renderProjectConfigDhall
         Tier0.defaultDaemonProjectConfig
-          { Tier0.context =
+          { Tier0.parameters = Tier0.configFileToTier0Parameters config
+          , Tier0.context =
               (Tier0.context Tier0.defaultDaemonProjectConfig)
                 { Tier0.cluster_id = clusterId
+                , Tier0.vault_address = vaultAddress
+                , Tier0.minio_endpoint = minioEndpoint
                 }
           }
     )
@@ -2164,6 +2183,7 @@ renderReleaseValuesJson
   -> Maybe KubernetesApiEgressCoordinate
   -> Either String String
 renderReleaseValuesJson substrate definition namespace rootChart settings chartSecrets gatewayEventKeys storageClassName storageBindings maybePublicFqdn maybeRuntimeImage maybeGatewayHostedZoneId maybeGatewayTier0Dhall maybeControlPlaneClusterId maybeControlPlaneParentRef maybeApiEgressCoordinate = do
+  let minioEndpoint = Text.pack minioClusterServiceEndpoint
   baseValues <-
     case chartDefinitionName definition of
       "keycloak-postgres" ->
@@ -2218,6 +2238,7 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
               zoneId
               gatewayTier0Dhall
               clusterId
+              minioEndpoint
           (Nothing, _, _, _) -> Left "gateway requires a public host"
           (_, Nothing, _, _) -> Left "gateway requires a Route 53 hosted zone id"
           (_, _, Nothing, _) -> Left "gateway requires a substrate-specific Tier-0 document"
@@ -2227,12 +2248,13 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
           valuesForBootstrapBrokerWithParent
             clusterId
             maybeControlPlaneParentRef
+            minioEndpoint
             namespace
             rootChart
             maybeRuntimeImage
       "lifecycle-authority" ->
         requireControlPlaneClusterId >>= \clusterId ->
-          valuesForLifecycleAuthority clusterId namespace rootChart maybeRuntimeImage
+          valuesForLifecycleAuthority clusterId minioEndpoint namespace rootChart maybeRuntimeImage
       "provider-worker" ->
         requireControlPlaneClusterId >>= \clusterId ->
           valuesForProviderWorker clusterId namespace rootChart maybeRuntimeImage
@@ -2700,18 +2722,19 @@ valuesForKeycloakPostgres namespace rootChart settings _chartSecrets storageClas
 -- 'attachResourcePlanValues' (the @bootstrap-broker@ workload profile), so it is
 -- intentionally absent here.
 valuesForBootstrapBroker
-  :: Text.Text -> String -> String -> Maybe ResolvedCustomImage -> Either String Value
-valuesForBootstrapBroker clusterId =
-  valuesForBootstrapBrokerWithParent clusterId Nothing
+  :: Text.Text -> Text.Text -> String -> String -> Maybe ResolvedCustomImage -> Either String Value
+valuesForBootstrapBroker clusterId minioEndpoint =
+  valuesForBootstrapBrokerWithParent clusterId Nothing minioEndpoint
 
 valuesForBootstrapBrokerWithParent
   :: Text.Text
   -> Maybe ParentRef
+  -> Text.Text
   -> String
   -> String
   -> Maybe ResolvedCustomImage
   -> Either String Value
-valuesForBootstrapBrokerWithParent clusterId maybeParent namespace rootChart maybeRuntimeImage = do
+valuesForBootstrapBrokerWithParent clusterId maybeParent minioEndpoint namespace rootChart maybeRuntimeImage = do
   resolvedImage <-
     case maybeRuntimeImage of
       Just imageInfo -> Right imageInfo
@@ -2776,14 +2799,14 @@ valuesForBootstrapBrokerWithParent clusterId maybeParent namespace rootChart may
         , "config"
             .= object
               [ "brokerDhall"
-                  .= renderBootstrapBrokerConfigDhall clusterId maybeParent statics
+                  .= renderBootstrapBrokerConfigDhall clusterId minioEndpoint maybeParent statics
               ]
         ]
     )
 
 renderBootstrapBrokerConfigDhall
-  :: Text.Text -> Maybe ParentRef -> BrokerChartStatics.BrokerChartStatics -> String
-renderBootstrapBrokerConfigDhall clusterId maybeParent statics =
+  :: Text.Text -> Text.Text -> Maybe ParentRef -> BrokerChartStatics.BrokerChartStatics -> String
+renderBootstrapBrokerConfigDhall clusterId minioEndpoint maybeParent statics =
   "{ schemaVersion = 2"
     ++ ", cluster_id = "
     ++ renderDhallText clusterId
@@ -2795,8 +2818,10 @@ renderBootstrapBrokerConfigDhall clusterId maybeParent statics =
     ++ show controlPlaneListenPort
     ++ " }"
     ++ ", bootstrap_store = "
-    ++ "{ store_endpoint = \"http://minio.prodbox.svc.cluster.local:9000\""
-    ++ ", store_bucket = \"prodbox-state\""
+    ++ "{ store_endpoint = "
+    ++ renderDhallText minioEndpoint
+    ++ ", store_bucket = "
+    ++ renderDhallText (Text.pack defaultObjectStoreBucket)
     ++ storeKey "vault_storage_generation_key" "vault-storage-generation"
     ++ storeKey "bootstrap_session_fence_key" "bootstrap-session-fence"
     ++ storeKey "prepared_init_envelope_key" "prepared-init-envelope"
@@ -2984,8 +3009,8 @@ controlPlaneProbeTimingValue =
     ]
 
 valuesForLifecycleAuthority
-  :: Text.Text -> String -> String -> Maybe ResolvedCustomImage -> Either String Value
-valuesForLifecycleAuthority clusterId namespace rootChart maybeRuntimeImage =
+  :: Text.Text -> Text.Text -> String -> String -> Maybe ResolvedCustomImage -> Either String Value
+valuesForLifecycleAuthority clusterId minioEndpoint namespace rootChart maybeRuntimeImage =
   valuesForControlPlaneRole
     clusterId
     LifecycleAuthorityRuntime
@@ -2995,8 +3020,8 @@ valuesForLifecycleAuthority clusterId namespace rootChart maybeRuntimeImage =
     (AuthorityStatics.lifecycleAuthorityStaticLivenessPath s)
     (AuthorityStatics.lifecycleAuthorityStaticReadinessPath s)
     ( roleStorePrimaryDhall
-        "http://minio.prodbox.svc.cluster.local:9000"
-        "prodbox-state"
+        minioEndpoint
+        (Text.pack defaultObjectStoreBucket)
     )
     namespace
     rootChart
@@ -3210,8 +3235,9 @@ valuesForGateway
   -> String
   -> String
   -> Text.Text
+  -> Text.Text
   -> Either String Value
-valuesForGateway substrate namespace rootChart settings _gatewayEventKeys sharedHostFqdn maybeRuntimeImage zoneId gatewayTier0Dhall lifecycleAuthorityScope = do
+valuesForGateway substrate namespace rootChart settings _gatewayEventKeys sharedHostFqdn maybeRuntimeImage zoneId gatewayTier0Dhall lifecycleAuthorityScope minioEndpoint = do
   -- Sprint 3.18: the per-node event keys and gateway AWS/MinIO credentials
   -- are Vault KV objects rendered into config.dhall as SecretRef.Vault
   -- references. The legacy 'gatewayEventKeys' parameter is vestigial and
@@ -3284,6 +3310,7 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
           -- it renders the physically separated StatefulSet workloads.
           "emitterPersistence" .= emitterPersistence
         , "tier0" .= object ["prodboxDhall" .= gatewayTier0Dhall]
+        , "minio" .= object ["endpointUrl" .= minioEndpoint]
         , "lifecycleAuthority"
             .= object
               [ "scope" .= lifecycleAuthorityScope
@@ -3943,14 +3970,18 @@ ensureChartStorage plan = do
               mapM
                 (EbsVolume.ebsRequiredVolumeFromChartStorageBinding availabilityZone)
                 awsBindings
-        case requiredResult of
-          Left err -> pure (Left err)
-          Right required -> do
+        settingsResult <- validateAndLoadSettings (chartDeploymentPlanRepoRoot plan)
+        case (requiredResult, settingsResult >>= requireAwsSubstrateProfile) of
+          (Left err, _) -> pure (Left err)
+          (_, Left err) -> pure (Left err)
+          (Right required, Right authoredProfile) -> do
             environment <- getEnvironment
             EbsVolume.ensureRetainedEbsVolumes
               EbsVolume.EbsEnsureInput
                 { EbsVolume.ebsEnsureEnvironment = environment
                 , EbsVolume.ebsEnsureWorkingDirectory = Just (chartDeploymentPlanRepoRoot plan)
+                , EbsVolume.ebsEnsureVolumeType =
+                    awsSubstrateStaticEbsVolumeType authoredProfile
                 }
               required
 

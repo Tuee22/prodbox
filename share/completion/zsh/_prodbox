@@ -242,7 +242,7 @@ _prodbox() {
     4)
       case "$words[2,3]" in
         "test integration")
-          words=("all" "cli" "aws-iam" "dns-aws" "aws-eks" "env" "gateway-daemon" "gateway-pods" "control-plane-counterexample" "teardown-recovery" "certificate-scope" "clean-room-handoff" "ha-rke2-aws" "lifecycle" "pulumi" "eks-volume-rebind" "charts-storage" "charts-platform" "resource-guardrails" "daemon-bootstrap" "pulsar-broker" "charts-vscode" "charts-api" "charts-websocket" "admin-routes" "public-dns" "keycloak-invite" "sealed-vault")
+          words=("all" "cli" "aws-iam" "dns-aws" "aws-eks" "env" "gateway-daemon" "gateway-pods" "control-plane-counterexample" "teardown-recovery" "certificate-scope" "clean-room-handoff" "cascade-qualification" "ha-rke2-aws" "lifecycle" "pulumi" "eks-volume-rebind" "charts-storage" "charts-platform" "resource-guardrails" "daemon-bootstrap" "pulsar-broker" "charts-vscode" "charts-api" "charts-websocket" "admin-routes" "public-dns" "keycloak-invite" "sealed-vault")
           _describe 'subcommand' words
           ;;
       esac
@@ -258,7 +258,7 @@ _prodbox() {
     3)
       case "$words[2,2]" in
         "vault")
-          words=("status" "init" "unseal" "seal" "reconcile" "rotate-unlock-bundle" "rotate-transit-key" "pki")
+          words=("status" "init" "reset-ambiguous-initialization" "unseal" "seal" "reconcile" "rotate-unlock-bundle" "rotate-transit-key" "pki")
           _describe 'subcommand' words
           ;;
       esac

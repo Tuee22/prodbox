@@ -80,6 +80,7 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.Aws.Region (awsGlobalServiceRegion)
 import Prodbox.Lifecycle.AwsInventory
   ( AwsInventoryFailure
   , AwsResourceCoordinate (AwsResourceCoordinate)
@@ -140,7 +141,8 @@ import Prodbox.Lifecycle.Teardown.TaggingApiReach (globalServiceTaggingRegion)
 -- so \"asked and found nothing\" and \"never asked\" stay distinct.
 newtype CascadeTerminalAuditBoundary m = CascadeTerminalAuditBoundary
   { auditIssueQuery
-      :: TerminalAuditQuery -> m (Either ObservationFailure [AwsTagRow])
+      :: TerminalAuditQuery
+      -> m (Either ObservationFailure [AwsTagRow])
   }
 
 -- | The queries whose union is the audit's field of view, in catalog order.
@@ -308,7 +310,13 @@ fixedAuditScenario = do
       )
   bucketArn <- firstShown (mkArn ("arn:aws:s3:::" <> fixedStateBucketName))
   escapeeArn <-
-    firstShown (mkArn "arn:aws:eks:us-east-1:111122223333:cluster/prodbox-escapee")
+    firstShown
+      ( mkArn
+          ( "arn:aws:eks:"
+              <> awsGlobalServiceRegion
+              <> ":111122223333:cluster/prodbox-escapee"
+          )
+      )
   let bucketRow resourceType tag =
         AwsTagRow
           { awsTagRowArn = bucketArn

@@ -226,10 +226,12 @@ a freshly-created operational `prodbox` IAM user on every run where `aws-ses` wa
 retained-by-design steady state) — the opposite of the leak-free goal. Sprint 7.9
 (2026-05-29) switches `runAwsIamHarnessTeardown` to `BypassAllResidueForHarnessRefresh`,
 matching the preflight: the postflight now clears operational `aws.*` and deletes the
-operational `prodbox` IAM user unconditionally with respect to Pulumi residue. Per-run stacks
-are still destroyed separately by `awsPostflightDestroyActions` before the teardown runs; the
-long-lived `aws-ses` stack is correctly *not* stranded because its explicit destroy is still
-admin-credentialed. The
+operational `prodbox` IAM user unconditionally with respect to Pulumi residue. **Current revision
+(Sprint `5.36`).** The later descriptor-bound harness cleanup supersedes the historical
+`awsPostflightDestroyActions`: exact selected per-run nodes run through the closed lifecycle
+dispatcher, and the legacy operational teardown is released only by the lifecycle-owned node-state
+decision. The long-lived `aws-ses` stack is correctly *not* stranded because its explicit destroy
+is still admin-credentialed. The
 `BypassPerRunResidueOnly` constructor remains a valid ADT member (it still refuses on long-lived
 residue) but no longer has a production caller. See
 [DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md → Sprint 7.9](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md).

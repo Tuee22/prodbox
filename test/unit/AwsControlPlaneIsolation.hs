@@ -83,16 +83,28 @@ awsControlPlaneIsolationSuite =
       let enabled = expectRight (enableControllerOwner uidState)
       registerControllerChildArn "arn:aws:elasticloadbalancing:example" enabled
         `shouldBe` Right
-          (ControllerChildArnRegistered descriptor "uid-1" "arn:aws:elasticloadbalancing:example")
+          ( ControllerChildArnsRegistered
+              descriptor
+              "uid-1"
+              ["arn:aws:elasticloadbalancing:example"]
+          )
 
-    it "makes observed child ARN enrichment idempotent and conflict-fenced" $ do
+    it "makes normalized child ARN enrichment monotone and idempotent" $ do
       let uidRegistered =
             expectRight
               (registerControllerOwnerUid "uid-1" (ControllerOwnerRegisteredInert descriptor))
           enabled = expectRight (enableControllerOwner uidRegistered)
           registered = expectRight (registerControllerChildArn "arn:child:1" enabled)
       registerControllerChildArn "arn:child:1" registered `shouldBe` Right registered
-      registerControllerChildArn "arn:child:2" registered `shouldBe` Left ControllerChildArnConflict
+      registerControllerChildArn "arn:child:2" registered
+        `shouldBe` Right
+          ( ControllerChildArnsRegistered
+              descriptor
+              "uid-1"
+              ["arn:child:1", "arn:child:2"]
+          )
+      registerControllerChildArns ["arn:child:2", "arn:child:2"] registered
+        `shouldBe` Left (ControllerChildArnDuplicated "arn:child:2")
 
     it "registers AWS public-edge DNS as a closed Provider intent family" $ do
       let ref = expectRight (mkPublicARecordRef "ZAWS" "edge.example.test." 60 ["192.0.2.10"])
@@ -117,7 +129,7 @@ descriptor :: ControllerOwnerDescriptor
 descriptor =
   ControllerOwnerDescriptor
     { controllerOwnerAccount = "123456789012"
-    , controllerOwnerRegion = "us-east-1"
+    , controllerOwnerRegion = (fixtureAwsRegion FixtureUsEast1)
     , controllerOwnerCluster = "prodbox-eks"
     , controllerOwnerResourceName = "public-edge"
     , controllerOwnerManifestDigest = "sha256:manifest"

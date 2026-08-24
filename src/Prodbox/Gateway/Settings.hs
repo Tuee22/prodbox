@@ -88,6 +88,7 @@ import Prodbox.Gateway.Types
   , Orders (..)
   , PeerEndpoint (..)
   , encodeOrdersCbor
+  , mkGatewayMinioEndpoint
   )
 import Prodbox.Http.Client (renderHttpError)
 import Prodbox.Settings.SecretRef
@@ -143,8 +144,6 @@ data DaemonBootDhall = DaemonBootDhall
   -- object-store access. Sibling field on @boot@ rather than nested inside
   -- @minio_creds@ so the endpoint can be rendered by the chart-side
   -- ConfigMap while credentials stay Vault-backed SecretRef values.
-  -- Canonical home value:
-  -- @http://minio.prodbox.svc.cluster.local:9000@.
   }
   deriving (Eq, Show, Generic, FromDhall)
 
@@ -258,6 +257,7 @@ toDaemonConfigWith
           resolvedEventKeys <- eventKeysResult
           resolvedAwsCreds <- awsCredsResult
           resolvedMinioCreds <- minioCredsResult
+          minioEndpoint <- mkGatewayMinioEndpoint (Text.unpack <$> maybeMinioEndpoint)
           Right
             DaemonConfig
               { daemonNodeId = Text.unpack nodeIdText
@@ -277,7 +277,7 @@ toDaemonConfigWith
               , daemonDnsWriteGate = toDnsWriteGate <$> maybeDnsGate
               , daemonAwsCreds = fromMaybe Nothing resolvedAwsCreds
               , daemonMinioCreds = resolvedMinioCreds
-              , daemonMinioEndpointUrl = Text.unpack <$> maybeMinioEndpoint
+              , daemonMinioEndpoint = minioEndpoint
               }
    where
     validateDaemonStaticFields = do
@@ -337,6 +337,7 @@ toDaemonConfigPreVault
     } = do
     validateDaemonStaticFields
     lifecycleAuthority <- traverse toGatewayLifecycleAuthority maybeLifecycleAuthority
+    minioEndpoint <- mkGatewayMinioEndpoint (Text.unpack <$> maybeMinioEndpoint)
     Right
       DaemonConfig
         { daemonNodeId = Text.unpack nodeIdText
@@ -356,7 +357,7 @@ toDaemonConfigPreVault
         , daemonDnsWriteGate = toDnsWriteGate <$> maybeDnsGate
         , daemonAwsCreds = Nothing
         , daemonMinioCreds = Nothing
-        , daemonMinioEndpointUrl = Text.unpack <$> maybeMinioEndpoint
+        , daemonMinioEndpoint = minioEndpoint
         }
    where
     validateDaemonStaticFields = do

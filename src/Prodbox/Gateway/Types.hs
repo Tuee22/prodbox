@@ -11,6 +11,9 @@ module Prodbox.Gateway.Types
   , DnsWriteGate (..)
   , GatewayAwsCreds (..)
   , GatewayMinioCreds (..)
+  , GatewayMinioEndpoint
+  , mkGatewayMinioEndpoint
+  , gatewayMinioEndpointUrl
   , GatewayVaultAuth (..)
   , GatewayLifecycleAuthority (..)
   , ChannelName (..)
@@ -33,6 +36,8 @@ where
 import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Data.Bifunctor (first)
 import Data.ByteString.Lazy qualified as BL
+import Data.Char (isSpace, toLower)
+import Data.List (isPrefixOf)
 import Data.Time.Clock (UTCTime)
 import GHC.Generics (Generic)
 import Prodbox.Cbor (CborPayload (..), cborPayloadFromJsonValue)
@@ -125,6 +130,46 @@ data GatewayMinioCreds = GatewayMinioCreds
   }
   deriving (Eq, Show)
 
+-- | Validated Gateway object-store endpoint observation. Absence remains an
+-- explicit unavailable state because pre-Vault and non-object-store daemon
+-- modes can decode without exercising continuity storage. A consumer must
+-- call 'gatewayMinioEndpointUrl', which refuses that state and therefore
+-- cannot substitute a compiled deployment endpoint.
+data GatewayMinioEndpoint
+  = GatewayMinioEndpointUnavailable
+  | GatewayMinioEndpointConfigured String
+  deriving (Eq, Show)
+
+mkGatewayMinioEndpoint :: Maybe String -> Either String GatewayMinioEndpoint
+mkGatewayMinioEndpoint maybeRaw =
+  case maybeRaw of
+    Nothing -> Right GatewayMinioEndpointUnavailable
+    Just raw
+      | null raw -> Left "boot.minio_endpoint_url must not be empty when set"
+      | any isSpace raw -> Left "boot.minio_endpoint_url must not contain whitespace"
+      | otherwise ->
+          case endpointAuthority raw of
+            Nothing -> Left "boot.minio_endpoint_url must be an http:// or https:// URL"
+            Just authority
+              | null authority -> Left "boot.minio_endpoint_url must include an authority"
+              | otherwise -> Right (GatewayMinioEndpointConfigured raw)
+
+gatewayMinioEndpointUrl :: GatewayMinioEndpoint -> Either String String
+gatewayMinioEndpointUrl endpoint =
+  case endpoint of
+    GatewayMinioEndpointUnavailable ->
+      Left "boot.minio_endpoint_url is required for Gateway object-store access"
+    GatewayMinioEndpointConfigured url -> Right url
+
+endpointAuthority :: String -> Maybe String
+endpointAuthority raw
+  | "http://" `isPrefixOf` lower = Just (authorityAfter 7)
+  | "https://" `isPrefixOf` lower = Just (authorityAfter 8)
+  | otherwise = Nothing
+ where
+  lower = map toLower raw
+  authorityAfter prefixLength = takeWhile (`notElem` ("/?#" :: String)) (drop prefixLength raw)
+
 data GatewayVaultAuth = GatewayVaultAuth
   { gatewayVaultAddress :: String
   , gatewayVaultAuthPath :: String
@@ -162,11 +207,10 @@ data DaemonConfig = DaemonConfig
   , daemonDnsWriteGate :: Maybe DnsWriteGate
   , daemonAwsCreds :: Maybe GatewayAwsCreds
   , daemonMinioCreds :: Maybe GatewayMinioCreds
-  , -- \^ In-cluster MinIO Service endpoint URL for gateway-owned
-    --   object-store access. Sourced from @boot.minio_endpoint_url@ of the
-    --   mounted Dhall config. Canonical home-substrate value:
-    --   @http://minio.prodbox.svc.cluster.local:9000@.
-    daemonMinioEndpointUrl :: Maybe String
+  , -- \^ Validated endpoint observation sourced from
+    --   @boot.minio_endpoint_url@. Missing configuration remains explicitly
+    --   unavailable; consumers cannot obtain a URL without handling refusal.
+    daemonMinioEndpoint :: GatewayMinioEndpoint
   }
   deriving (Eq, Show)
 

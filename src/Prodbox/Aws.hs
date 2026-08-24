@@ -7,10 +7,15 @@ module Prodbox.Aws
   , AwsTeardownInput (..)
   , AwsTeardownLongLivedPreflight
   , ConfigSetupInput (..)
+  , HarnessDeploymentInput (..)
   , QuotaSpec (..)
   , QuotaStatus (..)
   , configFromSetupInput
   , harnessConfigSetupInput
+  , harnessConfigSetupInputFrom
+  , harnessGeneratedConfig
+  , harnessReceiveSubdomainLabel
+  , existingHarnessConfigDisposition
   , regenerateConfigFromTestSecrets
   , IamProbe (..)
   , PulumiResiduePolicy (..)
@@ -23,6 +28,7 @@ module Prodbox.Aws
   , applyAwsRegionQuotaPreflight
   , applyAwsTeardown
   , awsRegionQuotaPreflightFromStatuses
+  , awsHarnessAdminScope
   , assertOperationalTeardownComplete
   , awsErrorCodeIsTransient
   , awsSpotPriceHistoryArgs
@@ -33,7 +39,6 @@ module Prodbox.Aws
   , buildIamPolicyJson
   , checkPulumiResidueBeforeTeardown
   , harnessPostflightResiduePolicy
-  , residuePolicyBypassesLongLivedProtection
   , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
   , operationalCredentialsClearedDecision
@@ -108,6 +113,7 @@ import Data.List
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.IO qualified as TextIO
 import Data.Vector qualified as Vector
 import Numeric.Natural (Natural)
 import Prodbox.Aws.AdminCredentials
@@ -145,10 +151,26 @@ import Prodbox.CLI.Output
   , writeOutput
   , writeOutputLine
   )
+import Prodbox.Capacity.Config
+  ( ResourcePlan (..)
+  , defaultResourcePlan
+  )
+import Prodbox.Capacity.HostProbe
+  ( deriveHostFittingCapacity
+  , observeHostCapacity
+  )
 import Prodbox.Capacity.Storage
   ( AwsRegionQuotaObservation (..)
   , StorageCapacityRefusal
   , regionQuotaPreflight
+  )
+import Prodbox.Cluster.Topology
+  ( ClusterTopology
+  , clusterTopologyMachines
+  , machineIdText
+  , machine_id
+  , mkSingleMachineRke2Topology
+  , renderTopologyError
   )
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
@@ -197,6 +219,7 @@ import Prodbox.Lifecycle.ResourceRegistry
   , residueGateRefusalList
   )
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
+import Prodbox.Lifecycle.Teardown.Model qualified as LifecycleModel
 import Prodbox.Repo
   ( resolveTier0ConfigPath
   , tier0ConfigFileName
@@ -211,8 +234,10 @@ import Prodbox.Scaling.Spot
 import Prodbox.Settings
   ( AcmeSection (..)
   , AwsCredentialsRef (..)
+  , CapacitySection (..)
   , ConfigFile (..)
   , Credentials (..)
+  , DeploymentContextInput (..)
   , DeploymentSection (..)
   , DomainSection (..)
   , MetallbBgpPeer (..)
@@ -225,11 +250,12 @@ import Prodbox.Settings
   , loadConfigFile
   , parsePublicEdgeAdvertisementMode
   , requireSesCaptureBucket
-  , supportedPublicHostname
   , validateAndLoadBootstrapSettings
   , validateAndLoadSettings
   , validateAwsBootstrapConfig
+  , validateConfigWithContext
   , validatePublicEdgeDeployment
+  , validatedDeploymentContextFor
   )
 import Prodbox.Settings.Coordinate
   ( AwsRegion
@@ -249,17 +275,24 @@ import Prodbox.Substrate
   )
 import Prodbox.Vault.Host
   ( TestSecrets
-      ( pulumi_state_backend_bucket_name
+      ( legacy_cluster_id
+      , legacy_machine_id
+      , legacy_minio_endpoint
+      , legacy_vault_address
+      , pulumi_state_backend_bucket_name
       , pulumi_state_backend_region
       , route53_zone_id
       , ses_capture_bucket
       , ses_receive_subdomain
       , ses_sender_domain
+      , test_acme_email
+      , test_served_fqdn
       )
   , loadTestSecrets
   )
 import System.Directory
-  ( doesFileExist
+  ( createDirectoryIfMissing
+  , doesFileExist
   )
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
@@ -344,13 +377,6 @@ data IamUserCleanupResult = IamUserCleanupResult
   }
   deriving (Eq, Show)
 
-data EksIamOrphanCleanupResult = EksIamOrphanCleanupResult
-  { eksIamOrphanCleanupSkippedReason :: Maybe Text
-  , eksIamOrphanCleanupDeletedPolicies :: [Text]
-  , eksIamOrphanCleanupDeletedRoles :: [Text]
-  }
-  deriving (Eq, Show)
-
 -- | Sprint 7.20: the observed AWS-side state of the operational @prodbox@
 -- IAM user AFTER teardown, fed to the pure teardown-completeness
 -- classifier 'residueFromProbe'. Both facts are carried independently so
@@ -425,8 +451,8 @@ data AwsTeardownInput = AwsTeardownInput
 
 -- | Per-run Pulumi stack names per
 -- @DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes@. These
--- stacks are auto-managed by the test runner's
--- 'awsPostflightDestroyActions' and may safely be bypassed by the
+-- stacks are auto-managed by the descriptor-bound lifecycle cleanup client
+-- and may safely be bypassed by the
 -- harness-internal 'BypassPerRunResidueOnly' policy.
 -- Sprint 4.27: derived from the 'StackDescriptor' SSoT
 -- ('perRunStackDescriptorNames') — the @PerRun@-class Pulumi-managed
@@ -469,35 +495,20 @@ partitionResidueByLifecycle = partition (\(name, _) -> name `elem` perRunStackNa
 -- Sprint 7.9 'BypassAllResidueForHarnessRefresh'). The Sprint 7.9 stranding fix
 -- is retained — clearing operational @aws.*@ still cannot strand @aws-ses@
 -- (which is admin-credentialed post-Sprint-4.10) and proceeds unconditionally
--- (per-run residue is destroyed separately by 'awsPostflightDestroyActions').
+-- (per-run residue is reconciled first by the descriptor-bound lifecycle client).
 -- But the all-residue bypass conflated destroyability with should-destroy: the
 -- @LCPC-2026-07-11@ forensics show the all-residue scope structurally bypasses
 -- the long-lived protection that the lifecycle preconditions otherwise enforce.
 -- The narrowed per-run scope restores that protection
--- ('residuePolicyBypassesLongLivedProtection' is 'False'), so the postflight is
+-- by construction, so the postflight is
 -- structurally unable to authorize destroying the retained @aws-ses@ /
 -- @public-edge-tls@ stacks while still clearing @aws.*@ + per-run residue.
 harnessPostflightResiduePolicy :: PulumiResiduePolicy
 harnessPostflightResiduePolicy = BypassPerRunResidueForHarnessRefresh
 
--- | Sprint 7.34: whether a residue policy bypasses the long-lived
--- cross-substrate protection — i.e. whether it authorizes proceeding without
--- refusing/protecting the retained @aws-ses@ and @public-edge-tls@ stacks. Only
--- the superseded 'BypassAllResidueForHarnessRefresh' does; every other policy
--- (including the narrowed 'BypassPerRunResidueForHarnessRefresh' now used by the
--- postflight) keeps the long-lived protection intact. Pure SSoT so the
--- structural narrowing is unit-testable without IO.
-residuePolicyBypassesLongLivedProtection :: PulumiResiduePolicy -> Bool
-residuePolicyBypassesLongLivedProtection policy = case policy of
-  BypassAllResidueForHarnessRefresh -> True
-  RefuseOnAnyResidue -> False
-  DestroyPulumiResidueFirst -> False
-  AcceptOrphanResidue -> False
-  BypassPerRunResidueOnly -> False
-  BypassPerRunResidueForHarnessRefresh -> False
-
 -- | Sprint 7.7 — canonical destroy order for
--- 'DestroyPulumiResidueFirst'. Mirrors 'awsPostflightDestroyActions':
+-- 'DestroyPulumiResidueFirst'. This is the operator-driven residue policy's
+-- own projection:
 -- subzone first (depends on EKS for nothing but is cheap to remove),
 -- then eks (the heavy stack), then test (HA-RKE2 EC2), then ses last
 -- because its re-creation is the most expensive (5–30 min DKIM
@@ -524,7 +535,8 @@ data ConfigSetupInput = ConfigSetupInput
   , configSetupDemoFqdnInput :: Text
   , configSetupDemoTtlInput :: Natural
   , configSetupAcmeEmailInput :: Text
-  , configSetupAcmeServerInput :: Text
+  , configSetupDeploymentContextInput :: DeploymentContextInput
+  , configSetupClusterTopologyInput :: ClusterTopology
   , configSetupDevModeInput :: Bool
   , configSetupBootstrapPublicIpOverrideInput :: Maybe Text
   , configSetupPulumiEnableDnsBootstrapInput :: Bool
@@ -539,23 +551,23 @@ data ConfigSetupInput = ConfigSetupInput
   }
   deriving (Eq, Show)
 
-zeroSslAcmeServer :: Text
-zeroSslAcmeServer = "https://acme.zerossl.com/v2/DV90"
+-- | The run-owned coordinates supplied to the shared non-interactive config
+-- builder. The legacy aggregate constructs this from explicit fixture fields;
+-- topology mode constructs it from one validated @RunVariant@ plus its stable
+-- suite/variant id. Neither constructor reads 'defaultConfigFile' for a
+-- deployment-varying answer.
+data HarnessDeploymentInput = HarnessDeploymentInput
+  { harnessDeploymentContext :: DeploymentContextInput
+  , harnessDeploymentTopology :: ClusterTopology
+  , harnessDeploymentStorageRoot :: FilePath
+  }
+  deriving (Eq, Show)
 
 prodboxIamUserName :: Text
 prodboxIamUserName = "prodbox"
 
 prodboxIamInlinePolicyName :: Text
 prodboxIamInlinePolicyName = "prodbox-inline"
-
-awsEksFixedIamPolicyName :: Text
-awsEksFixedIamPolicyName = "aws-eks-test-aws-lb-controller"
-
-awsEksFixedIamRoleNames :: [Text]
-awsEksFixedIamRoleNames =
-  [ "aws-eks-test-aws-lb-controller"
-  , "aws-eks-test-ebs-csi-driver"
-  ]
 
 baselineQuotaSpecs :: [QuotaSpec]
 baselineQuotaSpecs =
@@ -888,6 +900,23 @@ renderConfigSetupPlan repoRoot input =
     , "CONFIG_PATH=" ++ canonicalTier0ConfigDisplayPath repoRoot
     , "ZONE_ID=" ++ Text.unpack (configSetupRoute53ZoneIdInput input)
     , "PUBLIC_HOST=" ++ Text.unpack (configSetupDemoFqdnInput input)
+    , "ACME_CONTACT=" ++ Text.unpack (configSetupAcmeEmailInput input)
+    , "CLUSTER_ID="
+        ++ Text.unpack
+          (contextInputClusterId (configSetupDeploymentContextInput input))
+    , "MACHINE_IDS="
+        ++ intercalate
+          ","
+          ( map
+              (Text.unpack . machineIdText . machine_id)
+              (clusterTopologyMachines (configSetupClusterTopologyInput input))
+          )
+    , "VAULT_ADDRESS="
+        ++ Text.unpack
+          (contextInputVaultAddress (configSetupDeploymentContextInput input))
+    , "MINIO_ENDPOINT="
+        ++ Text.unpack
+          (contextInputMinioEndpoint (configSetupDeploymentContextInput input))
     , "POLICY_TIER=" ++ renderPolicyTier (configSetupPolicyTierInput input)
     ]
 
@@ -1065,11 +1094,14 @@ interactiveConfigSetupInput repoRoot = do
   credentials <- promptAdminCredentialsWithRegionChoice repoRoot
   zone <- promptHostedZoneChoice repoRoot credentials
   let zoneName = hostedZoneChoiceName zone
-  writeOutputLine ("The supported public hostname is fixed: " ++ Text.unpack supportedPublicHostname)
+  demoFqdnRaw <- promptText "Served public FQDN" Nothing
   demoTtl <- promptInt "Demo DNS TTL seconds" 60
   showAcmeProviderGuidance
   acmeEmailRaw <- promptText "ACME notification email (certificate expiry notices)" Nothing
-  let acmeServerValue = zeroSslAcmeServer
+  clusterIdRaw <- promptText "Cluster identity" Nothing
+  machineIdRaw <- promptText "Home machine identity" Nothing
+  vaultAddressRaw <- promptText "Vault endpoint URL" Nothing
+  minioEndpointRaw <- promptText "MinIO endpoint URL" Nothing
   showPolicyTierGuidance
   policyIndex <-
     promptNumberedChoice "Choose the operational IAM policy tier number" ["full", "core"] 0
@@ -1098,10 +1130,13 @@ interactiveConfigSetupInput repoRoot = do
     credentials
     (hostedZoneChoiceId zone)
     zoneName
-    (Text.unpack supportedPublicHostname)
+    demoFqdnRaw
     demoTtl
     acmeEmailRaw
-    acmeServerValue
+    clusterIdRaw
+    machineIdRaw
+    vaultAddressRaw
+    minioEndpointRaw
     devMode
     bootstrapOverrideRaw
     pulumiEnableDnsBootstrap
@@ -1282,8 +1317,7 @@ showRegionChoiceGuidance = do
 showHostedZoneChoiceGuidance :: IO ()
 showHostedZoneChoiceGuidance = do
   writeOutputLine "Route 53 hosted zone guidance:"
-  writeOutputLine
-    ("Choose the public hosted zone that owns " ++ Text.unpack supportedPublicHostname ++ ".")
+  writeOutputLine "Choose the public hosted zone that owns the served FQDN you will author."
   writeOutputLine "If the desired zone is missing, open AWS console -> Route 53 -> Hosted zones,"
   writeOutputLine "create or delegate the zone, then rerun this command."
   writeOutputLine ""
@@ -1336,7 +1370,6 @@ runAwsIamHarnessSetup :: FilePath -> PolicyTier -> IO String
 runAwsIamHarnessSetup repoRoot policyTier = do
   credentials <- loadHarnessAdminCredentials repoRoot
   existingIdentity <- probeConfiguredOperationalIdentity repoRoot
-  eksIamOrphanCleanup <- cleanupAwsEksIamOrphans repoRoot credentials
   preflightTeardownResult <-
     applyAwsTeardown
       repoRoot
@@ -1382,7 +1415,6 @@ runAwsIamHarnessSetup repoRoot policyTier = do
   pure
     ( renderAwsIamHarnessSetupReport
         existingIdentity
-        eksIamOrphanCleanup
         preflightTeardown
         preflightAssociatedCleanup
         preflightConfigCleared
@@ -1435,8 +1467,8 @@ runAwsIamHarnessTeardown repoRoot = do
           -- Sprint 7.9's BypassAllResidueForHarnessRefresh). Clearing
           -- operational aws.* still cannot strand aws-ses (admin-credentialed
           -- against the long-lived S3 backend post-Sprint-4.10) and proceeds
-          -- unconditionally; per-run stacks are destroyed separately by
-          -- awsPostflightDestroyActions (which retains aws-ses). The 7.9 fix is
+          -- unconditionally; exact per-run nodes are reconciled first by the
+          -- descriptor-bound lifecycle client (which retains aws-ses). The 7.9 fix is
           -- retained, but the all-residue scope structurally bypassed the
           -- long-lived protection; the per-run scope restores it, so the
           -- postflight is structurally unable to authorize destroying aws-ses /
@@ -1527,6 +1559,21 @@ harnessAdminCredentialsConfigured credentials =
   not (Text.null (Text.strip (access_key_id credentials)))
     && not (Text.null (Text.strip (secret_access_key credentials)))
     && not (Text.null (Text.strip (region credentials)))
+
+-- | Read-only account/region proof for the harness cleanup descriptor.  The
+-- account comes from STS under the same ephemeral admin fixture the harness
+-- setup consumes; the region is the validated credential region.  This runs
+-- before IAM setup so the cleanup run can be registered before the first AWS
+-- mutation.
+awsHarnessAdminScope :: FilePath -> IO LifecycleModel.AwsScope
+awsHarnessAdminScope repoRoot = do
+  credentials <- loadHarnessAdminCredentials repoRoot
+  accountId <- awsCallerAccountId repoRoot credentials
+  pure
+    ( LifecycleModel.AwsScope
+        (LifecycleModel.AwsAccountId accountId)
+        (LifecycleModel.AwsRegion (region credentials))
+    )
 
 promptRegionChoice :: FilePath -> Credentials -> IO Text
 promptRegionChoice repoRoot credentials = do
@@ -1670,7 +1717,10 @@ validateConfigSetupInput
   -> String
   -> Int
   -> String
-  -> Text
+  -> String
+  -> String
+  -> String
+  -> String
   -> Bool
   -> String
   -> Bool
@@ -1683,11 +1733,17 @@ validateConfigSetupInput
   -> String
   -> PolicyTier
   -> IO ConfigSetupInput
-validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl acmeEmailRaw acmeServer devMode bootstrapOverrideRaw pulumiEnableDnsBootstrap advertisementModeRaw bgpPeersRaw envoyGatewayControllerReplicasRaw envoyGatewayDataPlaneReplicasRaw apiReplicasRaw websocketReplicasRaw manualPvHostRootRaw policyTier = do
+validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl acmeEmailRaw clusterIdRaw machineIdRaw vaultAddressRaw minioEndpointRaw devMode bootstrapOverrideRaw pulumiEnableDnsBootstrap advertisementModeRaw bgpPeersRaw envoyGatewayControllerReplicasRaw envoyGatewayDataPlaneReplicasRaw apiReplicasRaw websocketReplicasRaw manualPvHostRootRaw policyTier = do
   normalizedAdminCredentials <- validateAdminCredentialsInput adminCredentials
   let normalizedZoneId = Text.strip zoneId
       normalizedDemoFqdn = normalizeFqdn (Text.pack demoFqdnRaw)
       normalizedAcmeEmail = Text.strip (Text.pack acmeEmailRaw)
+      deploymentContextInput =
+        DeploymentContextInput
+          { contextInputClusterId = Text.strip (Text.pack clusterIdRaw)
+          , contextInputVaultAddress = Text.strip (Text.pack vaultAddressRaw)
+          , contextInputMinioEndpoint = Text.strip (Text.pack minioEndpointRaw)
+          }
       normalizedBootstrapOverride = normalizeOptionalText (Text.pack bootstrapOverrideRaw)
       -- Sprint 1.80: the one place a string becomes a mode. Every other site
       -- consumes the union, so no downstream comparison decides what the
@@ -1713,16 +1769,14 @@ validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl ac
     throwAws "Route 53 zone ID must look like a hosted-zone ID (for example Z1234)"
   unless (isValidFqdn normalizedDemoFqdn) $
     throwAws "demo_fqdn must be a valid fully qualified domain name"
-  unless (Text.toLower normalizedDemoFqdn == Text.toLower supportedPublicHostname) $
-    throwAws ("demo_fqdn must be " ++ Text.unpack supportedPublicHostname)
   either throwAws pure (validateHostedZoneAlignment normalizedDemoFqdn zoneName)
   when (demoTtl < 30 || demoTtl > 86400) (throwAws "demo_ttl must be between 30 and 86400 seconds")
   unless
     (hasValidEmailShape normalizedAcmeEmail)
     (throwAws "acme_email must be a valid email address")
-  unless
-    ("https://" `Text.isPrefixOf` Text.toLower acmeServer)
-    (throwAws "acme_server must be an https:// URL")
+  configuredTopology <-
+    either (throwAws . renderTopologyError) pure (mkSingleMachineRke2Topology (Text.pack machineIdRaw))
+  _ <- either throwAws pure (validatedDeploymentContextFor deploymentContextInput configuredTopology)
   case normalizedAdvertisementMode of
     Nothing -> throwAws "public_edge_advertisement_mode must be l2 or bgp"
     Just _ -> either throwAws pure (validatePublicEdgeDeployment normalizedDeployment)
@@ -1733,7 +1787,8 @@ validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl ac
       , configSetupDemoFqdnInput = normalizedDemoFqdn
       , configSetupDemoTtlInput = fromIntegral demoTtl
       , configSetupAcmeEmailInput = normalizedAcmeEmail
-      , configSetupAcmeServerInput = Text.strip acmeServer
+      , configSetupDeploymentContextInput = deploymentContextInput
+      , configSetupClusterTopologyInput = configuredTopology
       , configSetupDevModeInput = devMode
       , configSetupBootstrapPublicIpOverrideInput = normalizedBootstrapOverride
       , configSetupPulumiEnableDnsBootstrapInput = pulumiEnableDnsBootstrap
@@ -1773,12 +1828,12 @@ applyAwsTeardown repoRoot input = do
     AcceptOrphanResidue -> runTeardown
     BypassAllResidueForHarnessRefresh -> runTeardown
     -- Sprint 7.34: the narrowed postflight policy clears operational @aws.*@
-    -- unconditionally (per-run residue is destroyed separately by
-    -- 'awsPostflightDestroyActions', so it never strands @aws.*@ — the Sprint
+    -- unconditionally (per-run residue is reconciled first by the
+    -- descriptor-bound lifecycle client, so it never strands @aws.*@ — the Sprint
     -- 7.9 stranding fix is retained). It is behaviourally identical to
     -- 'BypassAllResidueForHarnessRefresh' for the @aws.*@ clear, but it is
     -- PER-RUN-SCOPED: it does not bypass the long-lived protection
-    -- ('residuePolicyBypassesLongLivedProtection' is 'False'), so the postflight
+    -- by construction, so the postflight
     -- is structurally unable to authorize destroying the retained @aws-ses@ /
     -- @public-edge-tls@ stacks.
     BypassPerRunResidueForHarnessRefresh -> runTeardown
@@ -2390,7 +2445,7 @@ renderPulumiResidueRefusal residue =
 -- | Sprint 7.7 — refusal renderer for the harness-internal
 -- 'BypassPerRunResidueOnly' policy. Lists only the long-lived stacks
 -- that block the teardown (per-run stacks are intentionally not
--- mentioned because 'awsPostflightDestroyActions' handles them
+-- mentioned because the descriptor-bound lifecycle client handles them
 -- separately). Frames the recovery as "destroy the long-lived stack
 -- via its canonical command, then re-run" since the harness has no
 -- analog of @--destroy-pulumi-residue@.
@@ -2552,7 +2607,6 @@ configFromSetupInput currentConfig input =
     , acme =
         (acme currentConfig)
           { email = configSetupAcmeEmailInput input
-          , server = configSetupAcmeServerInput input
           }
     , deployment =
         DeploymentSection
@@ -2567,27 +2621,14 @@ configFromSetupInput currentConfig input =
           , websocket_scaling = configSetupWebsocketScalingInput input
           }
     , storage = StorageSection {manual_pv_host_root = configSetupManualPvHostRootInput input}
+    , cluster_topology = configSetupClusterTopologyInput input
     }
-
--- | The ACME registration email the harness bakes into the generated config
--- (Sprint 5.10), used non-interactively in place of the @prodbox config setup@
--- ACME-email prompt.
---
--- This address is REAL and deliberately so: it becomes the @contact@ on the
--- ACME account. A reserved-domain address is not an option — ACME servers
--- reject contacts at reserved domains outright, so account registration fails
--- and no certificate is ever issued. It is non-secret: an email address is not
--- a credential. Recorded here as real rather than left ambiguous
--- (vault_doctrine.md §20.1, the declared-real arm).
-harnessAcmeEmail :: Text
-harnessAcmeEmail = "matthewnowak@gmail.com"
 
 -- | Assemble a 'ConfigSetupInput' non-interactively for the test harness — the
 -- no-prompt analog of 'interactiveConfigSetupInput' (Sprint 5.10, the
--- @demoTestConfig@ idiom). The cleartext @route53.zone_id@ comes from
--- @test-secrets.dhall@; @acme.email@ is the baked operator default; every other knob is
--- carried over from the current (generated-skeleton) config, whose defaults
--- already match @config setup@.
+-- @demoTestConfig@ idiom). Sprint 5.37 makes every deployment-varying answer
+-- explicit: public-edge/infra names come from @test-secrets.dhall@ and the
+-- cluster/topology/endpoints/root arrive as one 'HarnessDeploymentInput'.
 harnessConfigSetupInput
   :: FilePath -> ConfigFile -> PolicyTier -> IO (Either String ConfigSetupInput)
 harnessConfigSetupInput repoRoot currentConfig policyTier = do
@@ -2597,115 +2638,383 @@ harnessConfigSetupInput repoRoot currentConfig policyTier = do
       pure (Left "harness config regeneration requires test-secrets.dhall (absent).")
     Just (Left err) ->
       pure (Left ("harness config regeneration failed to decode test-secrets.dhall: " ++ err))
-    Just (Right secrets) -> do
-      credentialsResult <- acquireAdminAwsCredentials repoRoot
-      pure $ case credentialsResult of
-        Left err -> Left err
-        Right credentials ->
-          Right
-            ConfigSetupInput
-              { configSetupAdminCredentialsInput = credentials
-              , configSetupRoute53ZoneIdInput =
-                  harnessPreferNonEmpty (route53_zone_id secrets) (zone_id (route53 currentConfig))
-              , configSetupDemoFqdnInput = demo_fqdn (domain currentConfig)
-              , configSetupDemoTtlInput = demo_ttl (domain currentConfig)
-              , configSetupAcmeEmailInput = harnessAcmeEmail
-              , configSetupAcmeServerInput = zeroSslAcmeServer
-              , configSetupDevModeInput = dev_mode (deployment currentConfig)
-              , configSetupBootstrapPublicIpOverrideInput =
-                  bootstrap_public_ip_override (deployment currentConfig)
-              , configSetupPulumiEnableDnsBootstrapInput =
-                  pulumi_enable_dns_bootstrap (deployment currentConfig)
-              , configSetupPublicEdgeAdvertisementModeInput =
-                  public_edge_advertisement_mode (deployment currentConfig)
-              , configSetupPublicEdgeBgpPeersInput =
-                  public_edge_bgp_peers (deployment currentConfig)
-              , configSetupEnvoyGatewayControllerScalingInput =
-                  envoy_gateway_controller_scaling (deployment currentConfig)
-              , configSetupEnvoyGatewayDataPlaneScalingInput =
-                  envoy_gateway_data_plane_scaling (deployment currentConfig)
-              , configSetupApiScalingInput = api_scaling (deployment currentConfig)
-              , configSetupWebsocketScalingInput = websocket_scaling (deployment currentConfig)
-              , configSetupManualPvHostRootInput = manual_pv_host_root (storage currentConfig)
-              , configSetupPolicyTierInput = policyTier
-              }
+    Just (Right secrets) -> harnessConfigSetupInputWithSecrets repoRoot currentConfig policyTier secrets
 
--- | Test-harness preflight (Sprint 5.10): regenerate the binary-sibling
--- @prodbox.dhall@ from @test-secrets.dhall@ + baked defaults through the shared
+harnessConfigSetupInputWithSecrets
+  :: FilePath
+  -> ConfigFile
+  -> PolicyTier
+  -> TestSecrets
+  -> IO (Either String ConfigSetupInput)
+harnessConfigSetupInputWithSecrets repoRoot currentConfig policyTier secrets =
+  case legacyHarnessDeploymentInput secrets of
+    Left err -> pure (Left err)
+    Right deploymentInput ->
+      case harnessConfigSetupInputFrom
+        currentConfig
+        policyTier
+        secrets
+        emptyHarnessValidationCredentials
+        deploymentInput of
+        Left err -> pure (Left err)
+        Right _ -> do
+          credentialsResult <- acquireAdminAwsCredentials repoRoot
+          pure $ do
+            credentials <- credentialsResult
+            harnessConfigSetupInputFrom
+              currentConfig
+              policyTier
+              secrets
+              credentials
+              deploymentInput
+
+emptyHarnessValidationCredentials :: Credentials
+emptyHarnessValidationCredentials =
+  Credentials
+    { access_key_id = ""
+    , secret_access_key = ""
+    , session_token = Nothing
+    , region = ""
+    }
+
+legacyHarnessDeploymentInput
+  :: TestSecrets -> Either String HarnessDeploymentInput
+legacyHarnessDeploymentInput secrets = do
+  machineId <- requiredHarnessField "legacy_machine_id" (legacy_machine_id secrets)
+  topology <-
+    case mkSingleMachineRke2Topology machineId of
+      Left err -> Left (renderTopologyError err)
+      Right value -> Right value
+  clusterId <- requiredHarnessField "legacy_cluster_id" (legacy_cluster_id secrets)
+  vaultAddress <- requiredHarnessField "legacy_vault_address" (legacy_vault_address secrets)
+  minioEndpoint <- requiredHarnessField "legacy_minio_endpoint" (legacy_minio_endpoint secrets)
+  Right
+    HarnessDeploymentInput
+      { harnessDeploymentContext =
+          DeploymentContextInput
+            { contextInputClusterId = clusterId
+            , contextInputVaultAddress = vaultAddress
+            , contextInputMinioEndpoint = minioEndpoint
+            }
+      , harnessDeploymentTopology = topology
+      , harnessDeploymentStorageRoot =
+          ".test-data" </> "legacy-aggregate"
+      }
+
+-- | Pure shared harness builder. It refuses every fixture-owned field before
+-- the writer is reachable and carries the derived/explicit deployment input
+-- through the same 'ConfigSetupInput' used by interactive production setup.
+harnessConfigSetupInputFrom
+  :: ConfigFile
+  -> PolicyTier
+  -> TestSecrets
+  -> Credentials
+  -> HarnessDeploymentInput
+  -> Either String ConfigSetupInput
+harnessConfigSetupInputFrom currentConfig policyTier secrets credentials deploymentInput = do
+  zoneId <- requiredHarnessField "route53_zone_id" (route53_zone_id secrets)
+  servedFqdn <- requiredHarnessField "test_served_fqdn" (test_served_fqdn secrets)
+  acmeEmail <- requiredHarnessField "test_acme_email" (test_acme_email secrets)
+  _ <- requiredHarnessField "ses_sender_domain" (ses_sender_domain secrets)
+  _ <- harnessReceiveSubdomainLabel secrets
+  _ <- requiredHarnessField "ses_capture_bucket" (ses_capture_bucket secrets)
+  _ <-
+    requiredHarnessField
+      "pulumi_state_backend_bucket_name"
+      (pulumi_state_backend_bucket_name secrets)
+  _ <-
+    requiredHarnessField
+      "pulumi_state_backend_region"
+      (pulumi_state_backend_region secrets)
+  let deploymentContext = harnessDeploymentContext deploymentInput
+      deploymentTopology = harnessDeploymentTopology deploymentInput
+  _ <- validatedDeploymentContextFor deploymentContext deploymentTopology
+  storageRoot <-
+    requiredHarnessField
+      "derived manual_pv_host_root"
+      (Text.pack (harnessDeploymentStorageRoot deploymentInput))
+  Right
+    ConfigSetupInput
+      { configSetupAdminCredentialsInput = credentials
+      , configSetupRoute53ZoneIdInput = zoneId
+      , configSetupDemoFqdnInput = servedFqdn
+      , configSetupDemoTtlInput = demo_ttl (domain currentConfig)
+      , configSetupAcmeEmailInput = acmeEmail
+      , configSetupDeploymentContextInput = deploymentContext
+      , configSetupClusterTopologyInput = deploymentTopology
+      , configSetupDevModeInput = dev_mode (deployment currentConfig)
+      , configSetupBootstrapPublicIpOverrideInput =
+          bootstrap_public_ip_override (deployment currentConfig)
+      , configSetupPulumiEnableDnsBootstrapInput =
+          pulumi_enable_dns_bootstrap (deployment currentConfig)
+      , configSetupPublicEdgeAdvertisementModeInput =
+          public_edge_advertisement_mode (deployment currentConfig)
+      , configSetupPublicEdgeBgpPeersInput =
+          public_edge_bgp_peers (deployment currentConfig)
+      , configSetupEnvoyGatewayControllerScalingInput =
+          envoy_gateway_controller_scaling (deployment currentConfig)
+      , configSetupEnvoyGatewayDataPlaneScalingInput =
+          envoy_gateway_data_plane_scaling (deployment currentConfig)
+      , configSetupApiScalingInput = api_scaling (deployment currentConfig)
+      , configSetupWebsocketScalingInput = websocket_scaling (deployment currentConfig)
+      , configSetupManualPvHostRootInput = storageRoot
+      , configSetupPolicyTierInput = policyTier
+      }
+
+requiredHarnessField :: String -> Text -> Either String Text
+requiredHarnessField field raw
+  | Text.null value =
+      Left
+        ( "test-secrets.dhall required field `"
+            ++ field
+            ++ "` is empty; author the deployment the harness will test before running it"
+        )
+  | otherwise = Right value
+ where
+  value = Text.strip raw
+
+-- | Normalize the one historical test-fixture shape that predates the typed
+-- Tier-0 coordinate.  Product config accepts only a single DNS label.  The
+-- harness additionally accepts @label.<sender-domain>@ only when the suffix is
+-- exactly the same fixture's sender domain, then projects the label before any
+-- config is written.  An arbitrary FQDN still refuses.
+harnessReceiveSubdomainLabel :: TestSecrets -> Either String Text
+harnessReceiveSubdomainLabel secrets = do
+  sender <- requiredHarnessField "ses_sender_domain" (ses_sender_domain secrets)
+  receive <-
+    requiredHarnessField "ses_receive_subdomain" (ses_receive_subdomain secrets)
+  case Text.breakOn "." receive of
+    (_, suffix) | Text.null suffix -> Right receive
+    (label, suffix)
+      | not (Text.null label) && suffix == "." <> sender -> Right label
+      | otherwise ->
+          Left
+            "test-secrets.dhall `ses_receive_subdomain` must be one DNS label or that label joined to the declared sender domain"
+
+-- | Complete the sections @config setup@ deliberately does not author. Every
+-- value comes from the already-validated harness fixture; there is no
+-- prefer-current or default arm.
+harnessGeneratedConfig :: ConfigFile -> TestSecrets -> ConfigSetupInput -> ConfigFile
+harnessGeneratedConfig currentConfig secrets input =
+  let built = configFromSetupInput currentConfig input
+      receiveLabel =
+        either
+          (const (Text.strip (ses_receive_subdomain secrets)))
+          id
+          (harnessReceiveSubdomainLabel secrets)
+   in built
+        { ses =
+            SesSection
+              { sender_domain = Text.strip (ses_sender_domain secrets)
+              , receive_subdomain = receiveLabel
+              , capture_bucket = Text.strip (ses_capture_bucket secrets)
+              }
+        , pulumi_state_backend =
+            (pulumi_state_backend built)
+              { psbBucketName = Text.strip (pulumi_state_backend_bucket_name secrets)
+              , psbRegion = Text.strip (pulumi_state_backend_region secrets)
+              }
+        }
+
+-- | Test-harness preflight (Sprint 5.10, completed by Sprint 5.37): regenerate
+-- the binary-sibling @prodbox.dhall@ from explicit fixture/run inputs through the shared
 -- 'configFromSetupInput' builder, so @prodbox test all@ runs from a freshly
 -- generated skeleton without an interactive @config setup@. Only regenerates
 -- when the operator fields are empty — it refuses to clobber a populated real
 -- config (the @demoTestConfig@ "generate only your own run config" rule). Runs
 -- before the managed AWS IAM harness validates the bootstrap config.
--- | Sprint 5.10 follow-up: prefer the @test-secrets.dhall@-supplied operator id,
--- but fall back to the value already in the config when test-secrets leaves it
--- empty — so the harness regen fills empty operator fields without clobbering a
--- populated one with a blank. (A real @test-secrets.dhall@ supplies non-empty
--- values, so this is identity for `test all`; it matters for the in-process CLI
--- tests, whose fixture config carries a `route53.zone_id` the fake test-secrets
--- leaves empty.)
-harnessPreferNonEmpty :: Text.Text -> Text.Text -> Text.Text
-harnessPreferNonEmpty fromSecrets fromConfig =
-  if Text.null (Text.strip fromSecrets) then fromConfig else fromSecrets
-
 regenerateConfigFromTestSecrets :: FilePath -> PolicyTier -> IO (Either String ())
 regenerateConfigFromTestSecrets repoRoot policyTier = do
-  currentConfig <- loadConfigForWrite repoRoot
-  let zoneSet = not (Text.null (Text.strip (zone_id (route53 currentConfig))))
-      emailSet = not (Text.null (Text.strip (email (acme currentConfig))))
-      sesSet = not (Text.null (Text.strip (sender_domain (ses currentConfig))))
-      backendSet =
-        not (Text.null (Text.strip (psbBucketName (pulumi_state_backend currentConfig))))
-  if zoneSet && emailSet && sesSet && backendSet
-    then pure (Right ())
-    else do
-      secretsResult <- loadTestSecrets repoRoot
-      case secretsResult of
-        Nothing ->
-          pure (Left "harness config regeneration requires test-secrets.dhall (absent).")
-        Just (Left err) ->
-          pure (Left ("harness config regeneration failed to decode test-secrets.dhall: " ++ err))
-        Just (Right secrets) -> do
-          inputResult <- harnessConfigSetupInput repoRoot currentConfig policyTier
-          case inputResult of
-            Left err -> pure (Left err)
-            Right input -> do
-              -- `config setup` does not author the `ses.*` block, so the shared
-              -- `configFromSetupInput` builder leaves it untouched; the harness
-              -- injects it directly from `test-secrets.dhall` (Sprint 5.10
-              -- follow-up) so the keycloak-invite SES stack provisions.
-              let built = configFromSetupInput currentConfig input
-                  withSes =
-                    built
-                      { ses =
-                          SesSection
-                            { sender_domain =
-                                harnessPreferNonEmpty (ses_sender_domain secrets) (sender_domain (ses built))
-                            , receive_subdomain =
-                                harnessPreferNonEmpty (ses_receive_subdomain secrets) (receive_subdomain (ses built))
-                            , capture_bucket =
-                                harnessPreferNonEmpty (ses_capture_bucket secrets) (capture_bucket (ses built))
-                            }
-                      , pulumi_state_backend =
-                          (pulumi_state_backend built)
-                            { psbBucketName =
-                                harnessPreferNonEmpty
-                                  (pulumi_state_backend_bucket_name secrets)
-                                  (psbBucketName (pulumi_state_backend built))
-                            , psbRegion =
-                                harnessPreferNonEmpty
-                                  (pulumi_state_backend_region secrets)
-                                  (psbRegion (pulumi_state_backend built))
-                            }
+  tier0Path <- resolveTier0ConfigPath repoRoot
+  tier0Exists <- doesFileExist tier0Path
+  currentConfigResult <-
+    if tier0Exists
+      then loadConfigFile repoRoot
+      else pure (Right defaultConfigFile)
+  existingProjectResult <-
+    if tier0Exists
+      then Tier0.decodeProjectConfigDhall tier0Path
+      else pure (Right Tier0.defaultProjectConfig)
+  canonicalSkeleton <-
+    if tier0Exists
+      then
+        (== Tier0.renderProjectConfigDhall Tier0.defaultProjectConfig)
+          <$> TextIO.readFile tier0Path
+      else pure True
+  case (currentConfigResult, existingProjectResult) of
+    (Right currentConfig, Right existingProject) -> do
+      existingDisposition <-
+        existingHarnessConfigDisposition repoRoot currentConfig existingProject tier0Exists
+      case existingDisposition of
+        Left err -> pure (Left err)
+        Right True -> prepareExistingHarnessConfig currentConfig
+        Right False -> generate currentConfig
+    -- The generated default is intentionally unauthored and may cease to
+    -- decode after a smart constructor is tightened (for example, the empty
+    -- topology machine id).  Exact equality with the current canonical
+    -- rendering is the only decode-failure escape: a partially authored or
+    -- merely similar file still refuses instead of being overwritten.
+    (Left _, Left _) | canonicalSkeleton -> generate defaultConfigFile
+    (Left err, _) -> pure (Left err)
+    (_, Left err) -> pure (Left err)
+ where
+  generate currentConfig = do
+    secretsResult <- loadTestSecrets repoRoot
+    case secretsResult of
+      Nothing ->
+        pure (Left "harness config regeneration requires test-secrets.dhall (absent).")
+      Just (Left err) ->
+        pure (Left ("harness config regeneration failed to decode test-secrets.dhall: " ++ err))
+      Just (Right secrets) -> do
+        inputResult <- harnessConfigSetupInputWithSecrets repoRoot currentConfig policyTier secrets
+        case inputResult of
+          Left err -> pure (Left err)
+          Right input -> do
+            let generated = harnessGeneratedConfig currentConfig secrets input
+                contextInput = configSetupDeploymentContextInput input
+            fittedResult <- fitHarnessConfig generated
+            case fittedResult of
+              Left err -> pure (Left err)
+              Right fitted -> do
+                validationResult <- validateConfigWithContext repoRoot contextInput fitted
+                case validationResult of
+                  Left err -> pure (Left ("generated harness config is invalid before write: " ++ err))
+                  Right _ -> do
+                    written <-
+                      Tier0.writeOperatorDeploymentConfigToTier0
+                        repoRoot
+                        fitted
+                        contextInput
+                    case written of
+                      Left err -> pure (Left err)
+                      Right () -> ensureHarnessStorageRoot fitted
+
+  -- A harness config written before host fitting was introduced carries the
+  -- exact portable default.  Fit that one legacy state once; a previously
+  -- fitted config is left byte-stable across qualification cycles.
+  prepareExistingHarnessConfig config
+    | isHarnessStorageRoot config
+        && host_capacity (resource_plan (capacity config))
+          == host_capacity defaultResourcePlan = do
+        fittedResult <- fitHarnessConfig config
+        case fittedResult of
+          Left err -> pure (Left err)
+          Right fitted -> do
+            written <- Tier0.writeOperatorParametersToTier0 repoRoot fitted
+            case written of
+              Left err -> pure (Left err)
+              Right () -> ensureHarnessStorageRoot fitted
+    | otherwise = ensureHarnessStorageRoot config
+
+  fitHarnessConfig config = do
+    let retainedRoot = repoRoot </> harnessStorageRelativeRoot config
+    createDirectoryIfMissing True retainedRoot
+    observed <- observeHostCapacity repoRoot retainedRoot
+    pure $ do
+      host <- observed
+      fitted <-
+        deriveHostFittingCapacity host (resource_plan (capacity config))
+      Right
+        config
+          { capacity =
+              (capacity config)
+                { resource_plan =
+                    (resource_plan (capacity config))
+                      { host_capacity = fitted
                       }
-              writeProjectConfigParameters repoRoot withSes
-              pure (Right ())
+                }
+          }
+
+  -- Capacity observation uses @df <path>@ and therefore requires the
+  -- run-owned storage root to exist.  Creation is bounded to the harness's
+  -- declared @.test-data@ tree; an operator-authored path remains untouched.
+  ensureHarnessStorageRoot config =
+    let relativeRoot = harnessStorageRelativeRoot config
+     in if isHarnessStorageRoot config
+          then do
+            createDirectoryIfMissing True (repoRoot </> relativeRoot)
+            pure (Right ())
+          else pure (Right ())
+
+  isHarnessStorageRoot config =
+    let relativeRoot = harnessStorageRelativeRoot config
+     in relativeRoot == ".test-data"
+          || ".test-data/" `isPrefixOf` relativeRoot
+
+  harnessStorageRelativeRoot =
+    Text.unpack . manual_pv_host_root . storage
+
+-- | Decide whether an existing binary-sibling config is (a) the unauthored
+-- generated skeleton the harness may replace, (b) a complete operator-authored
+-- deployment it must preserve, or (c) a partial authored deployment it must
+-- refuse to overwrite. The Boolean result is @True@ only for (b).
+existingHarnessConfigDisposition
+  :: FilePath
+  -> ConfigFile
+  -> Tier0.ProdboxProjectConfig
+  -> Bool
+  -> IO (Either String Bool)
+existingHarnessConfigDisposition repoRoot config projectConfig tier0Exists
+  | not tier0Exists = pure (Right False)
+  | all (Text.null . Text.strip) authoredValues = pure (Right False)
+  | otherwise = do
+      validationResult <- validateConfigWithContext repoRoot contextInput config
+      pure $ do
+        _ <-
+          case validationResult of
+            Left err ->
+              Left
+                ( "refusing to overwrite a partially authored binary-sibling prodbox.dhall: "
+                    ++ err
+                )
+            Right validated -> Right validated
+        mapM_ requireExistingField requiredExistingFields
+        Right True
+ where
+  tier0Context = Tier0.context projectConfig
+  contextInput =
+    DeploymentContextInput
+      { contextInputClusterId = Tier0.cluster_id tier0Context
+      , contextInputVaultAddress = Tier0.vault_address tier0Context
+      , contextInputMinioEndpoint = Tier0.minio_endpoint tier0Context
+      }
+  authoredValues =
+    [ demo_fqdn (domain config)
+    , email (acme config)
+    , Tier0.cluster_id tier0Context
+    , Tier0.vault_address tier0Context
+    , Tier0.minio_endpoint tier0Context
+    ]
+      ++ map (machineIdText . machine_id) (clusterTopologyMachines (cluster_topology config))
+  requiredExistingFields =
+    [ ("route53.zone_id", zone_id (route53 config))
+    , ("acme.email", email (acme config))
+    , ("ses.sender_domain", sender_domain (ses config))
+    , ("ses.receive_subdomain", receive_subdomain (ses config))
+    , ("ses.capture_bucket", capture_bucket (ses config))
+    , ("pulumi_state_backend.bucket_name", psbBucketName (pulumi_state_backend config))
+    , ("pulumi_state_backend.region", psbRegion (pulumi_state_backend config))
+    , ("aws.region", awsCredentialRegion (aws config))
+    ]
+  requireExistingField (field, raw)
+    | Text.null (Text.strip raw) =
+        Left
+          ( "refusing to overwrite a partially authored binary-sibling prodbox.dhall: `"
+              ++ field
+              ++ "` is empty"
+          )
+    | otherwise = Right ()
 
 applyConfigSetup :: FilePath -> ConfigSetupInput -> IO ConfigSetupResult
 applyConfigSetup repoRoot input = do
   currentConfig <- loadConfigForWrite repoRoot
   let updatedConfig = configFromSetupInput currentConfig input
-  writeProjectConfigParameters repoRoot updatedConfig
+  writeResult <-
+    Tier0.writeOperatorDeploymentConfigToTier0
+      repoRoot
+      updatedConfig
+      (configSetupDeploymentContextInput input)
+  either throwAws pure writeResult
   validationResult <- validateAndLoadSettings repoRoot
   case validationResult of
     Left err -> throwAws err
@@ -2887,47 +3196,6 @@ parseHostedZoneChoice value = do
       , hostedZoneChoiceName = Text.dropWhileEnd (== '.') zoneNameValue
       }
 
-cleanupAwsEksIamOrphans :: FilePath -> Credentials -> IO EksIamOrphanCleanupResult
-cleanupAwsEksIamOrphans repoRoot adminCredentials = do
-  perRunResidue <- queryPerRunResidueStatuses repoRoot
-  let eksStatus = ResidueStatus.residueObservationStatus (perRunAwsEksTest perRunResidue)
-  if not (ResidueStatus.isResidueAbsent eksStatus)
-    then
-      pure
-        EksIamOrphanCleanupResult
-          { eksIamOrphanCleanupSkippedReason =
-              Just
-                ( Text.pack
-                    ( "aws-eks-test Pulumi state is "
-                        ++ ResidueStatus.renderResidueStatus eksStatus
-                    )
-                )
-          , eksIamOrphanCleanupDeletedPolicies = []
-          , eksIamOrphanCleanupDeletedRoles = []
-          }
-    else do
-      accountIdValue <- awsCallerAccountId repoRoot adminCredentials
-      let policyArnValue = awsEksFixedIamPolicyArn accountIdValue
-      policyDeleted <-
-        deleteManagedPolicyIfPresent
-          repoRoot
-          adminCredentials
-          policyArnValue
-          awsEksFixedIamRoleNames
-      deletedRoles <-
-        fmap concat $
-          forM awsEksFixedIamRoleNames $
-            \roleName -> do
-              deleted <- deleteRoleIfPresent repoRoot adminCredentials roleName
-              pure [roleName | deleted]
-      pure
-        EksIamOrphanCleanupResult
-          { eksIamOrphanCleanupSkippedReason = Nothing
-          , eksIamOrphanCleanupDeletedPolicies =
-              [awsEksFixedIamPolicyName | policyDeleted]
-          , eksIamOrphanCleanupDeletedRoles = deletedRoles
-          }
-
 awsCallerAccountId :: FilePath -> Credentials -> IO Text
 awsCallerAccountId repoRoot adminCredentials = do
   payload <-
@@ -2938,220 +3206,6 @@ awsCallerAccountId repoRoot adminCredentials = do
       "aws sts get-caller-identity"
   payloadObject <- liftAwsEither (requireObject "aws sts get-caller-identity" payload)
   liftAwsEither (requireTextField "aws sts get-caller-identity" "Account" payloadObject)
-
-awsEksFixedIamPolicyArn :: Text -> Text
-awsEksFixedIamPolicyArn accountIdValue =
-  "arn:aws:iam::" <> accountIdValue <> ":policy/" <> awsEksFixedIamPolicyName
-
-deleteManagedPolicyIfPresent :: FilePath -> Credentials -> Text -> [Text] -> IO Bool
-deleteManagedPolicyIfPresent repoRoot adminCredentials policyArnValue allowedRoleNames = do
-  entities <- listPolicyEntitiesIfPresent repoRoot adminCredentials policyArnValue
-  case entities of
-    Nothing -> pure False
-    Just (attachedRoles, attachedUsers, attachedGroups) -> do
-      let unexpectedRoles = filter (`notElem` allowedRoleNames) attachedRoles
-          unexpected =
-            map (("role/" <>) . Text.unpack) unexpectedRoles
-              ++ map (("user/" <>) . Text.unpack) attachedUsers
-              ++ map (("group/" <>) . Text.unpack) attachedGroups
-      unless (null unexpected) $
-        throwAws
-          ( "Refusing to delete fixed-name aws-eks IAM policy "
-              ++ Text.unpack policyArnValue
-              ++ " because it is attached outside the harness-owned role set: "
-              ++ intercalate ", " unexpected
-          )
-      mapM_
-        (\roleName -> detachRolePolicyIfPresent repoRoot adminCredentials roleName policyArnValue)
-        attachedRoles
-      deletePolicyIfPresent repoRoot adminCredentials policyArnValue
-
-listPolicyEntitiesIfPresent
-  :: FilePath -> Credentials -> Text -> IO (Maybe ([Text], [Text], [Text]))
-listPolicyEntitiesIfPresent repoRoot adminCredentials policyArnValue = do
-  output <-
-    runAwsCliCompleted
-      repoRoot
-      adminCredentials
-      [ "iam"
-      , "list-entities-for-policy"
-      , "--policy-arn"
-      , Text.unpack policyArnValue
-      ]
-  case processExitCode output of
-    ExitFailure _ ->
-      case awsErrorCode (errorDetail output) of
-        Just "NoSuchEntity" -> pure Nothing
-        _ -> throwAws ("aws iam list-entities-for-policy failed: " ++ errorDetail output)
-    ExitSuccess -> do
-      payload <- liftAwsEither (decodeJsonPayload "list-entities-for-policy" (processStdout output))
-      payloadObject <- liftAwsEither (requireObject "list-entities-for-policy" payload)
-      roles <-
-        liftAwsEither (requireEntityNames "list-entities-for-policy" "PolicyRoles" "RoleName" payloadObject)
-      users <-
-        liftAwsEither (requireEntityNames "list-entities-for-policy" "PolicyUsers" "UserName" payloadObject)
-      groups <-
-        liftAwsEither
-          (requireEntityNames "list-entities-for-policy" "PolicyGroups" "GroupName" payloadObject)
-      pure (Just (roles, users, groups))
-
-requireEntityNames :: String -> String -> String -> Object -> Either String [Text]
-requireEntityNames context fieldName entityNameField objectValue = do
-  entities <- requireArrayField context fieldName objectValue
-  forM (Vector.toList entities) $ \entityValue -> do
-    entityObject <- requireObject (context ++ "." ++ fieldName) entityValue
-    requireTextField (context ++ "." ++ fieldName) entityNameField entityObject
-
-detachRolePolicyIfPresent :: FilePath -> Credentials -> Text -> Text -> IO ()
-detachRolePolicyIfPresent repoRoot adminCredentials roleName policyArnValue = do
-  output <-
-    runAwsCliCompleted
-      repoRoot
-      adminCredentials
-      [ "iam"
-      , "detach-role-policy"
-      , "--role-name"
-      , Text.unpack roleName
-      , "--policy-arn"
-      , Text.unpack policyArnValue
-      ]
-  when
-    ( processExitCode output /= ExitSuccess
-        && awsErrorCode (errorDetail output) /= Just "NoSuchEntity"
-    )
-    $ throwAws ("aws iam detach-role-policy failed: " ++ errorDetail output)
-
-deletePolicyIfPresent :: FilePath -> Credentials -> Text -> IO Bool
-deletePolicyIfPresent repoRoot adminCredentials policyArnValue = do
-  output <-
-    runAwsCliCompleted
-      repoRoot
-      adminCredentials
-      [ "iam"
-      , "delete-policy"
-      , "--policy-arn"
-      , Text.unpack policyArnValue
-      ]
-  case processExitCode output of
-    ExitSuccess -> pure True
-    ExitFailure _ ->
-      case awsErrorCode (errorDetail output) of
-        Just "NoSuchEntity" -> pure False
-        _ -> throwAws ("aws iam delete-policy failed: " ++ errorDetail output)
-
-deleteRoleIfPresent :: FilePath -> Credentials -> Text -> IO Bool
-deleteRoleIfPresent repoRoot adminCredentials roleName = do
-  present <- roleExists repoRoot adminCredentials roleName
-  if not present
-    then pure False
-    else do
-      attachedPolicyArns <- listAttachedRolePolicies repoRoot adminCredentials roleName
-      mapM_
-        (\policyArnValue -> detachRolePolicyIfPresent repoRoot adminCredentials roleName policyArnValue)
-        attachedPolicyArns
-      inlinePolicyNames <- listRoleInlinePolicies repoRoot adminCredentials roleName
-      mapM_
-        (\policyName -> deleteRolePolicyIfPresent repoRoot adminCredentials roleName policyName)
-        inlinePolicyNames
-      deleteRoleOutput <-
-        runAwsCliCompleted
-          repoRoot
-          adminCredentials
-          [ "iam"
-          , "delete-role"
-          , "--role-name"
-          , Text.unpack roleName
-          ]
-      case processExitCode deleteRoleOutput of
-        ExitSuccess -> pure True
-        ExitFailure _ ->
-          case awsErrorCode (errorDetail deleteRoleOutput) of
-            Just "NoSuchEntity" -> pure False
-            _ -> throwAws ("aws iam delete-role failed: " ++ errorDetail deleteRoleOutput)
-
-roleExists :: FilePath -> Credentials -> Text -> IO Bool
-roleExists repoRoot adminCredentials roleName = do
-  output <-
-    runAwsCliCompleted
-      repoRoot
-      adminCredentials
-      [ "iam"
-      , "get-role"
-      , "--role-name"
-      , Text.unpack roleName
-      ]
-  case processExitCode output of
-    ExitSuccess -> pure True
-    ExitFailure _ ->
-      case awsErrorCode (errorDetail output) of
-        Just "NoSuchEntity" -> pure False
-        _ -> throwAws ("aws iam get-role failed: " ++ errorDetail output)
-
-listAttachedRolePolicies :: FilePath -> Credentials -> Text -> IO [Text]
-listAttachedRolePolicies repoRoot adminCredentials roleName = do
-  output <-
-    runAwsCliCompleted
-      repoRoot
-      adminCredentials
-      [ "iam"
-      , "list-attached-role-policies"
-      , "--role-name"
-      , Text.unpack roleName
-      ]
-  payloadText <- liftAwsEither (requireCommandSuccess "aws iam list-attached-role-policies" output)
-  payload <- liftAwsEither (decodeJsonPayload "list-attached-role-policies" payloadText)
-  payloadObject <- liftAwsEither (requireObject "list-attached-role-policies" payload)
-  attachedPolicies <-
-    liftAwsEither (requireArrayField "list-attached-role-policies" "AttachedPolicies" payloadObject)
-  forM (Vector.toList attachedPolicies) $ \policyValue -> do
-    policyObject <- liftAwsEither (requireObject "AttachedPolicies" policyValue)
-    liftAwsEither (requireTextField "AttachedPolicies" "PolicyArn" policyObject)
-
-listRoleInlinePolicies :: FilePath -> Credentials -> Text -> IO [Text]
-listRoleInlinePolicies repoRoot adminCredentials roleName = do
-  output <-
-    runAwsCliCompleted
-      repoRoot
-      adminCredentials
-      [ "iam"
-      , "list-role-policies"
-      , "--role-name"
-      , Text.unpack roleName
-      ]
-  payloadText <- liftAwsEither (requireCommandSuccess "aws iam list-role-policies" output)
-  payload <- liftAwsEither (decodeJsonPayload "list-role-policies" payloadText)
-  payloadObject <- liftAwsEither (requireObject "list-role-policies" payload)
-  liftAwsEither (requireTextArrayField "list-role-policies" "PolicyNames" payloadObject)
-
-requireTextArrayField :: String -> String -> Object -> Either String [Text]
-requireTextArrayField context fieldName objectValue = do
-  values <- requireArrayField context fieldName objectValue
-  mapM (requireTextArrayItem context fieldName) (Vector.toList values)
-
-requireTextArrayItem :: String -> String -> Value -> Either String Text
-requireTextArrayItem context fieldName value =
-  case value of
-    String textValue -> Right textValue
-    _ -> Left (context ++ "." ++ fieldName ++ " contains a non-string value")
-
-deleteRolePolicyIfPresent :: FilePath -> Credentials -> Text -> Text -> IO ()
-deleteRolePolicyIfPresent repoRoot adminCredentials roleName policyName = do
-  output <-
-    runAwsCliCompleted
-      repoRoot
-      adminCredentials
-      [ "iam"
-      , "delete-role-policy"
-      , "--role-name"
-      , Text.unpack roleName
-      , "--policy-name"
-      , Text.unpack policyName
-      ]
-  when
-    ( processExitCode output /= ExitSuccess
-        && awsErrorCode (errorDetail output) /= Just "NoSuchEntity"
-    )
-    $ throwAws ("aws iam delete-role-policy failed: " ++ errorDetail output)
 
 deleteExistingOperationalKeys :: FilePath -> Credentials -> IO [Text]
 deleteExistingOperationalKeys repoRoot adminCredentials =
@@ -3486,16 +3540,14 @@ renderAwsTeardownResult result =
 
 renderAwsIamHarnessSetupReport
   :: OperationalIdentityProbe
-  -> EksIamOrphanCleanupResult
   -> IamTeardownResult
   -> Maybe IamUserCleanupResult
   -> Bool
   -> IamSetupResult
   -> String
-renderAwsIamHarnessSetupReport identityProbe eksIamOrphanCleanup preflightTeardown preflightAssociatedCleanup preflightConfigCleared setupResult =
+renderAwsIamHarnessSetupReport identityProbe preflightTeardown preflightAssociatedCleanup preflightConfigCleared setupResult =
   concat
     [ renderOperationalIdentityProbe identityProbe
-    , renderEksIamOrphanCleanup eksIamOrphanCleanup
     , renderAwsTeardownResult preflightTeardown
     , renderAssociatedCleanup preflightAssociatedCleanup
     , "PREFLIGHT_OPERATIONAL_CONFIG_CLEARED="
@@ -3514,25 +3566,6 @@ renderAwsIamHarnessSetupReport identityProbe eksIamOrphanCleanup preflightTeardo
       , "PREEXISTING_ASSOCIATED_USER_DELETED_ACCESS_KEYS="
           ++ show (length (iamUserCleanupDeletedAccessKeys cleanupResult))
       ]
-
-  renderEksIamOrphanCleanup :: EksIamOrphanCleanupResult -> String
-  renderEksIamOrphanCleanup cleanup =
-    case eksIamOrphanCleanupSkippedReason cleanup of
-      Just reasonValue ->
-        unlines
-          [ "PREFLIGHT_EKS_IAM_ORPHAN_CLEANUP=skipped"
-          , "PREFLIGHT_EKS_IAM_ORPHAN_CLEANUP_SKIP_REASON=" ++ Text.unpack reasonValue
-          , "PREFLIGHT_EKS_IAM_ORPHAN_POLICIES_DELETED=0"
-          , "PREFLIGHT_EKS_IAM_ORPHAN_ROLES_DELETED=0"
-          ]
-      Nothing ->
-        unlines
-          [ "PREFLIGHT_EKS_IAM_ORPHAN_CLEANUP=ran"
-          , "PREFLIGHT_EKS_IAM_ORPHAN_POLICIES_DELETED="
-              ++ show (length (eksIamOrphanCleanupDeletedPolicies cleanup))
-          , "PREFLIGHT_EKS_IAM_ORPHAN_ROLES_DELETED="
-              ++ show (length (eksIamOrphanCleanupDeletedRoles cleanup))
-          ]
 
 renderOperationalIdentityProbe :: OperationalIdentityProbe -> String
 renderOperationalIdentityProbe probe =
@@ -3649,14 +3682,6 @@ loadConfigForWrite repoRoot = do
         Left err -> throwAws err
         Right config -> pure config
     else pure defaultConfigFile
-
--- | Sprint 1.42 Part B: author the operator's non-secret config into the Tier-0
--- @prodbox.dhall@'s @parameters@ block (preserving the established
--- @context@/@witness@), replacing the retired @prodbox-config.dhall@ writer.
-writeProjectConfigParameters :: FilePath -> ConfigFile -> IO ()
-writeProjectConfigParameters repoRoot config = do
-  result <- Tier0.writeOperatorParametersToTier0 repoRoot config
-  either throwAws pure result
 
 -- | Admin/operational AWS CLI subprocess environment. Delegates to the
 -- single canonical PATH/HOME/LANG-preserving builder

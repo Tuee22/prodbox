@@ -436,6 +436,7 @@ compiled =
         cleanupRunId
         foundation
         (Just awsScope)
+        Nothing
         CascadeSurface
     )
 
@@ -446,6 +447,7 @@ longLivedCompiled =
         cleanupRunId
         foundation
         (Just awsScope)
+        Nothing
         ExplicitLongLivedSurface
     )
 
@@ -475,7 +477,7 @@ awsScope :: AwsScope
 awsScope =
   AwsScope
     (AwsAccountId "123456789012")
-    (AwsRegion "us-east-1")
+    (AwsRegion (fixtureAwsRegion FixtureUsEast1))
 
 observationRevision :: ObservationRevision
 observationRevision = ObservationRevision 73

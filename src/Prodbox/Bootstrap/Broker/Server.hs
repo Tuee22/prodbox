@@ -1153,6 +1153,7 @@ brokerRouteOperationTag route = case route of
   BrokerVaultRotateUnlockBundle -> Request.RotateUnlockBundle
   BrokerVaultRotateTransitKey -> Request.RotateTransitKey
   BrokerVaultBaselineReconcile -> Request.ReconcileVaultBaseline
+  BrokerPostUnsealHandoffReconcile -> Request.ReconcilePostUnsealHandoff
   BrokerVaultPkiStatus -> Request.ObserveVaultPki
   BrokerVaultPkiIssueTestCertificate -> Request.IssueVaultPkiTestCertificate
   BrokerVaultResetAmbiguousInitialization -> Request.RecoverAmbiguousInitialization

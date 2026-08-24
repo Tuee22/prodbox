@@ -12,6 +12,16 @@
 module Prodbox.Bootstrap.Broker.ProductionEngine
   ( BrokerReadinessCache
   , brokerReadinessCacheRefresh
+  , classifyRootAccessorAbsenceHttpFailure
+  , classifyRootAccessorAbsenceListing
+  , classifyRootAccessorInventoryHttpFailure
+  , classifyRootAccessorInventoryListing
+  , classifyRootAccessorRevocationHttpFailure
+  , classifyProvisionerAccessorCleanupHttpFailure
+  , classifyProvisionerAccessorCleanupListing
+  , classifyProvisionerPolicyCoreReconcileFailure
+  , classifyProvisionerPolicyPkiReconcileFailure
+  , decideRootAccessorAbsenceProof
   , productionBrokerEngine
   )
 where
@@ -52,6 +62,20 @@ import Prodbox.Bootstrap.Broker.Engine
   , BrokerProgramEvidenceBoundary (..)
   , EngineBoundaryError (..)
   , EngineFenceUseObservation (..)
+  , ProvisionerAccessorCleanupCause (..)
+  , ProvisionerAccessorCleanupHttpFailure (..)
+  , ProvisionerAccessorCleanupHttpOperation (..)
+  , ProvisionerPolicyApplicationCause (..)
+  , RootAccessorAbsenceProofCause (..)
+  , RootAccessorAbsenceProofHttpFailure (..)
+  , RootAccessorAbsenceProofHttpOperation (..)
+  , RootAccessorAbsenceProofRequirement (..)
+  , RootAccessorInventoryCause (..)
+  , RootAccessorInventoryHttpFailure (..)
+  , RootAccessorInventoryHttpOperation (..)
+  , RootAccessorRevocationCause (..)
+  , RootAccessorRevocationHttpFailure (..)
+  , RootAccessorRevocationHttpOperation (..)
   , RootInitRecoveryObservation (..)
   , mkBrokerEngine
   )
@@ -88,6 +112,7 @@ import Prodbox.Bootstrap.Broker.KubernetesWorker
   , productionKubernetesWorkerBoundary
   , readProjectedServiceAccountToken
   , renderVaultStorageIdentity
+  , renderVaultStorageResetFailure
   )
 import Prodbox.Bootstrap.Broker.Model
   ( PostUnsealHandoffPhase (..)
@@ -102,6 +127,9 @@ import Prodbox.Bootstrap.Broker.PgpBoundary
   ( generatedChildRecoveryPublicKeyBase64
   , generatedRootPublicKeyBase64
   )
+import Prodbox.Bootstrap.Broker.PristineJournal
+  ( classifyPristineJournal
+  )
 import Prodbox.Bootstrap.Broker.ProductionCapabilities
   ( ProductionCapabilityRegistry
   , mkProductionCapabilityRegistry
@@ -113,7 +141,9 @@ import Prodbox.Bootstrap.Broker.ProductionCryptoParameters
   , productionRootInitCryptoParameters
   )
 import Prodbox.Bootstrap.Broker.ProductionPgp
-  ( productionPgpBoundaryAt
+  ( classifyVaultCoreReconcileFailure
+  , classifyVaultPkiReconcileFailure
+  , productionPgpBoundaryAt
   , productionPgpReady
   )
 import Prodbox.Bootstrap.Broker.ProductionSecretWorkerBoundary
@@ -164,6 +194,7 @@ import Prodbox.Bootstrap.Broker.Types
   ( AccessorAbsenceAttestation
   , ArtifactDigest
   , BaselineReadBackReceipt
+  , BootstrapValueError (..)
   , ChildAttestation
   , ChildCustodyBinding (..)
   , DeliveryNonce
@@ -288,13 +319,16 @@ import Prodbox.ControlPlane.TransitRequestAuthentication
   ( resolveTransitRequestSigningCapability
   )
 import Prodbox.ControlPlane.VaultAccessorAudit
-  ( VaultAccessorAuditOps (..)
+  ( VaultAccessorAuditDetailedError (..)
+  , VaultAccessorAuditDetailedOps (..)
+  , VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
   , isBoundedBatchAuditorLogin
   , revokeAndProveVaultAccessorSubjectAbsent
+  , revokeAndProveVaultAccessorSubjectAbsentDetailed
   , vaultAccessorMatchesSubject
   )
-import Prodbox.Http.Client (defaultHttpConfig)
+import Prodbox.Http.Client (HttpError (..), defaultHttpConfig)
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
   , OwnerNonce
@@ -653,21 +687,14 @@ pristineEvidence settings store action = do
       | otherwise -> do
           journal <- readRootInitJournal store binding
           pure $ case journal of
-            Right StoreObjectAbsent ->
-              Right (productionPristineStorageProof binding)
-            Right (StoreObjectPresent _ _ state) ->
-              let expected = productionPristineStorageProof binding
-               in case rootInitStatePhase state of
-                    RootInitPristine proof
-                      | proof == expected -> Right proof
-                    RootResetPristine proof
-                      | resetReplacementPristine proof == expected ->
-                          Right (resetReplacementPristine proof)
-                    _ ->
-                      Left
-                        ( EngineBoundaryRefused
-                            "root initialization journal is not pristine"
-                        )
+            Right observation ->
+              case classifyPristineJournal binding observation of
+                Right proof -> Right proof
+                Left _ ->
+                  Left
+                    ( EngineBoundaryRefused
+                        "root initialization journal is not pristine"
+                    )
             Left failure -> Left (storeBoundaryError failure)
     (Left failure, _) -> pure (Left (storeBoundaryError failure))
     (_, Left _) -> boundaryUnavailable "Vault seal-status is unavailable"
@@ -1080,7 +1107,7 @@ acquireFence owner store kubernetes _ _ action requestDigest requestDeadline = d
   retireExpiredPredecessor request held = do
     leaseObservation <- kubernetesObserveBootstrapLease kubernetes requestDeadline
     workerObservation <-
-      kubernetesObserveFenceOwnerWorker
+      kubernetesReconcileFenceOwnerWorker
         kubernetes
         requestDeadline
         (bootstrapFenceGeneration held)
@@ -1267,8 +1294,8 @@ runPhysical _capabilityRegistry settings store kubernetes clients provisionerTok
     inventoryRootAccessors settings generation
   PhysicalRevokeRootAccessor _ _ accessor ->
     revokeRootAccessor settings accessor
-  PhysicalProveRootAccessorsAbsent _ _ inventory ->
-    proveRootAccessorsAbsent settings inventory
+  PhysicalProveRootAccessorsAbsent _ _ requirement inventory ->
+    proveRootAccessorsAbsent settings requirement inventory
   PhysicalStartGenerateRoot _ _ _ publicKey ->
     startGeneratedRoot settings (generatedRootPublicKeyBase64 publicKey)
   PhysicalCleanupProvisionerSessions _ _ generation ->
@@ -1310,8 +1337,8 @@ runPhysical _capabilityRegistry settings store kubernetes clients provisionerTok
     inventoryRootAccessors settings (childCustodyStorageGeneration binding)
   PhysicalRevokeChildRootAccessor _ _ accessor ->
     revokeRootAccessor settings accessor
-  PhysicalProveChildRootAccessorsAbsent _ _ inventory ->
-    proveRootAccessorsAbsent settings inventory
+  PhysicalProveChildRootAccessorsAbsent _ _ requirement inventory ->
+    proveRootAccessorsAbsent settings requirement inventory
   PhysicalStartChildGenerateRoot _ _ _ publicKey ->
     startGeneratedRoot settings (generatedChildRecoveryPublicKeyBase64 publicKey)
   -- These constructors are executable only through the attested one-shot
@@ -1348,7 +1375,11 @@ resetAmbiguousPhysical settings kubernetes permit ambiguity proof
           (vaultEffectPermitDeadline permit)
           proof
       case resetResult of
-        Left _ -> boundaryUnavailable "Kubernetes Vault storage reset failed"
+        Left failure ->
+          boundaryUnavailable
+            ( "vault-reset:"
+                <> renderVaultStorageResetFailure failure
+            )
         Right _ -> do
           observed <-
             awaitPristineVault
@@ -1418,21 +1449,31 @@ inventoryRootAccessors
   :: BootstrapBrokerSettings
   -> VaultStorageGeneration
   -> IO (Either EngineBoundaryError RootAccessorInventory)
-inventoryRootAccessors settings generation =
-  withVaultBatchRole settings tokenAccessorAuditorRole $ \login -> do
-    listing <- Vault.vaultListTokenAccessors address (Vault.vaultLoginToken login)
-    case listing of
-      Left _ -> boundaryUnavailable "root-accessor inventory is unavailable"
-      Right observed -> do
-        classified <-
-          traverse
-            (classifyRootAccessor address (Vault.vaultLoginToken login))
-            (Vault.tokenAccessorKeys observed)
-        pure $ do
-          accessors <- sequence classified
-          mapLeft
-            (EngineBoundaryRefused . Text.pack . show)
-            (mkRootAccessorInventory generation [accessor | Just accessor <- accessors])
+inventoryRootAccessors settings generation = do
+  loggedIn <- loginRootAccessorAuditor settings
+  case loggedIn of
+    Left failure ->
+      pure
+        ( Left
+            ( EngineBoundaryRootAccessorInventory
+                (rootAccessorInventoryAuditorCause failure)
+            )
+        )
+    Right login -> do
+      let token = Vault.vaultLoginToken login
+      listing <- Vault.vaultListTokenAccessors address token
+      case classifyRootAccessorInventoryListing listing of
+        Left failure -> pure (Left (EngineBoundaryRootAccessorInventory failure))
+        Right rawAccessors -> do
+          classified <-
+            traverse
+              (classifyRootAccessor address token)
+              rawAccessors
+          pure $ do
+            accessors <- sequence classified
+            mapLeft
+              (EngineBoundaryRootAccessorInventory . classifyRootAccessorInventoryFailure)
+              (mkRootAccessorInventory generation [accessor | Just accessor <- accessors])
  where
   address = Vault.VaultAddress (brokerVaultAddress settings)
 
@@ -1444,12 +1485,23 @@ classifyRootAccessor
 classifyRootAccessor address token rawAccessor = do
   observed <- Vault.vaultLookupTokenAccessorPolicies address token rawAccessor
   pure $ case observed of
-    Left _ -> Left (EngineBoundaryUnavailable "token-accessor policy lookup is unavailable")
+    Left failure ->
+      Left
+        ( EngineBoundaryRootAccessorInventory
+            ( RootAccessorInventoryHttpFailure
+                RootAccessorInventoryLookupAccessorPolicies
+                (classifyRootAccessorInventoryHttpFailure failure)
+            )
+        )
     Right policies
       | "root" `elem` policies ->
           Just
             <$> mapLeft
-              (EngineBoundaryRefused . Text.pack . show)
+              ( const
+                  ( EngineBoundaryRootAccessorInventory
+                      RootAccessorInventoryObservedAccessorInvalid
+                  )
+              )
               (mkRootPolicyAccessor rawAccessor)
       | otherwise -> Right Nothing
 
@@ -1457,41 +1509,416 @@ revokeRootAccessor
   :: BootstrapBrokerSettings
   -> RootPolicyAccessor
   -> IO (Either EngineBoundaryError ())
-revokeRootAccessor settings accessor =
-  withVaultBatchRole settings tokenAccessorAuditorRole $ \login -> do
-    let token = Vault.vaultLoginToken login
-        rawAccessor = renderRootPolicyAccessor accessor
-    revoked <- Vault.vaultRevokeTokenAccessor address token rawAccessor
-    case revoked of
-      Left _ -> boundaryUnavailable "root-accessor revocation failed"
-      Right () -> do
-        listed <- Vault.vaultListTokenAccessors address token
-        pure $ case listed of
-          Right observation
-            | rawAccessor `notElem` Vault.tokenAccessorKeys observation -> Right ()
-          _ -> Left (EngineBoundaryRefused "root-accessor revocation absence was not observed")
+revokeRootAccessor settings accessor = do
+  loggedIn <- loginRootAccessorAuditor settings
+  case loggedIn of
+    Left failure ->
+      pure
+        ( Left
+            ( EngineBoundaryRootAccessorRevocation
+                (rootAccessorRevocationAuditorCause failure)
+            )
+        )
+    Right login -> do
+      let token = Vault.vaultLoginToken login
+          rawAccessor = renderRootPolicyAccessor accessor
+      revoked <- Vault.vaultRevokeTokenAccessor address token rawAccessor
+      case revoked of
+        Left failure ->
+          pure
+            ( Left
+                ( EngineBoundaryRootAccessorRevocation
+                    ( RootAccessorRevocationHttpFailure
+                        RootAccessorRevocationRequest
+                        (classifyRootAccessorRevocationHttpFailure failure)
+                    )
+                )
+            )
+        Right () -> do
+          listed <- Vault.vaultListTokenAccessors address token
+          pure $ case listed of
+            Left failure ->
+              Left
+                ( EngineBoundaryRootAccessorRevocation
+                    ( RootAccessorRevocationHttpFailure
+                        RootAccessorRevocationListReadBack
+                        (classifyRootAccessorRevocationHttpFailure failure)
+                    )
+                )
+            Right observation
+              | rawAccessor `notElem` Vault.tokenAccessorKeys observation -> Right ()
+              | otherwise ->
+                  Left
+                    ( EngineBoundaryRootAccessorRevocation
+                        RootAccessorRevocationTargetStillPresent
+                    )
  where
   address = Vault.VaultAddress (brokerVaultAddress settings)
 
 proveRootAccessorsAbsent
   :: BootstrapBrokerSettings
+  -> RootAccessorAbsenceProofRequirement
   -> RootAccessorInventory
   -> IO (Either EngineBoundaryError AccessorAbsenceAttestation)
-proveRootAccessorsAbsent settings inventory = do
-  observed <- inventoryRootAccessors settings (rootAccessorInventoryGeneration inventory)
+proveRootAccessorsAbsent settings requirement inventory = do
+  observed <-
+    inventoryRootAccessorsForAbsenceProof
+      settings
+      (rootAccessorInventoryGeneration inventory)
   pure $ do
-    current <- observed
-    if null (rootAccessorInventoryAccessors current)
-      && all
-        (`notElem` rootAccessorInventoryAccessors current)
-        (rootAccessorInventoryAccessors inventory)
-      then
-        Right
-          ( mkAccessorAbsenceAttestation
-              inventory
-              (digestSerialised (inventory, current))
-          )
-      else Left (EngineBoundaryRefused "root-policy accessors remain present")
+    current <- mapLeft EngineBoundaryRootAccessorAbsenceProof observed
+    mapLeft
+      EngineBoundaryRootAccessorAbsenceProof
+      (decideRootAccessorAbsenceProof requirement inventory current)
+    Right
+      ( mkAccessorAbsenceAttestation
+          inventory
+          (digestSerialised (inventory, current))
+      )
+
+inventoryRootAccessorsForAbsenceProof
+  :: BootstrapBrokerSettings
+  -> VaultStorageGeneration
+  -> IO (Either RootAccessorAbsenceProofCause RootAccessorInventory)
+inventoryRootAccessorsForAbsenceProof settings generation = do
+  loggedIn <- loginRootAccessorAuditor settings
+  case loggedIn of
+    Left failure -> pure (Left (rootAccessorAbsenceAuditorCause failure))
+    Right login -> do
+      let token = Vault.vaultLoginToken login
+      listing <- Vault.vaultListTokenAccessors address token
+      case classifyRootAccessorAbsenceListing listing of
+        Left failure -> pure (Left failure)
+        Right rawAccessors -> do
+          classified <-
+            traverse
+              (classifyRootAccessorForAbsenceProof address token)
+              rawAccessors
+          pure $ do
+            accessors <- sequence classified
+            mapLeft
+              classifyRootAccessorAbsenceInventoryFailure
+              (mkRootAccessorInventory generation [accessor | Just accessor <- accessors])
+ where
+  address = Vault.VaultAddress (brokerVaultAddress settings)
+
+data RootAccessorAuditorFailure
+  = RootAccessorAuditorProjectedTokenUnavailable
+  | RootAccessorAuditorLoginHttpFailure !RootAccessorAbsenceProofHttpFailure
+  | RootAccessorAuditorLoginInvalid
+  | RootAccessorAuditorCleanupUnavailable
+  | RootAccessorAuditorCleanupRefused
+  | RootAccessorAuditorCleanupAmbiguous
+
+loginRootAccessorAuditor
+  :: BootstrapBrokerSettings
+  -> IO
+       ( Either
+           RootAccessorAuditorFailure
+           Vault.VaultKubernetesLoginResult
+       )
+loginRootAccessorAuditor settings = do
+  projected <- readProjectedServiceAccountToken
+  case projected of
+    Left _ -> pure (Left RootAccessorAuditorProjectedTokenUnavailable)
+    Right jwt -> do
+      loggedIn <-
+        Vault.vaultKubernetesLoginWithLease
+          address
+          "kubernetes"
+          tokenAccessorAuditorRole
+          jwt
+      case loggedIn of
+        Left failure ->
+          pure
+            ( Left
+                ( RootAccessorAuditorLoginHttpFailure
+                    (classifyRootAccessorAbsenceHttpFailure failure)
+                )
+            )
+        Right login
+          | isBoundedBatchAuditorLogin 300 login -> pure (Right login)
+          | otherwise -> do
+              cleaned <-
+                cleanupInvalidSuccessfulVaultLogin
+                  settings
+                  jwt
+                  tokenAccessorAuditorRole
+                  login
+              pure $ case cleaned of
+                Left failure -> Left (classifyRootAccessorAuditorCleanup failure)
+                Right () -> Left RootAccessorAuditorLoginInvalid
+ where
+  address = Vault.VaultAddress (brokerVaultAddress settings)
+
+classifyRootAccessorForAbsenceProof
+  :: Vault.VaultAddress
+  -> Vault.VaultToken
+  -> Text
+  -> IO (Either RootAccessorAbsenceProofCause (Maybe RootPolicyAccessor))
+classifyRootAccessorForAbsenceProof address token rawAccessor = do
+  observed <- Vault.vaultLookupTokenAccessorPolicies address token rawAccessor
+  pure $ case observed of
+    Left failure ->
+      Left
+        ( RootAccessorAbsenceHttpFailure
+            RootAccessorAbsenceLookupAccessorPolicies
+            (classifyRootAccessorAbsenceHttpFailure failure)
+        )
+    Right policies
+      | "root" `elem` policies ->
+          Just
+            <$> mapLeft
+              (const RootAccessorAbsenceObservedAccessorInvalid)
+              (mkRootPolicyAccessor rawAccessor)
+      | otherwise -> Right Nothing
+
+classifyRootAccessorAbsenceInventoryFailure
+  :: BootstrapValueError -> RootAccessorAbsenceProofCause
+classifyRootAccessorAbsenceInventoryFailure failure = case failure of
+  BootstrapAccessorInventoryTooLarge {} ->
+    RootAccessorAbsenceObservedInventoryTooLarge
+  BootstrapAccessorInventoryDuplicate {} ->
+    RootAccessorAbsenceObservedInventoryDuplicate
+  _ -> RootAccessorAbsenceObservedAccessorInvalid
+
+classifyRootAccessorInventoryFailure
+  :: BootstrapValueError -> RootAccessorInventoryCause
+classifyRootAccessorInventoryFailure failure = case failure of
+  BootstrapAccessorInventoryTooLarge {} ->
+    RootAccessorInventoryObservedInventoryTooLarge
+  BootstrapAccessorInventoryDuplicate {} ->
+    RootAccessorInventoryObservedInventoryDuplicate
+  _ -> RootAccessorInventoryObservedAccessorInvalid
+
+classifyRootAccessorAuditorCleanup
+  :: EngineBoundaryError -> RootAccessorAuditorFailure
+classifyRootAccessorAuditorCleanup failure = case failure of
+  EngineBoundaryUnavailable _ -> RootAccessorAuditorCleanupUnavailable
+  EngineBoundaryRefused _ -> RootAccessorAuditorCleanupRefused
+  EngineBoundaryAmbiguous _ -> RootAccessorAuditorCleanupAmbiguous
+  EngineBoundaryRootAccessorAbsenceProof _ -> RootAccessorAuditorCleanupRefused
+  EngineBoundaryRootAccessorRevocation _ -> RootAccessorAuditorCleanupRefused
+  EngineBoundaryRootAccessorInventory _ -> RootAccessorAuditorCleanupRefused
+  EngineBoundaryProvisionerAccessorCleanup _ -> RootAccessorAuditorCleanupRefused
+  EngineBoundaryProvisionerPolicyApplication _ ->
+    RootAccessorAuditorCleanupRefused
+
+rootAccessorAbsenceAuditorCause
+  :: RootAccessorAuditorFailure -> RootAccessorAbsenceProofCause
+rootAccessorAbsenceAuditorCause failure = case failure of
+  RootAccessorAuditorProjectedTokenUnavailable ->
+    RootAccessorAbsenceProjectedTokenUnavailable
+  RootAccessorAuditorLoginHttpFailure httpFailure ->
+    RootAccessorAbsenceHttpFailure RootAccessorAbsenceAuditorLogin httpFailure
+  RootAccessorAuditorLoginInvalid -> RootAccessorAbsenceAuditorLoginInvalid
+  RootAccessorAuditorCleanupUnavailable -> RootAccessorAbsenceAuditorCleanupUnavailable
+  RootAccessorAuditorCleanupRefused -> RootAccessorAbsenceAuditorCleanupRefused
+  RootAccessorAuditorCleanupAmbiguous -> RootAccessorAbsenceAuditorCleanupAmbiguous
+
+rootAccessorRevocationAuditorCause
+  :: RootAccessorAuditorFailure -> RootAccessorRevocationCause
+rootAccessorRevocationAuditorCause failure = case failure of
+  RootAccessorAuditorProjectedTokenUnavailable ->
+    RootAccessorRevocationProjectedTokenUnavailable
+  RootAccessorAuditorLoginHttpFailure httpFailure ->
+    RootAccessorRevocationHttpFailure
+      RootAccessorRevocationAuditorLogin
+      (rootAccessorRevocationHttpFailure httpFailure)
+  RootAccessorAuditorLoginInvalid -> RootAccessorRevocationAuditorLoginInvalid
+  RootAccessorAuditorCleanupUnavailable -> RootAccessorRevocationAuditorCleanupUnavailable
+  RootAccessorAuditorCleanupRefused -> RootAccessorRevocationAuditorCleanupRefused
+  RootAccessorAuditorCleanupAmbiguous -> RootAccessorRevocationAuditorCleanupAmbiguous
+
+rootAccessorInventoryAuditorCause
+  :: RootAccessorAuditorFailure -> RootAccessorInventoryCause
+rootAccessorInventoryAuditorCause failure = case failure of
+  RootAccessorAuditorProjectedTokenUnavailable ->
+    RootAccessorInventoryProjectedTokenUnavailable
+  RootAccessorAuditorLoginHttpFailure httpFailure ->
+    RootAccessorInventoryHttpFailure
+      RootAccessorInventoryAuditorLogin
+      (rootAccessorInventoryHttpFailure httpFailure)
+  RootAccessorAuditorLoginInvalid -> RootAccessorInventoryAuditorLoginInvalid
+  RootAccessorAuditorCleanupUnavailable -> RootAccessorInventoryAuditorCleanupUnavailable
+  RootAccessorAuditorCleanupRefused -> RootAccessorInventoryAuditorCleanupRefused
+  RootAccessorAuditorCleanupAmbiguous -> RootAccessorInventoryAuditorCleanupAmbiguous
+
+rootAccessorRevocationHttpFailure
+  :: RootAccessorAbsenceProofHttpFailure -> RootAccessorRevocationHttpFailure
+rootAccessorRevocationHttpFailure failure = case failure of
+  RootAccessorAbsenceHttpConnectionFailure -> RootAccessorRevocationHttpConnectionFailure
+  RootAccessorAbsenceHttpTimeout -> RootAccessorRevocationHttpTimeout
+  RootAccessorAbsenceHttpStatus status -> RootAccessorRevocationHttpStatus status
+  RootAccessorAbsenceHttpDecode -> RootAccessorRevocationHttpDecode
+
+rootAccessorInventoryHttpFailure
+  :: RootAccessorAbsenceProofHttpFailure -> RootAccessorInventoryHttpFailure
+rootAccessorInventoryHttpFailure failure = case failure of
+  RootAccessorAbsenceHttpConnectionFailure -> RootAccessorInventoryHttpConnectionFailure
+  RootAccessorAbsenceHttpTimeout -> RootAccessorInventoryHttpTimeout
+  RootAccessorAbsenceHttpStatus status -> RootAccessorInventoryHttpStatus status
+  RootAccessorAbsenceHttpDecode -> RootAccessorInventoryHttpDecode
+
+classifyRootAccessorAbsenceHttpFailure
+  :: HttpError -> RootAccessorAbsenceProofHttpFailure
+classifyRootAccessorAbsenceHttpFailure failure = case failure of
+  HttpConnectionFailure _ -> RootAccessorAbsenceHttpConnectionFailure
+  HttpTimeout _ -> RootAccessorAbsenceHttpTimeout
+  HttpStatus status _ -> RootAccessorAbsenceHttpStatus status
+  HttpDecode _ -> RootAccessorAbsenceHttpDecode
+
+-- | Vault returns 404 for LIST auth/token/accessors when the collection is
+-- empty.  Only that exact response establishes an empty inventory; every
+-- other transport or response failure remains a closed refusal.
+classifyRootAccessorAbsenceListing
+  :: Either HttpError Vault.TokenAccessorListing
+  -> Either RootAccessorAbsenceProofCause [Text]
+classifyRootAccessorAbsenceListing listing = case listing of
+  Right observed -> Right (Vault.tokenAccessorKeys observed)
+  Left (HttpStatus 404 _) -> Right []
+  Left failure ->
+    Left
+      ( RootAccessorAbsenceHttpFailure
+          RootAccessorAbsenceListAccessors
+          (classifyRootAccessorAbsenceHttpFailure failure)
+      )
+
+classifyRootAccessorRevocationHttpFailure
+  :: HttpError -> RootAccessorRevocationHttpFailure
+classifyRootAccessorRevocationHttpFailure failure = case failure of
+  HttpConnectionFailure _ -> RootAccessorRevocationHttpConnectionFailure
+  HttpTimeout _ -> RootAccessorRevocationHttpTimeout
+  HttpStatus status _ -> RootAccessorRevocationHttpStatus status
+  HttpDecode _ -> RootAccessorRevocationHttpDecode
+
+classifyRootAccessorInventoryHttpFailure
+  :: HttpError -> RootAccessorInventoryHttpFailure
+classifyRootAccessorInventoryHttpFailure failure = case failure of
+  HttpConnectionFailure _ -> RootAccessorInventoryHttpConnectionFailure
+  HttpTimeout _ -> RootAccessorInventoryHttpTimeout
+  HttpStatus status _ -> RootAccessorInventoryHttpStatus status
+  HttpDecode _ -> RootAccessorInventoryHttpDecode
+
+-- | Vault returns 404 for LIST auth/token/accessors when the collection is
+-- empty. Only that exact response establishes an empty inventory; every other
+-- transport or response failure remains a closed refusal.
+classifyRootAccessorInventoryListing
+  :: Either HttpError Vault.TokenAccessorListing
+  -> Either RootAccessorInventoryCause [Text]
+classifyRootAccessorInventoryListing listing = case listing of
+  Right observed -> Right (Vault.tokenAccessorKeys observed)
+  Left (HttpStatus 404 _) -> Right []
+  Left failure ->
+    Left
+      ( RootAccessorInventoryHttpFailure
+          RootAccessorInventoryListAccessors
+          (classifyRootAccessorInventoryHttpFailure failure)
+      )
+
+classifyProvisionerAccessorCleanupHttpFailure
+  :: HttpError -> ProvisionerAccessorCleanupHttpFailure
+classifyProvisionerAccessorCleanupHttpFailure failure = case failure of
+  HttpConnectionFailure _ -> ProvisionerAccessorCleanupHttpConnectionFailure
+  HttpTimeout _ -> ProvisionerAccessorCleanupHttpTimeout
+  HttpStatus status _ -> ProvisionerAccessorCleanupHttpStatus status
+  HttpDecode _ -> ProvisionerAccessorCleanupHttpDecode
+
+-- | Vault returns 404 for LIST auth/token/accessors when the collection is
+-- empty. Only that exact response establishes an empty cleanup inventory;
+-- every other transport or response failure remains a closed refusal.
+classifyProvisionerAccessorCleanupListing
+  :: ProvisionerAccessorCleanupHttpOperation
+  -> Either HttpError Vault.TokenAccessorListing
+  -> Either ProvisionerAccessorCleanupCause [Text]
+classifyProvisionerAccessorCleanupListing operation listing = case listing of
+  Right observed -> Right (Vault.tokenAccessorKeys observed)
+  Left (HttpStatus 404 _) -> Right []
+  Left failure -> Left (provisionerAccessorCleanupHttpCause operation failure)
+
+provisionerAccessorCleanupHttpCause
+  :: ProvisionerAccessorCleanupHttpOperation
+  -> HttpError
+  -> ProvisionerAccessorCleanupCause
+provisionerAccessorCleanupHttpCause operation failure =
+  ProvisionerAccessorCleanupHttpFailure
+    operation
+    (classifyProvisionerAccessorCleanupHttpFailure failure)
+
+classifyProvisionerAccessorCleanupAuditFailure
+  :: VaultAccessorAuditDetailedError ProvisionerAccessorCleanupCause
+  -> ProvisionerAccessorCleanupCause
+classifyProvisionerAccessorCleanupAuditFailure failure = case failure of
+  VaultAccessorAuditDetailedIdentityInvalid ->
+    ProvisionerAccessorCleanupAuditIdentityInvalid
+  VaultAccessorAuditDetailedObservationFailed cause -> cause
+  VaultAccessorAuditDetailedClassificationFailed cause -> cause
+  VaultAccessorAuditDetailedVisibilityWaitFailed cause -> cause
+  VaultAccessorAuditDetailedStableAbsenceFailed ->
+    ProvisionerAccessorCleanupStableAbsenceFailed
+
+classifyProvisionerAccessorCleanupVisibility
+  :: EngineBoundaryError -> ProvisionerAccessorCleanupCause
+classifyProvisionerAccessorCleanupVisibility failure = case failure of
+  EngineBoundaryUnavailable _ -> ProvisionerAccessorCleanupVisibilityUnavailable
+  EngineBoundaryRefused _ -> ProvisionerAccessorCleanupVisibilityRefused
+  EngineBoundaryAmbiguous _ -> ProvisionerAccessorCleanupVisibilityAmbiguous
+  EngineBoundaryRootAccessorAbsenceProof _ -> ProvisionerAccessorCleanupVisibilityRefused
+  EngineBoundaryRootAccessorRevocation _ -> ProvisionerAccessorCleanupVisibilityRefused
+  EngineBoundaryRootAccessorInventory _ -> ProvisionerAccessorCleanupVisibilityRefused
+  EngineBoundaryProvisionerAccessorCleanup _ -> ProvisionerAccessorCleanupVisibilityRefused
+  EngineBoundaryProvisionerPolicyApplication _ ->
+    ProvisionerAccessorCleanupVisibilityRefused
+
+classifyProvisionerAccessorCleanupValueFailure
+  :: BootstrapValueError -> ProvisionerAccessorCleanupCause
+classifyProvisionerAccessorCleanupValueFailure failure = case failure of
+  BootstrapAccessorInventoryTooLarge {} ->
+    ProvisionerAccessorCleanupObservedInventoryTooLarge
+  BootstrapAccessorInventoryDuplicate {} ->
+    ProvisionerAccessorCleanupObservedInventoryDuplicate
+  _ -> ProvisionerAccessorCleanupObservedAccessorInvalid
+
+provisionerAccessorCleanupAuditorCause
+  :: RootAccessorAuditorFailure -> ProvisionerAccessorCleanupCause
+provisionerAccessorCleanupAuditorCause failure = case failure of
+  RootAccessorAuditorProjectedTokenUnavailable ->
+    ProvisionerAccessorCleanupProjectedTokenUnavailable
+  RootAccessorAuditorLoginHttpFailure httpFailure ->
+    ProvisionerAccessorCleanupHttpFailure
+      ProvisionerAccessorCleanupAuditorLogin
+      (provisionerAccessorCleanupHttpFailure httpFailure)
+  RootAccessorAuditorLoginInvalid -> ProvisionerAccessorCleanupAuditorLoginInvalid
+  RootAccessorAuditorCleanupUnavailable -> ProvisionerAccessorCleanupAuditorCleanupUnavailable
+  RootAccessorAuditorCleanupRefused -> ProvisionerAccessorCleanupAuditorCleanupRefused
+  RootAccessorAuditorCleanupAmbiguous -> ProvisionerAccessorCleanupAuditorCleanupAmbiguous
+
+provisionerAccessorCleanupHttpFailure
+  :: RootAccessorAbsenceProofHttpFailure
+  -> ProvisionerAccessorCleanupHttpFailure
+provisionerAccessorCleanupHttpFailure failure = case failure of
+  RootAccessorAbsenceHttpConnectionFailure -> ProvisionerAccessorCleanupHttpConnectionFailure
+  RootAccessorAbsenceHttpTimeout -> ProvisionerAccessorCleanupHttpTimeout
+  RootAccessorAbsenceHttpStatus status -> ProvisionerAccessorCleanupHttpStatus status
+  RootAccessorAbsenceHttpDecode -> ProvisionerAccessorCleanupHttpDecode
+
+decideRootAccessorAbsenceProof
+  :: RootAccessorAbsenceProofRequirement
+  -> RootAccessorInventory
+  -> RootAccessorInventory
+  -> Either RootAccessorAbsenceProofCause ()
+decideRootAccessorAbsenceProof requirement expected current
+  | rootAccessorInventoryGeneration current
+      /= rootAccessorInventoryGeneration expected =
+      Left RootAccessorAbsenceGenerationMismatch
+  | any (`elem` observed) targets = Left RootAccessorAbsenceTargetPresent
+  | requirement == RootAccessorStableZeroRequired
+      && not (null observed) =
+      Left RootAccessorAbsenceStableZeroMismatch
+  | otherwise = Right ()
+ where
+  targets = rootAccessorInventoryAccessors expected
+  observed = rootAccessorInventoryAccessors current
 
 cleanupProvisionerSessions
   :: BootstrapBrokerSettings
@@ -1501,13 +1928,15 @@ cleanupProvisionerSessions
 cleanupProvisionerSessions settings registry generation = do
   cleaned <- cleanupVaultRoleAccessors settings bootstrapProvisionerRole
   case cleaned of
-    Left failure -> pure (Left failure)
+    Left failure ->
+      pure (Left (EngineBoundaryProvisionerAccessorCleanup failure))
     Right rawAccessors ->
       case traverse mkTypedAccessor rawAccessors
         >>= mapLeft
-          (EngineBoundaryRefused . Text.pack . show)
+          classifyProvisionerAccessorCleanupValueFailure
           . mkProvisionerAccessorInventory generation of
-        Left failure -> pure (Left failure)
+        Left failure ->
+          pure (Left (EngineBoundaryProvisionerAccessorCleanup failure))
         Right inventory -> do
           writeIORef registry Map.empty
           pure
@@ -1520,7 +1949,7 @@ cleanupProvisionerSessions settings registry generation = do
  where
   mkTypedAccessor =
     mapLeft
-      (EngineBoundaryRefused . Text.pack . show)
+      (const ProvisionerAccessorCleanupObservedAccessorInvalid)
       . mkProvisionerAccessor
 
 -- | Revoke every service token carrying the exact role policy, then perform a
@@ -1529,7 +1958,7 @@ cleanupProvisionerSessions settings registry generation = do
 cleanupVaultRoleAccessors
   :: BootstrapBrokerSettings
   -> Text
-  -> IO (Either EngineBoundaryError [Text])
+  -> IO (Either ProvisionerAccessorCleanupCause [Text])
 cleanupVaultRoleAccessors =
   cleanupVaultRoleAccessorsWithGrace boundedVaultAccessorVisibilityGrace
 
@@ -1537,15 +1966,91 @@ cleanupVaultRoleAccessorsWithGrace
   :: IO (Either EngineBoundaryError ())
   -> BootstrapBrokerSettings
   -> Text
-  -> IO (Either EngineBoundaryError [Text])
-cleanupVaultRoleAccessorsWithGrace waitForVisibility settings role =
-  withVaultBatchRole settings tokenAccessorAuditorRole $ \auditor -> do
-    auditVaultRoleStableZeroWithToken
-      waitForVisibility
-      settings
-      (Vault.vaultLoginToken auditor)
-      role
-      Nothing
+  -> IO (Either ProvisionerAccessorCleanupCause [Text])
+cleanupVaultRoleAccessorsWithGrace waitForVisibility settings role = do
+  loggedIn <- loginRootAccessorAuditor settings
+  case loggedIn of
+    Left failure -> pure (Left (provisionerAccessorCleanupAuditorCause failure))
+    Right auditor ->
+      auditVaultRoleStableZeroForProvisionerCleanup
+        waitForVisibility
+        settings
+        (Vault.vaultLoginToken auditor)
+        role
+
+auditVaultRoleStableZeroForProvisionerCleanup
+  :: IO (Either EngineBoundaryError ())
+  -> BootstrapBrokerSettings
+  -> Vault.VaultToken
+  -> Text
+  -> IO (Either ProvisionerAccessorCleanupCause [Text])
+auditVaultRoleStableZeroForProvisionerCleanup waitForVisibility settings token role = do
+  initial <- roleAccessorsForProvisionerCleanup settings token role
+  case initial of
+    Left failure -> pure (Left failure)
+    Right accessors -> do
+      audited <-
+        revokeAndProveVaultAccessorSubjectAbsentDetailed auditOps subject Nothing
+      pure $ case audited of
+        Left failure -> Left (classifyProvisionerAccessorCleanupAuditFailure failure)
+        Right () -> Right accessors
+ where
+  address = Vault.VaultAddress (brokerVaultAddress settings)
+  subject = bootstrapBrokerRoleSubject role
+  auditOps =
+    VaultAccessorAuditDetailedOps
+      { detailedAuditListAccessors =
+          fmap
+            (classifyProvisionerAccessorCleanupListing ProvisionerAccessorCleanupAuditListAccessors)
+            (Vault.vaultListTokenAccessors address token)
+      , detailedAuditLookupAccessor =
+          \accessor ->
+            fmap
+              (mapLeft (provisionerAccessorCleanupHttpCause ProvisionerAccessorCleanupAuditLookupAccessor))
+              (Vault.vaultLookupTokenAccessorInfo address token accessor)
+      , detailedAuditRevokeAccessor =
+          \accessor ->
+            fmap
+              (mapLeft (provisionerAccessorCleanupHttpCause ProvisionerAccessorCleanupAuditRevokeAccessor))
+              (Vault.vaultRevokeTokenAccessor address token accessor)
+      , detailedAuditObserveAccessorAbsent =
+          \accessor ->
+            fmap
+              (mapLeft (provisionerAccessorCleanupHttpCause ProvisionerAccessorCleanupAuditObserveKnownAccessor))
+              (Vault.vaultTokenAccessorAbsent address token accessor)
+      , detailedAuditWaitVisibilityGrace =
+          fmap (mapLeft classifyProvisionerAccessorCleanupVisibility) waitForVisibility
+      }
+
+roleAccessorsForProvisionerCleanup
+  :: BootstrapBrokerSettings
+  -> Vault.VaultToken
+  -> Text
+  -> IO (Either ProvisionerAccessorCleanupCause [Text])
+roleAccessorsForProvisionerCleanup settings token role = do
+  listing <- Vault.vaultListTokenAccessors address token
+  case classifyProvisionerAccessorCleanupListing
+    ProvisionerAccessorCleanupInitialListAccessors
+    listing of
+    Left failure -> pure (Left failure)
+    Right accessors -> do
+      classified <- traverse classify accessors
+      pure (fmap concat (sequence classified))
+ where
+  address = Vault.VaultAddress (brokerVaultAddress settings)
+  classify accessor = do
+    info <- Vault.vaultLookupTokenAccessorInfo address token accessor
+    pure $ case info of
+      Left failure ->
+        Left
+          ( provisionerAccessorCleanupHttpCause
+              ProvisionerAccessorCleanupInitialLookupAccessor
+              failure
+          )
+      Right observed
+        | vaultAccessorMatchesSubject (bootstrapBrokerRoleSubject role) observed ->
+            Right [accessor]
+        | otherwise -> Right []
 
 -- | Run the shared finite stable-zero proof with an already validated batch
 -- auditor.  A known accessor is an additional mandatory observation; the
@@ -1756,23 +2261,28 @@ applyProvisionerBaseline
   -> ProvisionerLoginReceipt
   -> IO (Either EngineBoundaryError ())
 applyProvisionerBaseline settings registry receipt = do
-  tokenResult <- lookupProvisionerToken registry receipt
+  tokenResult <- lookupProvisionerPolicyApplicationToken registry receipt
   case tokenResult of
-    Left failure -> pure (Left failure)
+    Left failure ->
+      pure (Left (EngineBoundaryProvisionerPolicyApplication failure))
     Right token -> do
       reconciled <-
         runVaultReconcile
           (Vault.VaultAddress (brokerVaultAddress settings))
           token
           defaultVaultReconcilePlan
-      case mapReconcileResult reconciled of
-        Left failure -> pure (Left failure)
+      case mapLeft classifyProvisionerPolicyCoreReconcileFailure reconciled of
+        Left failure ->
+          pure (Left (EngineBoundaryProvisionerPolicyApplication failure))
         Right _ -> do
           pki <-
             reconcileVaultPkiBaseline
               (Vault.VaultAddress (brokerVaultAddress settings))
               token
-          pure (mapReconcileResult pki >> Right ())
+          pure $ case mapLeft classifyProvisionerPolicyPkiReconcileFailure pki of
+            Left failure ->
+              Left (EngineBoundaryProvisionerPolicyApplication failure)
+            Right _ -> Right ()
 
 readBackProvisionerBaseline
   :: BootstrapBrokerSettings
@@ -1839,6 +2349,30 @@ lookupProvisionerToken registry receipt = do
         ( EngineBoundaryUnavailable
             "journaled provisioner session token is unavailable; restart cleanup is required"
         )
+
+lookupProvisionerPolicyApplicationToken
+  :: ProvisionerTokenRegistry
+  -> ProvisionerLoginReceipt
+  -> IO (Either ProvisionerPolicyApplicationCause Vault.VaultToken)
+lookupProvisionerPolicyApplicationToken registry receipt = do
+  tokens <- readIORef registry
+  pure $ case Map.lookup (provisionerLoginAccessor receipt) tokens of
+    Just token -> Right token
+    Nothing -> Left ProvisionerPolicyApplicationTokenUnavailable
+
+classifyProvisionerPolicyCoreReconcileFailure
+  :: VaultReconcile.VaultReconcileError
+  -> ProvisionerPolicyApplicationCause
+classifyProvisionerPolicyCoreReconcileFailure =
+  ProvisionerPolicyApplicationCoreReconcile
+    . classifyVaultCoreReconcileFailure
+
+classifyProvisionerPolicyPkiReconcileFailure
+  :: VaultReconcile.VaultPkiReconcileError
+  -> ProvisionerPolicyApplicationCause
+classifyProvisionerPolicyPkiReconcileFailure =
+  ProvisionerPolicyApplicationPkiReconcile
+    . classifyVaultPkiReconcileFailure
 
 observePostUnsealConsumer
   :: ProductionBrokerClients

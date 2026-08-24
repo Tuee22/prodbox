@@ -16,6 +16,7 @@ module Prodbox.Vault.Reconcile
   , VaultReconcileTarget (..)
   , VaultReconcileAction (..)
   , VaultReconcileStep (..)
+  , VaultReconcileHttpOperation (..)
   , VaultReconcileError (..)
   , defaultVaultReconcilePlan
   , bootstrapBrokerRotatableTransitKeys
@@ -25,6 +26,12 @@ module Prodbox.Vault.Reconcile
   , bootstrapSealRole
   , tokenAccessorAuditorRole
   , VaultPkiBaselineStatus (..)
+  , VaultPkiReconcileOperation (..)
+  , VaultPkiObserveOperation (..)
+  , VaultPkiReconcileError (..)
+  , VaultPkiObserveError (..)
+  , VaultPkiRootDecision (..)
+  , decideVaultPkiRoot
   , reconcileVaultPkiBaseline
   , observeVaultPkiBaseline
   , runVaultReconcile
@@ -235,8 +242,25 @@ data VaultReconcileStep = VaultReconcileStep
   }
   deriving (Eq, Show)
 
+-- | Closed operation identity for transport failures in the baseline fold.
+-- The accompanying context in 'VaultReconcileHttpError' remains available to
+-- the operator renderer, but callers that need a payload-free decision must
+-- classify this constructor instead of parsing that text.
+data VaultReconcileHttpOperation
+  = VaultReconcileListMounts
+  | VaultReconcileEnableMount
+  | VaultReconcileListAuthMethods
+  | VaultReconcileEnableAuthMethod
+  | VaultReconcileWriteKubernetesAuthConfig
+  | VaultReconcileReadTransitKey
+  | VaultReconcileCreateTransitKey
+  | VaultReconcileWritePolicy
+  | VaultReconcileWriteKubernetesRole
+  | VaultReconcileReadBackKubernetesRole
+  deriving (Eq, Ord, Show, Enum, Bounded)
+
 data VaultReconcileError
-  = VaultReconcileHttpError Text HttpError
+  = VaultReconcileHttpError VaultReconcileHttpOperation Text HttpError
   | VaultReconcileMountTypeMismatch Text Text Text
   | VaultReconcileMountOptionMismatch Text Text Text (Maybe Text)
   | VaultReconcileAuthTypeMismatch Text Text Text
@@ -714,7 +738,9 @@ runVaultReconcileWith
 runVaultReconcileWith ops plan = do
   mountResult <- vaultOpsListMounts ops
   case mountResult of
-    Left err -> pure (Left (VaultReconcileHttpError "list mounts" err))
+    Left err ->
+      pure
+        (Left (VaultReconcileHttpError VaultReconcileListMounts "list mounts" err))
     Right existingMounts -> do
       mountStepsResult <- reconcileMounts ops existingMounts (vaultReconcileMounts plan)
       case mountStepsResult of
@@ -722,7 +748,15 @@ runVaultReconcileWith ops plan = do
         Right mountSteps -> do
           authResult <- vaultOpsListAuthMethods ops
           case authResult of
-            Left err -> pure (Left (VaultReconcileHttpError "list auth methods" err))
+            Left err ->
+              pure
+                ( Left
+                    ( VaultReconcileHttpError
+                        VaultReconcileListAuthMethods
+                        "list auth methods"
+                        err
+                    )
+                )
             Right existingAuth -> do
               authStepsResult <- reconcileAuthMethods ops existingAuth (vaultReconcileAuthMethods plan)
               case authStepsResult of
@@ -777,7 +811,14 @@ reconcileMounts ops existing =
         result <- vaultOpsEnableMount ops spec
         case result of
           Left err ->
-            pure (Left (VaultReconcileHttpError ("enable mount " <> vaultMountSpecPath spec) err))
+            pure
+              ( Left
+                  ( VaultReconcileHttpError
+                      VaultReconcileEnableMount
+                      ("enable mount " <> vaultMountSpecPath spec)
+                      err
+                  )
+              )
           Right () ->
             go (step VaultReconcileMount (vaultMountSpecPath spec) VaultReconcileCreated : steps) rest
       Just info
@@ -820,7 +861,14 @@ reconcileAuthMethods ops existing =
         result <- vaultOpsEnableAuthMethod ops spec
         case result of
           Left err ->
-            pure (Left (VaultReconcileHttpError ("enable auth " <> vaultAuthSpecPath spec) err))
+            pure
+              ( Left
+                  ( VaultReconcileHttpError
+                      VaultReconcileEnableAuthMethod
+                      ("enable auth " <> vaultAuthSpecPath spec)
+                      err
+                  )
+              )
           Right () ->
             go (step VaultReconcileAuthMethod (vaultAuthSpecPath spec) VaultReconcileCreated : steps) rest
       Just info
@@ -851,6 +899,7 @@ reconcileKubernetesAuthConfigs ops =
         pure
           ( Left
               ( VaultReconcileHttpError
+                  VaultReconcileWriteKubernetesAuthConfig
                   ("write Kubernetes auth config " <> vaultKubernetesAuthConfigSpecPath spec)
                   err
               )
@@ -892,11 +941,25 @@ reconcileTransitKeys ops =
         createResult <- vaultOpsCreateTransitKey ops spec
         case createResult of
           Left err ->
-            pure (Left (VaultReconcileHttpError ("create transit key " <> vaultTransitKeySpecName spec) err))
+            pure
+              ( Left
+                  ( VaultReconcileHttpError
+                      VaultReconcileCreateTransitKey
+                      ("create transit key " <> vaultTransitKeySpecName spec)
+                      err
+                  )
+              )
           Right () ->
             go (step VaultReconcileTransitKey (vaultTransitKeySpecName spec) VaultReconcileCreated : steps) rest
       Left err ->
-        pure (Left (VaultReconcileHttpError ("read transit key " <> vaultTransitKeySpecName spec) err))
+        pure
+          ( Left
+              ( VaultReconcileHttpError
+                  VaultReconcileReadTransitKey
+                  ("read transit key " <> vaultTransitKeySpecName spec)
+                  err
+              )
+          )
 
 reconcilePolicies
   :: VaultReconcileOps -> [VaultPolicySpec] -> IO (Either VaultReconcileError [VaultReconcileStep])
@@ -908,7 +971,14 @@ reconcilePolicies ops =
     result <- vaultOpsWritePolicy ops spec
     case result of
       Left err ->
-        pure (Left (VaultReconcileHttpError ("write policy " <> vaultPolicySpecName spec) err))
+        pure
+          ( Left
+              ( VaultReconcileHttpError
+                  VaultReconcileWritePolicy
+                  ("write policy " <> vaultPolicySpecName spec)
+                  err
+              )
+          )
       Right () ->
         go (step VaultReconcilePolicy (vaultPolicySpecName spec) VaultReconcileWritten : steps) rest
 
@@ -926,7 +996,11 @@ reconcileKubernetesRoles ops =
       Left err ->
         pure
           ( Left
-              (VaultReconcileHttpError ("write Kubernetes role " <> vaultKubernetesRoleSpecName spec) err)
+              ( VaultReconcileHttpError
+                  VaultReconcileWriteKubernetesRole
+                  ("write Kubernetes role " <> vaultKubernetesRoleSpecName spec)
+                  err
+              )
           )
       Right () -> do
         observed <- vaultOpsReadKubernetesRole ops spec
@@ -934,7 +1008,11 @@ reconcileKubernetesRoles ops =
           Left err ->
             pure
               ( Left
-                  (VaultReconcileHttpError ("read back Kubernetes role " <> vaultKubernetesRoleSpecName spec) err)
+                  ( VaultReconcileHttpError
+                      VaultReconcileReadBackKubernetesRole
+                      ("read back Kubernetes role " <> vaultKubernetesRoleSpecName spec)
+                      err
+                  )
               )
           Right readback
             | kubernetesRoleReadbackMatches spec readback ->
@@ -1044,7 +1122,7 @@ renderVaultReconcileStep reconcileStep =
 
 renderVaultReconcileError :: VaultReconcileError -> String
 renderVaultReconcileError err = case err of
-  VaultReconcileHttpError context httpErr ->
+  VaultReconcileHttpError _ context httpErr ->
     Text.unpack context ++ " failed: " ++ renderHttpError httpErr
   VaultReconcileMountTypeMismatch mount expected actual ->
     "Vault mount "
@@ -1214,32 +1292,86 @@ data VaultPkiBaselineStatus
   | VaultPkiBaselineReady
   deriving (Eq, Show)
 
+-- | Closed mutation-side PKI operation vocabulary. Operator context, Vault
+-- paths, role names, and response bodies stay in the HTTP client rather than
+-- becoming part of the bootstrap diagnostic contract.
+data VaultPkiReconcileOperation
+  = VaultPkiReconcileListIssuers
+  | VaultPkiReconcileGenerateInternalRoot
+  | VaultPkiReconcileWriteRole
+  deriving (Eq, Show, Enum, Bounded)
+
+-- | Closed read-back-side PKI operation vocabulary.
+data VaultPkiObserveOperation
+  = VaultPkiObserveListIssuers
+  | VaultPkiObserveReadRole
+  deriving (Eq, Show, Enum, Bounded)
+
+data VaultPkiObserveError
+  = VaultPkiObserveHttpError !VaultPkiObserveOperation !HttpError
+  deriving (Eq, Show)
+
+data VaultPkiReconcileError
+  = VaultPkiReconcileHttpError !VaultPkiReconcileOperation !HttpError
+  | VaultPkiReconcileObserveFailed !VaultPkiObserveError
+  | VaultPkiReconcileReadBackNotExact !VaultPkiBaselineStatus
+  deriving (Eq, Show)
+
+data VaultPkiRootDecision
+  = VaultPkiGenerateRoot
+  | VaultPkiKeepExistingRoot
+  deriving (Eq, Show)
+
+-- | Decide the first PKI reconciliation step from issuer-list evidence.
+-- Vault represents a newly mounted PKI engine with HTTP 404 until an issuer
+-- exists; that state is semantically identical to a successful empty list.
+decideVaultPkiRoot
+  :: Either HttpError [Text]
+  -> Either VaultPkiReconcileError VaultPkiRootDecision
+decideVaultPkiRoot issuers = case issuers of
+  Right [] -> Right VaultPkiGenerateRoot
+  Right _ -> Right VaultPkiKeepExistingRoot
+  Left (HttpStatus 404 _) -> Right VaultPkiGenerateRoot
+  Left failure ->
+    Left (VaultPkiReconcileHttpError VaultPkiReconcileListIssuers failure)
+
 reconcileVaultPkiBaseline
-  :: VaultAddress -> VaultToken -> IO (Either Text VaultPkiBaselineStatus)
+  :: VaultAddress
+  -> VaultToken
+  -> IO (Either VaultPkiReconcileError VaultPkiBaselineStatus)
 reconcileVaultPkiBaseline address token = do
   issuers <- vaultListPkiIssuers address token
-  generated <- case issuers of
-    Right listing
-      | null (pkiIssuerKeys listing) ->
-          fmap (either (Left . Text.pack . renderHttpError) Right) $
-            vaultGeneratePkiInternalRoot address token
-    Right _ -> pure (Right ())
-    Left failure -> pure (Left (Text.pack (renderHttpError failure)))
+  generated <- case decideVaultPkiRoot (pkiIssuerKeys <$> issuers) of
+    Right VaultPkiGenerateRoot ->
+      fmap
+        ( either
+            (Left . VaultPkiReconcileHttpError VaultPkiReconcileGenerateInternalRoot)
+            Right
+        )
+        (vaultGeneratePkiInternalRoot address token)
+    Right VaultPkiKeepExistingRoot -> pure (Right ())
+    Left failure -> pure (Left failure)
   case generated of
     Left failure -> pure (Left failure)
     Right () -> do
       written <- vaultWritePkiRole address token "prodbox-bootstrap-test"
       case written of
-        Left failure -> pure (Left (Text.pack (renderHttpError failure)))
+        Left failure ->
+          pure
+            ( Left
+                (VaultPkiReconcileHttpError VaultPkiReconcileWriteRole failure)
+            )
         Right () -> do
           observed <- observeVaultPkiBaseline address token
           pure $ case observed of
             Right VaultPkiBaselineReady -> Right VaultPkiBaselineReady
-            Right _ -> Left "Vault PKI baseline read-back was not exact"
-            Left failure -> Left failure
+            Right status -> Left (VaultPkiReconcileReadBackNotExact status)
+            Left failure -> Left (VaultPkiReconcileObserveFailed failure)
 
 observeVaultPkiBaseline
-  :: VaultAddress -> VaultToken -> IO (Either Text VaultPkiBaselineStatus)
+  :: VaultAddress
+  -> VaultToken
+  -> IO (Either VaultPkiObserveError VaultPkiBaselineStatus)
 observeVaultPkiBaseline address token = do
   issuers <- vaultListPkiIssuers address token
   role <- vaultReadPkiRole address token "prodbox-bootstrap-test"
@@ -1253,8 +1385,10 @@ observeVaultPkiBaseline address token = do
       | otherwise -> Right VaultPkiBaselineDrifted
     (Left (HttpStatus 404 _), _) -> Right VaultPkiBaselineAbsent
     (_, Left (HttpStatus 404 _)) -> Right VaultPkiBaselineAbsent
-    (Left failure, _) -> Left (Text.pack (renderHttpError failure))
-    (_, Left failure) -> Left (Text.pack (renderHttpError failure))
+    (Left failure, _) ->
+      Left (VaultPkiObserveHttpError VaultPkiObserveListIssuers failure)
+    (_, Left failure) ->
+      Left (VaultPkiObserveHttpError VaultPkiObserveReadRole failure)
 
 -- The post-bootstrap provisioner can reconcile only the compiled Vault
 -- baseline families plus the Broker's exact test-PKI operations. It

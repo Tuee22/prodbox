@@ -188,13 +188,15 @@ import Prodbox.Gateway.Types
   )
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
-import Prodbox.Infra.Route53ValidationZone qualified as Route53ValidationZone
 import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Keycloak.CredentialSetupForm qualified as CredentialSetupForm
 import Prodbox.Keycloak.Email qualified
 import Prodbox.Lib.Storage
   ( defaultChartDataRootRelative
   , testManualPvHostRootEnv
+  )
+import Prodbox.Lifecycle.CleanupRunEntry
+  ( lifecycleCleanupResultSucceeded
   )
 import Prodbox.Lifecycle.LiveResidue
   ( awsEksTestStackName
@@ -208,6 +210,12 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
 import Prodbox.Lifecycle.ResourceClass
   ( LifecycleClass (..)
   )
+import Prodbox.Lifecycle.Teardown.CascadeCandidate
+  ( CascadeCandidatePlanSummary (..)
+  , fixedCascadeCandidatePlanSummary
+  )
+import Prodbox.Lifecycle.ValidationHostedZone qualified as Route53ValidationZone
+import Prodbox.Minio.ObjectStoreTypes (defaultObjectStoreBucket)
 import Prodbox.PublicEdge
   ( PublicEdgeRoute (..)
   , publicFqdn
@@ -294,6 +302,13 @@ import Prodbox.Subprocess
   , stopBackgroundProcess
   )
 import Prodbox.Substrate (Substrate (..), substrateId)
+import Prodbox.Test.CascadeQualification
+  ( cascadeQualificationEvidenceDigest
+  , cascadeQualificationEvidencePath
+  , cascadeQualificationLifecycleResult
+  , cascadeQualificationRunId
+  , runCascadeQualificationCandidate
+  )
 import Prodbox.Test.CertificateScopeServing
   ( renderCertificateServingDefect
   , validatePresentedDnsSans
@@ -537,7 +552,7 @@ daemonBootstrapHostRootTokenPatterns =
 defaultSealedVaultAuditInput :: SealedVaultAuditInput
 defaultSealedVaultAuditInput =
   SealedVaultAuditInput
-    { sealedVaultBucketNames = ["prodbox-state"]
+    { sealedVaultBucketNames = [defaultObjectStoreBucket]
     , sealedVaultObjectKeys = []
     , sealedVaultHostDiskEntries = []
     , sealedVaultKubernetesObjectNames = []
@@ -587,7 +602,7 @@ sealedVaultAuditReport input = do
 
 assertOnlyGenericBuckets :: [String] -> Either String ()
 assertOnlyGenericBuckets buckets =
-  case filter (`notElem` ["prodbox-state"]) buckets of
+  case filter (/= defaultObjectStoreBucket) buckets of
     [] -> Right ()
     unexpected -> Left ("sealed Vault audit found role-revealing bucket names: " ++ show unexpected)
 
@@ -1392,6 +1407,8 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
       ValidationTeardownRecovery -> runTeardownRecoveryValidation repoRoot
       ValidationCertificateScope -> runCertificateScopeServingValidation repoRoot substrate
       ValidationCleanRoomHandoff -> runCleanRoomHandoffValidation repoRoot
+      ValidationCascadeQualification ->
+        runCascadeQualificationValidation repoRoot environment substrate
       ValidationChartsPlatform ->
         runSequentially
           [ assertNativeCommandOutputContainsAll
@@ -5174,14 +5191,87 @@ runCleanRoomHandoffValidation repoRoot = do
       )
   case CleanRoom.legacyResidueViolations paths sources of
     residue : _ -> failWith ("clean-room legacy residue remains: " ++ show residue)
-    [] -> do
-      writeOutput (CleanRoom.renderCleanRoomPlan [])
-      pure ExitSuccess
+    [] ->
+      case CleanRoom.legacyCutoverResidueViolations
+        CleanRoom.LegacyScanPreActivation
+        sources of
+        residue : _ ->
+          failWith ("clean-room legacy cutover inventory drifted: " ++ show residue)
+        [] -> do
+          writeOutput (CleanRoom.renderCleanRoomPlan [])
+          case fixedCascadeCandidatePlanSummary of
+            Left err -> failWith err
+            Right summary ->
+              writeOutput
+                ( unlines
+                    [ "QUALIFICATION_ONLY_CASCADE_CANDIDATE"
+                    , "CLEANUP_RUN_ID="
+                        ++ Text.unpack (cascadeCandidateSummaryRunId summary)
+                    , "GRAPH_DIGEST="
+                        ++ Text.unpack (cascadeCandidateSummaryGraphDigest summary)
+                    , "DESCRIPTOR_DIGEST="
+                        ++ Text.unpack (cascadeCandidateSummaryDescriptorDigest summary)
+                    , "TERMINAL_OPERATION_ID="
+                        ++ Text.unpack
+                          (cascadeCandidateSummaryTerminalOperationId summary)
+                    ]
+                )
+                >> mapM_
+                  (writeOutput . CleanRoom.renderInstalledCascadeTrace)
+                  CleanRoom.fixedInstalledCascadeTraces
+                >> pure ExitSuccess
  where
   isProductionPath path =
     any (`isPrefixOf` path) ["app/", "src/", "charts/"]
       && path /= "src/Prodbox/CheckCode.hs"
       && path /= "src/Prodbox/Test/CleanRoomHandoff.hs"
+
+runCascadeQualificationValidation
+  :: FilePath -> [(String, String)] -> Substrate -> IO ExitCode
+runCascadeQualificationValidation repoRoot environment substrate =
+  case substrate of
+    SubstrateHomeLocal ->
+      failWith
+        "cascade-qualification is destructive AWS-harness work; rerun with --substrate aws"
+    SubstrateAws ->
+      case lookup cascadeQualificationCycleVariable environment of
+        Nothing ->
+          failWith
+            ( cascadeQualificationCycleVariable
+                ++ " must name the stable qualification cycle (for example pre-1, pre-2, or post-1)"
+            )
+        Just cycleLabel
+          | null cycleLabel || any isSpace cycleLabel ->
+              failWith
+                (cascadeQualificationCycleVariable ++ " must be non-empty and contain no whitespace")
+          | otherwise -> do
+              driven <-
+                runCascadeQualificationCandidate
+                  repoRoot
+                  environment
+                  (Text.pack cycleLabel)
+              case driven of
+                Left err -> failWith ("cascade qualification failed: " ++ err)
+                Right outcome -> do
+                  let result = cascadeQualificationLifecycleResult outcome
+                  writeOutput
+                    ( unlines
+                        [ "CASCADE_QUALIFICATION_RESULT"
+                        , "CYCLE=" ++ cycleLabel
+                        , "CLEANUP_RUN_ID="
+                            ++ Text.unpack (cascadeQualificationRunId outcome)
+                        , "EVIDENCE_PATH=" ++ cascadeQualificationEvidencePath outcome
+                        , "EVIDENCE_DIGEST="
+                            ++ Text.unpack (cascadeQualificationEvidenceDigest outcome)
+                        , "LIFECYCLE_RESULT=" ++ show result
+                        ]
+                    )
+                  if lifecycleCleanupResultSucceeded result
+                    then pure ExitSuccess
+                    else failWith "cascade qualification did not reach exact terminal success"
+
+cascadeQualificationCycleVariable :: String
+cascadeQualificationCycleVariable = "PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE"
 
 curlTlsServingProbe :: FilePath -> String -> IO (Either String ())
 curlTlsServingProbe repoRoot host = do

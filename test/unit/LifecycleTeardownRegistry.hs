@@ -31,10 +31,12 @@ lifecycleTeardownRegistrySuite = do
                    , (AwsEbsPerRunTestKey, Just PerRun, VolumeFamily)
                    , (AwsDnsValidationZoneKey, Just PerRun, DnsZoneFamily)
                    , (AwsDns01ChallengeRecordKey, Just PerRun, DnsRecordFamily)
+                   , (AwsEksIamRoleFamilyKey, Just PerRun, ControllerFamily)
+                   , (AwsEksLoadBalancerControllerFamilyKey, Just PerRun, ControllerFamily)
                    , (AwsEbsProductionRetainedKey, Just LongLived, VolumeFamily)
                    ]
       map registeredIdentityAuthority lifecycleRegistry
-        `shouldBe` replicate 8 LinuxRke2LifecycleAuthority
+        `shouldBe` replicate 10 LinuxRke2LifecycleAuthority
       lifecycleRegistryValidation `shouldBe` Right ()
 
     it "keeps the two EBS families on distinct exact coordinates and fixed classes" $ do
@@ -75,10 +77,14 @@ lifecycleTeardownRegistrySuite = do
                    , AwsEbsPerRunTestKey
                    , AwsDnsValidationZoneKey
                    , AwsDns01ChallengeRecordKey
+                   , AwsEksIamRoleFamilyKey
+                   , AwsEksLoadBalancerControllerFamilyKey
                    , LocalLinuxRke2Key
                    ]
       map cleanupTargetLifecycleClass (cleanupTargetsForSurface CascadeSurface)
         `shouldBe` [ Just PerRun
+                   , Just PerRun
+                   , Just PerRun
                    , Just PerRun
                    , Just PerRun
                    , Just PerRun
@@ -358,7 +364,10 @@ surfaceTable =
   , (AwsEksSubzoneKey, [Cascade, ExplicitPerRun, TotalDecommission])
   , (AwsTestKey, [Cascade, ExplicitPerRun, TotalDecommission])
   , (AwsEbsPerRunTestKey, [Cascade, ExplicitPerRun, TotalDecommission])
+  , (AwsDnsValidationZoneKey, [Cascade, ExplicitPerRun, TotalDecommission])
   , (AwsDns01ChallengeRecordKey, [Cascade, ExplicitPerRun, TotalDecommission])
+  , (AwsEksIamRoleFamilyKey, [Cascade, ExplicitPerRun, TotalDecommission])
+  , (AwsEksLoadBalancerControllerFamilyKey, [Cascade, ExplicitPerRun, TotalDecommission])
   , (AwsEbsProductionRetainedKey, [ExplicitLongLived, TotalDecommission])
   ]
 
@@ -372,7 +381,7 @@ foundation :: LinuxRke2FoundationId
 foundation = LinuxRke2FoundationId "home-linux-rke2"
 
 awsScope :: AwsScope
-awsScope = AwsScope (AwsAccountId "111122223333") (AwsRegion "ca-central-1")
+awsScope = AwsScope (AwsAccountId "111122223333") (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
 
 challengeZone :: HostedZoneId
 challengeZone = mustRightText (mkHostedZoneId "Z0123456789ABCDEFGHIJ")
@@ -525,12 +534,12 @@ wrongScopeTable =
         lifecycleRegistryRevision
         runScope
         foundation
-        (Just (AwsScope (AwsAccountId "999900001111") (AwsRegion "ca-central-1")))
+        (Just (AwsScope (AwsAccountId "999900001111") (AwsRegion (fixtureAwsRegion FixtureCaCentral1))))
         ReconcileDesiredAbsent
     , ObservationAwsScopeMismatch
         AwsEksKey
         (Just awsScope)
-        (Just (AwsScope (AwsAccountId "999900001111") (AwsRegion "ca-central-1")))
+        (Just (AwsScope (AwsAccountId "999900001111") (AwsRegion (fixtureAwsRegion FixtureCaCentral1))))
     )
   ,
     ( mkObservationEvidenceScope
@@ -538,12 +547,12 @@ wrongScopeTable =
         lifecycleRegistryRevision
         runScope
         foundation
-        (Just (AwsScope (AwsAccountId "111122223333") (AwsRegion "us-east-1")))
+        (Just (AwsScope (AwsAccountId "111122223333") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
         ReconcileDesiredAbsent
     , ObservationAwsScopeMismatch
         AwsEksKey
         (Just awsScope)
-        (Just (AwsScope (AwsAccountId "111122223333") (AwsRegion "us-east-1")))
+        (Just (AwsScope (AwsAccountId "111122223333") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
     )
   ,
     ( mkObservationEvidenceScope
@@ -597,12 +606,13 @@ conflictingRows :: [(AwsTagRow, AwsInventoryFailure)]
 conflictingRows =
   [
     ( (bucketRow lifecycleTag)
-        { awsTagRowScope = AwsScope (AwsAccountId "999900001111") (AwsRegion "ca-central-1")
+        { awsTagRowScope =
+            AwsScope (AwsAccountId "999900001111") (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
         }
     , AwsResourceScopeConflict
         bucketArn
         awsScope
-        (AwsScope (AwsAccountId "999900001111") (AwsRegion "ca-central-1"))
+        (AwsScope (AwsAccountId "999900001111") (AwsRegion (fixtureAwsRegion FixtureCaCentral1)))
     )
   ,
     ( (bucketRow lifecycleTag)

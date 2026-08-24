@@ -33,6 +33,7 @@ module Prodbox.Lifecycle.Teardown.EksDrainIntent
   , eksNamespacedNameName
   , CompleteLoadBalancerServiceClass (..)
   , CompleteIngressClass (..)
+  , CompleteControllerOwnerClass (..)
   , EksDrainTargetSelectionResult (..)
   , EksDrainTargetSelectionObservation (..)
   , eksDrainTargetSelectionObservationFor
@@ -73,6 +74,7 @@ module Prodbox.Lifecycle.Teardown.EksDrainIntent
   , EksDrainResourceClassReadBack (..)
   , LoadBalancerServiceClassReadBack (..)
   , IngressClassReadBack (..)
+  , ControllerOwnerClassReadBack (..)
   , EksDrainPvcReadBackResult (..)
   , EksDrainPvcReadBack (..)
   , EksDrainKubernetesTargetReadBack (..)
@@ -250,6 +252,13 @@ data CompleteIngressClass
   = CompleteIngressClass
   deriving (Eq, Ord, Show)
 
+-- | Mandatory exact controller-owner marker.  Version-2 intents always cover
+-- the deterministic public-edge EnvoyProxy before the controller-created AWS
+-- family can be reaped.
+data CompleteControllerOwnerClass
+  = CompleteControllerOwnerClass
+  deriving (Eq, Ord, Show)
+
 data EksDrainTargetSelectionResult
   = EksDrainTargetSelectionComplete ![EksNamespacedName]
   | EksDrainTargetSelectionPartial
@@ -270,6 +279,7 @@ data EksDrainTargetSelectionObservation = EksDrainTargetSelectionObservation
   , eksDrainSelectionCertificateAuthorityDigest :: !Text
   , eksDrainSelectionServiceClass :: !CompleteLoadBalancerServiceClass
   , eksDrainSelectionIngressClass :: !CompleteIngressClass
+  , eksDrainSelectionControllerOwnerClass :: !CompleteControllerOwnerClass
   , eksDrainSelectionResult :: !EksDrainTargetSelectionResult
   }
   deriving (Eq, Show)
@@ -292,6 +302,7 @@ eksDrainTargetSelectionObservationFor session revision result =
         eksDrainSessionCertificateAuthorityDigest session
     , eksDrainSelectionServiceClass = CompleteLoadBalancerServiceClass
     , eksDrainSelectionIngressClass = CompleteIngressClass
+    , eksDrainSelectionControllerOwnerClass = CompleteControllerOwnerClass
     , eksDrainSelectionResult = result
     }
 
@@ -305,6 +316,7 @@ data EksDrainIntentTarget
       , eksDrainTargetLoadBalancerServiceClass
           :: !CompleteLoadBalancerServiceClass
       , eksDrainTargetIngressClass :: !CompleteIngressClass
+      , eksDrainTargetControllerOwnerClass :: !CompleteControllerOwnerClass
       , eksDrainTargetDeletePolicyPvcs :: ![EksNamespacedName]
       }
   | EksDrainNoKubernetesTarget
@@ -381,6 +393,8 @@ prepareEksKubernetesDrainIntent binding session selection = do
                 , eksDrainTargetLoadBalancerServiceClass =
                     eksDrainSelectionServiceClass selection
                 , eksDrainTargetIngressClass = eksDrainSelectionIngressClass selection
+                , eksDrainTargetControllerOwnerClass =
+                    eksDrainSelectionControllerOwnerClass selection
                 , eksDrainTargetDeletePolicyPvcs = selected
                 }
           }
@@ -440,7 +454,7 @@ eksDrainIntentDigestText :: EksDrainIntentDigest -> Text
 eksDrainIntentDigestText (EksDrainIntentDigest value) = value
 
 eksDrainIntentFormatVersion :: Word16
-eksDrainIntentFormatVersion = 1
+eksDrainIntentFormatVersion = 2
 
 maximumEksDrainIntentBytes :: Int
 maximumEksDrainIntentBytes = 64 * 1024
@@ -483,6 +497,7 @@ data EksDrainTargetWire
       !Text
       !Text
       !Word64
+      !Word16
       !Word16
       !Word16
       ![(Text, Text)]
@@ -550,7 +565,7 @@ encodeScope scope =
 
 encodeTarget :: EksDrainIntentTarget -> EksDrainTargetWire
 encodeTarget target = case target of
-  EksDrainExactKubernetesTarget arn uid endpoint ca revision serviceClass ingressClass pvcs ->
+  EksDrainExactKubernetesTarget arn uid endpoint ca revision serviceClass ingressClass ownerClass pvcs ->
     EksDrainKubernetesTargetWire
       arn
       uid
@@ -559,6 +574,7 @@ encodeTarget target = case target of
       (observationRevisionWord revision)
       (encodeServiceClass serviceClass)
       (encodeIngressClass ingressClass)
+      (encodeControllerOwnerClass ownerClass)
       [ (eksNamespacedNameNamespace pvc, eksNamespacedNameName pvc)
       | pvc <- pvcs
       ]
@@ -654,25 +670,36 @@ decodeTarget
   -> EksDrainTargetWire
   -> Either EksDrainIntentError EksDrainIntentTarget
 decodeTarget scope wire = case wire of
-  EksDrainKubernetesTargetWire arn uid endpoint ca revision serviceMarker ingressMarker pvcWires -> do
-    validateProviderArn scope arn
-    validateKubernetesUid uid
-    validateSha256 "EKS endpoint digest" endpoint
-    validateSha256 "EKS certificate-authority digest" ca
-    serviceClass <- decodeServiceClass serviceMarker
-    ingressClass <- decodeIngressClass ingressMarker
-    pvcs <- mapM (uncurry mkEksNamespacedName) pvcWires >>= validatePvcSet
-    Right
-      EksDrainExactKubernetesTarget
-        { eksDrainTargetProviderArn = arn
-        , eksDrainTargetKubernetesUid = uid
-        , eksDrainTargetEndpointDigest = endpoint
-        , eksDrainTargetCertificateAuthorityDigest = ca
-        , eksDrainTargetSelectionRevision = ObservationRevision revision
-        , eksDrainTargetLoadBalancerServiceClass = serviceClass
-        , eksDrainTargetIngressClass = ingressClass
-        , eksDrainTargetDeletePolicyPvcs = pvcs
-        }
+  EksDrainKubernetesTargetWire
+    arn
+    uid
+    endpoint
+    ca
+    revision
+    serviceMarker
+    ingressMarker
+    ownerMarker
+    pvcWires -> do
+      validateProviderArn scope arn
+      validateKubernetesUid uid
+      validateSha256 "EKS endpoint digest" endpoint
+      validateSha256 "EKS certificate-authority digest" ca
+      serviceClass <- decodeServiceClass serviceMarker
+      ingressClass <- decodeIngressClass ingressMarker
+      ownerClass <- decodeControllerOwnerClass ownerMarker
+      pvcs <- mapM (uncurry mkEksNamespacedName) pvcWires >>= validatePvcSet
+      Right
+        EksDrainExactKubernetesTarget
+          { eksDrainTargetProviderArn = arn
+          , eksDrainTargetKubernetesUid = uid
+          , eksDrainTargetEndpointDigest = endpoint
+          , eksDrainTargetCertificateAuthorityDigest = ca
+          , eksDrainTargetSelectionRevision = ObservationRevision revision
+          , eksDrainTargetLoadBalancerServiceClass = serviceClass
+          , eksDrainTargetIngressClass = ingressClass
+          , eksDrainTargetControllerOwnerClass = ownerClass
+          , eksDrainTargetDeletePolicyPvcs = pvcs
+          }
   EksDrainNoKubernetesTargetWire revision evidence -> do
     absence <- validateAbsenceEvidence (AbsenceEvidence evidence)
     Right
@@ -847,6 +874,10 @@ newtype IngressClassReadBack
   = IngressClassReadBack EksDrainResourceClassReadBack
   deriving (Eq, Show)
 
+newtype ControllerOwnerClassReadBack
+  = ControllerOwnerClassReadBack EksDrainResourceClassReadBack
+  deriving (Eq, Show)
+
 data EksDrainPvcReadBackResult
   = EksDrainPvcAbsent !AbsenceEvidence
   | EksDrainPvcPresent
@@ -867,6 +898,7 @@ data EksDrainKubernetesTargetReadBack = EksDrainKubernetesTargetReadBack
   , eksDrainReadBackLoadBalancerServiceClass
       :: !LoadBalancerServiceClassReadBack
   , eksDrainReadBackIngressClass :: !IngressClassReadBack
+  , eksDrainReadBackControllerOwnerClass :: !ControllerOwnerClassReadBack
   , eksDrainReadBackDeletePolicyPvcs :: ![EksDrainPvcReadBack]
   }
   deriving (Eq, Show)
@@ -1068,6 +1100,7 @@ data EksDrainIntentError
   | EksDrainIntentCodecOperationInvalid !Word16
   | EksDrainIntentCodecServiceClassInvalid !Word16
   | EksDrainIntentCodecIngressClassInvalid !Word16
+  | EksDrainIntentCodecControllerOwnerClassInvalid !Word16
   | EksDrainIntentCodecRunIdInvalid !Text
   | EksDrainIntentCodecGraphDigestInvalid !Text
   | EksDrainIntentCodecOperationIdInvalid !Text
@@ -1086,6 +1119,7 @@ data EksDrainIntentError
   | EksDrainReadBackIdentityMismatch
   | EksDrainServiceClassNotAbsent !EksDrainResourceClassReadBack
   | EksDrainIngressClassNotAbsent !EksDrainResourceClassReadBack
+  | EksDrainControllerOwnerClassNotAbsent !EksDrainResourceClassReadBack
   | EksDrainPvcReadBackDuplicate !EksNamespacedName
   | EksDrainPvcReadBackMissing !EksNamespacedName
   | EksDrainPvcReadBackUnexpected !EksNamespacedName
@@ -1326,7 +1360,7 @@ validateKubernetesReadBack
   -> Either EksDrainIntentError ()
 validateKubernetesReadBack target readBack = case target of
   EksDrainNoKubernetesTarget {} -> Left EksDrainReadBackIdentityMismatch
-  EksDrainExactKubernetesTarget arn uid endpoint ca _ _ _ pvcs -> do
+  EksDrainExactKubernetesTarget arn uid endpoint ca _ _ _ _ pvcs -> do
     if ( arn
        , uid
        , endpoint
@@ -1346,6 +1380,10 @@ validateKubernetesReadBack target readBack = case target of
     case eksDrainReadBackIngressClass readBack of
       IngressClassReadBack (EksDrainResourceClassAbsent _) -> Right ()
       IngressClassReadBack observed -> Left (EksDrainIngressClassNotAbsent observed)
+    case eksDrainReadBackControllerOwnerClass readBack of
+      ControllerOwnerClassReadBack (EksDrainResourceClassAbsent _) -> Right ()
+      ControllerOwnerClassReadBack observed ->
+        Left (EksDrainControllerOwnerClassNotAbsent observed)
     validatePvcReadBack pvcs (eksDrainReadBackDeletePolicyPvcs readBack)
 
 validatePvcReadBack
@@ -1415,6 +1453,15 @@ decodeIngressClass :: Word16 -> Either EksDrainIntentError CompleteIngressClass
 decodeIngressClass tag = case tag of
   1 -> Right CompleteIngressClass
   _ -> Left (EksDrainIntentCodecIngressClassInvalid tag)
+
+encodeControllerOwnerClass :: CompleteControllerOwnerClass -> Word16
+encodeControllerOwnerClass CompleteControllerOwnerClass = 1
+
+decodeControllerOwnerClass
+  :: Word16 -> Either EksDrainIntentError CompleteControllerOwnerClass
+decodeControllerOwnerClass tag = case tag of
+  1 -> Right CompleteControllerOwnerClass
+  _ -> Left (EksDrainIntentCodecControllerOwnerClassInvalid tag)
 
 validateDnsLabel
   :: Text -> Text -> Either EksDrainIntentError ()

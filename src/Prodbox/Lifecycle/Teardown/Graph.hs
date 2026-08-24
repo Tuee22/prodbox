@@ -20,6 +20,7 @@ module Prodbox.Lifecycle.Teardown.Graph
   , compiledOperationForNode
   , DesiredAbsenceGraphError (..)
   , compileDesiredAbsenceGraph
+  , compileDesiredAbsenceGraphForRegisteredKeys
   , cleanupSurfaceRequiresAwsScope
   )
 where
@@ -53,6 +54,7 @@ import Prodbox.Lifecycle.CleanupRun
   , mkCleanupNodePlan
   , mkCleanupOperationId
   )
+import Prodbox.Lifecycle.DnsRecord (HostedZoneId, hostedZoneIdText)
 import Prodbox.Lifecycle.TargetCommitIntent (mkCredentialGeneration)
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Program
@@ -133,6 +135,7 @@ data DesiredAbsenceGraphError
   | DesiredAbsenceCoordinateInvalid !Text
   | DesiredAbsenceAwsScopeRequired !CleanupSurface
   | DesiredAbsenceAwsScopeForbidden !CleanupSurface
+  | DesiredAbsenceAwsDnsZoneForbidden !CleanupSurface
   | DesiredAbsenceDependencyUnknown !ProgramNodeName
   | DesiredAbsenceRecoveryCapabilityCatalogInvalid !Text
   | DesiredAbsenceCleanupGraphInvalid !CleanupGraphError
@@ -142,190 +145,264 @@ compileDesiredAbsenceGraph
   :: CleanupRunId
   -> LinuxRke2FoundationId
   -> Maybe AwsScope
+  -> Maybe HostedZoneId
   -> CleanupSurfaceWitness surface
   -> Either
        DesiredAbsenceGraphError
        (CompiledDesiredAbsenceProgram surface)
-compileDesiredAbsenceGraph runId foundation awsScope surface = do
-  case (cleanupSurfaceRequiresAwsScope surface, awsScope) of
-    (True, Nothing) ->
-      Left
-        ( DesiredAbsenceAwsScopeRequired
-            (cleanupSurfaceFromWitness surface)
-        )
-    (False, Just _) ->
-      Left
-        ( DesiredAbsenceAwsScopeForbidden
-            (cleanupSurfaceFromWitness surface)
-        )
-    _ -> Right ()
+compileDesiredAbsenceGraph runId foundation awsScope awsDnsZone surface = do
   program <-
     first DesiredAbsenceProgramInvalid (compileDesiredAbsenceProgram surface)
-  nodeIdentities <-
-    mapM compileNodeIdentity (desiredAbsenceProgramNodes program)
-  recoveryCapabilityCatalogDraft <-
-    first
-      (DesiredAbsenceRecoveryCapabilityCatalogInvalid . Text.pack . show)
-      ( mkRecoveryCapabilityCatalogDraft
-          [ (nodeId, programNodeRecoveryCapabilities sourceNode)
-          | (sourceNode, nodeId) <- nodeIdentities
-          ]
-      )
-  identities <-
-    mapM
-      (compileOperationIdentity recoveryCapabilityCatalogDraft)
-      nodeIdentities
-  let nodeIds =
-        Map.fromList
-          [ (programNodeName sourceNode, nodeId)
-          | (sourceNode, nodeId, _) <- identities
-          ]
-  plans <- mapM (compilePlan nodeIds) identities
-  graph <- first DesiredAbsenceCleanupGraphInvalid (mkCleanupGraph plans)
-  recoveryCapabilityCatalog <-
-    first
-      (DesiredAbsenceRecoveryCapabilityCatalogInvalid . Text.pack . show)
-      ( sealRecoveryCapabilityCatalog
-          recoveryCapabilityCatalogDraft
-          [ (nodeId, operationId)
-          | (_, nodeId, operationId) <- identities
-          ]
-      )
-  pure
-    CompiledDesiredAbsenceProgram
-      { internalCompiledDesiredAbsenceProgram = program
-      , internalCompiledDesiredAbsenceGraph = graph
-      , internalCompiledDesiredAbsenceRunId = runId
-      , internalCompiledDesiredAbsenceRunScope =
-          DurableObservationRunScope (cleanupRunIdText runId)
-      , internalCompiledDesiredAbsenceObservationScope =
-          mkObservationEvidenceScope
-            (cleanupSurfaceFromWitness surface)
-            lifecycleRegistryRevision
-            (DurableObservationRunScope (cleanupRunIdText runId))
-            foundation
-            awsScope
-            ReconcileDesiredAbsent
-      , internalCompiledDesiredAbsenceOperations =
+  compileDesiredAbsenceGraphWithProgram
+    runId
+    foundation
+    awsScope
+    awsDnsZone
+    surface
+    program
+
+compileDesiredAbsenceGraphForRegisteredKeys
+  :: CleanupRunId
+  -> LinuxRke2FoundationId
+  -> Maybe AwsScope
+  -> Maybe HostedZoneId
+  -> CleanupSurfaceWitness surface
+  -> [RegisteredResourceKey]
+  -> Either
+       DesiredAbsenceGraphError
+       (CompiledDesiredAbsenceProgram surface)
+compileDesiredAbsenceGraphForRegisteredKeys
+  runId
+  foundation
+  awsScope
+  awsDnsZone
+  surface
+  selectedKeys = do
+    program <-
+      first
+        DesiredAbsenceProgramInvalid
+        (compileDesiredAbsenceProgramForRegisteredKeys surface selectedKeys)
+    compileDesiredAbsenceGraphWithProgram
+      runId
+      foundation
+      awsScope
+      awsDnsZone
+      surface
+      program
+
+compileDesiredAbsenceGraphWithProgram
+  :: CleanupRunId
+  -> LinuxRke2FoundationId
+  -> Maybe AwsScope
+  -> Maybe HostedZoneId
+  -> CleanupSurfaceWitness surface
+  -> DesiredAbsenceProgram surface
+  -> Either
+       DesiredAbsenceGraphError
+       (CompiledDesiredAbsenceProgram surface)
+compileDesiredAbsenceGraphWithProgram
+  runId
+  foundation
+  awsScope
+  awsDnsZone
+  surface
+  program = do
+    case (cleanupSurfaceRequiresAwsScope surface, awsScope) of
+      (True, Nothing) ->
+        Left
+          ( DesiredAbsenceAwsScopeRequired
+              (cleanupSurfaceFromWitness surface)
+          )
+      (False, Just _) ->
+        Left
+          ( DesiredAbsenceAwsScopeForbidden
+              (cleanupSurfaceFromWitness surface)
+          )
+      _ -> Right ()
+    case (awsScope, awsDnsZone) of
+      (Nothing, Just _) ->
+        Left
+          ( DesiredAbsenceAwsDnsZoneForbidden
+              (cleanupSurfaceFromWitness surface)
+          )
+      _ -> Right ()
+    nodeIdentities <-
+      mapM compileNodeIdentity (desiredAbsenceProgramNodes program)
+    recoveryCapabilityCatalogDraft <-
+      first
+        (DesiredAbsenceRecoveryCapabilityCatalogInvalid . Text.pack . show)
+        ( mkRecoveryCapabilityCatalogDraft
+            [ (nodeId, programNodeRecoveryCapabilities sourceNode)
+            | (sourceNode, nodeId) <- nodeIdentities
+            ]
+        )
+    identities <-
+      mapM
+        (compileOperationIdentity recoveryCapabilityCatalogDraft)
+        nodeIdentities
+    let nodeIds =
           Map.fromList
-            [ (nodeId, programNodeOperation sourceNode)
+            [ (programNodeName sourceNode, nodeId)
             | (sourceNode, nodeId, _) <- identities
             ]
-      , internalCompiledDesiredAbsenceRecoveryCapabilityCatalog =
-          recoveryCapabilityCatalog
-      }
- where
-  compileNodeIdentity sourceNode = do
-    let ProgramNodeName sourceName = programNodeName sourceNode
-    nodeId <-
+    plans <- mapM (compilePlan nodeIds) identities
+    graph <- first DesiredAbsenceCleanupGraphInvalid (mkCleanupGraph plans)
+    recoveryCapabilityCatalog <-
       first
-        (DesiredAbsenceNodeIdInvalid sourceName)
-        (mkCleanupNodeId ("lifecycle/" <> sourceName))
-    pure (sourceNode, nodeId)
-
-  compileOperationIdentity recoveryCapabilityCatalog (sourceNode, nodeId) = do
-    let ProgramNodeName sourceName = programNodeName sourceNode
-    operationId <-
-      first
-        (DesiredAbsenceOperationIdInvalid sourceName)
-        ( mkCleanupOperationId
-            ( "lifecycle-operation/"
-                <> stableOperationDigest
-                  runId
+        (DesiredAbsenceRecoveryCapabilityCatalogInvalid . Text.pack . show)
+        ( sealRecoveryCapabilityCatalog
+            recoveryCapabilityCatalogDraft
+            [ (nodeId, operationId)
+            | (_, nodeId, operationId) <- identities
+            ]
+        )
+    pure
+      CompiledDesiredAbsenceProgram
+        { internalCompiledDesiredAbsenceProgram = program
+        , internalCompiledDesiredAbsenceGraph = graph
+        , internalCompiledDesiredAbsenceRunId = runId
+        , internalCompiledDesiredAbsenceRunScope =
+            DurableObservationRunScope (cleanupRunIdText runId)
+        , internalCompiledDesiredAbsenceObservationScope =
+            case awsDnsZone of
+              Nothing ->
+                mkObservationEvidenceScope
+                  (cleanupSurfaceFromWitness surface)
+                  lifecycleRegistryRevision
+                  (DurableObservationRunScope (cleanupRunIdText runId))
                   foundation
                   awsScope
-                  surface
-                  recoveryCapabilityCatalog
-                  (programNodeRecoveryCapabilities sourceNode)
-                  (programNodeOperation sourceNode)
-            )
-        )
-    pure (sourceNode, nodeId, operationId)
+                  ReconcileDesiredAbsent
+              Just dnsZone ->
+                mkObservationEvidenceScopeWithDnsZone
+                  (cleanupSurfaceFromWitness surface)
+                  lifecycleRegistryRevision
+                  (DurableObservationRunScope (cleanupRunIdText runId))
+                  foundation
+                  awsScope
+                  dnsZone
+                  ReconcileDesiredAbsent
+        , internalCompiledDesiredAbsenceOperations =
+            Map.fromList
+              [ (nodeId, programNodeOperation sourceNode)
+              | (sourceNode, nodeId, _) <- identities
+              ]
+        , internalCompiledDesiredAbsenceRecoveryCapabilityCatalog =
+            recoveryCapabilityCatalog
+        }
+   where
+    compileNodeIdentity sourceNode = do
+      let ProgramNodeName sourceName = programNodeName sourceNode
+      nodeId <-
+        first
+          (DesiredAbsenceNodeIdInvalid sourceName)
+          (mkCleanupNodeId ("lifecycle/" <> sourceName))
+      pure (sourceNode, nodeId)
 
-  compilePlan nodeIds (sourceNode, nodeId, operationId) = do
-    dependencies <- mapM (compileDependency nodeIds) (programNodeDependencies sourceNode)
-    coordinate <- operationCoordinate surface (programNodeOperation sourceNode)
-    pure $ case programNodeOperation sourceNode of
-      EstablishRecoveryPlane _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedEnsure coordinate) nodeId operationId dependencies
-      ReadBackRecoveryPlane _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-      ObserveRecoveryPlaneDisposition _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
-      ObserveRegisteredTarget _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
-      ObserveStackCheckpointPair _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
-      ReconcileStackCheckpointRestore _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedEnsure coordinate) nodeId operationId dependencies
-      ReadBackStackCheckpointRecovery _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-      CommitAwsStackReaderBundle _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-      ReadBackAwsStackReaderBundle _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-      CommitEksDrainIntent _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-      ReadBackEksDrainIntent _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-      DrainEksKubernetesResources _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-      ReadBackEksKubernetesDrain _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-      ReconcileRegisteredTargetAbsent _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-      ReadBackRegisteredTargetAbsent _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-      RetireStackCheckpointPair _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-      ReadBackStackCheckpointRetirement _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-      AuditCascadeEscapes ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
-      CommitCascadePreUninstallReport ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-      ReadBackCascadePreUninstallReport ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-      UninstallCascadeLocalFoundation ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-      ReadBackCascadeLocalAbsence ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-      CommitCascadeCompletion ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-      ReadBackCascadeCompletion ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-      UninstallLocalOnlyFoundation ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-      ReadBackLocalOnlyAbsence ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-      CommitLocalOnlyCompletion ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-      ReadBackLocalOnlyCompletion ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-      RevokeOperationalCredential _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-      ReadBackOperationalCredentialRevocation _ ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-      CommitOrdinarySurfaceReport ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-      ReadBackOrdinarySurfaceReport ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-      AuditTotalDecommissionEscapes ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
-      ObserveExternalDecommissionReceipt ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-      UninstallDecommissionLocalFoundation ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-      ReadBackDecommissionLocalAbsence ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-      ApplyDecommissionLocalDataDisposition ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-      ReadBackDecommissionLocalDataDisposition ->
-        mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-      CommitDecommissionTerminalReceipt ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-      ReadBackDecommissionTerminalReceipt ->
-        mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+    compileOperationIdentity recoveryCapabilityCatalog (sourceNode, nodeId) = do
+      let ProgramNodeName sourceName = programNodeName sourceNode
+      operationId <-
+        first
+          (DesiredAbsenceOperationIdInvalid sourceName)
+          ( mkCleanupOperationId
+              ( "lifecycle-operation/"
+                  <> stableOperationDigest
+                    runId
+                    foundation
+                    awsScope
+                    awsDnsZone
+                    surface
+                    recoveryCapabilityCatalog
+                    (programNodeRecoveryCapabilities sourceNode)
+                    (programNodeOperation sourceNode)
+              )
+          )
+      pure (sourceNode, nodeId, operationId)
+
+    compilePlan nodeIds (sourceNode, nodeId, operationId) = do
+      dependencies <- mapM (compileDependency nodeIds) (programNodeDependencies sourceNode)
+      coordinate <- operationCoordinate surface (programNodeOperation sourceNode)
+      pure $ case programNodeOperation sourceNode of
+        EstablishRecoveryPlane _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedEnsure coordinate) nodeId operationId dependencies
+        ReadBackRecoveryPlane _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+        ObserveRecoveryPlaneDisposition _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
+        ObserveRegisteredTarget _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
+        ObserveStackCheckpointPair _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
+        ReconcileStackCheckpointRestore _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedEnsure coordinate) nodeId operationId dependencies
+        ReadBackStackCheckpointRecovery _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+        CommitAwsStackReaderBundle _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+        ReadBackAwsStackReaderBundle _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+        CommitEksDrainIntent _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+        ReadBackEksDrainIntent _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+        DrainEksKubernetesResources _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+        ReadBackEksKubernetesDrain _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+        ReconcileRegisteredTargetAbsent _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+        ReadBackRegisteredTargetAbsent _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+        RetireStackCheckpointPair _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+        ReadBackStackCheckpointRetirement _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+        AuditCascadeEscapes ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
+        CommitCascadePreUninstallReport ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+        ReadBackCascadePreUninstallReport ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+        UninstallCascadeLocalFoundation ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+        ReadBackCascadeLocalAbsence ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+        CommitCascadeCompletion ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+        ReadBackCascadeCompletion ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+        UninstallLocalOnlyFoundation ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+        ReadBackLocalOnlyAbsence ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+        CommitLocalOnlyCompletion ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+        ReadBackLocalOnlyCompletion ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+        RevokeOperationalCredential _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+        ReadBackOperationalCredentialRevocation _ ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+        CommitOrdinarySurfaceReport ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+        ReadBackOrdinarySurfaceReport ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+        AuditTotalDecommissionEscapes ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
+        ObserveExternalDecommissionReceipt ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+        UninstallDecommissionLocalFoundation ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+        ReadBackDecommissionLocalAbsence ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+        ApplyDecommissionLocalDataDisposition ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+        ReadBackDecommissionLocalDataDisposition ->
+          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+        CommitDecommissionTerminalReceipt ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+        ReadBackDecommissionTerminalReceipt ->
+          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
 
 compileDependency
   :: Map ProgramNodeName CleanupNodeId
@@ -375,6 +452,7 @@ stableOperationDigest
   :: CleanupRunId
   -> LinuxRke2FoundationId
   -> Maybe AwsScope
+  -> Maybe HostedZoneId
   -> CleanupSurfaceWitness surface
   -> RecoveryCapabilityCatalogDraft
   -> RecoveryCapabilitySet
@@ -384,6 +462,7 @@ stableOperationDigest
   runId
   foundation
   awsScope
+  awsDnsZone
   surface
   recoveryCapabilityCatalogDraft
   recoveryCapabilities
@@ -405,6 +484,7 @@ stableOperationDigest
                       , foundationIdText foundation
                       ]
                         ++ awsScopeFields awsScope
+                        ++ awsDnsZoneFields awsDnsZone
                         ++ [ teardownOperationTag operation
                            , operationLogicalName operation
                            ]
@@ -425,6 +505,15 @@ stableOperationDigest
         [ "aws-scope/present"
         , accountId
         , region
+        ]
+    -- Preserve the pre-Sprint-7.38 graph identity exactly for a zoneless
+    -- program. A present zone extends the tuple and therefore every operation
+    -- and graph digest; absence appends no field at all.
+    awsDnsZoneFields zone = case zone of
+      Nothing -> []
+      Just hostedZone ->
+        [ "aws-dns-zone/present"
+        , hostedZoneIdText hostedZone
         ]
 
 operationTargetBinding

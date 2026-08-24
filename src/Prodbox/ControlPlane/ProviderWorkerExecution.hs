@@ -165,6 +165,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkEksClientAuthRequest
   , mkEksClusterIdentityRequest
   , mkProviderCheckpointRef
+  , mkProviderNativeStackFamilyRef
   , mkProviderRevision
   , mkProviderSpotPriceQuery
   , mkProviderStackRef
@@ -177,6 +178,10 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , providerCheckpointRefText
   , providerIntentCoordinate
   , providerIntentResourceKey
+  , providerNativeStackFamilyAccountId
+  , providerNativeStackFamilyHostedZoneId
+  , providerNativeStackFamilyRegion
+  , providerNativeStackFamilyStackRef
   , providerRevisionNatural
   , providerSpotPriceInstanceType
   , providerSpotPriceProductDescription
@@ -633,6 +638,17 @@ wireProviderIntent intent = case intent of
   ObserveOwnedResourceTags (ProviderOwnedTagKeyQuery key) -> simple 25 key
   ObserveOwnedResourceTags (ProviderOwnedTagPairQuery key value) ->
     WireProviderIntent 25 key Nothing Nothing (Just value) Nothing
+  ObserveEksIamRoleFamily roleNames policyNames ->
+    WireProviderIntent 27 roleNames Nothing Nothing (Just policyNames) Nothing
+  ReapEksIamRoleFamily roleNames policyNames ->
+    WireProviderIntent 28 roleNames Nothing Nothing (Just policyNames) Nothing
+  ObserveEksLoadBalancerControllerFamily loadBalancerName tags ->
+    WireProviderIntent 29 loadBalancerName Nothing Nothing (Just tags) Nothing
+  ReapEksLoadBalancerControllerFamily loadBalancerName tags ->
+    WireProviderIntent 30 loadBalancerName Nothing Nothing (Just tags) Nothing
+  ObserveNativeStackFamily ref config -> nativeStackFamilyWire 31 (Just config) ref []
+  ReapNativeStackFamily ref config admittedIdentities ->
+    nativeStackFamilyWire 32 (Just config) ref admittedIdentities
  where
   simple tag resource = WireProviderIntent tag resource Nothing Nothing Nothing Nothing
   publicARecordWire tag ref =
@@ -643,6 +659,20 @@ wireProviderIntent intent = case intent of
       Nothing
       (Just (publicARecordFqdn ref))
       (Just (Text.intercalate "," (publicARecordValues ref)))
+  nativeStackFamilyWire tag config ref admittedIdentities =
+    WireProviderIntent
+      tag
+      (providerStackRefText (providerNativeStackFamilyStackRef ref))
+      Nothing
+      config
+      (Just (providerNativeStackFamilyAccountId ref))
+      ( Just
+          ( providerNativeStackFamilyRegion ref
+              <> ":"
+              <> maybe "none" id (providerNativeStackFamilyHostedZoneId ref)
+              <> Text.concat (map ("\nidentity|" <>) admittedIdentities)
+          )
+      )
   configured tag ref revision config =
     WireProviderIntent
       tag
@@ -1250,6 +1280,53 @@ providerIntentFromWire wire = case wireProviderIntentTag wire of
     recordNamePrefix <-
       requireSecondary "missing DNS01 challenge record-name prefix" wire
     pure (ObserveDns01ChallengeRecords resource recordNamePrefix)
+  27 -> do
+    noRevision wire
+    noStackConfig wire
+    if Text.null resource
+      then Left (ProviderCommittedIntentValueInvalid "missing EKS IAM role family")
+      else Right ()
+    policies <- requireSecondary "missing EKS IAM managed-policy family" wire
+    noTertiary wire
+    pure (ObserveEksIamRoleFamily resource policies)
+  28 -> do
+    noRevision wire
+    noStackConfig wire
+    if Text.null resource
+      then Left (ProviderCommittedIntentValueInvalid "missing EKS IAM role family")
+      else Right ()
+    policies <- requireSecondary "missing EKS IAM managed-policy family" wire
+    noTertiary wire
+    pure (ReapEksIamRoleFamily resource policies)
+  29 -> do
+    noRevision wire
+    noStackConfig wire
+    if Text.null resource
+      then Left (ProviderCommittedIntentValueInvalid "missing EKS load-balancer name")
+      else Right ()
+    tags <- requireSecondary "missing EKS load-balancer controller tags" wire
+    noTertiary wire
+    pure (ObserveEksLoadBalancerControllerFamily resource tags)
+  30 -> do
+    noRevision wire
+    noStackConfig wire
+    if Text.null resource
+      then Left (ProviderCommittedIntentValueInvalid "missing EKS load-balancer name")
+      else Right ()
+    tags <- requireSecondary "missing EKS load-balancer controller tags" wire
+    noTertiary wire
+    pure (ReapEksLoadBalancerControllerFamily resource tags)
+  31 -> do
+    ref <- nativeStackFamilyRef True
+    config <- requireStackConfig wire
+    mapIntentValue (validateProviderStackConfig (providerNativeStackFamilyStackRef ref) config)
+    pure (ObserveNativeStackFamily ref config)
+  32 -> do
+    (ref, admittedIdentities) <- nativeStackFamilyRefWithIdentities True
+    config <- requireStackConfig wire
+    mapIntentValue (validateProviderStackConfig (providerNativeStackFamilyStackRef ref) config)
+    validateNativeStackFamilyIdentities admittedIdentities
+    pure (ReapNativeStackFamily ref config admittedIdentities)
   tag -> Left (ProviderCommittedIntentUnsupportedAction tag)
  where
   resource = wireProviderIntentResource wire
@@ -1275,6 +1352,46 @@ providerIntentFromWire wire = case wireProviderIntentTag wire of
     constructor
       <$> mapIntentValue
         (mkPublicARecordRef resource fqdn ttl (Text.splitOn "," rawValues))
+  nativeStackFamilyRef permitsConfig = do
+    (ref, identities) <- nativeStackFamilyRefWithIdentities permitsConfig
+    if null identities
+      then Right ref
+      else Left (ProviderCommittedIntentValueInvalid "unexpected native stack-family allowlist")
+  nativeStackFamilyRefWithIdentities permitsConfig = do
+    noRevision wire
+    if permitsConfig then Right () else noStackConfig wire
+    stackRef <- mapIntentValue (mkProviderStackRef resource)
+    account <- requireSecondary "missing native stack-family account" wire
+    regionZoneAndIdentities <- requireTertiary "missing native stack-family region/zone" wire
+    (regionAndZone, identityRows) <- case Text.lines regionZoneAndIdentities of
+      [] -> Left (ProviderCommittedIntentValueInvalid "missing native stack-family region/zone")
+      bindingLine : remaining -> Right (bindingLine, remaining)
+    let (region, zoneWithSeparator) = Text.breakOn ":" regionAndZone
+    zoneText <- case Text.stripPrefix ":" zoneWithSeparator of
+      Nothing -> Left (ProviderCommittedIntentValueInvalid "missing native stack-family zone")
+      Just value -> Right value
+    let zone = if zoneText == "none" then Nothing else Just zoneText
+    ref <- mapIntentValue (mkProviderNativeStackFamilyRef stackRef account region zone)
+    identities <- traverse decodeIdentity identityRows
+    Right (ref, identities)
+  decodeIdentity row = case Text.stripPrefix "identity|" row of
+    Just identity -> Right identity
+    Nothing -> Left (ProviderCommittedIntentValueInvalid "malformed native stack-family allowlist")
+  validateNativeStackFamilyIdentities identities
+    | null identities =
+        Left (ProviderCommittedIntentValueInvalid "empty native stack-family allowlist")
+    | length identities > 4096 =
+        Left (ProviderCommittedIntentValueInvalid "native stack-family allowlist exceeded its bound")
+    | length identities /= Set.size (Set.fromList identities) =
+        Left (ProviderCommittedIntentValueInvalid "native stack-family allowlist contained a duplicate")
+    | any invalid identities =
+        Left (ProviderCommittedIntentValueInvalid "native stack-family allowlist identity was invalid")
+    | otherwise = Right ()
+   where
+    invalid identity =
+      Text.null identity
+        || Text.length identity > 2048
+        || Text.any (\character -> character == '|' || character == '\n' || character == '\r') identity
   noRevision value = do
     case wireProviderIntentRequestedRevision value of
       Nothing -> Right ()

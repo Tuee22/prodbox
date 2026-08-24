@@ -47,7 +47,7 @@ storeLifetimeWitnessSuite :: SuiteBuilder ()
 storeLifetimeWitnessSuite =
   describe "Sprint 4.51 durability-index phantom witness" $ do
     it "erases the lifetime tag: identical authority and logical name across lifetimes" $ do
-      let name = "leases/123456789012/ca-central-1/aws-ses"
+      let name = ("leases/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
           retained = expectRight (mkClusterRetainedCoordinate authority name)
           chart = expectRight (mkChartLifetimeCoordinate authority name)
       modelBObjectLogicalName retained `shouldBe` name

@@ -99,6 +99,7 @@ import Prodbox.Config.OrdinaryTeardownRecovery
 import Prodbox.Config.OrdinaryTeardownRepair
   ( OrdinaryTeardownRepairError
   , OrdinaryTeardownRepairStep (..)
+  , RecoveryPlatformComponent
   , RetainedArtifactArchitecture
   , RetainedArtifactInventory
   , RetainedArtifactKind
@@ -151,6 +152,7 @@ data AdmittedRepairStep
   | AdmittedStartSubstrateService
   | AdmittedAwaitSubstrateApi
   | AdmittedLoadRetainedImage !VerifiedRetainedArtifact
+  | AdmittedReconcileRecoveryPlatform !RecoveryPlatformComponent
   | AdmittedReconcileRecoveryChart !String
   deriving (Eq, Show)
 
@@ -177,6 +179,7 @@ admittedRecoveryRepairArtifacts repair =
     AdmittedLoadRetainedImage artifact -> [artifact]
     AdmittedStartSubstrateService -> []
     AdmittedAwaitSubstrateApi -> []
+    AdmittedReconcileRecoveryPlatform _ -> []
     AdmittedReconcileRecoveryChart _ -> []
 
 -- | Why a repair may not start.
@@ -286,6 +289,8 @@ admitRecoveryRepair inventory catalog recovery state observation =
     RepairStartSubstrateService -> AdmittedStartSubstrateService
     RepairAwaitSubstrateApi -> AdmittedAwaitSubstrateApi
     RepairLoadRetainedImage ref -> AdmittedLoadRetainedImage (verified ref)
+    RepairReconcileRecoveryPlatform platform ->
+      AdmittedReconcileRecoveryPlatform platform
     RepairReconcileRecoveryChart chart -> AdmittedReconcileRecoveryChart chart
 
   verified ref =
@@ -310,6 +315,8 @@ data RecoveryRepairBoundary m = RecoveryRepairBoundary
   , repairStartSubstrateService :: m (Either Text ())
   , repairAwaitSubstrateApi :: m (Either Text ())
   , repairLoadRetainedImage :: VerifiedRetainedArtifact -> m (Either Text ())
+  , repairReconcileRecoveryPlatform
+      :: RecoveryPlatformComponent -> m (Either Text ())
   , repairReconcileRecoveryChart :: String -> m (Either Text ())
   }
 
@@ -383,6 +390,8 @@ applyRecoveryRepair boundary repair =
     AdmittedAwaitSubstrateApi -> repairAwaitSubstrateApi boundary
     AdmittedLoadRetainedImage artifact ->
       repairLoadRetainedImage boundary artifact
+    AdmittedReconcileRecoveryPlatform platform ->
+      repairReconcileRecoveryPlatform boundary platform
     AdmittedReconcileRecoveryChart chart ->
       repairReconcileRecoveryChart boundary chart
 

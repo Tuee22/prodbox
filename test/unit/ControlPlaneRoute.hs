@@ -96,6 +96,10 @@ controlPlaneRouteSuite =
               ( LifecycleOwnershipManifest
               , "/v1/authority/ownership-manifest"
               )
+            ,
+              ( LifecycleControllerOwner
+              , "/v1/authority/controller-owner"
+              )
             ]
       mapM_
         ( \(route, path) -> do

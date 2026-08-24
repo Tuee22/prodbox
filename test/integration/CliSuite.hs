@@ -17,14 +17,14 @@ import Control.Concurrent.MVar
   , takeMVar
   )
 import Control.Exception (SomeException, bracket, finally, try)
-import Control.Monad (void, when)
+import Control.Monad (filterM, void, when)
 import Data.ByteString.Char8 qualified as BS8
 import Data.List (find, findIndex, intercalate, isInfixOf, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time.Clock (nominalDiffTimeToSeconds)
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import FixtureServer (withVaultFixtureServer)
+import FixtureServer (withVaultFixtureServer, withVaultFixtureServerSealStatus)
 import Network.Socket
   ( Family (AF_INET)
   , SockAddr (SockAddrInet)
@@ -161,6 +161,27 @@ integrationCliSuite = do
         stderrText `shouldContain` "Missing required repository config"
         stderrText `shouldContain` "./.build/prodbox config setup"
 
+    it "Sprint 1.92: config generate emits an unauthored deployment skeleton" $
+      withSystemTempDirectory "prodbox-hs-config-generate" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+
+        (exitCode, stdoutText, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["config", "generate", "--portable"]) {cwd = Just tmpDir}
+            ""
+
+        exitCode `shouldBe` ExitSuccess
+        stderrText `shouldBe` ""
+        stdoutText `shouldContain` "Generated a non-secret Tier-0 prodbox.dhall"
+        generated <- readFile (tmpDir </> "prodbox.dhall")
+        generated `shouldContain` "demo_fqdn = \"\""
+        generated `shouldContain` "machine_id = \"\""
+        generated `shouldContain` "cluster_id = \"\""
+        generated `shouldContain` "vault_address = \"\""
+        generated `shouldContain` "minio_endpoint = \"\""
+        generated `shouldNotContain` "server ="
+        generated `shouldNotContain` "minio_bucket"
+
     it "runs native host info directly from the built Haskell frontend" $ do
       repoRoot <- getCurrentDirectory
       binary <- resolveBinaryPath
@@ -185,7 +206,7 @@ integrationCliSuite = do
           "AKIASESREADY"
           "ses-ready-secret"
           Nothing
-          "us-east-1"
+          (fixtureAwsRegion FixtureUsEast1)
         envVars <- fakeSesReadinessEnvironment tmpDir "ready"
 
         (exitCode, stdoutText, stderrText) <-
@@ -215,7 +236,7 @@ integrationCliSuite = do
           "AKIASESFAILED"
           "ses-failed-secret"
           Nothing
-          "us-east-1"
+          (fixtureAwsRegion FixtureUsEast1)
         envVars <- fakeSesReadinessEnvironment tmpDir "identity-failed"
 
         (exitCode, stdoutText, stderrText) <-
@@ -303,7 +324,7 @@ integrationCliSuite = do
         stdoutText `shouldBe` ""
         rendered <- readFile outputPath
         rendered `shouldContain` "node_id = \"node-a\""
-        rendered `shouldContain` "fqdn = \"test.resolvefintech.com\""
+        rendered `shouldContain` "fqdn = \"test.example.test\""
         rendered `shouldContain` "zone_id = \"Z1234567890ABC\""
 
     it "runs native gateway status against a loopback HTTP server through the native HTTP client" $
@@ -326,7 +347,7 @@ integrationCliSuite = do
             exitCode `shouldBe` ExitSuccess
             stderrText `shouldBe` ""
             stdoutText `shouldContain` "Gateway status"
-            stdoutText `shouldContain` "DNS_WRITE_GATE=test.resolvefintech.com@Z123 ttl=60"
+            stdoutText `shouldContain` "DNS_WRITE_GATE=test.example.test@Z123 ttl=60"
             stdoutText `shouldContain` "HEARTBEAT_NODE_B=1.5"
             requestLine <- takeMVar requestRef
             requestLine `shouldContain` "GET /v1/state"
@@ -424,6 +445,7 @@ integrationCliSuite = do
         withFakeVaultServer $ \vaultPort -> do
           binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
           writeRepoMarkers tmpDir
+          writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
           let ordersPath = tmpDir </> "orders.dhall"
               configPath = tmpDir </> "gateway-start.dhall"
               tokenPath = tmpDir </> "vault-token.jwt"
@@ -503,21 +525,11 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         repoRoot <- getCurrentDirectory
         binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
-        parentEnv <- getEnvironment
-        let exactEnvironment =
-              ("PRODBOX_TEST_RESIDUE_ABSENT", "1")
-                : filter
-                  ( \(name, _) ->
-                      name /= "PRODBOX_TEST_RESIDUE_ABSENT"
-                        && name /= "PRODBOX_TEST_TEARDOWN_COUNTEREXAMPLE_FIXTURE"
-                  )
-                  parentEnv
 
         (exitCode, stdoutText, stderrText) <-
           readCreateProcessWithExitCode
             (proc binary ["test", "integration", "teardown-recovery"])
               { cwd = Just repoRoot
-              , env = Just exactEnvironment
               }
             ""
 
@@ -650,6 +662,17 @@ integrationCliSuite = do
       stderrText `shouldBe` ""
       stdoutText `shouldContain` "Verify clean-room migration, rollback refusal, and legacy absence"
 
+    it "exposes the destructive cascade qualification through an installed binary" $ do
+      binary <- resolveBinaryPath
+      (exitCode, stdoutText, stderrText) <-
+        readCreateProcessWithExitCode
+          (proc binary ["test", "integration", "cascade-qualification", "--help"])
+          ""
+      exitCode `shouldBe` ExitSuccess
+      stderrText `shouldBe` ""
+      stdoutText
+        `shouldContain` "Run one named destructive recover-to-clean cascade qualification cycle"
+
     it "runs native resource-guardrails validation through fake Kubernetes resource JSON" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
@@ -665,7 +688,7 @@ integrationCliSuite = do
         writeExecutable (tmpDir </> "bin" </> "cabal") (fakeCabalListBinScript binary)
 
         (exitCode, stdoutText, stderrText) <-
-          withFakeGatewayReadinessEnvironment envVars $ \gatewayEnvironment ->
+          withFakeGatewayReadinessEnvironment tmpDir envVars $ \gatewayEnvironment ->
             readCreateProcessWithExitCode
               (proc binary ["test", "integration", "resource-guardrails"])
                 { cwd = Just tmpDir
@@ -711,7 +734,7 @@ integrationCliSuite = do
         writeExecutable (tmpDir </> "bin" </> "cabal") (fakeCabalListBinScript binary)
 
         (exitCode, stdoutText, stderrText) <-
-          withFakeGatewayReadinessEnvironment envVars $ \gatewayEnvironment ->
+          withFakeGatewayReadinessEnvironment tmpDir envVars $ \gatewayEnvironment ->
             readCreateProcessWithExitCode
               (proc binary ["test", "integration", "gateway-pods"])
                 { cwd = Just tmpDir
@@ -754,7 +777,7 @@ integrationCliSuite = do
         writeExecutable (tmpDir </> "bin" </> "cabal") (fakeCabalListBinScript binary)
 
         (exitCode, stdoutText, stderrText) <-
-          withFakeGatewayReadinessEnvironment envVars $ \gatewayEnvironment ->
+          withFakeGatewayReadinessEnvironment tmpDir envVars $ \gatewayEnvironment ->
             readCreateProcessWithExitCode
               (proc binary ["test", "integration", "gateway-pods"])
                 { cwd = Just tmpDir
@@ -1066,12 +1089,15 @@ integrationCliSuite = do
       $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
         envVars <- fakeRke2Environment tmpDir
 
         (statusExitCode, statusStdout, statusStderr) <-
-          readCreateProcessWithExitCode
-            (proc binary ["cluster", "status"]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          runInstalledWithAuthorityEnvironment
+            tmpDir
+            binary
+            ["cluster", "status"]
+            envVars
 
         statusExitCode `shouldBe` ExitSuccess
         statusStderr `shouldBe` ""
@@ -1272,7 +1298,7 @@ integrationCliSuite = do
         applyAdminRoutes `shouldNotContain` "harbor-ui"
         applyAdminRoutes `shouldNotContain` "harbor-oidc"
         applyAdminRoutes
-          `shouldContain` "https://test.resolvefintech.com/auth/realms/prodbox/protocol/openid-connect/auth"
+          `shouldContain` "https://test.example.test/auth/realms/prodbox/protocol/openid-connect/auth"
         applyAdminRoutes
           `shouldContain` "http://keycloak.vscode.svc.cluster.local:8080/auth/realms/prodbox/protocol/openid-connect/token"
 
@@ -1567,7 +1593,7 @@ integrationCliSuite = do
         -- local cluster uninstall. (All per-run AWS destruction is --cascade.)
         let envVars =
               ("PRODBOX_TEST_RESIDUE_UNREACHABLE", "1")
-                : filter ((/= "PRODBOX_TEST_RESIDUE_ABSENT") . fst) baseEnvVars
+                : baseEnvVars
 
         (deleteExitCode, deleteStdout, deleteStderr) <-
           readCreateProcessWithExitCode
@@ -1714,7 +1740,7 @@ integrationCliSuite = do
         writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
         writeFile (tmpDir </> "test-secrets.dhall") testSecretsDhall
         withFakeVaultLifecycleServer $ \vaultPort _stateRef -> do
-          baseEnvVars <- fakeVaultLifecycleEnvironment vaultPort
+          baseEnvVars <- fakeVaultLifecycleEnvironment tmpDir vaultPort
           let runVault args =
                 runInstalledWithFakeAuthorityEnvironment
                   tmpDir
@@ -1741,10 +1767,9 @@ integrationCliSuite = do
           tmpDir
           (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
         baseEnv <- fakeRke2Environment tmpDir
-        withGatewayStateServer sealedVaultStatusJson $ \port _ -> do
-          let envVars =
-                ("PRODBOX_TEST_PULUMI_VAULT_ADDR", fakeVaultAddress port)
-                  : filter ((/= "PRODBOX_TEST_PULUMI_VAULT_GATE") . fst) baseEnv
+        withVaultFixtureServerSealStatus True $ \port -> do
+          injectFixtureVaultAddress tmpDir port
+          let envVars = filter ((/= "PRODBOX_TEST_PULUMI_VAULT_GATE") . fst) baseEnv
 
           (exitCode, stdoutText, stderrText) <-
             readCreateProcessWithExitCode
@@ -1874,7 +1899,12 @@ integrationCliSuite = do
               writeRepoMarkers tmpDir
               writeFile
                 (tmpDir </> "test-secrets.dhall")
-                (testSecretsDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
+                ( testSecretsDhallWithAdmin
+                    "CONFIGADMINKEY"
+                    "config-admin-secret"
+                    (fixtureAwsRegion FixtureUsWest2)
+                    Nothing
+                )
               writeTier0Fixture
                 tmpDir
                 ( tier0FixtureWithContext
@@ -2091,7 +2121,7 @@ integrationCliSuite = do
         copySchema repoRoot tmpDir
         envVars <- fakeAwsEnvironment tmpDir
 
-        let inputText =
+        let inputText vaultPort =
               unlines
                 [ ""
                 , "ADMINKEY"
@@ -2099,13 +2129,18 @@ integrationCliSuite = do
                 , ""
                 , -- Sprint 1.91: the admin-region prompt has no pre-fill. It used
                   -- to accept an empty answer because the prompt offered a
-                  -- compiled `us-east-1`, so this fixture was exercising the
+                  -- compiled region, so this fixture was exercising the
                   -- invented value rather than an operator's choice.
-                  "us-east-1"
+                  (fixtureAwsRegion FixtureUsEast1)
                 , "1"
                 , "1"
+                , "test.example.test"
                 , ""
-                , "ops@resolvefintech.com"
+                , "ops@example.test"
+                , "integration-cluster"
+                , "integration-machine"
+                , fakeVaultAddress vaultPort
+                , "http://127.0.0.1:39000"
                 , "1"
                 , ""
                 , ""
@@ -2119,7 +2154,7 @@ integrationCliSuite = do
                 ]
 
         (exitCode, stdoutText, stderrText) <-
-          runInstalledWithFakeAuthorityEnvironmentInput
+          runInstalledWithFakeAuthorityEnvironmentInputForVault
             tmpDir
             binary
             ["config", "setup"]
@@ -2149,7 +2184,12 @@ integrationCliSuite = do
         configText `shouldContain` "field = \"access_key_id\""
         configText `shouldNotContain` "AKIAFAKESETUP"
         configText `shouldContain` "zone_id = \"Z1234567890ABC\""
-        configText `shouldContain` "demo_fqdn = \"test.resolvefintech.com\""
+        configText `shouldContain` "demo_fqdn = \"test.example.test\""
+        configText `shouldContain` "cluster_id = \"integration-cluster\""
+        configText `shouldContain` "machine_id = \"integration-machine\""
+        configText `shouldContain` "vault_address = \"http://127.0.0.1:"
+        configText `shouldNotContain` "vault_address = \"http://127.0.0.1:31820\""
+        configText `shouldContain` "minio_endpoint = \"http://127.0.0.1:39000\""
         configText `shouldContain` ".AdvertiseLayer2"
         configText `shouldNotContain` "public_edge_advertisement_mode = Some \"l2\""
         decodedConfig <- Settings.loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
@@ -2188,7 +2228,12 @@ integrationCliSuite = do
           (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
         writeFile
           (tmpDir </> "test-secrets.dhall")
-          (testSecretsDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
+          ( testSecretsDhallWithAdmin
+              "CONFIGADMINKEY"
+              "config-admin-secret"
+              (fixtureAwsRegion FixtureUsWest2)
+              Nothing
+          )
         envVars <- fakeAwsEnvironment tmpDir
 
         let setupInput = unlines ["ADMINKEY", "admin-secret", "", "", "1"]
@@ -2209,7 +2254,7 @@ integrationCliSuite = do
         createUserRecord `shouldBe` False
 
     it
-      "refuses native aws-iam credential teardown when the authenticated Credential Provisioner is unavailable"
+      "refuses native aws-iam setup before mutation when descriptor-bound cleanup is unavailable"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
         repoRoot <- getCurrentDirectory
@@ -2221,14 +2266,19 @@ integrationCliSuite = do
           (tier0FixtureWithParameters validConfigWithLeakedOperationalAwsAndConfiguredAdmin)
         writeFile
           (tmpDir </> "test-secrets.dhall")
-          (testSecretsDhallWithAdmin "CONFIGADMINKEY" "config-admin-secret" "us-west-2" Nothing)
+          ( testSecretsDhallWithAdmin
+              "CONFIGADMINKEY"
+              "config-admin-secret"
+              (fixtureAwsRegion FixtureUsWest2)
+              Nothing
+          )
         seedFakeVaultAwsCredentials
           tmpDir
           lifecycleProviderVaultPath
           "AKIALEAKED"
           "leaked-secret"
           Nothing
-          "us-west-2"
+          (fixtureAwsRegion FixtureUsWest2)
         seedFakeAwsHarnessState tmpDir
         envVars <- fakeAwsHarnessEnvironment tmpDir binary
 
@@ -2242,8 +2292,10 @@ integrationCliSuite = do
         exitCode `shouldBe` ExitFailure 1
         stdoutText `shouldContain` "Phase 1/2: validating integration prerequisites"
         stdoutText `shouldNotContain` "Phase 2/2: running test suites"
-        stderrText `shouldContain` "Managed AWS IAM harness setup failed"
-        stderrText `shouldContain` "cannot observe the live state of operational-aws-config"
+        stderrText
+          `shouldContain` "Lifecycle-owned AWS harness cleanup failed"
+        stderrText
+          `shouldContain` "descriptor-bound cleanup response/status mismatch"
 
         configAfterHarness <- readFile (tmpDir </> "prodbox.dhall")
         configAfterHarness `shouldContain` "path = \"aws/lifecycle-provider\""
@@ -2259,10 +2311,12 @@ integrationCliSuite = do
 
         deletedUsers <- doesFileExist (tmpDir </> "fake-aws-state" </> "iam_deleted_users")
         deletedUsers `shouldBe` False
-        deletedPolicies <- fmap lines (readFile (tmpDir </> "fake-aws-state" </> "iam_deleted_policies"))
-        deletedPolicies `shouldBe` ["aws-eks-test-aws-lb-controller"]
-        deletedRoles <- fmap lines (readFile (tmpDir </> "fake-aws-state" </> "iam_deleted_roles"))
-        deletedRoles `shouldBe` ["aws-eks-test-aws-lb-controller", "aws-eks-test-ebs-csi-driver"]
+        deletedPolicies <-
+          doesFileExist (tmpDir </> "fake-aws-state" </> "iam_deleted_policies")
+        deletedPolicies `shouldBe` False
+        deletedRoles <-
+          doesFileExist (tmpDir </> "fake-aws-state" </> "iam_deleted_roles")
+        deletedRoles `shouldBe` False
 
     it
       "does not bypass external-material ingress while running the IAM-only harness"
@@ -2280,7 +2334,7 @@ integrationCliSuite = do
           ( testSecretsDhallWithAdminAndAcmeEab
               "CONFIGADMINKEY"
               "config-admin-secret"
-              "us-west-2"
+              (fixtureAwsRegion FixtureUsWest2)
               Nothing
               "test-eab-key-id"
               "test-eab-hmac-key"
@@ -2291,7 +2345,7 @@ integrationCliSuite = do
           "AKIALEAKED"
           "leaked-secret"
           Nothing
-          "us-west-2"
+          (fixtureAwsRegion FixtureUsWest2)
         seedFakeAwsHarnessState tmpDir
         envVars <- fakeAwsHarnessEnvironment tmpDir binary
 
@@ -2324,7 +2378,7 @@ integrationCliSuite = do
         envVars <- fakeAwsEnvironment tmpDir
         -- Sprint 1.91: the fourth line is the admin region, which the prompt no
         -- longer pre-fills with a compiled value.
-        let commandInput = unlines ["ADMINKEY", "admin-secret", "", "us-east-1", "1"]
+        let commandInput = unlines ["ADMINKEY", "admin-secret", "", (fixtureAwsRegion FixtureUsEast1), "1"]
 
         (checkExitCode, checkStdout, checkStderr) <-
           readCreateProcessWithExitCode
@@ -2443,11 +2497,7 @@ copySchema sourceRoot targetRoot =
 
 gatewayStateResponseJson :: String
 gatewayStateResponseJson =
-  "{\"node_id\":\"node-a\",\"gateway_owner\":\"node-a\",\"has_active_claim\":true,\"mesh_peers\":[\"node-b\"],\"semantic_member_count\":2,\"signed_replay_assertion_count\":5,\"retained_assertion_count\":7,\"retained_assertion_capacity\":20,\"last_public_ip_observed\":\"203.0.113.10\",\"last_dns_write_ip\":\"203.0.113.10\",\"last_dns_write_at_utc\":\"2026-04-06T10:00:00Z\",\"dns_write_gate\":{\"zone_id\":\"Z123\",\"fqdn\":\"test.resolvefintech.com\",\"ttl\":60},\"heartbeat_age_seconds\":{\"node-a\":0.0,\"node-b\":1.5}}"
-
-sealedVaultStatusJson :: String
-sealedVaultStatusJson =
-  "{\"initialized\":true,\"sealed\":true,\"t\":3,\"n\":5,\"progress\":0}"
+  "{\"node_id\":\"node-a\",\"gateway_owner\":\"node-a\",\"has_active_claim\":true,\"mesh_peers\":[\"node-b\"],\"semantic_member_count\":2,\"signed_replay_assertion_count\":5,\"retained_assertion_count\":7,\"retained_assertion_capacity\":20,\"last_public_ip_observed\":\"203.0.113.10\",\"last_dns_write_ip\":\"203.0.113.10\",\"last_dns_write_at_utc\":\"2026-04-06T10:00:00Z\",\"dns_write_gate\":{\"zone_id\":\"Z123\",\"fqdn\":\"test.example.test\",\"ttl\":60},\"heartbeat_age_seconds\":{\"node-a\":0.0,\"node-b\":1.5}}"
 
 -- | Run @action@ against an ephemeral 127.0.0.1 HTTP server that serves
 -- @body@ as JSON once. Returns the loopback port and an 'MVar' holding
@@ -2849,6 +2899,35 @@ fakeVaultPkiCertificateJson =
 fakeVaultAddress :: Int -> String
 fakeVaultAddress port = "http://127.0.0.1:" ++ show port
 
+-- | Give a fake Vault server a typed deployment coordinate. Production no
+-- longer reads an environment escape for this value, so integration fixtures
+-- cross the same Tier-0 decoder and validated-context boundary as commands.
+injectFixtureVaultAddress :: FilePath -> Int -> IO ()
+injectFixtureVaultAddress repoRoot port = do
+  tier0Paths <-
+    filterM
+      doesFileExist
+      [ repoRoot </> "prodbox.dhall"
+      , repoRoot </> ".build" </> "prodbox.dhall"
+      ]
+  mapM_ injectAt tier0Paths
+ where
+  injectAt tier0Path = do
+    decoded <- Tier0.decodeProjectConfigDhall tier0Path
+    case decoded of
+      Left err -> ioError (userError ("could not inject fixture Vault address: " ++ err))
+      Right projectConfig -> do
+        let priorContext = Tier0.context projectConfig
+            updatedContext =
+              priorContext
+                { Tier0.vault_address = Text.pack (fakeVaultAddress port)
+                }
+            updatedProject = projectConfig {Tier0.context = updatedContext}
+        writeResult <- Tier0.writeTier0AtPath tier0Path updatedProject
+        case writeResult of
+          Left err -> ioError (userError ("could not write fixture Vault address: " ++ err))
+          Right () -> pure ()
+
 -- | Reserve a loopback TCP port with NO listener (bind an OS-assigned port, read
 -- it, close). A client connect then gets "connection refused". Used to point the
 -- gateway-daemon probe (@PRODBOX_TEST_GATEWAY_NODEPORT@) at a definitely-down
@@ -2870,17 +2949,16 @@ reserveClosedLoopbackPort =
           _ -> ioError (userError "expected IPv4 socket while reserving a closed loopback port")
     )
 
-fakeVaultLifecycleEnvironment :: Int -> IO [(String, String)]
-fakeVaultLifecycleEnvironment port = do
+fakeVaultLifecycleEnvironment :: FilePath -> Int -> IO [(String, String)]
+fakeVaultLifecycleEnvironment repoRoot port = do
+  injectFixtureVaultAddress repoRoot port
   currentEnvironment <- getEnvironment
   closedGatewayNodePort <- reserveClosedLoopbackPort
   pure
-    ( ("PRODBOX_TEST_HOST_VAULT_ADDR", fakeVaultAddress port)
-        : ("PRODBOX_TEST_GATEWAY_NODEPORT", show closedGatewayNodePort)
+    ( ("PRODBOX_TEST_GATEWAY_NODEPORT", show closedGatewayNodePort)
         : filter
           ( \(key, _) ->
-              key /= "PRODBOX_TEST_HOST_VAULT_ADDR"
-                && key /= "PRODBOX_TEST_HOST_VAULT_TOKEN"
+              key /= "PRODBOX_TEST_HOST_VAULT_TOKEN"
                 && key /= "PRODBOX_TEST_HOST_VAULT_KV"
                 && key /= "PRODBOX_TEST_GATEWAY_NODEPORT"
           )
@@ -2962,14 +3040,12 @@ fakeAwsEnvironment repoRoot = do
           ( \(k, _) ->
               k /= "PATH"
                 && k /= "PRODBOX_ALLOW_NON_TTY_INTERACTIVE"
-                && k /= "PRODBOX_TEST_RESIDUE_ABSENT"
                 && k /= "PRODBOX_TEST_HOST_VAULT_KV_DIR"
           )
           currentEnvironment
   pure
     ( ("PATH", updatedPath)
         : ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1")
-        : ("PRODBOX_TEST_RESIDUE_ABSENT", "1")
         : ("PRODBOX_TEST_HOST_VAULT_KV_DIR", fakeVaultKvDir repoRoot)
         : filtered
     )
@@ -3023,9 +3099,9 @@ fakeSesReadinessAwsScript repoRoot =
     , "    printf '%s\\n' '{\"Account\":\"123456789012\",\"Arn\":\"arn:aws:iam::123456789012:user/prodbox\",\"UserId\":\"AIDASESREADY\"}'"
     , "    ;;"
     , "  'route53 get-hosted-zone --id Z1234567890ABC --output json')"
-    , "    printf '%s\\n' '{\"HostedZone\":{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"resolvefintech.com.\"}}'"
+    , "    printf '%s\\n' '{\"HostedZone\":{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"example.test.\"}}'"
     , "    ;;"
-    , "  'sesv2 get-email-identity --email-identity test.resolvefintech.com --output json')"
+    , "  'sesv2 get-email-identity --email-identity test.example.test --output json')"
     , "    if [[ $mode == identity-failed ]]; then"
     , "      printf '%s\\n' '{\"IdentityType\":\"DOMAIN\",\"VerifiedForSendingStatus\":false,\"VerificationStatus\":\"SUCCESS\",\"DkimAttributes\":{\"SigningEnabled\":true,\"Status\":\"SUCCESS\"}}'"
     , "    else"
@@ -3033,10 +3109,13 @@ fakeSesReadinessAwsScript repoRoot =
     , "    fi"
     , "    ;;"
     , "  'route53 list-resource-record-sets --hosted-zone-id Z1234567890ABC --output json')"
-    , "    printf '%s\\n' '{\"ResourceRecordSets\":[{\"Name\":\"inbox.test.resolvefintech.com.\",\"Type\":\"MX\",\"TTL\":300,\"ResourceRecords\":[{\"Value\":\"10 inbound-smtp.us-east-1.amazonaws.com\"}]}]}'"
+    , ( "    printf '%s\\n' '{\"ResourceRecordSets\":[{\"Name\":\"inbox.test.example.test.\",\"Type\":\"MX\",\"TTL\":300,\"ResourceRecords\":[{\"Value\":\"10 inbound-smtp."
+          <> (fixtureAwsRegion FixtureUsEast1)
+          <> ".amazonaws.com\"}]}]}'"
+      )
     , "    ;;"
     , "  'ses describe-active-receipt-rule-set --output json')"
-    , "    printf '%s\\n' '{\"Metadata\":{\"Name\":\"prodbox-receive-rule-set\"},\"Rules\":[{\"Name\":\"prodbox-capture-all-mail\",\"Enabled\":true,\"Recipients\":[\"inbox.test.resolvefintech.com\"],\"Actions\":[{\"S3Action\":{\"BucketName\":\"prodbox-test-ses-capture\",\"ObjectKeyPrefix\":\"inbound/\"}}]}]}'"
+    , "    printf '%s\\n' '{\"Metadata\":{\"Name\":\"prodbox-receive-rule-set\"},\"Rules\":[{\"Name\":\"prodbox-capture-all-mail\",\"Enabled\":true,\"Recipients\":[\"inbox.test.example.test\"],\"Actions\":[{\"S3Action\":{\"BucketName\":\"prodbox-test-ses-capture\",\"ObjectKeyPrefix\":\"inbound/\"}}]}]}'"
     , "    ;;"
     , "  's3api list-objects-v2 --bucket prodbox-test-ses-capture --prefix inbound/.prodbox-readiness-capability-probe --max-keys 1 --output json')"
     , "    printf '%s\\n' '{\"KeyCount\":1,\"Contents\":[{\"Key\":\"inbound/.prodbox-readiness-capability-probe\"}]}'"
@@ -3063,14 +3142,12 @@ fakeAwsHarnessEnvironment repoRoot binaryPath = do
           ( \(k, _) ->
               k /= "PATH"
                 && k /= "PRODBOX_ALLOW_NON_TTY_INTERACTIVE"
-                && k /= "PRODBOX_TEST_RESIDUE_ABSENT"
                 && k /= "PRODBOX_TEST_HOST_VAULT_KV_DIR"
           )
           currentEnvironment
   pure
     ( ("PATH", updatedPath)
         : ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1")
-        : ("PRODBOX_TEST_RESIDUE_ABSENT", "1")
         : ("PRODBOX_TEST_HOST_VAULT_KV_DIR", fakeVaultKvDir repoRoot)
         : filtered
     )
@@ -3403,7 +3480,6 @@ withNoRke2Install baseEnvVars =
   overridden key =
     key
       `elem` [ "PRODBOX_TEST_RKE2_PRESENT"
-             , "PRODBOX_TEST_RESIDUE_ABSENT"
              , "PRODBOX_TEST_RESIDUE_UNREACHABLE"
              ]
 
@@ -3431,7 +3507,6 @@ fakeRke2Environment repoRoot = do
                           , "PRODBOX_FAKE_RKE2_RECORD_DIR"
                           , "PRODBOX_RKE2_CONTAINERD_SOCKET"
                           , "PRODBOX_RKE2_ENDPOINT_STATUS_ROOT"
-                          , "PRODBOX_TEST_RESIDUE_ABSENT"
                           , "PRODBOX_TEST_RESIDUE_UNREACHABLE"
                           , "PRODBOX_TEST_RKE2_PRESENT"
                           , "PRODBOX_TEST_PULUMI_VAULT_GATE"
@@ -3452,11 +3527,6 @@ fakeRke2Environment repoRoot = do
       , ("PRODBOX_RKE2_CONTAINERD_SOCKET", socketPath)
       , ("PRODBOX_RKE2_ENDPOINT_STATUS_ROOT", endpointStatusRoot)
       , ("KUBECONFIG", kubeconfigPath)
-      , -- These reconcile/delete tests model a no-AWS-substrate host where the
-        -- per-run Pulumi stacks are genuinely absent. Declare that so the
-        -- Sprint 4.19 fail-closed delete gate sees ResidueAbsent (pass) rather
-        -- than ResidueUnreachable (refuse) from the fake/unreachable MinIO.
-        ("PRODBOX_TEST_RESIDUE_ABSENT", "1")
       , -- These reconcile/delete tests model a host with an RKE2 install
         -- present, so the no-cluster short-circuit in 'rke2 delete' must NOT
         -- fire and the gate/cascade paths run as before. Production probes the
@@ -3487,7 +3557,7 @@ runRke2ReconcileWithFakeGateway
   -> [(String, String)]
   -> IO (ExitCode, String, String)
 runRke2ReconcileWithFakeGateway repoRoot binary arguments environment =
-  withFakeGatewayReadinessEnvironment environment $ \gatewayEnvironment ->
+  withFakeGatewayReadinessEnvironment repoRoot environment $ \gatewayEnvironment ->
     readCreateProcessWithExitCode
       (proc binary arguments)
         { cwd = Just repoRoot
@@ -3519,40 +3589,60 @@ runInstalledWithFakeAuthorityEnvironmentInput
   -> [(String, String)]
   -> String
   -> IO (ExitCode, String, String)
-runInstalledWithFakeAuthorityEnvironmentInput repoRoot binary arguments additionalEnvironment inputText = do
-  fixtureEnvironment <- fakeRke2Environment repoRoot
-  when
-    ( lookup "PRODBOX_ALLOW_NON_TTY_INTERACTIVE" additionalEnvironment == Just "1"
-        && lookup "PRODBOX_TEST_HOST_VAULT_KV_DIR" additionalEnvironment /= Nothing
-    )
-    (void (writeFakeAwsScript repoRoot))
-  let mergedPath =
-        case (lookup "PATH" additionalEnvironment, lookup "PATH" fixtureEnvironment) of
-          (Just additionalPath, Just fixturePath)
-            | lookup "PRODBOX_FAKE_SES_READINESS_MODE" additionalEnvironment /= Nothing ->
-                takeWhile (/= ':') additionalPath ++ ":" ++ fixturePath
-            | lookup "PRODBOX_ALLOW_NON_TTY_INTERACTIVE" additionalEnvironment == Just "1"
-                && lookup "PRODBOX_TEST_HOST_VAULT_KV_DIR" additionalEnvironment /= Nothing ->
-                takeWhile (/= ':') additionalPath ++ ":" ++ fixturePath
-            | otherwise -> fixturePath
-          (Just additionalPath, Nothing) -> additionalPath
-          (Nothing, Just fixturePath) -> fixturePath
-          (Nothing, Nothing) -> ""
-  withVaultFixtureServer $ \vaultPort ->
-    readCreateProcessWithExitCode
-      (proc binary arguments)
-        { cwd = Just repoRoot
-        , env =
-            Just
-              ( ("PATH", mergedPath)
-                  : ("PRODBOX_TEST_HOST_VAULT_ADDR", "http://127.0.0.1:" ++ show vaultPort)
-                  : filter (not . reservedKey . fst) additionalEnvironment
-                  ++ filter (not . reservedKey . fst) fixtureEnvironment
-              )
-        }
-      inputText
- where
-  reservedKey key = key `elem` ["PATH", "PRODBOX_TEST_HOST_VAULT_ADDR"]
+runInstalledWithFakeAuthorityEnvironmentInput repoRoot binary arguments additionalEnvironment inputText =
+  runInstalledWithFakeAuthorityEnvironmentInputForVault
+    repoRoot
+    binary
+    arguments
+    additionalEnvironment
+    (const inputText)
+
+runInstalledWithFakeAuthorityEnvironmentInputForVault
+  :: FilePath
+  -> FilePath
+  -> [String]
+  -> [(String, String)]
+  -> (Int -> String)
+  -> IO (ExitCode, String, String)
+runInstalledWithFakeAuthorityEnvironmentInputForVault
+  repoRoot
+  binary
+  arguments
+  additionalEnvironment
+  inputForVaultPort = do
+    fixtureEnvironment <- fakeRke2Environment repoRoot
+    when
+      ( lookup "PRODBOX_ALLOW_NON_TTY_INTERACTIVE" additionalEnvironment == Just "1"
+          && lookup "PRODBOX_TEST_HOST_VAULT_KV_DIR" additionalEnvironment /= Nothing
+      )
+      (void (writeFakeAwsScript repoRoot))
+    let mergedPath =
+          case (lookup "PATH" additionalEnvironment, lookup "PATH" fixtureEnvironment) of
+            (Just additionalPath, Just fixturePath)
+              | lookup "PRODBOX_FAKE_SES_READINESS_MODE" additionalEnvironment /= Nothing ->
+                  takeWhile (/= ':') additionalPath ++ ":" ++ fixturePath
+              | lookup "PRODBOX_ALLOW_NON_TTY_INTERACTIVE" additionalEnvironment == Just "1"
+                  && lookup "PRODBOX_TEST_HOST_VAULT_KV_DIR" additionalEnvironment /= Nothing ->
+                  takeWhile (/= ':') additionalPath ++ ":" ++ fixturePath
+              | otherwise -> fixturePath
+            (Just additionalPath, Nothing) -> additionalPath
+            (Nothing, Just fixturePath) -> fixturePath
+            (Nothing, Nothing) -> ""
+    withVaultFixtureServer $ \vaultPort -> do
+      injectFixtureVaultAddress repoRoot vaultPort
+      readCreateProcessWithExitCode
+        (proc binary arguments)
+          { cwd = Just repoRoot
+          , env =
+              Just
+                ( ("PATH", mergedPath)
+                    : filter (not . reservedKey . fst) additionalEnvironment
+                    ++ filter (not . reservedKey . fst) fixtureEnvironment
+                )
+          }
+        (inputForVaultPort vaultPort)
+   where
+    reservedKey key = key == "PATH"
 
 runInstalledWithAuthorityEnvironment
   :: FilePath
@@ -3561,34 +3651,34 @@ runInstalledWithAuthorityEnvironment
   -> [(String, String)]
   -> IO (ExitCode, String, String)
 runInstalledWithAuthorityEnvironment repoRoot binary arguments environment =
-  withVaultFixtureServer $ \vaultPort ->
+  withVaultFixtureServer $ \vaultPort -> do
+    injectFixtureVaultAddress repoRoot vaultPort
     readCreateProcessWithExitCode
       (proc binary arguments)
         { cwd = Just repoRoot
-        , env =
-            Just
-              ( ("PRODBOX_TEST_HOST_VAULT_ADDR", "http://127.0.0.1:" ++ show vaultPort)
-                  : filter ((/= "PRODBOX_TEST_HOST_VAULT_ADDR") . fst) environment
-              )
+        , env = Just environment
         }
       ""
 
 withFakeGatewayReadinessEnvironment
-  :: [(String, String)] -> ([(String, String)] -> IO value) -> IO value
-withFakeGatewayReadinessEnvironment environment action = do
+  :: FilePath
+  -> [(String, String)]
+  -> ([(String, String)] -> IO value)
+  -> IO value
+withFakeGatewayReadinessEnvironment repoRoot environment action = do
   -- Sprint 5.31: the receipt must be recent. `readinessFreshnessWindow` is 300s
   -- and the run is well inside it, so one stamp taken at fixture setup is
   -- honest evidence of a live daemon rather than a window the fixture widens.
   nowMicros <- roundTripLandedAtMicros
   withFakeGatewayDaemonServer (readinessResponses nowMicros) $ \gatewayPort _requestsRef ->
-    withVaultFixtureServer $ \vaultPort ->
+    withVaultFixtureServer $ \vaultPort -> do
+      injectFixtureVaultAddress repoRoot vaultPort
       action
         ( ("PRODBOX_TEST_GATEWAY_NODEPORT", show gatewayPort)
-            : ("PRODBOX_TEST_HOST_VAULT_ADDR", "http://127.0.0.1:" ++ show vaultPort)
             : filter (not . overridden . fst) environment
         )
  where
-  overridden key = key `elem` ["PRODBOX_TEST_GATEWAY_NODEPORT", "PRODBOX_TEST_HOST_VAULT_ADDR"]
+  overridden key = key == "PRODBOX_TEST_GATEWAY_NODEPORT"
   readinessResponses nowMicros =
     [
       ( "/v1/bootstrap/vault/status"
@@ -4569,12 +4659,6 @@ fakeAwsScript stateDir =
     , "identity_file() {"
     , "  printf '%s/identity-%s' \"$STATE_DIR\" \"$1\""
     , "}"
-    , "policy_file() {"
-    , "  printf '%s/policy-%s-exists' \"$STATE_DIR\" \"$1\""
-    , "}"
-    , "role_file() {"
-    , "  printf '%s/role-%s-exists' \"$STATE_DIR\" \"$1\""
-    , "}"
     , "append_line() {"
     , "  printf '%s\\n' \"$2\" >> \"$1\""
     , "}"
@@ -4597,12 +4681,18 @@ fakeAwsScript stateDir =
     , "case \"$service $action\" in"
     , "  \"ec2 describe-regions\")"
     , "    cat <<'JSON'"
-    , "{\"Regions\":[{\"RegionName\":\"us-east-1\",\"OptInStatus\":\"opt-in-not-required\"},{\"RegionName\":\"us-west-2\",\"OptInStatus\":\"opt-in-not-required\"}]}"
+    , ( "{\"Regions\":[{\"RegionName\":\""
+          <> (fixtureAwsRegion FixtureUsEast1)
+          <> ( "\",\"OptInStatus\":\"opt-in-not-required\"},{\"RegionName\":\""
+                 <> (fixtureAwsRegion FixtureUsWest2)
+                 <> "\",\"OptInStatus\":\"opt-in-not-required\"}]}"
+             )
+      )
     , "JSON"
     , "    ;;"
     , "  \"route53 list-hosted-zones\")"
     , "    cat <<'JSON'"
-    , "{\"HostedZones\":[{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"resolvefintech.com\"}]}"
+    , "{\"HostedZones\":[{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"example.test\"}]}"
     , "JSON"
     , "    ;;"
     , "  \"route53 get-hosted-zone\")"
@@ -4610,80 +4700,11 @@ fakeAwsScript stateDir =
     , "    if [[ -f \"$(identity_file \"$access_key_id\")\" || \"$access_key_id\" == 'ASIAFAKEFED' || \"$access_key_id\" == 'ADMINKEY' || \"$access_key_id\" == 'CONFIGADMINKEY' ]]; then"
     , "      printf '%s\\n' \"$access_key_id\" > \"$STATE_DIR/route53_get_hosted_zone_access_key_id\""
     , "      cat <<'JSON'"
-    , "{\"HostedZone\":{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"resolvefintech.com\"},\"DelegationSet\":{\"NameServers\":[\"ns-1.example.com\"]}}"
+    , "{\"HostedZone\":{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"example.test\"},\"DelegationSet\":{\"NameServers\":[\"ns-1.example.com\"]}}"
     , "JSON"
     , "    else"
     , "      aws_error 'InvalidClientTokenId' 'GetHostedZone' 'The security token included in the request is invalid.'"
     , "    fi"
-    , "    ;;"
-    , "  \"iam list-entities-for-policy\")"
-    , "    policy_arn=${4:-}"
-    , "    policy_name=${policy_arn##*/}"
-    , "    if [[ ! -f \"$(policy_file \"$policy_name\")\" ]]; then"
-    , "      aws_error 'NoSuchEntity' 'ListEntitiesForPolicy' \"Policy $policy_arn was not found.\""
-    , "    fi"
-    , "    if [[ -f \"$(role_file 'aws-eks-test-aws-lb-controller')\" ]]; then"
-    , "      cat <<'JSON'"
-    , "{\"PolicyRoles\":[{\"RoleName\":\"aws-eks-test-aws-lb-controller\"}],\"PolicyUsers\":[],\"PolicyGroups\":[]}"
-    , "JSON"
-    , "    else"
-    , "      cat <<'JSON'"
-    , "{\"PolicyRoles\":[],\"PolicyUsers\":[],\"PolicyGroups\":[]}"
-    , "JSON"
-    , "    fi"
-    , "    ;;"
-    , "  \"iam detach-role-policy\")"
-    , "    role_name=${4:-}"
-    , "    policy_arn=${6:-}"
-    , "    append_line \"$STATE_DIR/iam_detached_role_policies\" \"$role_name:$policy_arn\""
-    , "    printf '{}\\n'"
-    , "    ;;"
-    , "  \"iam delete-policy\")"
-    , "    policy_arn=${4:-}"
-    , "    policy_name=${policy_arn##*/}"
-    , "    if [[ ! -f \"$(policy_file \"$policy_name\")\" ]]; then"
-    , "      aws_error 'NoSuchEntity' 'DeletePolicy' \"Policy $policy_arn was not found.\""
-    , "    fi"
-    , "    rm -f \"$(policy_file \"$policy_name\")\""
-    , "    append_line \"$STATE_DIR/iam_deleted_policies\" \"$policy_name\""
-    , "    printf '{}\\n'"
-    , "    ;;"
-    , "  \"iam get-role\")"
-    , "    role_name=${4:-}"
-    , "    if [[ ! -f \"$(role_file \"$role_name\")\" ]]; then"
-    , "      aws_error 'NoSuchEntity' 'GetRole' \"The role with name $role_name cannot be found.\""
-    , "    fi"
-    , "    printf '{\"Role\":{\"RoleName\":\"%s\",\"Arn\":\"arn:aws:iam::123456789012:role/%s\"}}\\n' \"$role_name\" \"$role_name\""
-    , "    ;;"
-    , "  \"iam list-attached-role-policies\")"
-    , "    role_name=${4:-}"
-    , "    if [[ ! -f \"$(role_file \"$role_name\")\" ]]; then"
-    , "      aws_error 'NoSuchEntity' 'ListAttachedRolePolicies' \"The role with name $role_name cannot be found.\""
-    , "    fi"
-    , "    cat <<'JSON'"
-    , "{\"AttachedPolicies\":[]}"
-    , "JSON"
-    , "    ;;"
-    , "  \"iam list-role-policies\")"
-    , "    role_name=${4:-}"
-    , "    if [[ ! -f \"$(role_file \"$role_name\")\" ]]; then"
-    , "      aws_error 'NoSuchEntity' 'ListRolePolicies' \"The role with name $role_name cannot be found.\""
-    , "    fi"
-    , "    cat <<'JSON'"
-    , "{\"PolicyNames\":[]}"
-    , "JSON"
-    , "    ;;"
-    , "  \"iam delete-role-policy\")"
-    , "    printf '{}\\n'"
-    , "    ;;"
-    , "  \"iam delete-role\")"
-    , "    role_name=${4:-}"
-    , "    if [[ ! -f \"$(role_file \"$role_name\")\" ]]; then"
-    , "      aws_error 'NoSuchEntity' 'DeleteRole' \"The role with name $role_name cannot be found.\""
-    , "    fi"
-    , "    rm -f \"$(role_file \"$role_name\")\""
-    , "    append_line \"$STATE_DIR/iam_deleted_roles\" \"$role_name\""
-    , "    printf '{}\\n'"
     , "    ;;"
     , "  \"iam create-user\")"
     , "    user_name=${4:-}"
@@ -4833,9 +4854,6 @@ seedFakeAwsHarnessState repoRoot = do
   writeFile (stateDir </> "user-leaked-user-policy") ""
   writeFile (stateDir </> "user-leaked-user-access-key-id") "AKIALEAKED"
   writeFile (stateDir </> "identity-AKIALEAKED") "leaked-user"
-  writeFile (stateDir </> "policy-aws-eks-test-aws-lb-controller-exists") ""
-  writeFile (stateDir </> "role-aws-eks-test-aws-lb-controller-exists") ""
-  writeFile (stateDir </> "role-aws-eks-test-ebs-csi-driver-exists") ""
 
 harborRegistryStorageSecretName :: String
 harborRegistryStorageSecretName = "harbor-registry-s3"
@@ -4979,9 +4997,9 @@ gatewayStatusConfig vaultPort tokenPath =
     , "  , dns_write_gate ="
     , "      Some"
     , "        { zone_id = \"Z123\""
-    , "        , fqdn = \"test.resolvefintech.com\""
+    , "        , fqdn = \"test.example.test\""
     , "        , ttl = 60"
-    , "        , aws_region = \"us-east-1\""
+    , ("        , aws_region = \"" <> (fixtureAwsRegion FixtureUsEast1) <> "\"")
     , "        }"
     , "  , aws_creds ="
     , "      None { access_key_id : "
@@ -5053,7 +5071,13 @@ gatewayOrdersAtPorts restPort socketPort =
 -- these CLI flows don't exercise those substrates, so the values are empty.
 testSecretsOperatorIdFields :: [String]
 testSecretsOperatorIdFields =
-  [ ", route53_zone_id = \"\""
+  [ ", test_served_fqdn = \"harness.example.test\""
+  , ", test_acme_email = \"operator@harness.example.test\""
+  , ", legacy_cluster_id = \"integration-test-cluster\""
+  , ", legacy_machine_id = \"integration-test-machine\""
+  , ", legacy_vault_address = \"http://127.0.0.1:31820\""
+  , ", legacy_minio_endpoint = \"http://127.0.0.1:39000\""
+  , ", route53_zone_id = \"\""
   , ", ses_sender_domain = \"\""
   , ", ses_receive_subdomain = \"\""
   , ", ses_capture_bucket = \"\""
@@ -5118,19 +5142,19 @@ validConfig :: Settings.ConfigFile
 validConfig =
   configWithAwsAndAcme
     lifecycleProviderVaultPath
-    "us-east-1"
+    (fixtureAwsRegion FixtureUsEast1)
     True
-    "https://acme.zerossl.com/v2/DV90"
 
 validConfigWithBlankOperationalAwsAndConfiguredAdmin :: Settings.ConfigFile
 validConfigWithBlankOperationalAwsAndConfiguredAdmin =
-  (fixtureBaseConfig lifecycleProviderVaultPath "us-east-1" False)
-    { Settings.pulumi_state_backend = fixturePulumiBackend "prodbox-fixture-state" "us-east-1"
+  (fixtureBaseConfig lifecycleProviderVaultPath (fixtureAwsRegion FixtureUsEast1) False)
+    { Settings.pulumi_state_backend =
+        fixturePulumiBackend "prodbox-fixture-state" (fixtureAwsRegion FixtureUsEast1)
     }
 
 validConfigForNuke :: Settings.ConfigFile
 validConfigForNuke =
-  (fixtureBaseConfig lifecycleProviderVaultPath "us-east-1" False)
+  (fixtureBaseConfig lifecycleProviderVaultPath (fixtureAwsRegion FixtureUsEast1) False)
     { -- Sprint 5.30: the AWS-tier validator Sprint `1.81` introduced requires a
       -- non-empty subzone, and the SES readiness command validates at that tier.
       -- The pre-migration fixture left it empty; the fixture never decoded, so
@@ -5139,9 +5163,9 @@ validConfigForNuke =
       Settings.aws_substrate = fixtureAwsSubstrate
     , Settings.ses =
         Settings.SesSection
-          { Settings.sender_domain = Text.pack "test.resolvefintech.com"
+          { Settings.sender_domain = Text.pack "test.example.test"
           , -- Sprint 5.30: a single DNS label, not an FQDN. The pre-migration fixture
-            -- carried "inbox.test.resolvefintech.com" here, which
+            -- carried "inbox.test.example.test" here, which
             -- `validateOptionalDnsLabelField` rejects — but the fixture never decoded,
             -- so no test could observe it. Surfacing a latent invalid fixture value is
             -- the migration working, not migration damage.
@@ -5149,49 +5173,58 @@ validConfigForNuke =
           , Settings.capture_bucket = Text.pack "prodbox-test-ses-capture"
           }
     , Settings.pulumi_state_backend =
-        fixturePulumiBackend "prodbox-test-pulumi-long-lived" "us-west-2"
+        fixturePulumiBackend "prodbox-test-pulumi-long-lived" (fixtureAwsRegion FixtureUsWest2)
     }
 
 validConfigWithLeakedOperationalAwsAndConfiguredAdmin :: Settings.ConfigFile
 validConfigWithLeakedOperationalAwsAndConfiguredAdmin =
-  (fixtureBaseConfig lifecycleProviderVaultPath "us-west-2" False)
+  (fixtureBaseConfig lifecycleProviderVaultPath (fixtureAwsRegion FixtureUsWest2) False)
     { -- This fixture drives the AWS-tier IAM harness. Keep its substrate
       -- coordinates valid so the named unavailable-Credential-Provisioner
       -- refusal is the first failure, rather than an unrelated config refusal.
       Settings.aws_substrate = fixtureAwsSubstrate
-    , Settings.pulumi_state_backend = fixturePulumiBackend "" ""
+    , Settings.ses =
+        Settings.SesSection
+          { Settings.sender_domain = Text.pack "mail.example.test"
+          , Settings.receive_subdomain = Text.pack "inbox"
+          , Settings.capture_bucket = Text.pack "prodbox-test-ses-capture"
+          }
+    , Settings.pulumi_state_backend =
+        fixturePulumiBackend "prodbox-fixture-state" (fixtureAwsRegion FixtureUsWest2)
     }
 
 fixtureAwsSubstrate :: Settings.AwsSubstrateSection
 fixtureAwsSubstrate =
   Settings.AwsSubstrateSection
     { Settings.hosted_zone_id = Text.pack "Z0987654321XYZ"
-    , Settings.subzone_name = Text.pack "aws.test.resolvefintech.com"
+    , Settings.subzone_name = Text.pack "aws.test.example.test"
+    , Settings.profile = Nothing
     }
 
 zeroSslConfig :: Settings.ConfigFile
 zeroSslConfig = validConfig
 
-configWithAwsAndAcme :: String -> String -> Bool -> String -> Settings.ConfigFile
-configWithAwsAndAcme awsVaultPath regionValue includeSessionToken acmeServer =
+configWithAwsAndAcme :: String -> String -> Bool -> Settings.ConfigFile
+configWithAwsAndAcme awsVaultPath regionValue includeSessionToken =
   (fixtureBaseConfig awsVaultPath regionValue includeSessionToken)
-    { Settings.acme = fixtureAcme {Settings.server = Text.pack acmeServer}
-    , Settings.pulumi_state_backend = fixturePulumiBackend "prodbox-fixture-state" "us-east-1"
+    { Settings.pulumi_state_backend =
+        fixturePulumiBackend "prodbox-fixture-state" (fixtureAwsRegion FixtureUsEast1)
     }
 
 -- | The shared fixture shape: production defaults plus the handful of fields
 -- every integration fixture overrides.
 fixtureBaseConfig :: String -> String -> Bool -> Settings.ConfigFile
 fixtureBaseConfig awsVaultPath regionValue includeSessionToken =
-  Settings.defaultConfigFile
+  syntheticConfigFile
     { Settings.aws = fixtureAwsCredentials awsVaultPath regionValue includeSessionToken
     , Settings.route53 = Settings.Route53Section {Settings.zone_id = Text.pack "Z1234567890ABC"}
     , Settings.domain =
-        (Settings.domain Settings.defaultConfigFile)
-          { Settings.demo_fqdn = Text.pack "test.resolvefintech.com"
+        (Settings.domain syntheticConfigFile)
+          { Settings.demo_fqdn = Text.pack "test.example.test"
           }
     , Settings.acme = fixtureAcme
-    , Settings.pulumi_state_backend = fixturePulumiBackend "prodbox-fixture-state" "us-east-1"
+    , Settings.pulumi_state_backend =
+        fixturePulumiBackend "prodbox-fixture-state" (fixtureAwsRegion FixtureUsEast1)
     }
 
 fixtureAwsCredentials :: String -> String -> Bool -> Settings.AwsCredentialsRef
@@ -5210,8 +5243,8 @@ fixtureAwsCredentials awsVaultPath regionValue includeSessionToken =
 
 fixtureAcme :: Settings.AcmeSection
 fixtureAcme =
-  (Settings.acme Settings.defaultConfigFile)
-    { Settings.email = Text.pack "test@resolvefintech.com"
+  (Settings.acme syntheticConfigFile)
+    { Settings.email = Text.pack "test@example.test"
     , Settings.eab_key_id = Just (fixtureVaultRef (Text.pack acmeEabVaultPath) (Text.pack "key_id"))
     , Settings.eab_hmac_key = Just (fixtureVaultRef (Text.pack acmeEabVaultPath) (Text.pack "hmac_key"))
     }
@@ -5265,7 +5298,7 @@ resourceGuardrailFakeNamespaces :: [String]
 resourceGuardrailFakeNamespaces = ["keycloak", "vscode", "api", "websocket", "gateway"]
 
 defaultResourcePlan :: Capacity.ResourcePlan
-defaultResourcePlan = Capacity.resource_plan (Settings.capacity Settings.defaultConfigFile)
+defaultResourcePlan = Capacity.resource_plan (Settings.capacity syntheticConfigFile)
 
 -- | The fake cluster's LimitRange objects, rendered from the same projection the
 -- validator compares against (Sprint 5.31). This is where the gateway's

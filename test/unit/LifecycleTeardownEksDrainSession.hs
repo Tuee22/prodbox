@@ -113,32 +113,34 @@ lifecycleTeardownEksDrainSessionSuite = do
       let wrongAccount =
             mustProjection
               "999900001111"
-              "ca-central-1"
+              (fixtureAwsRegion FixtureCaCentral1)
               fixtureClusterName
               1_800
           wrongRegion =
             mustProjection
               "111122223333"
-              "us-east-1"
+              (fixtureAwsRegion FixtureUsEast1)
               fixtureClusterName
               1_800
           wrongCluster =
             mustProjection
               "111122223333"
-              "ca-central-1"
+              (fixtureAwsRegion FixtureCaCentral1)
               "other-cluster"
               1_800
           wrongArn =
             mustProjectionWithArn
               "111122223333"
-              "ca-central-1"
+              (fixtureAwsRegion FixtureCaCentral1)
               fixtureClusterName
-              ("arn:aws-us-gov:eks:ca-central-1:111122223333:cluster/" <> fixtureClusterName)
+              ( ("arn:aws-us-gov:eks:" <> (fixtureAwsRegion FixtureCaCentral1) <> ":111122223333:cluster/")
+                  <> fixtureClusterName
+              )
               1_800
           expired =
             mustProjection
               "111122223333"
-              "ca-central-1"
+              (fixtureAwsRegion FixtureCaCentral1)
               fixtureClusterName
               999
       mkSession fixtureVerified wrongAccount
@@ -149,7 +151,10 @@ lifecycleTeardownEksDrainSessionSuite = do
           )
       mkSession fixtureVerified wrongRegion
         `shouldBe` Left
-          (EksDrainProjectionRegionMismatch (AwsRegion "ca-central-1") "us-east-1")
+          ( EksDrainProjectionRegionMismatch
+              (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
+              (fixtureAwsRegion FixtureUsEast1)
+          )
       mkSession fixtureVerified wrongCluster
         `shouldBe` Left
           (EksDrainProjectionClusterMismatch fixtureClusterName "other-cluster")
@@ -170,7 +175,7 @@ lifecycleTeardownEksDrainSessionSuite = do
       let longLivedProjection =
             mustProjection
               "111122223333"
-              "ca-central-1"
+              (fixtureAwsRegion FixtureCaCentral1)
               fixtureClusterName
               5_000
       mkEksDrainSession
@@ -349,7 +354,7 @@ fixtureProjection :: EksClientAuthProjection
 fixtureProjection =
   mustProjection
     "111122223333"
-    "ca-central-1"
+    (fixtureAwsRegion FixtureCaCentral1)
     fixtureClusterName
     1_800
 
@@ -414,11 +419,14 @@ fixtureFoundation = LinuxRke2FoundationId "home-linux-rke2"
 
 fixtureAwsScope :: AwsScope
 fixtureAwsScope =
-  AwsScope (AwsAccountId "111122223333") (AwsRegion "ca-central-1")
+  AwsScope (AwsAccountId "111122223333") (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
 
 fixtureArn :: Text.Text
 fixtureArn =
-  "arn:aws:eks:ca-central-1:111122223333:cluster/aws-eks-test-cluster"
+  ( "arn:aws:eks:"
+      <> (fixtureAwsRegion FixtureCaCentral1)
+      <> ":111122223333:cluster/aws-eks-test-cluster"
+  )
 
 fixtureUid :: Text.Text
 fixtureUid = "eks-generation-7"

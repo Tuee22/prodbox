@@ -327,12 +327,18 @@ validateObservationIntent purpose intent =
     (ProviderDecisionObservation, ObserveValidationHostedZones {}) -> True
     (ProviderDecisionObservation, ObserveRetainedEbsVolumes {}) -> True
     (ProviderDecisionObservation, ObserveDns01ChallengeRecords {}) -> True
+    (ProviderDecisionObservation, ObserveEksIamRoleFamily {}) -> True
+    (ProviderDecisionObservation, ObserveEksLoadBalancerControllerFamily {}) -> True
+    (ProviderDecisionObservation, ObserveNativeStackFamily {}) -> True
     (ProviderAbsenceReadBack, ReadBackRegisteredStack {}) -> True
+    (ProviderAbsenceReadBack, ObserveNativeStackFamily {}) -> True
     (ProviderAbsenceReadBack, ObserveTestEbsVolumes {}) -> True
     (ProviderAbsenceReadBack, ObserveEksClusterIdentity {}) -> True
     (ProviderAbsenceReadBack, ObserveValidationHostedZones {}) -> True
     (ProviderAbsenceReadBack, ObserveRetainedEbsVolumes {}) -> True
     (ProviderAbsenceReadBack, ObserveDns01ChallengeRecords {}) -> True
+    (ProviderAbsenceReadBack, ObserveEksIamRoleFamily {}) -> True
+    (ProviderAbsenceReadBack, ObserveEksLoadBalancerControllerFamily {}) -> True
     (ProviderTerminalAudit, ObserveOwnedResourceTags {}) -> True
     _ -> False
 
@@ -350,4 +356,7 @@ validateMutationIntent purpose intent =
     (ProviderRegisteredMutation, ReapTestEbsVolumes {}) -> True
     (ProviderRegisteredMutation, ReapValidationHostedZones {}) -> True
     (ProviderRegisteredMutation, ReapRetainedEbsVolumes {}) -> True
+    (ProviderRegisteredMutation, ReapEksIamRoleFamily {}) -> True
+    (ProviderRegisteredMutation, ReapEksLoadBalancerControllerFamily {}) -> True
+    (ProviderRegisteredMutation, ReapNativeStackFamily {}) -> True
     _ -> False

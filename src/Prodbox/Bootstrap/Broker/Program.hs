@@ -192,6 +192,9 @@ data BrokerProgram (operation :: CapabilityKind) result where
   ReconcileAllowlistedBaseline
     :: RecoveryCustodyReceipt
     -> BrokerProgram 'VaultBaselineReconcile BaselineReadBackReceipt
+  ReconcilePostUnsealHandoff
+    :: RecoveryCustodyReceipt
+    -> BrokerProgram 'VaultBootstrapMutate PostUnsealHandoffReceipt
   VerifyProvisionerLogin
     :: ProvisionerLoginReceipt
     -> BrokerProgram 'VaultBaselineReconcile ProvisionerLoginReceipt
@@ -249,6 +252,7 @@ brokerProgramCapabilityRef references program = case program of
   DeliverChildRecovery {} -> bootstrapMutateRef references
   ObservePostUnsealHandoff _ _ -> bootstrapObserveRef references
   ReconcileAllowlistedBaseline _ -> baselineReconcileRef references
+  ReconcilePostUnsealHandoff _ -> bootstrapMutateRef references
   VerifyProvisionerLogin _ -> baselineReconcileRef references
   ObserveVaultPkiStatus -> pkiOperateRef references
   IssueVaultPkiTestCertificate _ -> pkiOperateRef references
@@ -272,6 +276,7 @@ brokerProgramCapabilityOp program = case program of
   DeliverChildRecovery {} -> OpVaultBootstrapMutate
   ObservePostUnsealHandoff _ _ -> OpVaultBootstrapObserve
   ReconcileAllowlistedBaseline _ -> OpVaultBaselineReconcile
+  ReconcilePostUnsealHandoff _ -> OpVaultBootstrapMutate
   VerifyProvisionerLogin _ -> OpVaultBaselineReconcile
   ObserveVaultPkiStatus -> OpVaultPkiOperate
   IssueVaultPkiTestCertificate _ -> OpVaultPkiOperate

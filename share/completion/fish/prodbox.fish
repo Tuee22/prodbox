@@ -85,6 +85,7 @@ complete -c prodbox -f -n '__fish_seen_subcommand_from users' -a 'list' -d 'List
 complete -c prodbox -f -n '__fish_seen_subcommand_from users' -a 'revoke' -d 'Disable or delete an operator-managed user'
 complete -c prodbox -f -n '__fish_seen_subcommand_from vault' -a 'status' -d 'Report Vault seal state'
 complete -c prodbox -f -n '__fish_seen_subcommand_from vault' -a 'init' -d 'Initialize Vault'
+complete -c prodbox -f -n '__fish_seen_subcommand_from vault' -a 'reset-ambiguous-initialization' -d 'Reset ambiguous Vault initialization'
 complete -c prodbox -f -n '__fish_seen_subcommand_from vault' -a 'unseal' -d 'Unseal Vault'
 complete -c prodbox -f -n '__fish_seen_subcommand_from vault' -a 'seal' -d 'Seal Vault'
 complete -c prodbox -f -n '__fish_seen_subcommand_from vault' -a 'reconcile' -d 'Reconcile Vault policy'

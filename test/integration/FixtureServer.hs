@@ -8,6 +8,7 @@ module FixtureServer
   , runAuthorityFixtureServer
   , runVaultFixtureServer
   , withVaultFixtureServer
+  , withVaultFixtureServerSealStatus
   )
 where
 
@@ -196,14 +197,25 @@ runVaultFixtureServer port =
   runFixtureServer port (pureBody vaultBody)
 
 withVaultFixtureServer :: (Int -> IO value) -> IO value
-withVaultFixtureServer action =
+withVaultFixtureServer =
+  withVaultFixtureServerBody vaultBody
+
+withVaultFixtureServerSealStatus :: Bool -> (Int -> IO value) -> IO value
+withVaultFixtureServerSealStatus sealed =
+  withVaultFixtureServerBody (vaultBodyWithSealStatus sealed)
+
+withVaultFixtureServerBody
+  :: (ByteString8.ByteString -> String -> String)
+  -> (Int -> IO value)
+  -> IO value
+withVaultFixtureServerBody responseBody action =
   withSocketsDo $
     bracket (openFixtureListener 0) close $ \listener -> do
       address <- getSocketName listener
       port <- case address of
         SockAddrInet rawPort _ -> pure (fromIntegral rawPort)
         _ -> ioError (userError "Vault fixture listener was not IPv4")
-      void (forkIO (acceptForever listener (pureBody vaultBody)))
+      void (forkIO (acceptForever listener (pureBody responseBody)))
       action port
 
 runFixtureServer
@@ -321,7 +333,7 @@ authorityBody cleanupRunState request path
             ( encodeControlPlaneResponse
                 LifecycleAuthorityObservation
                   { observedAuthorityServiceIdentity = lifecycleAuthorityServiceIdentity
-                  , observedAuthorityScope = "prodbox-home"
+                  , observedAuthorityScope = "synthetic-test-cluster"
                   , observedAuthorityWriterStatus =
                       MigrationReplacementWriterActive fixtureMigrationEpoch
                   , observedAuthorityAdmission =
@@ -616,6 +628,14 @@ vaultBody request path
   | path == "/v1/secret/data/control-plane/authority-epoch" =
       "{\"data\":{\"data\":{\"epoch\":\"1\"},\"metadata\":{\"version\":1}}}"
   | otherwise = "{}"
+
+vaultBodyWithSealStatus :: Bool -> ByteString8.ByteString -> String -> String
+vaultBodyWithSealStatus sealed request path
+  | path == "/v1/sys/seal-status" =
+      "{\"initialized\":true,\"sealed\":"
+        ++ (if sealed then "true" else "false")
+        ++ ",\"t\":3,\"n\":5,\"progress\":0}"
+  | otherwise = vaultBody request path
 
 prefixOf :: String -> String -> Bool
 prefixOf prefix value = take (length prefix) value == prefix

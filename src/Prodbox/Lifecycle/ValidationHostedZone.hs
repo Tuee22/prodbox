@@ -1,8 +1,7 @@
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Sprint 5.28: sole owner of the throwaway Route 53 hosted zone the
--- @dns-aws@ canonical-suite validation creates.
+-- | Shared Route 53 mechanics for the validation-owned hosted-zone family.
 --
 -- Sprint 5.18 promised to register this zone by account, region, caller
 -- reference, name, and operation, to read back its deletion, and to remove the
@@ -17,13 +16,13 @@
 -- @Prodbox.EffectInterpreter@. That probe no longer exists, which left the
 -- carve-out protecting an unbracketed create.
 --
--- This module is the registered owner: it holds the create verb, the delete
--- verb, the absence read-back, and the prefix sweep that the always-run cleanup
--- DAG calls whether or not the validation reached its own cleanup. Discovery is
--- by the @prodbox-dns-aws-@ name prefix, which is also the caller reference, so
--- a zone leaked by any path is still discoverable by identity rather than by
--- having been remembered in process memory.
-module Prodbox.Infra.Route53ValidationZone
+-- Creation remains a validation action. Destruction and exact read-back are
+-- called only by the registered Provider interpreter; the former TestRunner
+-- sweep and its validation-owned cleanup graph were removed in Sprint 5.36.
+-- Discovery is bounded by the @prodbox-dns-aws-@ name prefix, which is also the
+-- caller reference, so a zone leaked by any path remains discoverable by
+-- identity rather than by process memory.
+module Prodbox.Lifecycle.ValidationHostedZone
   ( validationHostedZoneNamePrefix
   , validationHostedZoneName
   , validationHostedZoneCallerReference

@@ -20,6 +20,8 @@ module Prodbox.Lifecycle.Teardown.RegisteredTargetResult
   , mkAwsEbsRegisteredTargetReconcile
   , mkAwsValidationZoneRegisteredTargetReconcile
   , mkAwsRetainedEbsRegisteredTargetReconcile
+  , mkAwsIamRoleFamilyRegisteredTargetReconcile
+  , mkAwsLoadBalancerControllerFamilyRegisteredTargetReconcile
   , mkDns01ChallengeRegisteredTargetReconcile
   , mkRefusedRegisteredTargetReconcile
   , RegisteredTargetReconcileError (..)
@@ -38,6 +40,14 @@ import Prodbox.Lifecycle.Teardown.AwsEksDestroyAdapter
   , awsEksDestroyAuthorizationKey
   , awsEksDestroyAuthorizationOperationId
   , awsEksDestroyAuthorizationScope
+  )
+import Prodbox.Lifecycle.Teardown.AwsIamRoleFamilyAdapter
+  ( ExactAwsIamRoleFamilyReapAuthorization
+  , awsIamRoleFamilyReapScope
+  )
+import Prodbox.Lifecycle.Teardown.AwsLoadBalancerControllerFamilyAdapter
+  ( ExactAwsLoadBalancerControllerFamilyReapAuthorization
+  , awsLoadBalancerControllerFamilyReapScope
   )
 import Prodbox.Lifecycle.Teardown.AwsRetainedEbsAdapter
   ( ExactAwsRetainedEbsReapAuthorization
@@ -97,6 +107,12 @@ data RegisteredTargetReconcileDisposition
     -- two families have opposite default dispositions, so a report must not
     -- say "per-run EBS" when production-retained storage was deleted.
     RegisteredTargetAwsRetainedEbsMutation !RegisteredTargetMutationAttempt
+  | -- | The deterministic EKS IAM role and managed-policy family.  It has a
+    -- distinct audit disposition so a report cannot mislabel identity cleanup
+    -- as stack or volume cleanup.
+    RegisteredTargetAwsIamRoleFamilyMutation !RegisteredTargetMutationAttempt
+  | RegisteredTargetAwsLoadBalancerControllerFamilyMutation
+      !RegisteredTargetMutationAttempt
   | -- | Sprint 7.36.  The DNS01 challenge family's mutation is a Kubernetes
     -- owner delete, not an AWS one, so its audit disposition says so rather
     -- than borrowing a provider-mutation name.
@@ -185,6 +201,17 @@ data RegisteredTargetReconcileError
   | RegisteredTargetEbsPerRunKeyRequired !RegisteredResourceKey
   | RegisteredTargetEbsKindRequired !ResourceKind
   | RegisteredTargetRetainedEbsKeyRequired !RegisteredResourceKey
+  | RegisteredTargetIamRoleFamilyKeyRequired !RegisteredResourceKey
+  | RegisteredTargetIamRoleFamilyKindRequired !ResourceKind
+  | RegisteredTargetIamRoleFamilyAuthorizationScopeMismatch
+      !ObservationEvidenceScope
+      !ObservationEvidenceScope
+  | RegisteredTargetLoadBalancerControllerFamilyKeyRequired
+      !RegisteredResourceKey
+  | RegisteredTargetLoadBalancerControllerFamilyKindRequired !ResourceKind
+  | RegisteredTargetLoadBalancerControllerFamilyAuthorizationScopeMismatch
+      !ObservationEvidenceScope
+      !ObservationEvidenceScope
   | RegisteredTargetDns01ChallengeKeyRequired !RegisteredResourceKey
   | RegisteredTargetDns01ChallengeKindRequired !ResourceKind
   | RegisteredTargetDns01ChallengeAuthorizationScopeMismatch
@@ -529,6 +556,97 @@ mkAwsRetainedEbsRegisteredTargetReconcile
           target
           scope
           (RegisteredTargetAwsRetainedEbsMutation attempt)
+      )
+
+-- | Close the registered EKS IAM family mutation over its opaque adapter
+-- authorization.  Exact provider absence is still proved by the separately
+-- compiled read-back node; this value records only the authorized attempt.
+mkAwsIamRoleFamilyRegisteredTargetReconcile
+  :: CleanupOperationId
+  -> RegisteredTargetBinding
+  -> ObservationEvidenceScope
+  -> ExactAwsIamRoleFamilyReapAuthorization
+  -> RegisteredTargetMutationAttempt
+  -> Either RegisteredTargetReconcileError RegisteredTargetReconcileResult
+mkAwsIamRoleFamilyRegisteredTargetReconcile
+  operationId
+  target
+  scope
+  authorization
+  attempt = do
+    validateStaticTarget target
+    if registeredTargetKey target == AwsEksIamRoleFamilyKey
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetIamRoleFamilyKeyRequired
+              (registeredTargetKey target)
+          )
+    if registeredTargetKind target == ControllerFamily
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetIamRoleFamilyKindRequired
+              (registeredTargetKind target)
+          )
+    if awsIamRoleFamilyReapScope authorization == scope
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetIamRoleFamilyAuthorizationScopeMismatch
+              scope
+              (awsIamRoleFamilyReapScope authorization)
+          )
+    Right
+      ( mkResult
+          operationId
+          target
+          scope
+          (RegisteredTargetAwsIamRoleFamilyMutation attempt)
+      )
+
+mkAwsLoadBalancerControllerFamilyRegisteredTargetReconcile
+  :: CleanupOperationId
+  -> RegisteredTargetBinding
+  -> ObservationEvidenceScope
+  -> ExactAwsLoadBalancerControllerFamilyReapAuthorization
+  -> RegisteredTargetMutationAttempt
+  -> Either RegisteredTargetReconcileError RegisteredTargetReconcileResult
+mkAwsLoadBalancerControllerFamilyRegisteredTargetReconcile
+  operationId
+  target
+  scope
+  authorization
+  attempt = do
+    validateStaticTarget target
+    if registeredTargetKey target == AwsEksLoadBalancerControllerFamilyKey
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetLoadBalancerControllerFamilyKeyRequired
+              (registeredTargetKey target)
+          )
+    if registeredTargetKind target == ControllerFamily
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetLoadBalancerControllerFamilyKindRequired
+              (registeredTargetKind target)
+          )
+    if awsLoadBalancerControllerFamilyReapScope authorization == scope
+      then Right ()
+      else
+        Left
+          ( RegisteredTargetLoadBalancerControllerFamilyAuthorizationScopeMismatch
+              scope
+              (awsLoadBalancerControllerFamilyReapScope authorization)
+          )
+    Right
+      ( mkResult
+          operationId
+          target
+          scope
+          (RegisteredTargetAwsLoadBalancerControllerFamilyMutation attempt)
       )
 
 -- | Preserve an exact interpreter refusal without opening the reconcile node

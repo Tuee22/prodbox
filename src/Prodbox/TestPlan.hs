@@ -46,6 +46,7 @@ data NativeValidation
   | ValidationTeardownRecovery
   | ValidationCertificateScope
   | ValidationCleanRoomHandoff
+  | ValidationCascadeQualification
   | ValidationChartsPlatform
   | ValidationResourceGuardrails
   | ValidationDaemonBootstrap
@@ -254,6 +255,24 @@ testExecutionPlan substrate scope =
             "integration-clean-room-handoff"
             [ValidationCleanRoomHandoff]
             False
+        IntegrationCascadeQualification ->
+          nativeExecutionPlan
+            "integration cascade-qualification"
+            []
+            NativeSuitePlan
+              { nativeSuiteId = "integration-cascade-qualification"
+              , nativeValidations = [ValidationCascadeQualification]
+              , nativeInitialIntegrationGatePrerequisites =
+                  validationInitialPrerequisites ValidationCascadeQualification
+              , nativeDeferredIntegrationGatePrerequisites =
+                  validationDeferredPrerequisites ValidationCascadeQualification
+              , nativeManagedAwsHarnessPolicyTier =
+                  derivedTier substrate [ValidationCascadeQualification]
+              , nativeRequiresIntegrationRunbook = True
+              , nativeRequiresSupportedRuntimeBootstrap = True
+              , nativeRequiresSupportedRuntimePostflight = False
+              , nativeSubstrate = substrate
+              }
         IntegrationHaRke2Aws ->
           nativeNamedSuite
             "integration ha-rke2-aws"
@@ -479,6 +498,7 @@ validationInitialPrerequisites validation =
     ValidationTeardownRecovery -> []
     ValidationCertificateScope -> [PublicEdgeReady, ToolCurl, ToolOpenSsl]
     ValidationCleanRoomHandoff -> []
+    ValidationCascadeQualification -> pulumiSubstratePrerequisites
     -- The chart-platform / storage / lifecycle validations operate on the
     -- local cluster: cluster only, no AWS credentials.
     ValidationChartsPlatform -> clusterPrerequisites
@@ -518,6 +538,7 @@ validationDeferredPrerequisites validation =
     ValidationTeardownRecovery -> []
     ValidationCertificateScope -> []
     ValidationCleanRoomHandoff -> []
+    ValidationCascadeQualification -> [PulumiLoggedIn]
     ValidationChartsPlatform -> []
     ValidationResourceGuardrails -> []
     ValidationDaemonBootstrap -> []
@@ -636,6 +657,7 @@ nativeValidationId validation =
     ValidationTeardownRecovery -> "teardown-recovery"
     ValidationCertificateScope -> "certificate-scope"
     ValidationCleanRoomHandoff -> "clean-room-handoff"
+    ValidationCascadeQualification -> "cascade-qualification"
     ValidationChartsPlatform -> "charts-platform"
     ValidationResourceGuardrails -> "resource-guardrails"
     ValidationDaemonBootstrap -> "daemon-bootstrap"

@@ -76,6 +76,8 @@ import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Map.Strict (Map)
 import Data.Maybe (isJust)
 import Data.Text qualified as Text
+import Prodbox.Config.Basics (UnencryptedBasics (basicsVaultAddress))
+import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
   , LifecycleAuthorityAuthentication
@@ -144,32 +146,17 @@ import Prodbox.Settings
   , loadConfigFile
   , pulumi_state_backend
   )
-import Prodbox.Vault.Client (vaultSealStatus)
+import Prodbox.Vault.Client (VaultAddress (VaultAddress), vaultSealStatus)
 import Prodbox.Vault.Gate
   ( VaultGateDecision (..)
   , vaultGateAllows
   , vaultGateDecision
   )
-import Prodbox.Vault.Host (resolveHostVaultAddress)
 import System.Environment (getEnvironment, lookupEnv)
 import System.FilePath ((</>))
 
--- | Test-only env var that makes both 'queryPerRunResidueStatuses'
--- and 'queryAwsSesResidueStatus' short-circuit to 'ResidueAbsent'
--- without consulting the live backends. The integration suite
--- ('fakeAwsEnvironment' / 'fakeAwsHarnessEnvironment') sets this so
--- the fake-AWS-CLI happy-path tests do not require a running MinIO or
--- a configured long-lived S3 backend. Production code paths never set
--- this var; the name is kept descriptive so a stray set in production
--- is loud rather than silent.
-testResidueAbsentEnvVar :: String
-testResidueAbsentEnvVar = "PRODBOX_TEST_RESIDUE_ABSENT"
-
-isTestResidueAbsentSet :: IO Bool
-isTestResidueAbsentSet = isJust <$> lookupEnv testResidueAbsentEnvVar
-
--- | Test-only env var (symmetric to 'PRODBOX_TEST_RESIDUE_ABSENT') that
--- makes 'queryPerRunResidueStatuses' short-circuit to all-'ResidueUnreachable'
+-- | Test-only env var that makes 'queryPerRunResidueStatuses' short-circuit to
+-- all-'ResidueUnreachable'
 -- without consulting a live backend. Lets the integration suite exercise the
 -- Sprint 4.19 fail-closed delete gate (MinIO-unreachable → refuse) without a
 -- real failing port-forward. Production code paths never set this var.
@@ -240,22 +227,18 @@ queryPerRunResidueStatusesWithAuthentication authentication repoRoot = do
   case bypass of
     Just statuses -> pure statuses
     Nothing -> do
-      gate <- queryResidueVaultGate
+      gate <- queryResidueVaultGate repoRoot
       if vaultGateAllows gate
         then queryPerRunLive authentication repoRoot
         else pure (perRunVaultGatedTriple gate)
 
 perRunResidueBypass :: IO (Maybe PerRunResidueStatuses)
 perRunResidueBypass = do
-  absentBypass <- isTestResidueAbsentSet
   unreachableBypass <- isTestResidueUnreachableSet
   pure
-    ( if absentBypass
-        then Just perRunAbsentTriple
-        else
-          if unreachableBypass
-            then Just perRunUnreachableTriple
-            else Nothing
+    ( if unreachableBypass
+        then Just perRunUnreachableTriple
+        else Nothing
     )
 
 -- | All three per-run stacks reported unreachable. Used for the
@@ -279,18 +262,6 @@ perRunAuthenticationFailedTriple detail =
           ResidueLayerRetainedCheckpoint
           (ResidueUnreachable (ResidueAuthorityUnauthenticated detail))
    in PerRunResidueStatuses unreachable unreachable unreachable
-
--- | All three per-run stacks reported absent. Used for the
--- 'PRODBOX_TEST_RESIDUE_ABSENT' bypass and as the base for tests that
--- override individual fields.
-perRunAbsentTriple :: PerRunResidueStatuses
-perRunAbsentTriple =
-  let absent = observeResidueAt ResidueLayerHarnessBypass ResidueAbsent
-   in PerRunResidueStatuses
-        { perRunAwsEksTest = absent
-        , perRunAwsEksSubzone = absent
-        , perRunAwsTest = absent
-        }
 
 perRunVaultGatedTriple :: VaultGateDecision -> PerRunResidueStatuses
 perRunVaultGatedTriple gate =
@@ -352,44 +323,36 @@ observePerRunCheckpoints authentication repoRoot =
 -- they cannot prove the resource is absent.
 queryAwsSesResidueStatus :: FilePath -> IO ResidueObservation
 queryAwsSesResidueStatus repoRoot = do
-  bypass <- isTestResidueAbsentSet
-  if bypass
-    then pure harnessBypassAbsence
-    else do
-      authenticated <-
-        withHostLifecycleAuthorityAuthentication
-          LifecycleAuthorityOperator
-          repoRoot
-          (\authentication -> queryAwsSesResidueStatusWithAuthentication authentication repoRoot)
-      pure $ case authenticated of
-        Left err ->
-          observeResidueAt
-            ResidueLayerRetainedCheckpoint
-            ( ResidueUnreachable
-                ( ResidueBackendS3Unreachable
-                    (renderLifecycleAuthorityAuthenticationError err)
-                )
+  authenticated <-
+    withHostLifecycleAuthorityAuthentication
+      LifecycleAuthorityOperator
+      repoRoot
+      (\authentication -> queryAwsSesResidueStatusWithAuthentication authentication repoRoot)
+  pure $ case authenticated of
+    Left err ->
+      observeResidueAt
+        ResidueLayerRetainedCheckpoint
+        ( ResidueUnreachable
+            ( ResidueBackendS3Unreachable
+                (renderLifecycleAuthorityAuthenticationError err)
             )
-        Right observation -> observation
+        )
+    Right observation -> observation
 
 queryAwsSesResidueStatusWithAuthentication
   :: LifecycleAuthorityAuthentication
   -> FilePath
   -> IO ResidueObservation
 queryAwsSesResidueStatusWithAuthentication authentication repoRoot = do
-  bypass <- isTestResidueAbsentSet
-  if bypass
-    then pure harnessBypassAbsence
+  gate <- queryResidueVaultGate repoRoot
+  if vaultGateAllows gate
+    then querySesLive authentication repoRoot
     else do
-      gate <- queryResidueVaultGate
-      if vaultGateAllows gate
-        then querySesLive authentication repoRoot
-        else
-          pure
-            ( observeResidueAt
-                ResidueLayerVaultGate
-                (residueStatusBlockedByVaultGate gate)
-            )
+      pure
+        ( observeResidueAt
+            ResidueLayerVaultGate
+            (residueStatusBlockedByVaultGate gate)
+        )
 
 -- | The @aws-ses@ stack is observed by listing its /encrypted checkpoint/
 -- through the Authority, so the layer is the retained checkpoint store and
@@ -412,12 +375,6 @@ querySesLive authentication repoRoot = do
         ResidueLayerRetainedCheckpoint
         (residueStatusFromS3Listing awsSesStackName result)
     )
-
--- | The one absence the harness bypass mints. Named so every bypass arm mints
--- the same value at the same layer, rather than each returning a bare
--- 'ResidueAbsent' that no consumer can tell from an observed one.
-harnessBypassAbsence :: ResidueObservation
-harnessBypassAbsence = observeResidueAt ResidueLayerHarnessBypass ResidueAbsent
 
 -- | Sprint 4.24: the canonical managed-resource name and the
 -- substrate-scoped S3 key prefix of the retained public-edge production
@@ -448,31 +405,27 @@ publicEdgeTlsRetentionPrefix = "public-edge-tls/"
 -- a consumer; they were both bare 'ResidueStatus' before.
 queryPublicEdgeTlsResidueStatus :: FilePath -> IO ResidueObservation
 queryPublicEdgeTlsResidueStatus repoRoot = do
-  bypass <- isTestResidueAbsentSet
-  if bypass
-    then pure harnessBypassAbsence
+  gate <- queryResidueVaultGate repoRoot
+  if vaultGateAllows gate
+    then
+      observeResidueAt ResidueLayerAwsResource
+        <$> withLongLivedBucketEnv
+          repoRoot
+          ( \section environment ->
+              residueStatusFromObjectListing publicEdgeTlsResourceName
+                <$> listLongLivedObjectKeysUnderPrefix
+                  repoRoot
+                  environment
+                  section
+                  publicEdgeTlsRetentionPrefix
+          )
+          (\err -> ResidueUnreachable (ResidueBackendS3Unreachable err))
     else do
-      gate <- queryResidueVaultGate
-      if vaultGateAllows gate
-        then
-          observeResidueAt ResidueLayerAwsResource
-            <$> withLongLivedBucketEnv
-              repoRoot
-              ( \section environment ->
-                  residueStatusFromObjectListing publicEdgeTlsResourceName
-                    <$> listLongLivedObjectKeysUnderPrefix
-                      repoRoot
-                      environment
-                      section
-                      publicEdgeTlsRetentionPrefix
-              )
-              (\err -> ResidueUnreachable (ResidueBackendS3Unreachable err))
-        else
-          pure
-            ( observeResidueAt
-                ResidueLayerVaultGate
-                (residueStatusBlockedByVaultGate gate)
-            )
+      pure
+        ( observeResidueAt
+            ResidueLayerVaultGate
+            (residueStatusBlockedByVaultGate gate)
+        )
 
 -- | Sprint 4.24: the @destroy@ action for the retained public-edge
 -- production TLS certificate managed resource — purge every object
@@ -730,10 +683,14 @@ pruneCorruptPerRunCheckpointWithAuthentication authentication repoRoot stackName
   retireCheckpointReference =
     pruneLogicalPulumiStack authentication repoRoot (stackRefFor stackName)
 
-queryResidueVaultGate :: IO VaultGateDecision
-queryResidueVaultGate = do
-  address <- resolveHostVaultAddress
-  vaultGateDecision <$> vaultSealStatus address
+queryResidueVaultGate :: FilePath -> IO VaultGateDecision
+queryResidueVaultGate repoRoot = do
+  basicsResult <- loadUnencryptedBasics repoRoot
+  case basicsResult of
+    Left err -> pure (VaultGateBlockUnreachable err)
+    Right basics ->
+      vaultGateDecision
+        <$> vaultSealStatus (VaultAddress (basicsVaultAddress basics))
 
 -- | Pure helper translating the 'listStacks' result into a typed
 -- 'ResidueStatus'. Exposed for unit testing because the IO query is

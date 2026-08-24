@@ -32,9 +32,20 @@ import Prodbox.Lifecycle.CleanupRunRunner
   ( CleanupNodeExecutionContext
   , resumeDurableCleanupWithContext
   )
-import Prodbox.Lifecycle.ProviderWorker.ProviderWork (ProviderIntent (..))
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent (..)
+  , ProviderRevision
+  , ProviderStackConfig
+  , mkAwsEksProviderStackConfig
+  , mkAwsEksSubzoneProviderStackConfig
+  , mkAwsTestProviderStackConfig
+  , mkProviderRevision
+  )
 import Prodbox.Lifecycle.PulumiCheckpoint
 import Prodbox.Lifecycle.Teardown.AwsCheckpointInterpreter
+import Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
+  ( encodeAwsNativeStackFamilyEvidence
+  )
 import Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter
 import Prodbox.Lifecycle.Teardown.CheckpointAuthority
 import Prodbox.Lifecycle.Teardown.Execution
@@ -78,7 +89,7 @@ lifecycleTeardownAwsCheckpointInterpreterSuite =
       runNode environment (nodeFor RecoveryReadBackNode AwsTestKey)
         `shouldReturn` CleanupNodeSucceeded
       let hasObservationAndReadBack calls = case map snd calls of
-            [ObserveRegisteredStack _, ReadBackRegisteredStack _] -> True
+            [ObserveNativeStackFamily {}, ObserveNativeStackFamily {}] -> True
             _ -> False
       readIORef (fakeProviderCalls environment)
         `shouldReturnSatisfying` hasObservationAndReadBack
@@ -336,7 +347,17 @@ registeredTargetInterpreterFor environment =
     , awsRegisteredTargetReadStackDecisionInputs =
         \_ _ _ -> pure (Left "decision input reader is outside this focused adapter")
     , awsRegisteredTargetReadStackProviderBinding =
-        \_ _ _ -> pure (Left "provider binding reader is outside this focused adapter")
+        \operationId key bindingScope ->
+          pure
+            ( firstText
+                ( mkAwsStackProviderBinding
+                    operationId
+                    key
+                    bindingScope
+                    providerRevision
+                    (providerConfig key)
+                )
+            )
     , awsRegisteredTargetPresentEksDestroyBoundary =
         mkAwsEksPresentDestroyBoundary $ \_ _ _ ->
           pure (Left AwsRegisteredTargetEksDrainProofRequired)
@@ -347,14 +368,29 @@ registeredTargetInterpreterFor environment =
 
 providerResult :: FakeEnvironment -> ProviderIntent -> TeardownProviderBoundaryResult
 providerResult environment intent = case intent of
-  ObserveRegisteredStack _ -> observed
-  ReadBackRegisteredStack _ -> observed
+  ObserveNativeStackFamily ref _ -> observed ref
   _ -> TeardownProviderRefused "unexpected Provider intent"
  where
-  observed = case fakeTargetFixture environment of
-    TargetPresent -> TeardownProviderCompleted stackPresentIdentity
-    TargetAbsent -> TeardownProviderCompleted stackAbsentEvidence
+  observed ref = case fakeTargetFixture environment of
+    TargetPresent ->
+      TeardownProviderCompleted
+        (mustRight (encodeAwsNativeStackFamilyEvidence ref ["vpc/vpc-fixture"]))
+    TargetAbsent ->
+      TeardownProviderCompleted
+        (mustRight (encodeAwsNativeStackFamilyEvidence ref []))
     TargetUnobservable -> TeardownProviderCompleted "malformed-provider-evidence"
+
+providerConfig :: RegisteredResourceKey -> ProviderStackConfig
+providerConfig key = case key of
+  AwsEksKey -> mustRight (mkAwsEksProviderStackConfig "127.0.0.1/32")
+  AwsEksSubzoneKey ->
+    mustRight
+      (mkAwsEksSubzoneProviderStackConfig "ZCHECKPOINT" "aws.example.test")
+  AwsTestKey -> mustRight (mkAwsTestProviderStackConfig "127.0.0.1/32")
+  _ -> error ("no Provider stack config for " <> show key)
+
+providerRevision :: ProviderRevision
+providerRevision = mustRight (mkProviderRevision 1)
 
 authorityOperationClientFor
   :: FakeEnvironment -> AuthorityOperationClient CheckpointEffects
@@ -661,6 +697,9 @@ twoEqualValues values = case values of
   [first, second] -> first == second
   _ -> False
 
+firstText :: (Show err) => Either err value -> Either Text value
+firstText = either (Left . Text.pack . show) Right
+
 isClientBindingMismatch
   :: Either AwsCheckpointInterpreterError (AwsCheckpointAuthorities CheckpointEffects)
   -> Bool
@@ -708,6 +747,7 @@ compiled =
         checkpointCleanupRunId
         foundation
         (Just awsScope)
+        Nothing
         CascadeSurface
     )
 
@@ -721,7 +761,7 @@ awsScope :: AwsScope
 awsScope =
   AwsScope
     (AwsAccountId "111122223333")
-    (AwsRegion "ca-central-1")
+    (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
 
 scope :: ObservationEvidenceScope
 scope = compiledDesiredAbsenceObservationScope compiled
@@ -735,12 +775,6 @@ otherScope =
     foundation
     (Just awsScope)
     ReconcileDesiredAbsent
-
-stackPresentIdentity :: Text
-stackPresentIdentity = "sha256:" <> Text.replicate 64 "a"
-
-stackAbsentEvidence :: Text
-stackAbsentEvidence = "registered stack is absent"
 
 shouldReturnSatisfying :: IO value -> (value -> Bool) -> Expectation
 shouldReturnSatisfying action predicate = do

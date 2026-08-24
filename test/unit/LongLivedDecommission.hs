@@ -123,7 +123,7 @@ longLivedDecommissionSuite =
             observeVersionedPrefixWith
               (run payload)
               "/repo"
-              [("AWS_REGION", "us-east-1")]
+              [("AWS_REGION", (fixtureAwsRegion FixtureUsEast1))]
               "prodbox-long-lived-test"
               "public-edge-tls/home-local/example.com"
       observe (successful "{\"DeleteMarkers\":[{\"Key\":\"x\"}]}")
@@ -296,7 +296,7 @@ backendSection :: PulumiStateBackendSection
 backendSection =
   PulumiStateBackendSection
     { psbBucketName = "prodbox-long-lived-test"
-    , psbRegion = "us-east-1"
+    , psbRegion = (fixtureAwsRegion FixtureUsEast1)
     , psbKeyPrefix = "pulumi/"
     }
 

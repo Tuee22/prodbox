@@ -91,6 +91,7 @@ import Prodbox.Aws.Native.Wire
   , renderFormBody
   )
 import Prodbox.Aws.Native.Xml (extractAll, extractFirst)
+import Prodbox.Aws.Region (awsGlobalServiceRegion)
 
 data CreateUserResult = CreateUserResult
   { createUserName :: !Text
@@ -176,7 +177,9 @@ data IamClient = IamClient
   , updateAssumeRolePolicy :: Text -> Text -> IO (Either AwsClientError ())
   , putRoleInlinePolicy :: Text -> Text -> Text -> IO (Either AwsClientError ())
   , observeRoleInlinePolicy
-      :: Text -> Text -> IO (Either AwsClientError IamRolePolicyObservation)
+      :: Text
+      -> Text
+      -> IO (Either AwsClientError IamRolePolicyObservation)
   , deleteRoleInlinePolicy :: Text -> Text -> IO (Either AwsClientError ())
   , deleteRole :: Text -> IO (Either AwsClientError ())
   }
@@ -208,9 +211,9 @@ newIamClient handle sender =
 iamEndpoint :: AwsEndpoint
 iamEndpoint = AwsEndpoint "https://iam.amazonaws.com" "iam.amazonaws.com"
 
--- | IAM is a global service; sign under the fixed @us-east-1@ region.
+-- | IAM is a global service and signs under AWS's fixed global-service region.
 iamScope :: AwsScope
-iamScope = AwsScope "us-east-1" "iam"
+iamScope = AwsScope awsGlobalServiceRegion "iam"
 
 encodeCreateUserForm :: Text -> [(ByteString, ByteString)]
 encodeCreateUserForm userName =

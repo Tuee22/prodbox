@@ -169,7 +169,7 @@ lifecycleTeardownRetainedInventorySuite =
         , retainedMatcherFamily matcher == RetainedSesReceiptRuleSet
         , RetainedMatchExactArn arn <- [retainedMatcherRule matcher]
         ]
-          `shouldBe` [ "arn:aws:ses:us-east-1:111122223333:receipt-rule-set/"
+          `shouldBe` [ ("arn:aws:ses:" <> (fixtureAwsRegion FixtureUsEast1) <> ":111122223333:receipt-rule-set/")
                          <> Text.pack sesReceiveRuleSetName
                      ]
 
@@ -339,7 +339,8 @@ lifecycleTeardownRetainedInventorySuite =
     -- The audit issues its queries in the audited scope's own region, and the
     -- Tagging API returns IAM and Route 53 only from the global-service
     -- region.  The cases above therefore hold only because 'auditedScope' is
-    -- that region; composed at 'ca-central-1' the same inventories asked about
+    -- that region; composed at the canonical regression region, the same
+    -- inventories asked about
     -- no IAM resource at all, and calling that clean is the exact shape of a
     -- non-answer inhabiting an answer that this phase exists to remove.
     describe "the audited region bounds what clean may claim" $ do
@@ -357,7 +358,7 @@ lifecycleTeardownRetainedInventorySuite =
               && all
                 (\service -> any (Text.isInfixOf service) details)
                 globalServicesRequiringGlobalRegion
-              && all (Text.isInfixOf "ca-central-1") details
+              && all (Text.isInfixOf (fixtureAwsRegion FixtureCaCentral1)) details
 
       -- A blind spot cannot launder a discovered escapee into a retained one:
       -- what the audit did see is still true.
@@ -412,7 +413,7 @@ auditedScope =
 -- not asked about at all.
 outOfRegionScope :: AwsScope
 outOfRegionScope =
-  AwsScope (AwsAccountId "111122223333") (AwsRegion "ca-central-1")
+  AwsScope (AwsAccountId "111122223333") (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
 
 catalogQueries :: [TerminalAuditQuery]
 catalogQueries = terminalAuditQueryCatalog binding
@@ -472,7 +473,8 @@ escapedBucketArn = mustArn "arn:aws:s3:::prodbox-run-leftover"
 
 retainedVolumeArn :: Arn
 retainedVolumeArn =
-  mustArn "arn:aws:ec2:us-east-1:111122223333:volume/vol-0retained"
+  mustArn
+    ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":111122223333:volume/vol-0retained")
 
 retainedOnlyInventory :: AwsInventory
 retainedOnlyInventory =

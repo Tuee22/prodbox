@@ -31,28 +31,50 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
       -- ownership edge; the other two stacks own only themselves. Nothing here
       -- is a name-prefix sweep or a tag query.
       legacyAdoptionExpectedFamily AwsEksKey
-        `shouldBe` [AwsEksKey, AwsEbsPerRunTestKey]
+        `shouldBe` [ AwsEksKey
+                   , AwsEbsPerRunTestKey
+                   , AwsEksIamRoleFamilyKey
+                   , AwsEksLoadBalancerControllerFamilyKey
+                   ]
       legacyAdoptionExpectedFamily AwsTestKey `shouldBe` [AwsTestKey]
 
     it "plans only over a complete observation of that family" $ do
-      let plan = mustPlan (observationsFor [(AwsEksKey, ["arn:eks"]), (AwsEbsPerRunTestKey, ["vol-1"])])
+      let plan = mustPlan (observationsFor (completeEksRows ["vol-1"]))
       legacyAdoptionPlanStackKey plan `shouldBe` AwsEksKey
       legacyAdoptionPlanSurface plan `shouldBe` ExplicitPerRun
       map legacyAdoptionEntryKey (legacyAdoptionPlanEntries plan)
-        `shouldBe` [AwsEksKey, AwsEbsPerRunTestKey]
+        `shouldBe` [ AwsEksKey
+                   , AwsEbsPerRunTestKey
+                   , AwsEksIamRoleFamilyKey
+                   , AwsEksLoadBalancerControllerFamilyKey
+                   ]
       map legacyAdoptionEntryIdentities (legacyAdoptionPlanEntries plan)
-        `shouldBe` [[ObservedResourceIdentity "arn:eks"], [ObservedResourceIdentity "vol-1"]]
+        `shouldBe` [ [ObservedResourceIdentity "arn:eks"]
+                   , [ObservedResourceIdentity "vol-1"]
+                   , [ObservedResourceIdentity "arn:iam-family"]
+                   , [ObservedResourceIdentity "arn:lbc-family"]
+                   ]
 
     it "records an observed-empty family rather than omitting it" $ do
       -- "Nothing recorded" and "recorded as empty" are different states, and a
       -- later cleanup must be able to tell them apart.
-      let plan = mustPlan (observationsFor [(AwsEksKey, ["arn:eks"]), (AwsEbsPerRunTestKey, [])])
+      let plan = mustPlan (observationsFor (completeEksRows []))
       map legacyAdoptionEntryIdentities (legacyAdoptionPlanEntries plan)
-        `shouldBe` [[ObservedResourceIdentity "arn:eks"], []]
+        `shouldBe` [ [ObservedResourceIdentity "arn:eks"]
+                   , []
+                   , [ObservedResourceIdentity "arn:iam-family"]
+                   , [ObservedResourceIdentity "arn:lbc-family"]
+                   ]
       renderLegacyAdoptionPlan plan `shouldContainText` "observed-empty"
 
     it "refuses a family member nothing was observed for" $ do
-      planFor (observationsFor [(AwsEksKey, ["arn:eks"])])
+      planFor
+        ( observationsFor
+            [ (AwsEksKey, ["arn:eks"])
+            , (AwsEksIamRoleFamilyKey, ["arn:iam-family"])
+            , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
+            ]
+        )
         `shouldBe` Left (LegacyAdoptionCandidatesMissing [AwsEbsPerRunTestKey])
 
     it "refuses an observation outside the closed family" $ do
@@ -61,6 +83,8 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
         ( observationsFor
             [ (AwsEksKey, ["arn:eks"])
             , (AwsEbsPerRunTestKey, ["vol-1"])
+            , (AwsEksIamRoleFamilyKey, ["arn:iam-family"])
+            , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
             , (AwsTestKey, ["arn:test"])
             ]
         )
@@ -72,6 +96,8 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
             [ (AwsEksKey, ["arn:eks"])
             , (AwsEbsPerRunTestKey, ["vol-1"])
             , (AwsEbsPerRunTestKey, ["vol-2"])
+            , (AwsEksIamRoleFamilyKey, ["arn:iam-family"])
+            , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
             ]
         )
         `shouldBe` Left (LegacyAdoptionCandidatesDuplicated [AwsEbsPerRunTestKey])
@@ -80,13 +106,22 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
       planFor
         [ presentObservation AwsEksKey ["arn:eks"]
         , unobservableObservation AwsEbsPerRunTestKey
+        , presentObservation AwsEksIamRoleFamilyKey ["arn:iam-family"]
+        , presentObservation AwsEksLoadBalancerControllerFamilyKey ["arn:lbc-family"]
         ]
         `shouldBe` Left (LegacyAdoptionCandidatesUnobservable [AwsEbsPerRunTestKey])
 
     it "refuses one identity claimed by two registered keys" $ do
       -- Adopting it would put one resource under two owners with two destroy
       -- orders.
-      planFor (observationsFor [(AwsEksKey, ["shared-arn"]), (AwsEbsPerRunTestKey, ["shared-arn"])])
+      planFor
+        ( observationsFor
+            [ (AwsEksKey, ["shared-arn"])
+            , (AwsEbsPerRunTestKey, ["shared-arn"])
+            , (AwsEksIamRoleFamilyKey, ["arn:iam-family"])
+            , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
+            ]
+        )
         `shouldBe` Left
           (LegacyAdoptionIdentitiesAmbiguous [ObservedResourceIdentity "shared-arn"])
 
@@ -95,18 +130,18 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
         ExplicitPerRunSurface
         AwsEksKey
         (scopeWith Nothing ReconcileDesiredAbsent)
-        (observationsFor [(AwsEksKey, ["arn:eks"]), (AwsEbsPerRunTestKey, ["vol-1"])])
+        (observationsFor (completeEksRows ["vol-1"]))
         `shouldBe` Left LegacyAdoptionAwsScopeMissing
       planLegacyAdoption
         ExplicitPerRunSurface
         AwsEksKey
         (scopeWith (Just awsScope) ReconcileDesiredPresent)
-        (observationsFor [(AwsEksKey, ["arn:eks"]), (AwsEbsPerRunTestKey, ["vol-1"])])
+        (observationsFor (completeEksRows ["vol-1"]))
         `shouldBe` Left (LegacyAdoptionOperationInvalid ReconcileDesiredPresent)
 
     it "digests exactly the document it renders, and a changed fact changes it" $ do
-      let plan = mustPlan (observationsFor [(AwsEksKey, ["arn:eks"]), (AwsEbsPerRunTestKey, ["vol-1"])])
-          other = mustPlan (observationsFor [(AwsEksKey, ["arn:eks"]), (AwsEbsPerRunTestKey, ["vol-2"])])
+      let plan = mustPlan (observationsFor (completeEksRows ["vol-1"]))
+          other = mustPlan (observationsFor (completeEksRows ["vol-2"]))
       renderLegacyAdoptionPlan plan `shouldContainText` "legacy-adoption-plan/v1"
       renderLegacyAdoptionPlan plan `shouldContainText` "vol-1"
       legacyAdoptionPlanDigestOf plan `shouldNotBe` legacyAdoptionPlanDigestOf other
@@ -137,7 +172,7 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
     it "confirms only the exact plan the permit names" $ do
       -- A plan re-rendered after the provider facts changed is a different
       -- plan, and the operator confirmed the earlier one.
-      let other = mustPlan (observationsFor [(AwsEksKey, ["arn:eks"]), (AwsEbsPerRunTestKey, ["vol-2"])])
+      let other = mustPlan (observationsFor (completeEksRows ["vol-2"]))
           permit = mustPermit (legacyAdoptionPlanDigestOf samplePlan)
       fmap confirmedLegacyAdoptionPlanDigest (confirmLegacyAdoptionPlan permit samplePlan)
         `shouldBe` Right (legacyAdoptionPlanDigestOf samplePlan)
@@ -167,7 +202,15 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
 
 samplePlan :: LegacyAdoptionPlan 'ExplicitPerRun
 samplePlan =
-  mustPlan (observationsFor [(AwsEksKey, ["arn:eks"]), (AwsEbsPerRunTestKey, ["vol-1"])])
+  mustPlan (observationsFor (completeEksRows ["vol-1"]))
+
+completeEksRows :: [Text] -> [(RegisteredResourceKey, [Text])]
+completeEksRows ebsIdentities =
+  [ (AwsEksKey, ["arn:eks"])
+  , (AwsEbsPerRunTestKey, ebsIdentities)
+  , (AwsEksIamRoleFamilyKey, ["arn:iam-family"])
+  , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
+  ]
 
 permitRequest
   :: RunnerRole -> LegacyAdoptionPlanDigest -> Text -> AdminLegacyAdoptionPermitRequest
@@ -239,7 +282,7 @@ scopeWith maybeAwsScope operation =
     operation
 
 awsScope :: AwsScope
-awsScope = AwsScope (AwsAccountId "123456789012") (AwsRegion "ca-central-1")
+awsScope = AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
 
 shouldContainText :: Text -> Text -> Expectation
 shouldContainText haystack needle =

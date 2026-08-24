@@ -256,6 +256,7 @@ compiledFor =
         (mustRight (mkCleanupRunId "production-cloud-runtime-run"))
         (LinuxRke2FoundationId "home-rke2")
         (Just frozenAwsScope)
+        Nothing
         CascadeSurface
     )
 
@@ -263,7 +264,7 @@ frozenAwsScope :: AwsScope
 frozenAwsScope =
   AwsScope
     (AwsAccountId "123456789012")
-    (AwsRegion "ca-central-1")
+    (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
 
 firstShow :: (Show err) => Either err value -> Either Text value
 firstShow = either (Left . Text.pack . show) Right

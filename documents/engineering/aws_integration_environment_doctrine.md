@@ -209,8 +209,9 @@ identity, authority, DNS-owner, or cleanup boundaries above.
     the postflight (`runAwsIamHarnessTeardown`) also uses `BypassAllResidueForHarnessRefresh`.
     The harness no longer refuses on `aws-ses` residue at all — its explicit destroy remains
     admin-authorized, so clearing operational `aws.*` and the registered SES lease role cannot
-    strand teardown, and per-run residue is destroyed by
-    `awsPostflightDestroyActions` in the same suite-exit unwind. `BypassPerRunResidueOnly`
+    strand teardown. Sprint `5.36` later replaced `awsPostflightDestroyActions` with exact selected
+    per-run nodes in the descriptor-bound lifecycle client; only the lifecycle-owned node-state
+    decision may now release the legacy operational teardown. `BypassPerRunResidueOnly`
     remains a valid ADT member (it still refuses on long-lived residue) but has no production
     caller after Sprint 7.9.
     Sprint `4.47` later moved canonical desired-present reconcile to the fixed operational role;
@@ -421,27 +422,31 @@ request. A sealed Vault or stale generation fails closed.
 
 ### 2.4 AWS Deployment Values Are Operator-Supplied; AWS Protocol Constants Are Compiled
 
-> **Target.** This subsection states an accepted end state. The compiled side is current, and so is
-> the operational AWS region on the operator-supplied side. The **resource envelope** — node group
-> instance types and sizes, the `aws-test` instance type and root volume, every VPC and subnet CIDR,
-> and the operator CIDR — is still compiled inside the checked-in stack programs and is scheduled.
-> Ownership and rollout live only in the
-> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+> **Current revision.** The operational region and the complete AWS resource/network envelope are
+> operator-supplied. `prodbox config generate` leaves the region empty and
+> `aws_substrate.profile = None`; home-only operation may retain that absence, but every EKS,
+> `aws-test`, or static-EBS desired-presence path requires a present validated profile. There is no
+> compiled production envelope.
 
 The rule is [config_doctrine.md](./config_doctrine.md) § 0 and is not restated here. This
 subsection is the AWS inventory it produces.
 
 **Operator-supplied, from validated Tier-0 Dhall, fail-closed when absent.** The operational AWS
-region — **current**: `prodbox config generate` emits `aws.region` empty, and
+region: `prodbox config generate` emits `aws.region` empty, and
 `requireOperationalAwsRegion`, `validateOperationalAwsCredentials`, and
 `validateLifecycleProviderAwsRegion` each refuse an absent one by name with the operator remedy.
-The EKS node group's instance types, node disk size, and desired/minimum/maximum size. The
-`aws-test` HA-RKE2 instance type and root-volume type and size. Every VPC and subnet CIDR in every
-checked-in stack program. The operator CIDR that gates API-server and SSH ingress. Each of these is
-a value whose namespace AWS owns and on which two correct deployments could legitimately differ —
-one operator's account has different instance quota, a different address plan, a different
-tolerance for node cost — so none of them may be compiled, and none may carry a default envelope
-that a deployment silently inherits.
+The hidden-constructor `AwsSubstrateProfile` is decoded through `mkAwsSubstrateProfile`; it carries
+the operator `/32`, EKS instance type and disk size, positive minimum and maximum sizes, three
+`aws-test` instance types, three root-volume types and sizes, the static EBS type, both VPC CIDRs,
+two EKS subnet CIDRs, and three `aws-test` subnet CIDRs. Empty tokens, zero sizes/counts, malformed
+or non-canonical CIDRs, wrong list cardinalities, and unsupported EBS types refuse before a
+provider intent or AWS request exists. The positive desired EKS count remains
+`cluster_topology.Eks.node_group_size`; configuration compilation checks it against the profile's
+minimum and maximum. Each of these is a value whose namespace
+AWS owns and on which two correct deployments could legitimately differ — one operator's account
+has different instance quota, a different address plan, a different tolerance for node cost — so
+none of them may be compiled, and none may carry a default envelope that a deployment silently
+inherits.
 
 **Compiled, each for a stated reason.** The AWS managed-policy ARNs attached to the cluster and
 node roles: AWS's own documentation determines the correct set, and an operator choosing a
@@ -449,27 +454,26 @@ different one is not configuring a deployment but breaking it. The EKS OIDC root
 AWS-schedule-varying real value, declared in place and registered under
 [vault_doctrine.md](./vault_doctrine.md) § 20. The vendor AMI owner and name filter: they name an
 upstream publisher's artifact, not a deployment choice. The EBS CSI driver add-on identifier: an
-AWS add-on name. The global signing region for Route 53 and IAM, and the empty
-`LocationConstraint` an S3 `CreateBucket` must carry in that region: both fixed by the AWS API. And
-the Resource Groups Tagging API's global-service region, which is **defined once and imported**
-(`globalServiceTaggingRegion` in `Prodbox.Lifecycle.Teardown.TaggingApiReach`, which the terminal
-cascade audit imports rather than restating) — two constants that agree today are not one constant,
-and nothing fails when AWS moves an endpoint and only one of them is updated. Every compiled value
-in this paragraph is registered in `awsCoordinateLiteralRegistry` with the class that covers it, so
-a new one cannot be added silently.
+AWS add-on name. The global-service signing region used by Route 53, IAM, S3, and the Resource
+Groups Tagging API is one protocol role, `awsGlobalServiceRegion` in `Prodbox.Aws.Region`; consumers
+import that role instead of restating its coordinate. The empty `LocationConstraint` S3 requires
+in that region is likewise fixed by the AWS API. No complete AWS region literal is compiled in a
+Haskell file: `checkAwsCoordinateLiterals` scans production and test Haskell and admits no
+exception.
 
-**Transport constraint.** The profile reaches the Pulumi programs over the existing
+**Transport and retained-wire constraint.** The profile reaches the Pulumi programs over the existing
 `pulumi config set` channel that `setPulumiConfiguration` already drives, and the typed
 configuration the Provider Worker carries is the one input to that channel. That type derives
 `Serialise` generically and rides inside the provider intent into the retained authority's
 provider-operation map, whose SHA-256 dispatch digest is persisted beside it and compared on every
 later read. **Re-shaping an existing constructor is therefore forbidden**: it makes retained
-authority objects undecodable and shifts every request digest. Appending a constructor is
-byte-compatible, because the generic sum encoding tags constructors by declaration index. Which of
-those two shapes the profile takes is an implementation decision scheduled in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here); the constraint is that the values
-stay inside the admitted, validated intent rather than arriving on a side channel the
-execution-time re-validation does not see.
+authority objects undecodable and shifts every request digest. The implementation appends
+`AwsEksProfileProviderStackConfig` and `AwsTestProfileProviderStackConfig` after the three existing
+constructors, so their indices, encodings, and digests are unchanged. Raw constructors are hidden;
+read-only exhaustive views are exported. The profile and desired node count stay inside the
+admitted, signed, execution-time-revalidated intent. Legacy EKS/test configurations remain
+observation/destroy compatible but are explicit observation-only inputs and fail closed for
+desired presence; no loopback or placeholder configuration can be applied.
 
 **Out of scope.** The AWS account id, which is discovered at runtime from `sts get-caller-identity`
 rather than pinned. And every name prodbox chooses for an object it creates — stack names, its own
@@ -601,12 +605,13 @@ Minimum rule:
    throughout because its `LongLived` cleanup class is retained across cluster teardown and may
    only be destroyed by `prodbox aws stack aws-ses destroy --yes` or `prodbox nuke`; its main
    checkpoint remains the encrypted Model-B object in MinIO described by §4.5
-7. the AWS validation Pulumi programs take a non-secret operator-CIDR input through explicit stack
-   config synchronized by the Haskell orchestration layer, while AWS provider credentials stay in
-   the Haskell-owned subprocess environment. *Corrected 2026-08-20:* this item previously named an
-   SSH-public-key input on the same channel. No such config key exists in either program — each
-   declares exactly one, `operatorCidr`; the `aws-test` program declares its own `tls:PrivateKey`
-   and consumes `publicKeyOpenssh` internally
+7. the AWS validation Pulumi programs take the complete validated non-secret substrate profile
+   through explicit stack config synchronized by the Haskell orchestration layer, while AWS
+   provider credentials stay in the Haskell-owned subprocess environment. `aws-eks` declares
+   `operatorCidr`, the node instance/disk/desired/minimum/maximum keys, VPC CIDR, and two subnet
+   CIDRs. `aws-test` declares `operatorCidr`, three node instance/root-volume type/size triples,
+   VPC CIDR, and three subnet CIDRs; it still declares its own `tls:PrivateKey` and consumes
+   `publicKeyOpenssh` internally
 8. both retained AWS destroy paths refresh Pulumi state and retry destroy once before surfacing a
    cleanup failure
 9. the HA-RKE2 validation destroys and recreates the retained AWS test stack once when stack
@@ -1096,6 +1101,15 @@ A cluster-wide tag query has no adapter into those values. Provider responses ar
 before cardinality, and the intentionally retained long-lived state bucket cannot inhabit any of
 the three per-run observations.
 
+Historical pre-deterministic EKS IAM roles use a narrower compatibility observer. It queries only
+the two exact historical logical `Name` tags through the bounded IAM-role Tagging API projection,
+pins IAM's global-service region, and validates every returned ARN against the signed account and
+the closed `clusterRole-` / `nodeRole-` physical-name families while excluding the current
+deterministic successors. Zero candidates is absence; one is a candidate; more than one or any row
+outside that family is ambiguity and refuses. Cleanup then additionally requires that exact ARN in
+the independently read-back confirmed manifest, detaches only the registered managed-policy set,
+deletes that exact role, and proves the registered family absent. There is no broad IAM scan.
+
 **One registered family is removed through Kubernetes rather than through the Provider, and the
 split is deliberate.** The ACME DNS01 challenge TXT is written by cert-manager's DNS01 solver, which
 holds a finalizer over the record and would rewrite one deleted underneath it; the Provider has no
@@ -1143,10 +1157,10 @@ Route 53 lifecycle validation uses the canonical AWS CLI command family:
 5. `aws route53 delete-hosted-zone`
 
 These are provider-interpreter leaves, not prerequisite effects or operator runbook steps. In the
-target lifecycle-client composition, the hosted-zone canary is a visible preparation resource
-registered before create with always-run delete/absence read-back; exact A/TXT record changes
-likewise execute only through their registered owner. The current `bracketOnError` canary carve-out
-is pre-cutover legacy.
+current lifecycle-client composition, the hosted-zone canary is a visible registered resource
+selected before create with always-run delete/absence read-back; exact A/TXT record changes
+likewise execute only through their registered owner. The former direct harness sweep and
+`bracketOnError` cleanup ownership are retired.
 
 ### 6.3 Pulumi Validation Commands
 

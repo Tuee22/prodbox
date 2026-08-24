@@ -66,13 +66,23 @@ module Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , publicARecordValues
 
     -- * Closed stack programs
-  , ProviderStackConfig (..)
+  , ProviderStackConfig
+  , ProviderStackConfigView (..)
   , ProviderStackConfigError (..)
   , mkAwsEksProviderStackConfig
   , mkAwsTestProviderStackConfig
   , mkAwsEksSubzoneProviderStackConfig
+  , mkAwsEksProfileProviderStackConfig
+  , mkAwsTestProfileProviderStackConfig
   , providerStackConfigRef
+  , providerStackConfigView
   , validateProviderStackConfig
+  , ProviderNativeStackFamilyRef
+  , mkProviderNativeStackFamilyRef
+  , providerNativeStackFamilyStackRef
+  , providerNativeStackFamilyAccountId
+  , providerNativeStackFamilyRegion
+  , providerNativeStackFamilyHostedZoneId
 
     -- * Closed native AWS programs
   , ProviderSpotPriceQuery
@@ -145,6 +155,12 @@ import GHC.Generics (Generic)
 import Numeric (showHex)
 import Numeric.Natural (Natural)
 import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
+import Prodbox.Settings.AwsSubstrateProfile
+  ( AwsSubstrateProfile
+  , awsEksStackConfiguration
+  , awsSubstrateOperatorCidr
+  , awsTestStackConfiguration
+  )
 
 -- | Why a raw provider-resource reference failed validation.
 data ProviderRefError
@@ -301,13 +317,83 @@ data ProviderStackConfig
   = AwsEksProviderStackConfig !Text
   | AwsTestProviderStackConfig !Text
   | AwsEksSubzoneProviderStackConfig !Text !Text
+  | AwsEksProfileProviderStackConfig !AwsSubstrateProfile !Natural
+  | AwsTestProfileProviderStackConfig !AwsSubstrateProfile
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+-- | Read-only elimination view.  Callers can exhaustively interpret a
+-- validated configuration but cannot bypass its smart constructor.
+data ProviderStackConfigView
+  = AwsEksLegacyConfig !Text
+  | AwsTestLegacyConfig !Text
+  | AwsEksSubzoneConfig !Text !Text
+  | AwsEksProfileConfig !AwsSubstrateProfile !Natural
+  | AwsTestProfileConfig !AwsSubstrateProfile
+  deriving stock (Eq, Show)
 
 data ProviderStackConfigError
   = ProviderStackConfigFieldInvalid !Text
   | ProviderStackConfigStackMismatch !ProviderStackRef !ProviderStackRef
   deriving stock (Eq, Show)
+
+-- | Exact account/region binding for checkpoint-independent observation and
+-- recovery of one registered stack family.  The subzone family additionally
+-- requires its exact hosted-zone id; the other two families forbid one.
+data ProviderNativeStackFamilyRef = ProviderNativeStackFamilyRef
+  { providerNativeStackFamilyStackRef :: !ProviderStackRef
+  , providerNativeStackFamilyAccountId :: !Text
+  , providerNativeStackFamilyRegion :: !Text
+  , providerNativeStackFamilyHostedZoneId :: !(Maybe Text)
+  }
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
+
+mkProviderNativeStackFamilyRef
+  :: ProviderStackRef
+  -> Text
+  -> Text
+  -> Maybe Text
+  -> Either ProviderRefError ProviderNativeStackFamilyRef
+mkProviderNativeStackFamilyRef stackRef rawAccount rawRegion rawZone = do
+  account <- validateProviderRef rawAccount
+  region <- validateProviderRef rawRegion
+  if Text.length account == 12 && Text.all isDigit account
+    then Right ()
+    else Left (ProviderRefMalformed "native stack-family AWS account")
+  if validRegion region
+    then Right ()
+    else Left (ProviderRefMalformed "native stack-family AWS region")
+  zone <- traverse validateProviderRef rawZone
+  case (providerStackRefText stackRef, zone) of
+    ("aws-eks-subzone", Just _) -> Right ()
+    ("aws-eks-subzone", Nothing) ->
+      Left (ProviderRefMalformed "native subzone stack-family hosted zone")
+    ("aws-eks", Nothing) -> Right ()
+    ("aws-test", Nothing) -> Right ()
+    ("aws-eks", Just _) ->
+      Left (ProviderRefMalformed "native EKS stack-family hosted zone")
+    ("aws-test", Just _) ->
+      Left (ProviderRefMalformed "native test stack-family hosted zone")
+    _ -> Left (ProviderRefMalformed "native stack-family stack")
+  Right
+    ProviderNativeStackFamilyRef
+      { providerNativeStackFamilyStackRef = stackRef
+      , providerNativeStackFamilyAccountId = account
+      , providerNativeStackFamilyRegion = region
+      , providerNativeStackFamilyHostedZoneId = zone
+      }
+ where
+  validRegion value =
+    Text.length value >= 6
+      && Text.length value <= 64
+      && Text.head value /= '-'
+      && Text.last value /= '-'
+      && all (not . Text.null) (Text.splitOn "-" value)
+      && length (Text.splitOn "-" value) >= 3
+      && Text.all
+        (\character -> isAsciiLower character || isDigit character || character == '-')
+        value
 
 mkAwsEksProviderStackConfig :: Text -> Either ProviderStackConfigError ProviderStackConfig
 mkAwsEksProviderStackConfig operatorCidr = do
@@ -328,6 +414,35 @@ mkAwsEksSubzoneProviderStackConfig parentZoneId subzoneName = do
   validateDnsName "subzone-name" subzoneName
   pure (AwsEksSubzoneProviderStackConfig parentZoneId subzoneName)
 
+-- | Append-only profile-bearing form. Existing constructors stay in their
+-- original order so retained Generic-'Serialise' payloads and digests remain
+-- stable; they are observation/destroy compatibility inputs only.
+mkAwsEksProfileProviderStackConfig
+  :: AwsSubstrateProfile
+  -> Natural
+  -> Either ProviderStackConfigError ProviderStackConfig
+mkAwsEksProfileProviderStackConfig profile desiredSize = do
+  case awsEksStackConfiguration profile desiredSize of
+    Left _ -> Left (ProviderStackConfigFieldInvalid "aws-substrate-profile")
+    Right _ -> Right (AwsEksProfileProviderStackConfig profile desiredSize)
+
+mkAwsTestProfileProviderStackConfig
+  :: AwsSubstrateProfile -> Either ProviderStackConfigError ProviderStackConfig
+mkAwsTestProfileProviderStackConfig profile = do
+  case awsTestStackConfiguration profile of
+    Left _ -> Left (ProviderStackConfigFieldInvalid "aws-substrate-profile")
+    Right _ -> Right (AwsTestProfileProviderStackConfig profile)
+
+providerStackConfigView :: ProviderStackConfig -> ProviderStackConfigView
+providerStackConfigView config = case config of
+  AwsEksProviderStackConfig operatorCidr -> AwsEksLegacyConfig operatorCidr
+  AwsTestProviderStackConfig operatorCidr -> AwsTestLegacyConfig operatorCidr
+  AwsEksSubzoneProviderStackConfig parentZoneId subzoneName ->
+    AwsEksSubzoneConfig parentZoneId subzoneName
+  AwsEksProfileProviderStackConfig profile desiredSize ->
+    AwsEksProfileConfig profile desiredSize
+  AwsTestProfileProviderStackConfig profile -> AwsTestProfileConfig profile
+
 providerStackConfigRef :: ProviderStackConfig -> ProviderStackRef
 providerStackConfigRef config = ProviderStackRef $ case config of
   -- The provider registry uses the logical resource name.  The interpreter
@@ -335,6 +450,8 @@ providerStackConfigRef config = ProviderStackRef $ case config of
   AwsEksProviderStackConfig _ -> "aws-eks"
   AwsTestProviderStackConfig _ -> "aws-test"
   AwsEksSubzoneProviderStackConfig _ _ -> "aws-eks-subzone"
+  AwsEksProfileProviderStackConfig _ _ -> "aws-eks"
+  AwsTestProfileProviderStackConfig _ -> "aws-test"
 
 validateProviderStackConfig
   :: ProviderStackRef
@@ -348,6 +465,10 @@ validateProviderStackConfig expected config = do
       mkAwsTestProviderStackConfig operatorCidr
     AwsEksSubzoneProviderStackConfig parentZoneId subzoneName ->
       mkAwsEksSubzoneProviderStackConfig parentZoneId subzoneName
+    AwsEksProfileProviderStackConfig profile desiredSize ->
+      mkAwsEksProfileProviderStackConfig profile desiredSize
+    AwsTestProfileProviderStackConfig profile ->
+      mkAwsTestProfileProviderStackConfig profile
   let actual = providerStackConfigRef rebuilt
   if actual == expected
     then Right ()
@@ -574,6 +695,8 @@ productionRegisteredProviderResources =
   , "ebs-reaper:retained"
   , "route53:validation-zone"
   , "route53:dns01-challenge"
+  , "iam:eks-role-family"
+  , "elbv2:eks-controller-family"
   , "owned-resource-tags"
   , "spot-price:ec2"
   , "operational-identity"
@@ -632,6 +755,12 @@ data ProviderIntent
     -- Provider delete would race the solver into rewriting it.  The absence of
     -- the mutation is the contract, not an omission.
     ObserveDns01ChallengeRecords !Text !Text
+  | -- | The exact deterministic EKS IAM roles and repository-owned managed
+    -- policies, encoded as canonical comma-separated registry projections.
+    ObserveEksIamRoleFamily !Text !Text
+  | ReapEksIamRoleFamily !Text !Text
+  | ObserveEksLoadBalancerControllerFamily !Text !Text
+  | ReapEksLoadBalancerControllerFamily !Text !Text
   | ObserveEksClusterIdentity !EksClusterIdentityRequest
   | ObserveProviderAwsScope
   | -- | Sprint 7.36: one owned-resource tag listing for the cascade's terminal
@@ -639,6 +768,16 @@ data ProviderIntent
     -- the filters inside a call and the audit's field of view is their union;
     -- issuing them as one call is the defect Sprint @4.77@ found in the sweep.
     ObserveOwnedResourceTags !ProviderOwnedTagQuery
+  | -- | Provider-native, checkpoint-independent exact observation of one
+    -- registered stack's closed AWS family.
+    ObserveNativeStackFamily !ProviderNativeStackFamilyRef !ProviderStackConfig
+  | -- | Manifest-authorized recovery mutation over that same family.  The
+    -- non-secret config supplies the exact parent-zone/name pair for subzone
+    -- recovery; neither argument can carry credentials or a command.
+    ReapNativeStackFamily
+      !ProviderNativeStackFamilyRef
+      !ProviderStackConfig
+      ![Text]
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -708,10 +847,20 @@ providerIntentResourceKey intent = case intent of
     "ebs-reaper:retained:" <> lifecycleValue
   ObserveDns01ChallengeRecords zoneId recordNamePrefix ->
     "route53:dns01-challenge:" <> zoneId <> ":" <> recordNamePrefix
+  ObserveEksIamRoleFamily _ _ -> "iam:eks-role-family"
+  ReapEksIamRoleFamily _ _ -> "iam:eks-role-family"
+  ObserveEksLoadBalancerControllerFamily _ _ ->
+    "elbv2:eks-controller-family"
+  ReapEksLoadBalancerControllerFamily _ _ ->
+    "elbv2:eks-controller-family"
   ObserveEksClusterIdentity request ->
     "stack:" <> providerStackRefText (eksClusterIdentityRequestStackRef request)
   ObserveOwnedResourceTags query ->
     "owned-resource-tags:" <> providerOwnedTagQueryKey query
+  ObserveNativeStackFamily ref _ ->
+    "stack:" <> providerStackRefText (providerNativeStackFamilyStackRef ref)
+  ReapNativeStackFamily ref _ _ ->
+    "stack:" <> providerStackRefText (providerNativeStackFamilyStackRef ref)
 
 publicARecordResourceKey :: PublicARecordRef -> Text
 publicARecordResourceKey ref =
@@ -813,6 +962,20 @@ providerIntentCoordinate intent = ProviderIntentCoordinate $ case intent of
     "reap-retained-ebs:" <> lifecycleValue
   ObserveDns01ChallengeRecords zoneId recordNamePrefix ->
     "observe-dns01-challenge-records:" <> zoneId <> ":" <> recordNamePrefix
+  ObserveEksIamRoleFamily roleNames policyNames ->
+    "observe-eks-iam-role-family:" <> roleNames <> ":" <> policyNames
+  ReapEksIamRoleFamily roleNames policyNames ->
+    "reap-eks-iam-role-family:" <> roleNames <> ":" <> policyNames
+  ObserveEksLoadBalancerControllerFamily loadBalancerName tags ->
+    "observe-eks-load-balancer-controller-family:"
+      <> loadBalancerName
+      <> ":"
+      <> tags
+  ReapEksLoadBalancerControllerFamily loadBalancerName tags ->
+    "reap-eks-load-balancer-controller-family:"
+      <> loadBalancerName
+      <> ":"
+      <> tags
   ObserveEksClusterIdentity request ->
     "observe-eks-cluster:"
       <> providerStackRefText (eksClusterIdentityRequestStackRef request)
@@ -824,13 +987,43 @@ providerIntentCoordinate intent = ProviderIntentCoordinate $ case intent of
       <> eksClusterIdentityRequestClusterName request
   ObserveOwnedResourceTags query ->
     "observe-owned-resource-tags:" <> providerOwnedTagQueryKey query
+  ObserveNativeStackFamily ref config ->
+    "observe-native-stack-family:"
+      <> nativeStackFamilyCoordinate ref
+      <> ":"
+      <> providerStackConfigCoordinate config
+  ReapNativeStackFamily ref config admittedIdentities ->
+    "reap-native-stack-family:"
+      <> nativeStackFamilyCoordinate ref
+      <> ":"
+      <> providerStackConfigCoordinate config
+      <> ":admitted="
+      <> Text.intercalate "|" admittedIdentities
+
+nativeStackFamilyCoordinate :: ProviderNativeStackFamilyRef -> Text
+nativeStackFamilyCoordinate ref =
+  Text.intercalate
+    ":"
+    [ providerStackRefText (providerNativeStackFamilyStackRef ref)
+    , providerNativeStackFamilyAccountId ref
+    , providerNativeStackFamilyRegion ref
+    , maybe "none" id (providerNativeStackFamilyHostedZoneId ref)
+    ]
 
 providerStackConfigCoordinate :: ProviderStackConfig -> Text
-providerStackConfigCoordinate config = case config of
-  AwsEksProviderStackConfig operatorCidr -> operatorCidr
-  AwsTestProviderStackConfig operatorCidr -> operatorCidr
-  AwsEksSubzoneProviderStackConfig parentZoneId subzoneName ->
+providerStackConfigCoordinate config = case providerStackConfigView config of
+  AwsEksLegacyConfig operatorCidr -> operatorCidr
+  AwsTestLegacyConfig operatorCidr -> operatorCidr
+  AwsEksSubzoneConfig parentZoneId subzoneName ->
     parentZoneId <> ":" <> subzoneName
+  AwsEksProfileConfig profile desiredSize ->
+    awsSubstrateOperatorCidr profile
+      <> ":profile:"
+      <> Text.pack (show profile)
+      <> ":desired:"
+      <> Text.pack (show desiredSize)
+  AwsTestProfileConfig profile ->
+    awsSubstrateOperatorCidr profile <> ":profile:" <> Text.pack (show profile)
 
 -- | A coordinate reference for a @close@/@recover@/@resolve@ command. It is an
 -- opaque key the decision matches against the in-flight coordinate; an unknown key

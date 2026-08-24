@@ -43,7 +43,12 @@ import Data.Char (isControl, isSpace)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
-import Prodbox.Config.Basics (UnencryptedBasics (basicsClusterId))
+import Prodbox.Config.Basics
+  ( UnencryptedBasics
+      ( basicsClusterId
+      , basicsVaultAddress
+      )
+  )
 import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientProviders
@@ -112,11 +117,10 @@ import Prodbox.Subprocess
   , captureSubprocessBounded
   )
 import Prodbox.Vault.Client
-  ( VaultAddress
+  ( VaultAddress (VaultAddress)
   , VaultKubernetesLoginResult (..)
   , vaultKubernetesLoginWithLease
   )
-import Prodbox.Vault.Host (resolveHostVaultAddress)
 import Prodbox.Vault.Session
   ( LoginLease (..)
   , VaultSessionError (VaultSessionForbidden, VaultSessionUnavailable)
@@ -202,7 +206,7 @@ withHostLifecycleAuthorityAuthentication caller repoRoot action = do
         Left err -> pure (Left err)
         Right scope -> do
           environment <- homeKubectlEnvironment kubeconfig
-          address <- resolveHostVaultAddress
+          let address = VaultAddress (basicsVaultAddress basics)
           session <-
             newVaultSession
               address

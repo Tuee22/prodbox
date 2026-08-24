@@ -46,6 +46,7 @@ module Prodbox.Lifecycle.CleanupRunEntry
   , registeredLifecycleCleanupHostIntent
   , prepareLifecycleCleanupBeforeMutation
   , registerLifecycleCleanupRun
+  , adoptExplicitPerRunLifecycleCleanup
   , claimLifecycleCleanupRun
   , attachLifecycleCleanupPrimaryOutcome
   , LifecycleCleanupResult (..)
@@ -53,6 +54,8 @@ module Prodbox.Lifecycle.CleanupRunEntry
   , LifecycleCleanupReobserveDiagnostic (..)
   , LifecycleCleanupClientError (..)
   , observeLifecycleCleanupResult
+  , lifecycleCleanupNodesSucceeded
+  , lifecycleCleanupResultSucceeded
   )
 where
 
@@ -75,14 +78,17 @@ import Prodbox.ControlPlane.CleanupRunClient
   , descriptorBoundCleanupRunPrimaryOutcome
   , descriptorBoundCleanupRunReport
   , descriptorBoundCleanupRunTerminal
+  , withDescriptorBoundCleanupProgram
   )
 import Prodbox.ControlPlane.CleanupRunEndpoint
   ( cleanupRunMaximumBytes
   )
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDigest
+  , CleanupGraph
   , CleanupLease (..)
   , CleanupNodeId
+  , CleanupNodeOutcome (..)
   , CleanupNodeState (..)
   , CleanupOperationId
   , CleanupOwnerId
@@ -117,7 +123,6 @@ import Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor
   , CleanupProgramDescriptorError
   , captureCleanupProgramDescriptor
   , cleanupProgramDescriptorDigest
-  , cleanupProgramDescriptorGraphDigest
   )
 import Prodbox.Lifecycle.Teardown.Graph
   ( CompiledDesiredAbsenceProgram
@@ -128,6 +133,8 @@ import Prodbox.Lifecycle.Teardown.Graph
   )
 import Prodbox.Lifecycle.Teardown.Model
   ( CleanupSurface (Cascade, ExplicitPerRun)
+  , CleanupSurfaceWitness (..)
+  , cleanupSurfaceFromWitness
   )
 import Prodbox.Lifecycle.Teardown.Program
   ( TeardownOperation (UninstallCascadeLocalFoundation)
@@ -341,8 +348,14 @@ data RegisteredLifecycleCleanup (surface :: CleanupSurface)
   { internalRegisteredLifecycleCleanupBoundRun :: !DescriptorBoundCleanupRun
   , internalRegisteredLifecycleCleanupHostRecord
       :: !(CleanupHostIntent surface)
-  , internalRegisteredLifecycleCleanupDescriptor
-      :: !(LifecycleCleanupDescriptor surface)
+  , internalRegisteredLifecycleCleanupBinding :: !RegisteredLifecycleBinding
+  }
+
+data RegisteredLifecycleBinding = RegisteredLifecycleBinding
+  { registeredBindingRunId :: !CleanupRunId
+  , registeredBindingDescriptorDigest :: !CleanupDigest
+  , registeredBindingGraph :: !CleanupGraph
+  , registeredBindingGraphDigest :: !CleanupDigest
   }
 
 registeredLifecycleCleanupBoundRun
@@ -368,6 +381,7 @@ data LifecycleCleanupReobserveDiagnostic
 
 data LifecycleCleanupClientError
   = LifecycleCleanupHostRunnerFailed !HostCleanupRunnerError
+  | LifecycleCleanupSurfaceMismatch !CleanupSurface !CleanupSurface
   | LifecycleCleanupAuthorityFailed !CleanupRunClientError
   | LifecycleCleanupAuthorityIndependentReadBackFailed !CleanupRunClientError
   | LifecycleCleanupAuthorityIndependentReadBackRejected
@@ -430,11 +444,91 @@ registerLifecycleCleanupRun preparation client descriptor = do
     Left err -> pure (Left err)
     Right hostRecord -> do
       registered <- observeOrCreate client descriptor
-      pure $
-        RegisteredLifecycleCleanup
-          <$> registered
-          <*> Right hostRecord
-          <*> Right descriptor
+      pure (registeredFromDescriptor descriptor hostRecord <$> registered)
+
+-- | Adopt one nonterminal explicit-per-run run returned by the Authority's
+-- descriptor-bound scan.  The opaque handle is rejoined to its committed
+-- descriptor before the surface index is refined; no caller reconstructs an
+-- initial run or guesses the descriptor that owns it.
+adoptExplicitPerRunLifecycleCleanup
+  :: DescriptorBoundCleanupRun
+  -> Either
+       LifecycleCleanupClientError
+       (RegisteredLifecycleCleanup 'ExplicitPerRun)
+adoptExplicitPerRunLifecycleCleanup observed = do
+  joined <-
+    first
+      LifecycleCleanupAuthorityFailed
+      (withDescriptorBoundCleanupProgram observed adoptExplicitPerRunProgram)
+  joined
+
+adoptExplicitPerRunProgram
+  :: CleanupSurfaceWitness surface
+  -> CompiledDesiredAbsenceProgram surface
+  -> DescriptorBoundCleanupRun
+  -> Either
+       LifecycleCleanupClientError
+       (RegisteredLifecycleCleanup 'ExplicitPerRun)
+adoptExplicitPerRunProgram witness compiled bound = case witness of
+  ExplicitPerRunSurface ->
+    Right (registeredFromObserved NoHostIntent compiled bound)
+  _ ->
+    Left
+      ( LifecycleCleanupSurfaceMismatch
+          ExplicitPerRun
+          (cleanupSurfaceFromWitness witness)
+      )
+
+registeredFromDescriptor
+  :: LifecycleCleanupDescriptor surface
+  -> CleanupHostIntent surface
+  -> DescriptorBoundCleanupRun
+  -> RegisteredLifecycleCleanup surface
+registeredFromDescriptor descriptor hostRecord bound =
+  RegisteredLifecycleCleanup
+    { internalRegisteredLifecycleCleanupBoundRun = bound
+    , internalRegisteredLifecycleCleanupHostRecord = hostRecord
+    , internalRegisteredLifecycleCleanupBinding =
+        bindingFromDescriptor descriptor
+    }
+
+registeredFromObserved
+  :: CleanupHostIntent surface
+  -> CompiledDesiredAbsenceProgram surface
+  -> DescriptorBoundCleanupRun
+  -> RegisteredLifecycleCleanup surface
+registeredFromObserved hostRecord compiled bound =
+  RegisteredLifecycleCleanup
+    { internalRegisteredLifecycleCleanupBoundRun = bound
+    , internalRegisteredLifecycleCleanupHostRecord = hostRecord
+    , internalRegisteredLifecycleCleanupBinding =
+        RegisteredLifecycleBinding
+          { registeredBindingRunId = descriptorBoundCleanupRunId bound
+          , registeredBindingDescriptorDigest =
+              descriptorBoundCleanupRunDescriptorDigest bound
+          , registeredBindingGraph = compiledDesiredAbsenceGraph compiled
+          , registeredBindingGraphDigest =
+              cleanupGraphDigest (compiledDesiredAbsenceGraph compiled)
+          }
+    }
+
+bindingFromDescriptor
+  :: LifecycleCleanupDescriptor surface -> RegisteredLifecycleBinding
+bindingFromDescriptor descriptor =
+  RegisteredLifecycleBinding
+    { registeredBindingRunId = lifecycleCleanupDescriptorRunId descriptor
+    , registeredBindingDescriptorDigest =
+        cleanupProgramDescriptorDigest
+          (lifecycleCleanupDescriptorProgramDescriptor descriptor)
+    , registeredBindingGraph =
+        compiledDesiredAbsenceGraph
+          (lifecycleCleanupDescriptorProgram descriptor)
+    , registeredBindingGraphDigest =
+        cleanupGraphDigest
+          ( compiledDesiredAbsenceGraph
+              (lifecycleCleanupDescriptorProgram descriptor)
+          )
+    }
 
 -- | Claim the exact run through the Authority.  Expired-owner takeover and
 -- its typed 'CleanupPrimaryRunnerLost' outcome remain lifecycle-kernel facts;
@@ -451,7 +545,7 @@ claimLifecycleCleanupRun
            (RegisteredLifecycleCleanup surface)
        )
 claimLifecycleCleanupRun client owner now expires registered = do
-  refreshed <- observeBoundRun client descriptor
+  refreshed <- observeRegisteredBoundRun client registered
   case refreshed of
     Left err -> pure (Left err)
     Right current
@@ -468,18 +562,17 @@ claimLifecycleCleanupRun client owner now expires registered = do
                 now
                 expires
             confirmed <-
-              confirmDescriptorMutation
+              confirmRegisteredMutation
                 client
-                descriptor
+                registered
                 attempted
                 (validateClaim expected)
             pure (withBoundRun <$> confirmed)
  where
-  descriptor = internalRegisteredLifecycleCleanupDescriptor registered
   withBoundRun run =
     registered {internalRegisteredLifecycleCleanupBoundRun = run}
   validateClaim expected observed = do
-    bound <- validateBoundRun descriptor observed
+    bound <- validateRegisteredBoundRun registered observed
     let (expectedLease, expectedPrimary, expectedStates) = expected
         actualLease = descriptorBoundCleanupRunLease bound
     if cleanupLeaseOwner actualLease == cleanupLeaseOwner expectedLease
@@ -509,7 +602,7 @@ attachLifecycleCleanupPrimaryOutcome
            (RegisteredLifecycleCleanup surface)
        )
 attachLifecycleCleanupPrimaryOutcome client outcome registered = do
-  refreshed <- observeBoundRun client descriptor
+  refreshed <- observeRegisteredBoundRun client registered
   case refreshed of
     Left err -> pure (Left err)
     Right current -> case descriptorBoundCleanupRunPrimaryOutcome current of
@@ -530,18 +623,17 @@ attachLifecycleCleanupPrimaryOutcome client outcome registered = do
             (cleanupLeaseFence currentLease)
             outcome
         confirmed <-
-          confirmDescriptorMutation
+          confirmRegisteredMutation
             client
-            descriptor
+            registered
             attempted
             validatePrimary
         pure (withBoundRun <$> confirmed)
  where
-  descriptor = internalRegisteredLifecycleCleanupDescriptor registered
   withBoundRun run =
     registered {internalRegisteredLifecycleCleanupBoundRun = run}
   validatePrimary observed = do
-    bound <- validateBoundRun descriptor observed
+    bound <- validateRegisteredBoundRun registered observed
     if descriptorBoundCleanupRunPrimaryOutcome bound == Just outcome
       then Right bound
       else Left (LifecycleCleanupPrimaryReadBackMismatch outcome)
@@ -562,6 +654,34 @@ data LifecycleCleanupIncomplete = LifecycleCleanupIncomplete
   }
   deriving stock (Eq, Show)
 
+-- | Canonical terminal decision for callers that need a binary gate while
+-- retaining the intact report for diagnostics.  The validation layer does not
+-- reinterpret node states or let cleanup success erase a failed primary.
+lifecycleCleanupResultSucceeded :: LifecycleCleanupResult -> Bool
+lifecycleCleanupResultSucceeded result = case result of
+  LifecycleCleanupIncompleteResult _ -> False
+  LifecycleCleanupReportObserved report ->
+    cleanupReportPrimaryOutcome report == CleanupPrimarySucceeded
+      && lifecycleCleanupNodesSucceeded result
+
+-- | Whether every lifecycle node reached an exact successful terminal
+-- outcome, independent of the primary validation result.  Credential teardown
+-- uses this narrower fact: a failed test still releases credentials after its
+-- resources are proven absent, while any cleanup failure preserves them.
+lifecycleCleanupNodesSucceeded :: LifecycleCleanupResult -> Bool
+lifecycleCleanupNodesSucceeded result = case result of
+  LifecycleCleanupIncompleteResult _ -> False
+  LifecycleCleanupReportObserved report ->
+    all nodeSucceeded (Map.elems (cleanupReportNodeStates report))
+ where
+  nodeSucceeded state = case state of
+    CleanupNodeCompleted _ CleanupNodeSucceeded -> True
+    CleanupNodePending -> False
+    CleanupNodeRunning _ -> False
+    CleanupNodeCompleted _ (CleanupNodeFailed _) -> False
+    CleanupNodeCompleted _ (CleanupNodeEffectUnconfirmed _) -> False
+    CleanupNodeBlocked _ -> False
+
 -- | Observe terminal state, then ask the Authority to compact and read back
 -- its backed-up report.  A lost compaction response is retried against the
 -- same tombstoned run id; any unresolved arm is an explicit incomplete result.
@@ -572,7 +692,7 @@ observeLifecycleCleanupResult
   -> RegisteredLifecycleCleanup surface
   -> IO LifecycleCleanupResult
 observeLifecycleCleanupResult client now retention registered = do
-  observed <- observeBoundRun client descriptor
+  observed <- observeRegisteredBoundRun client registered
   case observed of
     Left err -> pure (incomplete Nothing (err :| []))
     Right run
@@ -608,7 +728,7 @@ observeLifecycleCleanupResult client now retention registered = do
                   observeDescriptorBoundCleanupRun client runId
                 let tombstone =
                       validateCompactionReadBack
-                        descriptor
+                        binding
                         (cleanupDigestOfBytes reportBytes)
                         observedAfterAttempt
                 pure $ case attempted of
@@ -637,8 +757,8 @@ observeLifecycleCleanupResult client now retention registered = do
                             :| []
                         )
  where
-  descriptor = internalRegisteredLifecycleCleanupDescriptor registered
-  runId = lifecycleCleanupDescriptorRunId descriptor
+  binding = internalRegisteredLifecycleCleanupBinding registered
+  runId = registeredBindingRunId binding
   incomplete primary failures =
     LifecycleCleanupIncompleteResult
       LifecycleCleanupIncomplete
@@ -654,13 +774,10 @@ observeLifecycleCleanupResult client now retention registered = do
               (cleanupReportRunId observed)
           )
     | cleanupReportGraphDigest observed
-        /= cleanupProgramDescriptorGraphDigest
-          (lifecycleCleanupDescriptorProgramDescriptor descriptor) =
+        /= registeredBindingGraphDigest binding =
         Left
           ( LifecycleCleanupReportGraphDigestMismatch
-              ( cleanupProgramDescriptorGraphDigest
-                  (lifecycleCleanupDescriptorProgramDescriptor descriptor)
-              )
+              (registeredBindingGraphDigest binding)
               (cleanupReportGraphDigest observed)
           )
     | observed /= expected =
@@ -705,18 +822,20 @@ observeOrCreate client descriptor = do
         (lifecycleCleanupDescriptorProgramDescriptor descriptor)
     confirmDescriptorMutation client descriptor created Right
 
-observeBoundRun
+observeRegisteredBoundRun
   :: DescriptorBoundCleanupRunClient IO
-  -> LifecycleCleanupDescriptor surface
+  -> RegisteredLifecycleCleanup surface
   -> IO (Either LifecycleCleanupClientError DescriptorBoundCleanupRun)
-observeBoundRun client descriptor = do
+observeRegisteredBoundRun client registered = do
   observed <-
     observeDescriptorBoundCleanupRun
       client
-      (lifecycleCleanupDescriptorRunId descriptor)
+      (registeredBindingRunId binding)
   pure $ case observed of
     Left err -> Left (LifecycleCleanupAuthorityFailed err)
-    Right run -> validateBoundRun descriptor run
+    Right run -> validateRegisteredBoundRun registered run
+ where
+  binding = internalRegisteredLifecycleCleanupBinding registered
 
 validateBoundRun
   :: LifecycleCleanupDescriptor surface
@@ -754,6 +873,37 @@ validateBoundRun descriptor observed
     compiledDesiredAbsenceGraph
       (lifecycleCleanupDescriptorProgram descriptor)
   expectedGraphDigest = cleanupGraphDigest expectedGraph
+
+validateRegisteredBoundRun
+  :: RegisteredLifecycleCleanup surface
+  -> DescriptorBoundCleanupRun
+  -> Either LifecycleCleanupClientError DescriptorBoundCleanupRun
+validateRegisteredBoundRun registered observed
+  | descriptorBoundCleanupRunId observed /= registeredBindingRunId binding =
+      Left
+        ( LifecycleCleanupAuthorityRunIdMismatch
+            (registeredBindingRunId binding)
+            (descriptorBoundCleanupRunId observed)
+        )
+  | descriptorBoundCleanupRunDescriptorDigest observed
+      /= registeredBindingDescriptorDigest binding =
+      Left
+        ( LifecycleCleanupAuthorityDescriptorDigestMismatch
+            (registeredBindingDescriptorDigest binding)
+            (descriptorBoundCleanupRunDescriptorDigest observed)
+        )
+  | descriptorBoundCleanupRunGraphDigest observed
+      /= registeredBindingGraphDigest binding =
+      Left
+        ( LifecycleCleanupAuthorityGraphDigestMismatch
+            (registeredBindingGraphDigest binding)
+            (descriptorBoundCleanupRunGraphDigest observed)
+        )
+  | descriptorBoundCleanupRunGraph observed /= registeredBindingGraph binding =
+      Left LifecycleCleanupAuthorityGraphMismatch
+  | otherwise = Right observed
+ where
+  binding = internalRegisteredLifecycleCleanupBinding registered
 
 expectedClaimProjection
   :: CleanupOwnerId
@@ -832,12 +982,56 @@ confirmDescriptorMutation client descriptor attempted validatePostState = do
                 )
             )
 
+confirmRegisteredMutation
+  :: DescriptorBoundCleanupRunClient IO
+  -> RegisteredLifecycleCleanup surface
+  -> Either CleanupRunClientError DescriptorBoundCleanupRun
+  -> ( DescriptorBoundCleanupRun
+       -> Either LifecycleCleanupClientError DescriptorBoundCleanupRun
+     )
+  -> IO (Either LifecycleCleanupClientError DescriptorBoundCleanupRun)
+confirmRegisteredMutation client registered attempted validatePostState = do
+  independentlyObserved <-
+    observeDescriptorBoundCleanupRun
+      client
+      (registeredBindingRunId binding)
+  pure $ case attempted of
+    Right response -> do
+      responseBound <- validateRegisteredBoundRun registered response
+      _ <- validatePostState responseBound
+      case independentlyObserved of
+        Left err ->
+          Left (LifecycleCleanupAuthorityIndependentReadBackFailed err)
+        Right observed -> do
+          bound <- validateRegisteredBoundRun registered observed
+          validatePostState bound
+    Left firstFailure -> case independentlyObserved of
+      Left readBackFailure ->
+        Left
+          ( LifecycleCleanupAuthorityResponseUnconfirmed
+              firstFailure
+              (LifecycleCleanupReobserveClientFailed readBackFailure)
+          )
+      Right observed ->
+        case validateRegisteredBoundRun registered observed >>= validatePostState of
+          Right exact -> Right exact
+          Left rejection ->
+            Left
+              ( LifecycleCleanupAuthorityResponseUnconfirmed
+                  firstFailure
+                  ( LifecycleCleanupReobservePostStateRejected
+                      (Text.pack (show rejection))
+                  )
+              )
+ where
+  binding = internalRegisteredLifecycleCleanupBinding registered
+
 validateCompactionReadBack
-  :: LifecycleCleanupDescriptor surface
+  :: RegisteredLifecycleBinding
   -> CleanupDigest
   -> Either CleanupRunClientError DescriptorBoundCleanupRun
   -> Either LifecycleCleanupReobserveDiagnostic ()
-validateCompactionReadBack descriptor expectedReportDigest observed =
+validateCompactionReadBack binding expectedReportDigest observed =
   case observed of
     Left
       ( CleanupRunClientDescriptorTombstoned
@@ -861,6 +1055,4 @@ validateCompactionReadBack descriptor expectedReportDigest observed =
             )
         )
  where
-  expectedDescriptorDigest =
-    cleanupProgramDescriptorDigest
-      (lifecycleCleanupDescriptorProgramDescriptor descriptor)
+  expectedDescriptorDigest = registeredBindingDescriptorDigest binding

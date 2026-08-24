@@ -165,6 +165,8 @@ ordinaryTeardownRepairSuite =
           `shouldBe` [ "load:object_store_image"
                      , "load:secret_store_image"
                      , "load:prodbox_runtime_image"
+                     , "reconcile-platform:minio"
+                     , "reconcile-platform:vault"
                      , "reconcile:bootstrap-broker"
                      , "reconcile:lifecycle-authority"
                      , "reconcile:authority-backup"
@@ -189,6 +191,8 @@ ordinaryTeardownRepairSuite =
                      , "load:object_store_image"
                      , "load:secret_store_image"
                      , "load:prodbox_runtime_image"
+                     , "reconcile-platform:minio"
+                     , "reconcile-platform:vault"
                      , "reconcile:bootstrap-broker"
                      , "reconcile:target-secret-agent"
                      , "reconcile:lifecycle-authority"
@@ -528,6 +532,10 @@ stepShapes = fmap shape . ordinaryTeardownRepairPlanSteps
     RepairAwaitSubstrateApi -> "await-api"
     RepairLoadRetainedImage ref ->
       "load:" ++ retainedArtifactKindText (retainedArtifactRefKind ref)
+    RepairReconcileRecoveryPlatform platform ->
+      "reconcile-platform:" ++ case platform of
+        RecoveryPlatformMinio -> "minio"
+        RecoveryPlatformVault -> "vault"
     RepairReconcileRecoveryChart chartName -> "reconcile:" ++ chartName
 
 installedKinds :: OrdinaryTeardownRepairPlan -> [RetainedArtifactKind]
@@ -546,6 +554,7 @@ planArtifactRefs plan =
     RepairLoadRetainedImage ref -> [ref]
     RepairStartSubstrateService -> []
     RepairAwaitSubstrateApi -> []
+    RepairReconcileRecoveryPlatform _ -> []
     RepairReconcileRecoveryChart _ -> []
 
 requireRecovery :: OrdinaryTeardownTargetAgent -> IO OrdinaryTeardownRecovery

@@ -178,11 +178,15 @@ data EksDrainClientEffects m = EksDrainClientEffects
       :: m (EksDrainInventoryResult EksNamespacedName)
   , eksDrainClientObserveIngresses
       :: m (EksDrainInventoryResult EksNamespacedName)
+  , eksDrainClientObserveControllerOwners
+      :: m (EksDrainInventoryResult EksNamespacedName)
   , eksDrainClientObserveDeletePolicyPvcs
       :: m (EksDrainInventoryResult EksNamespacedName)
   , eksDrainClientDeleteLoadBalancerServices
       :: m EksDrainMutationResponse
   , eksDrainClientDeleteIngresses
+      :: m EksDrainMutationResponse
+  , eksDrainClientDeleteControllerOwners
       :: m EksDrainMutationResponse
   , eksDrainClientDeletePvc
       :: EksNamespacedName -> m EksDrainMutationResponse
@@ -397,6 +401,8 @@ data EksDrainDestroyAdmissionError
       !(EksDrainInventoryResult EksNamespacedName)
   | EksDrainDestroyAdmissionIngressClassNotAbsent
       !(EksDrainInventoryResult EksNamespacedName)
+  | EksDrainDestroyAdmissionControllerOwnerClassNotAbsent
+      !(EksDrainInventoryResult EksNamespacedName)
   | EksDrainDestroyAdmissionPvcNotAbsent
       !EksNamespacedName
       !EksDrainPvcObservation
@@ -521,8 +527,9 @@ observeVerifiedEksDrainSelection interpreter arms binding revision session = do
       Right () -> do
         services <- normalizeInventory <$> eksDrainClientObserveLoadBalancerServices effects
         ingresses <- normalizeInventory <$> eksDrainClientObserveIngresses effects
+        owners <- normalizeInventory <$> eksDrainClientObserveControllerOwners effects
         pvcs <- normalizeInventory <$> eksDrainClientObserveDeletePolicyPvcs effects
-        case combineSelection services ingresses pvcs of
+        case combineSelection services ingresses owners pvcs of
           EksDrainTargetSelectionComplete targets -> do
             let completeObservation =
                   observation (EksDrainTargetSelectionComplete targets)
@@ -628,8 +635,9 @@ acquireVerifiedEksDrainSelection
     selectCompleteInventory session effects = do
       services <- normalizeInventory <$> eksDrainClientObserveLoadBalancerServices effects
       ingresses <- normalizeInventory <$> eksDrainClientObserveIngresses effects
+      owners <- normalizeInventory <$> eksDrainClientObserveControllerOwners effects
       pvcs <- normalizeInventory <$> eksDrainClientObserveDeletePolicyPvcs effects
-      let result = combineSelection services ingresses pvcs
+      let result = combineSelection services ingresses owners pvcs
           observation =
             eksDrainTargetSelectionObservationFor session selectionRevision result
       case result of
@@ -776,14 +784,20 @@ validateFreshDestroyTargetsAbsent target session effects = case target of
         pure
           (Left (EksDrainDestroyAdmissionKubernetesUidUnobservable failures))
       Right () -> do
-        services <- normalizeInventory <$> eksDrainClientObserveLoadBalancerServices effects
-        case services of
+        owners <- normalizeInventory <$> eksDrainClientObserveControllerOwners effects
+        case owners of
           EksDrainInventoryComplete [] -> do
-            ingresses <- normalizeInventory <$> eksDrainClientObserveIngresses effects
-            case ingresses of
-              EksDrainInventoryComplete [] -> validatePvcs targets
-              _ -> pure (Left (EksDrainDestroyAdmissionIngressClassNotAbsent ingresses))
-          _ -> pure (Left (EksDrainDestroyAdmissionServiceClassNotAbsent services))
+            services <- normalizeInventory <$> eksDrainClientObserveLoadBalancerServices effects
+            case services of
+              EksDrainInventoryComplete [] -> do
+                ingresses <- normalizeInventory <$> eksDrainClientObserveIngresses effects
+                case ingresses of
+                  EksDrainInventoryComplete [] -> validatePvcs targets
+                  _ -> pure (Left (EksDrainDestroyAdmissionIngressClassNotAbsent ingresses))
+              _ -> pure (Left (EksDrainDestroyAdmissionServiceClassNotAbsent services))
+          _ ->
+            pure
+              (Left (EksDrainDestroyAdmissionControllerOwnerClassNotAbsent owners))
  where
   validatePvcs targets = case targets of
     [] -> pure (Right ())
@@ -1229,6 +1243,7 @@ mutateWithClient target session effects = do
             (combineObservationFailures "live EKS UID" failures)
         )
     Right () -> do
+      ownerResponse <- eksDrainClientDeleteControllerOwners effects
       serviceResponse <- eksDrainClientDeleteLoadBalancerServices effects
       ingressResponse <- eksDrainClientDeleteIngresses effects
       pvcResponses <-
@@ -1237,7 +1252,7 @@ mutateWithClient target session effects = do
           (eksDrainTargetDeletePolicyPvcs target)
       pure
         ( classifyMutationResponses
-            (serviceResponse : ingressResponse : pvcResponses)
+            (ownerResponse : serviceResponse : ingressResponse : pvcResponses)
         )
 
 readBackWithSession
@@ -1278,6 +1293,7 @@ readBackWithClient attempt target session effects = do
         normalizeInventory
           <$> eksDrainClientObserveLoadBalancerServices effects
       ingresses <- normalizeInventory <$> eksDrainClientObserveIngresses effects
+      owners <- normalizeInventory <$> eksDrainClientObserveControllerOwners effects
       -- Load-bearing: these are exact persisted intent names.  The PV
       -- selection callback is deliberately not reachable here.
       pvcs <-
@@ -1308,6 +1324,12 @@ readBackWithClient attempt target session effects = do
                         ( inventoryReadBack
                             "complete Ingress class absent"
                             ingresses
+                        )
+                  , eksDrainReadBackControllerOwnerClass =
+                      ControllerOwnerClassReadBack
+                        ( inventoryReadBack
+                            "exact registered public-edge controller owner absent"
+                            owners
                         )
                   , eksDrainReadBackDeletePolicyPvcs = pvcs
                   }
@@ -1559,7 +1581,7 @@ validateSessionForTarget now invocation target session = do
     session
   case target of
     EksDrainNoKubernetesTarget {} -> Left "EKS session supplied for no-target intent"
-    EksDrainExactKubernetesTarget arn uid endpoint ca _ _ _ _
+    EksDrainExactKubernetesTarget arn uid endpoint ca _ _ _ _ _
       | arn /= eksClusterArnText (eksDrainSessionClusterArn session) ->
           Left "fresh EKS session provider ARN mismatch"
       | uid /= eksClusterUidText (eksDrainSessionClusterUid session) ->
@@ -1621,8 +1643,9 @@ combineSelection
   :: EksDrainInventoryResult EksNamespacedName
   -> EksDrainInventoryResult EksNamespacedName
   -> EksDrainInventoryResult EksNamespacedName
+  -> EksDrainInventoryResult EksNamespacedName
   -> EksDrainTargetSelectionResult
-combineSelection services ingresses pvcs
+combineSelection services ingresses owners pvcs
   | not (null unobservableFailures) =
       EksDrainTargetSelectionUnobservable
         (NonEmpty.fromList (unobservableFailures <> partialFailures))
@@ -1633,7 +1656,7 @@ combineSelection services ingresses pvcs
   | otherwise =
       EksDrainTargetSelectionComplete (inventoryKnownValues pvcs)
  where
-  inventories = [services, ingresses, pvcs]
+  inventories = [services, ingresses, owners, pvcs]
   unobservableFailures = concatMap inventoryUnobservableFailures inventories
   partialFailures = concatMap inventoryPartialFailures inventories
 
@@ -1905,6 +1928,7 @@ productionClientEffects client =
           , "-o"
           , namespacedJsonPath
           ]
+    , eksDrainClientObserveControllerOwners = observeProductionControllerOwners client
     , eksDrainClientObserveDeletePolicyPvcs = observeDeletePolicyPvcs client
     , eksDrainClientDeleteLoadBalancerServices =
         runProductionMutation
@@ -1926,6 +1950,8 @@ productionClientEffects client =
           , "--wait=false"
           , "--ignore-not-found=true"
           ]
+    , eksDrainClientDeleteControllerOwners =
+        deleteProductionControllerOwners client
     , eksDrainClientDeletePvc = \target ->
         runProductionMutation
           client
@@ -1939,6 +1965,62 @@ productionClientEffects client =
           ]
     , eksDrainClientObservePvc = observeProductionPvc client
     }
+
+observeProductionControllerOwners
+  :: EphemeralKubectl -> IO (EksDrainInventoryResult EksNamespacedName)
+observeProductionControllerOwners client = do
+  observed <-
+    runProductionKubectl
+      client
+      [ "get"
+      , "envoyproxy.gateway.envoyproxy.io"
+      , "prodbox-public-edge"
+      , "--namespace"
+      , "envoy-gateway-system"
+      , "--ignore-not-found=true"
+      , "-o"
+      , "jsonpath={.metadata.namespace}{\"|\"}{.metadata.name}{\"|\"}{.metadata.uid}{\"\\n\"}"
+      ]
+  pure $ case observed of
+    Left failures
+      | controllerOwnerApiAbsent failures -> EksDrainInventoryComplete []
+      | otherwise -> EksDrainInventoryUnobservable failures
+    Right output -> parseNamespacedRows (Text.pack output)
+
+deleteProductionControllerOwners
+  :: EphemeralKubectl -> IO EksDrainMutationResponse
+deleteProductionControllerOwners client = do
+  deleted <-
+    runProductionKubectl
+      client
+      [ "delete"
+      , "envoyproxy.gateway.envoyproxy.io"
+      , "prodbox-public-edge"
+      , "--namespace"
+      , "envoy-gateway-system"
+      , "--wait=false"
+      , "--ignore-not-found=true"
+      ]
+  pure $ case deleted of
+    Right _ -> EksDrainMutationResponseApplied
+    Left failures
+      | controllerOwnerApiAbsent failures -> EksDrainMutationResponseApplied
+      | otherwise ->
+          EksDrainMutationResponseLost
+            (combineObservationFailures "delete exact controller owner" failures)
+
+controllerOwnerApiAbsent :: NonEmpty ObservationFailure -> Bool
+controllerOwnerApiAbsent =
+  all
+    ( \(ObservationFailure detail) ->
+        any
+          (`Text.isInfixOf` Text.toLower detail)
+          [ "server doesn't have a resource type"
+          , "the server could not find the requested resource"
+          , "no matches for kind"
+          ]
+    )
+    . NonEmpty.toList
 
 observeProductionUid
   :: EphemeralKubectl -> IO EksDrainKubernetesUidObservation

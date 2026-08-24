@@ -388,6 +388,11 @@ parserForPath path =
       Just (fmap (RunNative . NativeConfig . ConfigGenerate) hostFitModeParser)
     ["vault", "status"] -> Just (pure (RunNative (NativeVault VaultStatus)))
     ["vault", "init"] -> Just (pure (RunNative (NativeVault VaultInit)))
+    ["vault", "reset-ambiguous-initialization"] ->
+      Just $
+        fmap
+          (RunNative . NativeVault . VaultResetAmbiguousInitialization)
+          (yesSwitchParser "Confirm replacement of the ambiguous Vault storage generation")
     ["vault", "unseal"] -> Just (pure (RunNative (NativeVault VaultUnseal)))
     ["vault", "seal"] -> Just (pure (RunNative (NativeVault VaultSeal)))
     ["vault", "reconcile"] -> Just (pure (RunNative (NativeVault VaultReconcile)))
@@ -605,6 +610,8 @@ parserForPath path =
       Just (withCoverage (TestIntegration IntegrationCertificateScope))
     ["test", "integration", "clean-room-handoff"] ->
       Just (withCoverage (TestIntegration IntegrationCleanRoomHandoff))
+    ["test", "integration", "cascade-qualification"] ->
+      Just (withCoverage (TestIntegration IntegrationCascadeQualification))
     ["test", "integration", "ha-rke2-aws"] -> Just (withCoverage (TestIntegration IntegrationHaRke2Aws))
     ["test", "integration", "lifecycle"] -> Just (withCoverage (TestIntegration IntegrationLifecycle))
     ["test", "integration", "pulumi"] -> Just (withCoverage (TestIntegration IntegrationPulumi))
@@ -2461,6 +2468,16 @@ vaultGroup =
         []
         [example ["vault", "init"] "Initialize Vault and write the encrypted unlock bundle."]
     , leaf
+        "reset-ambiguous-initialization"
+        "Reset ambiguous Vault initialization"
+        "Recover only an initialization whose result is durably ambiguous. The Broker proves the exact storage generation is eligible, replaces it, and reads back a new pristine generation; the host cannot select the reset target."
+        [ flagOption "yes" (Just 'y') Nothing "Confirm replacement of the ambiguous Vault storage generation"
+        ]
+        [ example
+            ["vault", "reset-ambiguous-initialization", "--yes"]
+            "Replace the exact proven-resettable ambiguous Vault generation."
+        ]
+    , leaf
         "unseal"
         "Unseal Vault"
         "Decrypt the host-side unlock bundle and submit the unseal keys until Vault is unsealed."
@@ -2584,6 +2601,9 @@ testGroupSpec =
         , integrationLeaf
             "clean-room-handoff"
             "Verify clean-room migration, rollback refusal, and legacy absence"
+        , integrationLeaf
+            "cascade-qualification"
+            "Run one named destructive recover-to-clean cascade qualification cycle"
         , integrationLeaf "ha-rke2-aws" "Run HA RKE2 AWS integration tests"
         , integrationLeaf "lifecycle" "Run lifecycle integration tests"
         , integrationLeaf "pulumi" "Run Pulumi integration tests"

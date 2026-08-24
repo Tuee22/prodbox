@@ -225,6 +225,10 @@ data AwsEksRegisteredTargetDestroyError
       !CleanupOperationId
   | AwsEksRegisteredTargetDestroyEbsBackstopMissing
   | AwsEksRegisteredTargetDestroyEbsBackstopAmbiguous !Int
+  | AwsEksRegisteredTargetDestroyIamBackstopMissing
+  | AwsEksRegisteredTargetDestroyIamBackstopAmbiguous !Int
+  | AwsEksRegisteredTargetDestroyLoadBalancerBackstopMissing
+  | AwsEksRegisteredTargetDestroyLoadBalancerBackstopAmbiguous !Int
   | AwsEksRegisteredTargetDestroyCatalogOperationMissing !Text
   | AwsEksRegisteredTargetDestroySuccessfulPredecessorsMismatch
       ![AwsEksDestroyPredecessorIdentity]
@@ -453,6 +457,21 @@ validateSuccessfulPredecessors context target = do
     candidates ->
       Left (AwsEksRegisteredTargetDestroyEbsBackstopAmbiguous (length candidates))
   validateStaticTarget AwsEbsPerRunTestKey ebsTarget
+  iamTarget <- case iamBackstops of
+    [] -> Left AwsEksRegisteredTargetDestroyIamBackstopMissing
+    [backstop] -> Right backstop
+    candidates ->
+      Left (AwsEksRegisteredTargetDestroyIamBackstopAmbiguous (length candidates))
+  validateStaticTarget AwsEksIamRoleFamilyKey iamTarget
+  loadBalancerTarget <- case loadBalancerBackstops of
+    [] -> Left AwsEksRegisteredTargetDestroyLoadBalancerBackstopMissing
+    [backstop] -> Right backstop
+    candidates ->
+      Left
+        ( AwsEksRegisteredTargetDestroyLoadBalancerBackstopAmbiguous
+            (length candidates)
+        )
+  validateStaticTarget AwsEksLoadBalancerControllerFamilyKey loadBalancerTarget
   expected <-
     mapM
       expectedIdentity
@@ -461,6 +480,8 @@ validateSuccessfulPredecessors context target = do
       , ReadBackAwsStackReaderBundle target
       , ReadBackEksKubernetesDrain target
       , ReadBackRegisteredTargetAbsent ebsTarget
+      , ReadBackRegisteredTargetAbsent iamTarget
+      , ReadBackRegisteredTargetAbsent loadBalancerTarget
       ]
   let actual = map succeededIdentity successful
       attempted = map attemptedIdentity (teardownExecutionAttemptedPredecessors context)
@@ -487,6 +508,20 @@ validateSuccessfulPredecessors context target = do
     , ReadBackRegisteredTargetAbsent backstop <-
         [teardownSucceededPredecessorOperation predecessor]
     , registeredTargetKey backstop == AwsEbsPerRunTestKey
+    ]
+  iamBackstops =
+    [ backstop
+    | predecessor <- successful
+    , ReadBackRegisteredTargetAbsent backstop <-
+        [teardownSucceededPredecessorOperation predecessor]
+    , registeredTargetKey backstop == AwsEksIamRoleFamilyKey
+    ]
+  loadBalancerBackstops =
+    [ backstop
+    | predecessor <- successful
+    , ReadBackRegisteredTargetAbsent backstop <-
+        [teardownSucceededPredecessorOperation predecessor]
+    , registeredTargetKey backstop == AwsEksLoadBalancerControllerFamilyKey
     ]
   expectedIdentity operation = case teardownExecutionOperationIdFor context operation of
     Nothing ->

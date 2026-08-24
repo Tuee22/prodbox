@@ -43,6 +43,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
 import Prodbox.ControlPlane.TargetMaterialEndpoint.Internal
   ( targetMaterialMetadataActionDigestField
   , targetMaterialMetadataCommitmentField
@@ -363,7 +364,7 @@ fixedProviderCredentialSessionRegression =
                     )
              in all
                   (\secretValue -> not (secretValue `Text.isInfixOf` renderedBinding))
-                  ["AKIAEXAMPLE", "secret-value", "ca-central-1"]
+                  ["AKIAEXAMPLE", "secret-value", canonicalRegressionAwsRegion]
           Left _ -> False
     , providerCredentialSessionRegressionErrorSecretOpaque =
         case validateProviderCredentialSessionInternal validMetadata extraFieldExact of
@@ -453,7 +454,7 @@ validCredentialFields =
     [ ("access_key_id", "AKIAEXAMPLE")
     , ("secret_access_key", "secret-value")
     , ("session_token", "")
-    , ("region", "ca-central-1")
+    , ("region", canonicalRegressionAwsRegion)
     ]
 
 digestA :: Text

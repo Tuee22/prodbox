@@ -17,6 +17,7 @@ module Prodbox.ControlPlane.CleanupProgramDescriptorRepository.Internal
   , committedCleanupProgramDescriptorSurface
   , committedCleanupProgramDescriptorFoundation
   , committedCleanupProgramDescriptorAwsScope
+  , committedCleanupProgramDescriptorAwsDnsZone
   , committedCleanupProgramDescriptorRegistryRevision
   , committedCleanupProgramDescriptorLifecycleOperation
   , committedCleanupProgramDescriptorGraphDigest
@@ -41,6 +42,7 @@ module Prodbox.ControlPlane.CleanupProgramDescriptorRepository.Internal
   , cleanupProgramDescriptorRegressionUnknownStatesRefused
   , cleanupProgramDescriptorRegressionWrongRunRefused
   , cleanupProgramDescriptorRegressionRestartReconstructionValidated
+  , cleanupProgramDescriptorRegressionLegacyV1RestartReadable
   )
 where
 
@@ -58,6 +60,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
@@ -88,10 +91,16 @@ import Prodbox.Lifecycle.CleanupRun
   , recordPrimaryOutcome
   )
 import Prodbox.Lifecycle.CleanupRun qualified as CleanupRun
+import Prodbox.Lifecycle.DnsRecord
+  ( HostedZoneId
+  , hostedZoneIdText
+  , mkHostedZoneId
+  )
 import Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor
   ( CleanupProgramDescriptor
   , CleanupProgramDescriptorError
   , captureCleanupProgramDescriptor
+  , cleanupProgramDescriptorAwsDnsZone
   , cleanupProgramDescriptorAwsScope
   , cleanupProgramDescriptorBytes
   , cleanupProgramDescriptorCapabilityCatalogDigest
@@ -107,6 +116,7 @@ import Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor
   )
 import Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor.Internal
   ( decodeAndValidateCleanupProgramDescriptor
+  , legacyV1CleanupProgramDescriptorBytesForRegression
   , withRecompiledCleanupProgramDescriptor
   )
 import Prodbox.Lifecycle.Teardown.Graph
@@ -179,6 +189,12 @@ committedCleanupProgramDescriptorAwsScope
 committedCleanupProgramDescriptorAwsScope
   (CommittedCleanupProgramDescriptor descriptor) =
     cleanupProgramDescriptorAwsScope descriptor
+
+committedCleanupProgramDescriptorAwsDnsZone
+  :: CommittedCleanupProgramDescriptor -> Maybe HostedZoneId
+committedCleanupProgramDescriptorAwsDnsZone
+  (CommittedCleanupProgramDescriptor descriptor) =
+    cleanupProgramDescriptorAwsDnsZone descriptor
 
 committedCleanupProgramDescriptorRegistryRevision
   :: CommittedCleanupProgramDescriptor -> RegistryRevision
@@ -439,6 +455,7 @@ data CleanupProgramDescriptorRepositoryRegression
       !Bool
       !Bool
       !Bool
+      !Bool
 
 data RegressionInputs = RegressionInputs
   { regressionInputsAuthority :: !LongLivedCheckpointAuthority
@@ -487,13 +504,40 @@ fixedCleanupProgramDescriptorRepositoryRegression =
         Left _ -> pure CleanupProgramDescriptorCommitCreated
         Right alternateCandidate ->
           commitCleanupProgramDescriptorAttempt client alternateCandidate
-      tamperingRefused <- case tamperedCandidates candidate of
+      ordinaryTamperingRefused <- case tamperedCandidates candidate of
         Left _ -> pure False
         Right tampered ->
           and
             <$> mapM
               (fmap isLeft . readBackFromObservation . observedBytes)
               tampered
+      zoneTamperingRefused <-
+        case ( mkHostedZoneId "Z0123456789ABCDEFGHIJ"
+             , mkHostedZoneId "ZABCDEFGHIJ0123456789"
+             ) of
+          (Right originalZone, Right replacementZone) ->
+            case regressionCandidateWithDnsZone
+              owner
+              CascadeSurface
+              runId
+              regressionFoundation
+              (Just regressionAwsScope)
+              (Just originalZone) of
+              Left _ -> pure False
+              Right zonedCandidate ->
+                case replaceFirst
+                  (TextEncoding.encodeUtf8 (hostedZoneIdText originalZone))
+                  (TextEncoding.encodeUtf8 (hostedZoneIdText replacementZone))
+                  (cleanupProgramDescriptorBytes zonedCandidate) of
+                  Left _ -> pure False
+                  Right tampered ->
+                    isLeft <$> readBackFromObservation (observedBytes tampered)
+          _ -> pure False
+      legacyV1RestartReadable <-
+        case legacyV1CleanupProgramDescriptorBytesForRegression candidate of
+          Left _ -> pure False
+          Right legacyBytes ->
+            isRight <$> readBackFromObservation (observedBytes legacyBytes)
       missingRefused <-
         isLeft <$> readBackFromObservation ModelBMissing
       unobservableRefused <-
@@ -532,6 +576,8 @@ fixedCleanupProgramDescriptorRepositoryRegression =
             replayed == CleanupProgramDescriptorCommitExactReplay
           conflictPreserved =
             conflict == CleanupProgramDescriptorCommitConflict
+          tamperingRefused =
+            ordinaryTamperingRefused && zoneTamperingRefused
           restartReconstructionValidated = case recovered of
             Left _ -> False
             Right committed ->
@@ -555,6 +601,7 @@ fixedCleanupProgramDescriptorRepositoryRegression =
                 (missingRefused && unobservableRefused)
                 wrongRunRefused
                 restartReconstructionValidated
+                legacyV1RestartReadable
             )
         )
  where
@@ -584,6 +631,7 @@ regressionInputsAndFixture = do
           (regressionInputsRunId inputs)
           regressionFoundation
           (Just regressionAwsScope)
+          Nothing
           CascadeSurface
       )
   initialRun <-
@@ -634,47 +682,52 @@ regressionInputs = do
 cleanupProgramDescriptorRegressionAllSurfacesCaptured
   :: CleanupProgramDescriptorRepositoryRegression -> Bool
 cleanupProgramDescriptorRegressionAllSurfacesCaptured
-  (CleanupProgramDescriptorRepositoryRegression value _ _ _ _ _ _ _ _) = value
+  (CleanupProgramDescriptorRepositoryRegression value _ _ _ _ _ _ _ _ _) = value
 
 cleanupProgramDescriptorRegressionInitialStateRefused
   :: CleanupProgramDescriptorRepositoryRegression -> Bool
 cleanupProgramDescriptorRegressionInitialStateRefused
-  (CleanupProgramDescriptorRepositoryRegression _ value _ _ _ _ _ _ _) = value
+  (CleanupProgramDescriptorRepositoryRegression _ value _ _ _ _ _ _ _ _) = value
 
 cleanupProgramDescriptorRegressionResponseLossRecovered
   :: CleanupProgramDescriptorRepositoryRegression -> Bool
 cleanupProgramDescriptorRegressionResponseLossRecovered
-  (CleanupProgramDescriptorRepositoryRegression _ _ value _ _ _ _ _ _) = value
+  (CleanupProgramDescriptorRepositoryRegression _ _ value _ _ _ _ _ _ _) = value
 
 cleanupProgramDescriptorRegressionExactReplayPreserved
   :: CleanupProgramDescriptorRepositoryRegression -> Bool
 cleanupProgramDescriptorRegressionExactReplayPreserved
-  (CleanupProgramDescriptorRepositoryRegression _ _ _ value _ _ _ _ _) = value
+  (CleanupProgramDescriptorRepositoryRegression _ _ _ value _ _ _ _ _ _) = value
 
 cleanupProgramDescriptorRegressionConflictPreserved
   :: CleanupProgramDescriptorRepositoryRegression -> Bool
 cleanupProgramDescriptorRegressionConflictPreserved
-  (CleanupProgramDescriptorRepositoryRegression _ _ _ _ value _ _ _ _) = value
+  (CleanupProgramDescriptorRepositoryRegression _ _ _ _ value _ _ _ _ _) = value
 
 cleanupProgramDescriptorRegressionTamperingRefused
   :: CleanupProgramDescriptorRepositoryRegression -> Bool
 cleanupProgramDescriptorRegressionTamperingRefused
-  (CleanupProgramDescriptorRepositoryRegression _ _ _ _ _ value _ _ _) = value
+  (CleanupProgramDescriptorRepositoryRegression _ _ _ _ _ value _ _ _ _) = value
 
 cleanupProgramDescriptorRegressionUnknownStatesRefused
   :: CleanupProgramDescriptorRepositoryRegression -> Bool
 cleanupProgramDescriptorRegressionUnknownStatesRefused
-  (CleanupProgramDescriptorRepositoryRegression _ _ _ _ _ _ value _ _) = value
+  (CleanupProgramDescriptorRepositoryRegression _ _ _ _ _ _ value _ _ _) = value
 
 cleanupProgramDescriptorRegressionWrongRunRefused
   :: CleanupProgramDescriptorRepositoryRegression -> Bool
 cleanupProgramDescriptorRegressionWrongRunRefused
-  (CleanupProgramDescriptorRepositoryRegression _ _ _ _ _ _ _ value _) = value
+  (CleanupProgramDescriptorRepositoryRegression _ _ _ _ _ _ _ value _ _) = value
 
 cleanupProgramDescriptorRegressionRestartReconstructionValidated
   :: CleanupProgramDescriptorRepositoryRegression -> Bool
 cleanupProgramDescriptorRegressionRestartReconstructionValidated
-  (CleanupProgramDescriptorRepositoryRegression _ _ _ _ _ _ _ _ value) = value
+  (CleanupProgramDescriptorRepositoryRegression _ _ _ _ _ _ _ _ value _) = value
+
+cleanupProgramDescriptorRegressionLegacyV1RestartReadable
+  :: CleanupProgramDescriptorRepositoryRegression -> Bool
+cleanupProgramDescriptorRegressionLegacyV1RestartReadable
+  (CleanupProgramDescriptorRepositoryRegression _ _ _ _ _ _ _ _ _ value) = value
 
 allSurfacesCaptured :: RegressionInputs -> Bool
 allSurfacesCaptured inputs =
@@ -733,11 +786,28 @@ regressionCandidate
   -> LinuxRke2FoundationId
   -> Maybe AwsScope
   -> Either Text CleanupProgramDescriptor
-regressionCandidate owner surface runId foundation awsScope = do
+regressionCandidate owner surface runId foundation awsScope =
+  regressionCandidateWithDnsZone
+    owner
+    surface
+    runId
+    foundation
+    awsScope
+    Nothing
+
+regressionCandidateWithDnsZone
+  :: CleanupOwnerId
+  -> CleanupSurfaceWitness surface
+  -> CleanupRunId
+  -> LinuxRke2FoundationId
+  -> Maybe AwsScope
+  -> Maybe HostedZoneId
+  -> Either Text CleanupProgramDescriptor
+regressionCandidateWithDnsZone owner surface runId foundation awsScope awsDnsZone = do
   compiled <-
     first
       (Text.pack . show)
-      (compileDesiredAbsenceGraph runId foundation awsScope surface)
+      (compileDesiredAbsenceGraph runId foundation awsScope awsDnsZone surface)
   initialRun <-
     first
       (Text.pack . show)
@@ -874,4 +944,4 @@ regressionAwsScope :: AwsScope
 regressionAwsScope =
   AwsScope
     (AwsAccountId "111122223333")
-    (AwsRegion "ca-central-1")
+    (AwsRegion canonicalRegressionAwsRegion)

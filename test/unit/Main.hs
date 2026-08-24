@@ -17,6 +17,7 @@ import AwsSesLeaseRole (awsSesLeaseRoleSuite)
 import AwsSesLifecycle (awsSesLifecycleSuite)
 import AwsSesReadiness (awsSesReadinessSuite)
 import AwsSesSmtpKey (awsSesSmtpKeySuite)
+import AwsSubstrateProfile (awsSubstrateProfileSuite)
 import BootstrapBrokerClient (bootstrapBrokerClientSuite)
 import BootstrapBrokerCustody (bootstrapBrokerCustodySuite)
 import BootstrapBrokerEngine (bootstrapBrokerEngineSuite)
@@ -70,6 +71,9 @@ import ControlPlaneCleanupProgramDescriptorRepository
   )
 import ControlPlaneClient (controlPlaneClientSuite)
 import ControlPlaneConfigEndpoint (controlPlaneConfigEndpointSuite)
+import ControlPlaneControllerOwnerRepository
+  ( controlPlaneControllerOwnerRepositorySuite
+  )
 import ControlPlaneDeadline (controlPlaneDeadlineSuite)
 import ControlPlaneDescriptorBoundLifecycleRuntime
   ( controlPlaneDescriptorBoundLifecycleRuntimeSuite
@@ -81,6 +85,9 @@ import ControlPlaneEksDrainReadBackReceiptRepository
   ( controlPlaneEksDrainReadBackReceiptRepositorySuite
   )
 import ControlPlaneFederationBootstrap (controlPlaneFederationBootstrapSuite)
+import ControlPlaneLegacyAdoptionManifestRepository
+  ( controlPlaneLegacyAdoptionManifestRepositorySuite
+  )
 import ControlPlaneLifecycleAuthorityRestore
   ( controlPlaneLifecycleAuthorityRestoreSuite
   )
@@ -158,6 +165,7 @@ import Data.IORef
 import Data.List
   ( elemIndex
   , find
+  , intercalate
   , isInfixOf
   , isPrefixOf
   , isSuffixOf
@@ -245,6 +253,9 @@ import LifecycleAuthorityRetainedMaterial
 import LifecycleAuthorityState (lifecycleAuthorityStateSuite)
 import LifecycleAuthoritySubmission (lifecycleAuthoritySubmissionSuite)
 import LifecycleAuthorityTlsRetention (lifecycleAuthorityTlsRetentionSuite)
+import LifecycleAwsNativeStackFamily
+  ( lifecycleAwsNativeStackFamilySuite
+  )
 import LifecycleCleanupClient (lifecycleCleanupClientSuite)
 import LifecycleHostCleanupAuthorityArms
   ( lifecycleHostCleanupAuthorityArmsSuite
@@ -280,6 +291,12 @@ import LifecycleTeardownAwsEksDestroyAdapter
   )
 import LifecycleTeardownAwsEksRegisteredTargetDestroyInterpreter
   ( lifecycleTeardownAwsEksRegisteredTargetDestroyInterpreterSuite
+  )
+import LifecycleTeardownAwsIamRoleFamilyAdapter
+  ( lifecycleTeardownAwsIamRoleFamilyAdapterSuite
+  )
+import LifecycleTeardownAwsLoadBalancerControllerFamilyAdapter
+  ( lifecycleTeardownAwsLoadBalancerControllerFamilyAdapterSuite
   )
 import LifecycleTeardownAwsRegisteredTargetInterpreter
   ( lifecycleTeardownAwsRegisteredTargetInterpreterSuite
@@ -337,14 +354,14 @@ import LifecycleTeardownEksDrainIntent
 import LifecycleTeardownEksDrainInterpreter
   ( lifecycleTeardownEksDrainInterpreterSuite
   )
-import LifecycleTeardownEksDrainRuntime
-  ( lifecycleTeardownEksDrainRuntimeSuite
-  )
 import LifecycleTeardownEksDrainSession
   ( lifecycleTeardownEksDrainSessionSuite
   )
 import LifecycleTeardownEksTeardownExecutor
   ( lifecycleTeardownEksTeardownExecutorSuite
+  )
+import LifecycleTeardownLegacyAdoptionObserver
+  ( lifecycleTeardownLegacyAdoptionObserverSuite
   )
 import LifecycleTeardownLegacyAdoptionPlan
   ( lifecycleTeardownLegacyAdoptionPlanSuite
@@ -436,6 +453,7 @@ import Prodbox.Aws
   ( AwsSetupInput (..)
   , AwsTeardownInput (..)
   , ConfigSetupInput (..)
+  , HarnessDeploymentInput (..)
   , IamProbe (..)
   , QuotaStatus (..)
   , ResidueError (..)
@@ -451,7 +469,11 @@ import Prodbox.Aws
   , buildIamPolicyDocumentForAccountAndCaptureBucket
   , buildIamPolicyJson
   , configFromSetupInput
+  , existingHarnessConfigDisposition
+  , harnessConfigSetupInputFrom
+  , harnessGeneratedConfig
   , harnessPostflightResiduePolicy
+  , harnessReceiveSubdomainLabel
   , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
   , operationalCredentialsClearedDecision
@@ -469,7 +491,6 @@ import Prodbox.Aws
   , renderPulumiResidueRefusal
   , renderResidueError
   , residueFromProbe
-  , residuePolicyBypassesLongLivedProtection
   , sessionTokenPromptShape
   , spotObservationFromAwsSpotPriceHistory
   , spotObservationFromAwsSpotPriceOutput
@@ -480,6 +501,8 @@ import Prodbox.AwsEnvironment
   , overlayAwsCredentials
   , sealedAwsEnvironment
   )
+import Prodbox.Bootstrap.Broker.KubernetesWorker qualified as BrokerKubernetes
+import Prodbox.Bootstrap.Broker.PortForward qualified as BrokerPortForward
 import Prodbox.Bootstrap.Broker.Readiness
   ( BrokerDependencyObservation (..)
   , BrokerReadinessFacts (..)
@@ -588,6 +611,7 @@ import Prodbox.CLI.Rke2
   , acmeRuntimeManifestWith
   , adminPublicEdgeManifestItems
   , aggregateCascadeExit
+  , bindVaultLifecycleContext
   , buildNativeDeletePlan
   , buildNativeInstallExecutionPlan
   , cascadeOrderNarration
@@ -652,7 +676,6 @@ import Prodbox.CheckCode
   , awsCoordinateFindings
   , awsCoordinateLiteralRegistry
   , awsCoordinateLiteralsIn
-  , awsCoordinateRegistryOwners
   , awsCreateSiteViolations
   , awsCreateVerbs
   , boundSectionCitationsInLine
@@ -844,6 +867,11 @@ import Prodbox.ControlPlane.CapabilityRequirement
   , resolveRequirement
   )
 import Prodbox.ControlPlane.Client (controlPlaneEndpointText)
+import Prodbox.ControlPlane.InClusterAuthorityStore
+  ( inClusterAuthorityStoreClusterId
+  , inClusterAuthorityStoreEndpoint
+  , mkInClusterAuthorityStoreConfig
+  )
 import Prodbox.ControlPlane.ListenPort
   ( controlPlaneClusterServiceUrl
   , controlPlaneClusterServiceUrlText
@@ -909,6 +937,7 @@ import Prodbox.Gateway.Client qualified
 import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Gateway.Daemon
   ( daemonBootFieldsChanged
+  , daemonPulumiObjectStoreConfig
   )
 import Prodbox.Gateway.Logging
   ( Severity (..)
@@ -922,6 +951,7 @@ import Prodbox.Gateway.Types
   ( DaemonConfig (..)
   , DnsWriteGate (..)
   , GatewayLifecycleAuthority (..)
+  , GatewayMinioCreds (..)
   , GatewayRule (..)
   , GatewayVaultAuth (..)
   , Orders (..)
@@ -929,6 +959,8 @@ import Prodbox.Gateway.Types
   , cborPayloadFromJsonValue
   , decodeOrdersCbor
   , encodeOrdersCbor
+  , gatewayMinioEndpointUrl
+  , mkGatewayMinioEndpoint
   , validateDaemonTimingAgainstOrders
   )
 import Prodbox.Host
@@ -964,7 +996,7 @@ import Prodbox.Host.Substrate
 import Prodbox.Host.Wsl2
   ( defaultWsl2VM
   )
-import Prodbox.Http.Client (HttpError (HttpStatus, HttpTimeout))
+import Prodbox.Http.Client (HttpError (..))
 import Prodbox.Http.Client qualified
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
@@ -981,10 +1013,8 @@ import Prodbox.Infra.LongLivedPulumiBackend
 import Prodbox.Infra.MinioBackend
   ( firstReadableKubeconfigCandidate
   , localKubeconfigCandidates
-  , minioBackendBucket
   , parseDeletedMinioExportHostPath
   )
-import Prodbox.Infra.Route53ValidationZone qualified as Route53ValidationZone
 import Prodbox.Infra.StackDescriptor qualified as StackDescriptor
 import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.K8s
@@ -1033,6 +1063,7 @@ import Prodbox.Lib.ChartPlatform
   , validateOperatorGatesWith
   , valuesForAuthorityBackup
   , valuesForBootstrapBroker
+  , valuesForLifecycleAuthority
   , valuesForTlsRetention
   )
 import Prodbox.Lib.EksContainerdMirror qualified
@@ -1053,7 +1084,6 @@ import Prodbox.Lifecycle.CheckpointAuthority
   ( mkModelBObjectVersion
   , modelBObjectVersionText
   )
-import Prodbox.Lifecycle.CleanupRun (CleanupDependencyKind (..))
 import Prodbox.Lifecycle.CredentialProvisioner.Execution
   ( consumeExternalAcmeEabIngressFrame
   , withExternalAcmeEabIngressFrame
@@ -1108,6 +1138,7 @@ import Prodbox.Lifecycle.TargetSinkVersion.Internal
 import Prodbox.Lifecycle.Teardown.Model qualified as TeardownModel
 import Prodbox.Lifecycle.Teardown.RegisteredTargetExecutor qualified as TeardownExecutor
 import Prodbox.Lifecycle.Teardown.Registry qualified as TeardownRegistry
+import Prodbox.Lifecycle.ValidationHostedZone qualified as Route53ValidationZone
 import Prodbox.Minio.EncryptedObject
   ( EncryptedObjectError (..)
   , LogicalObject (..)
@@ -1126,6 +1157,7 @@ import Prodbox.Minio.ObjectStore
   , objectStoreCreateBucketArgs
   , objectStoreHeadBucketArgs
   )
+import Prodbox.Minio.ObjectStoreTypes (minioClusterServiceEndpoint)
 import Prodbox.Minio.RootCredential (minioRootPassword, minioRootUser)
 import Prodbox.Naming
   ( boundedResourceName
@@ -1226,6 +1258,7 @@ import Prodbox.Settings
   , AwsSubstrateSection (..)
   , ConfigFile (..)
   , Credentials (..)
+  , DeploymentContextInput (..)
   , DeploymentSection (..)
   , DomainSection (..)
   , FailoverScenario (..)
@@ -1253,8 +1286,11 @@ import Prodbox.Settings
   , coordinateOperationalAwsRegion
   , coordinatePulumiBackendRegion
   , decodeConfigDhallBytes
-  , defaultConfigFile
   , defaultTestTopology
+  , deploymentClusterId
+  , deploymentMachineIds
+  , deploymentMinioEndpoint
+  , deploymentVaultAddress
   , loadConfigFileAtPath
   , loadConfigForSettingsWith
   , loadTestTopologyAtPath
@@ -1272,7 +1308,7 @@ import Prodbox.Settings
   , validateAwsBootstrapConfig
   , validateAwsSubstrateSection
   , validateComponentNodes
-  , validateConfig
+  , validateConfigWithContext
   , validateConfiguredCertScope
   , validateLocalConfig
   , validateOperationalAwsCredentials
@@ -1280,8 +1316,12 @@ import Prodbox.Settings
   , validateTestTopology
   , validatedCoordinates
   , validatedCoordinatesFor
+  , validatedDeploymentContextFor
   , validatedPublicEdgeFor
+  , zeroSslAcmeDirectory
   )
+import Prodbox.Settings qualified as Settings
+import Prodbox.Settings.AwsSubstrateProfile qualified as AwsSubstrateProfile
 import Prodbox.Settings.Coordinate
   ( S3BucketName
   , awsRegionText
@@ -1315,7 +1355,6 @@ import Prodbox.Substrate
 import Prodbox.Test.GatewayRuntimeStability
   ( GatewayRuntimeStabilityReport (NotStableYet, StableObserved)
   )
-import Prodbox.Test.ManagedCleanupPlan (ManagedCleanupEdge (..))
 import Prodbox.TestPlan
   ( NativeSuitePlan (..)
   , NativeValidation (..)
@@ -1342,14 +1381,13 @@ import Prodbox.TestRunner
   , TestDeleteTarget (..)
   , TestGate (..)
   , TestRefusal (..)
-  , awsHarnessCleanupTopology
-  , awsPostflightDestroyCommandArgs
   , awsSubstrateBootstrapCommandArgs
   , awsSubstrateBootstrapRestorePlan
   , awsSubstrateBootstrapRestoreSteps
-  , clearOperationalCredsAfterPostflight
   , guardTestDelete
   , integrationRunbookCommandArgs
+  , lifecycleCleanupTargetsForSuite
+  , nativeMayProvisionPerRunAwsStacks
   , publicEdgeCertificateReissueStatusPatch
   , renderTestRefusal
   , supportedRuntimeBootstrapNeedsReconcile
@@ -1447,8 +1485,9 @@ import Prodbox.Vault.Gate
   )
 import Prodbox.Vault.Host
   ( AcmeEabFixture (..)
-  , TestSecrets (acme_eab)
+  , TestSecrets (..)
   , defaultTestSecrets
+  , vaultAddressForDeploymentContext
   )
 import Prodbox.Vault.Orchestration
   ( UnsealOutcome (..)
@@ -1463,6 +1502,9 @@ import Prodbox.Vault.Reconcile
   , VaultKubernetesRoleSpec (..)
   , VaultKubernetesTokenType (..)
   , VaultMountSpec (..)
+  , VaultPkiReconcileError (..)
+  , VaultPkiReconcileOperation (..)
+  , VaultPkiRootDecision (..)
   , VaultPolicySpec (..)
   , VaultReconcileAction (..)
   , VaultReconcileError (..)
@@ -1475,6 +1517,7 @@ import Prodbox.Vault.Reconcile
   , bootstrapPkiOperatorRole
   , bootstrapProvisionerRole
   , bootstrapSealRole
+  , decideVaultPkiRoot
   , defaultVaultReconcilePlan
   , runVaultReconcileWith
   )
@@ -1633,20 +1676,31 @@ gatewayTier0DhallFromPlan plan =
         _ -> Left "gateway values payload is not an object"
     _ -> Left "deployment plan does not contain exactly one gateway release"
 
-assertMountedGatewayTier0Identity :: String -> Text.Text -> Expectation
-assertMountedGatewayTier0Identity rendered expectedIdentity =
-  withSystemTempDirectory "prodbox-gateway-mounted-tier0" $ \tmpDir -> do
-    let configMapDir = tmpDir </> "gateway-config"
-        absentContainerDefault = tmpDir </> "absent-container-default.dhall"
-    createDirectoryIfMissing True configMapDir
-    writeFile (daemonConfigMapTier0Path configMapDir) rendered
-    loaded <- loadDaemonBinaryContext configMapDir absentContainerDefault
-    case loaded of
-      Left err -> expectationFailure err
-      Right (source, projectConfig) -> do
-        source `shouldBe` Tier0FromConfigMap (daemonConfigMapTier0Path configMapDir)
-        Tier0.context_kind (Tier0.context projectConfig) `shouldBe` Daemon
-        Tier0.cluster_id (Tier0.context projectConfig) `shouldBe` expectedIdentity
+chartReleaseValuesFromPlan :: String -> ChartDeploymentPlan -> Either String Value
+chartReleaseValuesFromPlan releaseName plan =
+  case filter ((== releaseName) . chartReleasePlanReleaseName) (chartDeploymentPlanReleases plan) of
+    [release] -> eitherDecode (BL8.pack (chartReleasePlanValuesJson release))
+    _ -> Left ("deployment plan does not contain exactly one `" ++ releaseName ++ "` release")
+
+chartTextAtPath :: [String] -> Value -> Either String Text.Text
+chartTextAtPath path value =
+  case (path, value) of
+    ([], String rendered) -> Right rendered
+    (field : rest, Object payload) ->
+      case KeyMap.lookup (Key.fromString field) payload of
+        Just nested -> chartTextAtPath rest nested
+        Nothing -> Left ("chart values path is missing `" ++ intercalate "." path ++ "`")
+    _ -> Left ("chart values path is not text at `" ++ intercalate "." path ++ "`")
+
+expectRightTest :: Either String value -> IO value
+expectRightTest result = case result of
+  Left detail -> expectationFailure detail >> fail detail
+  Right value -> pure value
+
+assertRenderedGatewayTier0Identity :: String -> Text.Text -> Expectation
+assertRenderedGatewayTier0Identity rendered expectedIdentity = do
+  rendered `shouldContain` "< HostOrchestrator | Daemon | ClusterService | OtherContext >.Daemon"
+  rendered `shouldContain` ("cluster_id = \"" ++ Text.unpack expectedIdentity ++ "\"")
 
 assertExactlyOne :: (Show a) => [a] -> (a -> Expectation) -> Expectation
 assertExactlyOne values assertion =
@@ -1773,15 +1827,28 @@ sampleChildBasics =
     , basicsFormatVersion = 1
     }
 
+-- | Explicit test root. Production 'defaultProjectConfig' deliberately carries
+-- no deployment identity after Sprint 1.92.
+sampleTier0Root :: ProdboxProjectConfig
+sampleTier0Root =
+  syntheticProjectConfig
+    { context =
+        (context syntheticProjectConfig)
+          { cluster_id = basicsClusterId sampleRootBasics
+          , vault_address = basicsVaultAddress sampleRootBasics
+          , minio_endpoint = "http://127.0.0.1:39000"
+          }
+    }
+
 -- | Sprint 1.39: a populated Tier-0 binary-context record for the
 -- @{ parameters, context, witness }@ tests. The context carries a child-cluster
 -- topology so the projected floor exercises the parent-ref arm; the parameters
 -- reuse the non-secret defaults (SecretRef.Vault pointers only).
 sampleTier0Child :: ProdboxProjectConfig
 sampleTier0Child =
-  defaultProjectConfig
+  syntheticProjectConfig
     { context =
-        (context defaultProjectConfig)
+        (context syntheticProjectConfig)
           { project = "prodbox"
           , binary = "prodbox"
           , context_kind = HostOrchestrator
@@ -1802,15 +1869,43 @@ sampleTier0Child =
           }
     }
 
+deploymentContextForTier0 :: ProdboxProjectConfig -> Settings.ValidatedDeploymentContext
+deploymentContextForTier0 projectConfig =
+  either
+    error
+    id
+    ( validatedDeploymentContextFor
+        DeploymentContextInput
+          { contextInputClusterId = cluster_id tier0Context
+          , contextInputVaultAddress = vault_address tier0Context
+          , contextInputMinioEndpoint = minio_endpoint tier0Context
+          }
+        (cluster_topology testValidatedConfigFile)
+    )
+ where
+  tier0Context = context projectConfig
+
+-- | Valid daemon-frame variant of the synthetic Tier-0 fixture. The compiled
+-- daemon template deliberately remains unauthored after Sprint 1.92.
+syntheticDaemonProjectConfig :: ProdboxProjectConfig
+syntheticDaemonProjectConfig =
+  syntheticProjectConfig
+    { context =
+        (context syntheticProjectConfig)
+          { binary = "gateway"
+          , context_kind = Daemon
+          }
+    }
+
 -- | Sprint 1.82: a Tier-0 record whose __named__ fields carry a literal secret
 -- value, for the decode gate that must refuse it. The stand-in value is
 -- unmistakably synthetic (vault_doctrine.md §20.1) and is deliberately built
 -- from the field name so a refusal that leaked it would be unambiguous about
 -- which one.
 poisonTier0 :: [Text.Text] -> ProdboxProjectConfig
-poisonTier0 fields = defaultProjectConfig {parameters = poisonedParams}
+poisonTier0 fields = syntheticProjectConfig {parameters = poisonedParams}
  where
-  base = Tier0.parameters defaultProjectConfig
+  base = Tier0.parameters syntheticProjectConfig
   baseAws = Tier0.aws base
   baseAcme = Tier0.acme base
   literal name = SecretRefTestPlaintext ("AKIA-LITERAL-CREDENTIAL-" <> name)
@@ -1889,6 +1984,12 @@ defaultGatewayRuntimeMemoryProfile =
     [profile] -> profile
     profiles -> error ("expected one default runtime-memory profile, got " ++ show profiles)
 
+-- Existing unit fixtures use a valid synthetic baseline. The production value
+-- with this historical local name is intentionally unauthored after Sprint
+-- 1.92 and is tested explicitly through @Settings.defaultConfigFile@.
+defaultConfigFile :: ConfigFile
+defaultConfigFile = syntheticConfigFile
+
 main :: IO ()
 main = do
   arguments <- getArgs
@@ -1911,6 +2012,7 @@ unitSuite = do
   awsSesLeaseRoleSuite
   awsSesReadinessSuite
   awsSesSmtpKeySuite
+  awsSubstrateProfileSuite
   bootstrapBrokerClientSuite
   bootstrapBrokerCustodySuite
   bootstrapBrokerEngineSuite
@@ -1994,6 +2096,8 @@ unitSuite = do
   controlPlaneAwsStackReaderRepositorySuite
   controlPlaneCleanupProgramDescriptorRepositorySuite
   controlPlaneOwnershipManifestRepositorySuite
+  controlPlaneControllerOwnerRepositorySuite
+  controlPlaneLegacyAdoptionManifestRepositorySuite
   controlPlaneEksDrainIntentRepositorySuite
   controlPlaneEksDrainReadBackReceiptRepositorySuite
   controlPlaneRetainedSesLeaseSuite
@@ -2068,11 +2172,15 @@ unitSuite = do
   lifecycleTeardownAwsEksAdapterSuite
   lifecycleTeardownAwsEksDestroyAdapterSuite
   lifecycleTeardownAwsEksRegisteredTargetDestroyInterpreterSuite
+  lifecycleTeardownAwsIamRoleFamilyAdapterSuite
+  lifecycleTeardownAwsLoadBalancerControllerFamilyAdapterSuite
   lifecycleTeardownAwsRegisteredTargetInterpreterSuite
   lifecycleTeardownAwsRetainedEbsAdapterSuite
   lifecycleTeardownAwsRoute53ZoneAdapterSuite
   lifecycleTeardownDns01ChallengeRecordAdapterSuite
   lifecycleTeardownLegacyAdoptionPlanSuite
+  lifecycleTeardownLegacyAdoptionObserverSuite
+  lifecycleAwsNativeStackFamilySuite
   lifecycleTeardownAwsStackAdapterSuite
   lifecycleTeardownAwsStackReaderInterpreterSuite
   clusterDeleteEntryArmSuite
@@ -2117,7 +2225,6 @@ unitSuite = do
   lifecycleTeardownEksDrainIntentSuite
   lifecycleTeardownEksTeardownExecutorSuite
   lifecycleTeardownEksDrainSessionSuite
-  lifecycleTeardownEksDrainRuntimeSuite
   lifecycleTeardownOwnershipManifestSuite
   retainedSesPreparationSuite
   retainedSesTargetRecoverySuite
@@ -2257,7 +2364,7 @@ unitSuite = do
     it "encodes an auth-method request without mount-only options" $ do
       eitherDecode (encode (EnableAuthMethodRequest "kubernetes"))
         `shouldBe` Right (object ["type" .= ("kubernetes" :: Text.Text)] :: Value)
-    it "encodes policy, Transit-key, and Kubernetes-role writes" $ do
+    it "encodes policy, Transit-key, and Kubernetes-role writes (Sprint 2.68 HMAC key size)" $ do
       eitherDecode (encode (WritePolicyRequest "path \"secret/*\" { capabilities = [\"read\"] }"))
         `shouldBe` Right
           ( object ["policy" .= ("path \"secret/*\" { capabilities = [\"read\"] }" :: Text.Text)]
@@ -2265,6 +2372,16 @@ unitSuite = do
           )
       eitherDecode (encode (TransitKeyRequest "aes256-gcm96"))
         `shouldBe` Right (object ["type" .= ("aes256-gcm96" :: Text.Text)] :: Value)
+      eitherDecode (encode (TransitKeyRequest "ed25519"))
+        `shouldBe` Right (object ["type" .= ("ed25519" :: Text.Text)] :: Value)
+      eitherDecode (encode (TransitKeyRequest "hmac"))
+        `shouldBe` Right
+          ( object
+              [ "type" .= ("hmac" :: Text.Text)
+              , "key_size" .= (32 :: Int)
+              ]
+              :: Value
+          )
       eitherDecode (encode (KubernetesRoleRequest ["sa"] ["ns"] ["policy"] (Just "vault") "1h" "service"))
         `shouldBe` Right
           ( object
@@ -2415,6 +2532,22 @@ unitSuite = do
       policy `shouldContain` "path \"transit/decrypt/prodbox-child-abcdef\""
       policy `shouldNotContain` "prodbox-child-*"
   describe "vault reconcile (Sprint 1.36)" $ do
+    it "Sprint 2.69 treats only issuer-list 404 and an empty list as generate-root" $ do
+      decideVaultPkiRoot (Right []) `shouldBe` Right VaultPkiGenerateRoot
+      decideVaultPkiRoot (Left (HttpStatus 404 "response body must not matter"))
+        `shouldBe` Right VaultPkiGenerateRoot
+      decideVaultPkiRoot (Right ["issuer-id"])
+        `shouldBe` Right VaultPkiKeepExistingRoot
+      forM_
+        [ HttpConnectionFailure "connection detail"
+        , HttpTimeout "timeout detail"
+        , HttpStatus 403 "response body"
+        , HttpDecode "decode detail"
+        ]
+        $ \failure ->
+          decideVaultPkiRoot (Left failure)
+            `shouldBe` Left
+              (VaultPkiReconcileHttpError VaultPkiReconcileListIssuers failure)
     it "default plan covers the base mounts, auth method, and Transit key domains" $ do
       map vaultMountSpecPath (vaultReconcileMounts defaultVaultReconcilePlan)
         `shouldBe` ["secret", "transit", "pki"]
@@ -2963,7 +3096,7 @@ unitSuite = do
               , awsCredentialSecretAccessKey =
                   SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "secret_access_key")
               , awsCredentialSessionToken = Nothing
-              , awsCredentialRegion = "us-east-1"
+              , awsCredentialRegion = (fixtureAwsRegion FixtureUsEast1)
               }
       lifecycleProviderAwsVaultFields refs `shouldBe` Right ()
     it "refuses non-canonical Lifecycle-provider AWS Vault SecretRef declarations" $ do
@@ -2974,7 +3107,7 @@ unitSuite = do
               , awsCredentialSecretAccessKey =
                   SecretRefVault (VaultSecretRef "secret" "wrong/path" "secret_access_key")
               , awsCredentialSessionToken = Nothing
-              , awsCredentialRegion = "us-east-1"
+              , awsCredentialRegion = (fixtureAwsRegion FixtureUsEast1)
               }
       lifecycleProviderAwsVaultFields refs
         `shouldBe` Left
@@ -3257,7 +3390,7 @@ unitSuite = do
               scratch
               [ ("AWS_ACCESS_KEY_ID", "minio-root")
               , ("AWS_SECRET_ACCESS_KEY", "minio-secret")
-              , ("AWS_REGION", "us-east-1")
+              , ("AWS_REGION", (fixtureAwsRegion FixtureUsEast1))
               , ("PULUMI_CONFIG_PASSPHRASE", "")
               , ("PRODBOX_PULUMI_AWS_ACCESS_KEY_ID", "provider-key")
               , ("PATH", "/bin")
@@ -3998,7 +4131,7 @@ unitSuite = do
       stepsForComponent ComponentChartTargetSecretAgent
         `shouldBe` [StepTargetSecretAgentChartReady]
       stepsForComponent ComponentChartLifecycleAuthority
-        `shouldBe` [StepLifecycleAuthorityChartReady]
+        `shouldBe` [StepLifecycleAuthorityChartReady, StepPostUnsealHandoff]
       stepsForComponent ComponentChartAuthorityBackup
         `shouldBe` [ StepAuthorityBackupChartReady
                    , StepEstablishAuthorityBackup
@@ -4021,6 +4154,8 @@ unitSuite = do
           indexOf StepTargetSecretAgentChartReady
             `shouldSatisfy` (`indexPrecedes` indexOf StepLifecycleAuthorityChartReady)
           indexOf StepLifecycleAuthorityChartReady
+            `shouldSatisfy` (`indexPrecedes` indexOf StepPostUnsealHandoff)
+          indexOf StepPostUnsealHandoff
             `shouldSatisfy` (`indexPrecedes` indexOf StepAuthorityBackupChartReady)
           indexOf StepAuthorityBackupChartReady
             `shouldSatisfy` (`indexPrecedes` indexOf StepEstablishAuthorityBackup)
@@ -4197,7 +4332,7 @@ unitSuite = do
       -- straight off the Tier-0 prodbox.dhall's context; writing the default
       -- root record (prodbox-home, shamir, no parent) yields the root floor.
       withSystemTempDirectory "prodbox-basics" $ \tmpDir -> do
-        writeTier0AtPath (tmpDir </> "prodbox.dhall") defaultProjectConfig `shouldReturn` Right ()
+        writeTier0AtPath (tmpDir </> "prodbox.dhall") sampleTier0Root `shouldReturn` Right ()
         loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall") `shouldReturn` Right sampleRootBasics
     it "fails the floor read when no prodbox.dhall is present" $
       -- A repo with no Tier-0 prodbox.dhall has no floor source, so the read
@@ -4228,12 +4363,15 @@ unitSuite = do
         -- Everything outside the witness is still identity.
         parameters decoded `shouldBe` parameters sampleTier0Child
         context decoded `shouldBe` context sampleTier0Child
-    it "round-trips: the default Tier-0 record decodes to the stamped default" $
+    it "the unauthored default Tier-0 record is refused by the topology decoder" $
       withSystemTempDirectory "prodbox-tier0-roundtrip" $ \tmpDir -> do
         let tier0Path = tmpDir </> "prodbox.dhall"
         writeFile tier0Path (Text.unpack (renderProjectConfigDhall defaultProjectConfig))
-        decoded <- Dhall.inputFile Dhall.auto tier0Path :: IO ProdboxProjectConfig
-        decoded `shouldBe` stampTier0Witness defaultProjectConfig
+        decoded <-
+          try (Dhall.inputFile Dhall.auto tier0Path) :: IO (Either SomeException ProdboxProjectConfig)
+        case decoded of
+          Right _ -> expectationFailure "expected the unauthored machine identity to be refused"
+          Left err -> show err `shouldContain` "machine_id"
 
     describe "Sprint 0.29 Tier-0 generator-stamped witness" $ do
       it "stamping is idempotent, because the digest excludes the witness" $ do
@@ -4290,34 +4428,17 @@ unitSuite = do
         loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
           `shouldReturn` Right (projectBasics sampleTier0Child)
   describe "Tier 0 basics-floor self-heal on reconcile (Sprint 1.39 P1)" $ do
-    it "missing floor + no prodbox.dhall reconstructs a valid root floor from the known local identity" $
-      -- A cluster initialized before 1.39 (or rebuilt against a durable Vault
-      -- PV, so `vault init` early-returned) has NO floor and NO prodbox.dhall.
-      -- The self-heal must write a coherent root (shamir, no parent) floor from
-      -- the default identity, with the caller-supplied Vault address.
-      -- A cluster initialized before 1.39 (or rebuilt against a durable Vault
-      -- PV, so `vault init` early-returned) has NO floor and NO prodbox.dhall.
-      -- The self-heal must write a coherent root (shamir, no parent) floor from
-      -- the default identity, with the caller-supplied Vault address.
-      -- A cluster initialized before 1.39 (or rebuilt against a durable Vault
-      -- PV, so `vault init` early-returned) has NO floor and NO prodbox.dhall.
-      -- The self-heal must write a coherent root (shamir, no parent) floor from
-      -- the default identity, with the caller-supplied Vault address.
+    it "missing floor + no prodbox.dhall refuses rather than inventing a root identity" $
       withSystemTempDirectory "prodbox-floor-selfheal-default" $ \tmpDir -> do
         before <- loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
         before `shouldSatisfy` isLeft
-        ensureBasicsFloorAtPath (tmpDir </> "prodbox.dhall") "http://127.0.0.1:31820"
-          `shouldReturn` Right ()
-        loaded <- loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
-        loaded
-          `shouldBe` Right
-            UnencryptedBasics
-              { basicsClusterId = "prodbox-home"
-              , basicsVaultAddress = "http://127.0.0.1:31820"
-              , basicsSealMode = SealModeShamir
-              , basicsParentRef = Nothing
-              , basicsFormatVersion = 1
-              }
+        result <-
+          ensureBasicsFloorAtPath
+            (tmpDir </> "prodbox.dhall")
+            (validatedDeploymentContext (testValidatedSettings tmpDir))
+        result `shouldSatisfy` leftContains "context.cluster_id"
+        result `shouldSatisfy` leftContains "prodbox config setup"
+        doesFileExist (tmpDir </> "prodbox.dhall") `shouldReturn` False
     it "present operator-authored prodbox.dhall IS the floor and self-heal preserves it" $
       -- Sprint 7.18: prodbox.dhall is the SOLE floor source. When the
       -- operator-authored prodbox.dhall exists, the floor loads straight off its
@@ -4340,7 +4461,10 @@ unitSuite = do
         before `shouldBe` Right (projectBasics sampleTier0Child)
         let tier0Path = tmpDir </> "prodbox.dhall"
         beforeBytes <- BS.readFile tier0Path
-        ensureBasicsFloorAtPath (tmpDir </> "prodbox.dhall") "http://10.0.0.99:8200" `shouldReturn` Right ()
+        ensureBasicsFloorAtPath
+          (tmpDir </> "prodbox.dhall")
+          (deploymentContextForTier0 sampleTier0Child)
+          `shouldReturn` Right ()
         afterBytes <- BS.readFile tier0Path
         afterBytes `shouldBe` beforeBytes
         loadUnencryptedBasicsAtPath (tmpDir </> "prodbox.dhall")
@@ -4356,10 +4480,12 @@ unitSuite = do
         writeTier0AtPath (tmpDir </> "prodbox.dhall") sampleTier0Child `shouldReturn` Right ()
         let tier0Path = tmpDir </> "prodbox.dhall"
         before <- BS.readFile tier0Path
-        ensureBasicsFloorAtPath (tmpDir </> "prodbox.dhall") "http://10.0.0.99:8200" `shouldReturn` Right ()
+        ensureBasicsFloorAtPath
+          (tmpDir </> "prodbox.dhall")
+          (deploymentContextForTier0 sampleTier0Child)
+          `shouldReturn` Right ()
         after <- BS.readFile tier0Path
-        -- The supplied address (different from the record's) is ignored because
-        -- the existing floor is valid: no-op, bytes unchanged.
+        -- A matching validated context leaves the floor byte-identical.
         after `shouldBe` before
     it "child self-heal reconstructs a coherent transit floor from the supplied identity" $
       -- The child analog: no floor, no prodbox.dhall → reconstruct a transit
@@ -4404,7 +4530,10 @@ unitSuite = do
       -- the prodbox.dhall path with a DIRECTORY so the file write errors.
       withSystemTempDirectory "prodbox-floor-selfheal-fail" $ \tmpDir -> do
         createDirectoryIfMissing True (tmpDir </> "prodbox.dhall")
-        result <- ensureBasicsFloorAtPath (tmpDir </> "prodbox.dhall") "http://127.0.0.1:31820"
+        result <-
+          ensureBasicsFloorAtPath
+            (tmpDir </> "prodbox.dhall")
+            (validatedDeploymentContext (testValidatedSettings tmpDir))
         result `shouldSatisfy` isLeft
   describe "AWS transient-error classifier (Sprint 7.20 P4)" $ do
     it "classifies well-known throttle / service-unavailable codes as transient" $ do
@@ -4482,14 +4611,14 @@ unitSuite = do
         case result of
           Right _ -> expectationFailure "expected the daemon loader to refuse a literal credential"
           Left err -> err `shouldContain` "aws.secret_access_key"
-    it "a clean generated Tier-0 file still decodes" $
+    it "a clean authored Tier-0 file still decodes" $
       withSystemTempDirectory "prodbox-tier0-secret-clean" $ \tmpDir -> do
         -- The gate must not be satisfiable by refusing everything.
         let path = tmpDir </> "prodbox.dhall"
-        writeFile path (Text.unpack (renderProjectConfigDhall defaultProjectConfig))
+        writeFile path (Text.unpack (renderProjectConfigDhall syntheticProjectConfig))
         decoded <- decodeProjectConfigDhall path
         fmap Tier0.parameters decoded
-          `shouldBe` Right (Tier0.parameters defaultProjectConfig)
+          `shouldBe` Right (Tier0.parameters syntheticProjectConfig)
   describe "Tier 0 in-cluster daemon binary context (Sprint 1.40)" $ do
     it "the daemon default is the Daemon-frame variant of the host default" $ do
       -- The in-cluster default reuses the shared non-secret parameters but
@@ -4498,7 +4627,7 @@ unitSuite = do
       Tier0.context_kind defaultDaemonContext `shouldBe` Daemon
       Tier0.binary defaultDaemonContext `shouldBe` "gateway"
       Tier0.parameters defaultDaemonProjectConfig `shouldBe` Tier0.parameters defaultProjectConfig
-    it "the baked-in container default prodbox.dhall decodes to a valid Tier-0 binary context" $
+    it "an authored container prodbox.dhall decodes to a valid Tier-0 binary context" $
       withSystemTempDirectory "prodbox-tier0-container-default" $ \tmpDir -> do
         -- No ConfigMap mount present: a freshly started container decodes its
         -- baked-in default. Emulate the on-disk container layout and decode it
@@ -4507,7 +4636,7 @@ unitSuite = do
             configMapDir = tmpDir </> "etc-gateway-config"
         createDirectoryIfMissing True (takeDirectory containerDefault)
         createDirectoryIfMissing True configMapDir
-        writeFile containerDefault (Text.unpack (renderProjectConfigDhall defaultDaemonProjectConfig))
+        writeFile containerDefault (Text.unpack (renderProjectConfigDhall syntheticDaemonProjectConfig))
         result <- loadDaemonBinaryContext configMapDir containerDefault
         case result of
           Left err -> expectationFailure ("expected container default to decode, got: " ++ err)
@@ -4515,13 +4644,13 @@ unitSuite = do
             source `shouldBe` Tier0FromContainerDefault containerDefault
             -- Sprint 0.29: the file was written through the stamping generator,
             -- so it decodes to the stamped record.
-            projectConfig `shouldBe` stampTier0Witness defaultDaemonProjectConfig
+            projectConfig `shouldBe` stampTier0Witness syntheticDaemonProjectConfig
             Tier0.context_kind (Tier0.context projectConfig) `shouldBe` Daemon
     it "the decoded daemon Tier-0 context carries no secret values" $
       withSystemTempDirectory "prodbox-tier0-daemon-secretfree" $ \tmpDir -> do
         let containerDefault = tmpDir </> "prodbox.dhall"
             configMapDir = tmpDir </> "no-configmap"
-        writeFile containerDefault (Text.unpack (renderProjectConfigDhall defaultDaemonProjectConfig))
+        writeFile containerDefault (Text.unpack (renderProjectConfigDhall syntheticDaemonProjectConfig))
         result <- loadDaemonBinaryContext configMapDir containerDefault
         case result of
           Left err -> expectationFailure ("expected decode, got: " ++ err)
@@ -4536,15 +4665,15 @@ unitSuite = do
         let containerDefault = tmpDir </> "etc-prodbox" </> "prodbox.dhall"
             configMapDir = tmpDir </> "etc-gateway-config"
             overwritten =
-              defaultDaemonProjectConfig
+              syntheticDaemonProjectConfig
                 { Tier0.context =
-                    (Tier0.context defaultDaemonProjectConfig)
+                    (Tier0.context syntheticDaemonProjectConfig)
                       { Tier0.cluster_id = "prodbox-configmap-override"
                       }
                 }
         createDirectoryIfMissing True (takeDirectory containerDefault)
         createDirectoryIfMissing True configMapDir
-        writeFile containerDefault (Text.unpack (renderProjectConfigDhall defaultDaemonProjectConfig))
+        writeFile containerDefault (Text.unpack (renderProjectConfigDhall syntheticDaemonProjectConfig))
         writeFile
           (daemonConfigMapTier0Path configMapDir)
           (Text.unpack (renderProjectConfigDhall overwritten))
@@ -4555,12 +4684,12 @@ unitSuite = do
             source `shouldBe` Tier0FromConfigMap (daemonConfigMapTier0Path configMapDir)
             projectConfig `shouldBe` stampTier0Witness overwritten
             Tier0.cluster_id (Tier0.context projectConfig) `shouldBe` "prodbox-configmap-override"
-    it "falls back to the compiled-in default when no file is present" $
+    it "refuses when neither an authored mount nor container file is present" $
       withSystemTempDirectory "prodbox-tier0-compiled-fallback" $ \tmpDir -> do
         let configMapDir = tmpDir </> "absent-configmap"
             containerDefault = tmpDir </> "absent-prodbox.dhall"
         result <- loadDaemonBinaryContext configMapDir containerDefault
-        result `shouldBe` Right (Tier0FromCompiledDefault, defaultDaemonProjectConfig)
+        result `shouldSatisfy` leftContains "prodbox config setup"
     it "exposes the canonical in-cluster ConfigMap Tier-0 path" $
       -- Sprint 1.49: the baked `/etc/prodbox/prodbox.dhall` container default is
       -- gone (the image generates a binary-sibling default by running the
@@ -4731,19 +4860,20 @@ unitSuite = do
         (withStderr "An error occurred (NoSuchKey) when calling the GetObject operation")
         `shouldBe` False
   describe "Dhall schema generated from the Haskell source of truth (Sprint 7.17)" $ do
-    it "round-trips: a default config against the GENERATED schema decodes to defaultConfigFile" $
+    it "the GENERATED schema default remains raw and is refused as deployment config" $
       withSystemTempDirectory "prodbox-schema-roundtrip" $ \tmpDir -> do
         -- Write the schema text generated from the Haskell types (not the
         -- on-disk file), then author a config that imports it and overrides
-        -- nothing — it must decode back to `defaultConfigFile`.
+        -- nothing. The document still type-checks, but validation must refuse
+        -- its deliberately unauthored deployment identity.
         writeFile (tmpDir </> "prodbox-config-types.dhall") (Text.unpack renderConfigTypesDhall)
         writeTier0Fixture tmpDir $
           rawTier0Parameters
             ExercisesGeneratedSchemaImport
             (unlines ["let Config = ./prodbox-config-types.dhall", "in  Config.default"])
         result <- loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
-        result `shouldBe` Right defaultConfigFile
-    it "round-trips: a config that overrides via Config::{ ... } + SecretRef.Vault decodes" $
+        result `shouldSatisfy` leftContains "machine_id"
+    it "type-checks Config::{ ... } + SecretRef.Vault before refusing missing identity" $
       withSystemTempDirectory "prodbox-schema-roundtrip" $ \tmpDir -> do
         writeFile (tmpDir </> "prodbox-config-types.dhall") (Text.unpack renderConfigTypesDhall)
         -- Exercise the operator-facing affordances the schema must expose:
@@ -4761,13 +4891,12 @@ unitSuite = do
                 , "              { mount = \"secret\", path = \"aws/lifecycle-provider\", field = \"access_key_id\" }"
                 , "        }"
                 , "    , route53 = { zone_id = \"Z1234567890ABC\" }"
+                , "    , domain = Config.default.domain // { demo_fqdn = \"schema.test.invalid\" }"
                 , "    }"
                 ]
             )
         result <- loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
-        case result of
-          Left err -> expectationFailure ("decode failed: " ++ err)
-          Right config -> zone_id (route53 config) `shouldBe` "Z1234567890ABC"
+        result `shouldSatisfy` leftContains "machine_id"
     it "round-trips: the in-force payload resolver decodes against the GENERATED schema" $
       withSystemTempDirectory "prodbox-schema-roundtrip" $ \tmpDir -> do
         writeFile (tmpDir </> "prodbox-config-types.dhall") (Text.unpack renderConfigTypesDhall)
@@ -4781,6 +4910,30 @@ unitSuite = do
           (unlines ["let TestSecrets = ./test-secrets-types.dhall", "in  TestSecrets.default"])
         decoded <- Dhall.inputFile Dhall.auto (tmpDir </> "test-secrets.dhall") :: IO TestSecrets
         decoded `shouldBe` defaultTestSecrets
+    it "Sprint 5.37 round-trips populated harness deployment fields through the GENERATED test schema" $
+      withSystemTempDirectory "prodbox-schema-roundtrip-harness" $ \tmpDir -> do
+        writeFile (tmpDir </> "test-secrets-types.dhall") (Text.unpack renderTestSecretsTypesDhall)
+        writeFile
+          (tmpDir </> "test-secrets.dhall")
+          ( unlines
+              [ "let TestSecrets = ./test-secrets-types.dhall"
+              , "in  TestSecrets::{"
+              , "    , test_served_fqdn = \"alpha.example.test\""
+              , "    , test_acme_email = \"operator@alpha.example.test\""
+              , "    , legacy_cluster_id = \"legacy-test-cluster\""
+              , "    , legacy_machine_id = \"legacy-test-machine\""
+              , "    , legacy_vault_address = \"http://127.0.0.1:31820\""
+              , "    , legacy_minio_endpoint = \"http://127.0.0.1:39000\""
+              , "    }"
+              ]
+          )
+        decoded <- Dhall.inputFile Dhall.auto (tmpDir </> "test-secrets.dhall") :: IO TestSecrets
+        test_served_fqdn decoded `shouldBe` "alpha.example.test"
+        test_acme_email decoded `shouldBe` "operator@alpha.example.test"
+        legacy_cluster_id decoded `shouldBe` "legacy-test-cluster"
+        legacy_machine_id decoded `shouldBe` "legacy-test-machine"
+        legacy_vault_address decoded `shouldBe` "http://127.0.0.1:31820"
+        legacy_minio_endpoint decoded `shouldBe` "http://127.0.0.1:39000"
     it "Sprint 5.34: a transposed admin credential pair is refused at decode" $
       withSystemTempDirectory "prodbox-schema-transposed" $ \tmpDir -> do
         -- The row that scheduled this named the defect exactly: `access_key_id`
@@ -4802,7 +4955,7 @@ unitSuite = do
                 , "      { access_key_id = \"" ++ keyId ++ "\""
                 , "      , secret_access_key = \"" ++ secret ++ "\""
                 , "      , session_token = None Text"
-                , "      , region = \"us-east-1\""
+                , ("      , region = \"" <> (fixtureAwsRegion FixtureUsEast1) <> "\"")
                 , "      } }"
                 ]
             decodeFixture body = do
@@ -4948,14 +5101,13 @@ unitSuite = do
   describe "Model B object store (Sprint 4.30)" $ do
     it "uses one generic bucket name for object-store and Pulumi backend paths" $ do
       defaultObjectStoreBucket `shouldBe` "prodbox-state"
-      minioBackendBucket `shouldBe` defaultObjectStoreBucket
       defaultObjectStoreBucket `shouldNotBe` "prodbox-test-pulumi-backends"
     it "routes gateway MinIO bootstrap to the same generic bucket" $ do
       repoRoot <- getCurrentDirectory
       source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
-      source `shouldContain` "gatewayMinioBucket = \"prodbox-state\""
+      source `shouldContain` "mc mb --ignore-existing local/\" ++ defaultObjectStoreBucket"
       source `shouldContain` "s3:DeleteObject"
-      source `shouldNotContain` "gatewayMinioBucket = \"prodbox\""
+      source `shouldNotContain` "gatewayMinioBucket"
     it "builds typed bucket lifecycle commands for the object-store bucket" $ do
       objectStoreHeadBucketArgs "http://127.0.0.1:39000" defaultObjectStoreBucket
         `shouldBe` [ "--endpoint-url"
@@ -5106,7 +5258,7 @@ unitSuite = do
         -- shamir, no parent) == sampleRootBasics. The floor itself selects the
         -- Authority-owned path; there is no object-absence, marker, or direct
         -- MinIO fallback after Tier-0 exists.
-        withBinarySiblingTier0 (tier0Fixture defaultProjectConfig) $ do
+        withBinarySiblingTier0 (tier0Fixture sampleTier0Root) $ do
           result <-
             loadConfigForSettingsWith
               (\basics -> basics `shouldBe` sampleRootBasics >> pure (Right roundTripConfigFile))
@@ -5114,7 +5266,7 @@ unitSuite = do
           result `shouldBe` Right roundTripConfigFile
     it "propagates an unobservable Authority config without filesystem fallback" $
       withSystemTempDirectory "prodbox-config-loader-fail-closed" $ \tmpDir -> do
-        withBinarySiblingTier0 (tier0Fixture defaultProjectConfig) $ do
+        withBinarySiblingTier0 (tier0Fixture sampleTier0Root) $ do
           result <-
             loadConfigForSettingsWith
               (\_ -> pure (Left "Authority config is unobservable"))
@@ -5457,6 +5609,16 @@ unitSuite = do
     it "routes vault unseal through the native Haskell runtime" $ do
       parseArgs ["vault", "unseal"]
         `shouldBe` Right (Options False (RunNative (NativeVault VaultUnseal)))
+
+    it "routes the confirmed ambiguous-initialization reset through the native Haskell runtime" $ do
+      parseArgs ["vault", "reset-ambiguous-initialization", "--yes"]
+        `shouldBe` Right
+          (Options False (RunNative (NativeVault (VaultResetAmbiguousInitialization True))))
+
+    it "keeps omitted reset confirmation explicit for the handler refusal" $ do
+      parseArgs ["vault", "reset-ambiguous-initialization"]
+        `shouldBe` Right
+          (Options False (RunNative (NativeVault (VaultResetAmbiguousInitialization False))))
 
     it "routes vault rotate-transit-key with its key argument" $ do
       parseArgs ["vault", "rotate-transit-key", "prodbox-minio-envelope"]
@@ -5989,10 +6151,257 @@ unitSuite = do
       $ do
         let built = configFromSetupInput defaultConfigFile sampleConfigSetupInput
         zone_id (route53 built) `shouldBe` "Z1234567890ABC"
-        email (acme built) `shouldBe` "ops@resolvefintech.com"
-        demo_fqdn (domain built) `shouldBe` "test.resolvefintech.com"
+        email (acme built) `shouldBe` "ops@example.test"
+        demo_fqdn (domain built) `shouldBe` "test.example.test"
         awsCredentialRegion (aws built)
           `shouldBe` region (configSetupAdminCredentialsInput sampleConfigSetupInput)
+
+    it "Sprint 1.92: config setup preserves a second distinct authoring input" $ do
+      let secondContext =
+            DeploymentContextInput
+              { contextInputClusterId = "second-cluster"
+              , contextInputVaultAddress = "https://vault.second.test"
+              , contextInputMinioEndpoint = "https://minio.second.test"
+              }
+          secondTopology =
+            either
+              (error . ClusterTopology.renderTopologyError)
+              id
+              (ClusterTopology.mkSingleMachineRke2Topology "second-machine")
+          secondInput =
+            sampleConfigSetupInput
+              { configSetupDemoFqdnInput = "second.example.test"
+              , configSetupAcmeEmailInput = "second@example.test"
+              , configSetupDeploymentContextInput = secondContext
+              , configSetupClusterTopologyInput = secondTopology
+              }
+          built = configFromSetupInput syntheticConfigFile secondInput
+      demo_fqdn (domain built) `shouldBe` "second.example.test"
+      email (acme built) `shouldBe` "second@example.test"
+      configSetupDeploymentContextInput secondInput `shouldBe` secondContext
+      map
+        (ClusterTopology.machineIdText . ClusterTopology.machine_id)
+        (ClusterTopology.clusterTopologyMachines (cluster_topology built))
+        `shouldBe` ["second-machine"]
+
+    it
+      "Sprint 5.37 writes two distinct explicit fixture/run configs without changing product identities"
+      $ withSystemTempDirectory "prodbox-harness-configs"
+      $ \tmpDir -> do
+        let topologyA =
+              either
+                (error . ClusterTopology.renderTopologyError)
+                id
+                (ClusterTopology.mkSingleMachineRke2Topology "harness-machine-a")
+            topologyB =
+              either
+                (error . ClusterTopology.renderTopologyError)
+                id
+                (ClusterTopology.mkSingleMachineRke2Topology "harness-machine-b")
+            deploymentInput context topology storageRoot =
+              HarnessDeploymentInput
+                { harnessDeploymentContext = context
+                , harnessDeploymentTopology = topology
+                , harnessDeploymentStorageRoot = storageRoot
+                }
+            contextA =
+              DeploymentContextInput
+                "harness-cluster-a"
+                "http://vault-a.fixture:8200"
+                "http://minio-a.fixture:9000"
+            contextB =
+              DeploymentContextInput
+                "harness-cluster-b"
+                "https://vault-b.fixture"
+                "https://minio-b.fixture"
+            secretsA = populatedHarnessTestSecrets
+            secretsB =
+              populatedHarnessTestSecrets
+                { test_served_fqdn = "bravo.example.test"
+                , test_acme_email = "operator@bravo.example.test"
+                }
+            credentials = configSetupAdminCredentialsInput sampleConfigSetupInput
+            generate secrets deploymentInput' = do
+              input <-
+                harnessConfigSetupInputFrom
+                  defaultConfigFile
+                  PolicyFull
+                  secrets
+                  credentials
+                  deploymentInput'
+              Right
+                ( harnessGeneratedConfig defaultConfigFile secrets input
+                , configSetupDeploymentContextInput input
+                )
+            generatedA =
+              generate
+                secretsA
+                (deploymentInput contextA topologyA ".test-data/harness-a")
+            generatedB =
+              generate
+                secretsB
+                (deploymentInput contextB topologyB ".test-data/harness-b")
+        case (generatedA, generatedB) of
+          (Right (configA, generatedContextA), Right (configB, generatedContextB)) -> do
+            demo_fqdn (domain configA) `shouldBe` "alpha.example.test"
+            demo_fqdn (domain configB) `shouldBe` "bravo.example.test"
+            email (acme configA) `shouldBe` "operator@alpha.example.test"
+            email (acme configB) `shouldBe` "operator@bravo.example.test"
+            map
+              (ClusterTopology.machineIdText . ClusterTopology.machine_id)
+              (ClusterTopology.clusterTopologyMachines (cluster_topology configA))
+              `shouldBe` ["harness-machine-a"]
+            map
+              (ClusterTopology.machineIdText . ClusterTopology.machine_id)
+              (ClusterTopology.clusterTopologyMachines (cluster_topology configB))
+              `shouldBe` ["harness-machine-b"]
+            aws configA `shouldBe` aws configB
+            pulumi_state_backend configA `shouldBe` pulumi_state_backend configB
+            let rootA = tmpDir </> "a"
+                rootB = tmpDir </> "b"
+            createDirectoryIfMissing True rootA
+            createDirectoryIfMissing True rootB
+            Tier0.writeTier0AtPath
+              (rootA </> "prodbox.dhall")
+              (harnessProjectConfig configA generatedContextA)
+              `shouldReturn` Right ()
+            Tier0.writeTier0AtPath
+              (rootB </> "prodbox.dhall")
+              (harnessProjectConfig configB generatedContextB)
+              `shouldReturn` Right ()
+            renderedA <- readFile (rootA </> "prodbox.dhall")
+            renderedB <- readFile (rootB </> "prodbox.dhall")
+            renderedA `shouldContain` "alpha.example.test"
+            renderedA `shouldContain` "harness-cluster-a"
+            renderedA `shouldContain` "harness-machine-a"
+            renderedA `shouldContain` "http://vault-a.fixture:8200"
+            renderedA `shouldContain` "http://minio-a.fixture:9000"
+            renderedB `shouldContain` "bravo.example.test"
+            renderedB `shouldContain` "harness-cluster-b"
+            renderedB `shouldContain` "harness-machine-b"
+            renderedB `shouldContain` "https://vault-b.fixture"
+            renderedB `shouldContain` "https://minio-b.fixture"
+            renderedA `shouldNotBe` renderedB
+          (Left err, _) -> expectationFailure err
+          (_, Left err) -> expectationFailure err
+
+    it
+      "Sprint 5.37 refuses every missing external or derived harness input in the pure pre-write builder"
+      $ do
+        let topology =
+              either
+                (error . ClusterTopology.renderTopologyError)
+                id
+                (ClusterTopology.mkSingleMachineRke2Topology "harness-machine")
+            context =
+              DeploymentContextInput
+                "harness-cluster"
+                "http://vault.fixture:8200"
+                "http://minio.fixture:9000"
+            deploymentInput = HarnessDeploymentInput context topology "/tmp/prodbox-harness"
+            credentials = configSetupAdminCredentialsInput sampleConfigSetupInput
+            build secrets input =
+              harnessConfigSetupInputFrom defaultConfigFile PolicyFull secrets credentials input
+            missingFixtureCases =
+              [ ("route53_zone_id", populatedHarnessTestSecrets {route53_zone_id = ""})
+              , ("test_served_fqdn", populatedHarnessTestSecrets {test_served_fqdn = ""})
+              , ("test_acme_email", populatedHarnessTestSecrets {test_acme_email = ""})
+              , ("ses_sender_domain", populatedHarnessTestSecrets {ses_sender_domain = ""})
+              , ("ses_receive_subdomain", populatedHarnessTestSecrets {ses_receive_subdomain = ""})
+              , ("ses_capture_bucket", populatedHarnessTestSecrets {ses_capture_bucket = ""})
+              ,
+                ( "pulumi_state_backend_bucket_name"
+                , populatedHarnessTestSecrets {pulumi_state_backend_bucket_name = ""}
+                )
+              ,
+                ( "pulumi_state_backend_region"
+                , populatedHarnessTestSecrets {pulumi_state_backend_region = ""}
+                )
+              ]
+            missingDerivedCases =
+              [
+                ( "context.cluster_id"
+                , deploymentInput
+                    { harnessDeploymentContext = context {contextInputClusterId = ""}
+                    }
+                )
+              ,
+                ( "context.vault_address"
+                , deploymentInput
+                    { harnessDeploymentContext = context {contextInputVaultAddress = ""}
+                    }
+                )
+              ,
+                ( "context.minio_endpoint"
+                , deploymentInput
+                    { harnessDeploymentContext = context {contextInputMinioEndpoint = ""}
+                    }
+                )
+              ,
+                ( "machine_id"
+                , deploymentInput
+                    { harnessDeploymentTopology = ClusterTopology.unconfiguredClusterTopology
+                    }
+                )
+              ,
+                ( "derived manual_pv_host_root"
+                , deploymentInput {harnessDeploymentStorageRoot = ""}
+                )
+              ]
+        forM_ missingFixtureCases $ \(field, secrets) ->
+          build secrets deploymentInput `shouldSatisfy` leftContains field
+        forM_ missingDerivedCases $ \(field, input) ->
+          build populatedHarnessTestSecrets input `shouldSatisfy` leftContains field
+
+    it "normalizes only the sender-bound legacy SES receive fixture" $ do
+      let sender = ses_sender_domain populatedHarnessTestSecrets
+          legacy =
+            populatedHarnessTestSecrets
+              { ses_receive_subdomain = "inbox." <> sender
+              }
+          unrelated =
+            populatedHarnessTestSecrets
+              { ses_receive_subdomain = "inbox.unrelated.example"
+              }
+      harnessReceiveSubdomainLabel populatedHarnessTestSecrets
+        `shouldBe` Right "receive"
+      harnessReceiveSubdomainLabel legacy `shouldBe` Right "inbox"
+      harnessReceiveSubdomainLabel unrelated
+        `shouldSatisfy` leftContains "declared sender domain"
+
+    it "Sprint 5.37 preserves a complete operator-authored Tier-0 sibling byte for byte" $
+      withSystemTempDirectory "prodbox-harness-preserve" $ \tmpDir -> do
+        let topology =
+              either
+                (error . ClusterTopology.renderTopologyError)
+                id
+                (ClusterTopology.mkSingleMachineRke2Topology "operator-machine")
+            context =
+              DeploymentContextInput
+                "operator-cluster"
+                "http://operator-vault.fixture:8200"
+                "http://operator-minio.fixture:9000"
+            deploymentInput = HarnessDeploymentInput context topology ".test-data/operator-data"
+            credentials = configSetupAdminCredentialsInput sampleConfigSetupInput
+            generated = do
+              input <-
+                harnessConfigSetupInputFrom
+                  defaultConfigFile
+                  PolicyFull
+                  populatedHarnessTestSecrets
+                  credentials
+                  deploymentInput
+              Right (harnessGeneratedConfig defaultConfigFile populatedHarnessTestSecrets input)
+        case generated of
+          Left err -> expectationFailure err
+          Right config -> do
+            let projectConfig = harnessProjectConfig config context
+            Tier0.writeTier0AtPath (tmpDir </> "prodbox.dhall") projectConfig
+              `shouldReturn` Right ()
+            before <- BS.readFile (tmpDir </> "prodbox.dhall")
+            existingHarnessConfigDisposition tmpDir config projectConfig True
+              `shouldReturn` Right True
+            BS.readFile (tmpDir </> "prodbox.dhall") `shouldReturn` before
 
     goldenTest
       "renders the gateway start plan deterministically"
@@ -6097,7 +6506,7 @@ unitSuite = do
               { access_key_id = ""
               , secret_access_key = "secret"
               , session_token = Nothing
-              , region = "us-west-2"
+              , region = (fixtureAwsRegion FixtureUsWest2)
               }
         )
         `shouldBe` OperationalAwsCredentialsAbsent "operational aws.* resolved with an empty field"
@@ -6111,7 +6520,7 @@ unitSuite = do
                 { access_key_id = "access"
                 , secret_access_key = "secret"
                 , session_token = Nothing
-                , region = "us-west-2"
+                , region = (fixtureAwsRegion FixtureUsWest2)
                 }
           )
           `shouldBe` OperationalAwsCredentialsReady
@@ -6645,14 +7054,15 @@ unitSuite = do
       awsEksMain `shouldContain` "operatorCidr:"
       awsEksMain `shouldContain` "type: string"
       awsEksMain `shouldNotContain` "std:getenv"
-      awsEksInfra `shouldContain` "mkAwsEksProviderStackConfig"
+      awsEksInfra `shouldContain` "mkAwsEksProfileProviderStackConfig"
       awsTestMain `shouldContain` "operatorCidr:"
       awsTestMain `shouldContain` "type: string"
       awsTestMain `shouldContain` "tls:PrivateKey"
       awsTestMain `shouldContain` "ssh_private_key:"
       awsTestMain `shouldNotContain` "std:getenv"
-      awsTestInfra `shouldContain` "mkAwsTestProviderStackConfig"
-      providerProduction `shouldContain` "[(\"operatorCidr\", Text.unpack operatorCidr)]"
+      awsTestInfra `shouldContain` "mkAwsTestProfileProviderStackConfig"
+      providerProduction `shouldContain` "awsEksStackConfiguration profile desiredSize"
+      providerProduction `shouldContain` "awsTestStackConfiguration profile"
       providerProduction
         `shouldContain` "[\"config\", \"set\", \"--stack\", stackName compiled, key, value, \"--non-interactive\"]"
 
@@ -6722,6 +7132,17 @@ unitSuite = do
       providerProduction `shouldContain` "[\"destroy\", \"--stack\""
 
   describe "test planning" $ do
+    let completeLifecyclePerRunTargets =
+          [ TeardownModel.AwsEksKey
+          , TeardownModel.AwsEksSubzoneKey
+          , TeardownModel.AwsTestKey
+          , TeardownModel.AwsEbsPerRunTestKey
+          , TeardownModel.AwsDnsValidationZoneKey
+          , TeardownModel.AwsDns01ChallengeRecordKey
+          , TeardownModel.AwsEksIamRoleFamilyKey
+          , TeardownModel.AwsEksLoadBalancerControllerFamilyKey
+          ]
+
     it "maps aggregate all to the native ordered validation workflow" $ do
       case testExecutionPlan SubstrateHomeLocal TestAll of
         testPlan -> do
@@ -6944,7 +7365,7 @@ unitSuite = do
               retainedSesRequirementForValidations (nativeValidations suitePlan)
                 `shouldBe` SesRequired
               integrationRunbookCommandArgs suitePlan `shouldBe` [["cluster", "reconcile", "--with-edge"]]
-              awsPostflightDestroyCommandArgs suitePlan `shouldBe` []
+              lifecycleCleanupTargetsForSuite suitePlan `shouldBe` []
             DelegatedSuite _ -> expectationFailure "expected native keycloak-invite plan"
 
     it "wraps targeted AWS-substrate validations in the managed IAM harness" $ do
@@ -6956,41 +7377,8 @@ unitSuite = do
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
               nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
               nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` False
-              awsPostflightDestroyCommandArgs suitePlan
-                `shouldBe` [ ["aws", "stack", "aws-subzone", "destroy", "--yes"]
-                           , ["aws", "stack", "eks", "destroy", "--yes"]
-                           , ["aws", "stack", "test", "destroy", "--yes"]
-                           ]
-              awsHarnessCleanupTopology suitePlan
-                `shouldBe` (
-                             [ "aws-k8s-drain"
-                             , "aws-vault-unseal"
-                             , "aws-eks"
-                             , "aws-eks-subzone"
-                             , "aws-test"
-                             , "aws-test-ebs"
-                             , -- Sprint 5.28: sweep leaked dns-aws validation zones
-                               -- before the teardown removes the credentials it needs.
-                               "aws-dns-validation-zones"
-                             , "aws-operational-teardown"
-                             ]
-                           ,
-                             [ ManagedCleanupEdge "aws-k8s-drain" CleanupRequiresAttempt "aws-vault-unseal"
-                             , ManagedCleanupEdge "aws-vault-unseal" CleanupRequiresAttempt "aws-eks"
-                             , ManagedCleanupEdge "aws-eks" CleanupRequiresAttempt "aws-eks-subzone"
-                             , ManagedCleanupEdge "aws-eks-subzone" CleanupRequiresAttempt "aws-test"
-                             , ManagedCleanupEdge "aws-test" CleanupRequiresAttempt "aws-test-ebs"
-                             , ManagedCleanupEdge "aws-test-ebs" CleanupRequiresAttempt "aws-dns-validation-zones"
-                             , ManagedCleanupEdge "aws-eks" CleanupRequiresSuccess "aws-operational-teardown"
-                             , ManagedCleanupEdge "aws-eks-subzone" CleanupRequiresSuccess "aws-operational-teardown"
-                             , ManagedCleanupEdge "aws-test" CleanupRequiresSuccess "aws-operational-teardown"
-                             , ManagedCleanupEdge "aws-test-ebs" CleanupRequiresSuccess "aws-operational-teardown"
-                             , ManagedCleanupEdge
-                                 "aws-dns-validation-zones"
-                                 CleanupRequiresSuccess
-                                 "aws-operational-teardown"
-                             ]
-                           )
+              lifecycleCleanupTargetsForSuite suitePlan
+                `shouldBe` completeLifecyclePerRunTargets
             DelegatedSuite _ -> expectationFailure "expected native keycloak-invite plan"
 
       case testExecutionPlan SubstrateAws (TestIntegration IntegrationPublicDns) of
@@ -7001,9 +7389,7 @@ unitSuite = do
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
               awsSubstrateBootstrapRestorePlan suitePlan
                 `shouldBe` buildRestoreCyclePlan SubstrateAws SesNotRequired
-              awsPostflightDestroyCommandArgs suitePlan `shouldBe` []
-              awsHarnessCleanupTopology suitePlan
-                `shouldBe` (["aws-operational-teardown"], [])
+              lifecycleCleanupTargetsForSuite suitePlan `shouldBe` []
             DelegatedSuite _ -> expectationFailure "expected native public-dns plan"
 
     it "does not repeat rke2 reconcile during supported runtime bootstrap after the runbook reconcile" $ do
@@ -7030,7 +7416,7 @@ unitSuite = do
               }
       supportedRuntimeBootstrapNeedsReconcile bootstrapWithoutRunbook `shouldBe` True
 
-    it "auto-destroys per-run stacks for targeted AWS-substrate Pulumi validations" $ do
+    it "selects the complete lifecycle projection for AWS stack validations" $ do
       case testExecutionPlan SubstrateAws (TestIntegration IntegrationAwsEks) of
         testPlan ->
           case testPlanExecutionMode testPlan of
@@ -7038,11 +7424,8 @@ unitSuite = do
               nativeSuiteId suitePlan `shouldBe` "integration-aws-eks"
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
               nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` False
-              awsPostflightDestroyCommandArgs suitePlan
-                `shouldBe` [ ["aws", "stack", "aws-subzone", "destroy", "--yes"]
-                           , ["aws", "stack", "eks", "destroy", "--yes"]
-                           , ["aws", "stack", "test", "destroy", "--yes"]
-                           ]
+              lifecycleCleanupTargetsForSuite suitePlan
+                `shouldBe` completeLifecyclePerRunTargets
             DelegatedSuite _ -> expectationFailure "expected native aws-eks plan"
 
       case testExecutionPlan SubstrateAws (TestIntegration IntegrationEksVolumeRebind) of
@@ -7052,12 +7435,38 @@ unitSuite = do
               nativeSuiteId suitePlan `shouldBe` "integration-eks-volume-rebind"
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
               nativeValidations suitePlan `shouldBe` [ValidationEksVolumeRebind]
-              awsPostflightDestroyCommandArgs suitePlan
-                `shouldBe` [ ["aws", "stack", "aws-subzone", "destroy", "--yes"]
-                           , ["aws", "stack", "eks", "destroy", "--yes"]
-                           , ["aws", "stack", "test", "destroy", "--yes"]
-                           ]
+              lifecycleCleanupTargetsForSuite suitePlan
+                `shouldBe` completeLifecyclePerRunTargets
             DelegatedSuite _ -> expectationFailure "expected native eks-volume-rebind plan"
+
+    it "gives cascade qualification one destructive AWS harness and no postflight rebuild" $ do
+      case testExecutionPlan SubstrateAws (TestIntegration IntegrationCascadeQualification) of
+        testPlan ->
+          case testPlanExecutionMode testPlan of
+            NativeSuite suitePlan -> do
+              nativeSuiteId suitePlan `shouldBe` "integration-cascade-qualification"
+              nativeValidations suitePlan `shouldBe` [ValidationCascadeQualification]
+              map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
+                `shouldBe` [ "host_substrate_supported"
+                           , "tool_docker"
+                           , "tool_ctr"
+                           , "tool_helm"
+                           , "tool_kubectl"
+                           , "tool_sudo"
+                           , "tool_systemctl"
+                           , "settings_object"
+                           , "aws_credentials_valid"
+                           , "tool_pulumi"
+                           ]
+              map prerequisiteIdText (nativeDeferredIntegrationGatePrerequisites suitePlan)
+                `shouldBe` ["pulumi_logged_in"]
+              nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
+              nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
+              nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
+              nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` False
+              lifecycleCleanupTargetsForSuite suitePlan
+                `shouldBe` completeLifecyclePerRunTargets
+            DelegatedSuite _ -> expectationFailure "expected native cascade-qualification plan"
 
     it "maps cluster-backed named suites to native validations plus prerequisites" $ do
       case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationAwsEks) of
@@ -7179,6 +7588,9 @@ unitSuite = do
               map prerequisiteIdText (nativeInitialIntegrationGatePrerequisites suitePlan)
                 `shouldBe` ["route53_lifecycle_capable"]
               nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
+              nativeMayProvisionPerRunAwsStacks suitePlan `shouldBe` True
+              lifecycleCleanupTargetsForSuite suitePlan
+                `shouldBe` [TeardownModel.AwsDnsValidationZoneKey]
             DelegatedSuite _ -> expectationFailure "expected native dns-aws plan"
 
       case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationAwsIam) of
@@ -9177,6 +9589,173 @@ unitSuite = do
     it "lists supported charts in canonical order" $ do
       supportedChartNames `shouldBe` ["keycloak", "vscode", "api", "websocket", "gateway"]
 
+    it "Sprint 3.43: separates host-only Tier-0 endpoints from the one in-cluster Service endpoint" $ do
+      let endpointA = "http://minio-a.test:9000"
+          endpointB = "https://minio-b.test:9443"
+          settingsA = chartProjectionSettings "edge-a.example.test" endpointA
+          settingsB = chartProjectionSettings "edge-b.example.test" endpointB
+          runtimeImage =
+            ResolvedCustomImage
+              { resolvedCustomImageRepository = "harbor.test/prodbox/runtime"
+              , resolvedCustomImageTag = "projection-test"
+              , resolvedCustomImageRolloutToken = Just ("sha256:" ++ replicate 64 'a')
+              , resolvedCustomImageRuntimeDigest = Just ("sha256:" ++ replicate 64 'b')
+              }
+          imageResolver _ = pure (Right (Just runtimeImage))
+          renderedProjection endpoint plan = do
+            gatewayValues <- expectRightTest (chartReleaseValuesFromPlan "gateway" plan)
+            gatewayEndpoint <- expectRightTest (chartTextAtPath ["minio", "endpointUrl"] gatewayValues)
+            gatewayTier0Dhall <- expectRightTest (gatewayTier0DhallFromPlan plan)
+            gatewayTier0 <-
+              Dhall.input Dhall.auto (Text.pack gatewayTier0Dhall)
+                :: IO Tier0.ProdboxProjectConfig
+            brokerValues <-
+              expectRightTest
+                ( valuesForBootstrapBroker
+                    "chart-projection"
+                    endpoint
+                    "bootstrap-broker"
+                    "bootstrap-broker"
+                    (Just runtimeImage)
+                )
+            brokerDhall <- expectRightTest (chartTextAtPath ["config", "brokerDhall"] brokerValues)
+            brokerConfig <-
+              Dhall.input Dhall.auto brokerDhall
+                :: IO BrokerSettings.BootstrapBrokerConfigDhall
+            authorityValues <-
+              expectRightTest
+                ( valuesForLifecycleAuthority
+                    "chart-projection"
+                    endpoint
+                    "lifecycle-authority"
+                    "lifecycle-authority"
+                    (Just runtimeImage)
+                )
+            authorityDhall <- expectRightTest (chartTextAtPath ["config", "roleDhall"] authorityValues)
+            authorityConfig <-
+              Dhall.input Dhall.auto authorityDhall
+                :: IO ControlPlaneRuntime.ControlPlaneConfig
+            case ControlPlaneRuntime.role_store authorityConfig of
+              ControlPlaneRuntime.RoleStorePrimary store ->
+                pure
+                  (
+                    [ gatewayEndpoint
+                    , Tier0.minio_endpoint (Tier0.context gatewayTier0)
+                    , BrokerSettings.store_endpoint (BrokerSettings.bootstrap_store brokerConfig)
+                    , ControlPlaneRuntime.primary_endpoint store
+                    ]
+                  ,
+                    [ BrokerSettings.store_bucket (BrokerSettings.bootstrap_store brokerConfig)
+                    , ControlPlaneRuntime.primary_bucket store
+                    ]
+                  )
+              other ->
+                expectationFailure ("expected primary role store, got " ++ show other) >> fail "wrong role store"
+          homeTier0 =
+            sampleTier0Root
+              { context =
+                  (context sampleTier0Root)
+                    { cluster_id = "chart-projection-home"
+                    }
+              }
+      withBinarySiblingTier0 (tier0Fixture homeTier0) $ do
+        planAResult <-
+          buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
+            imageResolver
+            SubstrateHomeLocal
+            "/tmp/prodbox"
+            settingsA
+            "gateway"
+            testChartSecrets
+            Map.empty
+        planBResult <-
+          buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
+            imageResolver
+            SubstrateHomeLocal
+            "/tmp/prodbox"
+            settingsB
+            "gateway"
+            testChartSecrets
+            Map.empty
+        planA <- expectRightTest planAResult
+        planB <- expectRightTest planBResult
+        (endpointsA, bucketsA) <- renderedProjection endpointA planA
+        (endpointsB, bucketsB) <- renderedProjection endpointB planB
+        endpointsA
+          `shouldBe` [ Text.pack minioClusterServiceEndpoint
+                     , Text.pack minioClusterServiceEndpoint
+                     , endpointA
+                     , endpointA
+                     ]
+        endpointsB
+          `shouldBe` [ Text.pack minioClusterServiceEndpoint
+                     , Text.pack minioClusterServiceEndpoint
+                     , endpointB
+                     , endpointB
+                     ]
+        bucketsA `shouldBe` replicate 2 (Text.pack defaultObjectStoreBucket)
+        bucketsB `shouldBe` bucketsA
+
+    it "Sprint 3.42: changes every public-host chart projection with the validated served host" $ do
+      let hostA = "edge-a.example.test"
+          hostB = "edge-b.example.test"
+          settingsA = chartProjectionSettings hostA "http://minio-a.test:9000"
+          settingsB = chartProjectionSettings hostB "http://minio-b.test:9000"
+          runtimeImage =
+            ResolvedCustomImage
+              { resolvedCustomImageRepository = "harbor.test/prodbox/runtime"
+              , resolvedCustomImageTag = "projection-test"
+              , resolvedCustomImageRolloutToken = Just ("sha256:" ++ replicate 64 'c')
+              , resolvedCustomImageRuntimeDigest = Just ("sha256:" ++ replicate 64 'd')
+              }
+          imageResolver _ = pure (Right (Just runtimeImage))
+          renderPlans settings =
+            mapM
+              ( \rootChart ->
+                  buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
+                    imageResolver
+                    SubstrateHomeLocal
+                    "/tmp/prodbox"
+                    settings
+                    rootChart
+                    testChartSecrets
+                    Map.empty
+              )
+              ["vscode", "api", "websocket", "gateway"]
+          hostProjections plans =
+            case plans of
+              [vscodePlan, apiPlan, websocketPlan, gatewayPlan] -> do
+                keycloakValues <- chartReleaseValuesFromPlan "keycloak" vscodePlan
+                vscodeValues <- chartReleaseValuesFromPlan "vscode" vscodePlan
+                apiValues <- chartReleaseValuesFromPlan "api" apiPlan
+                websocketValues <- chartReleaseValuesFromPlan "websocket" websocketPlan
+                gatewayValues <- chartReleaseValuesFromPlan "gateway" gatewayPlan
+                sequence
+                  [ chartTextAtPath ["keycloak", "publicHost"] keycloakValues
+                  , chartTextAtPath ["gateway", "host"] keycloakValues
+                  , chartTextAtPath ["gateway", "host"] vscodeValues
+                  , chartTextAtPath ["gateway", "host"] apiValues
+                  , chartTextAtPath ["gateway", "host"] websocketValues
+                  , chartTextAtPath ["dnsWriteGate", "fqdn"] gatewayValues
+                  ]
+              _ -> Left "expected four public-host deployment plans"
+          homeTier0 =
+            sampleTier0Root
+              { context =
+                  (context sampleTier0Root)
+                    { cluster_id = "chart-projection-home"
+                    }
+              }
+      withBinarySiblingTier0 (tier0Fixture homeTier0) $ do
+        planResultsA <- renderPlans settingsA
+        planResultsB <- renderPlans settingsB
+        plansA <- mapM expectRightTest planResultsA
+        plansB <- mapM expectRightTest planResultsB
+        projectionsA <- expectRightTest (hostProjections plansA)
+        projectionsB <- expectRightTest (hostProjections plansB)
+        projectionsA `shouldBe` replicate 6 hostA
+        projectionsB `shouldBe` replicate 6 hostB
+
     it "renders the Pulsar workload chart as a retained gateway dependency" $ do
       result <-
         buildChartDeploymentPlanForSubstrate
@@ -9334,6 +9913,7 @@ unitSuite = do
               }
       case valuesForBootstrapBroker
         "prodbox-home"
+        "http://minio.test:9000"
         "bootstrap-broker"
         "bootstrap-broker"
         (Just brokerImage) of
@@ -9382,9 +9962,9 @@ unitSuite = do
                   BrokerSettings.vault_address decoded
                     `shouldBe` "http://vault.vault.svc.cluster.local:8200"
                   BrokerSettings.store_endpoint (BrokerSettings.bootstrap_store decoded)
-                    `shouldBe` "http://minio.prodbox.svc.cluster.local:9000"
+                    `shouldBe` "http://minio.test:9000"
                   BrokerSettings.store_bucket (BrokerSettings.bootstrap_store decoded)
-                    `shouldBe` "prodbox-state"
+                    `shouldBe` Text.pack defaultObjectStoreBucket
                 _ -> expectationFailure "expected config.brokerDhall"
             _ -> expectationFailure "expected config object"
           -- The Guaranteed-QoS envelope is attached by attachResourcePlanValues,
@@ -9393,7 +9973,12 @@ unitSuite = do
         Right _ -> expectationFailure "expected bootstrap-broker values object"
 
     it "refuses Bootstrap Broker values without a resolved runtime image" $
-      valuesForBootstrapBroker "prodbox-home" "bootstrap-broker" "bootstrap-broker" Nothing
+      valuesForBootstrapBroker
+        "prodbox-home"
+        "http://minio.test:9000"
+        "bootstrap-broker"
+        "bootstrap-broker"
+        Nothing
         `shouldBe` Left "bootstrap-broker chart requires a resolved image reference"
 
     it "renders schema-v7 role-specific durable stores without generic S3 fields or secrets" $ do
@@ -9446,17 +10031,17 @@ unitSuite = do
       case ControlPlaneRuntime.role_store backupConfig of
         ControlPlaneRuntime.RoleStoreAuthorityBackup wire -> do
           ControlPlaneRuntime.authority_backup_endpoint wire
-            `shouldBe` "https://s3.ca-central-1.amazonaws.com"
-          ControlPlaneRuntime.authority_backup_region wire `shouldBe` "ca-central-1"
+            `shouldBe` ("https://s3." <> (fixtureAwsRegion FixtureCaCentral1) <> ".amazonaws.com")
+          ControlPlaneRuntime.authority_backup_region wire `shouldBe` (fixtureAwsRegion FixtureCaCentral1)
           ControlPlaneRuntime.authority_backup_bucket wire `shouldBe` "prodbox-retained"
           ControlPlaneRuntime.authority_backup_prefix wire `shouldBe` "authority-backup-store/home"
         other -> expectationFailure ("expected Backup role store, got " ++ show other)
       case ControlPlaneRuntime.role_store tlsConfig of
         ControlPlaneRuntime.RoleStoreTlsRetention wire -> do
           ControlPlaneRuntime.tls_retention_substrate wire `shouldBe` "aws"
-          ControlPlaneRuntime.tls_retention_scope_key wire `shouldBe` "aws.test.resolvefintech.com"
+          ControlPlaneRuntime.tls_retention_scope_key wire `shouldBe` "aws.test.example.test"
           ControlPlaneRuntime.tls_retention_prefix wire
-            `shouldBe` "public-edge-tls/aws/aws.test.resolvefintech.com"
+            `shouldBe` "public-edge-tls/aws/aws.test.example.test"
         other -> expectationFailure ("expected TLS role store, got " ++ show other)
 
     it "resolves the internal bootstrap-broker chart definition off the public surface" $
@@ -9503,9 +10088,9 @@ unitSuite = do
         Left err -> expectationFailure err
         Right plan -> do
           chartDeploymentPlanSubstrate plan `shouldBe` SubstrateAws
-          chartDeploymentPlanPublicFqdn plan `shouldBe` Just "aws.test.resolvefintech.com"
+          chartDeploymentPlanPublicFqdn plan `shouldBe` Just "aws.test.example.test"
           fmap (publicEdgeTlsRetentionKey SubstrateAws) (chartDeploymentPlanCertScopeSet plan)
-            `shouldBe` Just "public-edge-tls/aws/aws.test.resolvefintech.com"
+            `shouldBe` Just "public-edge-tls/aws/aws.test.example.test"
 
     it "renders AWS gateway deployments with the AWS-substrate image tag" $ do
       result <-
@@ -9573,9 +10158,9 @@ unitSuite = do
               )
           homeClusterId = "prodbox-home-target"
           homeTier0 =
-            defaultProjectConfig
+            sampleTier0Root
               { context =
-                  (context defaultProjectConfig)
+                  (context sampleTier0Root)
                     { cluster_id = homeClusterId
                     }
               }
@@ -9603,8 +10188,8 @@ unitSuite = do
             case (gatewayTier0DhallFromPlan homePlan, gatewayTier0DhallFromPlan awsPlan) of
               (Right homeDhall, Right awsDhall) -> do
                 homeDhall `shouldNotBe` awsDhall
-                assertMountedGatewayTier0Identity homeDhall homeClusterId
-                assertMountedGatewayTier0Identity
+                assertRenderedGatewayTier0Identity homeDhall homeClusterId
+                assertRenderedGatewayTier0Identity
                   awsDhall
                   (Text.pack AwsEks.awsEksCanonicalClusterName)
               (Left err, _) -> expectationFailure err
@@ -9643,7 +10228,7 @@ unitSuite = do
                       case KeyMap.lookup (Key.fromString "jwt") payload of
                         Just (Object jwtPayload) -> do
                           KeyMap.lookup (Key.fromString "issuer") jwtPayload
-                            `shouldBe` Just (String "https://aws.test.resolvefintech.com/auth/realms/prodbox")
+                            `shouldBe` Just (String "https://aws.test.example.test/auth/realms/prodbox")
                           KeyMap.lookup (Key.fromString "jwksUri") jwtPayload
                             `shouldBe` Just
                               ( String
@@ -9685,7 +10270,7 @@ unitSuite = do
                   case KeyMap.lookup (Key.fromString "jwt") payload of
                     Just (Object jwtPayload) -> do
                       KeyMap.lookup (Key.fromString "issuer") jwtPayload
-                        `shouldBe` Just (String "https://aws.test.resolvefintech.com/auth/realms/prodbox")
+                        `shouldBe` Just (String "https://aws.test.example.test/auth/realms/prodbox")
                       KeyMap.lookup (Key.fromString "jwksUri") jwtPayload
                         `shouldBe` Just
                           ( String
@@ -9753,7 +10338,7 @@ unitSuite = do
               { staticEbsVolumeBindingPersistentVolumeName =
                   chartStorageBindingPersistentVolumeName binding
               , staticEbsVolumeBindingVolumeHandle = "vol-0123"
-              , staticEbsVolumeBindingAvailabilityZone = "us-east-1a"
+              , staticEbsVolumeBindingAvailabilityZone = (fixtureAwsRegion FixtureUsEast1 <> "a")
               }
           manifestJsonResult =
             BL8.unpack . encode <$> chartEbsStorageManifest "vscode" "vscode" [binding] [ebsBinding]
@@ -9768,7 +10353,7 @@ unitSuite = do
           manifestJson `shouldContain` "\"driver\":\"ebs.csi.aws.com\""
           manifestJson `shouldContain` "\"volumeHandle\":\"vol-0123\""
           manifestJson `shouldContain` "\"key\":\"topology.ebs.csi.aws.com/zone\""
-          manifestJson `shouldContain` "\"values\":[\"us-east-1a\"]"
+          manifestJson `shouldContain` ("\"values\":[\"" <> (fixtureAwsRegion FixtureUsEast1) <> "a\"]")
           manifestJson `shouldContain` "\"volumeName\":\"prodbox-retained-vscode-vscode-0\""
           manifestJson `shouldNotContain` "\"hostPath\""
           manifestJson `shouldNotContain` "\"storageClassName\":\"gp2\""
@@ -9815,9 +10400,9 @@ unitSuite = do
         Right plan -> do
           chartDeploymentPlanRootChart plan `shouldBe` "vscode"
           chartDeploymentPlanNamespace plan `shouldBe` "vscode"
-          chartDeploymentPlanPublicFqdn plan `shouldBe` Just "test.resolvefintech.com"
+          chartDeploymentPlanPublicFqdn plan `shouldBe` Just "test.example.test"
           fmap (publicEdgeTlsRetentionKey SubstrateHomeLocal) (chartDeploymentPlanCertScopeSet plan)
-            `shouldBe` Just "public-edge-tls/home-local/test.resolvefintech.com"
+            `shouldBe` Just "public-edge-tls/home-local/test.example.test"
           map chartReleasePlanReleaseName (chartDeploymentPlanReleases plan)
             `shouldBe` ["keycloak-postgres", "keycloak", "vscode"]
 
@@ -9967,14 +10552,14 @@ unitSuite = do
               case KeyMap.lookup (Key.fromString "keycloak") payload of
                 Just (Object keycloakPayload) ->
                   KeyMap.lookup (Key.fromString "publicHost") keycloakPayload
-                    `shouldBe` Just (String "test.resolvefintech.com")
+                    `shouldBe` Just (String "test.example.test")
                 _ -> expectationFailure "expected keycloak runtime payload"
               case KeyMap.lookup (Key.fromString "gateway") payload of
                 Just (Object gatewayPayload) -> do
                   KeyMap.lookup (Key.fromString "className") gatewayPayload
                     `shouldBe` Just (String "prodbox-public-edge")
                   KeyMap.lookup (Key.fromString "host") gatewayPayload
-                    `shouldBe` Just (String "test.resolvefintech.com")
+                    `shouldBe` Just (String "test.example.test")
                   KeyMap.lookup (Key.fromString "httpRedirectListenerName") gatewayPayload
                     `shouldBe` Just (String "http")
                   KeyMap.lookup (Key.fromString "httpRedirectRouteName") gatewayPayload
@@ -9987,7 +10572,7 @@ unitSuite = do
                   KeyMap.lookup (Key.fromString "vscodeClientId") oidcPayload
                     `shouldBe` Just (String "vscode")
                   KeyMap.lookup (Key.fromString "redirectUri") oidcPayload
-                    `shouldBe` Just (String "https://test.resolvefintech.com/vscode/oauth2/callback")
+                    `shouldBe` Just (String "https://test.example.test/vscode/oauth2/callback")
                 _ -> expectationFailure "expected keycloak oidc payload"
               case KeyMap.lookup (Key.fromString "vault") payload of
                 Just (Object vaultPayload) -> do
@@ -10014,7 +10599,7 @@ unitSuite = do
                   KeyMap.lookup (Key.fromString "className") gatewayPayload
                     `shouldBe` Just (String "prodbox-public-edge")
                   KeyMap.lookup (Key.fromString "host") gatewayPayload
-                    `shouldBe` Just (String "test.resolvefintech.com")
+                    `shouldBe` Just (String "test.example.test")
                 _ -> expectationFailure "expected vscode gateway payload"
               case KeyMap.lookup (Key.fromString "oidc") payload of
                 Just (Object oidcPayload) -> do
@@ -10027,11 +10612,11 @@ unitSuite = do
                   KeyMap.lookup (Key.fromString "clientSecret") oidcPayload
                     `shouldBe` Nothing
                   KeyMap.lookup (Key.fromString "issuer") oidcPayload
-                    `shouldBe` Just (String "https://test.resolvefintech.com/auth/realms/prodbox")
+                    `shouldBe` Just (String "https://test.example.test/auth/realms/prodbox")
                   KeyMap.lookup (Key.fromString "authorizationEndpoint") oidcPayload
                     `shouldBe` Just
                       ( String
-                          "https://test.resolvefintech.com/auth/realms/prodbox/protocol/openid-connect/auth"
+                          "https://test.example.test/auth/realms/prodbox/protocol/openid-connect/auth"
                       )
                   KeyMap.lookup (Key.fromString "tokenEndpoint") oidcPayload
                     `shouldBe` Just
@@ -10123,7 +10708,7 @@ unitSuite = do
                     , Object
                         ( KeyMap.fromList
                             [ (Key.fromString "zone_id", String "Z123")
-                            , (Key.fromString "fqdn", String "test.resolvefintech.com")
+                            , (Key.fromString "fqdn", String "test.example.test")
                             , (Key.fromString "ttl", Number 60)
                             ]
                         )
@@ -10143,7 +10728,7 @@ unitSuite = do
         Left err -> expectationFailure err
         Right report -> do
           report `shouldContain` "ACTIVE_CLAIM=true"
-          report `shouldContain` "DNS_WRITE_GATE=test.resolvefintech.com@Z123 ttl=60"
+          report `shouldContain` "DNS_WRITE_GATE=test.example.test@Z123 ttl=60"
           report `shouldContain` "HEARTBEAT_NODE_B=1.5"
 
     it "enforces gateway timing relationships against the orders timeout" $ do
@@ -10237,10 +10822,10 @@ unitSuite = do
                         gatewayVaultRole vaultAuth `shouldBe` "gateway-gateway"
                         gatewayVaultServiceAccountTokenFile vaultAuth
                           `shouldBe` "/var/run/secrets/kubernetes.io/serviceaccount/token"
-                    dnsWriteGateFqdn gate `shouldBe` "test.resolvefintech.com"
+                    dnsWriteGateFqdn gate `shouldBe` "test.example.test"
                     dnsWriteGateZoneId gate `shouldBe` "Z1234567890ABC"
                     dnsWriteGateTtl gate `shouldBe` 60
-                    dnsWriteGateAwsRegion gate `shouldBe` "us-east-1"
+                    dnsWriteGateAwsRegion gate `shouldBe` (fixtureAwsRegion FixtureUsEast1)
 
     it
       "treats present-but-empty aws_creds as no aws creds on the home substrate (daemonAwsCreds = Nothing)"
@@ -10304,7 +10889,7 @@ unitSuite = do
           daemonEventKeys config `shouldBe` []
           daemonAwsCreds config `shouldBe` Nothing
           daemonMinioCreds config `shouldBe` Nothing
-          daemonMinioEndpointUrl config `shouldBe` Nothing
+          gatewayMinioEndpointUrl (daemonMinioEndpoint config) `shouldSatisfy` isLeft
           case daemonVaultAuth config of
             Nothing -> expectationFailure "expected gateway Vault auth"
             Just vaultAuth ->
@@ -10342,6 +10927,10 @@ unitSuite = do
           daemonBootFieldsChanged config config `shouldBe` False
           daemonBootFieldsChanged config (config {daemonLifecycleAuthority = Nothing}) `shouldBe` True
           daemonBootFieldsChanged config (config {daemonMinioCreds = Nothing}) `shouldBe` True
+          let changedEndpoint =
+                either error id (mkGatewayMinioEndpoint (Just "http://minio-other.test:9000"))
+          daemonBootFieldsChanged config (config {daemonMinioEndpoint = changedEndpoint})
+            `shouldBe` True
           daemonBootFieldsChanged config (config {daemonAwsCreds = Nothing}) `shouldBe` True
 
   describe "Sprint 2.17 Haskell HTTP client" $ do
@@ -10475,7 +11064,7 @@ unitSuite = do
                        , "      Some { zone_id = \"Z123\""
                        , "           , fqdn = \"test.example.com\""
                        , "           , ttl = 60"
-                       , "           , aws_region = \"us-east-1\""
+                       , ("           , aws_region = \"" <> (fixtureAwsRegion FixtureUsEast1) <> "\"")
                        , "           }"
                        ]
                     ++ gatewayAwsCredsNoneLines
@@ -10548,7 +11137,86 @@ unitSuite = do
               dnsWriteGateZoneId gate `shouldBe` "Z123"
               dnsWriteGateFqdn gate `shouldBe` "test.example.com"
               dnsWriteGateTtl gate `shouldBe` 60
-              dnsWriteGateAwsRegion gate `shouldBe` "us-east-1"
+              dnsWriteGateAwsRegion gate `shouldBe` (fixtureAwsRegion FixtureUsEast1)
+
+    it "Sprint 2.52: projects two configured MinIO endpoints exactly to the object-store client" $ do
+      let decodeEndpoint endpoint =
+            GatewaySettings.decodeDaemonConfigDhall
+              ( Text.replace
+                  "minio_endpoint_url = None Text"
+                  ("minio_endpoint_url = Some \"" <> endpoint <> "\"")
+                  happyDhall
+              )
+          objectStoreFor endpoint = do
+            decoded <- decodeEndpoint endpoint
+            pure $ do
+              config <- decoded
+              daemonPulumiObjectStoreConfig
+                config
+                  { daemonMinioCreds =
+                      Just (GatewayMinioCreds "fixture-access" "fixture-secret")
+                  }
+      firstStore <- objectStoreFor "http://minio-a.test:9000"
+      secondStore <- objectStoreFor "https://minio-b.test:9443"
+      fmap objectStoreEndpoint firstStore `shouldBe` Right "http://minio-a.test:9000"
+      fmap objectStoreEndpoint secondStore `shouldBe` Right "https://minio-b.test:9443"
+
+    it "Sprint 2.52: keeps an absent endpoint unavailable and never substitutes a service address" $ do
+      decoded <- GatewaySettings.decodeDaemonConfigDhall happyDhall
+      case decoded of
+        Left err -> expectationFailure err
+        Right config -> do
+          let withCreds =
+                config
+                  { daemonMinioCreds =
+                      Just (GatewayMinioCreds "fixture-access" "fixture-secret")
+                  }
+          daemonPulumiObjectStoreConfig withCreds
+            `shouldSatisfy` leftContains "boot.minio_endpoint_url is required"
+
+    it "Sprint 2.52: rejects empty and malformed configured endpoints by field name" $ do
+      emptyResult <-
+        GatewaySettings.decodeDaemonConfigDhall
+          ( Text.replace
+              "minio_endpoint_url = None Text"
+              "minio_endpoint_url = Some \"\""
+              happyDhall
+          )
+      malformedResult <-
+        GatewaySettings.decodeDaemonConfigDhall
+          ( Text.replace
+              "minio_endpoint_url = None Text"
+              "minio_endpoint_url = Some \"minio.internal:9000\""
+              happyDhall
+          )
+      emptyResult `shouldSatisfy` leftContains "boot.minio_endpoint_url"
+      malformedResult `shouldSatisfy` leftContains "boot.minio_endpoint_url"
+
+    it "Sprint 2.52: an unreachable configured endpoint reaches the fake client exactly and refuses" $ do
+      decoded <-
+        GatewaySettings.decodeDaemonConfigDhall
+          ( Text.replace
+              "minio_endpoint_url = None Text"
+              "minio_endpoint_url = Some \"http://unreachable.test:9000\""
+              happyDhall
+          )
+      case decoded of
+        Left err -> expectationFailure err
+        Right config -> do
+          let withCreds =
+                config
+                  { daemonMinioCreds =
+                      Just (GatewayMinioCreds "fixture-access" "fixture-secret")
+                  }
+          case daemonPulumiObjectStoreConfig withCreds of
+            Left err -> expectationFailure err
+            Right objectStore -> do
+              attempted <- newIORef []
+              let fakeClient candidate = do
+                    modifyIORef' attempted (++ [objectStoreEndpoint candidate])
+                    pure (Left "fake object-store endpoint unreachable" :: Either String ())
+              fakeClient objectStore `shouldReturn` Left "fake object-store endpoint unreachable"
+              readIORef attempted `shouldReturn` ["http://unreachable.test:9000"]
 
     it "fails fast on a schemaVersion mismatch" $ do
       let mismatched =
@@ -12295,6 +12963,8 @@ unitSuite = do
     it "admits EKS only for in-cluster worker substrates" $ do
       fmap ClusterTopology.clusterType (ClusterTopology.mkEksTopology 3 ClusterSubstrate.LinuxCuda)
         `shouldBe` Right ClusterTopology.ClusterTypeEks
+      ClusterTopology.mkEksTopology 0 ClusterSubstrate.LinuxCpu
+        `shouldBe` Left ClusterTopology.EksNodeGroupSizeZero
       ClusterTopology.mkEksTopology 3 ClusterSubstrate.AppleMetal
         `shouldBe` Left (ClusterTopology.EksHostResidentSubstrate ClusterSubstrate.AppleMetal)
 
@@ -12458,6 +13128,25 @@ unitSuite = do
             _ -> expectationFailure "defaultTestTopology should have exactly one variant"
         _ -> expectationFailure "defaultTestTopology should have exactly one suite"
 
+    it "Sprint 5.37 refuses missing or malformed variant service endpoints" $ do
+      case topologySuites defaultTestTopology of
+        [suite] ->
+          case suiteVariants suite of
+            [variant] -> do
+              let withVariant changed =
+                    defaultTestTopology
+                      { topologySuites = [suite {suiteVariants = [changed]}]
+                      }
+              validateTestTopology (withVariant (variant {variantVaultAddress = ""}))
+                `shouldBe` Left (TestVariantVaultAddressInvalid "unit")
+              validateTestTopology
+                (withVariant (variant {variantVaultAddress = "vault.fixture:8200"}))
+                `shouldBe` Left (TestVariantVaultAddressInvalid "unit")
+              validateTestTopology (withVariant (variant {variantMinioEndpoint = "ftp://minio.fixture"}))
+                `shouldBe` Left (TestVariantMinioEndpointInvalid "unit")
+            _ -> expectationFailure "defaultTestTopology should have exactly one variant"
+        _ -> expectationFailure "defaultTestTopology should have exactly one suite"
+
     it "exposes the Dhall test-topology contract helpers" $ do
       let expr =
             Text.pack
@@ -12480,6 +13169,8 @@ unitSuite = do
                   , "                              }"
                   , "                            ] : List TestTopology.Cluster.Machine"
                   , "                        }"
+                  , "                  , vault_address = \"http://127.0.0.1:31820\""
+                  , "                  , minio_endpoint = \"http://127.0.0.1:39000\""
                   , "                  , replicas = 1"
                   , "                  , failover = None TestTopology.FailoverScenario"
                   , "                  }"
@@ -12543,13 +13234,26 @@ unitSuite = do
           (renderTestTopologyDhall (repoRoot </> "dhall" </> "TestTopologySchema.dhall") defaultTestTopology)
         loadTestTopologyAtPath topologyPath `shouldReturn` Right defaultTestTopology
 
-    it "Sprint 5.11 generates per-variant run config with a .test-data manual PV root" $
-      withSystemTempDirectory "prodbox-test-topology-config" $ \repoRoot -> do
-        let testDataRoot = repoRoot </> ".test-data" </> "unit" </> "variant-1"
-            generatedConfig = topologyRunConfig testDataRoot
-        manual_pv_host_root (storage generatedConfig) `shouldBe` Text.pack testDataRoot
-        renderConfigDhall generatedConfig `shouldContain` testDataRoot
-        renderConfigDhall generatedConfig `shouldNotContain` ".data/prodbox"
+    it "Sprint 5.37 generates a complete per-variant run config with a .test-data manual PV root" $
+      withSystemTempDirectory "prodbox-test-topology-config" $ \_ -> do
+        let testDataRoot = ".test-data" </> "unit" </> "variant-1"
+        case topologySuites defaultTestTopology of
+          [suite] ->
+            case suiteVariants suite of
+              [variant] ->
+                case topologyRunConfig testDataRoot "test-unit-variant-1" variant populatedHarnessTestSecrets of
+                  Left err -> expectationFailure err
+                  Right (generatedConfig, contextInput) -> do
+                    manual_pv_host_root (storage generatedConfig) `shouldBe` Text.pack testDataRoot
+                    demo_fqdn (domain generatedConfig) `shouldBe` "alpha.example.test"
+                    email (acme generatedConfig) `shouldBe` "operator@alpha.example.test"
+                    contextInputClusterId contextInput `shouldBe` "test-unit-variant-1"
+                    contextInputVaultAddress contextInput `shouldBe` variantVaultAddress variant
+                    contextInputMinioEndpoint contextInput `shouldBe` variantMinioEndpoint variant
+                    renderConfigDhall generatedConfig `shouldContain` testDataRoot
+                    renderConfigDhall generatedConfig `shouldNotContain` ".data/prodbox"
+              _ -> expectationFailure "defaultTestTopology should have exactly one variant"
+          _ -> expectationFailure "defaultTestTopology should have exactly one suite"
 
     it "Sprint 5.11 passes the test data root and coverage flags through the variant environment" $ do
       let environment =
@@ -12625,7 +13329,7 @@ unitSuite = do
             { access_key_id = "AKIAADMIN"
             , secret_access_key = "admin-secret"
             , session_token = Nothing
-            , region = "us-west-2"
+            , region = (fixtureAwsRegion FixtureUsWest2)
             }
 
     it "operationalIamUserResidueFromExists maps Right True to present" $
@@ -12983,36 +13687,6 @@ unitSuite = do
         `shouldBe` length ([minBound .. maxBound] :: [Residue.ResidueObservationLayer])
       all (not . null) rendered `shouldBe` True
 
-    -- Sprint 4.84: the layer was carried and consulted by nothing — every
-    -- consumer stripped it with `residueObservationStatus` and decided over the
-    -- bare status. This is the classifier that says which layer may answer
-    -- which question.
-    it "Sprint 4.84 only AWS is authoritative for whether an AWS resource exists" $ do
-      map
-        Residue.residueLayerAnswersResourceExistence
-        [ Residue.ResidueLayerAwsResource
-        , Residue.ResidueLayerRetainedCheckpoint
-        , Residue.ResidueLayerVaultGate
-        , Residue.ResidueLayerHarnessBypass
-        ]
-        `shouldBe` [True, False, False, False]
-
-    it "Sprint 4.84 proving AWS absence is strictly stronger than observing absence" $ do
-      -- Both are `ResidueAbsent`; only one was answered by an authority
-      -- entitled to answer it, which is the distinction the bare status lost.
-      Residue.residueObservationProvesAwsAbsence awsAbsent `shouldBe` True
-      Residue.residueObservationProvesAwsAbsence checkpointAbsent `shouldBe` False
-      Residue.residueObservationProvesAwsAbsence
-        (Residue.observeResidueAt Residue.ResidueLayerHarnessBypass Residue.ResidueAbsent)
-        `shouldBe` False
-      -- An AWS-layer answer that is not absence still proves nothing.
-      Residue.residueObservationProvesAwsAbsence
-        ( Residue.observeResidueAt
-            Residue.ResidueLayerAwsResource
-            (Residue.ResidueUnreachable (Residue.ResidueQueryFailed "down"))
-        )
-        `shouldBe` False
-
   describe "global AWS audit cannot resolve exact per-stack residue" $ do
     let unreachable =
           observedAtCheckpoint
@@ -13126,7 +13800,8 @@ unitSuite = do
   describe "Sprint 4.76 fail-closed tag sweep decision" $ do
     let escapee =
           TagSweep.TaggedResource
-            { TagSweep.taggedResourceArn = "arn:aws:ec2:us-east-1:1:security-group/sg-1"
+            { TagSweep.taggedResourceArn =
+                ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":1:security-group/sg-1")
             , TagSweep.taggedResourceMatchedTagKey = "kubernetes.io/cluster/aws-eks-test-cluster"
             , TagSweep.taggedResourceMatchedTagValue = "owned"
             }
@@ -13201,7 +13876,7 @@ unitSuite = do
         `shouldBe` [["--tag-filters", "Key=prodbox.io/managed-by,Values=prodbox"]]
 
     it "unions the per-query results by row, so a doubly-tagged resource appears once" $ do
-      let arn = "arn:aws:ec2:us-east-1:1:security-group/sg-1"
+      let arn = ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":1:security-group/sg-1")
           ownershipRow = TagSweep.TaggedResource arn "prodbox.io/managed-by" "prodbox"
           clusterRow =
             TagSweep.TaggedResource arn "kubernetes.io/cluster/aws-eks-test-cluster" "owned"
@@ -13664,17 +14339,17 @@ unitSuite = do
     it "parseAwsTestNodesFromOutputs decodes the three-node Pulumi outputs" $ do
       let nodesJson =
             "[ {\"name\":\"aws-test-node-0\""
-              ++ ", \"availability_zone\":\"us-east-1a\""
+              ++ (", \"availability_zone\":\"" <> (fixtureAwsRegion FixtureUsEast1) <> "a\"")
               ++ ", \"instance_id\":\"i-aaaa\""
               ++ ", \"private_ip\":\"10.0.0.10\""
               ++ ", \"public_ip\":\"203.0.113.10\"}"
               ++ ", {\"name\":\"aws-test-node-1\""
-              ++ ", \"availability_zone\":\"us-east-1b\""
+              ++ (", \"availability_zone\":\"" <> (fixtureAwsRegion FixtureUsEast1) <> "b\"")
               ++ ", \"instance_id\":\"i-bbbb\""
               ++ ", \"private_ip\":\"10.0.0.11\""
               ++ ", \"public_ip\":\"203.0.113.11\"}"
               ++ ", {\"name\":\"aws-test-node-2\""
-              ++ ", \"availability_zone\":\"us-east-1c\""
+              ++ (", \"availability_zone\":\"" <> (fixtureAwsRegion FixtureUsEast1) <> "c\"")
               ++ ", \"instance_id\":\"i-cccc\""
               ++ ", \"private_ip\":\"10.0.0.12\""
               ++ ", \"public_ip\":\"203.0.113.12\"} ]"
@@ -13716,15 +14391,21 @@ unitSuite = do
               , ("vpc_id", "vpc-123")
               , ("subnet_ids", Text.pack "[\"subnet-aaa\",\"subnet-bbb\"]")
               , ("cluster_security_group_id", "sg-1234")
-              , ("cluster_oidc_issuer", "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE")
+              ,
+                ( "cluster_oidc_issuer"
+                , ("https://oidc.eks." <> (fixtureAwsRegion FixtureUsEast1) <> ".amazonaws.com/id/EXAMPLE")
+                )
               ,
                 ( "oidc_provider_arn"
-                , "arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+                , ( "arn:aws:iam::123456789012:oidc-provider/oidc.eks."
+                      <> (fixtureAwsRegion FixtureUsEast1)
+                      <> ".amazonaws.com/id/EXAMPLE"
+                  )
                 )
               , ("aws_lb_controller_policy_arn", "arn:aws:iam::123:policy/lbc")
               , ("aws_lb_controller_role_arn", "arn:aws:iam::123:role/lbc")
               , ("aws_lb_controller_role_name", "prodbox-lbc-role")
-              , ("retained_ebs_availability_zone", "us-east-1a")
+              , ("retained_ebs_availability_zone", (fixtureAwsRegion FixtureUsEast1 <> "a"))
               ]
       case AwsEks.parseAwsEksTestStackFromOutputs outputs of
         Left err -> expectationFailure ("expected Right, got Left: " ++ err)
@@ -13735,7 +14416,8 @@ unitSuite = do
           AwsEks.eksSnapshotSubnetIds snapshot `shouldBe` ["subnet-aaa", "subnet-bbb"]
           AwsEks.eksSnapshotAwsLbControllerRoleArn snapshot
             `shouldBe` "arn:aws:iam::123:role/lbc"
-          AwsEks.eksSnapshotRetainedEbsAvailabilityZone snapshot `shouldBe` "us-east-1a"
+          AwsEks.eksSnapshotRetainedEbsAvailabilityZone snapshot
+            `shouldBe` (fixtureAwsRegion FixtureUsEast1 <> "a")
 
     it "parseAwsEksTestStackFromOutputs fails when a required scalar is missing" $ do
       let outputs = Map.fromList [("cluster_name", "x")]
@@ -13759,7 +14441,7 @@ unitSuite = do
               , ("aws_lb_controller_policy_arn", "policy")
               , ("aws_lb_controller_role_arn", "role-arn")
               , ("aws_lb_controller_role_name", "role-name")
-              , ("retained_ebs_availability_zone", "us-east-1a")
+              , ("retained_ebs_availability_zone", (fixtureAwsRegion FixtureUsEast1 <> "a"))
               ]
       case AwsEks.parseAwsEksTestStackFromOutputs outputs of
         Left err -> err `shouldContain` "subnet_ids"
@@ -13769,14 +14451,15 @@ unitSuite = do
     it "renderTagSweepRefusal includes the cluster-tagged resource ARN and matched tag" $ do
       let resources =
             [ TagSweep.TaggedResource
-                { TagSweep.taggedResourceArn = "arn:aws:ec2:us-east-1:123:vpc/vpc-abc"
+                { TagSweep.taggedResourceArn =
+                    ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:vpc/vpc-abc")
                 , TagSweep.taggedResourceMatchedTagKey = "kubernetes.io/cluster/aws-eks-test-cluster"
                 , TagSweep.taggedResourceMatchedTagValue = "owned"
                 }
             ]
           rendered = TagSweep.renderTagSweepRefusal resources
       rendered
-        `shouldContain` "arn:aws:ec2:us-east-1:123:vpc/vpc-abc"
+        `shouldContain` ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:vpc/vpc-abc")
       rendered
         `shouldContain` "kubernetes.io/cluster/aws-eks-test-cluster"
       rendered `shouldContain` "Postflight tag sweep refused"
@@ -13824,7 +14507,7 @@ unitSuite = do
     it "still treats a genuine per-run/cluster resource (no long-lived marker) as escaped" $ do
       let escapee =
             [ TagSweep.TaggedResource
-                "arn:aws:ec2:us-east-1:123:vpc/vpc-xyz"
+                ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:vpc/vpc-xyz")
                 "kubernetes.io/cluster/aws-eks-test-cluster"
                 "owned"
             ]
@@ -13857,7 +14540,7 @@ unitSuite = do
     it "TagSweepInput record is constructible with all three fields" $ do
       let input =
             TagSweep.TagSweepInput
-              { TagSweep.tagSweepEnvironment = [("AWS_REGION", "us-east-1")]
+              { TagSweep.tagSweepEnvironment = [("AWS_REGION", (fixtureAwsRegion FixtureUsEast1))]
               , TagSweep.tagSweepClusterName = Just "aws-eks-test-cluster"
               , TagSweep.tagSweepWorkingDirectory = Just "/tmp/work"
               }
@@ -13874,7 +14557,7 @@ unitSuite = do
             [ "  vpc:"
             , "    type: aws:ec2:Vpc"
             , "    properties:"
-            , "      cidrBlock: \"10.91.0.0/16\""
+            , "      cidrBlock: ${vpcCidr}"
             , "      enableDnsHostnames: true"
             , "      enableDnsSupport: true"
             , "      tags:"
@@ -13907,7 +14590,7 @@ unitSuite = do
             , "    type: aws:ec2:Subnet"
             , "    properties:"
             , "      vpcId: ${vpc.id}"
-            , "      cidrBlock: \"10.91.0.0/24\""
+            , "      cidrBlock: ${subnet0Cidr}"
             , "      availabilityZone: ${availabilityZones[0]}"
             , "      mapPublicIpOnLaunch: true"
             , "      tags:"
@@ -13921,7 +14604,7 @@ unitSuite = do
             , "    type: aws:ec2:Subnet"
             , "    properties:"
             , "      vpcId: ${vpc.id}"
-            , "      cidrBlock: \"10.91.1.0/24\""
+            , "      cidrBlock: ${subnet1Cidr}"
             , "      availabilityZone: ${availabilityZones[1]}"
             , "      mapPublicIpOnLaunch: true"
             , "      tags:"
@@ -13939,10 +14622,10 @@ unitSuite = do
                 TagSweep.prodboxManagedByTagKey
                 TagSweep.prodboxManagedByTagValue
             | arn <-
-                [ "arn:aws:ec2:us-east-1:123:vpc/vpc-xyz"
-                , "arn:aws:ec2:us-east-1:123:internet-gateway/igw-xyz"
-                , "arn:aws:ec2:us-east-1:123:route-table/rtb-xyz"
-                , "arn:aws:ec2:us-east-1:123:subnet/subnet-xyz"
+                [ ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:vpc/vpc-xyz")
+                , ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:internet-gateway/igw-xyz")
+                , ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:route-table/rtb-xyz")
+                , ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:subnet/subnet-xyz")
                 ]
             ]
           (retained, escaped) = TagSweep.partitionRetainedLongLived rows
@@ -14066,12 +14749,15 @@ unitSuite = do
 
     it "parses ec2 describe-volumes JSON into typed volume ids and states" $
       EbsVolume.parseDescribeVolumesPayload
-        "{\"Volumes\":[{\"VolumeId\":\"vol-0123\",\"State\":\"available\",\"AvailabilityZone\":\"us-east-1a\",\"Tags\":[{\"Key\":\"prodbox.io/persistent-volume\",\"Value\":\"pv-a\"}]},{\"VolumeId\":\"vol-0456\",\"State\":\"in-use\"}]}"
+        ( "{\"Volumes\":[{\"VolumeId\":\"vol-0123\",\"State\":\"available\",\"AvailabilityZone\":\""
+            <> (fixtureAwsRegion FixtureUsEast1)
+            <> "a\",\"Tags\":[{\"Key\":\"prodbox.io/persistent-volume\",\"Value\":\"pv-a\"}]},{\"VolumeId\":\"vol-0456\",\"State\":\"in-use\"}]}"
+        )
         `shouldBe` Right
           [ EbsVolume.EbsVolume
               { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-0123"
               , EbsVolume.ebsVolumeState = "available"
-              , EbsVolume.ebsVolumeAvailabilityZone = Just "us-east-1a"
+              , EbsVolume.ebsVolumeAvailabilityZone = Just (fixtureAwsRegion FixtureUsEast1 <> "a")
               , EbsVolume.ebsVolumeTags = [("prodbox.io/persistent-volume", "pv-a")]
               }
           , EbsVolume.EbsVolume
@@ -14092,7 +14778,7 @@ unitSuite = do
               [ EbsVolume.EbsVolume
                   { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-0123"
                   , EbsVolume.ebsVolumeState = "available"
-                  , EbsVolume.ebsVolumeAvailabilityZone = Just "us-east-1a"
+                  , EbsVolume.ebsVolumeAvailabilityZone = Just (fixtureAwsRegion FixtureUsEast1 <> "a")
                   , EbsVolume.ebsVolumeTags = []
                   }
               ]
@@ -14127,10 +14813,11 @@ unitSuite = do
             EbsVolume.EbsRequiredVolume
               { EbsVolume.ebsRequiredPersistentVolumeName = "prodbox-retained-vscode-vscode-0"
               , EbsVolume.ebsRequiredSizeGiB = 50
-              , EbsVolume.ebsRequiredAvailabilityZone = "us-east-1a"
+              , EbsVolume.ebsRequiredAvailabilityZone = (fixtureAwsRegion FixtureUsEast1 <> "a")
               }
-          args = EbsVolume.ebsCreateVolumeArgs required
-      args `shouldContain` ["--availability-zone", "us-east-1a"]
+          volumeType = either (error . show) id (AwsSubstrateProfile.mkAwsEbsVolumeType "gp3")
+          args = EbsVolume.ebsCreateVolumeArgs volumeType required
+      args `shouldContain` ["--availability-zone", (fixtureAwsRegion FixtureUsEast1 <> "a")]
       args `shouldContain` ["--size", "50"]
       args `shouldContain` ["--volume-type", "gp3"]
       unwords args `shouldContain` "Key=prodbox.io/lifecycle,Value=retained-ebs"
@@ -14142,14 +14829,14 @@ unitSuite = do
             [ EbsVolume.EbsRequiredVolume
                 { EbsVolume.ebsRequiredPersistentVolumeName = "prodbox-retained-vscode-vscode-0"
                 , EbsVolume.ebsRequiredSizeGiB = 50
-                , EbsVolume.ebsRequiredAvailabilityZone = "us-east-1a"
+                , EbsVolume.ebsRequiredAvailabilityZone = (fixtureAwsRegion FixtureUsEast1 <> "a")
                 }
             ]
           discovered =
             [ EbsVolume.EbsVolume
                 { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-0123"
                 , EbsVolume.ebsVolumeState = "available"
-                , EbsVolume.ebsVolumeAvailabilityZone = Just "us-east-1a"
+                , EbsVolume.ebsVolumeAvailabilityZone = Just (fixtureAwsRegion FixtureUsEast1 <> "a")
                 , EbsVolume.ebsVolumeTags =
                     [ (EbsVolume.ebsPersistentVolumeTagKey, "prodbox-retained-vscode-vscode-0")
                     ]
@@ -14160,7 +14847,7 @@ unitSuite = do
           [ StaticEbsVolumeBinding
               { staticEbsVolumeBindingPersistentVolumeName = "prodbox-retained-vscode-vscode-0"
               , staticEbsVolumeBindingVolumeHandle = "vol-0123"
-              , staticEbsVolumeBindingAvailabilityZone = "us-east-1a"
+              , staticEbsVolumeBindingAvailabilityZone = (fixtureAwsRegion FixtureUsEast1 <> "a")
               }
           ]
 
@@ -14172,11 +14859,11 @@ unitSuite = do
     it "carves retained-production EBS volumes out of cascade tag-sweep failures" $ do
       let rows =
             [ TagSweep.TaggedResource
-                "arn:aws:ec2:us-east-1:123:volume/vol-0123"
+                ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:volume/vol-0123")
                 "prodbox.io/managed-by"
                 "prodbox"
             , TagSweep.TaggedResource
-                "arn:aws:ec2:us-east-1:123:volume/vol-0123"
+                ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:volume/vol-0123")
                 "prodbox.io/lifecycle"
                 "retained-ebs"
             ]
@@ -14185,8 +14872,8 @@ unitSuite = do
       retained `shouldBe` rows
 
     it "partitions test-scoped EBS rows only when the cluster ownership tag is present" $ do
-      let ownedArn = "arn:aws:ec2:us-east-1:123:volume/vol-owned"
-          missingOwnerArn = "arn:aws:ec2:us-east-1:123:volume/vol-missing-owner"
+      let ownedArn = ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:volume/vol-owned")
+          missingOwnerArn = ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:volume/vol-missing-owner")
           rows =
             [ TagSweep.TaggedResource ownedArn "prodbox.io/lifecycle" "per-run-test"
             , TagSweep.TaggedResource ownedArn "kubernetes.io/cluster/aws-eks-test-cluster" "owned"
@@ -14205,7 +14892,7 @@ unitSuite = do
             EbsVolume.EbsVolume
               { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId volumeId
               , EbsVolume.ebsVolumeState = "available"
-              , EbsVolume.ebsVolumeAvailabilityZone = Just "ca-central-1a"
+              , EbsVolume.ebsVolumeAvailabilityZone = Just (fixtureAwsRegion FixtureCaCentral1 <> "a")
               , EbsVolume.ebsVolumeTags =
                   ("kubernetes.io/cluster/aws-eks-test-cluster", "owned")
                     : lifecycleTags
@@ -14252,8 +14939,8 @@ unitSuite = do
         ]
 
     it "selects only test-scoped EBS volumes and never retained-production volumes" $ do
-      let retainedArn = "arn:aws:ec2:us-east-1:123:volume/vol-retained"
-          testArn = "arn:aws:ec2:us-east-1:123:volume/vol-test"
+      let retainedArn = ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:volume/vol-retained")
+          testArn = ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:volume/vol-test")
           rows =
             [ TagSweep.TaggedResource retainedArn "prodbox.io/lifecycle" "retained-ebs"
             , TagSweep.TaggedResource retainedArn "prodbox.io/lifecycle" "per-run-test"
@@ -14275,7 +14962,7 @@ unitSuite = do
             EbsVolume.EbsVolume
               { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-cluster-only"
               , EbsVolume.ebsVolumeState = "available"
-              , EbsVolume.ebsVolumeAvailabilityZone = Just "us-east-1a"
+              , EbsVolume.ebsVolumeAvailabilityZone = Just (fixtureAwsRegion FixtureUsEast1 <> "a")
               , EbsVolume.ebsVolumeTags =
                   [("kubernetes.io/cluster/aws-eks-test-cluster", "owned")]
               }
@@ -14311,7 +14998,8 @@ unitSuite = do
       let volumeId = EbsVolume.EbsVolumeId "vol-round-trip"
       EbsVolume.ebsVolumeIdFromArn (EbsVolume.ebsVolumeResourceCoordinate volumeId)
         `shouldBe` Just volumeId
-      EbsVolume.ebsVolumeIdFromArn "arn:aws:ec2:us-east-1:123:volume/vol-round-trip"
+      EbsVolume.ebsVolumeIdFromArn
+        ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123:volume/vol-round-trip")
         `shouldBe` Just volumeId
 
     it "builds an idempotent no-op plan when no test-scoped volumes are discovered" $ do
@@ -14545,7 +15233,7 @@ unitSuite = do
             { access_key_id = "config-access-key"
             , secret_access_key = "config-secret-key"
             , session_token = Nothing
-            , region = "us-west-2"
+            , region = (fixtureAwsRegion FixtureUsWest2)
             }
         credentialsWithSession =
           credentialsWithoutSession {session_token = Just "config-session-token"}
@@ -14564,8 +15252,8 @@ unitSuite = do
       lookup "PATH" updatedEnvironment `shouldBe` Just "/usr/bin"
       lookup "AWS_ACCESS_KEY_ID" updatedEnvironment `shouldBe` Just "config-access-key"
       lookup "AWS_SECRET_ACCESS_KEY" updatedEnvironment `shouldBe` Just "config-secret-key"
-      lookup "AWS_REGION" updatedEnvironment `shouldBe` Just "us-west-2"
-      lookup "AWS_DEFAULT_REGION" updatedEnvironment `shouldBe` Just "us-west-2"
+      lookup "AWS_REGION" updatedEnvironment `shouldBe` Just (fixtureAwsRegion FixtureUsWest2)
+      lookup "AWS_DEFAULT_REGION" updatedEnvironment `shouldBe` Just (fixtureAwsRegion FixtureUsWest2)
       lookup "AWS_EC2_METADATA_DISABLED" updatedEnvironment `shouldBe` Just "true"
       lookup "AWS_PAGER" updatedEnvironment `shouldBe` Just ""
       lookup "AWS_PROFILE" updatedEnvironment `shouldBe` Nothing
@@ -14578,8 +15266,8 @@ unitSuite = do
       lookup "AWS_ACCESS_KEY_ID" updatedEnvironment `shouldBe` Just "config-access-key"
       lookup "AWS_SECRET_ACCESS_KEY" updatedEnvironment `shouldBe` Just "config-secret-key"
       lookup "AWS_SESSION_TOKEN" updatedEnvironment `shouldBe` Just "config-session-token"
-      lookup "AWS_REGION" updatedEnvironment `shouldBe` Just "us-west-2"
-      lookup "AWS_DEFAULT_REGION" updatedEnvironment `shouldBe` Just "us-west-2"
+      lookup "AWS_REGION" updatedEnvironment `shouldBe` Just (fixtureAwsRegion FixtureUsWest2)
+      lookup "AWS_DEFAULT_REGION" updatedEnvironment `shouldBe` Just (fixtureAwsRegion FixtureUsWest2)
 
     it "seeds PATH and HOME from the parent environment in the canonical AWS CLI env builder" $ do
       originalPath <- lookupEnv "PATH"
@@ -14591,7 +15279,7 @@ unitSuite = do
       lookup "HOME" builtEnvironment `shouldBe` Just "/canary/home"
       lookup "AWS_ACCESS_KEY_ID" builtEnvironment `shouldBe` Just "config-access-key"
       lookup "AWS_SECRET_ACCESS_KEY" builtEnvironment `shouldBe` Just "config-secret-key"
-      lookup "AWS_REGION" builtEnvironment `shouldBe` Just "us-west-2"
+      lookup "AWS_REGION" builtEnvironment `shouldBe` Just (fixtureAwsRegion FixtureUsWest2)
       maybe (unsetEnv "PATH") (setEnv "PATH") originalPath
       maybe (unsetEnv "HOME") (setEnv "HOME") originalHome
 
@@ -14629,7 +15317,7 @@ unitSuite = do
             mockOutputsPath = mockOutputsDir </> (AwsTest.awsTestStackName ++ ".json")
             mockOutputsJson =
               "{\"nodes\":\"[ {\\\"name\\\":\\\"aws-test-node-0\\\""
-                ++ ", \\\"availability_zone\\\":\\\"us-west-2a\\\""
+                ++ (", \\\"availability_zone\\\":\\\"" <> (fixtureAwsRegion FixtureUsWest2) <> "a\\\"")
                 ++ ", \\\"instance_id\\\":\\\"i-1234567890\\\""
                 ++ ", \\\"private_ip\\\":\\\"10.0.0.10\\\""
                 ++ ", \\\"public_ip\\\":\\\"203.0.113.10\\\"} ]\""
@@ -14672,10 +15360,10 @@ unitSuite = do
   describe "Keycloak admin base URL" $ do
     it "derives the default public host from validated settings" $
       Prodbox.Keycloak.Admin.buildKeycloakBaseUrl (testValidatedSettings "/tmp/prodbox/.data")
-        `shouldBe` "https://test.resolvefintech.com/auth"
+        `shouldBe` "https://test.example.test/auth"
     it "accepts an explicit substrate public host" $
-      Prodbox.Keycloak.Admin.buildKeycloakBaseUrlForHost " aws.test.resolvefintech.com "
-        `shouldBe` "https://aws.test.resolvefintech.com/auth"
+      Prodbox.Keycloak.Admin.buildKeycloakBaseUrlForHost " aws.test.example.test "
+        `shouldBe` "https://aws.test.example.test/auth"
 
   -- Sprint 8.8: Keycloak 26's user-profile validation rejects a name-less
   -- user's first login / direct-grant token request with
@@ -14689,14 +15377,14 @@ unitSuite = do
             Prodbox.Keycloak.Admin.newUserCreationPayload
               Prodbox.Keycloak.Admin.NewUser
                 { Prodbox.Keycloak.Admin.newUserEmail =
-                    "test-abc123@inbox.test.resolvefintech.com"
+                    "test-abc123@inbox.test.example.test"
                 , Prodbox.Keycloak.Admin.newUserRole = Nothing
                 }
       payload
         `shouldBe` object
           [ "enabled" .= True
-          , "email" .= ("test-abc123@inbox.test.resolvefintech.com" :: Text.Text)
-          , "username" .= ("test-abc123@inbox.test.resolvefintech.com" :: Text.Text)
+          , "email" .= ("test-abc123@inbox.test.example.test" :: Text.Text)
+          , "username" .= ("test-abc123@inbox.test.example.test" :: Text.Text)
           , "firstName" .= ("test-abc123" :: Text.Text)
           , "lastName" .= ("Invitee" :: Text.Text)
           , "emailVerified" .= False
@@ -14706,21 +15394,22 @@ unitSuite = do
   describe "Keycloak realm SMTP reconciliation" $ do
     let smtpSettings =
           Prodbox.Keycloak.Admin.RealmSmtpSettings
-            { Prodbox.Keycloak.Admin.realmSmtpHost = "email-smtp.us-west-2.amazonaws.com"
+            { Prodbox.Keycloak.Admin.realmSmtpHost =
+                ("email-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com")
             , Prodbox.Keycloak.Admin.realmSmtpPort = "587"
-            , Prodbox.Keycloak.Admin.realmSmtpFrom = "noreply@test.resolvefintech.com"
+            , Prodbox.Keycloak.Admin.realmSmtpFrom = "noreply@test.example.test"
             , Prodbox.Keycloak.Admin.realmSmtpFromDisplayName = "prodbox"
-            , Prodbox.Keycloak.Admin.realmSmtpReplyTo = "noreply@test.resolvefintech.com"
+            , Prodbox.Keycloak.Admin.realmSmtpReplyTo = "noreply@test.example.test"
             , Prodbox.Keycloak.Admin.realmSmtpUser = "AKIAEXAMPLE"
             , Prodbox.Keycloak.Admin.realmSmtpPassword = "smtp-pass"
             }
         expectedSmtpJson =
           object
-            [ "host" .= ("email-smtp.us-west-2.amazonaws.com" :: Text.Text)
+            [ "host" .= (("email-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com") :: Text.Text)
             , "port" .= ("587" :: Text.Text)
-            , "from" .= ("noreply@test.resolvefintech.com" :: Text.Text)
+            , "from" .= ("noreply@test.example.test" :: Text.Text)
             , "fromDisplayName" .= ("prodbox" :: Text.Text)
-            , "replyTo" .= ("noreply@test.resolvefintech.com" :: Text.Text)
+            , "replyTo" .= ("noreply@test.example.test" :: Text.Text)
             , "starttls" .= ("true" :: Text.Text)
             , "auth" .= ("true" :: Text.Text)
             , "user" .= ("AKIAEXAMPLE" :: Text.Text)
@@ -14743,13 +15432,13 @@ unitSuite = do
   describe "Keycloak invite-email parser" $ do
     it "extracts the action-token URL from a plain-text invite email" $
       Prodbox.Keycloak.Email.parseKeycloakInviteLink keycloakInvitePlainFixture
-        `shouldBe` Right "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=abc123"
+        `shouldBe` Right "https://test.example.test/auth/realms/prodbox/login-actions/action-token?key=abc123"
     it "extracts the action-token URL across a quoted-printable soft-wrap" $
       Prodbox.Keycloak.Email.parseKeycloakInviteLink keycloakInviteQuotedPrintableFixture
-        `shouldBe` Right "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=def456"
+        `shouldBe` Right "https://test.example.test/auth/realms/prodbox/login-actions/action-token?key=def456"
     it "deduplicates multipart text/html copies after URL-local quoted-printable normalization" $
       Prodbox.Keycloak.Email.parseKeycloakInviteLink keycloakInviteMultipartDuplicateFixture
-        `shouldBe` Right "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=ghi789"
+        `shouldBe` Right "https://test.example.test/auth/realms/prodbox/login-actions/action-token?key=ghi789"
     it "fails fast when the email body contains multiple distinct invite links" $
       Prodbox.Keycloak.Email.parseKeycloakInviteLink keycloakInviteMultipleDistinctFixture
         `shouldBe` Left "multiple Keycloak invite links found in email body"
@@ -14758,22 +15447,40 @@ unitSuite = do
         `shouldBe` Left "no Keycloak invite link found in email body"
 
   describe "SES SMTP password derivation" $ do
-    it "matches the AWS published algorithm for us-west-2" $
-      Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-west-2" sesSmtpPasswordExampleSecret
+    it ("matches the AWS published algorithm for " <> (fixtureAwsRegion FixtureUsWest2)) $
+      Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword
+        (fixtureAwsRegion FixtureUsWest2)
+        sesSmtpPasswordExampleSecret
         `shouldBe` "BF2PynzbSCAjX08zhZZnP/kW+T9P5zs/1Er0pi5vTEmd"
-    it "matches the AWS published algorithm for us-east-1" $
-      Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-east-1" sesSmtpPasswordExampleSecret
+    it ("matches the AWS published algorithm for " <> (fixtureAwsRegion FixtureUsEast1)) $
+      Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword
+        (fixtureAwsRegion FixtureUsEast1)
+        sesSmtpPasswordExampleSecret
         `shouldBe` "BLBM/9hSUELfq8Gw+rU1YcBjkOxGbhT2XG763xVLGWL9"
-    it "matches the AWS published algorithm for eu-west-1" $
-      Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "eu-west-1" sesSmtpPasswordExampleSecret
+    it ("matches the AWS published algorithm for " <> (fixtureAwsRegion FixtureEuWest1)) $
+      Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword
+        (fixtureAwsRegion FixtureEuWest1)
+        sesSmtpPasswordExampleSecret
         `shouldBe` "BMW5RDrXmmVs0lV7GpI4oLkHXpZ4stDsk6q91z1g38Pk"
     it "is region-sensitive (different region → different password)" $ do
-      let p1 = Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-west-2" sesSmtpPasswordExampleSecret
-          p2 = Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-east-1" sesSmtpPasswordExampleSecret
+      let p1 =
+            Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword
+              (fixtureAwsRegion FixtureUsWest2)
+              sesSmtpPasswordExampleSecret
+          p2 =
+            Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword
+              (fixtureAwsRegion FixtureUsEast1)
+              sesSmtpPasswordExampleSecret
       p1 `shouldNotBe` p2
     it "is deterministic (same inputs → same output)" $ do
-      let p1 = Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-west-2" sesSmtpPasswordExampleSecret
-          p2 = Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-west-2" sesSmtpPasswordExampleSecret
+      let p1 =
+            Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword
+              (fixtureAwsRegion FixtureUsWest2)
+              sesSmtpPasswordExampleSecret
+          p2 =
+            Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword
+              (fixtureAwsRegion FixtureUsWest2)
+              sesSmtpPasswordExampleSecret
       p1 `shouldBe` p2
 
   describe "retained SES integration statics" $ do
@@ -15155,17 +15862,17 @@ unitSuite = do
                             "prodbox-test"
                         )
                     )
-            rendered `shouldContain` "\"hostnames\":[\"aws.test.resolvefintech.com\"]"
+            rendered `shouldContain` "\"hostnames\":[\"aws.test.example.test\"]"
             -- registry:2 has no web UI, so only the MinIO console admin route
             -- is rendered; the former /harbor OIDC route is gone.
             rendered
-              `shouldContain` "\"redirectURL\":\"https://aws.test.resolvefintech.com/minio/oauth2/callback\""
+              `shouldContain` "\"redirectURL\":\"https://aws.test.example.test/minio/oauth2/callback\""
             rendered
               `shouldNotContain` "/harbor/oauth2/callback"
             rendered
-              `shouldContain` "\"issuer\":\"https://aws.test.resolvefintech.com/auth/realms/prodbox\""
+              `shouldContain` "\"issuer\":\"https://aws.test.example.test/auth/realms/prodbox\""
             rendered
-              `shouldNotContain` "\"hostnames\":[\"test.resolvefintech.com\"]"
+              `shouldNotContain` "\"hostnames\":[\"test.example.test\"]"
             rendered `shouldContain` "minio-admin-oidc-materializer"
             rendered `shouldContain` "secret/vscode/oidc/vscode"
             rendered `shouldNotContain` "stringData"
@@ -15348,6 +16055,12 @@ unitSuite = do
                      "dns-aws-validation-hosted-zone"
                    , -- Sprint 7.36: the ACME DNS01 challenge TXT records.
                      "dns-aws-dns01-challenge-records"
+                   , -- Sprint 7.36: the exact EKS IAM role/policy family is
+                     -- registered independently of the Pulumi checkpoint.
+                     "aws-eks-iam-role-family"
+                   , -- Sprint 7.36: the exact AWS Load Balancer Controller
+                     -- family is independently registered too.
+                     "aws-eks-load-balancer-controller-family"
                    , -- Sprint 4.84: test-scoped EBS is statically PerRun. It was
                      -- `aws-ebs-volumes :: LongLived` until the two families were
                      -- split into separate registered identities.
@@ -15417,7 +16130,7 @@ unitSuite = do
       Residue.isResiduePresent
         ( LiveResidue.residueStatusFromObjectListing
             LiveResidue.publicEdgeTlsResourceName
-            (Right ["public-edge-tls/home-local/test.resolvefintech.com/tls.crt"])
+            (Right ["public-edge-tls/home-local/test.example.test/tls.crt"])
         )
         `shouldBe` True
 
@@ -15548,7 +16261,7 @@ unitSuite = do
                   [ "zone_id" .= (zone :: Text.Text)
                   , "fqdn" .= (fqdn :: Text.Text)
                   , "ttl" .= (60 :: Int)
-                  , "aws_region" .= ("us-east-1" :: Text.Text)
+                  , "aws_region" .= (fixtureAwsRegion FixtureUsEast1 :: Text.Text)
                   ]
             , "can_write_dns" .= writable
             , "last_dns_write_ip" .= observedIp
@@ -15622,7 +16335,7 @@ unitSuite = do
         -- case supplies them the same way production does rather than handing
         -- the renderer a settings record to re-read.
         fixtureAcmeAccount = either error id (requireAcmeAccount settings)
-        fixtureAwsRegion = either error id (requireOperationalAwsRegion settings)
+        fixtureConfiguredAwsRegion = either error id (requireOperationalAwsRegion settings)
         renderedManifests substrate s =
           either error id (acmeRuntimeManifestWith substrate s zoneId "pid" "lbl")
         -- EAB references are exact SecretRef.Vault values. Both fields are
@@ -15653,18 +16366,18 @@ unitSuite = do
                   }
             }
 
-    it "the issuer spec renders acme.server (ZeroSSL) and the ZeroSSL account key" $ do
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec fixtureAcmeAccount fixtureAwsRegion zoneId))
+    it "the issuer spec renders the compiled ZeroSSL directory and account key" $ do
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec fixtureAcmeAccount fixtureConfiguredAwsRegion zoneId))
       rendered `shouldContain` "https://acme.zerossl.com/v2/DV90"
       rendered `shouldContain` "zerossl-account-key"
 
     it "the issuer spec references the DNS-01 Route 53 solver secret and hosted zone" $ do
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec fixtureAcmeAccount fixtureAwsRegion zoneId))
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec fixtureAcmeAccount fixtureConfiguredAwsRegion zoneId))
       rendered `shouldContain` "route53-credentials"
       rendered `shouldContain` "ZHOSTEDZONE"
 
     it "keeps both EAB fields out of the host-rendered issuer spec" $ do
-      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec fixtureAcmeAccount fixtureAwsRegion zoneId))
+      let rendered = BL8.unpack (encode (acmeClusterIssuerSpec fixtureAcmeAccount fixtureConfiguredAwsRegion zoneId))
       rendered `shouldNotContain` "externalAccountBinding"
       rendered `shouldNotContain` "keyID"
 
@@ -15714,34 +16427,44 @@ unitSuite = do
       let homeScope =
             either error id $
               certScopeSetForServedHost
-                (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
-                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
-                "test.resolvefintech.com"
+                (DomainSection {demo_fqdn = "test.example.test", demo_ttl = 60, cert_scopes = []})
+                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
+                "test.example.test"
           awsScope =
             either error id $
               certScopeSetForServedHost
-                (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
-                (AwsSubstrateSection {hosted_zone_id = "Z123", subzone_name = "aws.test.resolvefintech.com"})
-                "aws.test.resolvefintech.com"
+                (DomainSection {demo_fqdn = "test.example.test", demo_ttl = 60, cert_scopes = []})
+                ( AwsSubstrateSection
+                    { hosted_zone_id = "Z123"
+                    , subzone_name = "aws.test.example.test"
+                    , profile = Nothing
+                    }
+                )
+                "aws.test.example.test"
       publicEdgeTlsRetentionKey SubstrateHomeLocal homeScope
-        `shouldBe` "public-edge-tls/home-local/test.resolvefintech.com"
+        `shouldBe` "public-edge-tls/home-local/test.example.test"
       publicEdgeTlsRetentionKey SubstrateAws awsScope
-        `shouldBe` "public-edge-tls/aws/aws.test.resolvefintech.com"
+        `shouldBe` "public-edge-tls/aws/aws.test.example.test"
 
     it "escapes wildcard and multi-scope syntax in the exact IAM-safe key segment" $ do
       let scopeSet =
             either error id $
               certScopeSetForServedHost
                 ( DomainSection
-                    { demo_fqdn = "test.resolvefintech.com"
+                    { demo_fqdn = "test.example.test"
                     , demo_ttl = 60
-                    , cert_scopes = ["*.test.resolvefintech.com", "test.resolvefintech.com"]
+                    , cert_scopes = ["*.test.example.test", "test.example.test"]
                     }
                 )
-                (AwsSubstrateSection {hosted_zone_id = "Z123", subzone_name = "aws.test.resolvefintech.com"})
-                "test.resolvefintech.com"
+                ( AwsSubstrateSection
+                    { hosted_zone_id = "Z123"
+                    , subzone_name = "aws.test.example.test"
+                    , profile = Nothing
+                    }
+                )
+                "test.example.test"
       publicEdgeTlsRetentionKey SubstrateHomeLocal scopeSet
-        `shouldBe` "public-edge-tls/home-local/test.resolvefintech.com%2C%2A.test.resolvefintech.com"
+        `shouldBe` "public-edge-tls/home-local/test.example.test%2C%2A.test.example.test"
 
     -- Sprint 5.22: the pure restore-vs-reissue half of the certificate-scope
     -- serving validation, proven at the production retention coordinate
@@ -15758,13 +16481,13 @@ unitSuite = do
       let scopeSet =
             either error id $
               certScopeSetForServedHost
-                (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
-                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
-                "test.resolvefintech.com"
+                (DomainSection {demo_fqdn = "test.example.test", demo_ttl = 60, cert_scopes = []})
+                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
+                "test.example.test"
       publicEdgeTlsRetentionKey SubstrateHomeLocal scopeSet
-        `shouldBe` "public-edge-tls/home-local/test.resolvefintech.com"
+        `shouldBe` "public-edge-tls/home-local/test.example.test"
       publicEdgeTlsRetentionKey SubstrateAws scopeSet
-        `shouldBe` "public-edge-tls/aws/test.resolvefintech.com"
+        `shouldBe` "public-edge-tls/aws/test.example.test"
       ( publicEdgeTlsRetentionKey SubstrateHomeLocal scopeSet
           == publicEdgeTlsRetentionKey SubstrateAws scopeSet
         )
@@ -15779,33 +16502,33 @@ unitSuite = do
             either error id $
               certScopeSetForServedHost
                 ( DomainSection
-                    { demo_fqdn = "test.resolvefintech.com"
+                    { demo_fqdn = "test.example.test"
                     , demo_ttl = 60
-                    , cert_scopes = ["vscode.resolvefintech.com"]
+                    , cert_scopes = ["vscode.example.test"]
                     }
                 )
-                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
-                "vscode.resolvefintech.com"
+                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
+                "vscode.example.test"
           wildcardSet =
             either error id $
               certScopeSetForServedHost
                 ( DomainSection
-                    { demo_fqdn = "test.resolvefintech.com"
+                    { demo_fqdn = "test.example.test"
                     , demo_ttl = 60
-                    , cert_scopes = ["*.resolvefintech.com"]
+                    , cert_scopes = ["*.example.test"]
                     }
                 )
-                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
-                "vscode.resolvefintech.com"
+                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
+                "vscode.example.test"
       impliedBy exactSet wildcardSet `shouldBe` True
       ( publicEdgeTlsRetentionKey SubstrateHomeLocal exactSet
           == publicEdgeTlsRetentionKey SubstrateHomeLocal wildcardSet
         )
         `shouldBe` False
       publicEdgeTlsRetentionKey SubstrateHomeLocal exactSet
-        `shouldBe` "public-edge-tls/home-local/vscode.resolvefintech.com"
+        `shouldBe` "public-edge-tls/home-local/vscode.example.test"
       publicEdgeTlsRetentionKey SubstrateHomeLocal wildcardSet
-        `shouldBe` "public-edge-tls/home-local/%2A.resolvefintech.com"
+        `shouldBe` "public-edge-tls/home-local/%2A.example.test"
 
     it "Sprint 5.22: an unchanged scope set restores under one coordinate regardless of authoring order" $ do
       -- Reordering the authored cert_scopes yields the same canonical set and the
@@ -15814,28 +16537,28 @@ unitSuite = do
             either error id $
               certScopeSetForServedHost
                 ( DomainSection
-                    { demo_fqdn = "test.resolvefintech.com"
+                    { demo_fqdn = "test.example.test"
                     , demo_ttl = 60
-                    , cert_scopes = ["api.resolvefintech.com", "vscode.resolvefintech.com"]
+                    , cert_scopes = ["api.example.test", "vscode.example.test"]
                     }
                 )
-                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
-                "api.resolvefintech.com"
+                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
+                "api.example.test"
           orderB =
             either error id $
               certScopeSetForServedHost
                 ( DomainSection
-                    { demo_fqdn = "test.resolvefintech.com"
+                    { demo_fqdn = "test.example.test"
                     , demo_ttl = 60
-                    , cert_scopes = ["vscode.resolvefintech.com", "api.resolvefintech.com"]
+                    , cert_scopes = ["vscode.example.test", "api.example.test"]
                     }
                 )
-                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
-                "api.resolvefintech.com"
+                (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
+                "api.example.test"
       publicEdgeTlsRetentionKey SubstrateHomeLocal orderA
         `shouldBe` publicEdgeTlsRetentionKey SubstrateHomeLocal orderB
       publicEdgeTlsRetentionKey SubstrateHomeLocal orderA
-        `shouldBe` "public-edge-tls/home-local/api.resolvefintech.com%2Cvscode.resolvefintech.com"
+        `shouldBe` "public-edge-tls/home-local/api.example.test%2Cvscode.example.test"
 
   describe "public-edge typed preserve outcome" $ do
     it "classifyPublicEdgePreserve distinguishes retain / in-flight / nothing (no silent absent)" $ do
@@ -16050,7 +16773,7 @@ unitSuite = do
       -- entry, so an unowned module carrying it is a violation.
       ("create-hosted-zone" `elem` map fst awsCreateVerbs) `shouldBe` True
       awsCreateSiteViolations
-        "src/Prodbox/Infra/Route53ValidationZone.hs"
+        "src/Prodbox/Lifecycle/ValidationHostedZone.hs"
         contentsWithCreateHostedZone
         `shouldBe` []
       assertExactlyOne
@@ -16060,7 +16783,7 @@ unitSuite = do
         )
         $ \violation -> do
           violation `shouldContain` "create-hosted-zone"
-          violation `shouldContain` "src/Prodbox/Infra/Route53ValidationZone.hs"
+          violation `shouldContain` "src/Prodbox/Lifecycle/ValidationHostedZone.hs"
       -- TestValidation used to carry the verb inline under the carve-out; it
       -- now calls the owner, so it too is a violation if the verb reappears.
       assertExactlyOne
@@ -16363,11 +17086,11 @@ unitSuite = do
           ]
           `shouldBe` 5
 
-    describe "Sprint 1.91 compiled AWS-coordinate registry" $ do
+    describe "complete AWS-coordinate literal ban" $ do
       let owned = "src/Prodbox/Owned.hs"
           entry =
             AwsCoordinateLiteral
-              { awsCoordinateValue = "eu-west-3"
+              { awsCoordinateValue = (fixtureAwsRegion FixtureEuWest3)
               , awsCoordinateSymbol = "ownedRegion"
               , awsCoordinateOwners = [owned]
               , awsCoordinateReason = AwsCoordinateProtocolFixed
@@ -16381,7 +17104,12 @@ unitSuite = do
         -- hyphenated protocol tokens that share their punctuation must not.
         map
           isAwsRegionShapedToken
-          ["us-east-1", "ap-southeast-2", "us-gov-west-1", "cn-northwest-1", "us-iso-east-1"]
+          [ (fixtureAwsRegion FixtureUsEast1)
+          , (fixtureAwsRegion FixtureApSoutheast2)
+          , (fixtureAwsRegion FixtureUsGovWest1)
+          , (fixtureAwsRegion FixtureCnNorthwest1)
+          , (fixtureAwsRegion FixtureUsIsoEast1)
+          ]
           `shouldBe` [True, True, True, True, True]
         map
           isAwsRegionShapedToken
@@ -16389,29 +17117,32 @@ unitSuite = do
           `shouldBe` [False, False, False, False, False]
 
       it "reads a region out of a larger literal and ignores comments" $ do
-        awsCoordinateLiteralsIn "a = mkArn \"arn:aws:eks:eu-west-3:1:cluster/x\""
-          `shouldBe` ["eu-west-3"]
-        awsCoordinateLiteralsIn "-- eu-west-3 is not a value\na = 1" `shouldBe` []
+        awsCoordinateLiteralsIn
+          ("a = mkArn \"arn:aws:eks:" <> (fixtureAwsRegion FixtureEuWest3) <> ":1:cluster/x\"")
+          `shouldBe` [(fixtureAwsRegion FixtureEuWest3)]
+        awsCoordinateLiteralsIn ("-- " <> (fixtureAwsRegion FixtureEuWest3) <> " is not a value\na = 1")
+          `shouldBe` []
 
       it "fails an unregistered literal in a scanned module" $
         findings
           [owned, "src/Prodbox/Other.hs"]
-          [("src/Prodbox/Other.hs", ["eu-west-3"])]
+          [("src/Prodbox/Other.hs", [(fixtureAwsRegion FixtureEuWest3)])]
           [(owned, ["ownedRegion"])]
-          `shouldSatisfy` any ("does not admit here" `isInfixOf`)
+          `shouldSatisfy` any ("Complete region coordinates are forbidden" `isInfixOf`)
 
       it "fails a registered literal seen outside its declared file set" $ do
         -- Same value, same registry, different file: registration is per
         -- (value, file), not per value.
-        findings [owned] [(owned, ["eu-west-3"])] [(owned, ["ownedRegion"])] `shouldBe` []
+        findings [owned] [(owned, [(fixtureAwsRegion FixtureEuWest3)])] [(owned, ["ownedRegion"])]
+          `shouldBe` []
         findings
           [owned, "src/Prodbox/Elsewhere.hs"]
-          [("src/Prodbox/Elsewhere.hs", ["eu-west-3"])]
+          [("src/Prodbox/Elsewhere.hs", [(fixtureAwsRegion FixtureEuWest3)])]
           [(owned, ["ownedRegion"])]
-          `shouldSatisfy` any ("does not admit here" `isInfixOf`)
+          `shouldSatisfy` any ("Complete region coordinates are forbidden" `isInfixOf`)
 
       it "fails a registry entry whose symbol has been deleted" $
-        findings [owned] [(owned, ["eu-west-3"])] [(owned, ["someOtherSymbol"])]
+        findings [owned] [(owned, [(fixtureAwsRegion FixtureEuWest3)])] [(owned, ["someOtherSymbol"])]
           `shouldSatisfy` any ("no longer exists in" `isInfixOf`)
 
       it "fails when a declared owner is not in the scanned set at all" $
@@ -16419,9 +17150,8 @@ unitSuite = do
         findings ["src/Prodbox/Other.hs"] [] []
           `shouldSatisfy` any ("is scoped to" `isInfixOf`)
 
-      it "declares an owner set the worktree actually contains" $ do
-        paths <- mapM doesFileExist (awsCoordinateRegistryOwners awsCoordinateLiteralRegistry)
-        paths `shouldSatisfy` and
+      it "admits no production exceptions" $
+        length awsCoordinateLiteralRegistry `shouldBe` 0
 
       it "keeps the registry free of the duplication it exists to forbid" $
         -- One (value, file) pair may be registered once. Two entries covering
@@ -16866,7 +17596,7 @@ unitSuite = do
               [ "{ parameters ="
               , "  { route53.zone_id = \"\""
               , "  , domain ="
-              , "    { demo_fqdn = \"test.resolvefintech.com\""
+              , "    { demo_fqdn = \"test.example.test\""
               , "    , demo_ttl = 60"
               , "    }"
               , "  }"
@@ -16882,7 +17612,7 @@ unitSuite = do
                 [ "{ parameters ="
                 , "  { route53.zone_id = \"\""
                 , "  , domain ="
-                , "    { demo_fqdn = \"test.resolvefintech.com\""
+                , "    { demo_fqdn = \"test.example.test\""
                 , "    , demo_ttl = 900"
                 , "    }"
                 , "  }"
@@ -16904,7 +17634,7 @@ unitSuite = do
               [ "{ parameters ="
               , "  { route53.zone_id = \"Z0HANDEDITED\""
               , "  , domain ="
-              , "    { demo_fqdn = \"test.resolvefintech.com\""
+              , "    { demo_fqdn = \"test.example.test\""
               , "    , demo_ttl = 60"
               , "    }"
               , "  }"
@@ -17049,7 +17779,7 @@ unitSuite = do
         isRelativeLinkTarget "https://example.com" `shouldBe` False
 
       it "skips mailto links" $
-        isRelativeLinkTarget "mailto:matthewnowak@gmail.com" `shouldBe` False
+        isRelativeLinkTarget "mailto:operator@example.test" `shouldBe` False
 
       it "skips pure-anchor links" $
         isRelativeLinkTarget "#section" `shouldBe` False
@@ -17335,6 +18065,136 @@ unitSuite = do
       lookup "dns-aws-validation-hosted-zone" ResourceClass.resourceLifecycleClasses
         `shouldBe` Just ResourceClass.PerRun
 
+  describe "Sprints 2.53/2.61 Bootstrap Broker host-connection barriers" $ do
+    let connection =
+          BrokerPortForward.BrokerHostConnection
+            { BrokerPortForward.brokerHostEnvironment = Just [("KUBECONFIG", "/tmp/rke2.yaml")]
+            , BrokerPortForward.brokerHostWorkingDirectory = "/tmp/prodbox"
+            }
+
+    it "waits for the exact Broker Deployment before opening a transport" $
+      renderSubprocess
+        (BrokerPortForward.brokerHostDeploymentReadySubprocess connection)
+        `shouldBe` "kubectl --namespace bootstrap-broker rollout status deployment/bootstrap-broker --timeout=60s"
+
+    it "keeps the subsequent Service port-forward loopback-only and exact" $
+      renderSubprocess
+        (BrokerPortForward.brokerHostPortForwardSubprocess connection 49152)
+        `shouldBe` "kubectl --namespace bootstrap-broker port-forward --address 127.0.0.1 service/bootstrap-broker 49152:broker"
+
+    it "keeps the recovery connection closed and preserves the normal rollout barrier" $ do
+      source <- readFile "src/Prodbox/Bootstrap/Broker/PortForward.hs"
+      source `shouldContain` "withBrokerHostRecoveryConnection = withBrokerHostConnectionAfterRollout"
+      source `shouldContain` "deploymentReady <- waitForBrokerDeployment connection"
+      source
+        `shouldNotContain` "withBrokerHostConnection connection idempotencyKey action = withBrokerHostConnectionAfterRollout"
+
+    it "selects recovery liveness only inside the ambiguous-reset handler" $ do
+      source <- readFile "src/Prodbox/CLI/Vault.hs"
+      let resetRegion =
+            unlines
+              . takeWhile (not . isPrefixOf "runBrokerVaultUnseal ::")
+              . dropWhile (not . isPrefixOf "runBrokerVaultResetAmbiguousInitialization ::")
+              . lines
+              $ source
+          ordinaryRegion =
+            unlines
+              . takeWhile (not . isPrefixOf "runObservedBrokerMutation")
+              . dropWhile (not . isPrefixOf "brokerQuery ::")
+              . lines
+              $ source
+      resetRegion `shouldContain` "withBrokerHostRecoveryConnection"
+      resetRegion `shouldNotContain` "withBrokerHostConnection ("
+      ordinaryRegion `shouldContain` "withBrokerHostConnection (brokerHostConnection repoRoot)"
+
+  describe "Sprint 2.62 payload-free Vault reset diagnostics" $ do
+    it "renders every closed stage without a Kubernetes response body" $ do
+      let cases =
+            [ (BrokerKubernetes.VaultResetIdentityUnavailable, "identity-unavailable")
+            , (BrokerKubernetes.VaultResetControllerImageUnavailable, "controller-image-unavailable")
+            , (BrokerKubernetes.VaultResetScaleDownUnavailable, "scale-down-unavailable")
+            , (BrokerKubernetes.VaultResetVaultPodAbsenceUnavailable, "vault-pod-absence-unavailable")
+            , (BrokerKubernetes.VaultResetPodCreateUnavailable, "reset-pod-create-unavailable")
+            , (BrokerKubernetes.VaultResetPodCreateRefused 422, "reset-pod-create-http-422")
+            , (BrokerKubernetes.VaultResetPodRecoveryUnavailable, "reset-pod-recovery-unavailable")
+            , (BrokerKubernetes.VaultResetPodRecoveryRefused 403, "reset-pod-recovery-http-403")
+            , (BrokerKubernetes.VaultResetPodResponseInvalid, "reset-pod-response-invalid")
+            , (BrokerKubernetes.VaultResetPodFailed, "reset-pod-failed")
+            , (BrokerKubernetes.VaultResetPodDeadlineElapsed, "reset-pod-deadline-elapsed")
+            , (BrokerKubernetes.VaultResetPodObservationUnavailable, "reset-pod-observation-unavailable")
+            , (BrokerKubernetes.VaultResetPodObservationRefused 404, "reset-pod-observation-http-404")
+            , (BrokerKubernetes.VaultResetPodDeleteUnavailable, "reset-pod-delete-unavailable")
+            , (BrokerKubernetes.VaultResetPodAbsenceUnavailable, "reset-pod-absence-unavailable")
+            , (BrokerKubernetes.VaultResetIdentityReadBackUnavailable, "identity-read-back-unavailable")
+            , (BrokerKubernetes.VaultResetIdentityChanged, "identity-changed")
+            , (BrokerKubernetes.VaultResetScaleUpUnavailable, "scale-up-unavailable")
+            ]
+      map (BrokerKubernetes.renderVaultStorageResetFailure . fst) cases
+        `shouldBe` map snd cases
+
+    it "carries only numeric HTTP status payloads and logs the closed rendered stage" $ do
+      kubernetesSource <- readFile "src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs"
+      adapterSource <- readFile "src/Prodbox/Bootstrap/Broker/EngineAdapter.hs"
+      let failureRegion =
+            unlines
+              . takeWhile (not . isPrefixOf "renderVaultStorageResetFailure ::")
+              . dropWhile (not . isPrefixOf "data VaultStorageResetFailure")
+              . lines
+              $ kubernetesSource
+      failureRegion `shouldNotContain` "Text"
+      failureRegion `shouldNotContain` "ByteString"
+      adapterSource `shouldContain` "Text.stripPrefix \"vault-reset:\" detail"
+      adapterSource `shouldContain` "route == BrokerVaultResetAmbiguousInitialization"
+
+  describe "Sprint 2.63 Kubernetes Scale omitted-zero wire" $ do
+    let scaleResponse metadataFields specFields =
+          BL.toStrict
+            . encode
+            $ object
+              [ "apiVersion" .= ("autoscaling/v1" :: Text.Text)
+              , "kind" .= ("Scale" :: Text.Text)
+              , "metadata" .= object metadataFields
+              , "spec" .= object specFields
+              ]
+        exactMetadata =
+          [ "name" .= ("vault" :: Text.Text)
+          , "namespace" .= ("vault" :: Text.Text)
+          , "resourceVersion" .= ("86387" :: Text.Text)
+          ]
+
+    it "decodes Kubernetes' omitted spec.replicas as zero" $
+      BrokerKubernetes.vaultScaleDesiredReplicasFromResponse
+        (scaleResponse exactMetadata [])
+        `shouldBe` Right 0
+
+    it "retains an explicit positive desired replica count" $
+      BrokerKubernetes.vaultScaleDesiredReplicasFromResponse
+        (scaleResponse exactMetadata ["replicas" .= (1 :: Int)])
+        `shouldBe` Right 1
+
+    it "still refuses negative, wrong-identity, and unversioned observations" $ do
+      BrokerKubernetes.vaultScaleDesiredReplicasFromResponse
+        (scaleResponse exactMetadata ["replicas" .= (-1 :: Int)])
+        `shouldSatisfy` isLeft
+      BrokerKubernetes.vaultScaleDesiredReplicasFromResponse
+        ( scaleResponse
+            [ "name" .= ("another-vault" :: Text.Text)
+            , "namespace" .= ("vault" :: Text.Text)
+            , "resourceVersion" .= ("86387" :: Text.Text)
+            ]
+            []
+        )
+        `shouldSatisfy` isLeft
+      BrokerKubernetes.vaultScaleDesiredReplicasFromResponse
+        ( scaleResponse
+            [ "name" .= ("vault" :: Text.Text)
+            , "namespace" .= ("vault" :: Text.Text)
+            , "resourceVersion" .= ("" :: Text.Text)
+            ]
+            []
+        )
+        `shouldSatisfy` isLeft
+
   describe "Sprint 2.41 supervised-worker negative space" $ do
     let daemonPath = "src/Prodbox/Gateway/Daemon.hs"
         supervised =
@@ -17581,16 +18441,16 @@ unitSuite = do
         -- So this refuses only a value that is present and malformed. Asserted on
         -- the section validator so the cert-scope rule, which also reads this
         -- section, cannot stand in for the check under test.
-        validateAwsSubstrateSection (AwsSubstrateSection "" "") `shouldBe` Right ()
-        validateAwsSubstrateSection (AwsSubstrateSection "" "sub.example.test")
+        validateAwsSubstrateSection (AwsSubstrateSection "" "" Nothing) `shouldBe` Right ()
+        validateAwsSubstrateSection (AwsSubstrateSection "" "sub.example.test" Nothing)
           `shouldBe` Right ()
-        validateAwsSubstrateSection (AwsSubstrateSection "Z1234567890ABC" "")
+        validateAwsSubstrateSection (AwsSubstrateSection "Z1234567890ABC" "" Nothing)
           `shouldBe` Right ()
-        validateAwsSubstrateSection (AwsSubstrateSection "not-a-zone-id" "")
+        validateAwsSubstrateSection (AwsSubstrateSection "not-a-zone-id" "" Nothing)
           `shouldSatisfy` refusedWith "aws_substrate.hosted_zone_id"
-        validateAwsSubstrateSection (AwsSubstrateSection "" "no-dots")
+        validateAwsSubstrateSection (AwsSubstrateSection "" "no-dots" Nothing)
           `shouldSatisfy` refusedWith "aws_substrate.subzone_name"
-        validateLocalConfig (withSubstrate (AwsSubstrateSection "" "")) `shouldBe` Right ()
+        validateLocalConfig (withSubstrate (AwsSubstrateSection "" "" Nothing)) `shouldBe` Right ()
 
     describe "the crash that became a decode-time refusal" $ do
       it "requires the AWS-substrate hostname on the AWS tier only" $ do
@@ -17600,7 +18460,7 @@ unitSuite = do
         validateLocalConfig defaultConfigFile `shouldBe` Right ()
         validateAwsBootstrapConfig awsTierConfigFile `shouldBe` Right ()
         validateAwsBootstrapConfig
-          awsTierConfigFile {aws_substrate = AwsSubstrateSection "Z123" ""}
+          awsTierConfigFile {aws_substrate = AwsSubstrateSection "Z123" "" Nothing}
           `shouldSatisfy` either (isInfixOf "aws_substrate.subzone_name") (const False)
 
   describe "Sprint 1.80 advertisement mode as a Dhall union" $ do
@@ -18040,6 +18900,328 @@ unitSuite = do
           `shouldBe` Text.pack
             (controlPlaneClusterServiceUrl "authority-backup" "authority-backup")
 
+    describe "Sprint 1.92 deployment-config ownership gate" $ do
+      let ownershipPaths =
+            [ "src/Prodbox/Settings.hs"
+            , "src/Prodbox/Config/Tier0.hs"
+            , "src/Prodbox/Cluster/Topology.hs"
+            , "src/Prodbox/Aws.hs"
+            , "src/Prodbox/Minio/ObjectStoreTypes.hs"
+            , "src/Prodbox/Vault/BootstrapBundle.hs"
+            , "src/Prodbox/Gateway/Daemon.hs"
+            , "src/Prodbox/Lifecycle/AuthorityConfig.hs"
+            , "prodbox-config-types.dhall"
+            ]
+          loadOwnershipSources =
+            mapM (\path -> do contents <- readFile path; pure (path, contents)) ownershipPaths
+          replaceIn path needle replacement =
+            map
+              ( \source@(candidate, contents) ->
+                  if candidate == path
+                    then
+                      ( candidate
+                      , Text.unpack
+                          (Text.replace (Text.pack needle) (Text.pack replacement) (Text.pack contents))
+                      )
+                    else source
+              )
+
+      it "accepts the exact audited field and fixed-identity reach" $ do
+        sources <- loadOwnershipSources
+        Prodbox.CheckCode.deploymentConfigOwnershipViolations sources `shouldBe` []
+
+      it "rejects the retired compiled hostname symbol and false schema fields" $ do
+        sources <- loadOwnershipSources
+        let withSymbol =
+              replaceIn
+                "src/Prodbox/Aws.hs"
+                "module Prodbox.Aws"
+                "supportedPublicHostname = \"fixed.example\"\nmodule Prodbox.Aws"
+                sources
+            withFalseField =
+              replaceIn
+                "prodbox-config-types.dhall"
+                "{ email : Text"
+                "{ email : Text, server : Text"
+                sources
+        Prodbox.CheckCode.deploymentConfigOwnershipViolations withSymbol
+          `shouldSatisfy` any ("supportedPublicHostname" `isInfixOf`)
+        Prodbox.CheckCode.deploymentConfigOwnershipViolations withFalseField
+          `shouldSatisfy` any ("acme.server" `isInfixOf`)
+
+      it "rejects a non-empty generated hostname seed" $ do
+        sources <- loadOwnershipSources
+        let mutated =
+              replaceIn
+                "src/Prodbox/Settings.hs"
+                "{ demo_fqdn = \"\""
+                "{ demo_fqdn = \"fixed.example\""
+                sources
+        Prodbox.CheckCode.deploymentConfigOwnershipViolations mutated
+          `shouldSatisfy` any ("demo_fqdn" `isInfixOf`)
+
+      it "rejects an audited raw field whose validated projection is removed" $ do
+        sources <- loadOwnershipSources
+        let mutated =
+              replaceIn
+                "src/Prodbox/Settings.hs"
+                "deploymentMinioEndpoint"
+                "removedMinioProjection"
+                sources
+        Prodbox.CheckCode.deploymentConfigOwnershipViolations mutated
+          `shouldSatisfy` any ("deploymentMinioEndpoint" `isInfixOf`)
+
+    describe "Sprint 2.52 Gateway MinIO endpoint ownership gate" $ do
+      let endpointPaths =
+            [ "src/Prodbox/Gateway/Types.hs"
+            , "src/Prodbox/Gateway/Settings.hs"
+            , "src/Prodbox/Gateway/Daemon.hs"
+            ]
+          loadEndpointSources =
+            mapM (\path -> do contents <- readFile path; pure (path, contents)) endpointPaths
+          replaceEndpointSource path needle replacement =
+            map
+              ( \source@(candidate, contents) ->
+                  if candidate == path
+                    then
+                      ( candidate
+                      , Text.unpack
+                          (Text.replace (Text.pack needle) (Text.pack replacement) (Text.pack contents))
+                      )
+                    else source
+              )
+
+      it "accepts the exact typed unavailable/configured projection" $ do
+        sources <- loadEndpointSources
+        Prodbox.CheckCode.gatewayMinioEndpointOwnershipViolations sources `shouldBe` []
+
+      it "rejects reintroducing the compiled in-cluster endpoint" $ do
+        sources <- loadEndpointSources
+        let mutated =
+              replaceEndpointSource
+                "src/Prodbox/Gateway/Daemon.hs"
+                "module Prodbox.Gateway.Daemon"
+                "legacyEndpoint = \"http://minio.prodbox.svc.cluster.local:9000\"\nmodule Prodbox.Gateway.Daemon"
+                sources
+        Prodbox.CheckCode.gatewayMinioEndpointOwnershipViolations mutated
+          `shouldSatisfy` any ("compiled Gateway MinIO service endpoint" `isInfixOf`)
+
+      it "rejects deleting the endpoint consumer refusal" $ do
+        sources <- loadEndpointSources
+        let mutated =
+              replaceEndpointSource
+                "src/Prodbox/Gateway/Daemon.hs"
+                "endpoint <- gatewayMinioEndpointUrl (daemonMinioEndpoint config)"
+                "endpoint <- Right \"fixture\""
+                sources
+        Prodbox.CheckCode.gatewayMinioEndpointOwnershipViolations mutated
+          `shouldSatisfy` any ("gatewayMinioEndpointUrl" `isInfixOf`)
+
+    describe "Sprint 3.42 chart deployment-context ownership gate" $ do
+      let chartProjectionPaths =
+            [ "src/Prodbox/Lib/ChartPlatform.hs"
+            , "src/Prodbox/PublicEdge.hs"
+            , "charts/gateway/values.yaml"
+            ]
+          loadChartProjectionSources =
+            mapM (\path -> do contents <- readFile path; pure (path, contents)) chartProjectionPaths
+          replaceChartProjectionSource path needle replacement =
+            map
+              ( \source@(candidate, contents) ->
+                  if candidate == path
+                    then
+                      ( candidate
+                      , Text.unpack
+                          (Text.replace (Text.pack needle) (Text.pack replacement) (Text.pack contents))
+                      )
+                    else source
+              )
+
+      it "accepts the complete endpoint, bucket, and served-host projection reach" $ do
+        sources <- loadChartProjectionSources
+        Prodbox.CheckCode.chartDeploymentContextOwnershipViolations sources `shouldBe` []
+
+      it "rejects compiled endpoint, bucket, and real-host answers" $ do
+        sources <- loadChartProjectionSources
+        let withAnswers =
+              replaceChartProjectionSource
+                "src/Prodbox/Lib/ChartPlatform.hs"
+                "module Prodbox.Lib.ChartPlatform"
+                ( unlines
+                    [ "legacyEndpoint = \"http://minio.prodbox.svc.cluster.local:9000\""
+                    , "legacyBucket = \"prodbox-state\""
+                    , "legacyHost = \"test.resolvefintech" ++ ".com\""
+                    , "module Prodbox.Lib.ChartPlatform"
+                    ]
+                )
+                sources
+            violations = Prodbox.CheckCode.chartDeploymentContextOwnershipViolations withAnswers
+        violations `shouldSatisfy` any ("compiled chart-rendering deployment answer" `isInfixOf`)
+        violations `shouldSatisfy` any ("second `prodbox-state` declaration" `isInfixOf`)
+
+      it "rejects removing the Gateway values endpoint projection" $ do
+        sources <- loadChartProjectionSources
+        let mutated =
+              replaceChartProjectionSource
+                "src/Prodbox/Lib/ChartPlatform.hs"
+                "\"endpointUrl\" .= minioEndpoint"
+                "\"endpointUrl\" .= (\"\" :: String)"
+                sources
+        Prodbox.CheckCode.chartDeploymentContextOwnershipViolations mutated
+          `shouldSatisfy` any ("endpointUrl" `isInfixOf`)
+
+    describe "Sprint 4.90 host/lifecycle deployment-context ownership" $ do
+      let topology = cluster_topology testValidatedConfigFile
+          inputA =
+            DeploymentContextInput
+              "lifecycle-a"
+              "http://vault-a.fixture:8200"
+              "http://minio-a.fixture:9000"
+          inputB =
+            DeploymentContextInput
+              "lifecycle-b"
+              "https://vault-b.fixture"
+              "https://minio-b.fixture"
+          contextA = either error id (validatedDeploymentContextFor inputA topology)
+          contextB = either error id (validatedDeploymentContextFor inputB topology)
+          lifecycleA = RootVaultLifecycle "lifecycle-a" "http://vault-a.fixture:8200"
+          lifecycleB = RootVaultLifecycle "lifecycle-b" "https://vault-b.fixture"
+          storeFor contextValue =
+            either
+              (error . show)
+              id
+              ( mkInClusterAuthorityStoreConfig
+                  (deploymentClusterId contextValue)
+                  (deploymentMinioEndpoint contextValue)
+                  (Text.pack defaultObjectStoreBucket)
+              )
+
+      it "projects two contexts to distinct Vault and MinIO capability coordinates" $ do
+        vaultAddressForDeploymentContext contextA
+          `shouldBe` VaultAddress "http://vault-a.fixture:8200"
+        vaultAddressForDeploymentContext contextB
+          `shouldBe` VaultAddress "https://vault-b.fixture"
+        bindVaultLifecycleContext contextA lifecycleA `shouldBe` Right lifecycleA
+        bindVaultLifecycleContext contextB lifecycleB `shouldBe` Right lifecycleB
+        inClusterAuthorityStoreClusterId (storeFor contextA) `shouldBe` "lifecycle-a"
+        inClusterAuthorityStoreClusterId (storeFor contextB) `shouldBe` "lifecycle-b"
+        inClusterAuthorityStoreEndpoint (storeFor contextA)
+          `shouldBe` "http://minio-a.fixture:9000"
+        inClusterAuthorityStoreEndpoint (storeFor contextB)
+          `shouldBe` "https://minio-b.fixture"
+
+      it "refuses cluster and Vault mismatches before returning a lifecycle capability" $ do
+        bindVaultLifecycleContext contextA lifecycleB
+          `shouldSatisfy` leftContains "cluster id"
+        bindVaultLifecycleContext
+          contextA
+          (RootVaultLifecycle "lifecycle-a" "http://foreign-vault.fixture:8200")
+          `shouldSatisfy` leftContains "Vault address"
+
+      it "does not let the retired environment variable change the selected endpoint" $ do
+        previous <- lookupEnv "PRODBOX_TEST_HOST_VAULT_ADDR"
+        let restore =
+              maybe
+                (unsetEnv "PRODBOX_TEST_HOST_VAULT_ADDR")
+                (setEnv "PRODBOX_TEST_HOST_VAULT_ADDR")
+                previous
+        ( do
+            setEnv "PRODBOX_TEST_HOST_VAULT_ADDR" "http://environment.fixture:8200"
+            vaultAddressForDeploymentContext contextA
+              `shouldBe` VaultAddress "http://vault-a.fixture:8200"
+          )
+          `finally` restore
+
+      it "refuses a mismatched Tier-0 floor without rewriting it" $
+        withSystemTempDirectory "prodbox-lifecycle-context-mismatch" $ \tmpDir -> do
+          writeTier0AtPath (tmpDir </> "prodbox.dhall") sampleTier0Child
+            `shouldReturn` Right ()
+          before <- BS.readFile (tmpDir </> "prodbox.dhall")
+          result <- ensureBasicsFloorAtPath (tmpDir </> "prodbox.dhall") contextA
+          result `shouldSatisfy` leftContains "cluster_id"
+          BS.readFile (tmpDir </> "prodbox.dhall") `shouldReturn` before
+
+      it "keeps the exact source boundary closed against fallbacks and duplicate bucket owners" $ do
+        let ownershipPaths =
+              [ "src/Prodbox/Vault/Host.hs"
+              , "src/Prodbox/Host.hs"
+              , "src/Prodbox/CLI/Rke2.hs"
+              , "src/Prodbox/Config/Tier0.hs"
+              , "src/Prodbox/ControlPlane/LifecycleAuthorityAuthentication.hs"
+              , "src/Prodbox/Infra/LongLivedPulumiBackend.hs"
+              , "src/Prodbox/Lifecycle/LiveResidue.hs"
+              , "src/Prodbox/Infra/MinioBackend.hs"
+              , "src/Prodbox/ControlPlane/InClusterAuthorityStore.hs"
+              , "src/Prodbox/TestValidation.hs"
+              , "src/Prodbox/Minio/ObjectStoreTypes.hs"
+              ]
+        sources <- mapM (\path -> do contents <- readFile path; pure (path, contents)) ownershipPaths
+        Prodbox.CheckCode.hostLifecycleContextOwnershipViolations sources `shouldBe` []
+        let mutate path needle replacement =
+              map
+                ( \source@(candidate, contents) ->
+                    if candidate == path
+                      then
+                        ( candidate
+                        , Text.unpack
+                            (Text.replace (Text.pack needle) (Text.pack replacement) (Text.pack contents))
+                        )
+                      else source
+                )
+            withFallback =
+              mutate
+                "src/Prodbox/Vault/Host.hs"
+                "module Prodbox.Vault.Host"
+                ( "legacy = \"PRODBOX_TEST_HOST_VAULT_ADDR http://127.0.0.1:31820\"\n"
+                    ++ "module Prodbox.Vault.Host"
+                )
+                sources
+            withBucket =
+              mutate
+                "src/Prodbox/Infra/MinioBackend.hs"
+                "module Prodbox.Infra.MinioBackend"
+                "duplicate = \"prodbox-state\"\nmodule Prodbox.Infra.MinioBackend"
+                sources
+        Prodbox.CheckCode.hostLifecycleContextOwnershipViolations withFallback
+          `shouldSatisfy` any ("retired host/lifecycle fallback" `isInfixOf`)
+        Prodbox.CheckCode.hostLifecycleContextOwnershipViolations withBucket
+          `shouldSatisfy` any ("second `prodbox-state` declaration" `isInfixOf`)
+
+    describe "Sprint 5.37 harness deployment-config ownership" $ do
+      let requiredPaths =
+            [ "src/Prodbox/Vault/Host.hs"
+            , "src/Prodbox/Aws.hs"
+            , "src/Prodbox/TestRunner.hs"
+            , "src/Prodbox/TestTopology.hs"
+            , "test-secrets-types.dhall"
+            ]
+          loadRequiredSources =
+            mapM (\path -> do contents <- readFile path; pure (path, contents)) requiredPaths
+
+      it "accepts the explicit fixture/run projection and reserved synthetic values" $ do
+        Prodbox.CheckCode.checkHarnessDeploymentConfigOwnership "." `shouldReturn` []
+        sources <- loadRequiredSources
+        Prodbox.CheckCode.harnessDeploymentConfigOwnershipViolations
+          (("test/unit/SyntheticFixture.hs", "served = \"alpha.example.test\"") : sources)
+          `shouldBe` []
+
+      it "rejects the retired builder fallback and live deployment literals" $ do
+        sources <- loadRequiredSources
+        let withRetired =
+              ( "test/unit/RetiredFixture.hs"
+              , unlines
+                  [ "fallback = harness" ++ "AcmeEmail"
+                  , "host = \"test.resolvefintech" ++ ".com\""
+                  , "contact = \"matthewnowak@gmail" ++ ".com\""
+                  ]
+              )
+                : sources
+            violations =
+              Prodbox.CheckCode.harnessDeploymentConfigOwnershipViolations withRetired
+        violations `shouldSatisfy` any (("harness" ++ "AcmeEmail") `isInfixOf`)
+        violations `shouldSatisfy` any ("test.resolvefintech" `isInfixOf`)
+        violations `shouldSatisfy` any ("matthewnowak@gmail" `isInfixOf`)
+
     describe "Sprint 1.88 ValidatedSettings minting boundary" $ do
       it "admits validateConfig's own module and refuses every other src module" $ do
         Prodbox.CheckCode.validatedSettingsMinterViolations
@@ -18081,6 +19263,7 @@ unitSuite = do
             , "validatedAllocatedPlan"
             , "validatedPublicEdge"
             , "validatedCoordinates"
+            , "validatedDeploymentContext"
             ]
 
   describe "Sprint 1.89 Tier-0 coordinate narrowing" $ do
@@ -18113,9 +19296,9 @@ unitSuite = do
 
       it "refuses an operational AWS region that is not a region" $ do
         coordinatesOf (withAws "") `shouldSatisfy` isRight
-        coordinatesOf (withAws "us-east-1") `shouldSatisfy` isRight
-        coordinatesOf (withAws "ap-southeast-2") `shouldSatisfy` isRight
-        coordinatesOf (withAws "us-gov-west-1") `shouldSatisfy` isRight
+        coordinatesOf (withAws (fixtureAwsRegion FixtureUsEast1)) `shouldSatisfy` isRight
+        coordinatesOf (withAws (fixtureAwsRegion FixtureApSoutheast2)) `shouldSatisfy` isRight
+        coordinatesOf (withAws (fixtureAwsRegion FixtureUsGovWest1)) `shouldSatisfy` isRight
         coordinatesOf (withAws "US-East-1")
           `shouldSatisfy` refusedWith "aws.region"
         coordinatesOf (withAws "useast1")
@@ -18126,23 +19309,20 @@ unitSuite = do
         -- checked anywhere, and it is read straight into an S3 client.
         coordinatesOf (withBackend (PulumiStateBackendSection "" "" "pulumi/"))
           `shouldSatisfy` isRight
-        coordinatesOf (withBackend (PulumiStateBackendSection "" "ca-central-1" "pulumi/"))
+        coordinatesOf
+          (withBackend (PulumiStateBackendSection "" (fixtureAwsRegion FixtureCaCentral1) "pulumi/"))
           `shouldSatisfy` isRight
         coordinatesOf (withBackend (PulumiStateBackendSection "" "Canada" "pulumi/"))
           `shouldSatisfy` refusedWith "pulumi_state_backend.region"
 
-      it "refuses an ACME contact that is not an address and a directory that is not https" $ do
-        let acmeWith emailValue serverValue =
-              (acme testValidatedConfigFile) {email = emailValue, server = serverValue}
-            zerossl = "https://acme.zerossl.com/v2/DV90"
-        coordinatesOf (withAcme (acmeWith "ops@resolvefintech.com" zerossl))
+      it "refuses an ACME contact that is not an address and fixes the directory in code" $ do
+        let acmeWith emailValue =
+              (acme testValidatedConfigFile) {email = emailValue}
+        coordinatesOf (withAcme (acmeWith "ops@example.test"))
           `shouldSatisfy` isRight
-        coordinatesOf (withAcme (acmeWith "ops" zerossl))
+        coordinatesOf (withAcme (acmeWith "ops"))
           `shouldSatisfy` refusedWith "acme.email"
-        coordinatesOf (withAcme (acmeWith "ops@resolvefintech.com" "acme.zerossl.com"))
-          `shouldSatisfy` refusedWith "acme.server"
-        coordinatesOf (withAcme (acmeWith "ops@resolvefintech.com" "http://acme.zerossl.com/v2"))
-          `shouldSatisfy` refusedWith "acme.server"
+        zeroSslAcmeDirectory `shouldBe` "https://acme.zerossl.com/v2/DV90"
 
     describe "Sprint 1.91 the three region refusals a seeded default disarmed" $ do
       -- All three rules already existed, with their messages and their
@@ -18173,15 +19353,11 @@ unitSuite = do
           `shouldBe` Left "aws.region must not be empty"
         validateLifecycleProviderAwsRegion (aws testValidatedConfigFile) `shouldBe` Right ()
 
-    describe "the half-set ACME pair, which the repository's own default is" $
-      it "is not an error, and yields no account rather than a partial one" $ do
-        -- This case exists because the first rule written for this sprint
-        -- refused a half-set pair, and that rule refuses `prodbox config
-        -- generate`'s own output: `defaultConfigFile` ships the ZeroSSL
-        -- directory and an empty contact. The two halves are not symmetric.
+    describe "the unconfigured ACME contact" $
+      it "yields no account while the directory remains a compiled protocol value" $ do
         let defaultAcme = acme defaultConfigFile
         email defaultAcme `shouldBe` ""
-        server defaultAcme `shouldNotBe` ""
+        zeroSslAcmeDirectory `shouldNotBe` ""
         fmap coordinateAcmeAccount (coordinatesOf (withAcme defaultAcme))
           `shouldBe` Right Nothing
 
@@ -18193,9 +19369,9 @@ unitSuite = do
         fmap route53ZoneIdText (coordinateAwsSubstrateZoneId coordinates)
           `shouldBe` Just "ZAWSSUBZONE123"
         fmap awsRegionText (coordinateOperationalAwsRegion coordinates)
-          `shouldBe` Just "us-east-1"
+          `shouldBe` Just (fixtureAwsRegion FixtureUsEast1)
         fmap awsRegionText (coordinatePulumiBackendRegion coordinates)
-          `shouldBe` Just "ca-central-1"
+          `shouldBe` Just (fixtureAwsRegion FixtureCaCentral1)
         dnsTtlSeconds (coordinateDemoTtl coordinates) `shouldBe` 60
 
       it "agrees with the raw config it was built from" $ do
@@ -18374,27 +19550,31 @@ unitSuite = do
       let section =
             PulumiStateBackendSection
               { psbBucketName = "prodbox-pulumi-state-long-lived"
-              , psbRegion = "us-west-2"
+              , psbRegion = (fixtureAwsRegion FixtureUsWest2)
               , psbKeyPrefix = "pulumi/"
               }
       longLivedPulumiBackendUrl section
-        `shouldBe` Just "s3://prodbox-pulumi-state-long-lived?region=us-west-2&awssdk=v2&prefix=pulumi/"
+        `shouldBe` Just
+          ( "s3://prodbox-pulumi-state-long-lived?region="
+              <> (fixtureAwsRegion FixtureUsWest2)
+              <> "&awssdk=v2&prefix=pulumi/"
+          )
 
     it "omits the prefix segment when key_prefix is empty" $ do
       let section =
             PulumiStateBackendSection
               { psbBucketName = "bucket"
-              , psbRegion = "us-east-1"
+              , psbRegion = (fixtureAwsRegion FixtureUsEast1)
               , psbKeyPrefix = ""
               }
       longLivedPulumiBackendUrl section
-        `shouldBe` Just "s3://bucket?region=us-east-1&awssdk=v2"
+        `shouldBe` Just ("s3://bucket?region=" <> (fixtureAwsRegion FixtureUsEast1) <> "&awssdk=v2")
 
     it "returns Nothing when bucket_name is empty (no fallback)" $ do
       let section =
             PulumiStateBackendSection
               { psbBucketName = "   "
-              , psbRegion = "us-west-2"
+              , psbRegion = (fixtureAwsRegion FixtureUsWest2)
               , psbKeyPrefix = "pulumi/"
               }
       longLivedPulumiBackendUrl section `shouldBe` Nothing
@@ -18412,7 +19592,7 @@ unitSuite = do
       let section =
             PulumiStateBackendSection
               { psbBucketName = ""
-              , psbRegion = "us-west-2"
+              , psbRegion = (fixtureAwsRegion FixtureUsWest2)
               , psbKeyPrefix = "pulumi/"
               }
       longLivedPulumiBackendUrlEither section `shouldBe` Left BackendBucketNameEmpty
@@ -18439,7 +19619,7 @@ unitSuite = do
           "<!DOCTYPE html>\
           \<html><body>\
           \<form id=\"kc-passwd-update-form\" \
-          \action=\"https://test.resolvefintech.com/auth/realms/prodbox/login-actions/required-action?session_code=SCODE\" \
+          \action=\"https://test.example.test/auth/realms/prodbox/login-actions/required-action?session_code=SCODE\" \
           \method=\"post\">\
           \<input type=\"hidden\" name=\"session_code\" value=\"SCODE\">\
           \<input type=\"hidden\" name=\"execution\" value=\"UPDATE_PASSWORD\">\
@@ -18452,21 +19632,21 @@ unitSuite = do
       let parsed = parseCredentialSetupForm syntheticForm
       (formActionUrl <$> parsed)
         `shouldBe` Right
-          "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/required-action?session_code=SCODE"
+          "https://test.example.test/auth/realms/prodbox/login-actions/required-action?session_code=SCODE"
       (formPasswordFieldName <$> parsed) `shouldBe` Right "password"
       (formPasswordConfirmFieldName <$> parsed) `shouldBe` Right "password-confirm"
 
     it "decodes HTML entities in the form action like a browser submit" $ do
       let encodedActionForm =
             "<form id=\"kc-passwd-update-form\" \
-            \action=\"https://test.resolvefintech.com/auth/realms/prodbox/login-actions/required-action?session_code=SCODE&amp;execution=UPDATE_PASSWORD&amp;client_id=account\" \
+            \action=\"https://test.example.test/auth/realms/prodbox/login-actions/required-action?session_code=SCODE&amp;execution=UPDATE_PASSWORD&amp;client_id=account\" \
             \method=\"post\">\
             \<input type=\"password\" name=\"password\" />\
             \<input type=\"password\" name=\"password-confirm\" />\
             \</form>"
       (formActionUrl <$> parseCredentialSetupForm encodedActionForm)
         `shouldBe` Right
-          "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/required-action?session_code=SCODE&execution=UPDATE_PASSWORD&client_id=account"
+          "https://test.example.test/auth/realms/prodbox/login-actions/required-action?session_code=SCODE&execution=UPDATE_PASSWORD&client_id=account"
 
     it "collects all hidden inputs verbatim, preserving order" $ do
       let parsed = parseCredentialSetupForm syntheticForm
@@ -18508,16 +19688,16 @@ unitSuite = do
             \<div id=\"kc-content\">\
             \<div id=\"kc-info-message\">\
             \<p class=\"instruction\">Perform the following action(s): Verify Email, Update Password</p>\
-            \<p><a href=\"https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=KEYJWT&amp;client_id=account&amp;tab_id=TID&amp;client_data=CD\">&raquo; Click here to proceed</a></p>\
+            \<p><a href=\"https://test.example.test/auth/realms/prodbox/login-actions/action-token?key=KEYJWT&amp;client_id=account&amp;tab_id=TID&amp;client_data=CD\">&raquo; Click here to proceed</a></p>\
             \</div></div></body></html>"
       parseCredentialSetupContinuationLink proceedPage
         `shouldBe` Right
-          "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=KEYJWT&client_id=account&tab_id=TID&client_data=CD"
+          "https://test.example.test/auth/realms/prodbox/login-actions/action-token?key=KEYJWT&client_id=account&tab_id=TID&client_data=CD"
 
     it "parses the live Keycloak 26 PatternFly update-password form" $ do
       let livePasswordForm =
             "<form id=\"kc-passwd-update-form\" class=\"pf-v5-c-form\" \
-            \action=\"https://test.resolvefintech.com/auth/realms/prodbox/login-actions/required-action?session_code=SC&amp;execution=UPDATE_PASSWORD&amp;client_id=account&amp;tab_id=TID\" \
+            \action=\"https://test.example.test/auth/realms/prodbox/login-actions/required-action?session_code=SC&amp;execution=UPDATE_PASSWORD&amp;client_id=account&amp;tab_id=TID\" \
             \method=\"post\" novalidate=\"novalidate\">\
             \<div class=\"pf-v5-c-form-control\">\
             \<input id=\"password-new\" name=\"password-new\" value=\"\" type=\"password\" autocomplete=\"new-password\" autofocus aria-invalid=\"\"/>\
@@ -18533,7 +19713,7 @@ unitSuite = do
       (formPasswordConfirmFieldName <$> parsed) `shouldBe` Right "password-confirm"
       (formActionUrl <$> parsed)
         `shouldBe` Right
-          "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/required-action?session_code=SC&execution=UPDATE_PASSWORD&client_id=account&tab_id=TID"
+          "https://test.example.test/auth/realms/prodbox/login-actions/required-action?session_code=SC&execution=UPDATE_PASSWORD&client_id=account&tab_id=TID"
       -- The live form carries no hidden inputs; session state is in the action query string.
       (formHiddenFields <$> parsed) `shouldBe` Right []
 
@@ -18558,7 +19738,7 @@ unitSuite = do
 
     it "accepts invited-user OIDC claims with email_verified=true" $ do
       let recipient = "test-invite@example.com"
-          issuer = "https://test.resolvefintech.com/auth/realms/prodbox"
+          issuer = "https://test.example.test/auth/realms/prodbox"
       assertInviteOidcClaims
         issuer
         recipient
@@ -18572,7 +19752,7 @@ unitSuite = do
 
     it "refuses invited-user OIDC claims when email_verified is false" $ do
       let recipient = "test-invite@example.com"
-          issuer = "https://test.resolvefintech.com/auth/realms/prodbox"
+          issuer = "https://test.example.test/auth/realms/prodbox"
       assertInviteOidcClaims
         issuer
         recipient
@@ -18586,7 +19766,7 @@ unitSuite = do
 
     it "refuses invited-user OIDC claims with the wrong email" $ do
       let recipient = "test-invite@example.com"
-          issuer = "https://test.resolvefintech.com/auth/realms/prodbox"
+          issuer = "https://test.example.test/auth/realms/prodbox"
       assertInviteOidcClaims
         issuer
         recipient
@@ -18605,7 +19785,7 @@ unitSuite = do
           { access_key_id = "AKIAEXAMPLE"
           , secret_access_key = "secret"
           , session_token = Nothing
-          , region = "us-west-2"
+          , region = (fixtureAwsRegion FixtureUsWest2)
           }
         `shouldBe` True
 
@@ -18615,7 +19795,7 @@ unitSuite = do
           { access_key_id = ""
           , secret_access_key = "secret"
           , session_token = Nothing
-          , region = "us-west-2"
+          , region = (fixtureAwsRegion FixtureUsWest2)
           }
         `shouldBe` False
 
@@ -18625,7 +19805,7 @@ unitSuite = do
           { access_key_id = "AKIAEXAMPLE"
           , secret_access_key = "   "
           , session_token = Nothing
-          , region = "us-west-2"
+          , region = (fixtureAwsRegion FixtureUsWest2)
           }
         `shouldBe` False
 
@@ -18645,7 +19825,7 @@ unitSuite = do
           { access_key_id = "ASIAEXAMPLE"
           , secret_access_key = "secret"
           , session_token = Just "tok"
-          , region = "us-east-1"
+          , region = (fixtureAwsRegion FixtureUsEast1)
           }
         `shouldBe` True
 
@@ -18845,15 +20025,6 @@ unitSuite = do
         "the postflight policy is no longer the all-residue bypass"
         $ (harnessPostflightResiduePolicy == BypassAllResidueForHarnessRefresh) `shouldBe` False
       it
-        "the narrowed postflight policy no longer bypasses the long-lived protection (only the superseded all-residue policy did)"
-        $ do
-          residuePolicyBypassesLongLivedProtection harnessPostflightResiduePolicy `shouldBe` False
-          residuePolicyBypassesLongLivedProtection BypassAllResidueForHarnessRefresh `shouldBe` True
-          map
-            residuePolicyBypassesLongLivedProtection
-            [RefuseOnAnyResidue, DestroyPulumiResidueFirst, AcceptOrphanResidue, BypassPerRunResidueOnly]
-            `shouldBe` [False, False, False, False]
-      it
         "with aws-ses live, the postflight still clears aws.* unconditionally (Sprint 7.9 stranding fix retained) but does not bypass long-lived protection"
         $ do
           -- aws-ses live is the retained-by-design steady state; the Sprint 7.7
@@ -18868,20 +20039,10 @@ unitSuite = do
             `shouldContain` "aws-ses → prodbox aws stack aws-ses destroy --yes"
           -- applyAwsTeardown proceeds (clears aws.*) under the postflight policy
           -- with aws-ses present (it is not a refusing policy), yet the policy
-          -- does not bypass the long-lived protection.
+          -- has the distinct per-run-only constructor.
           harnessPostflightResiduePolicy `shouldBe` BypassPerRunResidueForHarnessRefresh
-          residuePolicyBypassesLongLivedProtection harnessPostflightResiduePolicy
-            `shouldBe` False
-
-  describe "Sprint 7.10 harness preserves creds on per-run destroy failure" $ do
-    it
-      "clearOperationalCredsAfterPostflight returns True on ExitSuccess (per-run destroy succeeded)"
-      $ clearOperationalCredsAfterPostflight ExitSuccess `shouldBe` True
-    it
-      "clearOperationalCredsAfterPostflight returns False on ExitFailure (preserve creds for orphan retry)"
-      $ do
-        clearOperationalCredsAfterPostflight (ExitFailure 1) `shouldBe` False
-        clearOperationalCredsAfterPostflight (ExitFailure 124) `shouldBe` False
+          harnessPostflightResiduePolicy
+            `shouldNotBe` BypassAllResidueForHarnessRefresh
 
   describe "Sprint 7.7 DestroyPulumiResidueFirst dispatch plan (Scenarios J/K/L)" $ do
     it "Scenario J — aws-eks only: destroy plan dispatches just eks-destroy --yes" $ do
@@ -19122,7 +20283,7 @@ unitSuite = do
             , "      \"InstanceType\": \"t3.large\","
             , "      \"ProductDescription\": \"Linux/UNIX\","
             , "      \"SpotPrice\": \"" ++ price ++ "\","
-            , "      \"AvailabilityZone\": \"us-east-1a\""
+            , ("      \"AvailabilityZone\": \"" <> (fixtureAwsRegion FixtureUsEast1) <> "a\"")
             , "    }"
             , "  ]"
             , "}"
@@ -19484,6 +20645,55 @@ unitSuite = do
             _ -> expectationFailure "expected one gateway release"
 
   describe "settings" $ do
+    it "Sprint 1.92: keeps production generation defaults unauthored" $ do
+      demo_fqdn (domain Settings.defaultConfigFile) `shouldBe` ""
+      ClusterTopology.validateClusterTopology (cluster_topology Settings.defaultConfigFile)
+        `shouldBe` Left ClusterTopology.EmptyMachineId
+      let rendered = Text.unpack (renderProjectConfigDhall defaultProjectConfig)
+      rendered `shouldContain` "demo_fqdn = \"\""
+      rendered `shouldContain` "machine_id = \"\""
+      rendered `shouldContain` "cluster_id = \"\""
+      rendered `shouldContain` "vault_address = \"\""
+      rendered `shouldContain` "minio_endpoint = \"\""
+      rendered `shouldNotContain` "minio_bucket"
+      rendered `shouldNotContain` "server ="
+
+    it "Sprint 1.92: narrows two distinct deployment contexts without substitution" $ do
+      let topologyA =
+            either
+              (error . ClusterTopology.renderTopologyError)
+              id
+              (ClusterTopology.mkSingleMachineRke2Topology "machine-a")
+          topologyB =
+            either
+              (error . ClusterTopology.renderTopologyError)
+              id
+              (ClusterTopology.mkSingleMachineRke2Topology "machine-b")
+          inputA = DeploymentContextInput "cluster-a" "http://vault-a.test:8200" "https://minio-a.test"
+          inputB = DeploymentContextInput "cluster-b" "https://vault-b.test" "http://minio-b.test:9000"
+      let contextA = either error id (validatedDeploymentContextFor inputA topologyA)
+          contextB = either error id (validatedDeploymentContextFor inputB topologyB)
+      deploymentClusterId contextA `shouldBe` "cluster-a"
+      deploymentVaultAddress contextA `shouldBe` "http://vault-a.test:8200"
+      deploymentMinioEndpoint contextA `shouldBe` "https://minio-a.test"
+      map ClusterTopology.machineIdText (deploymentMachineIds contextA) `shouldBe` ["machine-a"]
+      deploymentClusterId contextB `shouldBe` "cluster-b"
+      deploymentVaultAddress contextB `shouldBe` "https://vault-b.test"
+      deploymentMinioEndpoint contextB `shouldBe` "http://minio-b.test:9000"
+      map ClusterTopology.machineIdText (deploymentMachineIds contextB) `shouldBe` ["machine-b"]
+
+    it "Sprint 1.92: refuses every missing or malformed deployment-context coordinate by field" $ do
+      let topology = cluster_topology syntheticConfigFile
+          rejects field input =
+            validatedDeploymentContextFor input topology `shouldSatisfy` leftContains field
+      rejects "context.cluster_id" (testDeploymentContextInput {contextInputClusterId = ""})
+      rejects
+        "context.vault_address"
+        (testDeploymentContextInput {contextInputVaultAddress = "vault.test:8200"})
+      rejects
+        "context.minio_endpoint"
+        (testDeploymentContextInput {contextInputMinioEndpoint = "ftp://minio.test"})
+
     it "validates Dhall config and renders masked output without materializing JSON" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
         writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
@@ -19497,7 +20707,7 @@ unitSuite = do
               `shouldContain` "aws.access_key_id=Vault:secret/aws/lifecycle-provider#access_key_id"
             -- Sprint 1.61: sensitive fields are ALWAYS masked; the former
             -- --show-secrets unmasked reveal mode is removed.
-            renderSettingsDisplay settings `shouldContain` "acme.email=****.com"
+            renderSettingsDisplay settings `shouldContain` "acme.email=****test"
             renderSettingsDisplay settings
               `shouldContain` ("storage.manual_pv_host_root=" ++ (tmpDir </> ".data"))
             renderSettingsDisplay settings
@@ -19530,47 +20740,47 @@ unitSuite = do
 
     it "Sprint 2.35: accepts the default scope set (empty cert_scopes covers the served host)" $
       validateConfiguredCertScope
-        (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
-        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        (DomainSection {demo_fqdn = "test.example.test", demo_ttl = 60, cert_scopes = []})
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
         `shouldBe` Right ()
 
     it "Sprint 2.35: accepts a delegated wildcard that covers the served host" $
       validateConfiguredCertScope
         ( DomainSection
-            { demo_fqdn = "test.resolvefintech.com"
+            { demo_fqdn = "test.example.test"
             , demo_ttl = 60
-            , cert_scopes = ["*.resolvefintech.com"]
+            , cert_scopes = ["*.example.test"]
             }
         )
-        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
         `shouldBe` Right ()
 
     it "Sprint 2.35: rejects an empty served host" $
       validateConfiguredCertScope
         (DomainSection {demo_fqdn = "", demo_ttl = 60, cert_scopes = []})
-        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
         `shouldBe` Left "domain.demo_fqdn must not be empty"
 
     it "Sprint 2.35: rejects a wildcard anchored at an undelegated zone" $
       validateConfiguredCertScope
         ( DomainSection
-            { demo_fqdn = "test.resolvefintech.com"
+            { demo_fqdn = "test.example.test"
             , demo_ttl = 60
             , cert_scopes = ["*.notdelegated.example"]
             }
         )
-        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
         `shouldSatisfy` isCertScopeError "not delegated"
 
     it "Sprint 2.35: rejects a configured scope set that does not cover the served host" $
       validateConfiguredCertScope
         ( DomainSection
-            { demo_fqdn = "test.resolvefintech.com"
+            { demo_fqdn = "test.example.test"
             , demo_ttl = 60
-            , cert_scopes = ["other.resolvefintech.com"]
+            , cert_scopes = ["other.example.test"]
             }
         )
-        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
         `shouldSatisfy` isCertScopeError "not covered"
 
     it "Sprint 1.83: a home-only config carries no AWS served host at all" $ do
@@ -19579,22 +20789,23 @@ unitSuite = do
       -- Sprint 1.87 deleted that accessor outright.
       let homeOnly =
             validatedPublicEdgeFor
-              (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
-              (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+              (DomainSection {demo_fqdn = "test.example.test", demo_ttl = 60, cert_scopes = []})
+              (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
       fmap (isJust . validatedAwsServedHost) homeOnly `shouldBe` Right False
       fmap (fqdnText . servedHostFqdn . validatedHomeServedHost) homeOnly
-        `shouldBe` Right "test.resolvefintech.com"
+        `shouldBe` Right "test.example.test"
     it "Sprint 1.83: an AWS-configured config carries the subzone served host" $ do
       let withSubzone =
             validatedPublicEdgeFor
-              (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
+              (DomainSection {demo_fqdn = "test.example.test", demo_ttl = 60, cert_scopes = []})
               ( AwsSubstrateSection
                   { hosted_zone_id = "Z123"
-                  , subzone_name = "aws.test.resolvefintech.com"
+                  , subzone_name = "aws.test.example.test"
+                  , profile = Nothing
                   }
               )
       fmap (fmap (fqdnText . servedHostFqdn) . validatedAwsServedHost) withSubzone
-        `shouldBe` Right (Just "aws.test.resolvefintech.com")
+        `shouldBe` Right (Just "aws.test.example.test")
     it "Sprint 1.83: the carried scope set is the parse, not a second derivation" $ do
       -- The property that matters: what consumers now read is exactly what the
       -- discarded parse produced, so threading it cannot have changed behavior.
@@ -19604,18 +20815,18 @@ unitSuite = do
         `shouldBe` certScopeSetForServedHost
           (domain config)
           (aws_substrate config)
-          "aws.test.resolvefintech.com"
+          "aws.test.example.test"
       requireSubstrateCertScopeSet settings SubstrateHomeLocal
         `shouldBe` certScopeSetForServedHost
           (domain config)
           (aws_substrate config)
-          "test.resolvefintech.com"
+          "test.example.test"
     it "Sprint 1.83: the AWS served host is a refusal, never an empty hostname" $ do
       let homeOnlyConfig =
             defaultConfigFile
-              { aws_substrate = AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""}
+              { aws_substrate = AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing}
               }
-      validated <- validateConfig "." homeOnlyConfig
+      validated <- validateConfigWithContext "." testDeploymentContextInput homeOnlyConfig
       case validated of
         Left err -> expectationFailure ("expected a home-only config to validate, got: " ++ err)
         Right settings -> do
@@ -19641,9 +20852,9 @@ unitSuite = do
       mkFqdn "   " `shouldBe` Left EmptyName
       let homeOnlyConfig =
             defaultConfigFile
-              { aws_substrate = AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""}
+              { aws_substrate = AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing}
               }
-      validated <- validateConfig "." homeOnlyConfig
+      validated <- validateConfigWithContext "." testDeploymentContextInput homeOnlyConfig
       case validated of
         Left err -> expectationFailure ("expected a home-only config to validate, got: " ++ err)
         Right settings -> do
@@ -19686,27 +20897,27 @@ unitSuite = do
               Just served ->
                 certDnsNamesForServedHost (domain config) (aws_substrate config) servedHost
                   `shouldBe` Right (certScopeSetDnsNames (servedHostCertScopes served))
-      agreesOn SubstrateHomeLocal "test.resolvefintech.com"
-      agreesOn SubstrateAws "aws.test.resolvefintech.com"
+      agreesOn SubstrateHomeLocal "test.example.test"
+      agreesOn SubstrateAws "aws.test.example.test"
 
     it "Sprint 2.35: certDnsNamesForServedHost defaults to the served host (behavior-identical)" $
       certDnsNamesForServedHost
-        (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
-        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
-        "test.resolvefintech.com"
-        `shouldBe` Right ["test.resolvefintech.com"]
+        (DomainSection {demo_fqdn = "test.example.test", demo_ttl = 60, cert_scopes = []})
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
+        "test.example.test"
+        `shouldBe` Right ["test.example.test"]
 
     it "Sprint 2.35: certDnsNamesForServedHost projects a configured wildcard scope" $
       certDnsNamesForServedHost
         ( DomainSection
-            { demo_fqdn = "test.resolvefintech.com"
+            { demo_fqdn = "test.example.test"
             , demo_ttl = 60
-            , cert_scopes = ["*.resolvefintech.com"]
+            , cert_scopes = ["*.example.test"]
             }
         )
-        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
-        "test.resolvefintech.com"
-        `shouldBe` Right ["*.resolvefintech.com"]
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
+        "test.example.test"
+        `shouldBe` Right ["*.example.test"]
 
     it "Sprint 2.35: certDnsNamesForServedHost keys on the AWS-subzone served host" $
       -- On the AWS substrate the served host is the subzone, so the default
@@ -19714,37 +20925,43 @@ unitSuite = do
       -- prior single `.Values.gateway.host` on that substrate).
       -- Sprint 1.85 removed two verbatim duplicates of this comment.
       certDnsNamesForServedHost
-        (DomainSection {demo_fqdn = "test.resolvefintech.com", demo_ttl = 60, cert_scopes = []})
-        (AwsSubstrateSection {hosted_zone_id = "Z123", subzone_name = "aws.test.resolvefintech.com"})
-        "aws.test.resolvefintech.com"
-        `shouldBe` Right ["aws.test.resolvefintech.com"]
+        (DomainSection {demo_fqdn = "test.example.test", demo_ttl = 60, cert_scopes = []})
+        ( AwsSubstrateSection
+            { hosted_zone_id = "Z123"
+            , subzone_name = "aws.test.example.test"
+            , profile = Nothing
+            }
+        )
+        "aws.test.example.test"
+        `shouldBe` Right ["aws.test.example.test"]
 
     it "Sprint 2.35: rejects an explicit scope set that covers home but not the AWS served host" $ do
       let domainSection =
             DomainSection
-              { demo_fqdn = "test.resolvefintech.com"
+              { demo_fqdn = "test.example.test"
               , demo_ttl = 60
-              , cert_scopes = ["test.resolvefintech.com"]
+              , cert_scopes = ["test.example.test"]
               }
           awsSection =
             AwsSubstrateSection
               { hosted_zone_id = "Z123"
-              , subzone_name = "aws.test.resolvefintech.com"
+              , subzone_name = "aws.test.example.test"
+              , profile = Nothing
               }
       validateConfiguredCertScope domainSection awsSection
         `shouldSatisfy` isCertScopeError "not covered"
-      certDnsNamesForServedHost domainSection awsSection "aws.test.resolvefintech.com"
+      certDnsNamesForServedHost domainSection awsSection "aws.test.example.test"
         `shouldSatisfy` isCertScopeError "not covered"
 
     it "Sprint 2.35: validates the supplied substrate served host even with explicit scopes" $
       certDnsNamesForServedHost
         ( DomainSection
-            { demo_fqdn = "test.resolvefintech.com"
+            { demo_fqdn = "test.example.test"
             , demo_ttl = 60
-            , cert_scopes = ["test.resolvefintech.com"]
+            , cert_scopes = ["test.example.test"]
             }
         )
-        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = ""})
+        (AwsSubstrateSection {hosted_zone_id = "", subzone_name = "", profile = Nothing})
         "not-a-fqdn"
         `shouldSatisfy` isCertScopeError "served hostname"
 
@@ -19936,15 +21153,15 @@ keycloakInvitePlainFixture :: BL8.ByteString
 keycloakInvitePlainFixture =
   BL8.pack
     ( unlines
-        [ "From: noreply@test.resolvefintech.com"
-        , "To: invitee@inbox.test.resolvefintech.com"
+        [ "From: noreply@test.example.test"
+        , "To: invitee@inbox.test.example.test"
         , "Subject: Verify your email"
         , "Content-Type: text/plain; charset=UTF-8"
         , ""
         , "Hi,"
         , ""
         , "Please follow this link to activate your account:"
-        , "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=abc123"
+        , "https://test.example.test/auth/realms/prodbox/login-actions/action-token?key=abc123"
         , ""
         , "Thanks."
         ]
@@ -19954,14 +21171,14 @@ keycloakInviteQuotedPrintableFixture :: BL8.ByteString
 keycloakInviteQuotedPrintableFixture =
   BL8.pack
     ( unlines
-        [ "From: noreply@test.resolvefintech.com"
-        , "To: invitee@inbox.test.resolvefintech.com"
+        [ "From: noreply@test.example.test"
+        , "To: invitee@inbox.test.example.test"
         , "Subject: Verify your email"
         , "Content-Type: text/plain; charset=UTF-8"
         , "Content-Transfer-Encoding: quoted-printable"
         , ""
         , "Please activate:"
-        , "https://test.resolvefintech.com/auth/realms/prodbox/login-act=\r"
+        , "https://test.example.test/auth/realms/prodbox/login-act=\r"
         , "ions/action-token?key=def456"
         , ""
         , "Thanks."
@@ -19972,20 +21189,20 @@ keycloakInviteMultipartDuplicateFixture :: BL8.ByteString
 keycloakInviteMultipartDuplicateFixture =
   BL8.pack
     ( unlines
-        [ "From: noreply@test.resolvefintech.com"
-        , "To: invitee@inbox.test.resolvefintech.com"
+        [ "From: noreply@test.example.test"
+        , "To: invitee@inbox.test.example.test"
         , "Subject: Verify your email"
         , "Content-Type: multipart/alternative; boundary=\"invite-boundary\""
         , ""
         , "--invite-boundary"
         , "Content-Type: text/plain; charset=UTF-8"
         , ""
-        , "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=ghi789"
+        , "https://test.example.test/auth/realms/prodbox/login-actions/action-token?key=ghi789"
         , "--invite-boundary"
         , "Content-Type: text/html; charset=UTF-8"
         , "Content-Transfer-Encoding: quoted-printable"
         , ""
-        , "<a href=3D\"https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=3Dghi789\">Activate</a>"
+        , "<a href=3D\"https://test.example.test/auth/realms/prodbox/login-actions/action-token?key=3Dghi789\">Activate</a>"
         , "--invite-boundary--"
         ]
     )
@@ -19994,13 +21211,13 @@ keycloakInviteMultipleDistinctFixture :: BL8.ByteString
 keycloakInviteMultipleDistinctFixture =
   BL8.pack
     ( unlines
-        [ "From: noreply@test.resolvefintech.com"
-        , "To: invitee@inbox.test.resolvefintech.com"
+        [ "From: noreply@test.example.test"
+        , "To: invitee@inbox.test.example.test"
         , "Subject: Verify your email"
         , "Content-Type: text/plain; charset=UTF-8"
         , ""
-        , "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=first-token"
-        , "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=second-token"
+        , "https://test.example.test/auth/realms/prodbox/login-actions/action-token?key=first-token"
+        , "https://test.example.test/auth/realms/prodbox/login-actions/action-token?key=second-token"
         ]
     )
 
@@ -20008,8 +21225,8 @@ keycloakInviteMissingFixture :: BL8.ByteString
 keycloakInviteMissingFixture =
   BL8.pack
     ( unlines
-        [ "From: noreply@test.resolvefintech.com"
-        , "To: invitee@inbox.test.resolvefintech.com"
+        [ "From: noreply@test.example.test"
+        , "To: invitee@inbox.test.example.test"
         , "Subject: Welcome"
         , "Content-Type: text/plain; charset=UTF-8"
         , ""
@@ -20149,7 +21366,7 @@ validConfig =
     , route53 = Route53Section {zone_id = "Z1234567890ABC"}
     , domain =
         DomainSection
-          { demo_fqdn = "test.resolvefintech.com"
+          { demo_fqdn = "test.example.test"
           , demo_ttl = 60
           , cert_scopes = []
           }
@@ -20183,7 +21400,7 @@ fixtureAwsCredentials =
         SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "secret_access_key")
     , awsCredentialSessionToken =
         Just (SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "session_token"))
-    , awsCredentialRegion = "us-east-1"
+    , awsCredentialRegion = (fixtureAwsRegion FixtureUsEast1)
     }
 
 fixtureEabRef :: Text.Text -> SecretRef
@@ -20192,8 +21409,7 @@ fixtureEabRef field = SecretRefVault (VaultSecretRef "secret" "acme/zerossl" fie
 fixtureAcme :: Maybe SecretRef -> Maybe SecretRef -> AcmeSection
 fixtureAcme eabKeyId eabHmacKey =
   AcmeSection
-    { email = "test@resolvefintech.com"
-    , server = "https://acme.zerossl.com/v2/DV90"
+    { email = "test@example.test"
     , eab_key_id = eabKeyId
     , eab_hmac_key = eabHmacKey
     }
@@ -20307,6 +21523,35 @@ categorizePulumiResidue perRun sesStatus =
         ++ ResourceRegistry.pairAwsSesResidue sesStatus
     )
 
+populatedHarnessTestSecrets :: TestSecrets
+populatedHarnessTestSecrets =
+  defaultTestSecrets
+    { test_served_fqdn = "alpha.example.test"
+    , test_acme_email = "operator@alpha.example.test"
+    , legacy_cluster_id = "legacy-test-cluster"
+    , legacy_machine_id = "legacy-test-machine"
+    , legacy_vault_address = "http://127.0.0.1:31820"
+    , legacy_minio_endpoint = "http://127.0.0.1:39000"
+    , route53_zone_id = "ZTESTHARNESS"
+    , ses_sender_domain = "mail.example.test"
+    , ses_receive_subdomain = "receive"
+    , ses_capture_bucket = "prodbox-test-ses-capture"
+    , pulumi_state_backend_bucket_name = "prodbox-state"
+    , pulumi_state_backend_region = fixtureAwsRegion FixtureUsEast2
+    }
+
+harnessProjectConfig :: ConfigFile -> DeploymentContextInput -> ProdboxProjectConfig
+harnessProjectConfig config input =
+  Tier0.defaultProjectConfig
+    { Tier0.parameters = Tier0.configFileToTier0Parameters config
+    , Tier0.context =
+        (Tier0.context Tier0.defaultProjectConfig)
+          { Tier0.cluster_id = contextInputClusterId input
+          , Tier0.vault_address = contextInputVaultAddress input
+          , Tier0.minio_endpoint = contextInputMinioEndpoint input
+          }
+    }
+
 testTopologyDhallDocument :: FilePath -> String
 testTopologyDhallDocument repoRoot =
   unlines
@@ -20327,6 +21572,8 @@ testTopologyDhallDocument repoRoot =
     , "                            }"
     , "                          ] : List TestTopology.Cluster.Machine"
     , "                      }"
+    , "                , vault_address = \"http://127.0.0.1:31820\""
+    , "                , minio_endpoint = \"http://127.0.0.1:39000\""
     , "                , replicas = 1"
     , "                , failover = Some TestTopology.FailoverScenario.LeaderKill"
     , "                }"
@@ -20614,6 +21861,58 @@ testValidatedSettings manualRoot =
       -- produce.
       validatedCoordinates =
         either error id (validatedCoordinatesFor testValidatedConfigFile)
+    , validatedDeploymentContext =
+        either
+          error
+          id
+          ( validatedDeploymentContextFor
+              testDeploymentContextInput
+              (cluster_topology testValidatedConfigFile)
+          )
+    }
+
+chartProjectionSettings :: Text.Text -> Text.Text -> ValidatedSettings
+chartProjectionSettings servedHost minioEndpoint =
+  base
+    { validatedConfig = projectedConfig
+    , validatedPublicEdge =
+        either
+          error
+          id
+          (validatedPublicEdgeFor (domain projectedConfig) (aws_substrate projectedConfig))
+    , validatedCoordinates = either error id (validatedCoordinatesFor projectedConfig)
+    , validatedDeploymentContext =
+        either
+          error
+          id
+          ( validatedDeploymentContextFor
+              testDeploymentContextInput {contextInputMinioEndpoint = minioEndpoint}
+              (cluster_topology projectedConfig)
+          )
+    }
+ where
+  base = testValidatedSettings "/tmp/prodbox/.data"
+  baseConfig = validatedConfig base
+  projectedConfig =
+    baseConfig
+      { domain =
+          (domain baseConfig)
+            { demo_fqdn = servedHost
+            , cert_scopes = []
+            }
+      , cluster_topology =
+          either
+            (error . ClusterTopology.renderTopologyError)
+            id
+            (ClusterTopology.mkSingleMachineRke2Topology "chart-projection-machine")
+      }
+
+testDeploymentContextInput :: DeploymentContextInput
+testDeploymentContextInput =
+  DeploymentContextInput
+    { contextInputClusterId = "test-cluster"
+    , contextInputVaultAddress = "http://127.0.0.1:31820"
+    , contextInputMinioEndpoint = "http://127.0.0.1:39000"
     }
 
 -- | Sprint 1.91: the capture bucket the printed-grant assertions thread. It is
@@ -20634,17 +21933,18 @@ testValidatedConfigFile =
               SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "secret_access_key")
           , awsCredentialSessionToken =
               Just (SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "session_token"))
-          , awsCredentialRegion = "us-east-1"
+          , awsCredentialRegion = (fixtureAwsRegion FixtureUsEast1)
           }
     , route53 = Route53Section {zone_id = "Z1234567890ABC"}
     , aws_substrate =
         AwsSubstrateSection
           { hosted_zone_id = "ZAWSSUBZONE123"
-          , subzone_name = "aws.test.resolvefintech.com"
+          , subzone_name = "aws.test.example.test"
+          , profile = Nothing
           }
     , domain =
         DomainSection
-          { demo_fqdn = "test.resolvefintech.com"
+          { demo_fqdn = "test.example.test"
           , demo_ttl = 60
           , cert_scopes = []
           }
@@ -20653,13 +21953,13 @@ testValidatedConfigFile =
       -- described an AWS-capable host in every respect except this one; leaving
       -- the contact blank made 'coordinateAcmeAccount' `Nothing` and the ACME
       -- renderer cases below untestable against a coherent config.
-      acme = (acme defaultConfigFile) {email = "ops@resolvefintech.com"}
+      acme = (acme defaultConfigFile) {email = "ops@example.test"}
     , deployment = validDeploymentSection
     , storage = StorageSection {manual_pv_host_root = ".data"}
     , pulumi_state_backend =
         PulumiStateBackendSection
           { psbBucketName = "prodbox-retained"
-          , psbRegion = "ca-central-1"
+          , psbRegion = (fixtureAwsRegion FixtureCaCentral1)
           , psbKeyPrefix = "pulumi"
           }
     }
@@ -20672,7 +21972,7 @@ sampleAwsSetupInput =
           { access_key_id = "admin-access-key"
           , secret_access_key = "admin-secret-key"
           , session_token = Just "admin-session-token"
-          , region = "us-west-2"
+          , region = (fixtureAwsRegion FixtureUsWest2)
           }
     , awsSetupPolicyTierInput = PolicyFull
     }
@@ -20689,10 +21989,15 @@ sampleConfigSetupInput =
   ConfigSetupInput
     { configSetupAdminCredentialsInput = awsSetupAdminCredentials sampleAwsSetupInput
     , configSetupRoute53ZoneIdInput = "Z1234567890ABC"
-    , configSetupDemoFqdnInput = "test.resolvefintech.com"
+    , configSetupDemoFqdnInput = "test.example.test"
     , configSetupDemoTtlInput = 60
-    , configSetupAcmeEmailInput = "ops@resolvefintech.com"
-    , configSetupAcmeServerInput = "https://acme.zerossl.com/v2/DV90"
+    , configSetupAcmeEmailInput = "ops@example.test"
+    , configSetupDeploymentContextInput = testDeploymentContextInput
+    , configSetupClusterTopologyInput =
+        either
+          (error . ClusterTopology.renderTopologyError)
+          id
+          (ClusterTopology.mkSingleMachineRke2Topology "test-machine")
     , configSetupDevModeInput = True
     , configSetupBootstrapPublicIpOverrideInput = Just "203.0.113.10"
     , configSetupPulumiEnableDnsBootstrapInput = True
@@ -20726,12 +22031,12 @@ roundTripConfigFile =
               SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "secret_access_key")
           , awsCredentialSessionToken =
               Just (SecretRefVault (VaultSecretRef "secret" "aws/lifecycle-provider" "session_token"))
-          , awsCredentialRegion = "us-east-1"
+          , awsCredentialRegion = (fixtureAwsRegion FixtureUsEast1)
           }
     , route53 = Route53Section {zone_id = "Z1234567890ABC"}
     , domain =
         DomainSection
-          { demo_fqdn = "test.resolvefintech.com"
+          { demo_fqdn = "test.example.test"
           , demo_ttl = 60
           , cert_scopes = []
           }
@@ -20821,7 +22126,7 @@ sampleAwsTestStackSnapshot =
     , AwsTest.testSnapshotNodes =
         [ AwsTest.AwsTestNode
             { AwsTest.testNodeName = "aws-test-node-0"
-            , AwsTest.testNodeAvailabilityZone = "us-west-2a"
+            , AwsTest.testNodeAvailabilityZone = (fixtureAwsRegion FixtureUsWest2 <> "a")
             , AwsTest.testNodeInstanceId = "i-1234567890"
             , AwsTest.testNodePrivateIp = "10.0.0.10"
             , AwsTest.testNodePublicIp = "203.0.113.10"
@@ -20841,15 +22146,19 @@ sampleAwsEksTestStackSnapshot =
     , AwsEks.eksSnapshotVpcId = "vpc-1234567890"
     , AwsEks.eksSnapshotSubnetIds = ["subnet-a", "subnet-b"]
     , AwsEks.eksSnapshotClusterSecurityGroupId = "sg-0987654321"
-    , AwsEks.eksSnapshotClusterOidcIssuer = "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+    , AwsEks.eksSnapshotClusterOidcIssuer =
+        ("https://oidc.eks." <> (fixtureAwsRegion FixtureUsEast1) <> ".amazonaws.com/id/EXAMPLE")
     , AwsEks.eksSnapshotOidcProviderArn =
-        "arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+        ( "arn:aws:iam::123456789012:oidc-provider/oidc.eks."
+            <> (fixtureAwsRegion FixtureUsEast1)
+            <> ".amazonaws.com/id/EXAMPLE"
+        )
     , AwsEks.eksSnapshotAwsLbControllerPolicyArn =
         "arn:aws:iam::123456789012:policy/aws-eks-test-aws-lb-controller"
     , AwsEks.eksSnapshotAwsLbControllerRoleArn =
         "arn:aws:iam::123456789012:role/aws-eks-test-aws-lb-controller"
     , AwsEks.eksSnapshotAwsLbControllerRoleName = "aws-eks-test-aws-lb-controller"
-    , AwsEks.eksSnapshotRetainedEbsAvailabilityZone = "us-east-1a"
+    , AwsEks.eksSnapshotRetainedEbsAvailabilityZone = (fixtureAwsRegion FixtureUsEast1 <> "a")
     }
 
 -- | Sprint 4.18: the flat @Map Text Text@ shape the Pulumi backend
@@ -20867,7 +22176,7 @@ sampleAwsTestStackOutputsMap =
       ( "nodes"
       , Text.pack
           ( "[{\"name\":\"aws-test-node-0\""
-              ++ ",\"availability_zone\":\"us-west-2a\""
+              ++ (",\"availability_zone\":\"" <> (fixtureAwsRegion FixtureUsWest2) <> "a\"")
               ++ ",\"instance_id\":\"i-1234567890\""
               ++ ",\"private_ip\":\"10.0.0.10\""
               ++ ",\"public_ip\":\"203.0.113.10\"}]"
@@ -20889,15 +22198,21 @@ sampleAwsEksTestStackOutputsMap =
     , ("vpc_id", "vpc-1234567890")
     , ("subnet_ids", Text.pack "[\"subnet-a\",\"subnet-b\"]")
     , ("cluster_security_group_id", "sg-0987654321")
-    , ("cluster_oidc_issuer", "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE")
+    ,
+      ( "cluster_oidc_issuer"
+      , ("https://oidc.eks." <> (fixtureAwsRegion FixtureUsEast1) <> ".amazonaws.com/id/EXAMPLE")
+      )
     ,
       ( "oidc_provider_arn"
-      , "arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+      , ( "arn:aws:iam::123456789012:oidc-provider/oidc.eks."
+            <> (fixtureAwsRegion FixtureUsEast1)
+            <> ".amazonaws.com/id/EXAMPLE"
+        )
       )
     , ("aws_lb_controller_policy_arn", "arn:aws:iam::123456789012:policy/aws-eks-test-aws-lb-controller")
     , ("aws_lb_controller_role_arn", "arn:aws:iam::123456789012:role/aws-eks-test-aws-lb-controller")
     , ("aws_lb_controller_role_name", "aws-eks-test-aws-lb-controller")
-    , ("retained_ebs_availability_zone", "us-east-1a")
+    , ("retained_ebs_availability_zone", (fixtureAwsRegion FixtureUsEast1 <> "a"))
     ]
 
 gatewaySecretRefType :: String
@@ -20995,10 +22310,9 @@ awsTierConfigFile =
     { route53 = Route53Section {zone_id = "Z1234567890ABC"}
     , acme =
         (acme defaultConfigFile)
-          { email = "operator@resolvefintech.com"
-          , server = "https://acme.zerossl.com/v2/DV90"
+          { email = "operator@example.test"
           }
-    , aws_substrate = AwsSubstrateSection "Z1234567890ABC" "sub.resolvefintech.com"
+    , aws_substrate = AwsSubstrateSection "Z1234567890ABC" "sub.example.test" Nothing
     }
 
 -- | Sprint 2.40: named rather than an inline lambda-case, per the repository's

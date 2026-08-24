@@ -50,6 +50,12 @@ module Prodbox.Lifecycle.Teardown.Registry
   , awsEbsProductionRetainedResource
   , awsDnsValidationZoneResource
   , awsDns01ChallengeRecordResource
+  , awsEksIamRoleFamilyResource
+  , awsEksIamRoleNames
+  , awsEksIamManagedPolicyNames
+  , awsEksLoadBalancerControllerFamilyResource
+  , awsEksLoadBalancerControllerName
+  , awsEksLoadBalancerControllerTags
   , managedResourceRegistry
   , lifecycleRegistry
   , lookupRegisteredIdentity
@@ -387,6 +393,69 @@ awsDns01ChallengeRecordResource =
     (AwsRoute53Dns01ChallengeRecordFamilyCoordinate dns01ChallengeRecordNamePrefix)
     AwsResourceApiAuthority
 
+-- | The four deterministic roles declared by @pulumi/aws-eks/Main.yaml@.
+-- Derived from the registered stack and cluster names so the cleanup family,
+-- the Pulumi program, and the stack/family ownership edge share one naming
+-- rule. The EBS CSI role predates the common prefix but is still exact.
+awsEksIamRoleNames :: [Text]
+awsEksIamRoleNames =
+  [ iamPrefix <> "-cluster-role"
+  , iamPrefix <> "-node-role"
+  , iamPrefix <> "-lbc-role"
+  , awsEksPulumiStackName <> "-ebs-csi-driver"
+  ]
+ where
+  iamPrefix =
+    "prodbox-"
+      <> awsEksPulumiStackName
+      <> "-"
+      <> awsEksProvisionedClusterName
+
+awsEksIamManagedPolicyNames :: [Text]
+awsEksIamManagedPolicyNames = [awsEksPulumiStackName <> "-aws-lb-controller"]
+
+awsEksIamRoleFamilyResource
+  :: ManagedResourceDescriptor 'PerRun 'ControllerFamily
+awsEksIamRoleFamilyResource =
+  mkManagedResource
+    AwsEksIamRoleFamilyKey
+    PerRunLifecycle
+    ControllerFamilyKind
+    ( AwsIamRoleFamilyCoordinate
+        awsEksProvisionedClusterName
+        awsEksIamRoleNames
+        awsEksIamManagedPolicyNames
+    )
+    AwsResourceApiAuthority
+
+-- | The NLB family created by the AWS Load Balancer Controller for the
+-- public-edge Service.  Its AWS name and tags are written before the Service
+-- is enabled and are shared by the Kubernetes manifest, the retained
+-- controller-owner record, and the Provider backstop.
+awsEksLoadBalancerControllerName :: Text
+awsEksLoadBalancerControllerName = "prodbox-public-edge"
+
+awsEksLoadBalancerControllerTags :: [(Text, Text)]
+awsEksLoadBalancerControllerTags =
+  [ ("prodbox.io/cluster", awsEksProvisionedClusterName)
+  , ("prodbox.io/managed-by", "prodbox")
+  , ("prodbox.io/resource", "public-edge")
+  ]
+
+awsEksLoadBalancerControllerFamilyResource
+  :: ManagedResourceDescriptor 'PerRun 'ControllerFamily
+awsEksLoadBalancerControllerFamilyResource =
+  mkManagedResource
+    AwsEksLoadBalancerControllerFamilyKey
+    PerRunLifecycle
+    ControllerFamilyKind
+    ( AwsLoadBalancerControllerFamilyCoordinate
+        awsEksProvisionedClusterName
+        awsEksLoadBalancerControllerName
+        awsEksLoadBalancerControllerTags
+    )
+    AwsResourceApiAuthority
+
 managedResourceRegistry :: [SomeManagedResourceDescriptor]
 managedResourceRegistry =
   [ SomeManagedResourceDescriptor awsEksResource
@@ -395,6 +464,8 @@ managedResourceRegistry =
   , SomeManagedResourceDescriptor awsEbsPerRunTestResource
   , SomeManagedResourceDescriptor awsDnsValidationZoneResource
   , SomeManagedResourceDescriptor awsDns01ChallengeRecordResource
+  , SomeManagedResourceDescriptor awsEksIamRoleFamilyResource
+  , SomeManagedResourceDescriptor awsEksLoadBalancerControllerFamilyResource
   , SomeManagedResourceDescriptor awsEbsProductionRetainedResource
   ]
 

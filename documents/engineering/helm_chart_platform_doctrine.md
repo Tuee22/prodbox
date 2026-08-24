@@ -136,6 +136,9 @@ The supported chart-maintenance surface is split between `prodbox dev lint chart
   - `charts/websocket/templates/http-route.yaml`
 - The generated route inventory is derived from `src/Prodbox/PublicEdge.hs`, so the public
   path catalog stays synchronized across docs, chart manifests, and validation surfaces.
+- Its `PUBLIC_FQDN` narration is a Helm-time projection of `.Values.gateway.host`. The Haskell
+  renderer and committed templates carry no deployment hostname; the validated served host
+  supplied in chart values is what appears in the rendered inventory.
 
 ## 1B. Resource Requirement Rendering
 
@@ -862,6 +865,18 @@ catalog:
 | Setting | Purpose |
 |---------|---------|
 | `domain.demo_fqdn` | Canonical shared public hostname for `/auth`, `/vscode`, `/api`, `/ws`, and `/minio` |
+| `context.minio_endpoint` | Operator-host MinIO endpoint for host-side lifecycle clients; it is never copied into a Pod network namespace |
+
+The generic `prodbox-state` bucket is not a setting: it is a prodbox-chosen object-store identity
+declared once in the object-store vocabulary. **Current revision.** The Gateway Helm value, Gateway
+Tier-0 document, Bootstrap Broker store, and Lifecycle Authority primary store all use the single
+compiled `minio.prodbox.svc.cluster.local:9000` Service coordinate from
+`Prodbox.Minio.ObjectStoreTypes`; none reuses the host's authored loopback address. Both
+rendered state-store buckets import `defaultObjectStoreBucket`; the generic Gateway chart default is
+empty and therefore cannot substitute a deployment address. The structural render proof varies the
+host coordinate without changing the Pod coordinate, while the bucket remains byte-identical.
+Adoption/removal status lives only
+in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 Namespace-local chart secrets are Vault KV objects, fetched in-cluster via Vault
 Kubernetes auth and materialized only at the consuming workload boundary per

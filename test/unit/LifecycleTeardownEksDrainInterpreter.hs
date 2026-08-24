@@ -48,7 +48,7 @@ import TestSupport
 lifecycleTeardownEksDrainInterpreterSuite :: SuiteBuilder ()
 lifecycleTeardownEksDrainInterpreterSuite =
   describe "Sprint 7.36 exact EKS drain interpreter" $ do
-    it "mints selection only after complete UID, Service, Ingress, and Delete-policy PVC queries" $ do
+    it "mints selection only after complete UID, owner, Service, Ingress, and Delete-policy PVC queries" $ do
       (arms, cluster, calls) <- fixtureArms
       selected <-
         observeVerifiedEksDrainSelection
@@ -70,6 +70,7 @@ lifecycleTeardownEksDrainInterpreterSuite =
                                   , FakeObserveUid
                                   , FakeObserveServices
                                   , FakeObserveIngresses
+                                  , FakeObserveControllerOwners
                                   , FakeObserveDeletePolicyPvcs
                                   ]
       modifyIORef'
@@ -126,6 +127,7 @@ lifecycleTeardownEksDrainInterpreterSuite =
                    , CommitSelectionObserveUid
                    , CommitSelectionObserveServices
                    , CommitSelectionObserveIngresses
+                   , CommitSelectionObserveControllerOwners
                    , CommitSelectionObserveDeletePolicyPvcs
                    ]
 
@@ -196,6 +198,7 @@ lifecycleTeardownEksDrainInterpreterSuite =
       countCall CommitSelectionObserveUid calls `shouldBe` 1
       calls `shouldNotContain` [CommitSelectionObserveServices]
       calls `shouldNotContain` [CommitSelectionObserveIngresses]
+      calls `shouldNotContain` [CommitSelectionObserveControllerOwners]
       calls `shouldNotContain` [CommitSelectionObserveDeletePolicyPvcs]
 
     it "mints only destroy authorization from a fresh UID under the sealed reconcile attempt" $ do
@@ -225,6 +228,7 @@ lifecycleTeardownEksDrainInterpreterSuite =
                            expectedProjectionRequest
                        , CommitSelectionObserveUid
                        , CommitSelectionObserveUid
+                       , CommitSelectionObserveControllerOwners
                        , CommitSelectionObserveServices
                        , CommitSelectionObserveIngresses
                        , CommitSelectionObservePvc fixturePvcA
@@ -297,6 +301,7 @@ lifecycleTeardownEksDrainInterpreterSuite =
                            expectedProjectionRequest
                        , AttemptExecutionObserveUid
                        , AttemptExecutionObserveUid
+                       , AttemptExecutionDeleteControllerOwners
                        , AttemptExecutionDeleteServices
                        , AttemptExecutionDeleteIngresses
                        , AttemptExecutionDeletePvc fixturePvcA
@@ -327,6 +332,7 @@ lifecycleTeardownEksDrainInterpreterSuite =
                        , AttemptExecutionObserveUid
                        , AttemptExecutionObserveServices
                        , AttemptExecutionObserveIngresses
+                       , AttemptExecutionObserveControllerOwners
                        , AttemptExecutionObservePvc fixturePvcA
                        , AttemptExecutionObservePvc fixturePvcB
                        ]
@@ -492,6 +498,7 @@ lifecycleTeardownEksDrainInterpreterSuite =
       observed
         `shouldContainAll` [ FakeAcquire drainEffectOperation attemptA
                            , FakeOpenClient drainEffectOperation
+                           , FakeDeleteControllerOwners
                            , FakeDeleteServices
                            , FakeDeleteIngresses
                            , FakeDeletePvc fixturePvcA
@@ -542,6 +549,7 @@ lifecycleTeardownEksDrainInterpreterSuite =
             state
               { fakeServiceInventory = EksDrainInventoryComplete []
               , fakeIngressInventory = EksDrainInventoryComplete []
+              , fakeControllerOwnerInventory = EksDrainInventoryComplete []
               , fakeDeletePolicyPvcInventory = EksDrainInventoryComplete []
               , fakePvcObservations =
                   Map.insert
@@ -570,6 +578,7 @@ lifecycleTeardownEksDrainInterpreterSuite =
             state
               { fakeServiceInventory = EksDrainInventoryComplete []
               , fakeIngressInventory = EksDrainInventoryComplete []
+              , fakeControllerOwnerInventory = EksDrainInventoryComplete []
               , fakePvcObservations =
                   Map.insert
                     fixturePvcB
@@ -712,6 +721,7 @@ data CommitSelectionCall
   | CommitSelectionObserveUid
   | CommitSelectionObserveServices
   | CommitSelectionObserveIngresses
+  | CommitSelectionObserveControllerOwners
   | CommitSelectionObserveDeletePolicyPvcs
   | CommitSelectionObservePvc !EksNamespacedName
   deriving (Eq, Show)
@@ -860,6 +870,10 @@ commitSelectionClientEffects =
         tracedCommitSelection
           CommitSelectionObserveIngresses
           (EksDrainInventoryComplete [fixtureIngress])
+    , eksDrainClientObserveControllerOwners =
+        tracedCommitSelection
+          CommitSelectionObserveControllerOwners
+          (EksDrainInventoryComplete [fixtureControllerOwner])
     , eksDrainClientObserveDeletePolicyPvcs =
         tracedCommitSelection
           CommitSelectionObserveDeletePolicyPvcs
@@ -873,6 +887,11 @@ commitSelectionClientEffects =
         pure
           ( EksDrainMutationResponseRefused
               (ObservationFailure "commit selector cannot mutate Ingresses")
+          )
+    , eksDrainClientDeleteControllerOwners =
+        pure
+          ( EksDrainMutationResponseRefused
+              (ObservationFailure "commit selector cannot mutate controller owners")
           )
     , eksDrainClientDeletePvc =
         \_ ->
@@ -981,6 +1000,7 @@ data DestroyAdmissionEnvironment = DestroyAdmissionEnvironment
   , destroyAdmissionUid :: !EksDrainKubernetesUidObservation
   , destroyAdmissionServices :: !(EksDrainInventoryResult EksNamespacedName)
   , destroyAdmissionIngresses :: !(EksDrainInventoryResult EksNamespacedName)
+  , destroyAdmissionControllerOwners :: !(EksDrainInventoryResult EksNamespacedName)
   , destroyAdmissionPvcs :: !(Map EksNamespacedName EksDrainPvcObservation)
   , destroyAdmissionCalls :: !(IORef [CommitSelectionCall])
   , destroyAdmissionCaptured
@@ -1052,6 +1072,7 @@ newDestroyAdmissionEnvironment projection uid = do
       , destroyAdmissionUid = uid
       , destroyAdmissionServices = EksDrainInventoryComplete []
       , destroyAdmissionIngresses = EksDrainInventoryComplete []
+      , destroyAdmissionControllerOwners = EksDrainInventoryComplete []
       , destroyAdmissionPvcs =
           Map.fromList
             [ (fixturePvcA, absentPvc "PVC A absent")
@@ -1130,9 +1151,14 @@ destroyAdmissionClientEffects =
         tracedDestroyAdmission
           CommitSelectionObserveIngresses
           destroyAdmissionIngresses
+    , eksDrainClientObserveControllerOwners =
+        tracedDestroyAdmission
+          CommitSelectionObserveControllerOwners
+          destroyAdmissionControllerOwners
     , eksDrainClientObserveDeletePolicyPvcs = unavailableInventory
     , eksDrainClientDeleteLoadBalancerServices = unavailableMutation
     , eksDrainClientDeleteIngresses = unavailableMutation
+    , eksDrainClientDeleteControllerOwners = unavailableMutation
     , eksDrainClientDeletePvc = const unavailableMutation
     , eksDrainClientObservePvc =
         \pvc ->
@@ -1247,7 +1273,9 @@ data AttemptExecutionCall
   | AttemptExecutionObserveUid
   | AttemptExecutionObserveServices
   | AttemptExecutionObserveIngresses
+  | AttemptExecutionObserveControllerOwners
   | AttemptExecutionObserveDeletePolicyPvcs
+  | AttemptExecutionDeleteControllerOwners
   | AttemptExecutionDeleteServices
   | AttemptExecutionDeleteIngresses
   | AttemptExecutionDeletePvc !EksNamespacedName
@@ -1418,6 +1446,10 @@ attemptExecutionClientEffects =
         tracedAttemptExecution
           AttemptExecutionObserveIngresses
           fakeIngressInventory
+    , eksDrainClientObserveControllerOwners =
+        tracedAttemptExecution
+          AttemptExecutionObserveControllerOwners
+          fakeControllerOwnerInventory
     , eksDrainClientObserveDeletePolicyPvcs =
         tracedAttemptExecution
           AttemptExecutionObserveDeletePolicyPvcs
@@ -1430,6 +1462,10 @@ attemptExecutionClientEffects =
         tracedAttemptExecution
           AttemptExecutionDeleteIngresses
           fakeIngressDelete
+    , eksDrainClientDeleteControllerOwners =
+        tracedAttemptExecution
+          AttemptExecutionDeleteControllerOwners
+          fakeControllerOwnerDelete
     , eksDrainClientDeletePvc = \pvc ->
         AttemptExecutionEffects $ \environment -> do
           modifyIORef'
@@ -1486,6 +1522,7 @@ isCapturedAttemptRefusal captured = case captured of
 
 isAttemptMutation :: AttemptExecutionCall -> Bool
 isAttemptMutation call = case call of
+  AttemptExecutionDeleteControllerOwners -> True
   AttemptExecutionDeleteServices -> True
   AttemptExecutionDeleteIngresses -> True
   AttemptExecutionDeletePvc _ -> True
@@ -1495,9 +1532,11 @@ data FakeCluster = FakeCluster
   { fakeUidObservation :: !EksDrainKubernetesUidObservation
   , fakeServiceInventory :: !(EksDrainInventoryResult EksNamespacedName)
   , fakeIngressInventory :: !(EksDrainInventoryResult EksNamespacedName)
+  , fakeControllerOwnerInventory :: !(EksDrainInventoryResult EksNamespacedName)
   , fakeDeletePolicyPvcInventory :: !(EksDrainInventoryResult EksNamespacedName)
   , fakeServiceDelete :: !EksDrainMutationResponse
   , fakeIngressDelete :: !EksDrainMutationResponse
+  , fakeControllerOwnerDelete :: !EksDrainMutationResponse
   , fakePvcDelete :: !(Map EksNamespacedName EksDrainMutationResponse)
   , fakePvcObservations :: !(Map EksNamespacedName EksDrainPvcObservation)
   }
@@ -1508,7 +1547,9 @@ data FakeCall
   | FakeObserveUid
   | FakeObserveServices
   | FakeObserveIngresses
+  | FakeObserveControllerOwners
   | FakeObserveDeletePolicyPvcs
+  | FakeDeleteControllerOwners
   | FakeDeleteServices
   | FakeDeleteIngresses
   | FakeDeletePvc !EksNamespacedName
@@ -1521,10 +1562,12 @@ defaultFakeCluster =
     { fakeUidObservation = EksDrainKubernetesUidPresent fixtureUid
     , fakeServiceInventory = EksDrainInventoryComplete [fixtureService]
     , fakeIngressInventory = EksDrainInventoryComplete [fixtureIngress]
+    , fakeControllerOwnerInventory = EksDrainInventoryComplete [fixtureControllerOwner]
     , fakeDeletePolicyPvcInventory =
         EksDrainInventoryComplete [fixturePvcB, fixturePvcA]
     , fakeServiceDelete = EksDrainMutationResponseApplied
     , fakeIngressDelete = EksDrainMutationResponseApplied
+    , fakeControllerOwnerDelete = EksDrainMutationResponseApplied
     , fakePvcDelete = Map.empty
     , fakePvcObservations =
         Map.fromList
@@ -1592,12 +1635,16 @@ fakeEffects cluster calls =
         traced FakeObserveServices fakeServiceInventory
     , eksDrainClientObserveIngresses =
         traced FakeObserveIngresses fakeIngressInventory
+    , eksDrainClientObserveControllerOwners =
+        traced FakeObserveControllerOwners fakeControllerOwnerInventory
     , eksDrainClientObserveDeletePolicyPvcs =
         traced FakeObserveDeletePolicyPvcs fakeDeletePolicyPvcInventory
     , eksDrainClientDeleteLoadBalancerServices =
         traced FakeDeleteServices fakeServiceDelete
     , eksDrainClientDeleteIngresses =
         traced FakeDeleteIngresses fakeIngressDelete
+    , eksDrainClientDeleteControllerOwners =
+        traced FakeDeleteControllerOwners fakeControllerOwnerDelete
     , eksDrainClientDeletePvc = \target -> do
         modifyIORef' calls (<> [FakeDeletePvc target])
         state <- readIORef cluster
@@ -1657,7 +1704,8 @@ commitSelectionCompiled =
     ( compileDesiredAbsenceGraph
         fixtureRunId
         (LinuxRke2FoundationId "home-linux-rke2")
-        (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")))
+        (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
+        Nothing
         CascadeSurface
     )
 
@@ -1880,6 +1928,9 @@ destroyDrainEvidence =
                   (absentClass "all LoadBalancer Services absent")
             , eksDrainReadBackIngressClass =
                 IngressClassReadBack (absentClass "all Ingresses absent")
+            , eksDrainReadBackControllerOwnerClass =
+                ControllerOwnerClassReadBack
+                  (absentClass "controller owner absent")
             , eksDrainReadBackDeletePolicyPvcs =
                 map absentPvcReadBack [fixturePvcA, fixturePvcB]
             }
@@ -1922,7 +1973,7 @@ expectedProjectionRequest :: EksDrainProjectionRequest
 expectedProjectionRequest =
   EksDrainProjectionRequest
     { eksDrainProjectionAccountId = "123456789012"
-    , eksDrainProjectionRegion = "us-east-1"
+    , eksDrainProjectionRegion = (fixtureAwsRegion FixtureUsEast1)
     , eksDrainProjectionClusterName = "aws-eks-test-cluster"
     }
 
@@ -2075,7 +2126,7 @@ fixtureProjectionFor endpoint ca expiresAt =
   mustRight
     ( testEksClientAuthProjection
         "123456789012"
-        "us-east-1"
+        (fixtureAwsRegion FixtureUsEast1)
         "aws-eks-test-cluster"
         fixtureArn
         endpoint
@@ -2091,7 +2142,7 @@ fixtureScope =
     lifecycleRegistryRevision
     (DurableObservationRunScope (cleanupRunIdText fixtureRunId))
     (LinuxRke2FoundationId "home-linux-rke2")
-    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")))
+    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
     ReconcileDesiredAbsent
 
 fixtureRunId, otherRunId :: CleanupRunId
@@ -2120,12 +2171,19 @@ attemptB = mustRight (mkCleanupAttemptId "attempt/eks-drain-b")
 
 fixtureArn, fixtureUid :: Text
 fixtureArn =
-  "arn:aws:eks:us-east-1:123456789012:cluster/aws-eks-test-cluster"
+  ("arn:aws:eks:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123456789012:cluster/aws-eks-test-cluster")
 fixtureUid = "eks-kube-system-uid-7"
 
-fixtureService, fixtureIngress, fixturePvcA, fixturePvcB :: EksNamespacedName
+fixtureService
+  , fixtureIngress
+  , fixtureControllerOwner
+  , fixturePvcA
+  , fixturePvcB
+    :: EksNamespacedName
 fixtureService = mustRight (mkEksNamespacedName "gateway" "public-gateway")
 fixtureIngress = mustRight (mkEksNamespacedName "api" "public-api")
+fixtureControllerOwner =
+  mustRight (mkEksNamespacedName "envoy-gateway-system" "prodbox-public-edge")
 fixturePvcA = mustRight (mkEksNamespacedName "api" "api-data")
 fixturePvcB = mustRight (mkEksNamespacedName "keycloak" "postgres-data")
 
@@ -2192,6 +2250,7 @@ shouldReturnNoMutation action = do
   filter isMutation calls `shouldBe` []
  where
   isMutation call = case call of
+    FakeDeleteControllerOwners -> True
     FakeDeleteServices -> True
     FakeDeleteIngresses -> True
     FakeDeletePvc _ -> True
@@ -2205,4 +2264,5 @@ classesAbsent state =
   state
     { fakeServiceInventory = EksDrainInventoryComplete []
     , fakeIngressInventory = EksDrainInventoryComplete []
+    , fakeControllerOwnerInventory = EksDrainInventoryComplete []
     }

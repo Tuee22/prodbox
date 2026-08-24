@@ -13,7 +13,8 @@
 `prodbox` uses exactly one public ACME provider: **ZeroSSL**.
 
 ZeroSSL issues through public ACME DNS-01 over Route 53, EAB-authenticated. `prodbox config setup`
-authors only the non-secret ZeroSSL/Tier-0 coordinates. EAB material enters later through its own
+authors only the non-secret ACME contact and EAB references. The ZeroSSL directory is a compiled
+provider-protocol constant, not a provider-choice field. EAB material enters later through its own
 schema-indexed external linear ingress and `OperatorMaterialPermit`; there is no provider choice
 because ZeroSSL is the only supported provider.
 
@@ -93,13 +94,13 @@ Keep the ZeroSSL fields coherent:
 1. ZeroSSL requires both `acme.eab_key_id` and `acme.eab_hmac_key`, and each must be a
    `SecretRef.Vault` reference (plaintext is rejected, mirroring the operational `aws.*`
    discipline).
-2. `acme.server` must be the ZeroSSL ACME directory URL above (an `https://` URL).
-3. A valid `acme.email` is required for expiry notices.
+2. A valid operator-authored `acme.email` is required for expiry notices.
 
-`prodbox config setup` and settings validation (`validateAcmeBinding`) enforce these combinations
-before the config is accepted: a ZeroSSL `acme.server` with a missing EAB field is rejected, a
-present-without-its-pair field is rejected, and a plaintext (non-`Vault`) EAB reference is
-rejected (`acme.eab_* must be a SecretRef.Vault reference`).
+`prodbox config setup` and settings validation enforce these combinations before the config is
+accepted: a missing pair member or plaintext (non-`Vault`) EAB reference is rejected
+(`acme.eab_* must be a SecretRef.Vault reference`). There is no `acme.server` field: the supported
+ZeroSSL directory is the single compiled `zeroSslAcmeDirectory` protocol declaration consumed by
+issuer rendering.
 
 ---
 
@@ -108,7 +109,7 @@ rejected (`acme.eab_* must be a SecretRef.Vault reference`).
 The Haskell lifecycle reconcile renders one cert-manager `ClusterIssuer`:
 
 ```text
-zerossl-dns01 — built from acme.server, EAB-authenticated, DNS-01 Route 53 solver
+zerossl-dns01 — built from the ZeroSSL protocol constant, EAB-authenticated, DNS-01 Route 53 solver
 ```
 
 The name is DNS-01-honest (the solver is DNS-01 Route 53, and the name says so); it is one SSoT
@@ -190,7 +191,8 @@ and the narrower-or-equal partial order (`impliedBy`) are RFC-6125-correct:
 
 Doctrine advises delegated-zone anchoring and discourages org-apex wildcards: an org-apex wildcard
 key sitting in a home-cluster Secret can silently impersonate every org subdomain, covers
-non-prodbox services, and cannot even cover the AWS substrate's `aws.test.resolvefintech.com` host
+non-prodbox services, and cannot even cover a deeper AWS-substrate host such as
+`aws.example.invalid`
 since a wildcard matches exactly one label.
 
 ### Wildcard DNS-01 issuance

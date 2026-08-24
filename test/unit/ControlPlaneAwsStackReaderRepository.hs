@@ -161,7 +161,7 @@ fixtureScope =
     ( Just
         ( AwsScope
             (AwsAccountId "111122223333")
-            (AwsRegion "ca-central-1")
+            (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
         )
     )
     ReconcileDesiredAbsent

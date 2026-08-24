@@ -169,12 +169,11 @@ vault:
     aws: aws/gateway-dns
     minio: gateway/gateway/minio
 
-# In-cluster MinIO endpoint URL for gateway-owned object-store access.
-# The default points at the home-substrate MinIO Service; AWS-substrate
-# deploys override this via `prodbox charts deploy gateway --substrate aws`
-# (the substrate adapter renders the AWS-side Service DNS).
+# MinIO endpoint URL for gateway-owned object-store access. The supported
+# ChartPlatform path projects the validated deployment context. The empty
+# generic-chart default fails closed rather than naming a deployment.
 minio:
-  endpointUrl: "http://minio.prodbox.svc.cluster.local:9000"
+  endpointUrl: ""
 
 # cert-manager Issuer/Certificate material for mesh mTLS. A self-signed
 # CA Issuer is created in the gateway namespace and used to mint one

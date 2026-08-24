@@ -54,6 +54,7 @@ where
 import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Data.ByteString qualified as StrictByteString
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.List (nub)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Word (Word16)
@@ -75,6 +76,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderCheckpointRef
   , ProviderIntent (..)
   , ProviderIntentCoordinate
+  , ProviderNativeStackFamilyRef
   , ProviderOwnedTagQuery (..)
   , ProviderReadinessProbe (..)
   , ProviderRevision
@@ -100,6 +102,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkEksClientAuthRequest
   , mkEksClusterIdentityRequest
   , mkProviderCheckpointRef
+  , mkProviderNativeStackFamilyRef
   , mkProviderRevision
   , mkProviderSpotPriceQuery
   , mkProviderStackRef
@@ -110,6 +113,10 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkSesRuleSetRef
   , providerCheckpointRefText
   , providerIntentCoordinate
+  , providerNativeStackFamilyAccountId
+  , providerNativeStackFamilyHostedZoneId
+  , providerNativeStackFamilyRegion
+  , providerNativeStackFamilyStackRef
   , providerRevisionNatural
   , providerSpotPriceInstanceType
   , providerSpotPriceProductDescription
@@ -219,6 +226,22 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
   , reapRetainedEbsVolumesCapability
       :: Text
       -> ProviderMutation m session
+  , observeEksIamRoleFamilyCapability
+      :: Text
+      -> Text
+      -> ProviderReadOnly m session
+  , reapEksIamRoleFamilyCapability
+      :: Text
+      -> Text
+      -> ProviderMutation m session
+  , observeEksLoadBalancerControllerFamilyCapability
+      :: Text
+      -> Text
+      -> ProviderReadOnly m session
+  , reapEksLoadBalancerControllerFamilyCapability
+      :: Text
+      -> Text
+      -> ProviderMutation m session
   , observeDns01ChallengeRecordsCapability
       :: Text
       -> Text
@@ -248,6 +271,15 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
   , observeEksClusterIdentityCapability
       :: EksClusterIdentityRequest
       -> ProviderReadOnly m session
+  , observeNativeStackFamilyCapability
+      :: ProviderNativeStackFamilyRef
+      -> ProviderStackConfig
+      -> ProviderReadOnly m session
+  , reapNativeStackFamilyCapability
+      :: ProviderNativeStackFamilyRef
+      -> ProviderStackConfig
+      -> [Text]
+      -> ProviderMutation m session
   }
 
 -- | Bracket-like session capability. Rank-2 scoping prevents the credential or
@@ -466,6 +498,18 @@ validateProviderIntent intent = case intent of
     validateTextRef "retained-ebs-lifecycle" lifecycleValue
   ReapRetainedEbsVolumes lifecycleValue ->
     validateTextRef "retained-ebs-lifecycle" lifecycleValue
+  ObserveEksIamRoleFamily roleNames policyNames -> do
+    validateTextRef "eks-iam-role-family-roles" roleNames
+    validateTextRef "eks-iam-role-family-policies" policyNames
+  ReapEksIamRoleFamily roleNames policyNames -> do
+    validateTextRef "eks-iam-role-family-roles" roleNames
+    validateTextRef "eks-iam-role-family-policies" policyNames
+  ObserveEksLoadBalancerControllerFamily loadBalancerName tags -> do
+    validateTextRef "eks-load-balancer-controller-name" loadBalancerName
+    validateTextRef "eks-load-balancer-controller-tags" tags
+  ReapEksLoadBalancerControllerFamily loadBalancerName tags -> do
+    validateTextRef "eks-load-balancer-controller-name" loadBalancerName
+    validateTextRef "eks-load-balancer-controller-tags" tags
   ObserveOwnedResourceTags query -> case query of
     ProviderOwnedTagKeyQuery key -> validateTextRef "owned-resource-tag-key" key
     ProviderOwnedTagPairQuery key value -> do
@@ -481,6 +525,13 @@ validateProviderIntent intent = case intent of
       Right actual
         | actual == request -> Right ()
         | otherwise -> Left (ProviderWorkStateIntentInvalid "eks-cluster-identity")
+  ObserveNativeStackFamily ref config -> do
+    validateNativeStackFamilyRef ref
+    validateStackConfig (providerNativeStackFamilyStackRef ref) config
+  ReapNativeStackFamily ref config admittedIdentities -> do
+    validateNativeStackFamilyRef ref
+    validateStackConfig (providerNativeStackFamilyStackRef ref) config
+    validateNativeStackFamilyIdentities admittedIdentities
  where
   validateRef label rebuilt expected = case rebuilt of
     Left _ -> Left (ProviderWorkStateIntentInvalid label)
@@ -511,6 +562,30 @@ validateProviderIntent intent = case intent of
     case mkProviderStackRef value of
       Left _ -> Left (ProviderWorkStateIntentInvalid label)
       Right _ -> Right ()
+  validateNativeStackFamilyRef ref =
+    validateRef
+      "native-stack-family"
+      ( mkProviderNativeStackFamilyRef
+          (providerNativeStackFamilyStackRef ref)
+          (providerNativeStackFamilyAccountId ref)
+          (providerNativeStackFamilyRegion ref)
+          (providerNativeStackFamilyHostedZoneId ref)
+      )
+      ref
+  validateNativeStackFamilyIdentities identities
+    | null identities = Left (ProviderWorkStateIntentInvalid "native-stack-family-empty-allowlist")
+    | length identities > 4096 =
+        Left (ProviderWorkStateIntentInvalid "native-stack-family-allowlist-bound")
+    | length identities /= length (nub identities) =
+        Left (ProviderWorkStateIntentInvalid "native-stack-family-allowlist-duplicate")
+    | any invalid identities =
+        Left (ProviderWorkStateIntentInvalid "native-stack-family-allowlist-identity")
+    | otherwise = Right ()
+   where
+    invalid identity =
+      Text.null identity
+        || Text.length identity > 2048
+        || Text.any (\character -> character == '|' || character == '\n' || character == '\r') identity
 
 validateEvidence :: Text -> Either ProviderWorkStateCodecError ()
 validateEvidence evidence
@@ -863,8 +938,33 @@ operationForIntent capabilities intent = case intent of
     IntentReadOnly (observeRetainedEbsVolumesCapability capabilities lifecycleValue)
   ReapRetainedEbsVolumes lifecycleValue ->
     IntentMutation (reapRetainedEbsVolumesCapability capabilities lifecycleValue)
+  ObserveEksIamRoleFamily roleNames policyNames ->
+    IntentReadOnly
+      (observeEksIamRoleFamilyCapability capabilities roleNames policyNames)
+  ReapEksIamRoleFamily roleNames policyNames ->
+    IntentMutation
+      (reapEksIamRoleFamilyCapability capabilities roleNames policyNames)
+  ObserveEksLoadBalancerControllerFamily loadBalancerName tags ->
+    IntentReadOnly
+      ( observeEksLoadBalancerControllerFamilyCapability
+          capabilities
+          loadBalancerName
+          tags
+      )
+  ReapEksLoadBalancerControllerFamily loadBalancerName tags ->
+    IntentMutation
+      ( reapEksLoadBalancerControllerFamilyCapability
+          capabilities
+          loadBalancerName
+          tags
+      )
   ObserveEksClusterIdentity request ->
     IntentReadOnly (observeEksClusterIdentityCapability capabilities request)
+  ObserveNativeStackFamily ref config ->
+    IntentReadOnly (observeNativeStackFamilyCapability capabilities ref config)
+  ReapNativeStackFamily ref config admittedIdentities ->
+    IntentMutation
+      (reapNativeStackFamilyCapability capabilities ref config admittedIdentities)
 
 markSnapshotRecovering
   :: (Monad m)

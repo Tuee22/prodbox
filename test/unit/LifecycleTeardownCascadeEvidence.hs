@@ -123,7 +123,11 @@ lifecycleTeardownCascadeEvidenceSuite =
           "import Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal"
       importers
         `shouldBe` sort
-          [ -- Sprint 4.86 Authority readiness namespace.  It is the store the
+          [ -- Sprint 6.5 joins the package-private report/backup repositories
+            -- to the replacement host runner. It restores only the exact
+            -- read-back evidence those repositories independently observed.
+            "src/Prodbox/ControlPlane/CascadePreUninstallRuntime/Internal.hs"
+          , -- Sprint 4.86 Authority readiness namespace.  It is the store the
             -- accepted readiness lives in, so it decodes the durable binding at
             -- the object-store seam in order to classify corrupt bytes as
             -- corrupt; it never restores a proof, which is why the opaque

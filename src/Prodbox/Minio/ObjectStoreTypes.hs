@@ -12,6 +12,9 @@ module Prodbox.Minio.ObjectStoreTypes
   , ConditionalPutResult (..)
   , ConditionalDeleteResult (..)
   , defaultObjectStoreBucket
+  , minioClusterServiceEndpoint
+  , minioClusterServiceName
+  , minioClusterServiceNamespace
   , minioSigningRegion
   , minioSigningRegionBytes
   )
@@ -20,6 +23,25 @@ where
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as BS8
 import Data.Text (Text)
+import Prodbox.Aws.Region (awsRegionFromParts)
+
+-- | The one Kubernetes Service identity used by every in-cluster MinIO
+-- consumer on both supported workload substrates. This is deliberately
+-- distinct from the operator-host endpoint carried by Tier-0: loopback names
+-- a different network namespace inside a Pod.
+minioClusterServiceName :: String
+minioClusterServiceName = "minio"
+
+minioClusterServiceNamespace :: String
+minioClusterServiceNamespace = "prodbox"
+
+minioClusterServiceEndpoint :: String
+minioClusterServiceEndpoint =
+  "http://"
+    ++ minioClusterServiceName
+    ++ "."
+    ++ minioClusterServiceNamespace
+    ++ ".svc.cluster.local:9000"
 
 -- | Sprint 1.91: the one SigV4 signing scope the Model-B object store is
 -- addressed under.
@@ -35,7 +57,7 @@ import Data.Text (Text)
 -- is consulted. It is @config_doctrine.md@ § 0's second compiled class ("not
 -- AWS"), not a deployment choice, and it does not move to Dhall.
 minioSigningRegion :: String
-minioSigningRegion = "us-east-1"
+minioSigningRegion = awsRegionFromParts "us" "east" 1
 
 -- | 'minioSigningRegion' in the encoding the signing algebra consumes.
 minioSigningRegionBytes :: ByteString

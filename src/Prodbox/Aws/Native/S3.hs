@@ -58,6 +58,7 @@ import Prodbox.Aws.Native.Wire
   , performAwsRequest
   )
 import Prodbox.Aws.Native.Xml (extractAll, extractFirst, xmlEscape)
+import Prodbox.Aws.Region (awsGlobalServiceRegion)
 import Prodbox.Lifecycle.OwnedResourceTags
   ( OwnedResourceTag
   , longLivedPulumiStateBucketTags
@@ -119,7 +120,7 @@ s3BucketPath bucket = "/" <> encodeUtf8 bucket
 
 renderCreateBucketXml :: ByteString -> ByteString
 renderCreateBucketXml region
-  | region == "us-east-1" = ""
+  | region == awsGlobalServiceRegion = ""
   | otherwise =
       "<CreateBucketConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
         <> "<LocationConstraint>"

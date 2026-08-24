@@ -233,7 +233,7 @@ staleRegistryScope =
 
 validAwsScope :: Maybe AwsScope
 validAwsScope =
-  Just (AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1"))
+  Just (AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1)))
 
 staleRegistryRevision :: RegistryRevision
 staleRegistryRevision = RegistryRevision "lifecycle-registry/stale"

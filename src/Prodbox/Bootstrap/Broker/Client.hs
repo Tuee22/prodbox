@@ -41,6 +41,7 @@ module Prodbox.Bootstrap.Broker.Client
   , rotateVaultUnlockBundle
   , rotateVaultTransitKey
   , reconcileVaultBaseline
+  , reconcilePostUnsealHandoff
   , queryVaultPkiStatus
   , issueVaultPkiTestCert
   , resetAmbiguousVaultInitialization
@@ -473,6 +474,14 @@ reconcileVaultBaseline
   -> IO (Either BrokerError Value)
 reconcileVaultBaseline endpoint context =
   postBrokerAction endpoint context BrokerVaultBaselineReconcile
+
+reconcilePostUnsealHandoff
+  :: BrokerEndpoint
+  -> BrokerCallContext
+  -> BrokerActionRequest
+  -> IO (Either BrokerError Value)
+reconcilePostUnsealHandoff endpoint context =
+  postBrokerAction endpoint context BrokerPostUnsealHandoffReconcile
 
 queryVaultPkiStatus
   :: BrokerEndpoint -> BrokerCallContext -> IO (Either BrokerError Value)

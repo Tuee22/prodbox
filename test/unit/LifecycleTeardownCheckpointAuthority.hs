@@ -228,7 +228,7 @@ scopeWith runScope foundation =
     lifecycleRegistryRevision
     (DurableObservationRunScope runScope)
     (LinuxRke2FoundationId foundation)
-    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")))
+    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
     ReconcileDesiredAbsent
 
 referenceOne :: VerifiedPulumiCheckpointRef

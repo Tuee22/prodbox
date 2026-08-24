@@ -11,6 +11,14 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-08-24; Sprint `2.75` is Planned and Next (Standards A/N/P).** Diagnostic-only,
+ready, zero-restart Broker generation 30 crossed Sprint `2.74`'s provisioner-policy application
+and read-back without a behavior correction. The next protected refusal is
+`revoke-provisioner-accessor; boundary-unavailable`; Sprint `2.75` owns its exact payload-free
+cause and the remaining baseline/Authority/handoff path. Development is paused before its
+implementation. Execution order lives in
+[README.md → Resume Here](README.md#resume-here).
+
 ✅ **Closed on its code-owned surface (2026-08-15).** Sprints `2.47` through `2.51` are all ✅ Done
 on their owned Bootstrap Broker fence, attestation, checkpoint-binding, and image-identity surfaces.
 The exact code-local and live-proof bounds remain in those sprint records; none is an active or
@@ -5685,6 +5693,1711 @@ runtime-identity attestation at all — the check this sprint added to the Broke
   Sprint `2.47`; the second Lease blocker was registered as its own `Pending Removal` row owned by
   Sprint `2.48` and moved to `Completed` when that sprint closed, together with the acquisition-path
   fence-leak row; the durable-checkpoint row moved to `Completed` on Sprint `2.50`.
+
+## Sprint 2.52: The Gateway Endpoint Has No Localhost Escape [✅ Done]
+
+**Status**: Done (2026-08-23) — Phase `2` reclosed on Gateway Runtime's boot/config consumer.
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Settings.hs`, and
+`src/Prodbox/Gateway/Types.hs`.
+**Deployment qualification**: pending — endpoint/capability wiring changes, so prior aggregate
+evidence does not describe this revision.
+**Independent Validation**: daemon-settings decode tables and a fake object-store interpreter prove
+configured, missing, malformed, and unreachable endpoints without a cluster or later phase.
+**Docs to update**: `documents/engineering/config_doctrine.md`,
+`documents/engineering/distributed_gateway_architecture.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Remove the Gateway daemon's compiled MinIO endpoint fallback. `boot.minio_endpoint_url` already
+exists, but `None` is converted into a hard-coded in-cluster endpoint, so missing configuration and
+the home deployment happen to select the same target. A daemon on another substrate can therefore
+contact the wrong service rather than refuse.
+
+### Deliverables
+
+- The legacy Gateway boot projection consumes the validated `context.minio_endpoint` supplied by
+  Sprint `1.92`; `None` or a malformed value yields a typed unavailable/refusal arm.
+- Delete the `fromMaybe` endpoint literal and the comments that describe it as an implicit default.
+- Tests inject endpoints through `DaemonBootDhall`/the typed settings seam; no production
+  environment variable or test-only production branch selects an endpoint.
+- The target cutover still removes generic Gateway object-store authority. This sprint only makes
+  the surviving pre-cutover consumer truthful; it does not widen Gateway's final role.
+
+### Validation
+
+1. Two distinct configured endpoints reach the fake client exactly and produce distinct requests.
+2. `None`, empty, malformed, and unreachable inputs each refuse with the source field and never
+   attempt a compiled address.
+3. Source/gate proof finds no complete MinIO service endpoint literal in Gateway production code.
+4. Gateway daemon/unit suites and `prodbox dev check` pass.
+
+### Remaining Work
+
+None on the sprint-owned surface. Sprint `3.42` owns chart-side projection of the validated
+deployment context; the endpoint consumer itself is closed and refuses until that projection is
+present.
+
+### Closure
+
+`DaemonBootDhall.minio_endpoint_url` now narrows into a `GatewayMinioEndpoint` observation with
+explicit unavailable and configured states. Configured values are checked for an HTTP(S) scheme,
+authority, non-emptiness, and whitespace before they enter `DaemonConfig`; the endpoint is part of
+the boot-change comparison.
+
+The legacy continuity-store consumer can obtain a URL only through
+`gatewayMinioEndpointUrl`. `None` returns a field-named refusal, and the former compiled in-cluster
+service address is deleted. Tests project two distinct endpoints exactly, prove absent/empty/
+malformed inputs refuse, send an unreachable endpoint to a fake client without substitution, and
+mutation-prove that either the compiled address or removal of the refusal fails `dev check`.
+
+The full unit command, both built-frontend integration commands, and `prodbox dev check` pass on
+this revision. Deployment qualification remains pending under Standard O/P.
+
+## Sprint 2.53: A Dead Port-Forward Is Not Broker Readiness [✅ Done]
+
+**Status**: Done (2026-08-23) — opened by the live reconcile that closed Sprint `3.43`.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/PortForward.hs` and focused unit coverage.
+**Deployment qualification**: pending — this changes the host-to-Broker capability wiring/startup
+sequence and must be included in Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: exact subprocess projection and live local reconcile from the existing
+half-built state.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make host access to the loopback-only Bootstrap Broker wait for the deployed server before opening
+its bounded Kubernetes Service port-forward. A port-forward process that exited before the Pod was
+running must not be represented as a live transport while the client retries HTTP against its dead
+local socket.
+
+### Deliverables
+
+- Observe the exact Broker Deployment rollout through the same explicit namespace, environment,
+  and working directory as the port-forward before minting a credential or starting the transport.
+- Preserve the Broker's Pod-loopback listener and the host's loopback-only `--address`; no ClusterIP,
+  NodePort, Gateway, or widened listener becomes a substitute.
+- A failed or timed-out rollout returns a distinct host-connection error before credential minting
+  and port-forward startup.
+- Pin the exact rollout and port-forward subprocess projections in pure unit cases.
+
+### Validation
+
+1. Unit cases prove rollout observation precedes the existing loopback port-forward projection and
+   neither command admits an operator-selected namespace, workload, address, or remote port.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. Live `prodbox cluster reconcile` crosses the Broker host connection and reaches the following
+   Vault lifecycle boundary from the current half-built state.
+
+### Remaining Work
+
+None on the sprint-owned surface. The repaired connection carried initialization into the worker,
+where Sprint `2.54` owns the later durable-journal refusal.
+
+### Closure
+
+`withBrokerHostConnection` observes `deployment/bootstrap-broker` rollout in the compiled namespace
+and supplied kubectl context before it reserves a port, mints a credential, or starts the transport.
+The rollout and port-forward command projections are pinned by focused tests (2/2). The rebuilt
+installed binary completed `prodbox vault status` through this path in 0.31 seconds and then carried
+`prodbox vault init` into the attested secret worker. That worker's “Root initialization journal is
+not pristine” result is downstream evidence that the connection performed real work, and the split
+journal predicate it exposed is separately owned by Sprint `2.54`.
+
+## Sprint 2.54: One Pristine Journal Has Two Opposite Answers [✅ Done]
+
+**Status**: Done on the code-owned surface — 2026-08-23. Live-proof: pending behind Sprint `2.55`.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionSecretWorker.hs`, and
+`src/Prodbox/Bootstrap/Broker/PristineJournal.hs`.
+**Deployment qualification**: pending — this changes retained bootstrap-state admission and must be
+included in Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: table-shaped pure cases over absent, exact pristine, exact reset,
+foreign-proof, foreign-binding, and non-pristine phases; source-region proof that both consumers call
+the classifier; full unit suite and canonical development gate. The live initialization half is
+pending behind Sprint `2.55`.
+**Docs updated**: `documents/engineering/vault_doctrine.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Give the controller and its attested one-shot worker one answer to the same retained root-journal
+observation. An absent journal and a present journal carrying the exact derived pristine/reset proof
+admit preparation; a foreign proof or any progressed/ambiguous phase refuses.
+
+### Deliverables
+
+- Extract one pure classifier over `StoreReadBack RootInitState` and the expected
+  `RootInitBinding`; both controller and worker consume it.
+- Preserve proof provenance: `RootResetPristine` admits only when its replacement pristine proof is
+  the exact one derived for the current storage generation.
+- Keep progressed and ambiguous journals fail-closed; no object is deleted, overwritten, or treated
+  as absent to recover.
+- Add positive/negative table cases and a mutation-sensitive source gate against reintroducing a
+  worker-only catch-all `StoreObjectPresent` rejection.
+
+### Validation
+
+1. Pure cases cover absent, exact pristine, exact reset, foreign pristine/reset, and every other
+   root-init phase class.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. Live Vault initialization resumes from retained state and advances beyond preparation without
+   deleting the retained root.
+
+### Remaining Work
+
+None on the code-owned surface. Sprint `2.55` owns the independently exposed selector correction;
+its live proof then resumes this sprint's pending initialization observation.
+
+### Closure Record
+
+- `classifyPristineJournal` is the sole pure classifier consumed by
+  `ProductionEngine.pristineEvidence` and `ProductionSecretWorker.prepareInitialization`.
+- Focused Sprint-`2.54` validation passes 2/2; the full unit suite passes 4604/4604; warning-clean
+  build and `prodbox dev check` exit 0.
+- The rebuilt controller runs with image ID `sha256:9309e970958086bd830a715db86aaba2e13bad439e5d707c4be6ad44ac0533e7`,
+  registry digest `sha256:694003de68372998fd6b8fefba61c1f36c5c5d83602979e4e19798078a6c06`,
+  and zero restarts. Its `/readyz` refusal names the separate Sprint-`2.55` selector defect, so no
+  retained worker was deleted to manufacture this sprint's live proof.
+
+## Sprint 2.55: Controller Self-Observation Selects Its One-Shot Worker [✅ Done]
+
+**Status**: Done and live-proven — 2026-08-23.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs`,
+`charts/bootstrap-broker/templates/_helpers.tpl`, and
+`test/unit/BootstrapBrokerProductionBoundary.hs`.
+**Deployment qualification**: pending — the changed arm is live-proven locally, but include it in
+Sprint `6.5`'s full current-revision campaign.
+**Independent Validation**: exact URL-projection cases bind the observer to the chart's controller
+selector; live reconcile must make the rebuilt controller Ready while the retained failed worker
+still exists, then initialization must advance until the next distinct outcome.
+**Docs updated**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make controller image self-observation select exactly the controller Deployment Pods. A retained
+one-shot worker shares the application name but not the Helm release instance label and must not
+enter the controller PodList response.
+
+### Deliverables
+
+- Encode the chart's controller selector as the conjunction of
+  `app.kubernetes.io/name=prodbox-bootstrap-broker` and
+  `app.kubernetes.io/instance=bootstrap-broker` in the Kubernetes Pod query.
+- Pin the URL encoding and its agreement with the chart selector in mutation-sensitive tests.
+- Preserve fail-closed multi-controller handling: this correction narrows selection and does not
+  teach the parser to choose arbitrarily from multiple matching controller Pods.
+- Reconcile and initialize with the retained worker still present; do not delete or relabel it as a
+  workaround.
+
+### Validation
+
+1. Focused tests prove the controller query carries both exact selector labels and the chart helper
+   renders both labels.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. Live controller readiness succeeds on the new immutable image while the retained worker remains,
+   and `vault init` advances to the next distinct terminal or non-terminal outcome.
+
+### Remaining Work
+
+None. Sprint `2.56` owns the separately exposed expired-owner cleanup refusal.
+
+### Closure Record
+
+- Focused self-observation validation passes 8/8; the full unit command and `prodbox dev check`
+  exit 0.
+- Live reconcile published local image ID
+  `sha256:07fa4d977625155ba2b4edca112f9c44f2fcfb50a5832be345530aad51f9d336`,
+  registry digest `sha256:04dd0b276a5e25080176c1bee17e73807632995ea9152e92c5eaa0f42dfe1945`,
+  and containerd manifest `sha256:d9399bb54fab1dc0b2500e20bc7242ad772cd75df41b64479c8057ba6bc00782`.
+- Deployment generation/revision 4 runs Pod `bootstrap-broker-6c7587f9f8-m447k` Ready with zero
+  restarts on that image ID. Retained Pod `bootstrap-secret-worker` remains Failed on the previous
+  image and has no instance label. `prodbox vault status` succeeds; the next `vault init` refusal is
+  `BootstrapFenceRetireOwnerStillPresent`, owned below.
+
+## Sprint 2.56: A Terminal Worker Is Not A Live Fence Owner [✅ Done]
+
+**Status**: Done and live-proven — 2026-08-23.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs` and
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`.
+**Deployment qualification**: pending — terminal-worker cleanup changes the retained bootstrap
+recovery path and must be included in Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: table-shaped decisions over same-generation terminal/live,
+foreign-generation terminal, absent, malformed, and unobservable Pods; exact UID-preconditioned
+delete followed by positive absence read-back; live initialization from the retained counterexample.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Let an expired fence retire when its exact worker process is provably terminal, without treating Pod
+object presence as process liveness and without deleting a live, foreign, or ambiguously observed
+worker.
+
+### Deliverables
+
+- Classify `Succeeded`/`Failed` as terminal only for the queried fence generation; Pending, Running,
+  Unknown, and absent phase remain present.
+- UID-precondition delete only that terminal same-generation Pod and wait for an exact 404 before
+  adapting the observation to `BootstrapFenceOwnerAbsent`.
+- Preserve the existing foreign-generation rule: another generation occupying the sole coordinate
+  proves queried-generation absence but is never deleted on its behalf.
+- Keep malformed identity/generation/status, authorization, transport, deletion, and absence-wait
+  failures unobservable and therefore unable to authorize fence retirement.
+
+### Validation
+
+1. Pure cases distinguish terminal same-generation cleanup from every no-delete arm.
+2. Focused tests, warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. Live reconcile retires the preserved generation-1 fence only after the exact failed worker is
+   UID-deleted/read-back absent, then initialization advances to its next distinct outcome.
+
+### Remaining Work
+
+None. Sprint `2.57` owns the separately exposed optional termination-message wire mismatch.
+
+### Closure Record
+
+- Focused Sprint-`2.56` cleanup validation passes 3/3 and the existing Sprint-`2.47` retirement
+  validation passes 3/3. The full unit command and warmed `prodbox dev check` exit 0; the first
+  cold `dev check` reached the final link and was externally terminated with exit 143, not a test,
+  lint, formatter, or compiler failure.
+- Live reconcile published local image ID
+  `sha256:d35e4758a59221f11339f8d9b81c25726952f1a5d1a30f5918ae27f33eeceb5c`, registry digest
+  `sha256:b55e39dccb732213da261e5c16d2e9a4bfd9e01dd1dd905d07aeeab594c5abb2`, and containerd manifest
+  `sha256:65b3f7e23eaea6df2628f98d684575a41aec242cc9e33f639ed84d43349f95a6`.
+- Deployment generation/revision 5 runs Pod `bootstrap-broker-7c68b5685-5vlgq` Ready with zero
+  restarts on that image. The Broker UID-precondition deleted generation-1 worker UID
+  `402a2fde-9f17-4668-8e6a-e70c61d3e171`, read the coordinate absent, logged fence-retirement receipt
+  `08f276ffbf44fbd79d3a844a575119aa4520b5864b6f7f99daa6e28dfb65f808`, and admitted generation 2
+  with worker UID `dc328b94-8adc-4172-9ecc-6cfd6f22e611`. The next refusal is owned below.
+
+## Sprint 2.57: A Failed Worker Without A Termination Message Is Still A Readable Pod [✅ Done]
+
+**Status**: Done on the code-owned surface — 2026-08-23.
+**Live-proof**: proven by Sprint `2.58`'s forward run — 2026-08-23.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs` and
+`test/unit/BootstrapBrokerProductionBoundary.hs`.
+**Deployment qualification**: pending — the shared worker observation decoder is on the bootstrap
+recovery path and must be included in Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: pure response decoding over Kubernetes-compliant terminated states with
+and without `message`; attestation and exit-binding cases prove omission remains fail-closed; live
+initialization must report the next exact worker outcome rather than an unreadable Pod.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Decode the Kubernetes Pod termination contract exactly: `exitCode` is required while the
+termination-log `message` is optional. Preserve the distinction between reading a failed Pod and
+possessing the exact success receipt required to clean it up.
+
+### Deliverables
+
+- Decode absent `state.terminated.message` as no termination-log receipt rather than rejecting the
+  whole Kubernetes response.
+- Keep worker attestation fail-closed: a terminal Pod is not Running/ready and cannot attest merely
+  because it is now readable.
+- Keep lifecycle cleanup fail-closed: an absent receipt cannot equal the cleanup binding's exact
+  receipt digest and cannot mint `SecretWorkerProcessExited`.
+- Add a response fixture matching the live failed Pod shape and pin both attestation and exit
+  observations without carrying response-body values into operator-visible decode errors.
+
+### Validation
+
+1. Focused pure cases prove an omitted termination message yields a readable terminal Pod but never
+   an attestation or receipt-bound exit success.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. Live reconcile reports the worker's next distinct exact outcome and never reports the valid Pod
+   body as `the response is not a readable Pod`.
+
+### Remaining Work
+
+None on the code-owned surface. Sprint `2.58` owns the separately exposed controller PodList
+cardinality refusal.
+
+### Closure Record
+
+- `ContainerTerminationWire` carries `Maybe Text`; Kubernetes may omit the termination-log message,
+  while `validateExitedPod` requires `Just` the exact receipt digest before returning exit evidence.
+- The focused live-shaped case passes 1/1. The full unit command passes 4609 main cases plus all
+  authority-admission/authentication/transport suites, and warmed `prodbox dev check` passes.
+- Live reconcile published image ID
+  `sha256:9c74f2eb23b674ea1d7df115924b6146e489e0081ab301936ef30a932955d6e0`, registry digest
+  `sha256:6fb3ea788cf939be92052f7083fdbb23bf55d01d14c12a9f1d01add19de6b37f`, and containerd manifest
+  `sha256:2730dd338385b2097d20b217bd8bcc5812628b2ae5f51850004e80430113131a`. Deployment
+  generation/revision 6 runs that image with zero restarts, but readiness stops earlier at the
+  Sprint-`2.58` selector counterexample rather than reaching worker attestation.
+- Sprint `2.58`'s successor image then reached the same failed worker and reported four exact
+  `worker phase mismatch` arms, never `the response is not a readable Pod`; this closes the pending
+  live axis.
+
+## Sprint 2.58: Terminal Controller Pods Do Not Count As Live Self-Observation Candidates [✅ Done]
+
+**Status**: Done and live-proven — 2026-08-23.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs` and
+`test/unit/BootstrapBrokerProductionBoundary.hs`.
+**Deployment qualification**: pending — controller self-readiness is a production process-topology
+surface and must be included in Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: table-shaped PodList responses with one live plus terminal history,
+multiple live candidates, deleting candidates, malformed items, and no live candidate; live rollout
+must make the current controller Ready without deleting terminal evidence manually.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make controller self-observation ask for exactly one live controller rather than exactly one Pod
+object across the Deployment's retained terminal history.
+
+### Deliverables
+
+- Exclude only Pods whose observed phase is positively `Succeeded` or `Failed` before enforcing the
+  one-controller cardinality rule.
+- Keep Pending, Running, Unknown, and deleting Pods in the candidate set; a sole Pending/Unknown or
+  deleting candidate then fails its existing exact state check rather than being inferred absent.
+- Preserve whole-list fail-closed decoding: one malformed Pod item makes the observation
+  unobservable, and two nonterminal controller candidates remain ambiguous.
+- Pin the live counterexample with one Running current Pod plus two terminal historical Pods and no
+  manual deletion or label mutation.
+
+### Validation
+
+1. Focused pure cases admit exactly one live candidate alongside terminal history and refuse every
+   ambiguous/unobservable variant.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. Live reconcile makes the current immutable controller Ready while retained terminal controller
+   Pods remain, then initialization advances to the next exact worker outcome.
+
+### Remaining Work
+
+None. Sprint `2.59` owns the separately exposed worker Lease-read capability mismatch.
+
+### Closure Record
+
+- Focused self-observation validation passes 10/10; the full unit command passes 4611 main cases
+  plus all authority-admission/authentication/transport suites; `prodbox dev check` exits 0.
+- Live reconcile published image ID
+  `sha256:7ed35b256003eec961b9f7e893d611139db0a61dc37170c1b073b1fcb510976a`, registry digest
+  `sha256:1149cd82f7904d9d30c96cf587c2d522043f56524c4bb2f06ba1904018030448`, and containerd manifest
+  `sha256:78f9a943dbeb6e249033affeac82d39eb579eb3a26dfdf51eafb95abebe5a584`.
+- Deployment generation/revision 7 runs Pod `bootstrap-broker-66cdf47645-rhw77` Ready with zero
+  restarts on that image while retained controller Pods `bootstrap-broker-7c68b5685-5dks5` and
+  `bootstrap-broker-7c68b5685-5vlgq` remain `Succeeded`. The supported initialization path retired
+  fence generation 2 with absence receipt `1f63524a…`, launched generation-3 worker UID
+  `b6d29452-a78f-49ff-9914-3b9c40db1282`, and reached the next refusal owned below.
+
+## Sprint 2.59: The Worker Can Read The Exact Fence It Must Revalidate [✅ Done]
+
+**Status**: Done and live-proven — 2026-08-23.
+**Implementation**: `charts/bootstrap-broker/templates/tokenreview-rbac.yaml` and chart/RBAC unit
+validation.
+**Deployment qualification**: pending — worker effect authorization is a production capability
+wiring surface and must be included in Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: rendered Role rules prove the worker may get exactly its fixed Pod and
+the named fence Lease but cannot mutate either resource or access Secrets/TokenReviews; live
+initialization must cross worker effect authorization to the next exact outcome.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make the worker's Kubernetes capability agree with its mandatory per-effect fence protocol: it must
+observe the one exact Lease whose binding it revalidates, without gaining any lifecycle mutation.
+
+### Deliverables
+
+- Add `get` on resource name `bootstrap-broker-fence` in the worker ServiceAccount's namespaced Role.
+- Keep controller-only `create`/`update` Lease verbs out of the worker binding and preserve its exact
+  fixed-Pod `get` rule.
+- Pin the rendered role and negative capability set in mutation-sensitive chart tests.
+- Preserve authorization failure as fail-closed; this sprint does not weaken or bypass the
+  per-effect Lease check.
+
+### Validation
+
+1. Focused chart/RBAC cases prove the exact positive rule and forbidden mutation/secret/tokenreview
+   capabilities.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. Live reconcile admits the worker's exact fence revalidation and advances initialization to its
+   next distinct outcome.
+
+### Remaining Work
+
+None. Sprint `2.60` owns the separately exposed missing public recovery command.
+
+### Closure Record
+
+- The rendered worker Role grants `get` on only Pod `bootstrap-secret-worker` and Lease
+  `bootstrap-broker-fence`; it grants no create/update/delete, Secret, TokenReview, exec, or attach
+  capability. Focused rendered-YAML validation passes 1/1, the full unit command and
+  `prodbox dev check` exit 0, and the live installed Role has the same two exact rules.
+- Live reconcile retained controller image ID `sha256:7ed35b25…`, crossed the worker's mandatory
+  durable-fence and Lease observations, and reached Vault `/sys/init`. The broker then persisted
+  `RootInitializationAmbiguous`, retired generation-3 with worker-absence receipt `8a146171…`, and
+  reported initialized/sealed Vault with no durable recovery custody. That later fail-closed state
+  is Sprint `2.60`, not an RBAC refusal.
+
+## Sprint 2.60: The Proven-Pristine Ambiguity Reset Has A Public Client [✅ Done]
+
+**Status**: Done on the code-owned surface — 2026-08-23. Live-proof: pending behind Sprint `2.61`.
+**Implementation**: `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Spec.hs`,
+`src/Prodbox/CLI/Vault.hs`, and CLI/parser validation.
+**Deployment qualification**: pending — the storage-generation replacement and resumed bootstrap
+must be included in Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: parser/help/command-surface cases pin an explicit confirmation-gated
+leaf; broker client projection pins the existing typed recovery route; a live run must prove the
+old ambiguous binding is replaced before initialization can resume.
+**Docs to update**: `documents/engineering/cli_command_surface.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make the broker's already-implemented proven-pristine ambiguity recovery reachable through the
+supported CLI. The command never retries `/sys/init` against the ambiguous generation: it invokes
+the exact typed reset, requires replacement-generation read-back, and only then allows normal
+bootstrap to start a new transaction.
+
+### Deliverables
+
+- Add one explicit `prodbox vault reset-ambiguous-initialization --yes` leaf that refuses without
+  confirmation and invokes only `BrokerVaultResetAmbiguousInitialization`.
+- Query broker status first and admit the command only when initialization is ambiguous; bind the
+  request to the exact observed storage generation.
+- Preserve the broker's proof boundary: the host supplies no pristine assertion, replacement
+  generation, Pod name, storage path, or deletion target.
+- Pin parser, prerequisite, help/command-registry, and handler routing so no direct Kubernetes or
+  filesystem reset can be substituted.
+
+### Validation
+
+1. Focused cases prove confirmation, exact route/generation binding, command metadata, and the
+   absence of operator-selected reset coordinates.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. Live reset reports success only after the old ambiguous storage generation is replaced and
+   read back pristine; subsequent reconcile initializes, unseals, and completes baseline custody.
+
+### Remaining Work
+
+None on the code-owned surface. Sprint `2.61` owns the independently exposed recovery-connection
+readiness deadlock; its live proof resumes this command unchanged.
+
+### Closure Record
+
+- `prodbox vault reset-ambiguous-initialization --yes` queries the authenticated Broker status,
+  refuses outside ambiguity, binds the action to the observed storage generation, and invokes only
+  `BrokerVaultResetAmbiguousInitialization`. Omitting `--yes` refuses before broker mutation.
+- Focused parser/confirmation and generated command-registry cases pass 5/5; the full unit command
+  passes 4616 main cases plus 27/33/29 authority suites; warmed `prodbox dev check` exits 0.
+- The confirmed live invocation reached only the shared Deployment-rollout barrier and timed out.
+  The running Broker was NotReady exactly because ambiguity is fail-closed, so the route did not
+  execute and no reset target changed. Sprint `2.61` owns that later transport admission defect.
+
+## Sprint 2.61: Ambiguity Recovery Reaches A Live But Deliberately NotReady Broker [✅ Done]
+
+**Status**: Done and live-proven — 2026-08-23.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/PortForward.hs`,
+`src/Prodbox/CLI/Vault.hs`, and focused connection-boundary validation.
+**Deployment qualification**: pending — the recovery connection and storage replacement must be
+included in Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: pure subprocess/source-region cases prove normal Broker calls retain
+the exact Deployment-rollout barrier and only the ambiguity-reset handler selects the recovery
+connection; live reset must cross liveness without claiming readiness.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `documents/engineering/cli_command_surface.md`,
+`DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Break the recovery deadlock without weakening ordinary readiness. The one route whose purpose is
+to leave `RootInitializationAmbiguous` may connect to a running Broker proven by its authenticated
+`/healthz`; every other host client still waits for the exact Deployment rollout before credential
+minting and port-forward startup.
+
+### Deliverables
+
+- Add a closed recovery-only connection combinator that skips only the Deployment-readiness barrier
+  and retains loopback reservation, TokenRequest authentication, Service port-forwarding,
+  authenticated health proof, bracketed cleanup, and bounded retry.
+- Select it only from `runBrokerVaultResetAmbiguousInitialization`; do not expose a Boolean or
+  caller-selectable readiness mode.
+- Preserve the normal `withBrokerHostConnection` sequence and exact subprocess projection for every
+  status/init/unseal/seal/reconcile/rotation/PKI call.
+- Pin the routing distinction and ensure neither connection widens namespace, Service, address,
+  named port, audience, or credential scope.
+
+### Validation
+
+1. Focused cases prove the recovery combinator has no rollout subprocess while the normal path is
+   unchanged, and the reset handler alone uses recovery liveness.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. The retained live ambiguity resets through the authenticated loopback route, reads back a new
+   pristine generation, and normal reconcile completes initialization/unseal/baseline.
+
+### Remaining Work
+
+None. Sprint `2.62` owns the separately exposed physical reset refusal.
+
+### Closure Record
+
+- The closed `withBrokerHostRecoveryConnection` skips only Deployment rollout and retains exact
+  loopback Service forwarding, TokenRequest authentication, authenticated `/healthz`, bounded
+  retry, and cleanup; only the ambiguity-reset handler uses it.
+- Focused source/projection validation passes 2/2, the full unit command passes 4618 main cases plus
+  27/33/29 authority suites, and `prodbox dev check` exits 0.
+- The confirmed live reset reached `/v1/bootstrap/vault/ambiguous-init/reset` in 1.9 seconds rather
+  than timing out on rollout. Its later 503 is `EnginePhysicalCallRefused`, proving the transport
+  arm live and exposing Sprint `2.62` below.
+
+## Sprint 2.62: The Reset Boundary Names Its Failure Stage Without Payloads [✅ Done]
+
+**Status**: Done and live-proven — 2026-08-23.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`, and
+`src/Prodbox/Bootstrap/Broker/EngineAdapter.hs`.
+**Deployment qualification**: pending — include the reset diagnostic and recovery sequence in
+Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: a closed payload-free reset failure algebra distinguishes identity,
+controller, scale, absence, Pod create/status/validation, cleanup, identity-read-back, and scale-up;
+live recovery must name and then cross the exact refusing arm.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make the destructive recovery boundary diagnosable without publishing Kubernetes bodies or
+controller-authored bindings. Every failure names its closed stage and, where the only useful
+payload is an HTTP refusal, its numeric status; the public response remains generic.
+
+### Deliverables
+
+- Replace reset-path `Either Text` collapse with a closed `VaultStorageResetFailure` whose renderer
+  contains only constructor names and numeric HTTP status where applicable.
+- Carry that renderer into the broker diagnostic only for the physical ambiguity-reset route; keep
+  the HTTP response body generic and every other boundary detail redacted.
+- Pin all reset stages and prove arbitrary Kubernetes response bytes cannot reach logs or output.
+- Preserve the fixed reset name, PVC identity/proof annotations, bounded resources, UID deletion,
+  and absence read-back while the new diagnostic identifies the next separately owned correction.
+
+### Validation
+
+1. Focused cases cover every failure constructor, diagnostic redaction, and the route-specific
+   renderer boundary.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. A rebuilt live Broker preserves the generic public response while emitting one closed
+   payload-free stage/status that is sufficient to register the next counterexample.
+
+### Remaining Work
+
+None. Sprint `2.63` owns the separately exposed omitted-zero Scale decoder correction.
+
+### Closure Record
+
+- `VaultStorageResetFailure` covers all 18 identity/controller/scale/Pod/cleanup/read-back stages;
+  its only payloads are numeric HTTP statuses. Only the physical ambiguity-reset adapter renders
+  the algebra, and the public HTTP response remains generic.
+- Focused constructor/redaction validation passes 2/2, the full unit command passes 4620 main cases
+  plus 27/33/29 authority suites, and `prodbox dev check` exits 0 with no HLint findings and a
+  warning-clean all-target build.
+- Reconcile deployed image ID `sha256:6e475d76…`; the confirmed reset returned only
+  `{"status":"boundary-unavailable"}` and the Broker logged only
+  `vault-reset=scale-down-unavailable`. The read-only Scale response was exact object identity plus
+  `"spec": {}` at desired count zero, exposing Sprint `2.63` without leaking the body through the
+  diagnostic.
+
+## Sprint 2.63: Kubernetes Scale Omission Means Zero [✅ Done]
+
+**Status**: Done and live-proven — 2026-08-23.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs` and focused Scale-wire
+validation in `test/unit/Main.hs`.
+**Deployment qualification**: pending — include zero-scale recovery and the complete resumed
+bootstrap in Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: pure Scale-response cases prove exact identity/resource-version
+validation while accepting both an explicit positive replica count and Kubernetes' omitted-zero
+encoding; a retained live reset proves the same native path progresses beyond scale-down.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Decode Kubernetes' `autoscaling/v1` Scale wire as the API defines it: a missing
+`spec.replicas` field has the Go `omitempty` zero value and is not malformed. Preserve the strict
+object identity/resource-version checks and the exact read-back comparison before advancing the
+destructive reset program.
+
+### Deliverables
+
+- Default only an omitted `spec.replicas` to zero; reject a malformed, negative, wrong-kind,
+  wrong-name, wrong-namespace, or unversioned Scale response as before.
+- Pin pure explicit-positive and omitted-zero response cases through an exported observation helper
+  consumed by the production decoder rather than source-text matching.
+- Keep the scale update as an exact resource-versioned `PUT`, and require its decoded read-back to
+  equal the requested replica count.
+- Resume the retained confirmed reset and register any later distinct counterexample before
+  correcting it.
+
+### Validation
+
+1. Focused Scale-wire cases prove omitted zero, explicit positive, and strict refusal arms.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. The retained live reset crosses scale-down and reaches its next exact terminal outcome; if the
+   reset completes, normal reconcile initializes, unseals, and completes baseline custody.
+
+### Remaining Work
+
+None. Sprint `2.64` owns the separately exposed applied-initialization ambiguity diagnostic.
+
+### Closure Record
+
+- `ScaleWire` gives only an omitted `spec.replicas` the API's zero-value meaning; explicit positive
+  values remain intact and malformed, negative, wrong-kind/name/namespace, or unversioned responses
+  remain refusals. Production decoding and focused tests share the exported pure observation helper.
+- Focused Scale-wire validation passes 3/3, the full unit command passes 4623 main cases plus
+  27/33/29 authority suites, and `prodbox dev check` exits 0 with no HLint findings and a
+  warning-clean all-target build.
+- Reconcile deployed image ID `sha256:0e975c27…`; the confirmed reset crossed scale-down, ran and
+  removed the fixed reset Pod, read back controller identity, scaled up, and returned mutation
+  receipt `9a51bcc9…` for new pristine generation `vault-reset-5cfd3662…`. The following normal
+  reconcile reached Vault initialization and failed closed with `EngineInitializationAmbiguous`,
+  exposing Sprint `2.64` rather than reopening this decoder.
+
+## Sprint 2.64: Applied Initialization Ambiguity Names Its Failure Class [✅ Done]
+
+**Status**: Done — closed and live-proven 2026-08-24.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/ProductionSecretWorker.hs`,
+`src/Prodbox/Bootstrap/Broker/SecretWorker.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionSecretWorkerBoundary.hs`,
+`src/Prodbox/Bootstrap/Broker/Engine.hs`, `src/Prodbox/Bootstrap/Broker/EngineAdapter.hs`, and
+focused validation under `test/unit/`.
+**Deployment qualification**: pending — include the diagnosed initialization ambiguity and its
+eventual recovery in Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: pure classification and wire/engine propagation cases prove every
+Vault HTTP failure class is payload-free, survives the one-shot worker boundary, leaves the durable
+root journal unchanged, and is rendered only at the protected Broker diagnostic boundary; a retained
+live reset/reconcile cycle identifies the observed class.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Preserve why an initialization call became applied-without-response after Vault's initialized
+read-back, without retaining or publishing a transport exception, Vault response body, encrypted
+shares, token material, or prepared-recipient data. The diagnostic must name the exact closed
+failure class before any separately registered behavioral correction is attempted.
+
+### Deliverables
+
+- Introduce a closed payload-free initialization-ambiguity cause that distinguishes a pre-call
+  already-initialized observation from connection, timeout, numeric HTTP status, and response-decode
+  failure after the initialization request.
+- Carry that cause through the one-shot worker durable result and engine outcome while leaving the
+  serialized `InitAmbiguity` root-journal shape unchanged; pin retained result compatibility where
+  the existing wire contract requires it.
+- Render the closed cause only in the protected Broker diagnostic for the initialization-ambiguity
+  route. Keep the public response generic and prove arbitrary exception/body bytes cannot reach it
+  or the diagnostic.
+- Deploy the rebuilt Broker, use only the confirmed `prodbox` reset and reconcile surfaces to
+  reproduce initialization, and register the exact next correction only after the cause is observed.
+
+### Validation
+
+1. Focused cases cover every cause constructor, durable worker/engine propagation, redaction, and
+   unchanged root-journal encoding.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. A rebuilt live Broker emits one closed payload-free initialization-ambiguity cause while the
+   public response remains generic; the cause is sufficient to scope the next sprint.
+
+### Remaining Work
+
+None. Sprint `2.65` owns the separately registered response-decoder correction exposed by the live
+cause.
+
+### Closure Record
+
+- `InitializationAmbiguityCause` distinguishes already-initialized-before-call, connection,
+  timeout, numeric HTTP status, response decoding, and retained unclassified results without
+  storing any exception or response payload. The classified durable constructor is appended after
+  the retained constructors; the legacy ambiguity result remains byte-for-byte CBOR `[129,3]`, and
+  the root `InitAmbiguity` journal is unchanged.
+- The cause crosses the production one-shot boundary and engine. Only the initialization route's
+  protected diagnostic appends the safe cause name; its loopback public response remains exactly
+  `409 {"status":"state-conflict"}`. Focused validation passes 3/3, the full unit command passes
+  4626 main cases plus 27/33/29 authority suites, the warning-clean all-target build passes, and
+  `prodbox dev check` exits 0.
+- Reconcile deployed local image ID `sha256:567130c4…` and registry digest
+  `sha256:e6ead3a1…` in a Ready zero-restart Broker Pod. After the confirmed reset, the normal
+  reconcile returned the same generic conflict while the protected Broker log named
+  `initialization-cause=response-decode-failure`; `vault status` proves initialized/sealed with no
+  recovery custody. That exact counterexample registers Sprint `2.65` rather than weakening the
+  diagnostic or resetting again without a decoder correction.
+
+## Sprint 2.65: Canonical Dual-Encoded Vault Initialization Response [✅ Done]
+
+**Status**: Done — closed and live-proven 2026-08-24.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/VaultWire.hs` and focused validation under
+`test/unit/BootstrapBrokerFoundation.hs`.
+**Deployment qualification**: pending — include the applied-without-response counterexample and
+the corrected initialization/custody path in Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: pure response-decoder fixtures prove exact canonical dual-encoding
+agreement, strict field/family refusal, redaction, and immediate projection into opaque custody;
+the retained live reset/reconcile cycle proves the real Vault response reaches durable custody.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Decode Vault's complete documented initialization response without treating its redundant `keys`
+projection as a second secret source and without weakening the Broker's strict secret-safe wire
+boundary. The two wire projections must prove they name the same encrypted bytes before only the
+opaque base64-derived custody values survive parsing.
+
+### Deliverables
+
+- Admit `keys` beside `keys_base64`, or `recovery_keys` beside `recovery_keys_base64`, only as an
+  exact equal-length pointwise canonical hexadecimal/base64 dual encoding of the same encrypted
+  share bytes. Reject a missing half, malformed encoding, disagreement, mixed Shamir/recovery
+  families, or any other field.
+- Discard the decoded hexadecimal projection inside the parser and expose only the existing opaque,
+  redacting `PgpEncryptedShare` values plus opaque burn-token ciphertext; add no printable or
+  durable raw-share constructor.
+- Pin the documented Vault-shaped response, every refusal arm, and `Show` redaction in pure tests;
+  keep the public initialization response and Sprint `2.64` diagnostic algebra unchanged.
+- Use the confirmed reset surface once, resume normal reconcile, and require encrypted response
+  write/read-back, final unlock-bundle promotion, unseal, and baseline custody to reach their next
+  exact terminal outcome. Register any distinct counterexample before correcting it.
+
+### Validation
+
+1. Focused decoder cases prove exact Shamir and recovery dual encodings, canonicality/equality,
+   strict unexpected-field/family refusal, and redaction.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. A rebuilt live Broker crosses initialization response decoding into durable encrypted custody;
+   the retained reset/reconcile cycle reaches its next exact terminal result.
+
+### Remaining Work
+
+None. Sprint `2.66` owns the separately registered post-unseal consumer-ordering counterexample.
+
+### Closure Record
+
+- `EncryptedVaultInitResponse` accepts exactly one complete Shamir or recovery family. Both arrays
+  must be non-empty and equal in length; lowercase hexadecimal and canonical base64 must decode
+  pointwise to the same encrypted bytes. Missing halves, malformed/case-noncanonical input,
+  disagreement, mixed families, and additional fields refuse. The redundant hex projection is
+  discarded inside the parser; only existing opaque redacting values survive.
+- Focused decoder validation passes 2/2, the warning-clean all-target build passes, the full unit
+  command passes 4627 main cases plus 27/33/29 authority suites, and `prodbox dev check` exits 0
+  with no HLint findings. The governed engineering docs state the same strict wire boundary.
+- Reconcile built local image ID `sha256:7eac19fd…`, published registry digest
+  `sha256:efaf8f61…`, and rolled Deployment generation 11 to one Ready zero-restart Pod. After the
+  confirmed reset receipt `9a51bcc9…`, initialization returned recovery-custody digest
+  `3c90f4f9…` for `vault-reset-37bbd69a…`, proving encrypted response decoding, persistence, and
+  final-bundle promotion. The following unseal applied — status is initialized, unsealed, and
+  custody-durable — but its later consumer observation returned generic `boundary-unavailable`,
+  which is Sprint `2.66` rather than a decoder or worker-result failure.
+
+## Sprint 2.66: Post-Unseal Handoff Follows Authority Readiness [✅ Done]
+
+**Status**: Done on the code-owned surface — opened and closed 2026-08-24; deployed live proof
+reached baseline and is pending exact handoff behind Sprint `2.67`.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/Routes.hs`,
+`src/Prodbox/Bootstrap/Broker/Engine.hs`, `src/Prodbox/Bootstrap/Broker/Client.hs`,
+`src/Prodbox/CLI/Vault.hs`, `src/Prodbox/CLI/Rke2.hs`, and focused validation under `test/unit/`.
+**Deployment qualification**: pending — include the applied-unseal/consumer-absent
+counterexample and corrected transition order in Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: the pure engine and route fixtures prove unseal and baseline close
+without consumer access, a fake ready Authority completes and read-backs the exact handoff, and
+the native Plan / Apply step table places the transition after Authority readiness.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Remove the bootstrap-order cycle without weakening the observed-handoff invariant. Unseal closes
+when its attested one-shot worker receipt is validated, baseline closes when its root-session
+receipt is validated, and the Broker performs the durable consumer acceptance/read-back only from
+an explicit graph transition after Lifecycle Authority has reached its rollout barrier.
+
+### Deliverables
+
+- Make the unseal route return its exact validated mutation receipt without contacting the
+  post-unseal consumer, and make baseline reconciliation stop requiring a handoff that cannot yet
+  exist. Preserve generation binding, fencing, idempotency, and generic refusal behavior.
+- Add one closed, fixed-coordinate Broker mutation for post-unseal handoff. It resolves the durable
+  root custody binding internally, drives the existing observation-only handoff state machine, and
+  succeeds only after Lifecycle Authority acceptance is observed back with the exact generation,
+  consumer, and digest.
+- Add an explicit native reconcile step after `StepLifecycleAuthorityChartReady`; keep narration
+  and execution projected from the same table. The step carries no password/share bytes and cannot
+  be selected before consumer readiness.
+- Deploy the rebuilt Broker and resume normal reconcile against the already-unsealed,
+  custody-durable generation. Prove baseline, Authority rollout, and exact handoff read-back advance
+  in that order without reinitializing Vault.
+
+### Validation
+
+1. Focused cases prove unseal never calls the handoff boundary, baseline no longer requires prior
+   handoff, the separate route resumes every handoff journal phase, and wrong generation/consumer/
+   read-back evidence refuses.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. A rebuilt live Broker and retained reconcile reach observed handoff after Authority readiness
+   without reinitializing Vault; status names the same durable generation and `handoff_observed`.
+
+### Remaining Work
+
+None on Sprint `2.66`'s code-owned surface. Sprint `2.67` owns the separately observed baseline
+physical refusal that precedes Lifecycle Authority deployment and exact handoff qualification.
+
+### Closure Record
+
+- `BrokerPostUnsealHandoffReconcile` is the seventeenth fixed Broker route and resolves only the
+  durable exact-generation custody binding. Unseal returns its attested worker receipt without a
+  consumer call; baseline closes on its root/provisioner receipt; the separate route retains the
+  existing accept/observe handoff state machine.
+- `StepPostUnsealHandoff` follows `StepLifecycleAuthorityChartReady` in the same compiled native
+  component projection and is that component's exact terminal readiness receipt. Plan narration,
+  Apply dispatch, ordering assertions, and both RKE2 goldens derive from that table.
+- Focused sequencing, early-refusal, route, admission, and plan cases pass. The warning-clean
+  all-target build passes; the full unit command passes 4629 main cases plus 27/33/29 authority
+  suites; the heap-bounded canonical `prodbox dev check` exits 0 with no HLint findings. Its first
+  default invocation had already passed policy/format/lint before host memory pressure terminated
+  the child build; the same build also passes independently with `-Werror -j1`.
+- Reconcile built local image ID `sha256:31d050471ff1…`, published and re-pulled registry digest
+  `sha256:5171b92b6905…`, and rolled the Broker to the immutable
+  `prodbox-3349a232b3454fb3be77b2f68919904f` tag. Unseal returned its exact receipt through that
+  image and the next call was baseline, not handoff. Baseline then returned the distinct Sprint
+  `2.67` HTTP 409; retained status proves generation `vault-reset-37bbd69a…` initialized,
+  unsealed, custody-durable, root-session-active, and handoff-unobserved.
+
+## Sprint 2.67: Baseline Physical Refusal Names Its Closed Stage [✅ Done]
+
+**Status**: Done on the code-owned surface — opened and closed 2026-08-24; its deployed correction
+crossed the physical bypass and exact baseline/handoff live proof remains pending behind Sprint
+`2.68`'s distinct PGP refusal.
+**Live-proof**: pending behind Sprint `2.68`.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/Engine.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`,
+`src/Prodbox/Bootstrap/Broker/EngineAdapter.hs`, and focused validation under `test/unit/`.
+**Deployment qualification**: pending — resume the retained active root session through exact
+baseline completion, Lifecycle Authority readiness, and handoff read-back; include the result in
+Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: pure/physical fixtures prove every root/provisioner physical refusal
+maps to one closed payload-free stage, only the protected baseline-route diagnostic renders that
+stage, the public response stays generic, and the corrected exact step resumes idempotently from
+the retained journal.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+**Live diagnosis (2026-08-24)**: the classifier deployed at local image ID
+`sha256:39e202ed…` / registry digest `sha256:2ca464ce…`; the public route retained its generic HTTP
+409 while the protected log named `baseline-stage=await-generated-root-ciphertext`. Source
+projection confirms `PhysicalAwaitGeneratedRootCiphertext` advertises
+`SecretWorkerCompleteGeneratedRoot`, but the generated-root workflow called `runPhysical`
+directly. Production's deliberate secret-worker bypass guard is therefore the refusal; no Vault
+response, token, accessor, share, or worker result is implicated.
+
+### Objective
+
+Turn the live baseline route's generic physical refusal into a secret-safe, closed, actionable
+stage observation, then correct the exact refusing root/provisioner transition and resume the same
+durable session. Preserve the generic public response, opaque token/share material, exact
+generation binding, root-accessor cleanup, fencing, and independent read-back requirements.
+
+### Deliverables
+
+- Define a closed payload-free baseline physical stage covering every root-session and provisioner
+  physical call. Attach it at the call site so the protected baseline-route diagnostic can name
+  the stage without rendering a Vault body, token, accessor, share, or free-form boundary detail.
+- Keep every non-baseline route and every public refusal body unchanged. Exhaustive matching must
+  make a newly added physical step fail compilation until it receives an authored stage.
+- Route `PhysicalAwaitGeneratedRootCiphertext` through `runAuthorizedSecretWorkerPhysical` under
+  the same `BootstrapVaultSubmitGenerateRootShare` effect and mutation attempt used to mint the
+  PGP-bound originating permit. The direct physical interpreter remains fail-closed. Add a
+  regression for the retained state and its idempotent retry.
+- Rebuild and deploy the Broker, resume normal reconcile, and require baseline completion,
+  Lifecycle Authority readiness, and exact post-unseal handoff read-back for the same storage
+  generation.
+
+### Validation
+
+1. Focused cases prove exhaustive stage classification, protected diagnostic rendering, generic
+   wire refusal, and the exact retained-session correction including retry/read-back behavior.
+2. Warning-clean build, full unit suite, and `prodbox dev check` pass.
+3. A rebuilt live Broker resumes the retained root session without reinitializing Vault, allocates
+   and retires the generated-root completion worker, and crosses the former direct-physical bypass.
+
+### Remaining Work
+
+None on the code-owned surface. Sprint `2.68` owns the distinct PGP refusal exposed after the
+corrected worker completed.
+
+### Closure Record
+
+- The closed baseline classifier contains 16 unique exhaustive stage labels. Only the protected
+  baseline diagnostic renders one; public HTTP responses and unrelated route diagnostics remain
+  generic and secret-free.
+- `PhysicalAwaitGeneratedRootCiphertext` now runs through
+  `runAuthorizedSecretWorkerPhysical` under `BootstrapVaultSubmitGenerateRootShare`; production's
+  direct physical interpreter continues to refuse that secret-worker constructor.
+- The warning-clean all-target build, focused retained-session/response-loss cases, full unit
+  command (**4630** primary cases plus **27/33/29** authority suites), documentation lint, and the
+  heap-bounded canonical `prodbox dev check` all pass.
+- The corrected live image is local ID `sha256:eb617339…`, registry digest
+  `sha256:d8699b89…`, and Broker Deployment generation 14 with zero restarts. It retired the
+  generated-root worker with exact absence receipt `377ecaf4…`, then exposed Sprint `2.68`'s
+  distinct PGP state conflict on the same `vault-reset-37bbd69a…` generation.
+
+## Sprint 2.68: A Closed PGP Refusal Still Reports Only That PGP Refused [✅ Done]
+
+**Status**: Done and correction live-proven — opened and closed 2026-08-24.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/PgpBoundary.hs`,
+`src/Prodbox/Bootstrap/Broker/Engine.hs`,
+`src/Prodbox/Bootstrap/Broker/EngineAdapter.hs`, and focused validation under `test/unit/`.
+**Deployment qualification**: pending — resume the retained active root session through exact
+baseline completion, Lifecycle Authority readiness, and handoff read-back; include the result in
+Sprint `6.5`'s current-revision campaign.
+**Independent Validation**: pure fixtures exhaust the closed `PgpBoundaryError` algebra, prove
+only the protected baseline route renders its stable payload-free label, keep the public response
+generic, and reproduce the exact diagnosed session/action invariant with fixed permits and worker
+result evidence.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+**Live counterexample (2026-08-24)**: Broker Deployment generation 14 runs local image ID
+`sha256:eb617339…` / registry digest `sha256:d8699b89…` with zero restarts. The corrected
+generated-root one-shot worker reached terminal completion and its expired fence was retired with
+absence receipt `377ecaf4…`; baseline then returned unchanged generic HTTP 409 `state-conflict`,
+while the protected log named only `EnginePgpBoundaryRefused`. `prodbox vault status` still binds
+the original `vault-reset-37bbd69a…` generation as initialized, unsealed, custody-durable,
+root-session-active, and handoff-unobserved. No secret, Vault body, or free-form boundary detail is
+needed to distinguish the existing closed PGP causes.
+
+**First diagnostic result (2026-08-24)**: the diagnostic-only image deployed as local ID
+`sha256:72336b36…` / registry digest `sha256:566df3ff…` in Deployment generation 15 with zero
+restarts. Its protected log names `pgp-cause=generated-root-action-refused`. That constructor does
+not yet identify the exact transition: production uses it for all four `GeneratedRootActionKind`
+values and also for generated-token decoding before any action. The diagnostic therefore splits
+pre-action token rejection into its own closed cause and attaches the existing closed action kind
+to action refusal before another live observation. Public status/body remain unchanged.
+
+**Refined diagnostic result (2026-08-24)**: local image ID `sha256:07aaa154…` / registry digest
+`sha256:52ac3462…` deployed as Broker generation 16 with zero restarts and named
+`generated-root-action-refused/apply-baseline`. Vault's read-only server log confirms the first
+attempt created the `secret`, `transit`, and `pki` mounts plus Kubernetes auth; later generated-root
+attempts complete without repeating those creation records. The apply action still contains two
+sequential effects—`runVaultReconcile` and `reconcileVaultPkiBaseline`—so its refusal receives a
+closed `core-reconcile`/`pki-reconcile` substage before behavior changes.
+
+**Core-reconcile diagnostic result (2026-08-24)**: local image ID `sha256:598d91b7…` / registry
+digest `sha256:2dcf66ea…` deployed as Broker generation 17 with zero restarts and named
+`generated-root-action-refused/apply-baseline/core-reconcile`. The public result remains the exact
+generic HTTP 409 `state-conflict`; status still binds the original `vault-reset-37bbd69a…`
+generation as initialized, unsealed, custody-durable, root-session-active, and
+handoff-unobserved. `core-reconcile` still collapses the closed `VaultReconcileError` algebra, so
+the next diagnostic gives that sum exhaustive payload-free labels and observes its exact
+constituent before any behavioral correction. Free-form context, HTTP bodies, paths, role names,
+and secret-bootstrap detail remain outside both log and response.
+
+**Closed core result (2026-08-24)**: the exhaustive reconciler projection deployed as generation
+18, local image ID `sha256:1795b5e7…` / registry digest `sha256:3e1d5da8…`, with zero restarts and
+named `core-reconcile/http/create-transit-key/status-500`. A disposable `--rm` Vault 1.18.3
+instance reproduces the exact response: creating a `type=hmac` Transit key without `key_size`
+returns HTTP 500 for an invalid zero-byte HMAC key, while explicitly supplying the documented
+256-bit size as 32 bytes succeeds. The correction therefore belongs only in the HMAC
+`TransitKeyRequest` encoding; AES and Ed25519 request bytes, desired types, key names, read-back,
+and mismatch refusal remain unchanged.
+
+**Corrected live result (2026-08-24)**: generation 19 runs local image ID
+`sha256:475d37de…` / registry digest `sha256:2d320ec1…` with zero restarts. It retired the expired
+generation-21 fence with an exact worker-absence receipt, crossed the former HMAC Transit-key
+creation refusal, and now names only the subsequent
+`generated-root-action-refused/apply-baseline/pki-reconcile` transition. The retained generation
+remains initialized, unsealed, custody-durable, root-session-active, and handoff-unobserved.
+Sprint `2.69` owns that distinct PKI refusal; it is not evidence against this sprint's exact wire
+correction.
+
+### Objective
+
+Make the baseline route's closed PGP refusal actionable without exposing ciphertext, plaintext,
+tokens, accessors, shares, key material, or free-form boundary detail. Diagnose the exact existing
+boundary invariant from the retained run, correct only the evidenced Vault request encoding, and
+resume the same durable root session.
+
+### Deliverables
+
+- Define one stable exhaustive secret-free label for every `PgpBoundaryError` constructor and
+  render it only in the protected baseline-route diagnostic. Separate pre-action generated-token
+  rejection from generated-root action refusal, and bind action refusal to the already closed
+  `GeneratedRootActionKind`. Keep the public response byte-for-byte generic and keep other route
+  diagnostics unchanged.
+- Bind each root action refusal to a closed action-specific boundary stage; in particular,
+  `apply-baseline` distinguishes the default core reconcile from the subsequent PKI reconcile.
+- Deploy the diagnostic-only image first and capture the exact closed cause from the retained
+  generation before authoring a behavioral correction.
+- Encode Vault 1.18.3's required 32-byte size only for `type=hmac` Transit-key creation without
+  changing the AES/Ed25519 wire, desired key inventory, read-back, or mismatch refusal.
+- Add stable repository-owned positive HMAC and negative non-HMAC wire cases, plus a disposable
+  same-version proof that omission reproduces the retained HTTP 500 and 32 bytes read back exact.
+- Rebuild and deploy the Broker, resume normal reconcile, prove the exact HMAC refusal is crossed,
+  and register any newly distinct subsequent transition before changing it. This sprint makes no
+  claim that PKI, Lifecycle Authority readiness, or post-unseal handoff is complete; Sprint `2.69`
+  owns that subsequent live path.
+
+### Validation
+
+1. Focused cases prove exhaustive closed-cause rendering, protected-only visibility, unchanged
+   generic wire refusal, exact HMAC request encoding, and unchanged AES/Ed25519 encoding.
+2. Warning-clean build, full unit suite, documentation lint, and `prodbox dev check` pass.
+3. Diagnostic-only deployments progressively name the exact closed cause; the corrected deployment
+   resumes the retained session without reinitializing Vault, crosses the HMAC creation failure,
+   and either advances or registers the next distinct transition before any further behavior change.
+
+### Remaining Work
+
+None on this sprint's owned surface. Sprint `2.69` owns the separately observed PKI reconcile
+refusal and the remaining baseline/Authority/handoff live path.
+
+### Closure Record
+
+- Exhaustive payload-free diagnostics cover the PGP token/action hierarchy, every generated-root
+  substage, and all core reconciler HTTP/drift/secret-bootstrap causes; only the protected baseline
+  route renders them and the public conflict remains generic.
+- Focused diagnostic and Transit-key wire cases pass, including exact 32-byte HMAC encoding and
+  unchanged AES/Ed25519 encodings. The warning-clean all-target build, documentation lint, **4631**
+  primary unit cases, **27/33/29** authority suites, and heap-bounded canonical
+  `prodbox dev check` all pass.
+- Broker generation 19 runs local image ID `sha256:475d37de…` / registry digest
+  `sha256:2d320ec1…` with zero restarts. It retired the expired generation-21 fence with absence
+  receipt `a38afbb…`, crossed `core-reconcile/http/create-transit-key/status-500`, and exposed only
+  Sprint `2.69`'s distinct `apply-baseline/pki-reconcile` refusal on the original retained
+  generation.
+
+## Sprint 2.69: PKI Reconcile Must Refuse With a Closed Cause [✅ Done]
+
+**Status**: Done and correction live-proven — opened and closed 2026-08-24.
+**Implementation**: `src/Prodbox/Vault/Reconcile.hs`,
+`src/Prodbox/Bootstrap/Broker/PgpBoundary.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionPgp.hs`, and focused validation under `test/unit/`.
+**Deployment qualification**: pending — resume the retained root session through PKI baseline,
+Lifecycle Authority readiness, and exact handoff read-back for the same storage generation.
+**Independent Validation**: pure fixtures exhaust every PKI reconcile/observe operation and
+payload-free HTTP/read-back cause, prove no Vault body or free-form `Text` enters the protected
+diagnostic, and keep the public HTTP conflict unchanged.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+**Live counterexample (2026-08-24)**: corrected Broker generation 19 runs local image ID
+`sha256:475d37de…` / registry digest `sha256:2d320ec1…` with zero restarts. The root action crosses
+the complete default core reconciler, including explicit 32-byte HMAC key creation, then returns
+the unchanged generic HTTP 409 while the protected log names only `apply-baseline/pki-reconcile`.
+The PKI helpers still collapse issuer listing, root generation, role write, observe/read-back, and
+drift into free-form `Either Text`.
+
+**Closed diagnostic result (2026-08-24)**: Broker generation 20 runs local image ID
+`sha256:e14ee898…` / registry digest `sha256:c320366b…` with zero restarts. Its protected log names
+`generated-root-action-refused/apply-baseline/pki-reconcile/http/list-issuers/status-404`; the
+public result remains the exact generic HTTP 409. Vault still reports the original
+`vault-reset-37bbd69a…` generation initialized, unsealed, custody-durable, root-session-active, and
+handoff-unobserved. A newly mounted PKI engine has no issuer collection, and the observation path
+already represents an issuer-list 404 as baseline absence. The correction maps only that same 404
+on the reconcile listing to generate-internal-root; a non-empty list remains keep-existing and all
+other HTTP classes remain closed failures.
+
+**Corrected live result (2026-08-24)**: Broker generation 21 runs local image ID
+`sha256:37cb7d0f…` / registry digest `sha256:ef472adc…` with zero restarts. The exact 404-as-absent
+decision generated the PKI root, reconciled the role, passed exact read-back, and advanced beyond
+the entire generated-root PGP scope. The next protected refusal is the separately closed baseline
+physical stage `prove-current-root-accessor-absent; boundary-refused`; the original retained
+generation remains initialized, unsealed, custody-durable, root-session-active, and
+handoff-unobserved. Sprint `2.70` owns that post-revocation proof and no further PKI behavior change
+is licensed by this result.
+
+### Objective
+
+Replace the PKI baseline's free-form error channel with a closed payload-free algebra, diagnose the
+exact retained transition, correct only that operation or read-back invariant, and resume the same
+durable root session through post-unseal handoff.
+
+### Deliverables
+
+- Define closed PKI reconcile and observation error types whose constructors distinguish issuer
+  listing, internal-root generation, role write, issuer/role read-back, and non-exact status without
+  retaining response bodies, paths, names, tokens, or arbitrary text.
+- Bind `GeneratedRootApplyPkiReconcile` and `GeneratedRootReadBackPkiObserve` to exhaustive stable
+  secret-free cause labels visible only on the protected baseline diagnostic; keep every public
+  response and unrelated route unchanged.
+- Deploy the diagnostic first, observe the exact cause on the retained generation, and register
+  any newly distinct transition before changing behavior.
+- Correct only the evidenced PKI request or read-back rule, add its positive and negative fixture,
+  then rebuild and resume until PKI closes or a distinct subsequent transition is registered. This
+  sprint makes no claim that root-accessor cleanup, Authority readiness, or handoff is complete;
+  Sprint `2.70` owns that subsequent live path.
+
+### Validation
+
+1. Focused tests exhaust the closed PKI cause mapping, protected-only rendering, generic public
+   refusal, and the exact correction plus its negative arm.
+2. Warning-clean all-target build, full unit suite, documentation lint, and `prodbox dev check`
+   pass.
+3. The diagnostic deployment names an exact PKI cause; the corrected deployment closes PKI
+   reconcile/read-back on the original generation and either advances or registers the next
+   distinct transition before further behavior changes.
+
+### Remaining Work
+
+None on this sprint's owned surface. Sprint `2.70` owns the subsequent accessor-absence proof and
+remaining baseline/Authority/handoff path.
+
+### Closure Record
+
+- PKI reconcile and observe expose closed operation-indexed errors; the generated-root projection
+  exhausts all mutation/read-back operations, four HTTP classes, nested observation failure, and
+  exact absent/drifted/ready status without retaining payloads or free-form text.
+- The pure root decision treats only successful empty issuer lists and HTTP 404 as fresh-mount
+  absence; non-empty lists preserve the root and every other failure remains closed. Focused cases
+  pass 2/2, the warning-clean all-target build, **4633** primary unit cases, **27/33/29** authority
+  suites, documentation lint, and the heap-bounded canonical `prodbox dev check` all pass.
+- Generation 20 diagnosed `pki-reconcile/http/list-issuers/status-404`. Corrected generation 21
+  runs local image ID `sha256:37cb7d0f…` / registry digest `sha256:ef472adc…` with zero restarts,
+  closes PKI reconcile/read-back, and exposes only Sprint `2.70`'s distinct
+  `prove-current-root-accessor-absent` physical stage.
+
+## Sprint 2.70: Current Root Revocation Needs an Exact Absence-Proof Cause [✅ Done]
+
+**Status**: Done — reclosed 2026-08-24 after generation 25 crossed the corrected exact
+current-accessor absence transition.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/Engine.hs`,
+`src/Prodbox/Bootstrap/Broker/EngineAdapter.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`, and focused validation under `test/unit/`.
+**Deployment qualification**: proven on the owned transition; Sprint `2.72` owns the next distinct
+post-baseline inventory transition and the remaining aggregate baseline/Authority/handoff proof.
+**Independent Validation**: pure physical-boundary fixtures exhaust the closed payload-free
+absence-proof causes, prove only the protected baseline diagnostic renders them, and keep the public
+HTTP refusal generic.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+**Live counterexample (2026-08-24)**: corrected Broker generation 21 runs local image ID
+`sha256:37cb7d0f…` / registry digest `sha256:ef472adc…` with zero restarts. It closes PKI
+reconcile/read-back and leaves the public baseline response generic, while the protected diagnostic
+names `baseline-stage=prove-current-root-accessor-absent; boundary-refused`. The physical call still
+collapses every `EngineBoundaryRefused Text` at this stage and therefore cannot identify the exact
+retained absence invariant without free-form detail.
+
+### Objective
+
+Give the current generated-root accessor absence proof a closed payload-free refusal cause, observe
+the exact retained invariant after revocation, correct only that proof, and resume the same durable
+root session through Authority handoff.
+
+### Deliverables
+
+- Replace the absence proof's free-form boundary refusal at the protected diagnostic with a closed
+  cause covering inventory identity/generation mismatch, stable-zero mismatch, HTTP class, and any
+  other production constructor the exact proof boundary can return.
+- Keep public responses generic and prevent accessor values, Vault bodies, tokens, paths, or
+  arbitrary text from entering the diagnostic type.
+- Deploy the diagnostic first, observe the retained cause, and register any distinct subsequent
+  transition before changing it.
+- Correct only the evidenced absence-proof invariant, add positive/negative fixtures, and resume
+  baseline, Lifecycle Authority readiness, and exact handoff read-back.
+
+### Validation
+
+1. Focused cases exhaust the closed proof-cause mapping and protected-only rendering while public
+   response bytes remain unchanged.
+2. Warning-clean all-target build, full unit suite, documentation lint, and `prodbox dev check`
+   pass.
+3. The diagnostic names an exact absence-proof cause; the corrected deployment advances the same
+   retained session through baseline and exact post-unseal handoff or registers the next distinct
+   transition before further behavior changes.
+
+### Remaining Work
+
+None on this sprint's owned surface. Sprint `2.72` owns the separately registered post-baseline
+inventory transition and the remaining aggregate baseline/Authority/handoff proof.
+
+### Reopened Counterexample (2026-08-24)
+
+- Diagnostic generation 24 runs local image ID `sha256:1acf4912…`, registry digest
+  `sha256:668994ce…`, and containerd OCI manifest `sha256:46407e95…`, ready with zero restarts.
+  Its protected diagnostic names
+  `prove-current-root-accessor-absent; root-accessor-absence-cause=http/list-accessors/status-404`.
+- The previous revocation has left the accessor collection empty; Vault answers LIST
+  `auth/token/accessors` with 404 for that state. The current classifier preserves 404 as an HTTP
+  failure instead of producing the empty inventory required by the exact absence decision.
+
+### Reclosure Record (2026-08-24)
+
+- Only accessor-list HTTP 404 is normalized to an empty inventory. Successful nonempty lists remain
+  observations, while connection, timeout, non-404 status, and decode failures retain their exact
+  closed refusal causes. The focused absence-list decision cases pass 3/3.
+- Corrected generation 25 runs local image ID `sha256:ab22555f…`, registry digest
+  `sha256:3e9cdbe8…`, and containerd OCI manifest `sha256:466816cf…`, ready with zero restarts. It
+  crossed `prove-current-root-accessor-absent`, then crossed Sprint `2.71`'s post-baseline
+  revocation transition, and exposed only Sprint `2.72`'s distinct
+  `inventory-post-baseline-root-accessors` stage.
+- The warning-clean all-target build, **4638** primary unit cases, **27/33/29** authority suites,
+  documentation lint, and the heap-bounded canonical `prodbox dev check` all pass.
+
+### Closure Record
+
+- Root-accessor proof calls carry an explicit stable-zero versus exact-target requirement. Their
+  production boundary maps projected-token, bounded-auditor login/cleanup, list/lookup HTTP,
+  malformed observation, generation, target-present, and stable-zero failures into one closed
+  payload-free cause; only the protected baseline diagnostic renders it.
+- The integrated physical fixture introduces an unrelated root accessor after generated-root
+  revocation. Exact current-target absence advances, while the subsequent explicit stable-zero
+  program still inventories, revokes, and proves that unrelated accessor absent. Focused cases
+  pass 2/2 plus three live-shaped baseline/recovery/target cases; the warning-clean all-target
+  build, **4635** primary unit cases, **27/33/29** authority suites, documentation lint, and the
+  heap-bounded canonical `prodbox dev check` all pass.
+- Diagnostic generation 22 ran local image ID `sha256:337d6666…` / registry digest
+  `sha256:8e0a72c4…` with zero restarts and named `stable-zero-mismatch`. Corrected generation 23
+  runs local image ID `sha256:1f709707…` / registry digest `sha256:3a9b6878…` with zero restarts,
+  crossed the exact target proof, and exposed only Sprint `2.71`'s subsequent
+  `revoke-post-baseline-root-accessor` stage.
+
+## Sprint 2.71: Post-Baseline Root Revocation Needs an Exact Cause [✅ Done]
+
+**Status**: Done — closed 2026-08-24 after generation 25 crossed the exact post-baseline
+root-accessor revocation transition.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/Engine.hs`,
+`src/Prodbox/Bootstrap/Broker/EngineAdapter.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`, and focused validation under `test/unit/`.
+**Deployment qualification**: proven on the owned transition; Sprint `2.72` owns the next distinct
+post-baseline inventory transition and the remaining aggregate baseline/Authority/handoff proof.
+**Independent Validation**: pure revocation-boundary fixtures exhaust a closed payload-free cause,
+retain the generic public refusal, and prove exact post-call observation behavior.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+**Live counterexample (2026-08-24)**: corrected Broker generation 23 runs local image ID
+`sha256:1f709707…` / registry digest `sha256:3a9b6878…` with zero restarts. It crosses the exact
+current-root accessor absence proof and leaves the public response generic, while the protected
+diagnostic names `baseline-stage=revoke-post-baseline-root-accessor; boundary-refused`. The
+revocation call still collapses its exact Vault mutation and absence read-back outcomes into
+free-form `EngineBoundaryError` detail.
+
+### Objective
+
+Give the post-baseline root-accessor revocation an exact payload-free cause, observe the retained
+failure, correct only its evidenced invariant, and resume the same durable root session through
+Authority handoff.
+
+### Deliverables
+
+- Replace the post-baseline revocation's free-form protected refusal with a closed cause covering
+  auditor login, revoke HTTP outcome, list/read-back HTTP outcome, and exact absence status.
+- Keep public responses generic and prevent accessor values, tokens, Vault bodies, paths, or
+  arbitrary text from entering the diagnostic type.
+- Deploy the diagnostic first, observe the retained cause, and register any distinct subsequent
+  transition before changing it.
+- Correct only the evidenced revocation/read-back invariant and resume baseline, Lifecycle
+  Authority readiness, and exact handoff read-back.
+
+### Validation
+
+1. Focused cases exhaust the closed revocation mapping and protected-only rendering while public
+   response bytes remain unchanged.
+2. Warning-clean all-target build, full unit suite, documentation lint, and `prodbox dev check`
+   pass.
+3. The diagnostic names an exact post-baseline revocation cause; the corrected deployment advances
+   the same retained session through baseline and exact post-unseal handoff or registers the next
+   distinct transition before further behavior changes.
+
+### Remaining Work
+
+None on this sprint's owned surface. Sprint `2.72` owns the separately observed post-baseline root
+inventory transition and the remaining aggregate baseline/Authority/handoff proof.
+
+### Closure Record
+
+- The revocation boundary carries a closed payload-free cause for projected-token availability,
+  auditor login and cleanup, revoke/list HTTP operation and failure class, invalid login, and an
+  exact target that remains present. Only the protected baseline diagnostic renders it; public
+  refusal bytes remain generic. Exhaustive focused cause/rendering cases pass 2/2.
+- Generation 25 runs local image ID `sha256:ab22555f…`, registry digest `sha256:3e9cdbe8…`, and
+  containerd OCI manifest `sha256:466816cf…`, ready with zero restarts. It crossed
+  `revoke-post-baseline-root-accessor` without a revocation failure and exposed only Sprint
+  `2.72`'s distinct `inventory-post-baseline-root-accessors; boundary-unavailable` stage.
+- The warning-clean all-target build, **4638** primary unit cases, **27/33/29** authority suites,
+  documentation lint, and the heap-bounded canonical `prodbox dev check` all pass.
+
+## Sprint 2.72: Post-Baseline Root Inventory Needs an Exact Cause [✅ Done]
+
+**Status**: Done — closed 2026-08-24 after generation 27 crossed the corrected exact post-baseline
+root-inventory transition.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/Engine.hs`,
+`src/Prodbox/Bootstrap/Broker/EngineAdapter.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`, and focused validation under `test/unit/`.
+**Deployment qualification**: proven on the owned transition; Sprint `2.73` owns the next distinct
+provisioner-accessor cleanup transition and the remaining aggregate baseline/Authority/handoff
+proof.
+**Independent Validation**: pure inventory-boundary fixtures must exhaust the closed payload-free
+cause, retain generic public refusal bytes, and distinguish an empty list from every refusal.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+**Live counterexample (2026-08-24)**: corrected Broker generation 25 runs local image ID
+`sha256:ab22555f…`, registry digest `sha256:3e9cdbe8…`, and containerd OCI manifest
+`sha256:466816cf…`, ready with zero restarts. It crosses exact current-root absence and
+post-baseline revocation, then the protected diagnostic names
+`baseline-stage=inventory-post-baseline-root-accessors; boundary-unavailable`. The production
+inventory boundary still collapses projected-token, auditor-login, list, per-accessor policy
+lookup, malformed-observation, and inventory-construction outcomes into broad text-bearing engine
+failures, so the exact retained cause is not yet observable.
+
+### Exact Diagnostic Observation (2026-08-24)
+
+- Diagnostic generation 26 runs local image ID `sha256:936aab88…`, registry digest
+  `sha256:82b9fe9e…`, and containerd OCI manifest `sha256:6dfdab10…`, ready 1/1 with zero restarts.
+  Its protected diagnostic names
+  `inventory-post-baseline-root-accessors; root-accessor-inventory-cause=http/list-accessors/status-404`.
+- The prior revocation left the root-policy accessor collection empty. Vault answers LIST
+  `auth/token/accessors` with 404 for that state, so post-baseline inventory must map only that
+  exact result to an empty inventory while preserving every other failure class.
+
+### Objective
+
+Give post-baseline root inventory a closed payload-free cause, observe the exact retained failure,
+correct only its evidenced invariant, and resume the same durable root session through Authority
+handoff.
+
+### Deliverables
+
+- Replace post-baseline inventory's broad protected failure with a closed cause covering
+  projected-token availability, auditor login/cleanup, list and policy-lookup HTTP outcomes,
+  malformed observations, and inventory construction invariants.
+- Keep public responses generic and prevent accessor values, policies, tokens, Vault bodies,
+  paths, or arbitrary text from entering the diagnostic type.
+- Deploy the diagnostic without changing inventory behavior, observe the exact live cause, and
+  register any distinct subsequent transition before changing it.
+- Correct only the evidenced inventory invariant and resume baseline, Lifecycle Authority
+  readiness, and exact handoff read-back.
+
+### Validation
+
+1. Focused cases exhaust the closed inventory mapping and protected-only rendering while public
+   response bytes remain unchanged.
+2. Warning-clean all-target build, full unit suite, documentation lint, and `prodbox dev check`
+   pass before live qualification.
+3. The diagnostic names an exact post-baseline inventory cause; the corrected deployment advances
+   through baseline and exact post-unseal handoff or registers the next distinct transition before
+   further behavior changes.
+
+### Remaining Work
+
+None on this sprint's owned surface. Sprint `2.73` owns the separately observed
+provisioner-accessor cleanup transition and the remaining aggregate baseline/Authority/handoff
+proof.
+
+### Closure Record
+
+- Root inventory now has 20 exhaustive payload-free causes across projected-token/auditor cleanup,
+  three HTTP operations and four failure classes, malformed accessor, and inventory construction.
+  Only the protected baseline route renders the exact cause; public replies retain their generic
+  unavailable/refused/ambiguous classes.
+- Only inventory-list HTTP 404 supplies the empty inventory Vault represents. Successful nonempty
+  lists remain observations; connection, timeout, every non-404 status, and decode failure retain
+  their exact cause. Focused exhaustive/classifier/decision cases pass 3/3.
+- Diagnostic generation 26 (local image ID `sha256:936aab88…`, registry digest
+  `sha256:82b9fe9e…`, OCI manifest `sha256:6dfdab10…`) named
+  `http/list-accessors/status-404`. Corrected generation 27 runs local image ID
+  `sha256:d3a26728…`, registry digest `sha256:d3034ee4…`, and OCI manifest
+  `sha256:d871d358…`, ready 1/1 with zero restarts. It crossed post-baseline root inventory and
+  exposed only Sprint `2.73`'s distinct `cleanup-provisioner-accessors; boundary-unavailable`
+  transition.
+- The warning-clean all-target build, **4641** primary unit cases, **27/33/29** authority suites,
+  documentation lint, and the heap-bounded canonical `prodbox dev check` all pass.
+
+## Sprint 2.73: Provisioner-Accessor Cleanup Needs an Exact Cause [✅ Done]
+
+**Status**: Done — closed 2026-08-24 after generation 29 crossed the corrected exact cleanup
+transition.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/Engine.hs`,
+`src/Prodbox/Bootstrap/Broker/EngineAdapter.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`, and focused validation under `test/unit/`.
+**Deployment qualification**: proven on the owned transition; Sprint `2.74` owns the next distinct
+provisioner-policy application transition and the remaining aggregate baseline/Authority/handoff
+proof.
+**Independent Validation**: pure cleanup-boundary fixtures must exhaust the closed payload-free
+cause, retain generic public reply bytes, and cover every list/lookup/revoke/absence decision arm.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+**Live counterexample (2026-08-24)**: corrected Broker generation 27 runs local image ID
+`sha256:d3a26728…`, registry digest `sha256:d3034ee4…`, and containerd OCI manifest
+`sha256:d871d358…`, ready 1/1 with zero restarts. It crosses post-baseline root inventory, then the
+protected diagnostic names `baseline-stage=cleanup-provisioner-accessors; boundary-unavailable`.
+The cleanup boundary still collapses projected-token/login, role-wide list and subject lookup,
+revoke, visibility, exact absence, and stable-zero audit outcomes into broad text-bearing engine
+failures, so the retained cause is not yet observable.
+
+**Current validation state (2026-08-24)**: the diagnostic-only implementation uses a shared typed
+detailed stable-zero audit, preserves provisional revoke semantics, and exposes 41 unique
+payload-free cleanup causes only at the protected baseline route. Focused cases pass 3/3; the
+warning-clean all-target build, **4644** primary unit cases, documentation lint, and the
+heap-bounded canonical `prodbox dev check` pass. Ready, zero-restart diagnostic generation 28 runs
+local image ID `sha256:65a7127d…`, registry digest `sha256:8d3f4a7e…`, and OCI manifest
+`sha256:9b7a8d0c…`; it names the exact cause
+`http/initial-list-accessors/status-404`. Only cleanup's shared LIST empty-collection decision now
+required correction. The shared classifier now admits only exact HTTP 404 as empty at both initial
+and repeated list sites; focused cases pass 3/3, all **4644** primary unit cases pass, and the
+warning-clean all-target build, documentation lint, and heap-bounded canonical `prodbox dev check`
+pass. Corrected generation 29 runs local image ID
+`sha256:5f456f04039f8c2d2d5d67b76194ced6fa68c618efffdb42e0c125f41d1cf8ea`, registry digest
+`sha256:c854aa67b448b4c903955e126bccdf7c6490d62b15a4f1670870cb7ae1192a0f`, and containerd OCI
+manifest `sha256:d469027cf1c1e263cf89d79c5d1088a626eb11d562d384470e1ea3a390d0c69e` in Deployment
+generation 29, ready 1/1 with zero restarts. It crossed cleanup and exposed only Sprint `2.74`'s
+distinct `apply-provisioner-policy; boundary-unavailable` transition; the public response remained
+the generic HTTP 503 boundary-unavailable body.
+
+### Objective
+
+Give provisioner-accessor cleanup a closed payload-free cause, observe the exact retained failure,
+correct only its evidenced invariant, and resume the same durable session through baseline and
+Authority handoff.
+
+### Deliverables
+
+- Replace cleanup's broad protected failure with a closed cause covering projected-token and
+  bounded-auditor login/cleanup, initial and repeated list/lookup HTTP outcomes, typed provisional
+  revoke/direct-absence operations, visibility, subject classification, and stable-zero
+  invariants. Cleanup carries no known accessor, so direct-known-absence is an exhaustive operation
+  arm but not a terminal step on this role-wide lane; revoke responses likewise remain provisional
+  and later authoritative observations decide closure.
+- Keep public responses generic and prevent accessors, subjects, roles, tokens, Vault bodies,
+  paths, or arbitrary text from entering the diagnostic type.
+- Deploy the diagnostic without changing cleanup behavior, observe the exact live cause, and
+  register any distinct subsequent transition before changing it.
+- Correct only the evidenced cleanup invariant and resume baseline, Lifecycle Authority readiness,
+  and exact handoff read-back.
+
+### Validation
+
+1. Focused cases exhaust the closed cleanup mapping and protected-only rendering while public reply
+   bytes remain unchanged.
+2. Warning-clean all-target build, full unit suite, documentation lint, and `prodbox dev check`
+   pass before live qualification.
+3. The diagnostic names an exact provisioner-cleanup cause; the corrected deployment advances
+   through baseline and exact post-unseal handoff or registers the next distinct transition before
+   further behavior changes.
+
+### Remaining Work
+
+None on this sprint's owned surface. Sprint `2.74` owns the separately observed
+provisioner-policy application transition and the remaining aggregate baseline/Authority/handoff
+proof.
+
+### Closure Record
+
+- Cleanup carries 41 unique payload-free causes across projected-token, bounded-auditor,
+  initial/repeated list and lookup, provisional revoke, visibility, subject, and stable-zero
+  outcomes. Only the protected route renders them; public replies remain generic.
+- Diagnostic generation 28 named exact `http/initial-list-accessors/status-404`. The shared
+  classifier admits only exact LIST HTTP 404 as Vault's empty collection at both initial and
+  repeated audit sites; every other HTTP class remains a typed refusal and revoke responses remain
+  provisional. Focused exhaustive/classifier cases pass 3/3.
+- Corrected generation 29 carries the exact identities and live transition recorded above, is
+  ready 1/1 with zero restarts, and crossed cleanup before exposing Sprint `2.74`'s separately
+  registered policy-application boundary.
+- The warning-clean all-target build, **4644** primary unit cases, documentation lint, and the
+  heap-bounded canonical `prodbox dev check` all pass.
+
+## Sprint 2.74: Provisioner-Policy Application Needs an Exact Cause [✅ Done]
+
+**Status**: Done — closed 2026-08-24 after generation 30 crossed policy application and read-back
+without a behavior correction.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/Engine.hs`,
+`src/Prodbox/Bootstrap/Broker/EngineAdapter.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`, and focused validation under `test/unit/`.
+**Deployment qualification**: proven on the owned transition; Sprint `2.75` owns the next distinct
+provisioner-accessor revocation transition and the remaining baseline, Lifecycle Authority, and
+handoff read-back.
+**Independent Validation**: pure policy-application fixtures must exhaust the closed payload-free
+cause, retain generic public reply bytes, and distinguish provisioner-token lookup, Vault baseline
+reconcile, and PKI reconcile outcomes.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+**Live counterexample (2026-08-24)**: corrected Broker generation 29 runs the exact identities
+recorded in Sprint `2.73`, ready 1/1 with zero restarts. It crosses provisioner-accessor cleanup,
+then the protected diagnostic names
+`baseline-stage=apply-provisioner-policy; boundary-unavailable`. The public response remains the
+generic HTTP 503 boundary-unavailable body. `applyProvisionerBaseline` still collapses
+provisioner-token registry lookup, the default Vault reconcile program, and PKI reconcile outcomes
+into broad `EngineBoundaryError` classes, so the exact retained cause is not yet observable.
+
+**Current validation state (2026-08-24)**: the diagnostic-only implementation introduces one
+stage-specific closed cause over missing process-local token state and the existing shared
+payload-free core/PKI reconcile projections. The shared classifiers remain exhaustive over every
+Vault HTTP operation/class, typed drift, nested secret-bootstrap CAS outcome, PKI observation
+failure, and non-exact status. All 78 rendered causes are unique, appear only on the protected
+baseline route, retain no arbitrary payload, and preserve the prior generic HTTP 503 public reply.
+Focused cases pass 2/2, the warning-clean all-target build and all **4646** primary unit cases pass,
+documentation lint is clean, and the heap-bounded canonical `prodbox dev check` passes.
+Diagnostic-only generation 30 crossed policy application and its read-back without reproducing the
+earlier broad failure, so policy-application behavior remains unchanged.
+
+### Objective
+
+Give provisioner-policy application a closed payload-free cause, observe the exact retained
+failure, correct only its evidenced invariant, and resume the same durable session through
+baseline and Authority handoff.
+
+### Deliverables
+
+- Replace policy application's broad protected failure with a closed cause covering provisioner
+  token lookup, default Vault reconcile, and PKI reconcile operation/outcome classes.
+- Keep public responses generic and prevent tokens, Vault bodies, paths, policy material, or
+  arbitrary text from entering the diagnostic type.
+- Deploy the diagnostic without changing policy-application behavior, observe the exact live
+  cause, and register any distinct subsequent transition before changing it.
+- Correct only the evidenced invariant and resume baseline, Lifecycle Authority readiness, and
+  exact handoff read-back.
+
+### Validation
+
+1. Focused cases exhaust the closed policy-application mapping and protected-only rendering while
+   public response bytes remain unchanged.
+2. Warning-clean all-target build, full unit suite, documentation lint, and `prodbox dev check`
+   pass before live qualification.
+3. The diagnostic names an exact policy-application cause; the corrected deployment advances
+   through baseline and exact post-unseal handoff or registers the next distinct transition before
+   further behavior changes.
+
+### Remaining Work
+
+None on this sprint's owned surface. Sprint `2.75` owns the separately observed
+provisioner-accessor revocation transition and the remaining aggregate baseline/Authority/handoff
+proof.
+
+### Closure Record
+
+- The diagnostic boundary carries 78 unique payload-free causes across process-local token lookup,
+  the exhaustive core Vault reconcile projection, and the exhaustive PKI reconcile/read-back
+  projection. Only the protected route renders them; public responses retain the generic HTTP 503
+  body. Focused cases pass 2/2.
+- Diagnostic-only generation 30 runs local image ID
+  `sha256:8ca4523193be3e2cd3a60148dfd2c919231dd45c4b1108e3c475f475be539a4c`, registry digest
+  `sha256:8d7480383b5a2d9445beb30b2b74d1e44dc7a946c949d235135fa2b70ae1a0c0`, and containerd OCI
+  manifest `sha256:e1df135dfb3f59991677f8d94ebc6967f7747c46acc8a2a92ffc213fc397ab0b`, ready 1/1 with zero
+  restarts. It did not reproduce generation 29's broad refusal: policy application and read-back
+  crossed unchanged, so no correction was justified. The durable program then exposed Sprint
+  `2.75`'s distinct `revoke-provisioner-accessor; boundary-unavailable` transition.
+- The warning-clean all-target build, **4646** primary unit cases, documentation lint, and the
+  heap-bounded canonical `prodbox dev check` all pass.
+
+## Sprint 2.75: Provisioner-Accessor Revocation Needs an Exact Cause [📋 Planned]
+
+**Status**: Planned — registered 2026-08-24 from generation 30's next independently observed
+baseline transition, ready to start, and paused before implementation.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/Engine.hs`,
+`src/Prodbox/Bootstrap/Broker/EngineAdapter.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`, and focused validation under `test/unit/`.
+**Deployment qualification**: pending — deploy the exact diagnostic before behavior changes,
+correct only its live cause, and resume baseline, Lifecycle Authority readiness, and handoff
+read-back.
+**Independent Validation**: pure provisioner-revocation fixtures must exhaust the closed
+payload-free cause, retain generic public reply bytes, and distinguish bounded-auditor,
+inventory, lookup, revocation, and post-revocation outcomes.
+**Docs to update**: `documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+**Live counterexample (2026-08-24)**: diagnostic-only Broker generation 30 runs the exact
+identities recorded in Sprint `2.74`, ready 1/1 with zero restarts. It crosses policy application
+and read-back, then the protected diagnostic names
+`baseline-stage=revoke-provisioner-accessor; boundary-unavailable`. The public response remains
+the generic HTTP 503 boundary-unavailable body. `revokeProvisionerSession` still collapses bounded
+auditor login/cleanup, initial inventory, accessor lookup/subject verification, exact revocation,
+and authoritative post-revocation inventory into broad `EngineBoundaryError` classes, so the
+retained cause is not yet observable.
+
+**Current handoff (2026-08-24)**: development is paused with the live counterexample and immutable
+generation-30 identities recorded above. No Sprint `2.75` source change, diagnostic deployment, or
+revocation behavior correction has begun. Resume with Remaining Work item 1.
+
+### Objective
+
+Give provisioner-accessor revocation a closed payload-free cause, observe the exact retained
+failure, correct only its evidenced invariant, and resume the same durable session through
+baseline and Authority handoff.
+
+### Deliverables
+
+- Replace provisioner revocation's broad protected failure with a closed cause covering bounded
+  auditor login and cleanup, initial accessor inventory, target lookup and subject verification,
+  revoke HTTP outcome, post-revocation inventory, and exact target/role absence status.
+- Keep public responses generic and prevent accessors, subjects, roles, tokens, Vault bodies,
+  paths, or arbitrary text from entering the diagnostic type.
+- Deploy the diagnostic without changing revocation behavior, observe the exact live cause, and
+  register any distinct subsequent transition before changing it.
+- Correct only the evidenced invariant and resume baseline, Lifecycle Authority readiness, and
+  exact handoff read-back.
+
+### Validation
+
+1. Focused cases exhaust the closed provisioner-revocation mapping and protected-only rendering
+   while public response bytes remain unchanged.
+2. Warning-clean all-target build, full unit suite, documentation lint, and `prodbox dev check`
+   pass before live qualification.
+3. The diagnostic names an exact provisioner-revocation cause; the corrected deployment advances
+   through baseline and exact post-unseal handoff or registers the next distinct transition before
+   further behavior changes.
+
+### Remaining Work
+
+1. Implement the diagnostic-only closed cause and exhaustive focused validation.
+2. Complete local validation, deploy the diagnostic, and observe the exact cause.
+3. Correct only the evidenced invariant and resume baseline, Authority readiness, and exact
+   handoff; close only after the owned transition crosses and any next distinct transition is
+   registered.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/config_doctrine.md` — current boot-field correspondence and no-fallback
+  target.
+- `documents/engineering/distributed_gateway_architecture.md` — the pre-cutover Gateway consumes
+  the configured endpoint without gaining final object-store authority.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `2` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md); register the fallback in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

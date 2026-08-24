@@ -96,12 +96,16 @@ import Prodbox.Lifecycle.CleanupRun
   , mkCleanupRunId
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
-  ( ProviderStackConfig (..)
+  ( ProviderStackConfig
+  , ProviderStackConfigView (..)
+  , mkAwsEksProfileProviderStackConfig
   , mkAwsEksProviderStackConfig
   , mkAwsEksSubzoneProviderStackConfig
+  , mkAwsTestProfileProviderStackConfig
   , mkAwsTestProviderStackConfig
   , mkProviderRevision
   , providerRevisionNatural
+  , providerStackConfigView
   )
 import Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter
   ( AwsRegisteredTargetInterpreterError
@@ -134,6 +138,7 @@ import Prodbox.Lifecycle.Teardown.Registry
   , registeredIdentityCoordinateDigest
   , registeredIdentityKind
   )
+import Prodbox.Settings.AwsSubstrateProfile (AwsSubstrateProfile)
 
 newtype AwsStackReaderSubmissionKey = AwsStackReaderSubmissionKey Text
   deriving stock (Eq, Ord, Show)
@@ -743,6 +748,8 @@ data ProviderConfigWire
   = AwsEksProviderConfigWire !Text
   | AwsTestProviderConfigWire !Text
   | AwsEksSubzoneProviderConfigWire !Text !Text
+  | AwsEksProfileProviderConfigWire !AwsSubstrateProfile !Natural
+  | AwsTestProfileProviderConfigWire !AwsSubstrateProfile
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -1062,11 +1069,14 @@ scopeFromWire wire = do
   pure (mkObservationEvidenceScope surface revision runScope foundation awsScope operation)
 
 providerConfigToWire :: ProviderStackConfig -> ProviderConfigWire
-providerConfigToWire config = case config of
-  AwsEksProviderStackConfig operatorCidr -> AwsEksProviderConfigWire operatorCidr
-  AwsTestProviderStackConfig operatorCidr -> AwsTestProviderConfigWire operatorCidr
-  AwsEksSubzoneProviderStackConfig parentZone subzone ->
+providerConfigToWire config = case providerStackConfigView config of
+  AwsEksLegacyConfig operatorCidr -> AwsEksProviderConfigWire operatorCidr
+  AwsTestLegacyConfig operatorCidr -> AwsTestProviderConfigWire operatorCidr
+  AwsEksSubzoneConfig parentZone subzone ->
     AwsEksSubzoneProviderConfigWire parentZone subzone
+  AwsEksProfileConfig profile desiredSize ->
+    AwsEksProfileProviderConfigWire profile desiredSize
+  AwsTestProfileConfig profile -> AwsTestProfileProviderConfigWire profile
 
 providerConfigFromWire
   :: ProviderConfigWire -> Either AwsStackReaderError ProviderStackConfig
@@ -1076,6 +1086,10 @@ providerConfigFromWire wire =
     AwsTestProviderConfigWire operatorCidr -> mkAwsTestProviderStackConfig operatorCidr
     AwsEksSubzoneProviderConfigWire parentZone subzone ->
       mkAwsEksSubzoneProviderStackConfig parentZone subzone
+    AwsEksProfileProviderConfigWire profile desiredSize ->
+      mkAwsEksProfileProviderStackConfig profile desiredSize
+    AwsTestProfileProviderConfigWire profile ->
+      mkAwsTestProfileProviderStackConfig profile
 
 checkedFailures
   :: [Text] -> Either AwsStackReaderError (NonEmpty ObservationFailure)

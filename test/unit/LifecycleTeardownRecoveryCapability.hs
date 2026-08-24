@@ -27,8 +27,8 @@ import TestSupport
 lifecycleTeardownRecoveryCapabilitySuite :: SuiteBuilder ()
 lifecycleTeardownRecoveryCapabilitySuite = do
   describe "lifecycle teardown recovery capability catalog" $ do
-    it "keeps all eight current registered identities free of Target-Agent ability" $ do
-      length lifecycleRegistry `shouldBe` 8
+    it "keeps all current registered identities free of Target-Agent ability" $ do
+      length lifecycleRegistry `shouldBe` 10
       forM_ lifecycleRegistry $ \identity -> do
         recoveryCapabilitySetNames
           (registeredIdentityRecoveryCapabilities identity)
@@ -39,7 +39,7 @@ lifecycleTeardownRecoveryCapabilitySuite = do
 
     it "binds every current operation to ResumeOrdinaryCleanup only" $ do
       let checkSurface (SurfaceCase surface maybeAwsScope) =
-            case compileDesiredAbsenceGraph runId foundation maybeAwsScope surface of
+            case compileDesiredAbsenceGraph runId foundation maybeAwsScope Nothing surface of
               Left err -> expectationFailure (show err)
               Right compiled -> do
                 let programNodes =
@@ -178,7 +178,7 @@ awsScope :: AwsScope
 awsScope =
   AwsScope
     (AwsAccountId "111122223333")
-    (AwsRegion "ca-central-1")
+    (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
 
 sourceImporters :: FilePath -> String -> IO [FilePath]
 sourceImporters root importNeedle = do

@@ -323,9 +323,16 @@ to the compiled/pinned burn public key. The Broker verifies the exact public byt
 pins before init. The burn private material existed only in the isolated destructive ceremony,
 was never exported, was destroyed before adoption, and is never accepted, retained, or accessible
 to prodbox; see the
-[burn-recipient provenance record](./burn_recipient_provenance.md). Before decrypting any share, the Broker
-persists and byte/digest-read-backs the complete encrypted init response under the same transaction
-and storage-generation binding. It then decrypts the shares only in bounded memory, constructs the
+[burn-recipient provenance record](./burn_recipient_provenance.md). Vault's
+[documented response](https://developer.hashicorp.com/vault/api-docs/system/init) carries each
+encrypted share twice: canonical lowercase hexadecimal in `keys` and canonical base64 in
+`keys_base64` (or the corresponding recovery fields). The Broker requires exactly one complete
+family whose arrays are non-empty, equal in length, and pointwise decode to identical bytes. It
+rejects a missing half, malformed encoding, mismatch, mixed families, or additional field, then
+discards the hexadecimal projection inside the parser. Only opaque redacting shares and opaque
+burn-token ciphertext cross that boundary. Before decrypting any share, the Broker persists and
+byte/digest-read-backs the complete encrypted init response under the same transaction and
+storage-generation binding. It then decrypts the shares only in bounded memory, constructs the
 password-AEAD-sealed **unlock bundle**, writes and reads back the candidate, and atomically promotes
 that candidate as the fixed current bundle. Only after the promoted bundle is read back and
 decrypt-verified may the Broker delete the `PreparedInitEnvelope`; deletion itself requires
@@ -342,6 +349,13 @@ instead and has no unlock bundle at all; its recovery keys live in the parent's 
 and [cluster_federation_doctrine.md](./cluster_federation_doctrine.md). The unlock bundle is
 Tier-1 bootstrap-secret material per [config_doctrine.md §0](./config_doctrine.md), and Tier 1 is
 **root-cluster-only**.)
+
+The controller and the attested initialization worker consume one pure classification of the same
+root-journal read-back. Object absence derives the current generation's pristine proof. A present
+`RootInitPristine` admits only when it carries that exact proof; a present `RootResetPristine`
+admits only when its replacement proof is exact, retaining the reset provenance. Every progressed,
+ambiguous, or foreign-proof journal refuses. Retained state is never deleted or silently lowered to
+absence to make initialization proceed.
 
 The unlock bundle is **not** a Vault-Transit envelope: it is precisely the material that *unseals*
 Vault, so it cannot depend on an unsealed Vault. Instead it is sealed directly under the operator
@@ -500,6 +514,7 @@ prodbox adds a `vault` command group (Sprint `1.36`):
 ```text
 prodbox vault status
 prodbox vault init
+prodbox vault reset-ambiguous-initialization --yes
 prodbox vault unseal
 prodbox vault seal
 prodbox vault reconcile
@@ -525,6 +540,15 @@ a new prompt while prior cleanup is unobservable. The fixed progress coordinates
 root-session, child-custody, and child-recovery journals plus post-unseal handoff and secret-worker
 checkpoint; none is a caller-supplied object-store key.
 
+Generated-root completion is in that same one-shot set. The root-session controller starts the
+PGP-encrypted generated-root attempt directly under its bounded root-session permit, but submits
+recovery shares and receives the encrypted token only through
+`SecretWorkerCompleteGeneratedRoot`. The one-shot call is bound to the same
+`BootstrapVaultSubmitGenerateRootShare` effect, mutation attempt, storage generation, and operation
+deadline as the originating PGP scope. The direct physical interpreter refuses this constructor;
+it is never a fallback when worker allocation, attestation, checkpoint read-back, or cleanup is
+unavailable.
+
 - `vault init` is the operator-facing init-if-empty surface. The host CLI reaches the
   loopback-restricted Bootstrap Broker controller with secret-free metadata; the controller returns
   success unchanged if already initialized (init-once; §5), otherwise fences and verifies a
@@ -534,17 +558,48 @@ checkpoint; none is a caller-supplied object-store key.
   the burn recipient, the password-AEAD `PreparedInitEnvelope` is read back before the init call,
   Vault's PGP-encrypted response is durably read back, and the final password-AEAD unlock bundle is
   atomically promoted/read back before the prepared envelope is deleted/read back absent (root).
+  If Vault is observed initialized before this worker calls `/sys/init`, or the call fails and a
+  fresh post-call seal-status observation proves it applied, the durable worker result carries a
+  closed payload-free class: already-observed, connection failure, timeout, numeric HTTP status,
+  response-decode failure, or `unclassified` for retained legacy/restart evidence. The legacy
+  nullary result retains its exact CBOR wire and the classified result is appended; the durable
+  `InitAmbiguity` root journal is unchanged. Only the protected Broker diagnostic for this route
+  renders the class. Vault bodies, exception detail, recipient material, ciphertext, and
+  credentials remain absent, and the public response remains generic. A successful response admits
+  exactly one complete Shamir or recovery dual-encoding family; its canonical hex and base64 arrays
+  must decode pointwise to equal encrypted bytes, after which the hex projection is discarded and
+  only opaque redacting custody values survive.
   Child recovery material is generation-CAS delivered to parent Vault KV (§16). Only then does a
   separate PGP-protected short-lived root session establish/read back the baseline and revoke. It
   prints no raw key material.
+- `vault reset-ambiguous-initialization --yes` is the only public recovery from
+  `RootInitializationAmbiguous`. The host binds a confirmed request to the exact generation
+  returned by Broker status but supplies no reset evidence or target coordinate. The Broker audits
+  that no durable encrypted response, established custody, or dependent state exists, runs its
+  attested fixed reset Pod, observes a new sealed/uninitialized generation, advances the durable
+  generation with read-back, and only then marks the root journal reset-pristine. The command
+  refuses without `--yes`, outside ambiguity, or on any unobservable/mismatched proof; it never
+  retries `/sys/init` against the ambiguous generation. Because this state deliberately withdraws
+  Broker readiness, this leaf alone uses the recovery connector's authenticated liveness proof;
+  every ordinary Vault leaf retains the exact Deployment-rollout barrier. Physical reset failures
+  cross the engine boundary as a closed payload-free stage/status algebra: only this route may log
+  that rendered stage, numeric HTTP refusal status is the only admitted payload, and the public
+  response remains generic. Kubernetes bodies, object values, credentials, controller-authored
+  bindings, and storage identities never enter that diagnostic. The reset scales only the fixed
+  Vault StatefulSet through an exact `autoscaling/v1` Scale observation and resource-versioned
+  update. Because Kubernetes omits the Go zero value, an absent `spec.replicas` decodes as zero;
+  every object-identity field, non-empty resource version, non-negative explicit count, and exact
+  post-update replica read-back remains fail-closed.
 - `vault unseal` is the operator-facing unseal surface. The host CLI prompts for the bundle password
   unless the test harness supplies it, submits secret-free metadata to the Broker controller, then
   sends password bytes only to its newly verified one-shot unseal worker over authenticated
   exec/attach stdin. The worker reads the unlock bundle from MinIO via in-cluster Service DNS,
   decrypts in bounded memory, submits unseal keys to Vault via in-cluster Service DNS, verifies
   Vault is unsealed, returns a typed receipt, revokes/exits, and is observed absent. The controller
-  never receives password/share bytes. Plaintext unseal keys are never persisted. A child cluster
-  auto-unseals against its parent's transit key with no human prompt (§16).
+  never receives password/share bytes. Plaintext unseal keys are never persisted. The route closes
+  on that validated receipt and does not contact Lifecycle Authority, which is not installed until
+  after baseline. A child cluster auto-unseals against its parent's transit key with no human
+  prompt (§16).
 - `vault reconcile` binds the exact Bootstrap Broker `VaultBaselineReconcile` capability. It
   requires Vault initialized and unsealed, then idempotently reconciles auth
   mounts, policies, roles, KV mounts, Transit keys, PKI mounts and issuers, Kubernetes
@@ -555,15 +610,84 @@ checkpoint; none is a caller-supplied object-store key.
   `Prodbox.Vault.Reconcile`. It is not a Gateway Runtime or host-root-token route. Normal runs use
   the dedicated provisioner Kubernetes-auth role; generated first-baseline/break-glass root
   sessions are bounded, stale-root accessors are reconciled first, and each current accessor is
-  revoked and observed absent inside the Broker transaction.
+  revoked and observed absent inside the Broker transaction. Generated-root share submission and
+  encrypted-token recovery cross the fenced one-shot worker boundary; the controller receives only
+  the typed ciphertext and decrypts it inside the already-bound ephemeral PGP scope.
+  Transit-key creation preserves each compiled desired type exactly. HMAC-only commitment keys
+  encode `type=hmac` with an explicit 32-byte `key_size`, which is Vault's 256-bit HMAC size;
+  AES and Ed25519 requests omit `key_size`. Read-back still requires the exact desired key type,
+  so this wire requirement neither widens the key family nor permits type substitution.
+  PKI reconciliation treats both a successful empty issuer list and issuer-list HTTP 404 as the
+  same fresh-mount absence evidence and generates the internal root. A successful non-empty list
+  keeps the existing root. Connection failure, timeout, every non-404 status, and decode failure
+  remain closed refusals; the subsequent role write and issuer/role read-back must still be exact.
+  PKI reconcile/observe failures cross the generated-root boundary only as their closed operation,
+  HTTP class, nested observation cause, or non-exact status—never as Vault bodies or free-form text.
+  Root-accessor absence proofs distinguish two invariants in their typed physical call. Stale and
+  post-baseline cleanup require global root-policy stable zero; revoking the current generated-root
+  session requires the exact journaled accessor absent and does not treat an unrelated root-policy
+  accessor as evidence that the revoked target remains. Both requirements still refuse a target
+  that is present or an observation from another storage generation. The protected diagnostic
+  carries only a closed login/list/lookup HTTP class, bounded-auditor cleanup class, malformed
+  observation class, generation/target mismatch, or stable-zero mismatch; accessor values, tokens,
+  Vault bodies, paths, and free-form errors never cross it. A later explicit post-baseline inventory
+  remains responsible for reconciling and proving global stable zero. Vault represents an empty
+  token-accessor collection as LIST HTTP 404, so only that exact list result becomes an empty
+  inventory; all other list failures retain their closed HTTP cause.
+  Root-accessor revocation has its own closed boundary cause rather than borrowing the subsequent
+  absence-proof vocabulary: projected-token failure, bounded auditor login/invalid-login cleanup,
+  revoke HTTP, immediate list read-back HTTP, and exact target-still-present are exhaustive. HTTP
+  failures retain only connection/timeout/numeric-status/decode class. Only the protected baseline
+  diagnostic renders that cause; accessors, tokens, Vault bodies, paths, and arbitrary error text
+  cannot inhabit it, and the public response remains generic.
+  Root-accessor inventory also carries a separate closed protected cause: projected-token failure,
+  bounded auditor login/invalid-login cleanup, list or policy-lookup HTTP operation/class, malformed
+  accessor, and inventory size/uniqueness are exhaustive. Accessors, policies, tokens, response
+  bodies, paths, and arbitrary error text cannot inhabit it. The public response remains generic.
+  Inventory owns the decision independently from the later absence proof: only LIST HTTP 404
+  supplies an empty inventory, while connection failure, timeout, every non-404 status, and decode
+  failure retain their exact cause.
+  Provisioner-accessor cleanup has its own closed protected cause for projected-token and bounded
+  auditor acquisition, initial role-wide list/subject lookup, repeated audit
+  list/lookup/revoke/direct-absence operations, visibility, malformed accessor/inventory evidence,
+  and finite stable-absence exhaustion. Only the operation plus
+  connection/timeout/numeric-status/decode class may cross the HTTP boundary; accessors, subjects,
+  policies, roles, tokens, paths, bodies, and arbitrary text cannot. Revoke responses remain
+  provisional and never decide terminal cleanup: later authoritative observations alone close or
+  fail the proof. Initial and repeated cleanup LIST operations share one decision: exact HTTP 404
+  supplies an empty role-wide inventory, while connection failure, timeout, every other status,
+  and decode failure remain closed. Public and unrelated-route replies remain generic.
+  Provisioner-policy application has a separate closed protected cause after cleanup and login.
+  Missing process-local token state, the core reconcile fold, and the PKI reconcile/read-back fold
+  are distinct. Core and PKI failures reuse the generated-root lane's exhaustive payload-free
+  projections and classifiers, including every HTTP operation/class, typed drift,
+  secret-bootstrap CAS disposition, nested PKI observation failure, and non-exact PKI status.
+  Tokens, paths, names, policies, secret values, response bodies, and arbitrary text cannot cross
+  this boundary. Only the protected baseline diagnostic renders the exact cause; all public arms
+  remain the same generic HTTP 503 `boundary-unavailable` response until a deployed diagnostic
+  observes the invariant that may be corrected.
+  Provisioner-accessor revocation is a separate boundary from cleanup, policy application, and
+  root-accessor revocation. Its target protected cause distinguishes bounded-auditor login and
+  invalid-login cleanup, initial inventory, target lookup and subject verification, revoke HTTP,
+  authoritative post-revocation inventory, and exact target/role absence status. HTTP failures
+  retain only connection/timeout/numeric-status/decode class; accessors, subjects, roles, tokens,
+  paths, bodies, and arbitrary text cannot cross. Public responses remain generic. The current
+  production interpreter still collapses these outcomes; adoption is scheduled in
+  [Sprint `2.75`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md#sprint-275-provisioner-accessor-revocation-needs-an-exact-cause),
+  while current execution status remains owned by the development-plan resumption ledger.
+  Baseline reconciliation closes its durable root/provisioner session without requiring a
+  post-unseal consumer that cannot yet exist. After the native plan observes Lifecycle Authority
+  rollout, its separate secret-free fixed-coordinate handoff mutation resolves the durable custody
+  binding internally, obtains Authority acceptance, observes the exact generation/consumer/digest
+  back, and only then closes the post-unseal handoff journal. Direct or early invocation refuses
+  until the baseline journal is durably complete.
   Chart-by-chart Vault-auth adoption, PKI issuer generation, and child-custody workflows land in
   their owning later sprints (§12, §16, §18).
 
-The code-local role deliberately serves liveness but refuses readiness and non-health execution.
-Completed Sprint `3.26` supplied the separate chart/render foundation, but the physical TokenReview,
-Kubernetes Lease/workload, MinIO, Vault, and OpenPGP path is not the active production selection.
-This doctrine does not promote that boundary to deployment-qualified or cut over; activation and
-removal status remain in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+The deployed role serves the physical TokenReview, Kubernetes Lease/workload, MinIO, Vault, and
+OpenPGP path. This doctrine does not by itself promote the aggregate revision to deployment-
+qualified or complete an unrelated legacy cutover; that status remains only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 **Historical implementation record.** Lifecycle integration into `prodbox cluster reconcile` was
 split by cluster role: Sprint `4.29`
@@ -598,7 +722,9 @@ prodbox cluster reconcile
         MinIO credential, password-AEAD-decrypt with the operator password, submit unseal keys to
         Vault via Service DNS; §6.1.
         child: auto-unseal from parent, §16)
-  -> workers revoke/exit and are observed absent; Broker runs bounded Vault baseline reconcile
+  -> workers revoke/exit and are observed absent; Broker runs bounded Vault baseline reconcile,
+     including a separately fenced one-shot generated-root-completion worker whose encrypted result
+     returns only to the bound ephemeral PGP scope
   -> finish MinIO reconcile (steady-state root creds now resolvable; ensure the `prodbox-state`
      object-store bucket and its Vault-Transit encryption path)
   -> deploy home Target Secret Agent, Lifecycle Authority, Authority Backup Adapter, and the
@@ -768,6 +894,9 @@ on-disk/k8s/log sweep while Vault is sealed.
 Pulumi role. The registry's public image layers stay a separate, non-secret store — the §13 public class,
 not enveloped. The Sprint `7.14` interposition makes Pulumi see only a scratch `file://` backend on
 main stack cycles; persistent checkpoints are opaque `objects/<id>.enc` Model-B objects.
+`defaultObjectStoreBucket` is the sole declaration of that identity. Host lifecycle, gateway
+bootstrap, backend, chart, Authority, and fixture projections import or receive it; the in-cluster
+Authority store has no private bucket default.
 
 **One encrypted object format, capability-owned access.** The envelope, HMAC-naming, index, and
 decoy codec is shared pure code; it is not a generic network proxy and does not make one service
@@ -984,6 +1113,11 @@ operator unlock-bundle password is the ephemeral root that gates the decrypt —
 Uniform encryption does not mean ambient endpoint selection. The retained home/control-plane
 Lifecycle Authority owns the long-lived `aws-ses` aggregate and checkpoint-blob namespace in
 `prodbox-state`; no Gateway Runtime, active kube context, or port-forward can become that authority.
+The host Vault coordinate is likewise never ambient: validated-context consumers project it through
+`vaultAddressForDeploymentContext`, retained lower gates read it from sealed Tier-0 basics, and an
+exact cluster-id or Vault-address mismatch refuses lifecycle binding before an effect. Production
+contains no endpoint-changing host/Pulumi test environment seam; fixtures author a typed Tier-0
+coordinate or inject a fake client.
 The authority commits provider revision, semantic readiness, and the current retained-home SMTP
 custody receipt before it commits a bounded target-delivery outbox. A home one-shot custody worker
 rewraps only that exact receipt to a newly attested selected-Agent worker; the selected substrate's
@@ -1554,13 +1688,18 @@ widely to annotate at every site. Each names its declaration site, which carries
 
 | Value | Why it must be real | Declaration site |
 |---|---|---|
-| The operator's served public hostname and its subdomains | It is the actual served host: certificates are issued for it, Route 53 answers for it, and the public edge routes on it. A reserved name here would break serving. | `Prodbox.Settings.supportedPublicHostname` |
 | The vendor AMI-owner account id in the AWS test program | The image lookup resolves against the vendor's real account; a placeholder finds no image. | `pulumi/aws-test/Main.yaml`, commented in place |
 | The EKS OIDC root-CA thumbprint | Federation fails unless the thumbprint is the real one. | `pulumi/aws-eks/Main.yaml`, commented in place |
 | The long-lived stack's settings file | Its config keys name real infrastructure the stack manages. It is the one version-controlled settings file, and it is where the hosted-zone-id disclosure happened — every value in it is declared at the head of the file. | `pulumi/aws-ses/Pulumi.aws-ses.yaml` |
 
 A value not in this table and not declared at its own site is undeclared, and undeclared is a defect
 whether or not the value turns out to be real.
+
+An operator-authored real value such as the served public hostname or ACME contact is not a
+repository-scoped registered real value: it lives in git-ignored Tier-0 or harness fixture input,
+is validated before use, and has no committed declaration site. Compiling one into Haskell would
+move it back into this section's scope and is forbidden by
+[config_doctrine.md §0](./config_doctrine.md#compiled-protocol-constants-versus-operator-supplied-deployment-values).
 
 ### 20.2 Secret material is the strictest class
 

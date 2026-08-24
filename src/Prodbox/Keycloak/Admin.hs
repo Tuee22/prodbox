@@ -73,11 +73,10 @@ import Prodbox.Settings
   , ValidatedServedHost (..)
   , ValidatedSettings (..)
   )
-import Prodbox.Settings qualified as Settings
 import Prodbox.Tls.CertScope (fqdnText)
 
 -- | A live Keycloak admin client. Holds a shared TLS manager, the resolved base URL
--- (e.g. `https://test.resolvefintech.com/auth`), the target realm, and the admin
+-- (e.g. `https://test.example.test/auth`), the target realm, and the admin
 -- credentials needed to refresh the bearer token.
 data KeycloakClient = KeycloakClient
   { keycloakManager :: Manager
@@ -643,9 +642,6 @@ _unusedSettings _ = ()
 
 _unusedServedHost :: ValidatedServedHost -> ()
 _unusedServedHost _ = ()
-
-_unusedSettingsModule :: ()
-_unusedSettingsModule = Settings.supportedPublicHostname `seq` ()
 
 _unusedBL :: BL.ByteString -> ()
 _unusedBL _ = ()

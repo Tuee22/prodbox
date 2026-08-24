@@ -581,13 +581,29 @@ fixtureCreationScope
   , otherCleanupScope
     :: ObservationEvidenceScope
 fixtureCreationScope =
-  scopeFor "run/manifest-1" "foundation/home" "ca-central-1" ReconcileDesiredPresent
+  scopeFor
+    "run/manifest-1"
+    "foundation/home"
+    (fixtureAwsRegion FixtureCaCentral1)
+    ReconcileDesiredPresent
 fixtureCleanupScope =
-  scopeFor "run/manifest-1" "foundation/home" "ca-central-1" ReconcileDesiredAbsent
+  scopeFor
+    "run/manifest-1"
+    "foundation/home"
+    (fixtureAwsRegion FixtureCaCentral1)
+    ReconcileDesiredAbsent
 otherCreationScope =
-  scopeFor "run/manifest-2" "foundation/home" "ca-central-1" ReconcileDesiredPresent
+  scopeFor
+    "run/manifest-2"
+    "foundation/home"
+    (fixtureAwsRegion FixtureCaCentral1)
+    ReconcileDesiredPresent
 otherCleanupScope =
-  scopeFor "run/manifest-2" "foundation/home" "ca-central-1" ReconcileDesiredAbsent
+  scopeFor
+    "run/manifest-2"
+    "foundation/home"
+    (fixtureAwsRegion FixtureCaCentral1)
+    ReconcileDesiredAbsent
 
 scopeFor :: Text -> Text -> Text -> LifecycleOperation -> ObservationEvidenceScope
 scopeFor runScope foundation region operation =
@@ -600,7 +616,7 @@ scopeFor runScope foundation region operation =
     operation
 
 fixtureAwsScope :: AwsScope
-fixtureAwsScope = AwsScope (AwsAccountId "111122223333") (AwsRegion "ca-central-1")
+fixtureAwsScope = AwsScope (AwsAccountId "111122223333") (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
 
 data DurableModelB = DurableModelB
   { durableAdapter :: !(ModelBCasAdapter 'ClusterRetained IO ByteString)

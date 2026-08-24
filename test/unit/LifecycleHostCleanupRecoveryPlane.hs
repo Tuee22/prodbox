@@ -153,7 +153,7 @@ fixtureScope =
     (RegistryRevision "fixture-revision")
     (DurableObservationRunScope "cleanup-run/recovery-plane-fixture")
     (LinuxRke2FoundationId "home-rke2")
-    (Just (AwsScope (AwsAccountId "000000000000") (AwsRegion "eu-west-2")))
+    (Just (AwsScope (AwsAccountId "000000000000") (AwsRegion (fixtureAwsRegion FixtureEuWest2))))
     ReconcileDesiredAbsent
 
 emptyRun :: RecoveryRepairRun
@@ -194,6 +194,7 @@ recordingBoundary calls answer =
     , repairStartSubstrateService = record "start"
     , repairAwaitSubstrateApi = record "await"
     , repairLoadRetainedImage = \_ -> record "image"
+    , repairReconcileRecoveryPlatform = \_ -> record "platform"
     , repairReconcileRecoveryChart = \_ -> record "chart"
     }
  where

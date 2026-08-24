@@ -23,7 +23,7 @@
 --     the one validation keeps the value.
 --
 --   * __Never decided at all.__ @aws.region@, @pulumi_state_backend.region@,
---     @acme.email@, @acme.server@, and @route53.zone_id@ reach live AWS, ACME,
+--     @acme.email@ and @route53.zone_id@ reach live AWS, ACME,
 --     and Route 53 calls having been checked, at most, for emptiness.
 --     @route53.zone_id@ is the sharpest instance: it is structurally identical
 --     to @aws_substrate.hosted_zone_id@, which /is/ shape-checked — so the home
@@ -126,7 +126,7 @@ renderCoordinateError :: CoordinateError -> String
 renderCoordinateError err = case err of
   CoordinateEmpty -> "must not be empty"
   NotAnAwsRegion _ ->
-    "must be a valid AWS region (for example us-east-1)"
+    "must be a valid AWS region (two-letter geography, location, and non-zero ordinal)"
   NotARoute53ZoneId _ ->
     "must look like a Route 53 hosted-zone id (for example Z1234)"
   NotAnS3BucketName _ -> "must be a valid S3 bucket name"
@@ -141,7 +141,7 @@ renderCoordinateError err = case err of
   PathIsAbsolute _ -> "must be a relative path, not absolute"
   PathEscapesRoot _ -> "must not contain a `..` segment"
 
--- | An AWS region name: @us-east-1@, @ap-southeast-2@, @us-gov-west-1@.
+-- | An AWS region name with geography, location, and non-zero ordinal segments.
 --
 -- Deliberately a /shape/ rule and not an allowlist of today's regions. AWS adds
 -- regions; a repository-pinned list would refuse a legitimate config the day

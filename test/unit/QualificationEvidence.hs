@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module QualificationEvidence (qualificationEvidenceSuite) where
+module QualificationEvidence (qualificationEvidenceSuite, validInput) where
 
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.Either (isLeft)
@@ -78,6 +78,9 @@ identity source first second =
     , qualificationTopologyWiringDigest = second
     , qualificationResourceEnvelopeDigest = first
     , qualificationLoadFaultDigest = second
+    , qualificationInterpreterDigest = first
+    , qualificationPersistenceDigest = second
+    , qualificationCleanupSchemaDigest = first
     }
 
 sourceIdentity :: String -> String -> IO SourceIdentity

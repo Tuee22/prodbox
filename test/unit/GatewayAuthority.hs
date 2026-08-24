@@ -384,13 +384,13 @@ dnsAuthoritySuite =
           authorizedContinuityFence authority `shouldBe` continuityFenceOne
 
     it "validates and binds the exact Route 53 request before interpretation" $ do
-      mkDnsWriteRequest "" "gateway.example.test" 60 "us-east-1" "203.0.113.10"
+      mkDnsWriteRequest "" "gateway.example.test" 60 (fixtureAwsRegion FixtureUsEast1) "203.0.113.10"
         `shouldBe` Left DnsWriteZoneIdInvalid
-      mkDnsWriteRequest "Z123" "bad_host" 60 "us-east-1" "203.0.113.10"
+      mkDnsWriteRequest "Z123" "bad_host" 60 (fixtureAwsRegion FixtureUsEast1) "203.0.113.10"
         `shouldBe` Left DnsWriteFqdnInvalid
-      mkDnsWriteRequest "Z123" "gateway.example.test" 0 "us-east-1" "203.0.113.10"
+      mkDnsWriteRequest "Z123" "gateway.example.test" 0 (fixtureAwsRegion FixtureUsEast1) "203.0.113.10"
         `shouldBe` Left (DnsWriteTtlInvalid 0)
-      mkDnsWriteRequest "Z123" "gateway.example.test" 60 "us-east-1" "999.0.0.1"
+      mkDnsWriteRequest "Z123" "gateway.example.test" 60 (fixtureAwsRegion FixtureUsEast1) "999.0.0.1"
         `shouldBe` Left DnsWriteIpv4Invalid
       let authority = mustRight validDnsAuthority
           request = mustRight validDnsRequest
@@ -401,7 +401,7 @@ dnsAuthoritySuite =
       dnsWriteActionIpv4 action `shouldBe` "203.0.113.10"
       let wrongRegion =
             mustRight
-              (mkDnsWriteRequest "Z123" "gateway.example.test" 60 "us-west-2" "203.0.113.10")
+              (mkDnsWriteRequest "Z123" "gateway.example.test" 60 (fixtureAwsRegion FixtureUsWest2) "203.0.113.10")
       authorizeDnsWriteRequest authority wrongRegion
         `shouldBe` Left DnsWriteRequestRegionMismatch
 
@@ -441,8 +441,8 @@ dnsAuthoritySuite =
       lookup "AWS_ACCESS_KEY_ID" environment `shouldBe` Just "AKIA_TEST"
       lookup "AWS_SECRET_ACCESS_KEY" environment `shouldBe` Just "test-secret"
       lookup "AWS_SESSION_TOKEN" environment `shouldBe` Just "test-session"
-      lookup "AWS_REGION" environment `shouldBe` Just "us-east-1"
-      lookup "AWS_DEFAULT_REGION" environment `shouldBe` Just "us-east-1"
+      lookup "AWS_REGION" environment `shouldBe` Just (fixtureAwsRegion FixtureUsEast1)
+      lookup "AWS_DEFAULT_REGION" environment `shouldBe` Just (fixtureAwsRegion FixtureUsEast1)
       lookup "AWS_EC2_METADATA_DISABLED" environment `shouldBe` Just "true"
       lookup "AWS_SHARED_CREDENTIALS_FILE" environment `shouldBe` Just "/dev/null"
       lookup "AWS_CONFIG_FILE" environment `shouldBe` Just "/dev/null"
@@ -652,7 +652,7 @@ validCredentialInput =
     { dnsCredentialAccessKeyId = "AKIA_TEST"
     , dnsCredentialSecretAccessKey = "test-secret"
     , dnsCredentialSessionToken = Just "test-session"
-    , dnsCredentialRegion = "us-east-1"
+    , dnsCredentialRegion = (fixtureAwsRegion FixtureUsEast1)
     }
 
 generationOne :: CredentialGeneration
@@ -682,7 +682,7 @@ validDnsRequest =
     "Z123"
     "gateway.example.test"
     60
-    "us-east-1"
+    (fixtureAwsRegion FixtureUsEast1)
     "203.0.113.10"
 
 phaseOneChildBudget :: RuntimeMemory.ChildProcessBudget

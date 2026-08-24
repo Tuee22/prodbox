@@ -96,35 +96,39 @@ brokerProtocolBoundarySuite =
     it "decodes only non-secret token accessors" $ do
       eitherDecode "{\"data\":{\"keys\":[\"a\",\"b\"]}}"
         `shouldBe` Right (TokenAccessorListing ["a", "b"])
-    it "decodes init outputs only as canonical opaque PGP ciphertext" $ do
-      let decoded =
-            eitherDecode
-              "{\"keys_base64\":[\"Y2lwaGVyLXNoYXJl\"],\"root_token\":\"YnVybi10b2tlbi1jaXBoZXI=\"}"
-              :: Either String EncryptedVaultInitResponse
-      case decoded of
-        Left err -> expectationFailure err
-        Right response -> do
-          fmap BrokerTypes.pgpEncryptedShareBytes (encryptedVaultInitShares response)
-            `shouldBe` [12]
-          BrokerTypes.burnTokenCiphertextBytes (encryptedVaultInitBurnToken response)
-            `shouldBe` 17
-          show response `shouldNotContain` "cipher-share"
-          show response `shouldNotContain` "burn-token-cipher"
-      ( eitherDecode
-          "{\"keys_base64\":[\"not canonical\"],\"root_token\":\"c2VjcmV0\"}"
-          :: Either String EncryptedVaultInitResponse
-        )
-        `shouldSatisfy` isLeft
-      ( eitherDecode
-          "{\"keys_base64\":[\"YQ==\"],\"recovery_keys_base64\":[\"Yg==\"],\"root_token\":\"Yw==\"}"
-          :: Either String EncryptedVaultInitResponse
-        )
-        `shouldSatisfy` isLeft
-      forM_
-        [ "{\"keys_base64\":[\"YQ==\"],\"root_token\":\"Yw==\",\"keys\":[\"plaintext-share\"]}"
-        , "{\"keys_base64\":[\"YQ==\"],\"root_token\":\"Yw==\",\"recovery_keys\":[\"plaintext-share\"]}"
-        , "{\"keys_base64\":[\"YQ==\"],\"root_token\":\"Yw==\",\"unexpected\":true}"
-        ]
+    describe "Sprint 2.65 canonical dual-encoded Vault initialization response" $ do
+      it "admits exact Shamir and recovery projections only as opaque ciphertext" $ do
+        let decoded =
+              eitherDecode
+                "{\"keys\":[\"6369706865722d7368617265\"],\"keys_base64\":[\"Y2lwaGVyLXNoYXJl\"],\"root_token\":\"YnVybi10b2tlbi1jaXBoZXI=\"}"
+                :: Either String EncryptedVaultInitResponse
+        case decoded of
+          Left err -> expectationFailure err
+          Right response -> do
+            fmap BrokerTypes.pgpEncryptedShareBytes (encryptedVaultInitShares response)
+              `shouldBe` [12]
+            BrokerTypes.burnTokenCiphertextBytes (encryptedVaultInitBurnToken response)
+              `shouldBe` 17
+            show response `shouldNotContain` "6369706865722d7368617265"
+            show response `shouldNotContain` "cipher-share"
+            show response `shouldNotContain` "burn-token-cipher"
+        ( eitherDecode
+            "{\"recovery_keys\":[\"61\"],\"recovery_keys_base64\":[\"YQ==\"],\"root_token\":\"Yw==\"}"
+            :: Either String EncryptedVaultInitResponse
+          )
+          `shouldSatisfy` isRight
+      it "refuses missing, malformed, unequal, mixed, or additional projections"
+        $ forM_
+          [ "{\"keys_base64\":[\"YQ==\"],\"root_token\":\"Yw==\"}"
+          , "{\"keys\":[\"61\"],\"root_token\":\"Yw==\"}"
+          , "{\"keys\":[\"6g\"],\"keys_base64\":[\"YQ==\"],\"root_token\":\"Yw==\"}"
+          , "{\"keys\":[\"61\"],\"keys_base64\":[\"not canonical\"],\"root_token\":\"Yw==\"}"
+          , "{\"keys\":[\"62\"],\"keys_base64\":[\"YQ==\"],\"root_token\":\"Yw==\"}"
+          , "{\"keys\":[\"61\",\"62\"],\"keys_base64\":[\"YQ==\"],\"root_token\":\"Yw==\"}"
+          , "{\"keys\":[\"61\"],\"keys_base64\":[\"YQ==\"],\"recovery_keys\":[\"62\"],\"recovery_keys_base64\":[\"Yg==\"],\"root_token\":\"Yw==\"}"
+          , "{\"keys\":[\"plaintext-share\"],\"keys_base64\":[\"YQ==\"],\"root_token\":\"Yw==\"}"
+          , "{\"keys\":[\"61\"],\"keys_base64\":[\"YQ==\"],\"root_token\":\"Yw==\",\"unexpected\":true}"
+          ]
         $ \payload ->
           (eitherDecode payload :: Either String EncryptedVaultInitResponse)
             `shouldSatisfy` isLeft
@@ -256,24 +260,24 @@ brokerProtocolBoundarySuite =
           malformedNames =
             [ ""
             , "single-label"
-            , "*.resolvefintech.com"
+            , "*.example.test"
             , "127.0.0.1"
-            , "bad..resolvefintech.com"
-            , "-bad.resolvefintech.com"
-            , "bad-.resolvefintech.com"
-            , "bad\n.resolvefintech.com"
-            , Text.replicate 64 "a" <> ".resolvefintech.com"
+            , "bad..example.test"
+            , "-bad.example.test"
+            , "bad-.example.test"
+            , "bad\n.example.test"
+            , Text.replicate 64 "a" <> ".example.test"
             , maximumName <> "e"
             ]
       ( Program.pkiIssueCommonName
-          <$> Program.mkPkiIssueRequest "  TEST.ResolveFintech.COM  " 300
+          <$> Program.mkPkiIssueRequest "  TEST.Example.TEST  " 300
         )
-        `shouldBe` Right "test.resolvefintech.com"
+        `shouldBe` Right "test.example.test"
       Program.mkPkiIssueRequest maximumName 3600 `shouldSatisfy` isRight
       forM_ malformedNames $ \name ->
         Program.mkPkiIssueRequest name 300 `shouldSatisfy` isLeft
-      Program.mkPkiIssueRequest "test.resolvefintech.com" 0 `shouldSatisfy` isLeft
-      Program.mkPkiIssueRequest "test.resolvefintech.com" 3601 `shouldSatisfy` isLeft
+      Program.mkPkiIssueRequest "test.example.test" 0 `shouldSatisfy` isLeft
+      Program.mkPkiIssueRequest "test.example.test" 3601 `shouldSatisfy` isLeft
 
 brokerIsolationLintSuite :: SuiteBuilder ()
 brokerIsolationLintSuite =
@@ -469,8 +473,8 @@ runtimeRoleSuite =
 brokerRouteSuite :: SuiteBuilder ()
 brokerRouteSuite =
   describe "Sprint 2.33 closed Bootstrap Broker route registry" $ do
-    it "enumerates all sixteen routes exactly once" $ do
-      length Routes.allBrokerRoutes `shouldBe` 16
+    it "enumerates all seventeen routes exactly once" $ do
+      length Routes.allBrokerRoutes `shouldBe` 17
       Routes.allBrokerRoutes
         `shouldBe` [minBound .. maxBound]
       length (nub Routes.allBrokerRoutes)
@@ -963,6 +967,7 @@ operationContracts =
   , (Request.ObserveBootstrapStatus, Request.HttpGet, ExpectNoBody)
   , (Request.EnsureVaultInitialized, Request.HttpPost, ExpectBody)
   , (Request.EnsureVaultUnsealed, Request.HttpPost, ExpectBody)
+  , (Request.ReconcilePostUnsealHandoff, Request.HttpPost, ExpectBody)
   , (Request.SealVault, Request.HttpPost, ExpectBody)
   , (Request.RotateUnlockBundle, Request.HttpPost, ExpectBody)
   , (Request.RotateTransitKey, Request.HttpPost, ExpectBody)

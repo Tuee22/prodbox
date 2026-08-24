@@ -12,9 +12,11 @@ module Prodbox.Bootstrap.Broker.PortForward
   ( BrokerHostConnection (..)
   , BrokerHostConnectionError (..)
   , brokerHostNamespace
+  , brokerHostDeploymentReadySubprocess
   , brokerHostPortForwardSubprocess
   , renderBrokerHostConnectionError
   , withBrokerHostConnection
+  , withBrokerHostRecoveryConnection
   )
 where
 
@@ -53,12 +55,16 @@ import Prodbox.Bootstrap.Broker.Client
   )
 import Prodbox.Bootstrap.Broker.Request (IdempotencyKey)
 import Prodbox.Error (errorMsg)
+import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
   ( BackgroundProcess
+  , ProcessOutput (..)
   , Subprocess (..)
+  , captureSubprocessResult
   , startBackgroundProcess
   , stopBackgroundProcess
   )
+import System.Exit (ExitCode (..))
 
 data BrokerHostConnection = BrokerHostConnection
   { brokerHostEnvironment :: !(Maybe [(String, String)])
@@ -67,7 +73,8 @@ data BrokerHostConnection = BrokerHostConnection
   deriving stock (Eq, Show)
 
 data BrokerHostConnectionError
-  = BrokerHostPortReservationFailed !String
+  = BrokerHostDeploymentNotReady !String
+  | BrokerHostPortReservationFailed !String
   | BrokerHostEndpointInvalid !String
   | BrokerHostCredentialFailed !BrokerClientContextError
   | BrokerHostPortForwardStartFailed !String
@@ -76,6 +83,8 @@ data BrokerHostConnectionError
 
 renderBrokerHostConnectionError :: BrokerHostConnectionError -> String
 renderBrokerHostConnectionError err = case err of
+  BrokerHostDeploymentNotReady detail ->
+    "wait for Bootstrap Broker Deployment rollout: " ++ detail
   BrokerHostPortReservationFailed detail ->
     "reserve Bootstrap Broker loopback port: " ++ detail
   BrokerHostEndpointInvalid detail ->
@@ -96,6 +105,26 @@ brokerHostService = "bootstrap-broker"
 
 brokerHostRemotePortName :: String
 brokerHostRemotePortName = "broker"
+
+-- | Exact pre-transport barrier.  The Service port-forward resolves a Pod at
+-- startup and exits when that replacement is not running yet, so HTTP retry
+-- against one already-dead local socket is not a readiness strategy.
+brokerHostDeploymentReadySubprocess
+  :: BrokerHostConnection -> Subprocess
+brokerHostDeploymentReadySubprocess connection =
+  Subprocess
+    { subprocessPath = "kubectl"
+    , subprocessArguments =
+        [ "--namespace"
+        , Text.unpack brokerHostNamespace
+        , "rollout"
+        , "status"
+        , "deployment/bootstrap-broker"
+        , "--timeout=60s"
+        ]
+    , subprocessEnvironment = brokerHostEnvironment connection
+    , subprocessWorkingDirectory = Just (brokerHostWorkingDirectory connection)
+    }
 
 -- | Pure, exact command projection. Explicit @--address 127.0.0.1@ prevents
 -- kubectl defaults or future configuration from widening the listener.
@@ -126,6 +155,33 @@ withBrokerHostConnection
   -> (BrokerEndpoint -> BrokerCallContext -> IO value)
   -> IO (Either BrokerHostConnectionError value)
 withBrokerHostConnection connection idempotencyKey action = do
+  deploymentReady <- waitForBrokerDeployment connection
+  case deploymentReady of
+    Left detail -> pure (Left (BrokerHostDeploymentNotReady detail))
+    Right () ->
+      withBrokerHostConnectionAfterRollout
+        connection
+        idempotencyKey
+        action
+
+-- | The ambiguity-reset route exists to leave a state in which Broker
+-- readiness deliberately fails. It therefore cannot wait on Deployment
+-- readiness without deadlocking. This closed alternative skips only that
+-- barrier; it retains the exact loopback Service, TokenRequest credential,
+-- authenticated liveness proof, bounded retry, and bracketed cleanup below.
+withBrokerHostRecoveryConnection
+  :: BrokerHostConnection
+  -> IdempotencyKey
+  -> (BrokerEndpoint -> BrokerCallContext -> IO value)
+  -> IO (Either BrokerHostConnectionError value)
+withBrokerHostRecoveryConnection = withBrokerHostConnectionAfterRollout
+
+withBrokerHostConnectionAfterRollout
+  :: BrokerHostConnection
+  -> IdempotencyKey
+  -> (BrokerEndpoint -> BrokerCallContext -> IO value)
+  -> IO (Either BrokerHostConnectionError value)
+withBrokerHostConnectionAfterRollout connection idempotencyKey action = do
   reserved <- reserveLoopbackPort
   case reserved of
     Left detail -> pure (Left (BrokerHostPortReservationFailed detail))
@@ -153,6 +209,29 @@ withBrokerHostConnection connection idempotencyKey action = do
     case readiness of
       Left detail -> pure (Left (BrokerHostReadinessFailed detail))
       Right () -> Right <$> action endpoint context
+
+waitForBrokerDeployment
+  :: BrokerHostConnection -> IO (Either String ())
+waitForBrokerDeployment connection = do
+  observed <-
+    captureSubprocessResult
+      (brokerHostDeploymentReadySubprocess connection)
+  pure $ case observed of
+    Failure detail -> Left detail
+    Success output -> case processExitCode output of
+      ExitSuccess -> Right ()
+      ExitFailure code ->
+        Left
+          ( "kubectl rollout status exited "
+              ++ show code
+              ++ renderProcessDetail output
+          )
+
+renderProcessDetail :: ProcessOutput -> String
+renderProcessDetail output
+  | not (null (processStderr output)) = ": " ++ processStderr output
+  | not (null (processStdout output)) = ": " ++ processStdout output
+  | otherwise = ""
 
 brokerReadinessAttempts :: Int
 brokerReadinessAttempts = 240

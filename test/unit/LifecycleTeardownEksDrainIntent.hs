@@ -71,7 +71,7 @@ lifecycleTeardownEksDrainIntentSuite =
       let intent = fixtureKubernetesIntent
       eksDrainIntentResourceKey intent `shouldBe` AwsEksKey
       case eksDrainIntentTarget intent of
-        EksDrainExactKubernetesTarget arn uid endpoint ca revision serviceClass ingressClass pvcs -> do
+        EksDrainExactKubernetesTarget arn uid endpoint ca revision serviceClass ingressClass ownerClass pvcs -> do
           arn `shouldBe` fixtureArn
           uid `shouldBe` fixtureUid
           endpoint `shouldBe` eksDrainSessionEndpointDigest fixtureSession
@@ -79,6 +79,7 @@ lifecycleTeardownEksDrainIntentSuite =
           revision `shouldBe` ObservationRevision 41
           serviceClass `shouldBe` CompleteLoadBalancerServiceClass
           ingressClass `shouldBe` CompleteIngressClass
+          ownerClass `shouldBe` CompleteControllerOwnerClass
           pvcs `shouldBe` [fixturePvcA, fixturePvcB]
         target -> expectationFailure ("unexpected target arm: " <> show target)
 
@@ -377,6 +378,9 @@ fixtureKubernetesReadBack attempt =
           , eksDrainReadBackIngressClass =
               IngressClassReadBack
                 (EksDrainResourceClassAbsent (AbsenceEvidence "all Ingresses absent"))
+          , eksDrainReadBackControllerOwnerClass =
+              ControllerOwnerClassReadBack
+                (EksDrainResourceClassAbsent (AbsenceEvidence "controller owner absent"))
           , eksDrainReadBackDeletePolicyPvcs =
               [pvcAbsent fixturePvcB, pvcAbsent fixturePvcA]
           }
@@ -462,7 +466,7 @@ fixtureProjection =
   mustRight
     ( testEksClientAuthProjection
         "123456789012"
-        "us-east-1"
+        (fixtureAwsRegion FixtureUsEast1)
         "aws-eks-test-cluster"
         fixtureArn
         "https://example.eks.amazonaws.com"
@@ -510,11 +514,11 @@ fixtureFoundation = LinuxRke2FoundationId "home-linux-rke2"
 
 fixtureAwsScope :: AwsScope
 fixtureAwsScope =
-  AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")
+  AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))
 
 fixtureArn :: Text
 fixtureArn =
-  "arn:aws:eks:us-east-1:123456789012:cluster/aws-eks-test-cluster"
+  ("arn:aws:eks:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123456789012:cluster/aws-eks-test-cluster")
 
 fixtureUid :: Text
 fixtureUid = "eks-kube-system-uid-7"

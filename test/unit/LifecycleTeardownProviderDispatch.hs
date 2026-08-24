@@ -45,6 +45,12 @@ import Prodbox.Lifecycle.Teardown.RegisteredTargetExecutor
 import Prodbox.Lifecycle.Teardown.RegisteredTargetResult
   ( RegisteredTargetMutationAttempt (..)
   )
+import Prodbox.Lifecycle.Teardown.Registry
+  ( awsEksIamManagedPolicyNames
+  , awsEksIamRoleNames
+  , awsEksLoadBalancerControllerName
+  , awsEksLoadBalancerControllerTags
+  )
 import TestSupport
 
 lifecycleTeardownProviderDispatchSuite :: SuiteBuilder ()
@@ -337,6 +343,30 @@ executorIntents executor = case executor of
         -- for the provider dispatcher to admit at the mutation purpose.
         executorMutationIntent = Nothing
       }
+  EksIamRoleFamilyExecutor ->
+    ExecutorIntents
+      { executorDecisionIntent = iamObservation
+      , executorReadBackIntent = iamObservation
+      , executorMutationIntent = Just iamReap
+      }
+  EksLoadBalancerControllerFamilyExecutor ->
+    ExecutorIntents
+      { executorDecisionIntent = lbcObservation
+      , executorReadBackIntent = lbcObservation
+      , executorMutationIntent = Just lbcReap
+      }
+ where
+  roles = Text.intercalate "|" awsEksIamRoleNames
+  policies = Text.intercalate "|" awsEksIamManagedPolicyNames
+  iamObservation = ObserveEksIamRoleFamily roles policies
+  iamReap = ReapEksIamRoleFamily roles policies
+  lbcName = awsEksLoadBalancerControllerName
+  lbcTags =
+    Text.intercalate
+      "|"
+      (map (\(key, value) -> key <> "=" <> value) awsEksLoadBalancerControllerTags)
+  lbcObservation = ObserveEksLoadBalancerControllerFamily lbcName lbcTags
+  lbcReap = ReapEksLoadBalancerControllerFamily lbcName lbcTags
 
 purposeMismatched :: Either ProviderDispatchError () -> Bool
 purposeMismatched dispatched = case dispatched of
@@ -349,7 +379,7 @@ eksIdentityRequest =
     ( mkEksClusterIdentityRequest
         stackRef
         "123456789012"
-        "ca-central-1"
+        (fixtureAwsRegion FixtureCaCentral1)
         "aws-eks-test-cluster"
     )
 

@@ -74,6 +74,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderRevision
   , ProviderStackConfig
   , ProviderStackConfigError
+  , mkProviderNativeStackFamilyRef
   , mkProviderStackRef
   , providerIntentCoordinate
   , validateProviderStackConfig
@@ -144,7 +145,7 @@ import Prodbox.Lifecycle.Teardown.Registry qualified as Registry
 
 data AwsEksDestroyAuthorityKind
   = AwsEksDestroyFromPrimaryCheckpoint
-  | AwsEksDestroyFromCompleteManifest
+  | AwsEksDestroyFromCompleteManifest ![Text]
   deriving (Eq, Show)
 
 -- | Opaque EKS-only destruction capability.  Every retained field is a safe
@@ -281,6 +282,16 @@ authorizeAwsEksDestroy now providerRevision expectedBinding expectedAttempt dest
       Left (AwsEksDestroyObservationUnobservable failures)
     (ExactResourcePresent _, Nothing) ->
       Left AwsEksDestroyObservationPresentWithoutArn
+  case authorityKind of
+    AwsEksDestroyFromPrimaryCheckpoint -> Right ()
+    AwsEksDestroyFromCompleteManifest admitted
+      | "eks-cluster/" <> observedArn `elem` admitted -> Right ()
+      | otherwise ->
+          Left
+            ( AwsEksDestroyManifestIdentityMismatch
+                ("eks-cluster/" <> observedArn)
+                admitted
+            )
   case eksDrainTargetsAbsentDisposition drainEvidence of
     ExactKubernetesDrainTargetsAbsent -> Right ()
     NoKubernetesDrainTargetRequired ->
@@ -427,7 +438,23 @@ mkAwsEksDestroyRequest authorization requestedRevision config = do
     (Left . AwsEksDestroyConfigInvalid)
     Right
     (validateProviderStackConfig stackRef config)
-  let intent = DestroyRegisteredStack stackRef requestedRevision config
+  intent <- case awsEksDestroyAuthorizationAuthorityKind authorization of
+    AwsEksDestroyFromPrimaryCheckpoint ->
+      Right (DestroyRegisteredStack stackRef requestedRevision config)
+    AwsEksDestroyFromCompleteManifest admitted -> do
+      awsScope <-
+        maybe
+          (Left AwsEksDestroyAwsScopeMissing)
+          Right
+          (evidenceAwsScope (awsEksDestroyAuthorizationScope authorization))
+      let AwsAccountId accountId = awsScopeAccountId awsScope
+          AwsRegion region = awsScopeRegion awsScope
+      nativeRef <-
+        either
+          (Left . AwsEksDestroyProviderRefInvalid)
+          Right
+          (mkProviderNativeStackFamilyRef stackRef accountId region Nothing)
+      Right (ReapNativeStackFamily nativeRef config admitted)
   Right
     AwsEksDestroyRequest
       { internalAwsEksDestroyRequestAuthorization = authorization
@@ -669,6 +696,7 @@ data AwsEksDestroyRefusal
   | AwsEksDestroyDrainedCertificateAuthorityDigestMismatch !Text !Text
   | AwsEksDestroyProviderRevisionMismatch !ProviderRevision !ProviderRevision
   | AwsEksDestroyProviderRefInvalid !ProviderRefError
+  | AwsEksDestroyAwsScopeMissing
   | AwsEksDestroyConfigInvalid !ProviderStackConfigError
   | AwsEksDestroyReadBackRevisionNotFresh
       !ObservationRevision
@@ -692,6 +720,7 @@ data AwsEksDestroyRefusal
   | AwsEksDestroyReadBackStillPresent !ExactResourceInventory
   | AwsEksDestroyReadBackPartial !(NonEmpty ObservationFailure)
   | AwsEksDestroyReadBackUnobservable !(NonEmpty ObservationFailure)
+  | AwsEksDestroyManifestIdentityMismatch !Text ![Text]
   deriving (Eq, Show)
 
 validateDestroyDecision
@@ -706,7 +735,8 @@ validateDestroyDecision decision = case decision of
   StackDestroyFromVerifiedManifest key authority -> do
     validateDecisionKey key
     case authority of
-      VerifiedOwnershipManifest {} -> Right AwsEksDestroyFromCompleteManifest
+      VerifiedOwnershipManifest _ _ identities ->
+        Right (AwsEksDestroyFromCompleteManifest (map observedIdentityText identities))
       _ -> Left (AwsEksDestroyDecisionAuthorityMismatch authority)
   StackAlreadyAbsent {} -> Left AwsEksDestroyDecisionAlreadyAbsent
   StackRestoreBackupThenDestroy {} ->
@@ -718,6 +748,9 @@ validateDecisionKey
   :: RegisteredResourceKey -> Either AwsEksDestroyRefusal ()
 validateDecisionKey actual =
   requireEqual AwsEksDestroyDecisionKeyMismatch AwsEksKey actual
+
+observedIdentityText :: ObservedResourceIdentity -> Text
+observedIdentityText (ObservedResourceIdentity identity) = identity
 
 validateDistinctDestroyOperation
   :: EksDrainOperationBinding

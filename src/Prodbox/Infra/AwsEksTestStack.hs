@@ -34,6 +34,7 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Vector qualified as Vector
 import Prodbox.CLI.Output (writeError, writeOutputLine)
+import Prodbox.Cluster.Topology (eksNodeGroupSize)
 import Prodbox.ControlPlane.EksClientAuthClient (withEksClientAuthProjection)
 import Prodbox.ControlPlane.EksClientAuthProjection
   ( EksClientAuthProjection
@@ -58,20 +59,23 @@ import Prodbox.ControlPlane.RegisteredStackCreationSubmitter
   , submitRegisteredStackCreation
   )
 import Prodbox.Error (fatalError)
-import Prodbox.Http.Client (defaultHttpConfig, httpGetText, renderHttpError)
 import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (DestroyRegisteredStack, ReconcileRegisteredStack)
   , ProviderRevision
-  , mkAwsEksProviderStackConfig
+  , ProviderStackConfig
+  , mkAwsEksProfileProviderStackConfig
   , mkProviderRevision
   , mkProviderStackRef
   )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.Teardown.Registry qualified as Registry
 import Prodbox.Settings
-  ( Credentials (..)
+  ( ConfigFile (..)
+  , Credentials (..)
+  , ValidatedSettings (..)
+  , requireAwsSubstrateProfile
   , requireOperationalAwsRegion
   , validateAndLoadSettings
   )
@@ -132,13 +136,7 @@ ensureAwsEksTestStackResourcesWithAuthentication
   -> FilePath
   -> IO ExitCode
 ensureAwsEksTestStackResourcesWithAuthentication authentication repoRoot = do
-  publicIp <- fetchPublicIpv4
-  let configResult = case publicIp of
-        Left err -> Left err
-        Right value ->
-          case mkAwsEksProviderStackConfig (Text.pack (value <> "/32")) of
-            Left err -> Left (show err)
-            Right config -> Right config
+  configResult <- loadAwsEksProviderConfig repoRoot
   case (mkProviderStackRef "aws-eks", mkProviderRevision 1, configResult) of
     (Right ref, Right revision, Right config) ->
       -- Sprint 4.84: creation goes through the submitting lane, which commits
@@ -167,22 +165,35 @@ destroyAwsEksTestStackWithAuthentication
   -> FilePath
   -> Bool
   -> IO ExitCode
-destroyAwsEksTestStackWithAuthentication authentication _repoRoot _quietOutput =
-  case ( mkProviderStackRef "aws-eks"
-       , mkProviderRevision 1
-       , mkAwsEksProviderStackConfig "127.0.0.1/32"
-       ) of
+destroyAwsEksTestStackWithAuthentication authentication repoRoot _quietOutput = do
+  configResult <- loadAwsEksProviderConfig repoRoot
+  case (mkProviderStackRef "aws-eks", mkProviderRevision 1, configResult) of
     (Right ref, Right revision, Right config) ->
       dispatchStack
         authentication
         "operator-destroy-aws-eks"
         "AWS EKS Provider destroy receipt: "
         (DestroyRegisteredStack ref revision config)
-    (refResult, revisionResult, configResult) ->
+    (refResult, revisionResult, providerConfigResult) ->
       failWith
         ( "build typed AWS EKS destroy intent: "
-            ++ show (refResult, revisionResult, configResult)
+            ++ show (refResult, revisionResult, providerConfigResult)
         )
+
+loadAwsEksProviderConfig :: FilePath -> IO (Either String ProviderStackConfig)
+loadAwsEksProviderConfig repoRoot = do
+  settingsResult <- validateAndLoadSettings repoRoot
+  pure $ do
+    settings <- settingsResult
+    authoredProfile <- requireAwsSubstrateProfile settings
+    desiredSize <-
+      maybe
+        (Left "aws-eks provisioning requires cluster_topology.Eks.node_group_size")
+        Right
+        (eksNodeGroupSize (cluster_topology (validatedConfig settings)))
+    case mkAwsEksProfileProviderStackConfig authoredProfile desiredSize of
+      Left err -> Left (show err)
+      Right config -> Right config
 
 -- | Sprint 4.84: create a registered stack and commit its lifecycle generation
 -- in one admitted lane.
@@ -408,15 +419,6 @@ eksKubeconfig projection tokenFifoPath =
                ]
            ]
     ]
-
-fetchPublicIpv4 :: IO (Either String String)
-fetchPublicIpv4 = do
-  result <- httpGetText defaultHttpConfig "https://api.ipify.org"
-  pure $ case result of
-    Left err -> Left ("failed to fetch public IP: " ++ renderHttpError err)
-    Right body
-      | length (filter (== '.') body) == 3 -> Right body
-      | otherwise -> Left ("unexpected public IP response: " ++ body)
 
 joinComma :: [String] -> String
 joinComma = foldr (\value rest -> value ++ if null rest then "" else "," ++ rest) ""

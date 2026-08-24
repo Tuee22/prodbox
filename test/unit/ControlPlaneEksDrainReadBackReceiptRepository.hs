@@ -686,6 +686,9 @@ readBackObservationFor attempt uid =
           , eksDrainReadBackIngressClass =
               IngressClassReadBack
                 (EksDrainResourceClassAbsent (AbsenceEvidence "no Ingresses"))
+          , eksDrainReadBackControllerOwnerClass =
+              ControllerOwnerClassReadBack
+                (EksDrainResourceClassAbsent (AbsenceEvidence "controller owner absent"))
           , eksDrainReadBackDeletePolicyPvcs =
               [ EksDrainPvcReadBack
                   fixturePvc
@@ -758,7 +761,7 @@ fixtureProjection =
   mustRight
     ( testEksClientAuthProjection
         "123456789012"
-        "us-east-1"
+        (fixtureAwsRegion FixtureUsEast1)
         "aws-eks-test-cluster"
         fixtureArn
         fixtureEndpoint
@@ -1163,7 +1166,7 @@ fixtureScope =
     lifecycleRegistryRevision
     (DurableObservationRunScope (cleanupRunIdText fixtureRunId))
     (LinuxRke2FoundationId fixtureFoundation)
-    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")))
+    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
     ReconcileDesiredAbsent
 
 fixtureFoundation, otherFoundation :: Text
@@ -1172,7 +1175,7 @@ otherFoundation = "fake-linux-rke2"
 
 fixtureArn, fixtureUid, staleUid :: Text
 fixtureArn =
-  "arn:aws:eks:us-east-1:123456789012:cluster/aws-eks-test-cluster"
+  ("arn:aws:eks:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123456789012:cluster/aws-eks-test-cluster")
 fixtureUid = "eks-kube-system-uid-original"
 staleUid = "eks-kube-system-uid-recreate"
 

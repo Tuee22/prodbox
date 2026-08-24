@@ -21,6 +21,7 @@ module Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal
   , lifecycleAuthorityProviderAwsScopeReaderInternal
   , readBackVerifiedAuthorityProviderAwsScope
   , readBackVerifiedAuthorityProviderAwsScopeInternal
+  , verifySettledAuthorityProviderAwsScopeReceipt
   , verifyAuthorityProviderAwsScopeCompletion
   )
 where
@@ -50,6 +51,7 @@ import Prodbox.ControlPlane.ProviderWorkerExecution
   )
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityProviderOperation (..)
+  , ProviderOperationCleanupOwner (ProviderOperationUnownedByCleanupRun)
   , authorityAggregateProviderOperations
   )
 import Prodbox.Lifecycle.Authority.Submission
@@ -303,6 +305,29 @@ verifyAuthorityProviderAwsScopeCompletion expectedOperation retained = do
       , internalAuthorityProviderAwsScopeOperationId = expectedOperation
       , internalAuthorityProviderAwsScopeCoordinate = coordinate
       }
+
+-- | Verify the completion receipt returned by the authenticated Authority
+-- dispatch route.
+--
+-- The route returns a completion only after 'settleProviderOperation' has
+-- confirmed the aggregate CAS with a fresh repository read.  This helper does
+-- not create a second authority source: it checks that the bounded response
+-- carries the exact operation identity and canonical scope receipt that the
+-- confirmed retained completion carries.  It remains package-private so raw
+-- receipt text cannot mint a proof on the public library surface.
+verifySettledAuthorityProviderAwsScopeReceipt
+  :: OperationId
+  -> Text
+  -> Either ProviderAwsScopeReceiptError VerifiedAuthorityProviderAwsScope
+verifySettledAuthorityProviderAwsScopeReceipt expectedOperation evidence =
+  verifyAuthorityProviderAwsScopeCompletion
+    expectedOperation
+    ( AuthorityProviderCompleted
+        (operationIdDigest expectedOperation)
+        ObserveProviderAwsScope
+        evidence
+        ProviderOperationUnownedByCleanupRun
+    )
 
 encodeReceipt
   :: VerifiedProviderAwsScope

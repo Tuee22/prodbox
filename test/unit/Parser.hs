@@ -448,6 +448,7 @@ commandPathOfRequest request =
                     IntegrationTeardownRecovery -> ["teardown-recovery"]
                     IntegrationCertificateScope -> ["certificate-scope"]
                     IntegrationCleanRoomHandoff -> ["clean-room-handoff"]
+                    IntegrationCascadeQualification -> ["cascade-qualification"]
                     IntegrationHaRke2Aws -> ["ha-rke2-aws"]
                     IntegrationLifecycle -> ["lifecycle"]
                     IntegrationPulumi -> ["pulumi"]
@@ -477,6 +478,7 @@ commandPathOfRequest request =
             : case vaultCommand of
               VaultStatus -> ["status"]
               VaultInit -> ["init"]
+              VaultResetAmbiguousInitialization _ -> ["reset-ambiguous-initialization"]
               VaultUnseal -> ["unseal"]
               VaultSeal -> ["seal"]
               VaultReconcile -> ["reconcile"]

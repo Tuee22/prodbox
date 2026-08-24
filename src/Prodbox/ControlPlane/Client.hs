@@ -196,6 +196,8 @@ data ControlPlaneRouteFor (r :: RuntimeRole) where
     :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
   LifecycleCascadeRetainedSlotRoute
     :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
+  LifecycleControllerOwnerRoute
+    :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
   ProviderWorkApplyRoute
     :: ControlPlaneRouteFor 'ProviderWorkerRuntime
   ProviderWorkObserveRoute
@@ -282,6 +284,7 @@ controlPlaneRouteForValue route = case route of
   LifecycleRecoveryPlaneRoute -> LifecycleRecoveryPlane
   LifecycleLocalRke2HostObservationRoute -> LifecycleLocalRke2HostObservation
   LifecycleCascadeRetainedSlotRoute -> LifecycleCascadeRetainedSlot
+  LifecycleControllerOwnerRoute -> LifecycleControllerOwner
   ProviderWorkApplyRoute -> ProviderWorkApply
   ProviderWorkObserveRoute -> ProviderWorkObserve
   AuthorityBackupCopyRoute -> AuthorityBackupCopy

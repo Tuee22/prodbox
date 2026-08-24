@@ -84,6 +84,7 @@ import Prodbox.ControlPlane.AuthorityOperationClient
   )
 import Prodbox.ControlPlane.AwsStackCreationBindingRepository
   ( committedAwsStackCreationConfig
+  , committedAwsStackCreationOperationId
   , committedAwsStackCreationRevision
   , readBackCommittedAwsStackCreationBindingForScope
   )
@@ -106,6 +107,8 @@ import Prodbox.ControlPlane.EksDrainReadBackReceiptTransportClient
   )
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller
+  , renderLifecycleAuthorityAuthenticationError
+  , withHostLifecycleAuthorityAuthentication
   )
 import Prodbox.ControlPlane.OwnershipManifestRepository
   ( readBackOwnershipManifestDecisionForScope
@@ -116,6 +119,10 @@ import Prodbox.ControlPlane.OwnershipManifestTransportClient
 import Prodbox.ControlPlane.PulumiCheckpointClient
   ( PulumiCheckpointAuthority
   , lifecycleAuthorityPulumiCheckpointAuthenticated
+  )
+import Prodbox.ControlPlane.RegisteredStackCreationSubmitter
+  ( renderRegisteredStackCleanupSelectError
+  , selectRegisteredStackGenerationForCleanup
   )
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDigest
@@ -172,7 +179,12 @@ import Prodbox.Lifecycle.Teardown.ExecutionIdentity
   ( TeardownExecutionIdentity
   , teardownExecutionIdentityOperationId
   )
-import Prodbox.Lifecycle.Teardown.Model (ObservationRevision)
+import Prodbox.Lifecycle.Teardown.Model
+  ( LifecycleOperation (ReconcileDesiredPresent)
+  , ObservationRevision
+  , evidenceCleanupSurface
+  , mkObservationEvidenceScope
+  )
 import Prodbox.Lifecycle.Teardown.Observation (CheckpointPairObservation)
 import Prodbox.Lifecycle.Teardown.OwnershipManifest
   ( OwnershipManifestDecisionEvidence
@@ -189,6 +201,16 @@ import Prodbox.Lifecycle.Teardown.ProviderDispatch
   , mkProviderDispatchKey
   , observationRevisionForProviderDispatchKey
   , productionTeardownProviderBoundary
+  )
+import Prodbox.Lifecycle.Teardown.StackGeneration
+  ( registeredStackGenerationAdmittedOperationId
+  , registeredStackGenerationCreatingRunScope
+  , registeredStackGenerationCreatingSurface
+  , registeredStackGenerationKey
+  , registeredStackGenerationProviderRevision
+  , stackGenerationKeyAwsScope
+  , stackGenerationKeyFoundation
+  , stackGenerationKeyRegistryRevision
   )
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 
@@ -326,7 +348,7 @@ productionCloudRuntime inputs transport runId graphDigest = do
               mkAwsStackReaderInputReaders
                 (readPostRecoveryCheckpointPair checkpoint)
                 (readCompleteOwnershipManifest transport)
-                (readProviderCreationBinding transport)
+                (readProviderCreationBinding inputs transport)
           }
 
       eksExecutor =
@@ -444,31 +466,66 @@ readCompleteOwnershipManifest transport context target =
 -- through 'mkAwsStackProviderBinding' rather than returning the durable value
 -- directly is what re-checks the configuration against the stack the key names.
 readProviderCreationBinding
-  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  :: ProductionCloudRuntimeInputs
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
   -> TeardownExecutionContext surface
   -> RegisteredTargetBinding
   -> CleanupOperationId
   -> IO (Either Text AwsStackProviderBinding)
-readProviderCreationBinding transport context target operationId = do
-  observed <-
-    readBackCommittedAwsStackCreationBindingForScope
-      (lifecycleAuthorityAwsStackCreationBindingAuthenticatedClient transport)
-      key
-      scope
-  pure $ do
-    committed <- first renderBounded observed
-    first
-      renderBounded
-      ( mkAwsStackProviderBinding
-          operationId
-          key
-          scope
-          (committedAwsStackCreationRevision committed)
-          (committedAwsStackCreationConfig committed)
+readProviderCreationBinding inputs transport context target operationId = do
+  selected <-
+    withHostLifecycleAuthorityAuthentication
+      (productionCloudCaller inputs)
+      (productionCloudRepositoryRoot inputs)
+      ( \authentication ->
+          selectRegisteredStackGenerationForCleanup
+            authentication
+            (productionCloudRepositoryRoot inputs)
+            key
+            (evidenceCleanupSurface cleanupScope)
       )
+  case selected of
+    Left err ->
+      pure (Left (Text.pack (renderLifecycleAuthorityAuthenticationError err)))
+    Right (Left err) ->
+      pure (Left (Text.pack (renderRegisteredStackCleanupSelectError err)))
+    Right (Right generation) -> do
+      let generationKey = registeredStackGenerationKey generation
+          creationScope =
+            mkObservationEvidenceScope
+              (registeredStackGenerationCreatingSurface generation)
+              (stackGenerationKeyRegistryRevision generationKey)
+              (registeredStackGenerationCreatingRunScope generation)
+              (stackGenerationKeyFoundation generationKey)
+              (Just (stackGenerationKeyAwsScope generationKey))
+              ReconcileDesiredPresent
+      observed <-
+        readBackCommittedAwsStackCreationBindingForScope
+          (lifecycleAuthorityAwsStackCreationBindingAuthenticatedClient transport)
+          key
+          creationScope
+      pure $ do
+        committed <- first renderBounded observed
+        if committedAwsStackCreationOperationId committed
+          /= registeredStackGenerationAdmittedOperationId generation
+          then Left "selected stack generation and committed creation operation differ"
+          else Right ()
+        if committedAwsStackCreationRevision committed
+          /= registeredStackGenerationProviderRevision generation
+          then Left "selected stack generation and committed Provider revision differ"
+          else Right ()
+        first
+          renderBounded
+          ( mkAwsStackProviderBinding
+              operationId
+              key
+              cleanupScope
+              (committedAwsStackCreationRevision committed)
+              (committedAwsStackCreationConfig committed)
+          )
  where
   key = registeredTargetKey target
-  scope = teardownExecutionObservationScope context
+  cleanupScope = teardownExecutionObservationScope context
 
 revisionFor
   :: TeardownExecutionIdentity

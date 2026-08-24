@@ -117,6 +117,7 @@ import Prodbox.Lifecycle.CleanupRun
   )
 import Prodbox.Lifecycle.Teardown.EksDrainIntent
   ( CommittedEksDrainIntent
+  , ControllerOwnerClassReadBack (..)
   , EksDrainAttemptEvidence
   , EksDrainAttemptOutcome (..)
   , EksDrainIntentError
@@ -745,6 +746,7 @@ data PositiveReadBackWire
       !Text
       !Text
       !Text
+      !Text
       ![PvcAbsenceWire]
   | NoKubernetesTargetWire
   deriving stock (Eq, Show, Generic)
@@ -767,7 +769,7 @@ data DecodedReceiptIdentity = DecodedReceiptIdentity
   }
 
 receiptFormatVersion :: Word16
-receiptFormatVersion = 1
+receiptFormatVersion = 2
 
 identityWire :: EksDrainReadBackReceiptIdentity -> ReceiptIdentityWire
 identityWire identity =
@@ -850,6 +852,11 @@ positiveReadBackWire observation =
           (EksDrainResourceClassAbsent (AbsenceEvidence detail)) ->
             boundedAbsence detail
         _ -> Left EksDrainReadBackReceiptPositiveShapeInvalid
+      ownerEvidence <- case eksDrainReadBackControllerOwnerClass readBack of
+        ControllerOwnerClassReadBack
+          (EksDrainResourceClassAbsent (AbsenceEvidence detail)) ->
+            boundedAbsence detail
+        _ -> Left EksDrainReadBackReceiptPositiveShapeInvalid
       pvcs <- mapM pvcWire (eksDrainReadBackDeletePolicyPvcs readBack)
       Right
         ( KubernetesTargetsAbsentWire
@@ -859,6 +866,7 @@ positiveReadBackWire observation =
             (eksDrainReadBackCertificateAuthorityDigest readBack)
             serviceEvidence
             ingressEvidence
+            ownerEvidence
             pvcs
         )
     EksDrainTargetReadBackUnobservable _ ->
@@ -884,13 +892,14 @@ validateReadBackWire
   :: PositiveReadBackWire -> Either EksDrainReadBackReceiptError ()
 validateReadBackWire wire = case wire of
   NoKubernetesTargetWire -> Right ()
-  KubernetesTargetsAbsentWire arn uid endpointDigest caDigest service ingress pvcs -> do
+  KubernetesTargetsAbsentWire arn uid endpointDigest caDigest service ingress owner pvcs -> do
     validateBoundedText "provider ARN" 2048 arn
     validateBoundedText "Kubernetes UID" 256 uid
     validateSha256 "endpoint digest" endpointDigest
     validateSha256 "certificate-authority digest" caDigest
     validateAbsence service
     validateAbsence ingress
+    validateAbsence owner
     if length pvcs <= maximumEksDrainPvcTargets
       then Right ()
       else
@@ -988,7 +997,7 @@ decodePositiveReadBack
   -> Either EksDrainReadBackReceiptError EksDrainTargetReadBackResult
 decodePositiveReadBack wire = case wire of
   NoKubernetesTargetWire -> Right EksDrainObservedNoKubernetesTarget
-  KubernetesTargetsAbsentWire arn uid endpointDigest caDigest service ingress pvcs -> do
+  KubernetesTargetsAbsentWire arn uid endpointDigest caDigest service ingress owner pvcs -> do
     decodedPvcs <- mapM decodePvc pvcs
     Right
       ( EksDrainObservedKubernetesTarget
@@ -1003,6 +1012,9 @@ decodePositiveReadBack wire = case wire of
             , eksDrainReadBackIngressClass =
                 IngressClassReadBack
                   (EksDrainResourceClassAbsent (AbsenceEvidence ingress))
+            , eksDrainReadBackControllerOwnerClass =
+                ControllerOwnerClassReadBack
+                  (EksDrainResourceClassAbsent (AbsenceEvidence owner))
             , eksDrainReadBackDeletePolicyPvcs = decodedPvcs
             }
       )

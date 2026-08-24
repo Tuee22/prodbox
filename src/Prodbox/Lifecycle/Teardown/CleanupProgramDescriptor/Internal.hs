@@ -19,6 +19,7 @@ module Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor.Internal
   , cleanupProgramDescriptorSurface
   , cleanupProgramDescriptorFoundation
   , cleanupProgramDescriptorAwsScope
+  , cleanupProgramDescriptorAwsDnsZone
   , cleanupProgramDescriptorRegistryRevision
   , cleanupProgramDescriptorLifecycleOperation
   , cleanupProgramDescriptorGraphDigest
@@ -31,6 +32,7 @@ module Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor.Internal
   , cleanupProgramDescriptorCapabilityCatalogVersion
   , cleanupProgramDescriptorCapabilitySetVersion
   , maximumCleanupProgramDescriptorBytes
+  , legacyV1CleanupProgramDescriptorBytesForRegression
   , decodeAndValidateCleanupProgramDescriptor
   , withRecompiledCleanupProgramDescriptor
   )
@@ -43,6 +45,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isControl, isSpace)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import GHC.Generics (Generic)
@@ -63,11 +66,17 @@ import Prodbox.Lifecycle.CleanupRun
   , mkCleanupRunId
   , newCleanupRun
   )
+import Prodbox.Lifecycle.DnsRecord
+  ( HostedZoneId
+  , hostedZoneIdText
+  , mkHostedZoneId
+  )
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
 import Prodbox.Lifecycle.Teardown.Graph
   ( CompiledDesiredAbsenceProgram
   , DesiredAbsenceGraphError
   , compileDesiredAbsenceGraph
+  , compileDesiredAbsenceGraphForRegisteredKeys
   , compiledDesiredAbsenceGraph
   , compiledDesiredAbsenceObservationScope
   , compiledDesiredAbsenceOperations
@@ -84,9 +93,11 @@ import Prodbox.Lifecycle.Teardown.Model
   , LifecycleOperation (ReconcileDesiredAbsent)
   , LinuxRke2FoundationId (..)
   , ObservationEvidenceScope
+  , RegisteredResourceKey
   , RegistryRevision (..)
   , ResourceKind (..)
   , cleanupSurfaceFromWitness
+  , evidenceAwsDnsZone
   , evidenceAwsScope
   , evidenceCleanupSurface
   , evidenceDurableRunScope
@@ -94,6 +105,7 @@ import Prodbox.Lifecycle.Teardown.Model
   , evidenceLinuxRke2Foundation
   , evidenceRegistryRevision
   , managedResourceCoordinateDigestText
+  , registeredResourceKeyFromText
   , registeredResourceKeyText
   )
 import Prodbox.Lifecycle.Teardown.Program
@@ -122,6 +134,7 @@ data CleanupProgramDescriptor = CleanupProgramDescriptor
   , internalDescriptorSurface :: !CleanupSurface
   , internalDescriptorFoundation :: !LinuxRke2FoundationId
   , internalDescriptorAwsScope :: !(Maybe AwsScope)
+  , internalDescriptorAwsDnsZone :: !(Maybe HostedZoneId)
   , internalDescriptorRegistryRevision :: !RegistryRevision
   , internalDescriptorLifecycleOperation :: !LifecycleOperation
   , internalDescriptorGraphDigest :: !CleanupDigest
@@ -188,6 +201,7 @@ data CleanupProgramDescriptorWire = CleanupProgramDescriptorWire
   , descriptorWireFoundation :: !Text
   , descriptorWireAwsAccount :: !(Maybe Text)
   , descriptorWireAwsRegion :: !(Maybe Text)
+  , descriptorWireAwsDnsZone :: !(Maybe Text)
   , descriptorWireRegistryRevision :: !Text
   , descriptorWireDurableRunScope :: !Text
   , descriptorWireLifecycleOperation :: !Int
@@ -203,12 +217,49 @@ data CleanupProgramDescriptorWire = CleanupProgramDescriptorWire
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- | Sprint 7.38's superseded v1 wire. It remains restart-readable so adding
+-- the zone binding cannot strand a retained zoneless descriptor. New captures
+-- always use 'CleanupProgramDescriptorWire' v2.
+data LegacyCleanupProgramDescriptorWire = LegacyCleanupProgramDescriptorWire
+  { legacyDescriptorWireFormatVersion :: !Int
+  , legacyDescriptorWireRunId :: !Text
+  , legacyDescriptorWireSurface :: !Int
+  , legacyDescriptorWireFoundation :: !Text
+  , legacyDescriptorWireAwsAccount :: !(Maybe Text)
+  , legacyDescriptorWireAwsRegion :: !(Maybe Text)
+  , legacyDescriptorWireRegistryRevision :: !Text
+  , legacyDescriptorWireDurableRunScope :: !Text
+  , legacyDescriptorWireLifecycleOperation :: !Int
+  , legacyDescriptorWireCompilerVersion :: !Text
+  , legacyDescriptorWireOperationIdentityVersion :: !Text
+  , legacyDescriptorWireCapabilityCatalogVersion :: !Text
+  , legacyDescriptorWireCapabilitySetVersion :: !Text
+  , legacyDescriptorWireGraphDigest :: !Text
+  , legacyDescriptorWireCapabilityCatalogDigest :: !Text
+  , legacyDescriptorWireInitialRun :: !ByteString
+  , legacyDescriptorWireSemanticOperations :: ![SemanticOperationWire]
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
 cleanupProgramDescriptorFormatVersion :: Int
-cleanupProgramDescriptorFormatVersion = 1
+cleanupProgramDescriptorFormatVersion = 2
 
 cleanupProgramDescriptorCompilerVersion :: Text
 cleanupProgramDescriptorCompilerVersion =
+  "lifecycle-desired-absence-program-compiler/v5"
+
+-- Descriptors captured before selected-key programs existed compiled the full
+-- surface. Their semantic-operation catalog still reconstructs that exact
+-- target set, so v3 and the pre-zone v4 remain restart-readable while new v2
+-- wires author v5.
+legacyCleanupProgramDescriptorCompilerVersion :: Text
+legacyCleanupProgramDescriptorCompilerVersion =
   "lifecycle-desired-absence-program-compiler/v3"
+
+profileCleanupProgramDescriptorCompilerVersion :: Text
+profileCleanupProgramDescriptorCompilerVersion =
+  "lifecycle-desired-absence-program-compiler/v4"
 
 cleanupProgramDescriptorOperationIdentityVersion :: Text
 cleanupProgramDescriptorOperationIdentityVersion =
@@ -247,6 +298,7 @@ captureCleanupProgramDescriptor compiled initialRun = do
           , descriptorWireFoundation = foundationText scope
           , descriptorWireAwsAccount = awsAccountText <$> evidenceAwsScope scope
           , descriptorWireAwsRegion = awsRegionText <$> evidenceAwsScope scope
+          , descriptorWireAwsDnsZone = hostedZoneIdText <$> evidenceAwsDnsZone scope
           , descriptorWireRegistryRevision = registryRevisionText scope
           , descriptorWireDurableRunScope = durableRunScopeText scope
           , descriptorWireLifecycleOperation = 0
@@ -282,6 +334,123 @@ decodeAndValidateCleanupProgramDescriptor
 decodeAndValidateCleanupProgramDescriptor bytes =
   decodeAndValidateCleanupProgramDescriptorWith bytes $ \_ _ _ descriptor ->
     descriptor
+
+-- | Re-encode a newly captured zoneless descriptor in the superseded v1
+-- shape. This package-private fixture constructor exists only so the Authority
+-- repository regression can prove that retained pre-zone bytes still decode,
+-- recompile, and read back after restart.
+legacyV1CleanupProgramDescriptorBytesForRegression
+  :: CleanupProgramDescriptor
+  -> Either CleanupProgramDescriptorError ByteString
+legacyV1CleanupProgramDescriptorBytesForRegression descriptor = do
+  (wire, canonicalBytes) <-
+    decodeDescriptorWire (cleanupProgramDescriptorBytes descriptor)
+  unless
+    (canonicalBytes == cleanupProgramDescriptorBytes descriptor)
+    (Left CleanupProgramDescriptorNonCanonical)
+  when
+    (descriptorWireAwsDnsZone wire /= Nothing)
+    (Left (CleanupProgramDescriptorScopeMismatch "legacy v1 AWS DNS zone"))
+  let legacy =
+        LegacyCleanupProgramDescriptorWire
+          { legacyDescriptorWireFormatVersion = 1
+          , legacyDescriptorWireRunId = descriptorWireRunId wire
+          , legacyDescriptorWireSurface = descriptorWireSurface wire
+          , legacyDescriptorWireFoundation = descriptorWireFoundation wire
+          , legacyDescriptorWireAwsAccount = descriptorWireAwsAccount wire
+          , legacyDescriptorWireAwsRegion = descriptorWireAwsRegion wire
+          , legacyDescriptorWireRegistryRevision =
+              descriptorWireRegistryRevision wire
+          , legacyDescriptorWireDurableRunScope =
+              descriptorWireDurableRunScope wire
+          , legacyDescriptorWireLifecycleOperation =
+              descriptorWireLifecycleOperation wire
+          , legacyDescriptorWireCompilerVersion =
+              profileCleanupProgramDescriptorCompilerVersion
+          , legacyDescriptorWireOperationIdentityVersion =
+              descriptorWireOperationIdentityVersion wire
+          , legacyDescriptorWireCapabilityCatalogVersion =
+              descriptorWireCapabilityCatalogVersion wire
+          , legacyDescriptorWireCapabilitySetVersion =
+              descriptorWireCapabilitySetVersion wire
+          , legacyDescriptorWireGraphDigest = descriptorWireGraphDigest wire
+          , legacyDescriptorWireCapabilityCatalogDigest =
+              descriptorWireCapabilityCatalogDigest wire
+          , legacyDescriptorWireInitialRun = descriptorWireInitialRun wire
+          , legacyDescriptorWireSemanticOperations =
+              descriptorWireSemanticOperations wire
+          }
+      bytes = LazyByteString.toStrict (serialise legacy)
+  _ <- decodeAndValidateCleanupProgramDescriptor bytes
+  Right bytes
+
+decodeDescriptorWire
+  :: ByteString
+  -> Either
+       CleanupProgramDescriptorError
+       (CleanupProgramDescriptorWire, ByteString)
+decodeDescriptorWire bytes =
+  case deserialiseOrFail encoded of
+    Right wire
+      | descriptorWireFormatVersion wire == cleanupProgramDescriptorFormatVersion ->
+          Right (wire, LazyByteString.toStrict (serialise wire))
+      | otherwise ->
+          Left
+            ( CleanupProgramDescriptorVersionUnsupported
+                (descriptorWireFormatVersion wire)
+            )
+    Left currentError ->
+      case deserialiseOrFail encoded of
+        Right legacy
+          | legacyDescriptorWireFormatVersion legacy == 1 ->
+              Right
+                ( upgradeLegacyDescriptorWire legacy
+                , LazyByteString.toStrict (serialise legacy)
+                )
+          | otherwise ->
+              Left
+                ( CleanupProgramDescriptorVersionUnsupported
+                    (legacyDescriptorWireFormatVersion legacy)
+                )
+        Left legacyError ->
+          Left
+            ( CleanupProgramDescriptorDecodeFailed
+                ( Text.pack (show currentError)
+                    <> "; legacy v1: "
+                    <> Text.pack (show legacyError)
+                )
+            )
+ where
+  encoded = LazyByteString.fromStrict bytes
+
+upgradeLegacyDescriptorWire
+  :: LegacyCleanupProgramDescriptorWire -> CleanupProgramDescriptorWire
+upgradeLegacyDescriptorWire legacy =
+  CleanupProgramDescriptorWire
+    { descriptorWireFormatVersion = legacyDescriptorWireFormatVersion legacy
+    , descriptorWireRunId = legacyDescriptorWireRunId legacy
+    , descriptorWireSurface = legacyDescriptorWireSurface legacy
+    , descriptorWireFoundation = legacyDescriptorWireFoundation legacy
+    , descriptorWireAwsAccount = legacyDescriptorWireAwsAccount legacy
+    , descriptorWireAwsRegion = legacyDescriptorWireAwsRegion legacy
+    , descriptorWireAwsDnsZone = Nothing
+    , descriptorWireRegistryRevision = legacyDescriptorWireRegistryRevision legacy
+    , descriptorWireDurableRunScope = legacyDescriptorWireDurableRunScope legacy
+    , descriptorWireLifecycleOperation = legacyDescriptorWireLifecycleOperation legacy
+    , descriptorWireCompilerVersion = legacyDescriptorWireCompilerVersion legacy
+    , descriptorWireOperationIdentityVersion =
+        legacyDescriptorWireOperationIdentityVersion legacy
+    , descriptorWireCapabilityCatalogVersion =
+        legacyDescriptorWireCapabilityCatalogVersion legacy
+    , descriptorWireCapabilitySetVersion =
+        legacyDescriptorWireCapabilitySetVersion legacy
+    , descriptorWireGraphDigest = legacyDescriptorWireGraphDigest legacy
+    , descriptorWireCapabilityCatalogDigest =
+        legacyDescriptorWireCapabilityCatalogDigest legacy
+    , descriptorWireInitialRun = legacyDescriptorWireInitialRun legacy
+    , descriptorWireSemanticOperations =
+        legacyDescriptorWireSemanticOperations legacy
+    }
 
 -- | Package-private restart eliminator.  The retained canonical bytes are
 -- decoded again and the closed surface witness is used to recompile and
@@ -321,24 +490,27 @@ decodeAndValidateCleanupProgramDescriptorWith bytes consume = do
             maximumCleanupProgramDescriptorBytes
         )
     )
-  wire <-
-    first
-      (CleanupProgramDescriptorDecodeFailed . Text.pack . show)
-      (deserialiseOrFail (LazyByteString.fromStrict bytes))
+  (wire, canonicalBytes) <- decodeDescriptorWire bytes
   unless
-    (LazyByteString.toStrict (serialise wire) == bytes)
+    (canonicalBytes == bytes)
     (Left CleanupProgramDescriptorNonCanonical)
   unless
-    (descriptorWireFormatVersion wire == cleanupProgramDescriptorFormatVersion)
+    ( descriptorWireFormatVersion wire
+        `elem` [1, cleanupProgramDescriptorFormatVersion]
+    )
     ( Left
         ( CleanupProgramDescriptorVersionUnsupported
             (descriptorWireFormatVersion wire)
         )
     )
-  requireVersion
-    CleanupProgramDescriptorCompilerVersionMismatch
-    cleanupProgramDescriptorCompilerVersion
-    (descriptorWireCompilerVersion wire)
+  unless
+    (descriptorCompilerVersionSupported wire)
+    ( Left
+        ( CleanupProgramDescriptorCompilerVersionMismatch
+            cleanupProgramDescriptorCompilerVersion
+            (descriptorWireCompilerVersion wire)
+        )
+    )
   requireVersion
     CleanupProgramDescriptorOperationIdentityVersionMismatch
     cleanupProgramDescriptorOperationIdentityVersion
@@ -359,6 +531,7 @@ decodeAndValidateCleanupProgramDescriptorWith bytes consume = do
   foundationValue <-
     checkedText "Linux RKE2 foundation" 512 (descriptorWireFoundation wire)
   awsScope <- decodeAwsScope wire
+  awsDnsZone <- decodeAwsDnsZone wire
   let foundation = LinuxRke2FoundationId foundationValue
       registryRevision = RegistryRevision (descriptorWireRegistryRevision wire)
       lifecycleOperation = ReconcileDesiredAbsent
@@ -396,6 +569,7 @@ decodeAndValidateCleanupProgramDescriptorWith bytes consume = do
     runId
     foundation
     awsScope
+    awsDnsZone
     wire
     initialRun
     ( \witness compiled validatedRun descriptor ->
@@ -412,11 +586,25 @@ decodeAndValidateCleanupProgramDescriptorWith bytes consume = do
             }
     )
 
+descriptorCompilerVersionSupported :: CleanupProgramDescriptorWire -> Bool
+descriptorCompilerVersionSupported wire =
+  case descriptorWireFormatVersion wire of
+    1 ->
+      descriptorWireCompilerVersion wire
+        `elem` [ legacyCleanupProgramDescriptorCompilerVersion
+               , profileCleanupProgramDescriptorCompilerVersion
+               ]
+    2 ->
+      descriptorWireCompilerVersion wire
+        == cleanupProgramDescriptorCompilerVersion
+    _ -> False
+
 validateForSurfaceWith
   :: CleanupSurface
   -> CleanupRunId
   -> LinuxRke2FoundationId
   -> Maybe AwsScope
+  -> Maybe HostedZoneId
   -> CleanupProgramDescriptorWire
   -> CleanupRun
   -> ( forall surface
@@ -427,7 +615,7 @@ validateForSurfaceWith
        -> result
      )
   -> Either CleanupProgramDescriptorError result
-validateForSurfaceWith surface runId foundation awsScope wire initialRun consume =
+validateForSurfaceWith surface runId foundation awsScope awsDnsZone wire initialRun consume =
   case surface of
     LocalOnly ->
       validateDescriptorForWitnessWith
@@ -435,6 +623,7 @@ validateForSurfaceWith surface runId foundation awsScope wire initialRun consume
         runId
         foundation
         awsScope
+        awsDnsZone
         wire
         initialRun
         consume
@@ -444,6 +633,7 @@ validateForSurfaceWith surface runId foundation awsScope wire initialRun consume
         runId
         foundation
         awsScope
+        awsDnsZone
         wire
         initialRun
         consume
@@ -453,6 +643,7 @@ validateForSurfaceWith surface runId foundation awsScope wire initialRun consume
         runId
         foundation
         awsScope
+        awsDnsZone
         wire
         initialRun
         consume
@@ -462,6 +653,7 @@ validateForSurfaceWith surface runId foundation awsScope wire initialRun consume
         runId
         foundation
         awsScope
+        awsDnsZone
         wire
         initialRun
         consume
@@ -471,6 +663,7 @@ validateForSurfaceWith surface runId foundation awsScope wire initialRun consume
         runId
         foundation
         awsScope
+        awsDnsZone
         wire
         initialRun
         consume
@@ -480,6 +673,7 @@ validateForSurfaceWith surface runId foundation awsScope wire initialRun consume
         runId
         foundation
         awsScope
+        awsDnsZone
         wire
         initialRun
         consume
@@ -489,6 +683,7 @@ validateDescriptorForWitnessWith
   -> CleanupRunId
   -> LinuxRke2FoundationId
   -> Maybe AwsScope
+  -> Maybe HostedZoneId
   -> CleanupProgramDescriptorWire
   -> CleanupRun
   -> ( forall validatedSurface
@@ -504,13 +699,26 @@ validateDescriptorForWitnessWith
   runId
   foundation
   awsScope
+  awsDnsZone
   wire
   initialRun
   consume = do
+    selectedKeys <- selectedExplicitPerRunKeys witness wire
     compiled <-
       first
         CleanupProgramDescriptorCompilationFailed
-        (compileDesiredAbsenceGraph runId foundation awsScope witness)
+        ( case selectedKeys of
+            Nothing ->
+              compileDesiredAbsenceGraph runId foundation awsScope awsDnsZone witness
+            Just keys ->
+              compileDesiredAbsenceGraphForRegisteredKeys
+                runId
+                foundation
+                awsScope
+                awsDnsZone
+                witness
+                keys
+        )
     validateCompiledWire compiled wire initialRun
     let descriptor =
           CleanupProgramDescriptor
@@ -518,6 +726,7 @@ validateDescriptorForWitnessWith
             , internalDescriptorSurface = cleanupSurfaceFromWitness witness
             , internalDescriptorFoundation = foundation
             , internalDescriptorAwsScope = awsScope
+            , internalDescriptorAwsDnsZone = awsDnsZone
             , internalDescriptorRegistryRevision = lifecycleRegistryRevision
             , internalDescriptorLifecycleOperation = ReconcileDesiredAbsent
             , internalDescriptorGraphDigest = cleanupRunGraphDigest initialRun
@@ -526,6 +735,29 @@ validateDescriptorForWitnessWith
             , internalDescriptorBytes = ByteString.empty
             }
     pure (consume witness compiled initialRun descriptor)
+
+selectedExplicitPerRunKeys
+  :: CleanupSurfaceWitness surface
+  -> CleanupProgramDescriptorWire
+  -> Either CleanupProgramDescriptorError (Maybe [RegisteredResourceKey])
+selectedExplicitPerRunKeys witness wire = case witness of
+  ExplicitPerRunSurface -> Just . Set.toAscList . Set.fromList <$> traverse decodeKey targetNames
+  _ -> Right Nothing
+ where
+  targetNames =
+    [ semanticTargetKey target
+    | operation <- descriptorWireSemanticOperations wire
+    , Just target <- [semanticOperationTarget operation]
+    ]
+  decodeKey raw =
+    maybe
+      ( Left
+          ( CleanupProgramDescriptorFieldInvalid
+              ("semantic operation names an unregistered target: " <> raw)
+          )
+      )
+      Right
+      (registeredResourceKeyFromText raw)
 
 validateCompiledWire
   :: CompiledDesiredAbsenceProgram surface
@@ -557,6 +789,11 @@ validateCompiledWire compiled wire initialRun = do
   unless
     (descriptorWireAwsRegion wire == (awsRegionText <$> evidenceAwsScope scope))
     (Left (CleanupProgramDescriptorScopeMismatch "AWS region"))
+  unless
+    ( descriptorWireAwsDnsZone wire
+        == (hostedZoneIdText <$> evidenceAwsDnsZone scope)
+    )
+    (Left (CleanupProgramDescriptorScopeMismatch "AWS DNS hosted zone"))
   unless
     (descriptorWireRegistryRevision wire == registryRevisionText scope)
     (Left (CleanupProgramDescriptorScopeMismatch "registry revision"))
@@ -714,6 +951,22 @@ decodeAwsScope wire = case (descriptorWireAwsAccount wire, descriptorWireAwsRegi
     Right (Just (AwsScope (AwsAccountId account') (AwsRegion region')))
   _ -> Left (CleanupProgramDescriptorScopeMismatch "incomplete AWS scope")
 
+decodeAwsDnsZone
+  :: CleanupProgramDescriptorWire
+  -> Either CleanupProgramDescriptorError (Maybe HostedZoneId)
+decodeAwsDnsZone wire =
+  traverse decodeZone (descriptorWireAwsDnsZone wire)
+ where
+  decodeZone raw = do
+    value <- checkedText "AWS DNS hosted zone" 128 raw
+    first
+      ( CleanupProgramDescriptorFieldInvalid
+          . ("AWS DNS hosted zone: " <>)
+          . Text.pack
+          . show
+      )
+      (mkHostedZoneId value)
+
 requireVersion
   :: (Text -> Text -> CleanupProgramDescriptorError)
   -> Text
@@ -803,6 +1056,10 @@ cleanupProgramDescriptorFoundation = internalDescriptorFoundation
 cleanupProgramDescriptorAwsScope
   :: CleanupProgramDescriptor -> Maybe AwsScope
 cleanupProgramDescriptorAwsScope = internalDescriptorAwsScope
+
+cleanupProgramDescriptorAwsDnsZone
+  :: CleanupProgramDescriptor -> Maybe HostedZoneId
+cleanupProgramDescriptorAwsDnsZone = internalDescriptorAwsDnsZone
 
 cleanupProgramDescriptorRegistryRevision
   :: CleanupProgramDescriptor -> RegistryRevision

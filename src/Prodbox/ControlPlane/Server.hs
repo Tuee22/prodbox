@@ -255,6 +255,7 @@ controlPlaneRouteMaximumBodyBytes route = case route of
     controlPlaneMaximumLifecycleInputBodyBytes
   LifecycleCascadeRetainedSlot ->
     controlPlaneMaximumLifecycleInputBodyBytes
+  LifecycleControllerOwner -> controlPlaneMaximumLifecycleInputBodyBytes
 
 parseFramingHeaders
   :: ByteString

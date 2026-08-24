@@ -111,6 +111,7 @@ import Dhall qualified
 import GHC.Generics (Generic)
 import Numeric (showHex)
 import Numeric.Natural (Natural)
+import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
 import System.FilePath ((</>))
 import System.IO (IOMode (ReadMode), withBinaryFile)
 import Text.Read (readMaybe)
@@ -536,7 +537,7 @@ canonicalTeardownEvidenceScope =
     , teardownScopeOperation = "reconcile-desired-absent"
     , teardownScopeFoundation = "home-linux-rke2"
     , teardownScopeAwsAccount = "111122223333"
-    , teardownScopeAwsRegion = "ca-central-1"
+    , teardownScopeAwsRegion = canonicalRegressionAwsRegion
     }
 
 canonicalRetainedBucketArn :: AwsAuditArn

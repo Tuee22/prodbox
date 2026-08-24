@@ -66,6 +66,7 @@ data BrokerOperationTag
   | ObserveBootstrapStatus
   | EnsureVaultInitialized
   | EnsureVaultUnsealed
+  | ReconcilePostUnsealHandoff
   | SealVault
   | RotateUnlockBundle
   | RotateTransitKey

@@ -13,6 +13,8 @@ module Prodbox.Lifecycle.Teardown.CascadeCandidate
   , cascadeCandidateTerminalOperationIsCompiled
   , cascadeCandidateDeclaredLeaseIsRequired
   , cascadeCandidateIdentityBindsDescriptor
+  , CascadeCandidatePlanSummary (..)
+  , fixedCascadeCandidatePlanSummary
   )
 where
 

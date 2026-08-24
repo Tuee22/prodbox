@@ -408,7 +408,7 @@ exactRoleArn = "arn:aws:iam::123456789012:role/prodbox-ses-lease-session"
 
 environment :: [(String, String)]
 environment =
-  [ ("AWS_REGION", "ca-central-1")
+  [ ("AWS_REGION", (fixtureAwsRegion FixtureCaCentral1))
   , ("AWS_SECRET_ACCESS_KEY", Text.unpack secretSentinel)
   ]
 

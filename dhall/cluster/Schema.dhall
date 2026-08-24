@@ -112,7 +112,10 @@ let rke2OK =
 
 let eksOK =
       \(e : EksTopology) ->
-        residencyIsInCluster (residencyOf e.eks_substrate)
+            if Natural/isZero e.node_group_size
+            then False
+            else True
+        &&  residencyIsInCluster (residencyOf e.eks_substrate)
 
 let contractOK =
       \(topology : ClusterTopology) ->

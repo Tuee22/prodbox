@@ -8,11 +8,14 @@
 -- create a recursive auditor-cleanup obligation.
 module Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditError (..)
+  , VaultAccessorAuditDetailedError (..)
   , VaultAccessorSubject (..)
   , VaultAccessorAuditOps (..)
+  , VaultAccessorAuditDetailedOps (..)
   , isBoundedBatchAuditorLogin
   , vaultAccessorMatchesSubject
   , revokeAndProveVaultAccessorSubjectAbsent
+  , revokeAndProveVaultAccessorSubjectAbsentDetailed
   , auditVaultTokenAccessorAbsence
   )
 where
@@ -43,6 +46,17 @@ data VaultAccessorAuditError
   | VaultAccessorStableAbsenceFailed
   deriving stock (Eq, Show)
 
+-- | The finite audit result with the interpreter's closed operation failure
+-- retained. Revoke failures are deliberately absent: revoke responses are
+-- provisional and only later authoritative observations decide closure.
+data VaultAccessorAuditDetailedError failure
+  = VaultAccessorAuditDetailedIdentityInvalid
+  | VaultAccessorAuditDetailedObservationFailed !failure
+  | VaultAccessorAuditDetailedClassificationFailed !failure
+  | VaultAccessorAuditDetailedVisibilityWaitFailed !failure
+  | VaultAccessorAuditDetailedStableAbsenceFailed
+  deriving stock (Eq, Show)
+
 -- | Secret-free identity of one ephemeral login lane.  Policy equality is
 -- exact (apart from ordering), while metadata is a required subset because
 -- Vault may add plugin-version-specific, non-authoritative metadata fields.
@@ -64,6 +78,17 @@ data VaultAccessorAuditOps m = VaultAccessorAuditOps
   , auditRevokeAccessor :: Text -> m (Either Text ())
   , auditObserveAccessorAbsent :: Text -> m (Either Text Bool)
   , auditWaitVisibilityGrace :: m (Either Text ())
+  }
+
+-- | Typed counterpart to 'VaultAccessorAuditOps'. The interpreter supplies a
+-- closed failure type that identifies the exact operation without retaining
+-- arbitrary provider text.
+data VaultAccessorAuditDetailedOps m failure = VaultAccessorAuditDetailedOps
+  { detailedAuditListAccessors :: m (Either failure [Text])
+  , detailedAuditLookupAccessor :: Text -> m (Either failure TokenAccessorInfo)
+  , detailedAuditRevokeAccessor :: Text -> m (Either failure ())
+  , detailedAuditObserveAccessorAbsent :: Text -> m (Either failure Bool)
+  , detailedAuditWaitVisibilityGrace :: m (Either failure ())
   }
 
 isBoundedBatchAuditorLogin
@@ -98,38 +123,68 @@ revokeAndProveVaultAccessorSubjectAbsent
   -> VaultAccessorSubject
   -> Maybe Text
   -> m (Either VaultAccessorAuditError ())
-revokeAndProveVaultAccessorSubjectAbsent ops subject maybeKnown = do
-  initial <- matchingAccessors ops subject
+revokeAndProveVaultAccessorSubjectAbsent ops subject maybeKnown =
+  fmap (mapLeft collapseDetailedAuditError) $
+    revokeAndProveVaultAccessorSubjectAbsentDetailed detailedOps subject maybeKnown
+ where
+  detailedOps =
+    VaultAccessorAuditDetailedOps
+      { detailedAuditListAccessors = auditListAccessors ops
+      , detailedAuditLookupAccessor = auditLookupAccessor ops
+      , detailedAuditRevokeAccessor = auditRevokeAccessor ops
+      , detailedAuditObserveAccessorAbsent = auditObserveAccessorAbsent ops
+      , detailedAuditWaitVisibilityGrace = auditWaitVisibilityGrace ops
+      }
+
+  collapseDetailedAuditError failure = case failure of
+    VaultAccessorAuditDetailedIdentityInvalid -> VaultAccessorAuditIdentityInvalid
+    VaultAccessorAuditDetailedObservationFailed _ -> VaultAccessorObservationFailed
+    VaultAccessorAuditDetailedClassificationFailed _ -> VaultAccessorClassificationFailed
+    VaultAccessorAuditDetailedVisibilityWaitFailed _ -> VaultAccessorVisibilityWaitFailed
+    VaultAccessorAuditDetailedStableAbsenceFailed -> VaultAccessorStableAbsenceFailed
+
+-- | Typed stable-zero proof. The provider-specific failure is returned only
+-- for authoritative list, lookup, direct-absence, and visibility operations.
+-- Revoke responses remain provisional and cannot decide terminal closure.
+revokeAndProveVaultAccessorSubjectAbsentDetailed
+  :: (Monad m)
+  => VaultAccessorAuditDetailedOps m failure
+  -> VaultAccessorSubject
+  -> Maybe Text
+  -> m (Either (VaultAccessorAuditDetailedError failure) ())
+revokeAndProveVaultAccessorSubjectAbsentDetailed ops subject maybeKnown = do
+  initial <- matchingAccessorsDetailed ops subject
   case initial of
     Left err -> pure (Left err)
     Right accessors -> do
       -- A revoke response can be lost after Vault applied it. Attempt every
       -- correlated accessor and treat these responses as provisional; only
       -- the later authoritative inventories decide terminal closure.
-      traverse_ (auditRevokeAccessor ops) accessors
+      traverse_ (detailedAuditRevokeAccessor ops) accessors
       case fmap Text.strip maybeKnown of
         Just accessor
           | Text.null accessor ->
-              pure (Left VaultAccessorAuditIdentityInvalid)
+              pure (Left VaultAccessorAuditDetailedIdentityInvalid)
         normalizedKnown ->
           pollUntilStable maximumVisibilityPolls normalizedKnown
  where
   pollUntilStable remaining known
-    | remaining == 0 = pure (Left VaultAccessorStableAbsenceFailed)
+    | remaining == 0 = pure (Left VaultAccessorAuditDetailedStableAbsenceFailed)
     | otherwise = do
         observation <- observeCorrelated known
         case observation of
           Left err -> pure (Left err)
           Right (True, []) -> do
-            waited <- auditWaitVisibilityGrace ops
+            waited <- detailedAuditWaitVisibilityGrace ops
             case waited of
-              Left _ -> pure (Left VaultAccessorVisibilityWaitFailed)
+              Left failure ->
+                pure (Left (VaultAccessorAuditDetailedVisibilityWaitFailed failure))
               Right () -> do
                 confirmed <- observeCorrelated known
                 case confirmed of
                   Right (True, []) -> pure (Right ())
                   Right (_, visible) -> do
-                    traverse_ (auditRevokeAccessor ops) visible
+                    traverse_ (detailedAuditRevokeAccessor ops) visible
                     pollUntilStable (remaining - 1) known
                   Left err -> pure (Left err)
           Right (_, visible) -> do
@@ -137,10 +192,11 @@ revokeAndProveVaultAccessorSubjectAbsent ops subject maybeKnown = do
             -- eventual-consistency window. Revoke any still-correlated
             -- members provisionally, consume one fixed grace interval, and
             -- retry without extending this finite cleanup budget.
-            traverse_ (auditRevokeAccessor ops) visible
-            waited <- auditWaitVisibilityGrace ops
+            traverse_ (detailedAuditRevokeAccessor ops) visible
+            waited <- detailedAuditWaitVisibilityGrace ops
             case waited of
-              Left _ -> pure (Left VaultAccessorVisibilityWaitFailed)
+              Left failure ->
+                pure (Left (VaultAccessorAuditDetailedVisibilityWaitFailed failure))
               Right () -> pollUntilStable (remaining - 1) known
 
   observeCorrelated known = do
@@ -148,40 +204,47 @@ revokeAndProveVaultAccessorSubjectAbsent ops subject maybeKnown = do
     case knownAbsent of
       Left err -> pure (Left err)
       Right absent -> do
-        matching <- matchingAccessors ops subject
+        matching <- matchingAccessorsDetailed ops subject
         pure ((absent,) <$> matching)
 
   observeKnown known = case known of
     Nothing -> pure (Right True)
     Just accessor -> do
-      observed <- auditObserveAccessorAbsent ops accessor
+      observed <- detailedAuditObserveAccessorAbsent ops accessor
       pure $ case observed of
-        Left _ -> Left VaultAccessorObservationFailed
+        Left failure -> Left (VaultAccessorAuditDetailedObservationFailed failure)
         Right absent -> Right absent
 
 maximumVisibilityPolls :: Int
 maximumVisibilityPolls = 8
 
-matchingAccessors
+matchingAccessorsDetailed
   :: (Monad m)
-  => VaultAccessorAuditOps m
+  => VaultAccessorAuditDetailedOps m failure
   -> VaultAccessorSubject
-  -> m (Either VaultAccessorAuditError [Text])
-matchingAccessors ops subject = do
-  listed <- auditListAccessors ops
+  -> m (Either (VaultAccessorAuditDetailedError failure) [Text])
+matchingAccessorsDetailed ops subject = do
+  listed <- detailedAuditListAccessors ops
   case listed of
-    Left _ -> pure (Left VaultAccessorObservationFailed)
+    Left failure ->
+      pure (Left (VaultAccessorAuditDetailedObservationFailed failure))
     Right accessors -> classify [] accessors
  where
   classify matching [] = pure (Right (reverse matching))
   classify matching (accessor : rest) = do
-    lookedUp <- auditLookupAccessor ops accessor
+    lookedUp <- detailedAuditLookupAccessor ops accessor
     case lookedUp of
-      Left _ -> pure (Left VaultAccessorClassificationFailed)
+      Left failure ->
+        pure (Left (VaultAccessorAuditDetailedClassificationFailed failure))
       Right info ->
         classify
           (if vaultAccessorMatchesSubject subject info then accessor : matching else matching)
           rest
+
+mapLeft :: (left -> mapped) -> Either left value -> Either mapped value
+mapLeft project value = case value of
+  Left failure -> Left (project failure)
+  Right result -> Right result
 
 auditVaultTokenAccessorAbsence
   :: VaultAddress

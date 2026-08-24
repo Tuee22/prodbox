@@ -64,6 +64,13 @@ module Prodbox.Lifecycle.Teardown.OwnershipManifest
   , ObservedDurableWriteAheadOwnershipManifest
   , bindObservedDurableWriteAheadOwnershipManifestForCleanup
   , bindConfirmedLegacyAdoptionManifestForCleanup
+  , ConfirmedLegacyAdoptionManifestWrite
+  , confirmedLegacyAdoptionManifestWrite
+  , confirmedLegacyAdoptionManifestWriteStackKey
+  , confirmedLegacyAdoptionManifestWriteScope
+  , confirmedLegacyAdoptionManifestWritePlanDigest
+  , confirmedLegacyAdoptionManifestWriteReceiptBytes
+  , completeConfirmedLegacyAdoptionManifestReadBack
   , DurableWriteAheadOwnershipManifestError (..)
   , maximumDurableWriteAheadOwnershipManifestBytes
   , OwnershipManifestDecisionEvidence
@@ -72,12 +79,14 @@ module Prodbox.Lifecycle.Teardown.OwnershipManifest
   , ownershipManifestDecisionView
   , ownershipManifestDecisionStackKey
   , ownershipManifestDecisionScope
+  , ownershipManifestDecisionEntryIdentities
   , LegacyAdoptionPlanDigest
   , legacyAdoptionPlanDigestText
   , OwnershipManifestError (..)
   )
 where
 
+import Data.ByteString qualified as ByteString
 import Data.List (nub, sort, sortOn)
 import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
@@ -86,9 +95,13 @@ import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan
   ( ConfirmedLegacyAdoptionPlan
+  , LegacyAdoptionPlanEntry (..)
   , confirmedLegacyAdoptionPlan
   , confirmedLegacyAdoptionPlanDigest
+  , legacyAdoptionPlanEntries
+  , legacyAdoptionPlanScope
   , legacyAdoptionPlanStackKey
+  , legacyAdoptionPlanSurface
   )
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
@@ -505,6 +518,130 @@ bindConfirmedLegacyAdoptionManifestForCleanup
     plan = confirmedLegacyAdoptionPlan confirmed
     confirmedDigest = confirmedLegacyAdoptionPlanDigest confirmed
 
+-- | A confirmed legacy-adoption manifest prepared for durable receipt commit.
+--
+-- The wrapper is opaque and carries the exact confirmed plan beside the
+-- manifest write.  Its receipt bytes are the bytes an effectful repository
+-- must commit and independently read back before
+-- 'completeConfirmedLegacyAdoptionManifestReadBack' can expose cleanup
+-- evidence.  Discovery alone therefore still cannot authorize mutation.
+data ConfirmedLegacyAdoptionManifestWrite (surface :: CleanupSurface)
+  = ConfirmedLegacyAdoptionManifestWrite
+      !(CleanupSurfaceWitness surface)
+      !(ConfirmedLegacyAdoptionPlan surface)
+      !(OwnershipManifestWrite ('LegacyAdoptionOwnership surface) surface)
+      !ByteString.ByteString
+
+confirmedLegacyAdoptionManifestWrite
+  :: CleanupSurfaceWitness surface
+  -> ConfirmedLegacyAdoptionPlan surface
+  -> Either OwnershipManifestError (ConfirmedLegacyAdoptionManifestWrite surface)
+confirmedLegacyAdoptionManifestWrite surface confirmed = do
+  let plan = confirmedLegacyAdoptionPlan confirmed
+      expectedSurface = cleanupSurfaceFromWitness surface
+      actualSurface = legacyAdoptionPlanSurface plan
+  if actualSurface == expectedSurface
+    then Right ()
+    else Left (OwnershipManifestScopeSurfaceMismatch expectedSurface actualSurface)
+  binding <-
+    manifestBindingFor
+      ReconcileDesiredAbsent
+      surface
+      (legacyAdoptionPlanStackKey plan)
+      (legacyAdoptionPlanScope plan)
+  let entries = map adoptionEntry (legacyAdoptionPlanEntries plan)
+      write =
+        manifestWrite
+          (LegacyAdoptionOwnershipValue expectedSurface)
+          binding
+          entries
+      receiptBytes =
+        TextEncoding.encodeUtf8
+          ( Text.intercalate
+              "\n"
+              ( [ "confirmed-legacy-adoption-manifest/v1"
+                , renderPurpose (LegacyAdoptionOwnershipValue expectedSurface)
+                , renderManifestBinding binding
+                , "plan "
+                    <> legacyAdoptionPlanDigestText
+                      (confirmedLegacyAdoptionPlanDigest confirmed)
+                ]
+                  ++ map renderManifestEntry (ownershipManifestWriteEntries write)
+              )
+          )
+  Right
+    ( ConfirmedLegacyAdoptionManifestWrite
+        surface
+        confirmed
+        write
+        receiptBytes
+    )
+ where
+  adoptionEntry entry =
+    OwnershipManifestEntry
+      { ownershipManifestEntryKey = legacyAdoptionEntryKey entry
+      , ownershipManifestEntryCoordinateDigest =
+          legacyAdoptionEntryCoordinateDigest entry
+      , ownershipManifestEntryObservedIdentities =
+          legacyAdoptionEntryIdentities entry
+      }
+
+confirmedLegacyAdoptionManifestWriteStackKey
+  :: ConfirmedLegacyAdoptionManifestWrite surface -> RegisteredResourceKey
+confirmedLegacyAdoptionManifestWriteStackKey
+  (ConfirmedLegacyAdoptionManifestWrite _ _ write _) =
+    ownershipManifestWriteStackKey write
+
+confirmedLegacyAdoptionManifestWriteScope
+  :: ConfirmedLegacyAdoptionManifestWrite surface -> ObservationEvidenceScope
+confirmedLegacyAdoptionManifestWriteScope
+  (ConfirmedLegacyAdoptionManifestWrite _ _ write _) =
+    ownershipManifestWriteScope write
+
+confirmedLegacyAdoptionManifestWritePlanDigest
+  :: ConfirmedLegacyAdoptionManifestWrite surface -> LegacyAdoptionPlanDigest
+confirmedLegacyAdoptionManifestWritePlanDigest
+  (ConfirmedLegacyAdoptionManifestWrite _ confirmed _ _) =
+    confirmedLegacyAdoptionPlanDigest confirmed
+
+confirmedLegacyAdoptionManifestWriteReceiptBytes
+  :: ConfirmedLegacyAdoptionManifestWrite surface -> ByteString.ByteString
+confirmedLegacyAdoptionManifestWriteReceiptBytes
+  (ConfirmedLegacyAdoptionManifestWrite _ _ _ bytes) = bytes
+
+-- | Promote an exact independently read-back confirmed-adoption receipt into
+-- cleanup evidence.  The effectful repository owns byte equality and calls
+-- this function only after its fresh read-back equals
+-- 'confirmedLegacyAdoptionManifestWriteReceiptBytes'.  This function then
+-- rechecks the typed plan/manifest binding and is the only positive minter for
+-- the adoption path.
+completeConfirmedLegacyAdoptionManifestReadBack
+  :: OwnershipManifestProvenance
+  -> OwnershipManifestVersion
+  -> ConfirmedLegacyAdoptionManifestWrite surface
+  -> Either OwnershipManifestError OwnershipManifestDecisionEvidence
+completeConfirmedLegacyAdoptionManifestReadBack
+  provenance
+  version
+  (ConfirmedLegacyAdoptionManifestWrite surface confirmed write _) = do
+    let OwnershipManifestWrite purpose binding digest entries = write
+        verified =
+          VerifiedOwnershipManifestInternal
+            purpose
+            binding
+            provenance
+            version
+            digest
+            entries
+            (Just (confirmedLegacyAdoptionPlanDigest confirmed))
+    target <-
+      mkOwnershipManifestTarget
+        surface
+        (ownershipManifestWriteStackKey write)
+        (ownershipManifestWriteScope write)
+    (\complete -> ValidatedCompleteOwnershipManifest complete entries)
+      <$> bindConfirmedLegacyAdoptionManifestForCleanup target confirmed verified
+
 bindObservedDurableWriteAheadOwnershipManifestForCleanup
   :: OwnershipManifestTarget surface
   -> ObservedDurableWriteAheadOwnershipManifest
@@ -545,7 +682,7 @@ bindObservedDurableWriteAheadOwnershipManifestForCleanup
                   )
             }
     verified <- readBackWriteAheadOwnershipManifest write observation
-    ValidatedCompleteOwnershipManifest
+    (\complete -> ValidatedCompleteOwnershipManifest complete entries)
       <$> bindOwnershipManifestForCleanup target verified
    where
     ownershipEntry entry =
@@ -571,6 +708,7 @@ data OwnershipManifestDecisionEvidence where
     -> OwnershipManifestDecisionEvidence
   ValidatedCompleteOwnershipManifest
     :: !(CompleteOwnershipManifest surface)
+    -> ![OwnershipManifestEntry]
     -> OwnershipManifestDecisionEvidence
 
 -- | Read-only projection of decision evidence.  The complete branch exposes
@@ -595,7 +733,7 @@ ownershipManifestDecisionView
 ownershipManifestDecisionView evidence = case evidence of
   OwnershipManifestObservationOnly observation ->
     OwnershipManifestDecisionObservation observation
-  ValidatedCompleteOwnershipManifest manifest ->
+  ValidatedCompleteOwnershipManifest manifest _ ->
     OwnershipManifestDecisionComplete
       (completeOwnershipManifestProvenance manifest)
       (completeOwnershipManifestVersion manifest)
@@ -604,13 +742,30 @@ ownershipManifestDecisionStackKey
   :: OwnershipManifestDecisionEvidence -> RegisteredResourceKey
 ownershipManifestDecisionStackKey evidence = case evidence of
   OwnershipManifestObservationOnly observation -> ownershipManifestStackKey observation
-  ValidatedCompleteOwnershipManifest manifest -> completeOwnershipManifestStackKey manifest
+  ValidatedCompleteOwnershipManifest manifest _ -> completeOwnershipManifestStackKey manifest
 
 ownershipManifestDecisionScope
   :: OwnershipManifestDecisionEvidence -> ObservationEvidenceScope
 ownershipManifestDecisionScope evidence = case evidence of
   OwnershipManifestObservationOnly observation -> ownershipManifestEvidenceScope observation
-  ValidatedCompleteOwnershipManifest manifest -> completeOwnershipManifestScope manifest
+  ValidatedCompleteOwnershipManifest manifest _ -> completeOwnershipManifestScope manifest
+
+-- | The exact identities receipt-committed for one registered family.
+-- Observation-only evidence carries no mutation allowlist. A complete
+-- manifest returns a value only when it contains exactly one entry for the
+-- requested key; a malformed duplicate or omission therefore fails closed.
+ownershipManifestDecisionEntryIdentities
+  :: RegisteredResourceKey
+  -> OwnershipManifestDecisionEvidence
+  -> Maybe [ObservedResourceIdentity]
+ownershipManifestDecisionEntryIdentities key evidence = case evidence of
+  OwnershipManifestObservationOnly _ -> Nothing
+  ValidatedCompleteOwnershipManifest _ entries -> case [ ownershipManifestEntryObservedIdentities entry
+                                                       | entry <- entries
+                                                       , ownershipManifestEntryKey entry == key
+                                                       ] of
+    [identities] -> Just identities
+    _ -> Nothing
 
 data OwnershipManifestError
   = OwnershipManifestKeyUnregistered !RegisteredResourceKey

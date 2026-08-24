@@ -47,9 +47,12 @@ eksClientAuthProjectionSuite =
     it "rejects non-positive expiry and non-canonical envelope bytes" $ do
       testEksClientAuthProjection
         "123456789012"
-        "ca-central-1"
+        (fixtureAwsRegion FixtureCaCentral1)
         "aws-eks-test-cluster"
-        "arn:aws:eks:ca-central-1:123456789012:cluster/aws-eks-test-cluster"
+        ( "arn:aws:eks:"
+            <> (fixtureAwsRegion FixtureCaCentral1)
+            <> ":123456789012:cluster/aws-eks-test-cluster"
+        )
         "https://example.eks.amazonaws.com"
         "Y2E="
         "bearer"
@@ -60,16 +63,19 @@ eksClientAuthProjectionSuite =
     it "binds the exact EKS ARN to account, region, and cluster" $ do
       testEksClientAuthProjection
         "123456789012"
-        "ca-central-1"
+        (fixtureAwsRegion FixtureCaCentral1)
         "aws-eks-test-cluster"
-        "arn:aws:eks:us-east-1:123456789012:cluster/aws-eks-test-cluster"
+        ("arn:aws:eks:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123456789012:cluster/aws-eks-test-cluster")
         "https://example.eks.amazonaws.com"
         "Y2E="
         "bearer"
         2000000000
         `shouldBe` Left (EksClientAuthFieldInvalid "cluster-arn")
       eksClientAuthClusterArn (sampleProjection "bearer")
-        `shouldBe` "arn:aws:eks:ca-central-1:123456789012:cluster/aws-eks-test-cluster"
+        `shouldBe` ( "arn:aws:eks:"
+                       <> (fixtureAwsRegion FixtureCaCentral1)
+                       <> ":123456789012:cluster/aws-eks-test-cluster"
+                   )
     it "renders kubeconfig with only a FIFO token path, never the bearer" $ do
       let bearer = "k8s-aws-v1.never-in-kubeconfig"
           rendered = LazyByteString.unpack (encode (eksKubeconfig (sampleProjection bearer) "/tmp/token-fifo"))
@@ -121,9 +127,12 @@ sampleProjection bearer =
     id
     ( testEksClientAuthProjection
         "123456789012"
-        "ca-central-1"
+        (fixtureAwsRegion FixtureCaCentral1)
         "aws-eks-test-cluster"
-        "arn:aws:eks:ca-central-1:123456789012:cluster/aws-eks-test-cluster"
+        ( "arn:aws:eks:"
+            <> (fixtureAwsRegion FixtureCaCentral1)
+            <> ":123456789012:cluster/aws-eks-test-cluster"
+        )
         "https://example.eks.amazonaws.com"
         "Y2VydGlmaWNhdGUtYXV0aG9yaXR5"
         bearer
@@ -140,9 +149,12 @@ sampleProjectionFixture
 sampleProjectionFixture bearer =
   testEksClientAuthProjectionFixture
     "123456789012"
-    "ca-central-1"
+    (fixtureAwsRegion FixtureCaCentral1)
     "aws-eks-test-cluster"
-    "arn:aws:eks:ca-central-1:123456789012:cluster/aws-eks-test-cluster"
+    ( "arn:aws:eks:"
+        <> (fixtureAwsRegion FixtureCaCentral1)
+        <> ":123456789012:cluster/aws-eks-test-cluster"
+    )
     "https://example.eks.amazonaws.com"
     "Y2VydGlmaWNhdGUtYXV0aG9yaXR5"
     bearer

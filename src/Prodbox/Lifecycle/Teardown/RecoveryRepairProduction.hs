@@ -61,6 +61,7 @@ module Prodbox.Lifecycle.Teardown.RecoveryRepairProduction
 
     -- * The repair boundary
   , RecoveryRepairChartReconciler
+  , RecoveryRepairPlatformReconciler
   , SubstrateApiWait
   , mkSubstrateApiWait
   , substrateApiWaitAttempts
@@ -98,7 +99,8 @@ import Prodbox.Config.LocalRke2RecoveryState
   , renderLocalRke2RecoveryStateError
   )
 import Prodbox.Config.OrdinaryTeardownRepair
-  ( RetainedArtifactArchitecture (..)
+  ( RecoveryPlatformComponent
+  , RetainedArtifactArchitecture (..)
   , RetainedArtifactKind (..)
   , retainedArtifactArchitectureText
   , retainedArtifactKindText
@@ -322,6 +324,12 @@ substrateApiWaitDelayMicros = internalSubstrateApiDelayMicros
 -- rather than a dependency: the composition that owns both supplies it.
 type RecoveryRepairChartReconciler m = String -> m (Either Text ())
 
+-- | What reconciles the closed non-chart recovery workloads (MinIO and
+-- Vault).  The target is an ADT projected by the recovery plan, not caller
+-- text.
+type RecoveryRepairPlatformReconciler m =
+  RecoveryPlatformComponent -> m (Either Text ())
+
 -- | Compose the five repair arms over one physical boundary.
 recoveryRepairBoundaryOver
   :: (Monad m)
@@ -332,77 +340,86 @@ recoveryRepairBoundaryOver
   -- production caller's argument; the composition only reads bytes under it,
   -- and reading is what a bootstrap-located root is for.
   -> SubstrateApiWait
+  -> RecoveryRepairPlatformReconciler m
   -> RecoveryRepairChartReconciler m
   -> RecoveryRepairBoundary m
-recoveryRepairBoundaryOver physical architecture storeRoot wait reconcileChart =
-  RecoveryRepairBoundary
-    { repairInstallSubstrate = installSubstrate
-    , repairStartSubstrateService =
-        issue RecoveryStartSubstrateService substrateStartSubprocess
-    , repairAwaitSubstrateApi = awaitApi (substrateApiWaitAttempts wait)
-    , repairLoadRetainedImage = \artifact ->
-        issue
-          RecoveryImportRetainedImage
-          ( retainedImageImportSubprocess
-              (storeRoot </> verifiedRetainedArtifactRelativePath artifact)
-          )
-    , repairReconcileRecoveryChart = reconcileChart
-    }
- where
-  installSubstrate artifacts =
-    case substrateInstallStaging architecture storeRoot artifacts of
-      Left detail -> pure (Left detail)
-      Right links -> do
-        staged <- recoveryStageInstallDirectory physical links
-        case staged of
-          Left detail -> pure (Left detail)
-          Right directory -> do
-            ran <- issue RecoveryInstallSubstrate (substrateInstallSubprocess directory)
-            recoveryDiscardInstallDirectory physical directory
-            pure ran
-
-  issue command spec = do
-    ran <- recoveryRunCommand physical command spec
-    pure $ case ran of
-      Left detail ->
-        Left (renderRecoveryRepairCommand command <> " could not be issued: " <> detail)
-      Right output -> case processExitCode output of
-        ExitSuccess -> Right ()
-        ExitFailure code ->
-          Left
-            ( renderRecoveryRepairCommand command
-                <> " exited "
-                <> Text.pack (show code)
-                <> ": "
-                <> commandFailureDetail output
+recoveryRepairBoundaryOver
+  physical
+  architecture
+  storeRoot
+  wait
+  reconcilePlatform
+  reconcileChart =
+    RecoveryRepairBoundary
+      { repairInstallSubstrate = installSubstrate
+      , repairStartSubstrateService =
+          issue RecoveryStartSubstrateService substrateStartSubprocess
+      , repairAwaitSubstrateApi = awaitApi (substrateApiWaitAttempts wait)
+      , repairLoadRetainedImage = \artifact ->
+          issue
+            RecoveryImportRetainedImage
+            ( retainedImageImportSubprocess
+                (storeRoot </> verifiedRetainedArtifactRelativePath artifact)
             )
+      , repairReconcileRecoveryPlatform = reconcilePlatform
+      , repairReconcileRecoveryChart = reconcileChart
+      }
+   where
+    installSubstrate artifacts =
+      case substrateInstallStaging architecture storeRoot artifacts of
+        Left detail -> pure (Left detail)
+        Right links -> do
+          staged <- recoveryStageInstallDirectory physical links
+          case staged of
+            Left detail -> pure (Left detail)
+            Right directory -> do
+              ran <- issue RecoveryInstallSubstrate (substrateInstallSubprocess directory)
+              recoveryDiscardInstallDirectory physical directory
+              pure ran
 
-  -- Availability is the one observer's answer, polled.  A substrate that is
-  -- not yet healthy has not failed, and a substrate that cannot be observed
-  -- has said nothing; both are waited on, and the bound decides.
-  awaitApi remaining = do
-    observed <- recoveryObserveSubstrate physical
-    case observed of
-      Right LocalRke2RecoveryHealthy -> pure (Right ())
-      _
-        | remaining <= 1 -> pure (Left (exhausted observed))
-        | otherwise -> do
-            recoveryPauseMicros physical (substrateApiWaitDelayMicros wait)
-            awaitApi (remaining - 1)
+    issue command spec = do
+      ran <- recoveryRunCommand physical command spec
+      pure $ case ran of
+        Left detail ->
+          Left (renderRecoveryRepairCommand command <> " could not be issued: " <> detail)
+        Right output -> case processExitCode output of
+          ExitSuccess -> Right ()
+          ExitFailure code ->
+            Left
+              ( renderRecoveryRepairCommand command
+                  <> " exited "
+                  <> Text.pack (show code)
+                  <> ": "
+                  <> commandFailureDetail output
+              )
 
-  exhausted observed =
-    "the local substrate API did not become available within "
-      <> Text.pack (show (substrateApiWaitAttempts wait))
-      <> " observations; the last one was "
-      <> case observed of
-        Left detail -> "unobservable: " <> detail
-        Right state -> Text.pack (show state)
+    -- Availability is the one observer's answer, polled.  A substrate that is
+    -- not yet healthy has not failed, and a substrate that cannot be observed
+    -- has said nothing; both are waited on, and the bound decides.
+    awaitApi remaining = do
+      observed <- recoveryObserveSubstrate physical
+      case observed of
+        Right LocalRke2RecoveryHealthy -> pure (Right ())
+        _
+          | remaining <= 1 -> pure (Left (exhausted observed))
+          | otherwise -> do
+              recoveryPauseMicros physical (substrateApiWaitDelayMicros wait)
+              awaitApi (remaining - 1)
+
+    exhausted observed =
+      "the local substrate API did not become available within "
+        <> Text.pack (show (substrateApiWaitAttempts wait))
+        <> " observations; the last one was "
+        <> case observed of
+          Left detail -> "unobservable: " <> detail
+          Right state -> Text.pack (show state)
 
 -- | The host boundary with the production physical acts under it.
 productionRecoveryRepairBoundary
   :: RetainedArtifactArchitecture
   -> RetainedArtifactStore authority
   -> SubstrateApiWait
+  -> RecoveryRepairPlatformReconciler IO
   -> RecoveryRepairChartReconciler IO
   -> RecoveryRepairBoundary IO
 productionRecoveryRepairBoundary architecture store =
@@ -619,6 +636,7 @@ runFixedRepairProduction wait = do
             fixedArchitecture
             fixedStoreRoot
             wait
+            (\_ -> pure (Right ()))
             (\_ -> pure (Right ()))
     result <- use boundary
     recorded <- readIORef journal

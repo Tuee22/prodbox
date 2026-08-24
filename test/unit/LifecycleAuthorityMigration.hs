@@ -410,14 +410,14 @@ lifecycleAuthorityMigrationSuite =
   primaryStore = PrimaryStoreWire endpoint bucket
   backupStore =
     AuthorityBackupStoreWire
-      "https://s3.ca-central-1.amazonaws.com"
-      "ca-central-1"
+      ("https://s3." <> (fixtureAwsRegion FixtureCaCentral1) <> ".amazonaws.com")
+      (fixtureAwsRegion FixtureCaCentral1)
       "prodbox-retained"
       "authority-backup-store/home"
   tlsStore =
     TlsRetentionStoreWire
-      "https://s3.ca-central-1.amazonaws.com"
-      "ca-central-1"
+      ("https://s3." <> (fixtureAwsRegion FixtureCaCentral1) <> ".amazonaws.com")
+      (fixtureAwsRegion FixtureCaCentral1)
       "prodbox-retained"
       "home-local"
       "test.example.com"

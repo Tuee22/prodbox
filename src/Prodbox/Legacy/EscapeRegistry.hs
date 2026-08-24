@@ -259,16 +259,16 @@ escapeCoverageRules =
       { coverageRuleCategory = BespokeCascadeExecutor
       , coverageRuleSymbol = "runNativeDeleteCascade"
       , coverageRuleSites =
-          ["src/Prodbox/CLI/Rke2.hs"]
+          [ "src/Prodbox/CLI/Rke2.hs"
+          , "src/Prodbox/Test/CascadeQualification.hs"
+          , "src/Prodbox/Test/CleanRoomHandoff.hs"
+          ]
       , coverageRuleLedgerRow = "bespoke cascade executor"
       }
   , EscapeCoverageRule
       { coverageRuleCategory = BespokeCascadeExecutor
       , coverageRuleSymbol = "runCascadeDrainResult"
-      , coverageRuleSites =
-          [ "src/Prodbox/CLI/Rke2.hs"
-          , "src/Prodbox/TestRunner.hs"
-          ]
+      , coverageRuleSites = ["src/Prodbox/CLI/Rke2.hs"]
       , coverageRuleLedgerRow = "bespoke cascade executor"
       }
   ]

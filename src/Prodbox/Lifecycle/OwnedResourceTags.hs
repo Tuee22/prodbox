@@ -79,7 +79,7 @@ sesCaptureBucketTags =
 -- audit's query catalog.
 data CodeCreatedAwsResource
   = -- | The throwaway Route 53 hosted zone the @dns-aws@ canonical-suite
-    -- validation creates, owned by @Prodbox.Infra.Route53ValidationZone@.
+    -- validation creates, owned by @Prodbox.Lifecycle.ValidationHostedZone@.
     DnsValidationHostedZone
   deriving (Bounded, Enum, Eq, Ord, Show)
 
@@ -102,7 +102,7 @@ codeCreatedAwsResourceTags resource = case resource of
 -- than as intentionally retained.
 -- | The name prefix every @dns-aws@ validation zone carries.
 --
--- Sprint 7.36 moved it here from @Prodbox.Infra.Route53ValidationZone@ so the
+-- Sprint 7.36 moved it here from the former Infra Route53 owner so the
 -- registered teardown family and the creator/sweep read one constant.  The rest
 -- of a zone's name is a per-run nonce, so this prefix /is/ the family: two
 -- statements of it could disagree about which zones the compiled program sweeps.

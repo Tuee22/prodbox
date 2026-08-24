@@ -136,7 +136,7 @@ request =
     , adminQuotaRequestAuthorityEndpoint = "http://lifecycle-authority:8600"
     , adminQuotaRequestServiceCode = "vpc"
     , adminQuotaRequestCode = "L-F678F1CE"
-    , adminQuotaRequestRegion = "ca-central-1"
+    , adminQuotaRequestRegion = (fixtureAwsRegion FixtureCaCentral1)
     , adminQuotaRequestDesiredValue = "10"
     }
 

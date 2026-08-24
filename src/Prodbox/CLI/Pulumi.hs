@@ -43,14 +43,18 @@ import Prodbox.Lifecycle.LiveResidue
   , awsTestStackName
   , pruneCorruptPerRunCheckpoint
   )
+import Prodbox.Settings
+  ( validateAndLoadSettings
+  , validatedDeploymentContext
+  )
 import Prodbox.Vault.Client
-  ( VaultAddress (..)
-  , vaultSealStatus
+  ( vaultSealStatus
   )
 import Prodbox.Vault.Gate
   ( VaultGateOutcome (..)
   , vaultGateOutcome
   )
+import Prodbox.Vault.Host (vaultAddressForDeploymentContext)
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -76,8 +80,8 @@ data EphemeralPulumiOutputs = EphemeralPulumiOutputs
   deriving (Eq, Show)
 
 runPulumiCommand :: FilePath -> PulumiCommand -> IO ExitCode
-runPulumiCommand =
-  runPulumiCommandWithGate probePulumiVaultGate
+runPulumiCommand repoRoot =
+  runPulumiCommandWithGate (probePulumiVaultGate repoRoot) repoRoot
 
 runPulumiCommandWithGate :: IO VaultGateOutcome -> FilePath -> PulumiCommand -> IO ExitCode
 runPulumiCommandWithGate gate repoRoot command =
@@ -220,19 +224,25 @@ runGatedPulumiApply gate action = do
       writeDiagnosticLine message
       pure (ExitFailure 1)
 
-probePulumiVaultGate :: IO VaultGateOutcome
-probePulumiVaultGate = do
+probePulumiVaultGate :: FilePath -> IO VaultGateOutcome
+probePulumiVaultGate repoRoot = do
   testGate <- lookupEnv "PRODBOX_TEST_PULUMI_VAULT_GATE"
   case testGate of
     Just "allow" -> pure VaultGateProceed
     _ -> do
-      address <- pulumiVaultAddress
-      vaultGateOutcome <$> vaultSealStatus address
-
-pulumiVaultAddress :: IO VaultAddress
-pulumiVaultAddress = do
-  override <- lookupEnv "PRODBOX_TEST_PULUMI_VAULT_ADDR"
-  pure (VaultAddress (Text.pack (maybe "http://127.0.0.1:31820" id override)))
+      settingsResult <- validateAndLoadSettings repoRoot
+      case settingsResult of
+        Left err ->
+          pure
+            ( VaultGateRefuse
+                ( "Blocked: could not load the sealed deployment context for the Vault gate: "
+                    ++ err
+                )
+            )
+        Right settings ->
+          vaultGateOutcome
+            <$> vaultSealStatus
+              (vaultAddressForDeploymentContext (validatedDeploymentContext settings))
 
 buildPulumiExecutionPlan :: String -> Bool -> Plan String
 buildPulumiExecutionPlan commandName confirmed =

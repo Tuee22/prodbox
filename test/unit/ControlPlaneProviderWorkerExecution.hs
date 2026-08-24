@@ -680,6 +680,16 @@ fixtureCapabilities fixture =
         mutation fixture ("validation-zone-reap:" <> namePrefix)
     , observeRetainedEbsVolumesCapability = \lifecycleValue ->
         readOnly fixture ("retained-ebs-observe:" <> lifecycleValue)
+    , observeEksIamRoleFamilyCapability = \roleNames policyNames ->
+        readOnly
+          fixture
+          ("eks-iam-family-observe:" <> roleNames <> ":" <> policyNames)
+    , reapEksIamRoleFamilyCapability = \roleNames policyNames ->
+        mutation fixture ("eks-iam-family-reap:" <> roleNames <> ":" <> policyNames)
+    , observeEksLoadBalancerControllerFamilyCapability = \name tags ->
+        readOnly fixture ("eks-lbc-family-observe:" <> name <> ":" <> tags)
+    , reapEksLoadBalancerControllerFamilyCapability = \name tags ->
+        mutation fixture ("eks-lbc-family-reap:" <> name <> ":" <> tags)
     , observeDns01ChallengeRecordsCapability = \zoneId recordNamePrefix ->
         readOnly
           fixture
@@ -704,6 +714,10 @@ fixtureCapabilities fixture =
         readOnly fixture (readinessLabel probe)
     , issueEksClientAuthCapability = \_ -> readOnly fixture "eks-client-auth"
     , observeEksClusterIdentityCapability = \_ -> readOnly fixture "eks-cluster-identity"
+    , observeNativeStackFamilyCapability = \_ _ ->
+        readOnly fixture "native-stack-family-observe"
+    , reapNativeStackFamilyCapability = \_ _ _ ->
+        mutation fixture "native-stack-family-reap"
     }
 
 mutation :: Fixture -> Text -> ProviderMutation IO Text
@@ -762,6 +776,7 @@ expectedExecutionResult intent = case intent of
   IssueEksClientAuth _ -> ProviderIntentExecutionObserved coordinate evidence
   ObserveTestEbsVolumes _ -> ProviderIntentExecutionObserved coordinate evidence
   ObserveEksClusterIdentity _ -> ProviderIntentExecutionObserved coordinate evidence
+  ObserveNativeStackFamily _ _ -> ProviderIntentExecutionObserved coordinate evidence
   _ -> ProviderIntentExecutionApplied coordinate evidence
  where
   coordinate = providerIntentCoordinate intent
@@ -791,6 +806,8 @@ expectedCalls intent =
         ObserveTestEbsVolumes _ ->
           [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
         ObserveEksClusterIdentity _ ->
+          [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
+        ObserveNativeStackFamily _ _ ->
           [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
         _ ->
           [ call "session-open"
@@ -940,7 +957,7 @@ allIntents =
       ( mustRight
           ( mkEksClientAuthRequest
               "123456789012"
-              "ca-central-1"
+              (fixtureAwsRegion FixtureCaCentral1)
               "aws-eks-test-cluster"
               (ByteString.replicate 32 7)
           )
@@ -950,10 +967,12 @@ allIntents =
           ( mkEksClusterIdentityRequest
               (stackRef "aws-eks")
               "123456789012"
-              "ca-central-1"
+              (fixtureAwsRegion FixtureCaCentral1)
               "aws-eks-test-cluster"
           )
       )
+  , ObserveNativeStackFamily nativeTestRef awsTestConfig
+  , ReapNativeStackFamily nativeTestRef awsTestConfig ["vpc/vpc-fixture"]
   ]
 
 -- The v2 action vocabulary in wire-ordinal order. New actions append to the
@@ -979,7 +998,7 @@ legacyProviderIntentsByOrdinal =
       ( mustRight
           ( mkEksClientAuthRequest
               "123456789012"
-              "ca-central-1"
+              (fixtureAwsRegion FixtureCaCentral1)
               "aws-eks-test-cluster"
               (ByteString.replicate 32 7)
           )
@@ -992,7 +1011,7 @@ legacyProviderIntentsByOrdinal =
           ( mkEksClusterIdentityRequest
               (stackRef "aws-eks")
               "123456789012"
-              "ca-central-1"
+              (fixtureAwsRegion FixtureCaCentral1)
               "aws-eks-test-cluster"
           )
       )
@@ -1060,11 +1079,21 @@ labelFor intent = case intent of
     "retained-ebs-observe:" <> lifecycleValue
   ReapRetainedEbsVolumes lifecycleValue ->
     "retained-ebs-reap:" <> lifecycleValue
+  ObserveEksIamRoleFamily roleNames policyNames ->
+    "eks-iam-family-observe:" <> roleNames <> ":" <> policyNames
+  ReapEksIamRoleFamily roleNames policyNames ->
+    "eks-iam-family-reap:" <> roleNames <> ":" <> policyNames
+  ObserveEksLoadBalancerControllerFamily name tags ->
+    "eks-lbc-family-observe:" <> name <> ":" <> tags
+  ReapEksLoadBalancerControllerFamily name tags ->
+    "eks-lbc-family-reap:" <> name <> ":" <> tags
   ObserveEksClusterIdentity _ -> "eks-cluster-identity"
   ObserveOwnedResourceTags query ->
     "owned-resource-tags:" <> providerOwnedTagQueryKey query
   ObserveDns01ChallengeRecords zoneId recordNamePrefix ->
     "dns01-challenge-observe:" <> zoneId <> ":" <> recordNamePrefix
+  ObserveNativeStackFamily _ _ -> "native-stack-family-observe"
+  ReapNativeStackFamily {} -> "native-stack-family-reap"
 
 readinessLabel :: ProviderReadinessProbe -> Text
 readinessLabel probe = case probe of
@@ -1145,6 +1174,19 @@ revision = mustRight . mkProviderRevision
 
 awsEksConfig :: ProviderStackConfig
 awsEksConfig = mustRight (mkAwsEksProviderStackConfig "127.0.0.1/32")
+
+awsTestConfig :: ProviderStackConfig
+awsTestConfig = mustRight (mkAwsTestProviderStackConfig "127.0.0.1/32")
+
+nativeTestRef :: ProviderNativeStackFamilyRef
+nativeTestRef =
+  mustRight
+    ( mkProviderNativeStackFamilyRef
+        (stackRef "aws-test")
+        "123456789012"
+        (fixtureAwsRegion FixtureCaCentral1)
+        Nothing
+    )
 
 spotPriceQuery :: ProviderSpotPriceQuery
 spotPriceQuery = mustRight (mkProviderSpotPriceQuery "t3.small" "Linux/UNIX")

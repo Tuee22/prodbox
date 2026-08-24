@@ -122,18 +122,28 @@ awsSesLifecycleSuite = do
       case parseAwsSesStackFromOutputs canonicalSesOutputs of
         Left err -> expectationFailure err
         Right snapshot -> do
-          sesSnapshotAwsRegion snapshot `shouldBe` "us-east-1"
+          sesSnapshotAwsRegion snapshot `shouldBe` (fixtureAwsRegion FixtureUsEast1)
           sesSnapshotReceiveSubdomainMxPriority snapshot `shouldBe` 10
           sesSnapshotReceiveSubdomainMxTarget snapshot
-            `shouldBe` "inbound-smtp.us-east-1.amazonaws.com"
+            `shouldBe` ("inbound-smtp." <> (fixtureAwsRegion FixtureUsEast1) <> ".amazonaws.com")
           sesSnapshotCaptureReadinessKey snapshot
             `shouldBe` "inbound/.prodbox-readiness-capability-probe"
       parseAwsSesStackFromOutputs (Map.delete "capture_readiness_key" canonicalSesOutputs)
         `shouldBe` Left "aws-ses Pulumi outputs missing required field 'capture_readiness_key'"
       parseAwsSesStackFromOutputs
-        (Map.insert "receive_subdomain_mx_target" "inbound-smtp.us-west-2.amazonaws.com" canonicalSesOutputs)
+        ( Map.insert
+            "receive_subdomain_mx_target"
+            ("inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com")
+            canonicalSesOutputs
+        )
         `shouldBe` Left
-          "aws-ses Pulumi output 'receive_subdomain_mx_target' is \"inbound-smtp.us-west-2.amazonaws.com\", expected \"inbound-smtp.us-east-1.amazonaws.com\""
+          ( ( "aws-ses Pulumi output 'receive_subdomain_mx_target' is \"inbound-smtp."
+                <> (fixtureAwsRegion FixtureUsWest2)
+                <> ".amazonaws.com\", expected \"inbound-smtp."
+            )
+              <> (fixtureAwsRegion FixtureUsEast1)
+              <> ".amazonaws.com\""
+          )
 
     it "derives the exact home target registry from the retained authority" $
       awsSesTargetSelectionForSink testAuthority homeTarget
@@ -221,12 +231,15 @@ canonicalSesOutputs :: Map.Map Text.Text Text.Text
 canonicalSesOutputs =
   Map.fromList
     [ ("backend_bucket", "prodbox-state")
-    , ("aws_region", "us-east-1")
-    , ("sending_domain", "test.resolvefintech.com")
-    , ("receive_subdomain", "inbox.test.resolvefintech.com")
-    , ("receive_subdomain_mx_fqdn", "inbox.test.resolvefintech.com.")
+    , ("aws_region", (fixtureAwsRegion FixtureUsEast1))
+    , ("sending_domain", "test.example.test")
+    , ("receive_subdomain", "inbox.test.example.test")
+    , ("receive_subdomain_mx_fqdn", "inbox.test.example.test.")
     , ("receive_subdomain_mx_priority", "10")
-    , ("receive_subdomain_mx_target", "inbound-smtp.us-east-1.amazonaws.com")
+    ,
+      ( "receive_subdomain_mx_target"
+      , ("inbound-smtp." <> (fixtureAwsRegion FixtureUsEast1) <> ".amazonaws.com")
+      )
     , ("receive_rule_set_name", "prodbox-receive-rule-set")
     , ("receive_rule_name", "prodbox-capture-all-mail")
     , ("capture_bucket_name", "prodbox-test-ses-capture")

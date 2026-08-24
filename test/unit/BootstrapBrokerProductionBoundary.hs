@@ -53,6 +53,7 @@ import Prodbox.Bootstrap.Broker.KubernetesWorker
   ( ControllerImageIdentity (..)
   , ControllerImageObservation (..)
   , ControllerSelfObservationScope (..)
+  , FenceOwnerWorkerCleanupDecision (..)
   , WorkerPodDecodeReason (..)
   , bootstrapLeaseAnnotationsForFence
   , bootstrapLeaseFromResponse
@@ -60,6 +61,7 @@ import Prodbox.Bootstrap.Broker.KubernetesWorker
   , brokerPodsUrl
   , controllerImageFromResponse
   , decodeWorkerPod
+  , fenceOwnerWorkerCleanupFromResponse
   , fenceOwnerWorkerFromResponse
   , imageDigestFromRuntimeId
   , imageReferenceRepository
@@ -274,6 +276,16 @@ bootstrapBrokerProductionBoundarySuite = do
         (exitedWorkerPodBody canonicalWorkerRequest (digest 'e'))
         `shouldSatisfy` isUnobservableLifecycle
 
+    it "reads a failed Pod with no termination message without inventing a receipt" $ do
+      let failedBody = failedWorkerPodBodyWithoutReceipt canonicalWorkerRequest
+      decodeWorkerPodReason failedBody `shouldBe` Right ()
+      attestSecretWorker
+        canonicalWorkerRequest
+        (workerAttestationFromResponse namespace canonicalWorkerRequest 200 failedBody)
+        `shouldSatisfy` isLeft
+      workerExitFromResponse namespace canonicalCleanupBinding 200 failedBody
+        `shouldSatisfy` isUnobservableLifecycle
+
     it "deletes with the exact UID precondition and requires positive 404 read-back" $ do
       let deleteBody = LazyByteString.toStrict (encode (workerPodDeleteOptions canonicalCleanupBinding))
       deleteBody
@@ -378,6 +390,63 @@ bootstrapBrokerProductionBoundarySuite = do
             (fenceOwnerPodBody "worker-pod-uid" (annotated "7"))
         ]
         $ \observation -> observation `shouldSatisfy` isUnobservableFenceOwnerWorker
+
+  describe "Sprint 2.56 terminal expired-owner cleanup" $ do
+    it "deletes only a terminal worker for the queried fence generation" $ do
+      let heldGeneration = bootstrapFenceGeneration canonicalFence
+          matching phase =
+            fenceOwnerWorkerCleanupFromResponse
+              namespace
+              heldGeneration
+              200
+              ( fenceOwnerPodBodyWithPhase
+                  "worker-pod-uid"
+                  (Map.singleton fenceGenerationAnnotation "7")
+                  phase
+              )
+      forM_ ["Succeeded", "Failed"] $ \phase ->
+        matching phase `shouldBe` FenceOwnerWorkerDeleteTerminated "worker-pod-uid"
+      forM_ ["Pending", "Running", "Unknown"] $ \phase ->
+        matching phase
+          `shouldBe` FenceOwnerWorkerObserved
+            (BootstrapFenceOwnerWorkerPresent heldGeneration)
+
+    it "never deletes a foreign-generation terminal worker" $ do
+      let heldGeneration = bootstrapFenceGeneration canonicalFence
+          decision =
+            fenceOwnerWorkerCleanupFromResponse
+              namespace
+              heldGeneration
+              200
+              ( fenceOwnerPodBodyWithPhase
+                  "replacement-uid"
+                  (Map.singleton fenceGenerationAnnotation "8")
+                  "Failed"
+              )
+      decision `shouldSatisfy` isObservedFenceOwnerAbsence
+
+    it "keeps missing, malformed, and unavailable terminal state unobservable" $ do
+      let heldGeneration = bootstrapFenceGeneration canonicalFence
+          annotated = Map.singleton fenceGenerationAnnotation "7"
+          cases =
+            [ fenceOwnerWorkerCleanupFromResponse
+                namespace
+                heldGeneration
+                200
+                (fenceOwnerPodBody "worker-pod-uid" annotated)
+            , fenceOwnerWorkerCleanupFromResponse
+                namespace
+                heldGeneration
+                200
+                (fenceOwnerPodBodyWithPhase "worker-pod-uid" annotated "Completed")
+            , fenceOwnerWorkerCleanupFromResponse
+                namespace
+                heldGeneration
+                403
+                ByteString.empty
+            ]
+      forM_ cases $ \decision ->
+        decision `shouldSatisfy` isObservedFenceOwnerUnobservable
 
   describe "Sprint 2.48 Kubernetes MicroTime encoding" $ do
     -- Root-caused live and proven server-side with `kubectl create
@@ -541,11 +610,29 @@ bootstrapBrokerProductionBoundarySuite = do
       networkPolicy `shouldContain` "range .Values.kubernetesApiEgress.addresses"
       networkPolicy `shouldNotContain` "port: 443"
 
+  describe "Sprint 2.59 worker fence revalidation RBAC" $
+    it "grants exact worker reads without lifecycle mutation or secret access" $ do
+      repoRoot <- getCurrentDirectory
+      rbac <-
+        readFile (repoRoot </> "charts" </> "bootstrap-broker" </> "templates" </> "tokenreview-rbac.yaml")
+      let workerRole = yamlDocumentNamed "bootstrap-secret-worker-self-observer" rbac
+      workerRole `shouldContain` "      - pods"
+      workerRole `shouldContain` "      - bootstrap-secret-worker"
+      workerRole `shouldContain` "      - coordination.k8s.io"
+      workerRole `shouldContain` "      - leases"
+      workerRole `shouldContain` "      - bootstrap-broker-fence"
+      workerRole `shouldContain` "      - get"
+      workerRole `shouldNotContain` "      - create"
+      workerRole `shouldNotContain` "      - update"
+      workerRole `shouldNotContain` "      - delete"
+      workerRole `shouldNotContain` "      - secrets"
+      workerRole `shouldNotContain` "      - tokenreviews"
+
   describe "Sprint 2.43 Bootstrap Broker self-observation" $ do
-    -- Validation 1: the selector is asserted against the chart's rendered
-    -- label, not against a second copy of the string. A restatement is what
-    -- the defect was.
-    it "selects the label the chart actually renders" $ do
+    -- Validation 1: the query is asserted against both labels in the chart's
+    -- controller selector. The one-shot worker shares the name label but not
+    -- the release-instance label.
+    it "selects the exact controller labels the chart renders" $ do
       repoRoot <- getCurrentDirectory
       helpers <-
         readFile
@@ -564,8 +651,28 @@ bootstrapBrokerProductionBoundarySuite = do
         (sole : _) -> pure sole
         [] -> fail "bootstrap-broker _helpers.tpl renders no app.kubernetes.io/name label"
       renderedName `shouldBe` "prodbox-bootstrap-broker"
+      helpers `shouldContain` "app.kubernetes.io/instance: {{ .Release.Name }}"
       brokerPodsUrl "bootstrap-broker"
-        `shouldContain` ("app.kubernetes.io%2Fname%3D" ++ renderedName)
+        `shouldContain` ( "?labelSelector=app.kubernetes.io%2Fname%3D"
+                            ++ renderedName
+                            ++ "%2Capp.kubernetes.io%2Finstance%3Dbootstrap-broker"
+                        )
+
+    it "keeps the one-shot worker outside the controller selector" $ do
+      let pullReference = mustRight (mkWorkerImagePullReference controllerRuntimeImage)
+          rendered =
+            TextEncoding.decodeUtf8
+              ( LazyByteString.toStrict
+                  ( encode
+                      ( workerPodManifestForIntent
+                          brokerNamespace
+                          pullReference
+                          (secretWorkerRequestIntent canonicalWorkerRequest)
+                      )
+                  )
+              )
+      rendered `shouldSatisfy` Text.isInfixOf "\"app.kubernetes.io/name\""
+      rendered `shouldSatisfy` (not . Text.isInfixOf "\"app.kubernetes.io/instance\"")
 
     -- Validation 2: Kubernetes omits apiVersion/kind on PodList items, so the
     -- observation must succeed without them. This is the exact payload shape a
@@ -585,6 +692,31 @@ bootstrapBrokerProductionBoundarySuite = do
         200
         emptyControllerPodListBody
         `shouldSatisfy` (not . isObservedControllerImage)
+
+    it "selects one live controller alongside retained terminal history" $
+      controllerImageFromResponse
+        ControllerObservedForOwnReadiness
+        brokerNamespace
+        200
+        (controllerPodListBodyWithPhases controllerRuntimeImage ["Succeeded", "Running", "Failed"])
+        `shouldSatisfy` isObservedControllerImage
+
+    it "still refuses multiple live candidates, no live candidate, or one malformed item" $ do
+      forM_
+        [ controllerPodListBodyWithPhases controllerRuntimeImage ["Running", "Pending"]
+        , controllerPodListBodyWithPhases controllerRuntimeImage ["Succeeded", "Failed"]
+        , controllerPodListBodyFromItems
+            [controllerPodItemWithDeletion controllerRuntimeImage "Running" (Just "now") 0]
+        , controllerPodListBodyFromItems
+            [controllerPodItem controllerRuntimeImage "Running" 0, object []]
+        ]
+        $ \body ->
+          controllerImageFromResponse
+            ControllerObservedForOwnReadiness
+            brokerNamespace
+            200
+            body
+            `shouldSatisfy` (not . isObservedControllerImage)
 
     -- Validation 3: both substrate tags validate against the compiled owner;
     -- a foreign repository still fails.
@@ -1029,44 +1161,70 @@ controllerRuntimeImage =
 -- Sprint 2.43 defect.
 controllerPodListBody :: Text.Text -> ByteString.ByteString
 controllerPodListBody image =
+  controllerPodListBodyWithPhases image ["Running"]
+
+controllerPodListBodyWithPhases
+  :: Text.Text -> [Text.Text] -> ByteString.ByteString
+controllerPodListBodyWithPhases image phases =
+  controllerPodListBodyFromItems
+    (zipWith (controllerPodItem image) phases [0 ..])
+
+controllerPodListBodyFromItems :: [Value] -> ByteString.ByteString
+controllerPodListBodyFromItems items =
   LazyByteString.toStrict . encode $
     object
       [ "apiVersion" .= ("v1" :: Text.Text)
       , "kind" .= ("PodList" :: Text.Text)
-      , "items"
-          .= [ object
-                 [ "metadata"
-                     .= object
-                       [ "name" .= ("bootstrap-broker-57b8f8784f-lwdkt" :: Text.Text)
-                       , "namespace" .= brokerNamespace
-                       , "uid" .= ("controller-pod-uid" :: Text.Text)
-                       , "annotations" .= object []
-                       ]
-                 , "spec"
-                     .= object
-                       [ "serviceAccountName" .= ("prodbox-bootstrap-broker" :: Text.Text)
-                       , "containers"
-                           .= [ object
-                                  [ "name" .= ("bootstrap-broker" :: Text.Text)
-                                  , "image" .= image
-                                  ]
-                              ]
-                       ]
-                 , "status"
-                     .= object
-                       [ "phase" .= ("Running" :: Text.Text)
-                       , "containerStatuses"
-                           .= [ object
-                                  [ "name" .= ("bootstrap-broker" :: Text.Text)
-                                  , "imageID" .= sha256 'a'
-                                  , "ready" .= True
-                                  , "state" .= object ["running" .= object []]
-                                  ]
-                              ]
-                       ]
-                 ]
-             ]
+      , "items" .= items
       ]
+
+controllerPodItem :: Text.Text -> Text.Text -> Int -> Value
+controllerPodItem image phase suffix =
+  controllerPodItemWithDeletion image phase Nothing suffix
+
+controllerPodItemWithDeletion
+  :: Text.Text -> Text.Text -> Maybe Text.Text -> Int -> Value
+controllerPodItemWithDeletion image phase deletionTimestamp suffix =
+  object
+    [ "metadata"
+        .= object
+          ( [ "name"
+                .= ( ( "bootstr"
+                         <> fixtureAwsRegion FixtureApBroker57
+                         <> "b8f8784f-"
+                         <> Text.pack (show suffix)
+                     )
+                       :: Text.Text
+                   )
+            , "namespace" .= brokerNamespace
+            , "uid" .= ("controller-pod-uid-" <> Text.pack (show suffix))
+            , "annotations" .= object []
+            ]
+              ++ maybe [] (\timestamp -> ["deletionTimestamp" .= timestamp]) deletionTimestamp
+          )
+    , "spec"
+        .= object
+          [ "serviceAccountName" .= ("prodbox-bootstrap-broker" :: Text.Text)
+          , "containers"
+              .= [ object
+                     [ "name" .= ("bootstrap-broker" :: Text.Text)
+                     , "image" .= image
+                     ]
+                 ]
+          ]
+    , "status"
+        .= object
+          [ "phase" .= phase
+          , "containerStatuses"
+              .= [ object
+                     [ "name" .= ("bootstrap-broker" :: Text.Text)
+                     , "imageID" .= sha256 'a'
+                     , "ready" .= True
+                     , "state" .= object ["running" .= object []]
+                     ]
+                 ]
+          ]
+    ]
 
 emptyControllerPodListBody :: ByteString.ByteString
 emptyControllerPodListBody =
@@ -1081,6 +1239,13 @@ isObservedControllerImage :: ControllerImageObservation -> Bool
 isObservedControllerImage observation = case observation of
   ControllerImageObserved _ -> True
   _ -> False
+
+yamlDocumentNamed :: String -> String -> String
+yamlDocumentNamed name =
+  unlines
+    . takeWhile (/= "---")
+    . dropWhile (/= "  name: " ++ name)
+    . lines
 
 -- | The transport failures a live cluster can actually produce at this
 -- boundary, each paired with the exact reason it must render as. Constructors
@@ -1369,6 +1534,19 @@ exitedWorkerPodBody request receiptDigest =
         ]
     )
 
+failedWorkerPodBodyWithoutReceipt
+  :: SecretFreeWorkerRequest -> ByteString.ByteString
+failedWorkerPodBodyWithoutReceipt request =
+  workerPodBody
+    request
+    "worker-pod-uid"
+    (workerDigestReference (sha256 'a'))
+    (sha256 'a')
+    (workerPodAnnotationsForRequest request)
+    "Failed"
+    False
+    (object ["terminated" .= object ["exitCode" .= (1 :: Int)]])
+
 -- | The rendered refusal for a body, or the empty text when the body decoded.
 -- Named rather than inlined so the redaction case has no @case@ inside a lambda.
 decodeRefusalText :: ByteString.ByteString -> Text.Text
@@ -1518,6 +1696,26 @@ fenceOwnerPodBody podUid annotations =
             ]
       ]
 
+fenceOwnerPodBodyWithPhase
+  :: Text.Text
+  -> Map.Map Text.Text Text.Text
+  -> Text.Text
+  -> ByteString.ByteString
+fenceOwnerPodBodyWithPhase podUid annotations phase =
+  LazyByteString.toStrict . encode $
+    object
+      [ "apiVersion" .= ("v1" :: Text.Text)
+      , "kind" .= ("Pod" :: Text.Text)
+      , "metadata"
+          .= object
+            [ "name" .= workerPodNameForRequest canonicalWorkerRequest
+            , "namespace" .= namespace
+            , "uid" .= podUid
+            , "annotations" .= annotations
+            ]
+      , "status" .= object ["phase" .= phase]
+      ]
+
 fenceGenerationAnnotation :: Text.Text
 fenceGenerationAnnotation = "bootstrap.prodbox.dev/fence-generation"
 
@@ -1603,6 +1801,16 @@ absenceGeneration observation = case observation of
 isUnobservableFenceOwnerWorker :: BootstrapFenceOwnerWorkerObservation -> Bool
 isUnobservableFenceOwnerWorker observation = case observation of
   BootstrapFenceOwnerWorkerUnobservable _ -> True
+  _ -> False
+
+isObservedFenceOwnerAbsence :: FenceOwnerWorkerCleanupDecision -> Bool
+isObservedFenceOwnerAbsence decision = case decision of
+  FenceOwnerWorkerObserved BootstrapFenceOwnerWorkerAbsent {} -> True
+  _ -> False
+
+isObservedFenceOwnerUnobservable :: FenceOwnerWorkerCleanupDecision -> Bool
+isObservedFenceOwnerUnobservable decision = case decision of
+  FenceOwnerWorkerObserved BootstrapFenceOwnerWorkerUnobservable {} -> True
   _ -> False
 
 podIdentityBody :: Text.Text -> ByteString.ByteString

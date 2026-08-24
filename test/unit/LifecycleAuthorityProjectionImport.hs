@@ -446,10 +446,10 @@ lifecycleAuthorityProjectionImportSuite =
             4096
       let legacy = productionLegacyProjectionCoordinates production
           replacement = productionReplacementProjectionCoordinates production
-          leaseName = "leases/123456789012/ca-central-1/aws-ses"
+          leaseName = ("leases/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
           checkpointName = "pulumi-stack/aws-ses"
-          targetName = "target-commit-intents/123456789012/ca-central-1/aws-ses"
-          smtpName = "smtp-commit/123456789012/ca-central-1/aws-ses"
+          targetName = ("target-commit-intents/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
+          smtpName = ("smtp-commit/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
           expectedNames =
             [leaseName, checkpointName, targetName, smtpName]
       fmap
@@ -476,9 +476,9 @@ lifecycleAuthorityProjectionImportSuite =
                   "transit/prodbox-v2"
               )
           otherResource =
-            mustRight (mkLeaseKey "123456789012" "ca-central-1" "other-stack")
+            mustRight (mkLeaseKey "123456789012" (fixtureAwsRegion FixtureCaCentral1) "other-stack")
           malformedAccount =
-            mustRight (mkLeaseKey "1234" "ca-central-1" "aws-ses")
+            mustRight (mkLeaseKey "1234" (fixtureAwsRegion FixtureCaCentral1) "aws-ses")
           malformedRegion =
             mustRight (mkLeaseKey "123456789012" "CA-CENTRAL-1" "aws-ses")
       case mkProductionProjectionImport
@@ -654,7 +654,7 @@ registeredTargets :: RegisteredTargetSet
 registeredTargets = mustRight (mkRegisteredTargetSet 1 [targetSink])
 
 leaseKey :: LeaseKey
-leaseKey = mustRight (mkLeaseKey "123456789012" "ca-central-1" "aws-ses")
+leaseKey = mustRight (mkLeaseKey "123456789012" (fixtureAwsRegion FixtureCaCentral1) "aws-ses")
 
 leaseOwner :: OwnerNonce
 leaseOwner = mustRight (mkOwnerNonce "projection-import-owner")

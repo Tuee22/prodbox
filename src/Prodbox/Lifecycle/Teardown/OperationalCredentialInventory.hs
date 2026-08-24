@@ -163,6 +163,12 @@ data OperationalCredentialConsumer
   | RetainedEbsReapConsumer
   | OwnedResourceTagObserveConsumer
   | Dns01ChallengeRecordObserveConsumer
+  | EksIamRoleFamilyObserveConsumer
+  | EksIamRoleFamilyReapConsumer
+  | EksLoadBalancerControllerFamilyObserveConsumer
+  | EksLoadBalancerControllerFamilyReapConsumer
+  | NativeStackFamilyObserveConsumer
+  | NativeStackFamilyReapConsumer
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 operationalCredentialConsumerForIntent
@@ -194,6 +200,14 @@ operationalCredentialConsumerForIntent intent = case intent of
   ObserveProviderAwsScope -> ProviderAwsScopeObserveConsumer
   ObserveOwnedResourceTags {} -> OwnedResourceTagObserveConsumer
   ObserveDns01ChallengeRecords {} -> Dns01ChallengeRecordObserveConsumer
+  ObserveEksIamRoleFamily {} -> EksIamRoleFamilyObserveConsumer
+  ReapEksIamRoleFamily {} -> EksIamRoleFamilyReapConsumer
+  ObserveEksLoadBalancerControllerFamily {} ->
+    EksLoadBalancerControllerFamilyObserveConsumer
+  ReapEksLoadBalancerControllerFamily {} ->
+    EksLoadBalancerControllerFamilyReapConsumer
+  ObserveNativeStackFamily {} -> NativeStackFamilyObserveConsumer
+  ReapNativeStackFamily {} -> NativeStackFamilyReapConsumer
 
 operationalCredentialInventoryConsumers
   :: OperationalCredentialInventory -> [OperationalCredentialConsumer]

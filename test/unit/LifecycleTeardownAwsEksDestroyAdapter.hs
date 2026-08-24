@@ -290,6 +290,19 @@ lifecycleTeardownAwsEksDestroyAdapterSuite =
           eksConfig
       awsEksDestroyRequestProviderCoordinate request
         `shouldBe` providerIntentCoordinate (awsEksDestroyRequestProviderIntent request)
+      let manifestAuthorization =
+            mustRight
+              ( authorizeFixture
+                  manifestDecision
+                  freshVerified
+                  freshSession
+                  fixtureDrainEvidence
+              )
+          manifestRequest =
+            mustRight
+              (mkAwsEksDestroyRequest manifestAuthorization providerRevision eksConfig)
+      awsEksDestroyRequestProviderIntent manifestRequest
+        `shouldSatisfy` isNativeManifestReap
       mkAwsEksDestroyRequest fixtureAuthorization otherProviderRevision eksConfig
         `shouldBe` Left
           ( AwsEksDestroyProviderRevisionMismatch
@@ -525,6 +538,9 @@ drainEvidenceFor binding attemptId =
             , eksDrainReadBackIngressClass =
                 IngressClassReadBack
                   (EksDrainResourceClassAbsent (AbsenceEvidence "all Ingresses absent"))
+            , eksDrainReadBackControllerOwnerClass =
+                ControllerOwnerClassReadBack
+                  (EksDrainResourceClassAbsent (AbsenceEvidence "controller owner absent"))
             , eksDrainReadBackDeletePolicyPvcs = []
             }
       )
@@ -629,7 +645,7 @@ projectionFor arn endpoint ca =
   mustRight
     ( testEksClientAuthProjection
         "123456789012"
-        "us-east-1"
+        (fixtureAwsRegion FixtureUsEast1)
         "aws-eks-test-cluster"
         arn
         endpoint
@@ -812,6 +828,7 @@ manifestAuthority =
   VerifiedOwnershipManifest
     (OwnershipManifestProvenance "manifest://aws-eks-destroy")
     (OwnershipManifestVersion "manifest-v1")
+    [ObservedResourceIdentity ("eks-cluster/" <> fixtureArn)]
 
 fixtureRunId, otherRunId :: CleanupRunId
 fixtureRunId = mustRight (mkCleanupRunId "cleanup-run/eks-destroy")
@@ -896,13 +913,16 @@ fixtureFoundation = LinuxRke2FoundationId "home-linux-rke2"
 
 fixtureAwsScope :: AwsScope
 fixtureAwsScope =
-  AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")
+  AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))
 
 fixtureArn, otherPartitionArn, fixtureUid, recreatedUid :: Text
 fixtureArn =
-  "arn:aws:eks:us-east-1:123456789012:cluster/aws-eks-test-cluster"
+  ("arn:aws:eks:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123456789012:cluster/aws-eks-test-cluster")
 otherPartitionArn =
-  "arn:aws-us-gov:eks:us-east-1:123456789012:cluster/aws-eks-test-cluster"
+  ( "arn:aws-us-gov:eks:"
+      <> (fixtureAwsRegion FixtureUsEast1)
+      <> ":123456789012:cluster/aws-eks-test-cluster"
+  )
 fixtureUid = "eks-kube-system-uid-original"
 recreatedUid = "eks-kube-system-uid-recreated"
 
@@ -918,7 +938,7 @@ hasManifestAuthority
 hasManifestAuthority result = case result of
   Right authorization ->
     awsEksDestroyAuthorizationAuthorityKind authorization
-      == AwsEksDestroyFromCompleteManifest
+      == AwsEksDestroyFromCompleteManifest ["eks-cluster/" <> fixtureArn]
   Left _ -> False
 
 isAuthorization
@@ -948,6 +968,12 @@ isCaMismatch result = case result of
 isConfigMismatch :: Either AwsEksDestroyRefusal AwsEksDestroyRequest -> Bool
 isConfigMismatch result = case result of
   Left AwsEksDestroyConfigInvalid {} -> True
+  _ -> False
+
+isNativeManifestReap :: ProviderIntent -> Bool
+isNativeManifestReap intent = case intent of
+  ReapNativeStackFamily _ config admitted ->
+    config == eksConfig && admitted == ["eks-cluster/" <> fixtureArn]
   _ -> False
 
 isStillPresent :: Either AwsEksDestroyRefusal CompleteAwsEksDestroy -> Bool

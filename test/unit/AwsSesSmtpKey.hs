@@ -116,7 +116,7 @@ awsSesSmtpKeySuite =
               ["iam", "create-access-key", "--user-name", "prodbox-ses-smtp", "--output", "json"] ->
                 successfulProcess exactCreateJson
               _ -> Failure "unexpected command"
-          environment = [("AWS_REGION", "ca-central-1")]
+          environment = [("AWS_REGION", (fixtureAwsRegion FixtureCaCentral1))]
       inventory <- observeAwsSesSmtpKeyInventoryWith runner "/repo" environment
       cleanup <- deleteAwsSesSmtpAccessKeyWith runner "/repo" environment keyOne
       created <- createAwsSesSmtpAccessKeyWith runner "/repo" environment

@@ -415,6 +415,9 @@ qualificationArtifact trace replacementSource receiptBinding superseded replacem
           frozenTopology
           frozenEnvelope
           frozenLoad
+          frozenTopology
+          frozenConfig
+          frozenEnvelope
       replacementIdentity =
         QualificationIdentity
           replacementSource
@@ -423,6 +426,9 @@ qualificationArtifact trace replacementSource receiptBinding superseded replacem
           replacementDigest
           frozenEnvelope
           frozenLoad
+          replacementDigest
+          frozenTopology
+          frozenEnvelope
       input =
         QualificationEvidenceInput
           "home-local"

@@ -100,10 +100,9 @@ data:
             , minio_secret_key =
 {{ include "gateway.secretRefVault" (dict "mount" "secret" "path" $.Values.vault.paths.minio "field" "minio_secret_key") | nindent 16 }}
             }
-      -- In-cluster MinIO Service endpoint URL for gateway-owned object-store
-      -- access. Operator-overridable via the chart value
-      -- @minio.endpointUrl@; default is the home-substrate canonical
-      -- Service DNS.
+      -- Validated deployment-context endpoint for gateway-owned object-store
+      -- access. The supported ChartPlatform renderer supplies
+      -- @minio.endpointUrl@; the generic chart default is empty.
       , minio_endpoint_url = Some {{ $.Values.minio.endpointUrl | quote }}
       }
     , live =

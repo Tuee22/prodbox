@@ -30,11 +30,13 @@ module Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
   , CascadeEvidenceError (..)
   , CascadeAbsenceEvidence
   , mkCascadeAbsenceEvidence
+  , mkCascadeRunConvergenceEvidence
   , CascadeCredentialDispositionEvidence
   , mkCascadeCredentialDispositionEvidence
   , CascadeTerminalAuditEvidence
   , cascadeAuditScope
   , mkCascadeTerminalAuditEvidence
+  , mkCascadeTerminalConvergenceEvidence
   , CascadeCapabilityCustodyEvidence
   , cascadeExpectedCustodialCapabilities
   , mkCascadeCapabilityCustodyEvidence
@@ -115,10 +117,13 @@ import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isAscii, isAsciiLower, isAsciiUpper, isDigit)
 import Data.List (find, nub, sort)
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Word (Word16)
 import GHC.Generics (Generic)
+import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
 import Prodbox.Lifecycle.AwsInventory
   ( AwsInventory
   , AwsResource
@@ -129,6 +134,8 @@ import Prodbox.Lifecycle.AwsInventory
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDigest
   , CleanupNodeId
+  , CleanupNodeOutcome (CleanupNodeSucceeded)
+  , CleanupNodeState (CleanupNodeCompleted)
   , CleanupOperationId
   , CleanupRun (cleanupRunGraph, cleanupRunGraphDigest, cleanupRunId)
   , CleanupRunId
@@ -284,6 +291,7 @@ data CascadeEvidenceError
   | CascadeResourceUnobservable
       !RegisteredResourceKey
       !(NonEmpty ObservationFailure)
+  | CascadeAbsenceReadBackNotSuccessful ![RegisteredResourceKey]
   | CascadeCredentialScopeMismatch
       !ObservationEvidenceScope
       !ObservationEvidenceScope
@@ -305,6 +313,7 @@ data CascadeEvidenceError
   | CascadeCustodyCapabilityLost !(NonEmpty CapabilityLoss)
   | CascadeCustodyCapabilityUnobservable
       !(NonEmpty (CustodialCapability, Text))
+  | CascadeCustodyRetirementReadBackNotSuccessful ![RegisteredResourceKey]
   | CascadeReceiptKindMismatch !DurableReceiptKind !DurableReceiptKind
   | CascadeReceiptScopeMismatch
       !DurableReceiptKind
@@ -425,6 +434,76 @@ mkCascadeAbsenceEvidence compiled observations = do
                 failures
             )
 
+-- | Rebuild the two convergence proofs that are already present in an opaque,
+-- descriptor-bound cleanup run.  A successful absence read-back state can be
+-- recorded only after 'Execution' has validated the exact key, coordinate,
+-- authority, scope, and provider-absent result.  Likewise, a successful
+-- checkpoint-retirement read-back is the durable rotation proof for that
+-- stack capability.  Consuming those terminal states here avoids weakening a
+-- restart into a process-local cache of the observations that produced them.
+mkCascadeRunConvergenceEvidence
+  :: CompiledDesiredAbsenceProgram 'Cascade
+  -> Map CleanupNodeId CleanupNodeState
+  -> Either
+       CascadeEvidenceError
+       (CascadeAbsenceEvidence, CascadeCapabilityCustodyEvidence)
+mkCascadeRunConvergenceEvidence compiled states = do
+  binding <- cascadeProofBinding compiled
+  let expectedAbsence = cascadeExpectedAbsenceKeys compiled
+      absenceReadBacks =
+        [ (registeredTargetKey target, nodeId)
+        | (nodeId, ReadBackRegisteredTargetAbsent target) <-
+            compiledDesiredAbsenceOperations compiled
+        ]
+      absenceKeys = sort (map fst absenceReadBacks)
+  if absenceKeys == expectedAbsence
+    then Right ()
+    else Left (CascadeAbsenceKeySetMismatch expectedAbsence absenceKeys)
+  let incompleteAbsence =
+        [ key
+        | (key, nodeId) <- absenceReadBacks
+        , not (nodeSucceeded nodeId)
+        ]
+  case incompleteAbsence of
+    [] -> Right ()
+    _ -> Left (CascadeAbsenceReadBackNotSuccessful (sort incompleteAbsence))
+
+  let expectedCapabilities = cascadeExpectedCustodialCapabilities compiled
+      retirementReadBacks =
+        [ (CheckpointCapability (registeredTargetKey target), nodeId)
+        | (nodeId, ReadBackStackCheckpointRetirement target) <-
+            compiledDesiredAbsenceOperations compiled
+        ]
+      actualCapabilities = sort (map fst retirementReadBacks)
+  if actualCapabilities == expectedCapabilities
+    then Right ()
+    else
+      Left
+        ( CascadeCustodyAnswerSetMismatch
+            expectedCapabilities
+            actualCapabilities
+        )
+  let incompleteRetirements =
+        [ key
+        | (CheckpointCapability key, nodeId) <- retirementReadBacks
+        , not (nodeSucceeded nodeId)
+        ]
+  case incompleteRetirements of
+    [] ->
+      Right
+        ( CascadeAbsenceEvidence binding
+        , CascadeCapabilityCustodyEvidence binding
+        )
+    _ ->
+      Left
+        ( CascadeCustodyRetirementReadBackNotSuccessful
+            (sort incompleteRetirements)
+        )
+ where
+  nodeSucceeded nodeId = case Map.lookup nodeId states of
+    Just (CleanupNodeCompleted _ CleanupNodeSucceeded) -> True
+    _ -> False
+
 data CascadeCredentialDispositionEvidence
   = CascadeCredentialDispositionEvidence !CascadeProofBinding
   deriving (Eq, Show)
@@ -514,6 +593,26 @@ mkCascadeTerminalAuditEvidence catalog compiled observation = do
       Left (CascadeTerminalAuditFoundEscapes escaped)
     TerminalAuditUnobservable _ failures ->
       Left (CascadeTerminalAuditUnobservable failures)
+
+-- | A clean terminal audit closes both the escape inventory and the
+-- run-scoped credential disposition.  The retained catalog deliberately
+-- excludes every 'RunScopedCredential', while its query field of view is
+-- checked against every managed credential writer by the repository quality
+-- gate.  Consequently a clean, scope-bound audit is also the independent
+-- provider observation that no disposable credential principal survived.
+-- Keeping the bridge beside the private evidence constructors prevents a
+-- caller from turning an arbitrary boolean or empty answer into disposition.
+mkCascadeTerminalConvergenceEvidence
+  :: RetainedCatalog 'Cascade
+  -> CompiledDesiredAbsenceProgram 'Cascade
+  -> TerminalAuditObservation 'Cascade
+  -> Either
+       CascadeEvidenceError
+       (CascadeCredentialDispositionEvidence, CascadeTerminalAuditEvidence)
+mkCascadeTerminalConvergenceEvidence catalog compiled observation = do
+  audit <- mkCascadeTerminalAuditEvidence catalog compiled observation
+  binding <- cascadeProofBinding compiled
+  Right (CascadeCredentialDispositionEvidence binding, audit)
 
 -- | Sprint 4.89: every custodial capability this cascade run holds is still
 -- held.
@@ -1786,12 +1885,14 @@ fixedCascadeEvidenceRegression = do
           (compiledDesiredAbsenceRunId compiled)
           fixedCascadeFoundation
           Nothing
+          Nothing
           LocalOnlySurface
       localOnlyScoped =
         compileDesiredAbsenceGraph
           (compiledDesiredAbsenceRunId compiled)
           fixedCascadeFoundation
           (Just fixedCascadeAwsScope)
+          Nothing
           LocalOnlySurface
       localOnlyReceiptFor program result =
         DurableReceiptObservation
@@ -2024,6 +2125,7 @@ fixedCascadeEvidenceFixtureFor rawRunId foundation = do
           runId
           foundation
           (Just fixedCascadeAwsScope)
+          Nothing
           CascadeSurface
       )
   owner <- firstShowInternal (mkCleanupOwnerId "cascade-evidence-fixed-regression")
@@ -2281,7 +2383,7 @@ fixedCascadeAwsScope :: AwsScope
 fixedCascadeAwsScope =
   AwsScope
     (AwsAccountId "111122223333")
-    (AwsRegion "ca-central-1")
+    (AwsRegion canonicalRegressionAwsRegion)
 
 mkCleanupRunIdText :: Text -> Either Text CleanupRunId
 mkCleanupRunIdText raw = firstShowInternal (mkCleanupRunId raw)

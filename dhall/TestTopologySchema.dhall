@@ -18,6 +18,8 @@ let Budget =
 
 let RunVariant =
       { cluster : Cluster.ClusterTopology
+      , vault_address : Text
+      , minio_endpoint : Text
       , replicas : Natural
       , failover : Optional FailoverScenario
       }
@@ -151,6 +153,8 @@ let selfMachine =
 let selfVariant =
       { cluster =
           Cluster.ClusterTopology.Rke2 { machines = [ selfMachine ] : List Cluster.Machine }
+      , vault_address = "http://127.0.0.1:31820"
+      , minio_endpoint = "http://127.0.0.1:39000"
       , replicas = 1
       , failover = None FailoverScenario
       }

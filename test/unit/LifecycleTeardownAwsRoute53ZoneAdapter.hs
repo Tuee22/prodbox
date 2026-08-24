@@ -163,7 +163,7 @@ cascadeScope =
     lifecycleRegistryRevision
     (DurableObservationRunScope "aws-route53-zone-adapter-run")
     (LinuxRke2FoundationId "home-rke2")
-    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")))
+    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
     ReconcileDesiredAbsent
 
 isExactAbsent :: ExactObservationResult -> Bool

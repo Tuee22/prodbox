@@ -566,7 +566,7 @@ iamParameters :: CredentialIamParameters
 iamParameters =
   must
     ( mkLifecycleProviderIamParameters
-        "us-west-2"
+        (fixtureAwsRegion FixtureUsWest2)
         "123456789012"
         "prodbox-provider-role"
     )
@@ -656,7 +656,7 @@ adminCredentials =
     { access_key_id = "fixture-admin-access-key-1"
     , secret_access_key = "fixture-admin-secret-access-key-1"
     , session_token = Nothing
-    , region = "us-west-2"
+    , region = (fixtureAwsRegion FixtureUsWest2)
     }
 
 encodePermitIntent :: AwsAdminPermitIntent -> ByteString.ByteString

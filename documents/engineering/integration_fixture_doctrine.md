@@ -232,6 +232,21 @@ engine. It is a client with three additional responsibilities:
 2. attach the originating validation identity and final validation outcome to the generic run; and
 3. assert the durable report, including every cleanup failure, as part of the validation result.
 
+**Current revision.** `Prodbox.Test.LifecycleCleanupClient` is the validation-specific composition
+over that protocol. `TestRunner` supplies the suite identity, exact registered-resource selection,
+kubectl environment, and primary body. The canonical selected-key compiler owns graph shape and
+operation IDs; the authenticated Lifecycle Authority owns registration and restart; the closed
+ordinary dispatcher owns effects; and lifecycle core owns the terminal node-state decision. A
+later invocation adopts the one nonterminal run under the stable suite prefix and does not rerun the
+primary body. The deleted `ManagedCleanupPlan` / `DurableCleanupComposition` modules, direct Route
+53 sweep, ambient absence fixture, and validation-owned success fold have no supported caller.
+
+The retained local config/RKE2/Vault preparation that establishes the Lifecycle Authority may
+precede an ordinary descriptor because the Authority is physically unavailable before that work.
+It creates no selected per-run AWS resource. Registration and claim must be independently
+re-observable before IAM setup or any later mutation that can create one; this is the enforceable
+pre-mutation boundary for `ExplicitPerRun`, not a cascade-only host-uninstall record.
+
 The fixture-side request is pure data:
 
 ```haskell
@@ -288,13 +303,13 @@ remain `Unobservable`; discarded stderr leaves both its cause and whether it rea
 API unknown. Separately, the AWS Tagging API returned one `ResourceTagMapping` for the intentionally
 retained long-lived state-bucket ARN with its full two-tag set; the pre-cutover decoder emitted two
 rows from that one mapping. The global audit returned no per-run mapping, but every exact stack
-observation remained unobservable, not an empty inventory. The old composition must reproduce its
-false three-stack presence classification by copying those two unkeyed decoded rows to `aws-eks`,
-`aws-eks-subzone`, and `aws-test`.
+observation remained unobservable, not an empty inventory. The frozen historical arm reproduces
+the old composition's false three-stack presence classification by copying those two unkeyed
+decoded rows to `aws-eks`, `aws-eks-subzone`, and `aws-test`.
 
-The replacement must report the bucket once as retained, preserve every exact stack observation and
-the caller observation as independently unobservable, select no EKS drain or per-run destroy from
-the global audit, and return the same cleanup run on retry.
+The current replacement reports the bucket once as retained, preserves every exact stack
+observation and the caller observation as independently unobservable, selects no EKS drain or
+per-run destroy from the global audit, and returns the same cleanup run on retry.
 
 Live home and AWS campaigns use the same assertions but remain deployment-qualification evidence
 under Standards O/P in the Development Plan. A fake fixture proves decision structure and
@@ -338,6 +353,13 @@ Four consequences bind this doctrine:
   be valid enough for execution to reach that boundary. A test of a Credential Provisioner refusal,
   for example, must not stop first on an empty substrate coordinate. Deliberately invalid
   prerequisite values belong only in a case that names and asserts that prerequisite refusal.
+- **A generated deployment fixture names where every value came from.** Externally chosen
+  test-deployment values enter through the harness-only `test-secrets.dhall`; ephemeral identities,
+  endpoints, and roots derive from the validated `prodbox.test.dhall` variant/run id; fixed protocol
+  or product identities import their single production declaration. A Haskell literal is not a
+  fourth source. Pure negative tests use reserved/synthetic constructors from `TestSupport`, while
+  live values are injected through the fixture schema. The complete partition is owned by
+  [test_topology_doctrine.md §3](./test_topology_doctrine.md#3-test-run-drives-the-real-deploy-path-across-every-variant).
 
 This document works with:
 

@@ -80,10 +80,11 @@ import Prodbox.Settings
   , renderPublicEdgeAdvertisementMode
   , validateAndLoadSettings
   , validatedConfig
+  , validatedDeploymentContext
   )
 import Prodbox.Subprocess (ProcessOutput (..), Subprocess (..), captureSubprocessResult)
 import Prodbox.Substrate (Substrate (..), substrateId)
-import Prodbox.Vault.Host (hostVaultAddress)
+import Prodbox.Vault.Host (vaultAddressForDeploymentContext)
 import Prodbox.Vault.Status (probeVaultStatusLine)
 import System.Directory (doesFileExist, findExecutable)
 import System.Exit (ExitCode (..))
@@ -441,7 +442,9 @@ runHostPublicEdge repoRoot substrate = do
                                       certExpiryRungText (classifyCertificateExpiry now certificateDoc)
                                   }
                           writeOutput (renderPublicEdgeReport runtime)
-                          (vaultLine, _vaultExit) <- probeVaultStatusLine hostVaultAddress
+                          (vaultLine, _vaultExit) <-
+                            probeVaultStatusLine
+                              (vaultAddressForDeploymentContext (validatedDeploymentContext settings))
                           writeOutputLine vaultLine
                           pure ExitSuccess
                   _ -> failWith "internal error: host public-edge results were incomplete"

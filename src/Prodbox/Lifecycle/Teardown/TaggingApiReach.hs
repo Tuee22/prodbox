@@ -46,6 +46,7 @@ where
 
 import Data.List (nub, sort)
 import Data.Text (Text)
+import Prodbox.Aws.Region (awsGlobalServiceRegion)
 import Prodbox.Lifecycle.Teardown.Model (AwsRegion (..))
 
 -- | How far the Resource Groups Tagging API reaches for one resource type.
@@ -73,7 +74,7 @@ data TaggingApiReach
 
 -- | The region whose Tagging API endpoint answers for global services.
 globalServiceTaggingRegion :: Text
-globalServiceTaggingRegion = "us-east-1"
+globalServiceTaggingRegion = awsGlobalServiceRegion
 
 isGlobalServiceTaggingRegion :: AwsRegion -> Bool
 isGlobalServiceTaggingRegion (AwsRegion region) =

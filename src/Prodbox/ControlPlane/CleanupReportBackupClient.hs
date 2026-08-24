@@ -36,6 +36,7 @@ module Prodbox.ControlPlane.CleanupReportBackupClient
   , renderCleanupReportBackupClientError
   , CleanupReportBackupObservation (..)
   , cleanupReportBackupClient
+  , cleanupReportBackupClientWithTransport
   )
 where
 
@@ -47,7 +48,9 @@ import Data.Text qualified as Text
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError
   , AuthenticatedClientProviders
+  , AuthenticatedClientTransport
   , AuthenticatedTransportBounds
+  , callAuthenticatedClientTransport
   , callAuthenticatedControlPlane
   )
 import Prodbox.ControlPlane.AuthorityBackupEndpoint
@@ -129,6 +132,26 @@ cleanupReportBackupClient
   -> ControlPlaneClient 'AuthorityBackupRuntime
   -> CleanupReportBackupClient IO
 cleanupReportBackupClient bounds providers client =
+  cleanupReportBackupClientOver
+    (callAuthenticatedControlPlane bounds providers client)
+
+-- | Narrow an already authenticated, role-indexed Backup Adapter session to
+-- the cleanup-report object class.  This is the production host-cascade entry:
+-- it preserves the caller, nonce, deadline, and response bounds selected by
+-- the surrounding composition instead of opening a second session.
+cleanupReportBackupClientWithTransport
+  :: AuthenticatedClientTransport 'AuthorityBackupRuntime
+  -> CleanupReportBackupClient IO
+cleanupReportBackupClientWithTransport transport =
+  cleanupReportBackupClientOver (callAuthenticatedClientTransport transport)
+
+cleanupReportBackupClientOver
+  :: ( ControlPlaneRouteFor 'AuthorityBackupRuntime
+       -> ByteString
+       -> IO (Either AuthenticatedClientError ControlPlaneResponse)
+     )
+  -> CleanupReportBackupClient IO
+cleanupReportBackupClientOver call =
   CleanupReportBackupClient
     { copyCleanupReportBackup = copyBlob
     , observeCleanupReportBackup = observeBlob
@@ -138,10 +161,7 @@ cleanupReportBackupClient bounds providers client =
     Left detail -> pure (Left (CleanupReportBackupCiphertextInvalid detail))
     Right ciphertext -> do
       attempted <-
-        callAuthenticatedControlPlane
-          bounds
-          providers
-          client
+        call
           AuthorityBackupCopyRoute
           ( LazyByteString.toStrict
               ( encodeControlPlaneRequest
@@ -165,10 +185,7 @@ cleanupReportBackupClient bounds providers client =
     Left detail -> pure (Left (CleanupReportBackupDigestInvalid detail))
     Right digest -> do
       attempted <-
-        callAuthenticatedControlPlane
-          bounds
-          providers
-          client
+        call
           AuthorityBackupObserveRoute
           ( LazyByteString.toStrict
               ( encodeControlPlaneRequest

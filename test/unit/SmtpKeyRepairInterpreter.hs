@@ -528,7 +528,7 @@ authority =
     )
 
 leaseKey :: LeaseKey
-leaseKey = expectRight (mkLeaseKey "123456789012" "ca-central-1" "aws-ses")
+leaseKey = expectRight (mkLeaseKey "123456789012" (fixtureAwsRegion FixtureCaCentral1) "aws-ses")
 
 leaseCoordinate :: ModelBObjectCoordinate 'ClusterRetained
 leaseCoordinate = expectRight (leaseObjectCoordinate authority leaseKey)
@@ -538,7 +538,7 @@ smtpProjectionCoordinate =
   expectRight
     ( mkClusterRetainedCoordinate
         authority
-        "smtp-commit/123456789012/ca-central-1/aws-ses"
+        ("smtp-commit/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
     )
 
 smtpOperationCoordinate :: ModelBObjectCoordinate 'ClusterRetained

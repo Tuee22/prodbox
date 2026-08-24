@@ -385,7 +385,10 @@ qualificationTeardownCounterexampleSuite =
             , ("operation reconcile-desired-absent", "operation wrong-operation")
             , ("foundation home-linux-rke2", "foundation wrong-foundation")
             , ("aws-account 111122223333", "aws-account 000000000000")
-            , ("aws-region ca-central-1", "aws-region us-east-1")
+            ,
+              ( ("aws-region " <> (fixtureAwsRegion FixtureCaCentral1))
+              , ("aws-region " <> (fixtureAwsRegion FixtureUsEast1))
+              )
             , ("source-head superseded 5a40", "source-head superseded 6a40")
             , ("source-dirty superseded true", "source-dirty superseded false")
             , ("source-policy-version superseded 1", "source-policy-version superseded 2")

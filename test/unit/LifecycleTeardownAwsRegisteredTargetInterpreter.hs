@@ -8,8 +8,13 @@ module LifecycleTeardownAwsRegisteredTargetInterpreter
 where
 
 import Data.IORef
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.Lifecycle.Authority.AdminAction
+  ( PermitFreshness (PermitFresh)
+  , RunnerRole (AdminActionRunner)
+  )
 import Prodbox.Lifecycle.Authority.ClientRegistry
   ( ClientSubmissionKey
   , clientSubmissionKeyText
@@ -42,14 +47,19 @@ import Prodbox.Lifecycle.Teardown.AwsEksAdapter
   , verifiedAwsEksClusterArn
   , verifiedAwsEksExactObservation
   )
+import Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
+  ( encodeAwsNativeStackFamilyEvidence
+  )
 import Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter
 import Prodbox.Lifecycle.Teardown.Execution
 import Prodbox.Lifecycle.Teardown.Graph
+import Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.OwnershipManifest
 import Prodbox.Lifecycle.Teardown.Program
 import Prodbox.Lifecycle.Teardown.ProviderDispatch
+import Prodbox.Lifecycle.Teardown.Registry
 import TestSupport
 
 lifecycleTeardownAwsRegisteredTargetInterpreterSuite :: SuiteBuilder ()
@@ -67,7 +77,7 @@ lifecycleTeardownAwsRegisteredTargetInterpreterSuite =
                    , operationText (nodeFor ReadBackNode AwsTestKey) <> ":absence-readback"
                    ]
       let hasObservationAndReadBack intents = case intents of
-            [ObserveRegisteredStack _, ReadBackRegisteredStack _] -> True
+            [ObserveNativeStackFamily {}, ObserveNativeStackFamily {}] -> True
             _ -> False
       map snd calls `shouldSatisfy` hasObservationAndReadBack
 
@@ -93,9 +103,9 @@ lifecycleTeardownAwsRegisteredTargetInterpreterSuite =
             runNode environment readBackPlan `shouldReturn` CleanupNodeSucceeded
             calls <- readIORef (fakeProviderCalls environment)
             let hasDestroySequence intents = case intents of
-                  [ ObserveRegisteredStack _
+                  [ ObserveNativeStackFamily {}
                     , DestroyRegisteredStack {}
-                    , ReadBackRegisteredStack _
+                    , ObserveNativeStackFamily {}
                     ] -> True
                   _ -> False
             map snd calls `shouldSatisfy` hasDestroySequence
@@ -106,6 +116,21 @@ lifecycleTeardownAwsRegisteredTargetInterpreterSuite =
               `shouldBe` take 2 firstKeys
         )
         [DecisionPrimary]
+
+    it "reaps provider-native resources from complete adopted-manifest authority" $ do
+      environment <- newEnvironment BoundaryHealthy DecisionManifestComplete False
+      let reconcilePlan = nodeFor ReconcileNode AwsTestKey
+          readBackPlan = nodeFor ReadBackNode AwsTestKey
+      runNode environment reconcilePlan `shouldReturn` CleanupNodeSucceeded
+      runNode environment readBackPlan `shouldReturn` CleanupNodeSucceeded
+      calls <- readIORef (fakeProviderCalls environment)
+      let hasNativeReapSequence intents = case intents of
+            [ ObserveNativeStackFamily {}
+              , ReapNativeStackFamily {}
+              , ObserveNativeStackFamily {}
+              ] -> True
+            _ -> False
+      map snd calls `shouldSatisfy` hasNativeReapSequence
 
     it "does not upgrade a present observation-only manifest into destroy authority" $ do
       environment <-
@@ -131,7 +156,7 @@ lifecycleTeardownAwsRegisteredTargetInterpreterSuite =
       outcome `shouldSatisfy` failedWith "AwsRegisteredTargetCheckpointRecoveryRequired"
       calls <- readIORef (fakeProviderCalls environment)
       let isSingleStackObservation intents = case intents of
-            [ObserveRegisteredStack _] -> True
+            [ObserveNativeStackFamily {}] -> True
             _ -> False
       map snd calls `shouldSatisfy` isSingleStackObservation
 
@@ -154,7 +179,10 @@ lifecycleTeardownAwsRegisteredTargetInterpreterSuite =
         [Right verified] -> do
           verifiedAwsEksClusterArn verified
             `shouldBe` Just
-              "arn:aws:eks:ca-central-1:111122223333:cluster/aws-eks-test-cluster"
+              ( "arn:aws:eks:"
+                  <> (fixtureAwsRegion FixtureCaCentral1)
+                  <> ":111122223333:cluster/aws-eks-test-cluster"
+              )
           exactObservationResult (verifiedAwsEksExactObservation verified)
             `shouldSatisfy` isPresent
         other -> expectationFailure ("unexpected verified EKS decisions: " <> show other)
@@ -221,7 +249,7 @@ lifecycleTeardownAwsRegisteredTargetInterpreterSuite =
       providerOutcome
         `shouldSatisfy` failedWith "AwsRegisteredTargetProviderBindingMismatch"
       readIORef (fakeProviderCalls staleProvider)
-        `shouldReturnSatisfying` onlyOneStackObservation
+        `shouldReturn` []
 
     it "contains no fresh submission, host AWS credential, or unsafe escape hatch" $ do
       source <-
@@ -253,6 +281,7 @@ data BoundaryMode
 data DecisionMode
   = DecisionPrimary
   | DecisionManifestObservedPresent
+  | DecisionManifestComplete
   | DecisionBackup
   | DecisionWrongOperation
 
@@ -379,8 +408,20 @@ providerResponse environment submissionKey intent
 observedResponse
   :: ClientSubmissionKey -> ProviderIntent -> TeardownProviderBoundaryResult
 observedResponse submissionKey intent = case intent of
-  ObserveRegisteredStack _ -> TeardownProviderCompleted stackPresentIdentity
-  ReadBackRegisteredStack _ -> TeardownProviderCompleted stackAbsentEvidence
+  ObserveNativeStackFamily ref _ ->
+    TeardownProviderCompleted
+      ( mustRight
+          ( encodeAwsNativeStackFamilyEvidence
+              ref
+              [ "vpc/vpc-fixture"
+              | not
+                  ( Text.isSuffixOf
+                      ":absence-readback"
+                      (clientSubmissionKeyText submissionKey)
+                  )
+              ]
+          )
+      )
   ObserveEksClusterIdentity _ ->
     TeardownProviderCompleted eksEvidence
   ObserveTestEbsVolumes _ ->
@@ -395,7 +436,10 @@ observedResponse submissionKey intent = case intent of
     | Text.isSuffixOf ":absence-readback" (clientSubmissionKeyText submissionKey) =
         "registered EKS cluster is absent"
     | otherwise =
-        "eks-cluster-arn:arn:aws:eks:ca-central-1:111122223333:cluster/aws-eks-test-cluster"
+        ( "eks-cluster-arn:arn:aws:eks:"
+            <> (fixtureAwsRegion FixtureCaCentral1)
+            <> ":111122223333:cluster/aws-eks-test-cluster"
+        )
 
 isDecisionSubmission :: ClientSubmissionKey -> Bool
 isDecisionSubmission =
@@ -404,6 +448,7 @@ isDecisionSubmission =
 isMutation :: ProviderIntent -> Bool
 isMutation intent = case intent of
   DestroyRegisteredStack {} -> True
+  ReapNativeStackFamily {} -> True
   ReapTestEbsVolumes {} -> True
   _ -> False
 
@@ -433,10 +478,13 @@ decisionInputs environment operationId key scope =
     DecisionBackup -> checkpointPair key scope FixtureAbsent FixturePresent
     DecisionManifestObservedPresent ->
       checkpointPair key scope FixtureAbsent FixtureAbsent
+    DecisionManifestComplete ->
+      checkpointPair key scope FixtureAbsent FixtureAbsent
     _ -> checkpointPair key scope FixturePresent FixtureAbsent
   manifest = case fakeDecisionMode environment of
     DecisionManifestObservedPresent ->
       observationOnlyManifestEvidence key scope (OwnershipManifestPresent manifestVersion)
+    DecisionManifestComplete -> completeManifestEvidence key scope
     _ -> observationOnlyManifestEvidence key scope OwnershipManifestAbsent
 
 data CheckpointFixture = FixtureAbsent | FixturePresent
@@ -484,6 +532,49 @@ observationOnlyManifestEvidence key scope result =
         , ownershipManifestResult = result
         }
     )
+
+completeManifestEvidence
+  :: RegisteredResourceKey
+  -> ObservationEvidenceScope
+  -> OwnershipManifestDecisionEvidence
+completeManifestEvidence key scope =
+  mustRight
+    ( completeConfirmedLegacyAdoptionManifestReadBack
+        manifestProvenance
+        manifestVersion
+        write
+    )
+ where
+  plan =
+    mustRight
+      ( planLegacyAdoption
+          CascadeSurface
+          key
+          scope
+          [ exactResourceObservationFor
+              (mustIdentity key)
+              (ObservationRevision 1)
+              scope
+              ( ExactResourcePresent
+                  ( ExactResourceInventory
+                      (ObservedResourceIdentity "vpc/vpc-fixture" :| [])
+                  )
+              )
+          ]
+      )
+  permit =
+    mustRight
+      ( admitAdminLegacyAdoptionPermit
+          PermitFresh
+          AdminLegacyAdoptionPermitRequest
+            { adminLegacyPermitRequestAudience = AdminActionRunner
+            , adminLegacyPermitRequestStackKey = key
+            , adminLegacyPermitRequestPlanDigest = legacyAdoptionPlanDigestOf plan
+            , adminLegacyPermitRequestNonce = "fixture-confirmation"
+            }
+      )
+  confirmed = mustRight (confirmLegacyAdoptionPlan permit plan)
+  write = mustRight (confirmedLegacyAdoptionManifestWrite CascadeSurface confirmed)
 
 providerBinding
   :: FakeEnvironment
@@ -566,7 +657,7 @@ failedWith needle outcome = case outcome of
 onlyOneStackObservation
   :: [(ClientSubmissionKey, ProviderIntent)] -> Bool
 onlyOneStackObservation calls = case map snd calls of
-  [ObserveRegisteredStack _] -> True
+  [ObserveNativeStackFamily {}] -> True
   _ -> False
 
 onlyOneEksObservation
@@ -612,6 +703,11 @@ mustRight result = case result of
   Left err -> error ("expected Right, got " <> show err)
   Right value -> value
 
+mustIdentity :: RegisteredResourceKey -> RegisteredIdentity
+mustIdentity key = case lookupRegisteredIdentity key of
+  Just identity -> identity
+  Nothing -> error ("missing registered identity: " <> show key)
+
 compiled :: CompiledDesiredAbsenceProgram 'Cascade
 compiled =
   mustRight
@@ -619,6 +715,7 @@ compiled =
         cleanupRunId
         foundation
         (Just awsScope)
+        Nothing
         CascadeSurface
     )
 
@@ -632,7 +729,7 @@ awsScope :: AwsScope
 awsScope =
   AwsScope
     (AwsAccountId "111122223333")
-    (AwsRegion "ca-central-1")
+    (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
 
 otherOperationId :: CleanupOperationId
 otherOperationId = mustRight (mkCleanupOperationId "other-operation")
@@ -645,12 +742,6 @@ manifestProvenance = OwnershipManifestProvenance "lifecycle-authority/manifest"
 
 manifestVersion :: OwnershipManifestVersion
 manifestVersion = OwnershipManifestVersion "manifest/version-1"
-
-stackPresentIdentity :: Text
-stackPresentIdentity = "sha256:" <> Text.replicate 64 "a"
-
-stackAbsentEvidence :: Text
-stackAbsentEvidence = "registered stack is absent"
 
 ebsPresentEvidence :: Text
 ebsPresentEvidence =

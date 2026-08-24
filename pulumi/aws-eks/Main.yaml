@@ -1,6 +1,22 @@
 config:
   operatorCidr:
     type: string
+  nodeInstanceType:
+    type: string
+  nodeDiskSizeGiB:
+    type: integer
+  nodeDesiredSize:
+    type: integer
+  nodeMinSize:
+    type: integer
+  nodeMaxSize:
+    type: integer
+  vpcCidr:
+    type: string
+  subnet0Cidr:
+    type: string
+  subnet1Cidr:
+    type: string
 
 variables:
   stackName: ${pulumi.stack}
@@ -45,7 +61,7 @@ resources:
   vpc:
     type: aws:ec2:Vpc
     properties:
-      cidrBlock: "10.91.0.0/16"
+      cidrBlock: ${vpcCidr}
       enableDnsHostnames: true
       enableDnsSupport: true
       tags:
@@ -75,7 +91,7 @@ resources:
     type: aws:ec2:Subnet
     properties:
       vpcId: ${vpc.id}
-      cidrBlock: "10.91.0.0/24"
+      cidrBlock: ${subnet0Cidr}
       availabilityZone: ${availabilityZones[0]}
       mapPublicIpOnLaunch: true
       tags:
@@ -88,7 +104,7 @@ resources:
     type: aws:ec2:Subnet
     properties:
       vpcId: ${vpc.id}
-      cidrBlock: "10.91.1.0/24"
+      cidrBlock: ${subnet1Cidr}
       availabilityZone: ${availabilityZones[1]}
       mapPublicIpOnLaunch: true
       tags:
@@ -197,12 +213,12 @@ resources:
       subnetIds:
         - ${publicSubnet0.id}
       instanceTypes:
-        - t3.large
-      diskSize: 50
+        - ${nodeInstanceType}
+      diskSize: ${nodeDiskSizeGiB}
       scalingConfig:
-        desiredSize: 2
-        minSize: 2
-        maxSize: 2
+        desiredSize: ${nodeDesiredSize}
+        minSize: ${nodeMinSize}
+        maxSize: ${nodeMaxSize}
       tags:
         Name: ${nodeGroupName}
         prodbox.io/managed-by: prodbox

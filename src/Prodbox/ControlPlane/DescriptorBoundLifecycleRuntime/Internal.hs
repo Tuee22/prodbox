@@ -12,10 +12,12 @@ module Prodbox.ControlPlane.DescriptorBoundLifecycleRuntime.Internal
   ( DescriptorBoundLifecycleRuntimeError (..)
   , DescriptorBoundLifecycleUnsupported (..)
   , descriptorBoundLifecycleNodeActionInternal
+  , descriptorBoundOrdinaryLifecycleNodeActionInternal
   , DescriptorBoundLifecycleRuntimeRegression
   , fixedDescriptorBoundLifecycleRuntimeRegression
   , descriptorBoundLifecycleRuntimeCloudOperationsExact
   , descriptorBoundLifecycleRuntimeRecoveryOperationsExact
+  , descriptorBoundLifecycleRuntimeCascadePreUninstallOperationsExact
   , descriptorBoundLifecycleRuntimeCascadeHostOperationsExact
   , descriptorBoundLifecycleRuntimeUnsupportedOperationsExact
   , descriptorBoundLifecycleRuntimeUnsupportedIsRefusal
@@ -35,9 +37,11 @@ import Data.IORef
   , newIORef
   , readIORef
   )
+import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientProviders (..)
   , AuthenticatedClientTransport
@@ -57,10 +61,15 @@ import Prodbox.ControlPlane.CascadeHostRuntime.Internal
   , fixedCascadeHostRuntimeRegression
   , mkCascadeHostRuntime
   )
+import Prodbox.ControlPlane.CascadePreUninstallRuntime.Internal
+  ( CascadePreUninstallRuntime
+  , cascadePreUninstallDescriptorBoundNodeActionInternal
+  )
 import Prodbox.ControlPlane.CleanupRunClient
   ( DescriptorBoundCleanupRun
   , DescriptorBoundCleanupRunClient (..)
   , descriptorBoundCleanupRunClient
+  , descriptorBoundCleanupRunNodeStates
   )
 import Prodbox.ControlPlane.CleanupRunEndpoint
   ( CleanupRunDescriptorResponse (..)
@@ -100,13 +109,16 @@ import Prodbox.Http.ReplyStatus
   )
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.CleanupRun
-  ( CleanupNodeOutcome (..)
+  ( CleanupDigest
+  , CleanupNodeOutcome (..)
   , CleanupNodePlan
+  , CleanupNodeState (..)
   , CleanupOwnerId
   , CleanupPrimaryOutcome (CleanupPrimarySucceeded)
   , CleanupRun
   , beginCleanupNode
   , cleanupDigestText
+  , cleanupGraphDigest
   , cleanupGraphNodes
   , cleanupLeaseFence
   , cleanupNodeId
@@ -133,6 +145,14 @@ import Prodbox.Lifecycle.HostCleanupRunner
   , HostCleanupRunnerEffects (..)
   )
 import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderRevision
+  , ProviderStackConfig
+  , mkAwsEksProviderStackConfig
+  , mkAwsEksSubzoneProviderStackConfig
+  , mkAwsTestProviderStackConfig
+  , mkProviderRevision
+  )
 import Prodbox.Lifecycle.PulumiCheckpoint
 import Prodbox.Lifecycle.Teardown.AwsCheckpointInterpreter
 import Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter
@@ -152,14 +172,19 @@ import Prodbox.Lifecycle.Teardown.CloudRuntime
 import Prodbox.Lifecycle.Teardown.EksDrainInterpreter
 import Prodbox.Lifecycle.Teardown.EksTeardownExecutor
 import Prodbox.Lifecycle.Teardown.Execution
-  ( LifecycleTeardownEffects (..)
-  , TeardownNodeResult (TeardownNodeRefused)
+  ( DurableReceiptKind (OrdinarySurfaceReportReceipt)
+  , DurableReceiptObservation (..)
+  , DurableReceiptObservationResult (..)
+  , LifecycleTeardownEffects (..)
+  , TeardownMutationResult (TeardownMutationApplied)
+  , TeardownNodeResult (..)
   , runCompiledTeardownNodeWithDescriptorContext
   )
 import Prodbox.Lifecycle.Teardown.Graph
   ( CompiledDesiredAbsenceProgram
   , compileDesiredAbsenceGraph
   , compiledDesiredAbsenceGraph
+  , compiledDesiredAbsenceObservationScope
   , compiledDesiredAbsenceOperations
   )
 import Prodbox.Lifecycle.Teardown.Model
@@ -169,7 +194,9 @@ import Prodbox.Lifecycle.Teardown.Model
   , CleanupSurface (Cascade)
   , CleanupSurfaceWitness (..)
   , LinuxRke2FoundationId (..)
+  , ObservationEvidenceScope
   , ObservationFailure (..)
+  , RegisteredResourceKey (..)
   )
 import Prodbox.Lifecycle.Teardown.Program
   ( TeardownOperation (..)
@@ -185,10 +212,7 @@ import System.IO.Temp (withSystemTempDirectory)
 -- refusal classification. Appending a lifecycle operation requires extending
 -- the exhaustive classifier below before this module compiles warning-free.
 data DescriptorBoundLifecycleUnsupported
-  = DescriptorBoundLifecycleCascadeAudit
-  | DescriptorBoundLifecycleCascadePreUninstallReportCommit
-  | DescriptorBoundLifecycleCascadePreUninstallReportReadBack
-  | DescriptorBoundLifecycleLocalOnlyFoundationUninstall
+  = DescriptorBoundLifecycleLocalOnlyFoundationUninstall
   | DescriptorBoundLifecycleLocalOnlyAbsenceReadBack
   | DescriptorBoundLifecycleLocalOnlyCompletionCommit
   | DescriptorBoundLifecycleLocalOnlyCompletionReadBack
@@ -212,13 +236,19 @@ data DescriptorBoundLifecycleRuntimeError
   | DescriptorBoundLifecycleCloudOperationDeclined !Text
   | DescriptorBoundLifecycleRecoveryEnteredCloudRuntime !Text
   | DescriptorBoundLifecycleCascadeHostEnteredCloudRuntime !Text
+  | DescriptorBoundLifecycleCascadeHostRuntimeUnavailable !Text
+  | DescriptorBoundLifecycleCascadePreUninstallEnteredCloudRuntime !Text
+  | DescriptorBoundLifecycleCascadePreUninstallRuntimeUnavailable !Text
+  | DescriptorBoundLifecycleOrdinaryReportEnteredCloudRuntime !Text
   | DescriptorBoundLifecycleOperationUnsupported
       !DescriptorBoundLifecycleUnsupported
   deriving stock (Eq, Show)
 
 data DescriptorBoundLifecycleRoute
   = DescriptorBoundLifecycleRecoveryRoute
+  | DescriptorBoundLifecycleCascadePreUninstallRoute
   | DescriptorBoundLifecycleCascadeHostRoute
+  | DescriptorBoundLifecycleOrdinaryReportRoute
   | DescriptorBoundLifecycleCloudRoute
   | DescriptorBoundLifecycleUnsupportedRoute
       !DescriptorBoundLifecycleUnsupported
@@ -268,23 +298,42 @@ data DescriptorBoundLifecycleOperationShape
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
 -- | Total descriptor-bound lifecycle action. Recovery-plane operations use
--- the released closed host action; cloud operations use the released cloud
--- runtime behind the descriptor-aware Execution validator. Every other
--- operation enters the same validator and is then refused by its exact typed
--- unsupported classification.
+-- the released closed host action; cascade Stage-C operations use the closed
+-- pre-uninstall runtime; cloud operations use the released cloud runtime
+-- behind the descriptor-aware Execution validator. Every other operation
+-- enters the same validator and is then refused by its exact typed unsupported
+-- classification.
 descriptorBoundLifecycleNodeActionInternal
   :: CloudRuntime IO
   -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> CascadePreUninstallRuntime
   -> CascadeHostRuntime
   -> DescriptorBoundCleanupNodeExecutionAction
-descriptorBoundLifecycleNodeActionInternal cloudRuntime transport cascadeHost =
+descriptorBoundLifecycleNodeActionInternal cloudRuntime transport cascadePreUninstall cascadeHost =
   descriptorBoundCleanupNodeAction
-    (dispatchDescriptorBoundLifecycleNode cloudRuntime transport cascadeHost)
+    ( dispatchDescriptorBoundLifecycleNode
+        cloudRuntime
+        transport
+        (Just cascadePreUninstall)
+        (Just cascadeHost)
+    )
+
+-- | The same total dispatcher for an ordinary cleanup surface.  No cascade
+-- host runtime can be supplied: an explicit per-run program has no operation
+-- capable of uninstalling the retained local foundation.
+descriptorBoundOrdinaryLifecycleNodeActionInternal
+  :: CloudRuntime IO
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> DescriptorBoundCleanupNodeExecutionAction
+descriptorBoundOrdinaryLifecycleNodeActionInternal cloudRuntime transport =
+  descriptorBoundCleanupNodeAction
+    (dispatchDescriptorBoundLifecycleNode cloudRuntime transport Nothing Nothing)
 
 dispatchDescriptorBoundLifecycleNode
   :: CloudRuntime IO
   -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
-  -> CascadeHostRuntime
+  -> Maybe CascadePreUninstallRuntime
+  -> Maybe CascadeHostRuntime
   -> DescriptorBoundCleanupRun
   -> CleanupSurfaceWitness surface
   -> CompiledDesiredAbsenceProgram surface
@@ -294,6 +343,7 @@ dispatchDescriptorBoundLifecycleNode
 dispatchDescriptorBoundLifecycleNode
   cloudRuntime
   transport
+  cascadePreUninstall
   cascadeHost
   running
   _
@@ -309,12 +359,38 @@ dispatchDescriptorBoundLifecycleNode
             running
             context
             plan
+        DescriptorBoundLifecycleCascadePreUninstallRoute ->
+          case cascadePreUninstall of
+            Nothing ->
+              pure
+                ( refusalOutcome
+                    ( DescriptorBoundLifecycleCascadePreUninstallRuntimeUnavailable
+                        (teardownOperationTag operation)
+                    )
+                )
+            Just runtime ->
+              cascadePreUninstallDescriptorBoundNodeActionInternal
+                runtime
+                running
+                context
+                plan
         DescriptorBoundLifecycleCascadeHostRoute ->
-          cascadeHostDescriptorBoundNodeActionInternal
-            cascadeHost
-            running
-            context
-            plan
+          case cascadeHost of
+            Nothing ->
+              pure
+                ( refusalOutcome
+                    ( DescriptorBoundLifecycleCascadeHostRuntimeUnavailable
+                        (teardownOperationTag operation)
+                    )
+                )
+            Just runtime ->
+              cascadeHostDescriptorBoundNodeActionInternal
+                runtime
+                running
+                context
+                plan
+        DescriptorBoundLifecycleOrdinaryReportRoute ->
+          runOrdinaryReportAction running compiled context plan
         DescriptorBoundLifecycleCloudRoute -> runCloudAction
         DescriptorBoundLifecycleUnsupportedRoute _ -> runCloudAction
    where
@@ -462,11 +538,11 @@ routeOperationShape shape = case shape of
   DescriptorBoundLifecycleReadBackStackCheckpointRetirement ->
     DescriptorBoundLifecycleCloudRoute
   DescriptorBoundLifecycleAuditCascadeEscapes ->
-    unsupported DescriptorBoundLifecycleCascadeAudit
+    DescriptorBoundLifecycleCascadePreUninstallRoute
   DescriptorBoundLifecycleCommitCascadePreUninstallReport ->
-    unsupported DescriptorBoundLifecycleCascadePreUninstallReportCommit
+    DescriptorBoundLifecycleCascadePreUninstallRoute
   DescriptorBoundLifecycleReadBackCascadePreUninstallReport ->
-    unsupported DescriptorBoundLifecycleCascadePreUninstallReportReadBack
+    DescriptorBoundLifecycleCascadePreUninstallRoute
   DescriptorBoundLifecycleUninstallCascadeLocalFoundation ->
     DescriptorBoundLifecycleCascadeHostRoute
   DescriptorBoundLifecycleReadBackCascadeLocalAbsence ->
@@ -484,9 +560,9 @@ routeOperationShape shape = case shape of
   DescriptorBoundLifecycleReadBackLocalOnlyCompletion ->
     unsupported DescriptorBoundLifecycleLocalOnlyCompletionReadBack
   DescriptorBoundLifecycleCommitOrdinarySurfaceReport ->
-    unsupported DescriptorBoundLifecycleOrdinarySurfaceReportCommit
+    DescriptorBoundLifecycleOrdinaryReportRoute
   DescriptorBoundLifecycleReadBackOrdinarySurfaceReport ->
-    unsupported DescriptorBoundLifecycleOrdinarySurfaceReportReadBack
+    DescriptorBoundLifecycleOrdinaryReportRoute
   DescriptorBoundLifecycleRevokeOperationalCredential ->
     unsupported DescriptorBoundLifecycleOperationalCredentialRevoke
   DescriptorBoundLifecycleReadBackOperationalCredentialRevocation ->
@@ -572,6 +648,24 @@ instance LifecycleTeardownEffects ClosedLifecycleEffects where
                   )
               )
           )
+      DescriptorBoundLifecycleCascadePreUninstallRoute ->
+        pure
+          ( TeardownNodeRefused
+              ( renderRuntimeError
+                  ( DescriptorBoundLifecycleCascadePreUninstallEnteredCloudRuntime
+                      (teardownOperationTag operation)
+                  )
+              )
+          )
+      DescriptorBoundLifecycleOrdinaryReportRoute ->
+        pure
+          ( TeardownNodeRefused
+              ( renderRuntimeError
+                  ( DescriptorBoundLifecycleOrdinaryReportEnteredCloudRuntime
+                      (teardownOperationTag operation)
+                  )
+              )
+          )
       DescriptorBoundLifecycleUnsupportedRoute unsupported ->
         pure
           ( TeardownNodeRefused
@@ -579,6 +673,100 @@ instance LifecycleTeardownEffects ClosedLifecycleEffects where
                   (DescriptorBoundLifecycleOperationUnsupported unsupported)
               )
           )
+
+data OrdinaryReportRuntime = OrdinaryReportRuntime
+  { ordinaryReportScope :: !ObservationEvidenceScope
+  , ordinaryReportGraphDigest :: !CleanupDigest
+  , ordinaryReportReadBackResult :: !DurableReceiptObservationResult
+  }
+
+newtype OrdinaryReportEffects value = OrdinaryReportEffects
+  { runOrdinaryReportEffects :: OrdinaryReportRuntime -> IO value
+  }
+
+instance Functor OrdinaryReportEffects where
+  fmap transform action =
+    OrdinaryReportEffects $ \runtime ->
+      fmap transform (runOrdinaryReportEffects action runtime)
+
+instance Applicative OrdinaryReportEffects where
+  pure value = OrdinaryReportEffects $ \_ -> pure value
+  function <*> value =
+    OrdinaryReportEffects $ \runtime -> do
+      transform <- runOrdinaryReportEffects function runtime
+      input <- runOrdinaryReportEffects value runtime
+      pure (transform input)
+
+instance Monad OrdinaryReportEffects where
+  action >>= next =
+    OrdinaryReportEffects $ \runtime -> do
+      value <- runOrdinaryReportEffects action runtime
+      runOrdinaryReportEffects (next value) runtime
+
+instance LifecycleTeardownEffects OrdinaryReportEffects where
+  executeLifecycleTeardownOperation _ operation =
+    OrdinaryReportEffects (runOrdinaryReportOperation operation)
+
+runOrdinaryReportOperation
+  :: TeardownOperation surface
+  -> OrdinaryReportRuntime
+  -> IO (TeardownNodeResult surface)
+runOrdinaryReportOperation operation runtime = case operation of
+  CommitOrdinarySurfaceReport ->
+    pure (TeardownMutationAttempt TeardownMutationApplied)
+  ReadBackOrdinarySurfaceReport ->
+    pure
+      ( TeardownDurableReceiptObservation
+          DurableReceiptObservation
+            { durableReceiptObservationKind = OrdinarySurfaceReportReceipt
+            , durableReceiptObservationScope = ordinaryReportScope runtime
+            , durableReceiptObservationGraphDigest = ordinaryReportGraphDigest runtime
+            , durableReceiptObservationResult = ordinaryReportReadBackResult runtime
+            }
+      )
+  _ ->
+    pure
+      ( TeardownNodeRefused
+          ( renderRuntimeError
+              ( DescriptorBoundLifecycleOrdinaryReportEnteredCloudRuntime
+                  (teardownOperationTag operation)
+              )
+          )
+      )
+
+runOrdinaryReportAction
+  :: DescriptorBoundCleanupRun
+  -> CompiledDesiredAbsenceProgram surface
+  -> CleanupNodeExecutionContext
+  -> CleanupNodePlan
+  -> IO CleanupNodeOutcome
+runOrdinaryReportAction running compiled context plan =
+  runOrdinaryReportEffects
+    ( runCompiledTeardownNodeWithDescriptorContext
+        running
+        compiled
+        context
+        plan
+    )
+    OrdinaryReportRuntime
+      { ordinaryReportScope = compiledDesiredAbsenceObservationScope compiled
+      , ordinaryReportGraphDigest =
+          cleanupGraphDigest (compiledDesiredAbsenceGraph compiled)
+      , ordinaryReportReadBackResult = ordinaryReportReceiptResult running compiled
+      }
+
+ordinaryReportReceiptResult
+  :: DescriptorBoundCleanupRun
+  -> CompiledDesiredAbsenceProgram surface
+  -> DurableReceiptObservationResult
+ordinaryReportReceiptResult running compiled =
+  case [ nodeId
+       | (nodeId, CommitOrdinarySurfaceReport) <- compiledDesiredAbsenceOperations compiled
+       ] of
+    [commitNode] -> case Map.lookup commitNode (descriptorBoundCleanupRunNodeStates running) of
+      Just (CleanupNodeCompleted _ CleanupNodeSucceeded) -> DurableReceiptObserved
+      _ -> DurableReceiptMissing
+    _ -> DurableReceiptMissing
 
 refusalOutcome
   :: DescriptorBoundLifecycleRuntimeError
@@ -592,6 +780,7 @@ renderRuntimeError = Text.take 1024 . Text.pack . show
 -- handle, operation value, or executable action escapes the public facade.
 data DescriptorBoundLifecycleRuntimeRegression
   = DescriptorBoundLifecycleRuntimeRegression
+      !Bool
       !Bool
       !Bool
       !Bool
@@ -619,6 +808,14 @@ fixedDescriptorBoundLifecycleRuntimeRegression = do
           inventory
           && recoveryPlaneHostRuntimeClosedOperationsExact
             fixedRecoveryPlaneHostRuntimeRegression
+      cascadePreUninstallExact =
+        either
+          (const False)
+          ( \shapes ->
+              shapes == allShapes
+                && routeCount isCascadePreUninstallRoute shapes == 3
+          )
+          inventory
       cascadeHostExact =
         either
           (const False)
@@ -639,21 +836,42 @@ fixedDescriptorBoundLifecycleRuntimeRegression = do
           -- typed refusals like every other unreleased operation.
           -- Sprint 4.86 (2026-08-19): 19 rather than 23 — the four cascade
           -- host nodes now have a released runtime.
-          (\shapes -> shapes == allShapes && routeCount isUnsupportedRoute shapes == 19)
+          -- Sprint 6.5 (2026-08-23): 14 rather than 17 — the cascade audit,
+          -- report commit, and report read-back now have a closed runtime.
+          (\shapes -> shapes == allShapes && routeCount isUnsupportedRoute shapes == 14)
           inventory
       cloudExecuted = either (const False) (\(exact, _, _) -> exact) exercised
-      unsupportedExecuted = either (const False) (\(_, exact, _) -> exact) exercised
+      cascadePreUninstallExecuted =
+        either (const False) (\(_, exact, _) -> exact) exercised
       cascadeHostExecuted = either (const False) (\(_, _, exact) -> exact) exercised
-      closed = cloudExecuted && unsupportedExecuted && cascadeHostExecuted
+      unsupportedIsRefusal =
+        not
+          ( Text.null
+              ( renderRuntimeError
+                  ( DescriptorBoundLifecycleOperationUnsupported
+                      DescriptorBoundLifecycleLocalOnlyFoundationUninstall
+                  )
+              )
+          )
+      closed =
+        cloudExecuted
+          && cascadePreUninstallExecuted
+          && cascadeHostExecuted
+          && unsupportedIsRefusal
       descriptorBound = closed && cloudExact && unsupportedExact
-      opaque = descriptorBound && recoveryExact && cascadeHostExact
+      opaque =
+        descriptorBound
+          && recoveryExact
+          && cascadePreUninstallExact
+          && cascadeHostExact
   pure
     ( DescriptorBoundLifecycleRuntimeRegression
         cloudExact
         recoveryExact
+        cascadePreUninstallExact
         cascadeHostExact
         unsupportedExact
-        unsupportedExecuted
+        unsupportedIsRefusal
         closed
         descriptorBound
         opaque
@@ -662,42 +880,47 @@ fixedDescriptorBoundLifecycleRuntimeRegression = do
 descriptorBoundLifecycleRuntimeCloudOperationsExact
   :: DescriptorBoundLifecycleRuntimeRegression -> Bool
 descriptorBoundLifecycleRuntimeCloudOperationsExact
-  (DescriptorBoundLifecycleRuntimeRegression exact _ _ _ _ _ _ _) = exact
+  (DescriptorBoundLifecycleRuntimeRegression exact _ _ _ _ _ _ _ _) = exact
 
 descriptorBoundLifecycleRuntimeRecoveryOperationsExact
   :: DescriptorBoundLifecycleRuntimeRegression -> Bool
 descriptorBoundLifecycleRuntimeRecoveryOperationsExact
-  (DescriptorBoundLifecycleRuntimeRegression _ exact _ _ _ _ _ _) = exact
+  (DescriptorBoundLifecycleRuntimeRegression _ exact _ _ _ _ _ _ _) = exact
+
+descriptorBoundLifecycleRuntimeCascadePreUninstallOperationsExact
+  :: DescriptorBoundLifecycleRuntimeRegression -> Bool
+descriptorBoundLifecycleRuntimeCascadePreUninstallOperationsExact
+  (DescriptorBoundLifecycleRuntimeRegression _ _ exact _ _ _ _ _ _) = exact
 
 descriptorBoundLifecycleRuntimeCascadeHostOperationsExact
   :: DescriptorBoundLifecycleRuntimeRegression -> Bool
 descriptorBoundLifecycleRuntimeCascadeHostOperationsExact
-  (DescriptorBoundLifecycleRuntimeRegression _ _ exact _ _ _ _ _) = exact
+  (DescriptorBoundLifecycleRuntimeRegression _ _ _ exact _ _ _ _ _) = exact
 
 descriptorBoundLifecycleRuntimeUnsupportedOperationsExact
   :: DescriptorBoundLifecycleRuntimeRegression -> Bool
 descriptorBoundLifecycleRuntimeUnsupportedOperationsExact
-  (DescriptorBoundLifecycleRuntimeRegression _ _ _ exact _ _ _ _) = exact
+  (DescriptorBoundLifecycleRuntimeRegression _ _ _ _ exact _ _ _ _) = exact
 
 descriptorBoundLifecycleRuntimeUnsupportedIsRefusal
   :: DescriptorBoundLifecycleRuntimeRegression -> Bool
 descriptorBoundLifecycleRuntimeUnsupportedIsRefusal
-  (DescriptorBoundLifecycleRuntimeRegression _ _ _ _ exact _ _ _) = exact
+  (DescriptorBoundLifecycleRuntimeRegression _ _ _ _ _ exact _ _ _) = exact
 
 descriptorBoundLifecycleRuntimeNoCallerContinuation
   :: DescriptorBoundLifecycleRuntimeRegression -> Bool
 descriptorBoundLifecycleRuntimeNoCallerContinuation
-  (DescriptorBoundLifecycleRuntimeRegression _ _ _ _ _ exact _ _) = exact
+  (DescriptorBoundLifecycleRuntimeRegression _ _ _ _ _ _ exact _ _) = exact
 
 descriptorBoundLifecycleRuntimeDescriptorBoundOnly
   :: DescriptorBoundLifecycleRuntimeRegression -> Bool
 descriptorBoundLifecycleRuntimeDescriptorBoundOnly
-  (DescriptorBoundLifecycleRuntimeRegression _ _ _ _ _ _ exact _) = exact
+  (DescriptorBoundLifecycleRuntimeRegression _ _ _ _ _ _ _ exact _) = exact
 
 descriptorBoundLifecycleRuntimeOpacityClosed
   :: DescriptorBoundLifecycleRuntimeRegression -> Bool
 descriptorBoundLifecycleRuntimeOpacityClosed
-  (DescriptorBoundLifecycleRuntimeRegression _ _ _ _ _ _ _ exact) = exact
+  (DescriptorBoundLifecycleRuntimeRegression _ _ _ _ _ _ _ _ exact) = exact
 
 routeCount
   :: (DescriptorBoundLifecycleRoute -> Bool)
@@ -714,6 +937,11 @@ isCloudRoute route = case route of
 isRecoveryRoute :: DescriptorBoundLifecycleRoute -> Bool
 isRecoveryRoute route = case route of
   DescriptorBoundLifecycleRecoveryRoute -> True
+  _ -> False
+
+isCascadePreUninstallRoute :: DescriptorBoundLifecycleRoute -> Bool
+isCascadePreUninstallRoute route = case route of
+  DescriptorBoundLifecycleCascadePreUninstallRoute -> True
   _ -> False
 
 isCascadeHostRoute :: DescriptorBoundLifecycleRoute -> Bool
@@ -775,6 +1003,7 @@ shapesFor rawRunId witness maybeAwsScope = do
           runId
           regressionFoundation
           maybeAwsScope
+          Nothing
           witness
       )
   pure
@@ -828,16 +1057,18 @@ exerciseRegressionRoutes
   descriptor
   cascadeHost = do
     cloud <- execute "observe/aws-test"
-    unsupported <- execute "audit-cascade-escapes"
+    cascadePreUninstall <- execute "audit-cascade-escapes"
     cascade <- execute "uninstall-cascade-local-foundation"
     pure $ do
       (cloudOutcome, cloudCalls) <- cloud
-      (unsupportedOutcome, unsupportedCalls) <- unsupported
+      (cascadePreUninstallOutcome, cascadePreUninstallCalls) <- cascadePreUninstall
       (cascadeOutcome, cascadeCalls) <- cascade
       pure
         ( cloudCalls == 1 && isFailedOutcome cloudOutcome
-        , unsupportedCalls == 0
-            && failedWith "DescriptorBoundLifecycleCascadeAudit" unsupportedOutcome
+        , cascadePreUninstallCalls == 0
+            && failedWith
+              "DescriptorBoundLifecycleCascadePreUninstallRuntimeUnavailable"
+              cascadePreUninstallOutcome
         , -- The destructive host node reaches the closed cascade host runtime
           -- and never the cloud runtime: an empty durable record refuses
           -- before any effect is taken.
@@ -911,10 +1142,13 @@ executeRegressionOperation
               Right context -> do
                 atomicModifyIORef' providerCalls (const (0, ()))
                 outcome <-
-                  descriptorBoundLifecycleNodeActionInternal
-                    cloudRuntime
-                    transport
-                    cascadeHost
+                  descriptorBoundCleanupNodeAction
+                    ( dispatchDescriptorBoundLifecycleNode
+                        cloudRuntime
+                        transport
+                        Nothing
+                        (Just cascadeHost)
+                    )
                     bound
                     context
                     plan
@@ -942,6 +1176,7 @@ regressionDescriptorFixture = do
           runId
           regressionFoundation
           (Just regressionAwsScope)
+          Nothing
           CascadeSurface
       )
   initialRun <-
@@ -1169,7 +1404,17 @@ regressionRegisteredInterpreter providerCalls =
     , awsRegisteredTargetReadStackDecisionInputs =
         \_ _ _ -> pure (Left "fixed decision reader refusal")
     , awsRegisteredTargetReadStackProviderBinding =
-        \_ _ _ -> pure (Left "fixed Provider-binding reader refusal")
+        \operationId key scope ->
+          pure
+            ( firstShow
+                ( mkAwsStackProviderBinding
+                    operationId
+                    key
+                    scope
+                    regressionProviderRevision
+                    (regressionProviderConfig key)
+                )
+            )
     , awsRegisteredTargetPresentEksDestroyBoundary =
         mkAwsEksPresentDestroyBoundary $ \_ _ _ ->
           pure (Left AwsRegisteredTargetEksDrainProofRequired)
@@ -1279,7 +1524,22 @@ regressionAwsScope :: AwsScope
 regressionAwsScope =
   AwsScope
     (AwsAccountId "111122223333")
-    (AwsRegion "ca-central-1")
+    (AwsRegion canonicalRegressionAwsRegion)
+
+regressionProviderRevision :: ProviderRevision
+regressionProviderRevision =
+  either (error . show) id (mkProviderRevision 1)
+
+regressionProviderConfig :: RegisteredResourceKey -> ProviderStackConfig
+regressionProviderConfig key = case key of
+  AwsEksKey -> mustConfig (mkAwsEksProviderStackConfig "127.0.0.1/32")
+  AwsEksSubzoneKey ->
+    mustConfig
+      (mkAwsEksSubzoneProviderStackConfig "ZREGRESSION" "aws.example.test")
+  AwsTestKey -> mustConfig (mkAwsTestProviderStackConfig "127.0.0.1/32")
+  _ -> error ("fixed dispatcher requested Provider config for " <> show key)
+ where
+  mustConfig = either (error . show) id
 
 firstShow :: (Show err) => Either err value -> Either Text value
 firstShow = first (Text.pack . show)

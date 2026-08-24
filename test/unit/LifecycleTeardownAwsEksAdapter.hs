@@ -84,9 +84,18 @@ lifecycleTeardownAwsEksAdapterSuite =
             exactObservationResult observation `shouldSatisfy` isNotAbsent
         )
         [ exactAbsentEvidence <> " "
-        , "eks-cluster-arn:arn:aws:eks:us-west-2:123456789012:cluster/aws-eks-test-cluster"
-        , "eks-cluster-arn:arn:aws:eks:us-east-1:999999999999:cluster/aws-eks-test-cluster"
-        , "eks-cluster-arn:arn:aws:eks:us-east-1:123456789012:cluster/another-cluster"
+        , ( "eks-cluster-arn:arn:aws:eks:"
+              <> (fixtureAwsRegion FixtureUsWest2)
+              <> ":123456789012:cluster/aws-eks-test-cluster"
+          )
+        , ( "eks-cluster-arn:arn:aws:eks:"
+              <> (fixtureAwsRegion FixtureUsEast1)
+              <> ":999999999999:cluster/aws-eks-test-cluster"
+          )
+        , ( "eks-cluster-arn:arn:aws:eks:"
+              <> (fixtureAwsRegion FixtureUsEast1)
+              <> ":123456789012:cluster/another-cluster"
+          )
         , "eks-cluster-arn:"
         , "sha256:0123456789abcdef"
         , "connection refused"
@@ -189,7 +198,7 @@ staleRegistryScope =
 
 validAwsScope :: Maybe AwsScope
 validAwsScope =
-  Just (AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1"))
+  Just (AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1)))
 
 staleRegistryRevision :: RegistryRevision
 staleRegistryRevision = RegistryRevision "lifecycle-registry/stale"
@@ -203,7 +212,7 @@ canonicalClusterName = "aws-eks-test-cluster"
 
 canonicalArn :: Text
 canonicalArn =
-  "arn:aws:eks:us-east-1:123456789012:cluster/aws-eks-test-cluster"
+  ("arn:aws:eks:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123456789012:cluster/aws-eks-test-cluster")
 
 exactAbsentEvidence, exactPresentEvidence :: Text
 exactAbsentEvidence = "registered EKS cluster is absent"

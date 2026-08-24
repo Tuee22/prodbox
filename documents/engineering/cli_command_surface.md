@@ -364,6 +364,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox test integration teardown-recovery` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration certificate-scope` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration clean-room-handoff` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration cascade-qualification` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration ha-rke2-aws` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration lifecycle` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration pulumi` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
@@ -395,6 +396,7 @@ The per-group command matrix (generated; do not edit by hand):
 |---------|-----------|---------|
 | `prodbox vault status` | none | none |
 | `prodbox vault init` | none | none |
+| `prodbox vault reset-ambiguous-initialization` | none | `--yes` |
 | `prodbox vault unseal` | none | none |
 | `prodbox vault seal` | none | none |
 | `prodbox vault reconcile` | none | none |
@@ -425,6 +427,10 @@ Per-command intent (authoritative model in
   policy-reconciled through the daemon status route.
 - `prodbox vault init` — idempotent init-if-empty; capture the unseal/recovery keys and root
   token once into the password-AEAD-sealed unlock bundle in the durable MinIO bucket.
+- `prodbox vault reset-ambiguous-initialization --yes` — recover only when the Broker has durably
+  classified initialization as ambiguous and independently proves the exact storage generation is
+  resettable. The host cannot select a storage path, generation, Pod, or proof; omitting `--yes`
+  refuses without mutation.
 - `prodbox vault unseal` — prompt for the unlock-bundle password and unseal Vault; it posts the
   password to the daemon bootstrap endpoint, which reads MinIO and calls Vault in-cluster.
 - `prodbox vault seal` — seal Vault (fail-closed back to the sealed-state invariant).
@@ -893,7 +899,7 @@ platform.
 
 The current public chart surface ships:
 
-- Keycloak on the shared hostname `test.resolvefintech.com` under `/auth`
+- Keycloak on the substrate's validated shared hostname under `/auth`
 - redirect-only HTTP on port `80`, which permanently redirects to the same shared-host path over
   HTTPS
 - `vscode` on `/vscode`, protected by Envoy Gateway `SecurityPolicy`
@@ -995,14 +1001,13 @@ Named suite commands:
   target outbox. That migration remains plan-tracked
 - excludes retained `aws-ses` from ordinary suite cleanup on success, failure, and Ctrl-C; only the
   explicit long-lived destroy surfaces remove it
-- once `runWithAwsHarnessCleanup` is entered, interprets the current
-  Lifecycle-Authority-backed durable cleanup composition so independent nodes continue after
-  failure, IAM teardown waits for
-  credential-dependent destroys, and cleanup failure makes the run fail. Some preparatory mutation
-  still precedes that wrapper, and the current composition does not durably register every
-  obligation before mutation or prove exact terminal absence. Those stronger properties belong to
-  the target lifecycle-client composition in
-  [Test Topology Doctrine §5](./test_topology_doctrine.md#5-artifact-teardown-and-lifecycle-class-projection)
+- enters `runWithAwsHarnessCleanup` before IAM setup or any mutation that can create a selected
+  per-run AWS resource. The authenticated descriptor-bound client selects exact registry keys;
+  lifecycle core owns graph/operation-ID compilation, Authority registration, closed ordinary
+  dispatch, same-run restart, exact terminal observation, and the node-success decision. Local
+  config/RKE2/Vault desired-presence preparation necessarily precedes this ordinary descriptor
+  because it establishes the retained Authority. Operational IAM teardown remains a legacy tail
+  pending Sprint `6.5`, and runs only when the lifecycle-owned exact node decision permits it
 - waits for `prodbox edge status` to report `CLASSIFICATION=ready-for-external-proof` before
   external `charts-vscode`, `charts-api`, `charts-websocket`, or `admin-routes` proof continues
   on the supported-runtime path
@@ -1136,12 +1141,13 @@ there is no repository-config, Gateway-config, or environment fallback. `--dry-r
 document and renders the secret-free bounded listener/store/limit plan, while `--plan-file` uses the
 ordinary plan-output contract.
 
-The controller accepts only loopback listeners and a closed fifteen-route protocol. Client,
+The controller accepts only loopback listeners and a closed seventeen-route protocol. Client,
 server, deterministic fake, and execution engine share that exact schema, and the engine carries
 the same indexed `CapabilityRef` through admission and execution. The production APPLY boundary
-currently exposes liveness and refuses readiness and all non-health operations. Chart/render
-foundations exist, but the physical adapters are not the active production path. The command row
-therefore records a code-local runtime surface, not deployment qualification or operational
+includes a secret-free fixed-coordinate post-unseal handoff mutation used by native reconcile only
+after Lifecycle Authority rollout; the public `vault unseal` and `vault reconcile` leaves close on
+their own exact worker/baseline receipts and cannot hide that later graph effect. The command row
+records the runtime surface, not deployment qualification or operational
 cutover; status lives only in the
 [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here). The combined gateway
 bootstrap routes remain only in the

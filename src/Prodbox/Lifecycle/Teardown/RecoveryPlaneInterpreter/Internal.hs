@@ -47,6 +47,7 @@ import Data.IORef
 import Data.List (nub)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientProviders (..)
   , mkAuthenticatedClientTransport
@@ -854,6 +855,7 @@ regressionDescriptorFixture witness maybeAwsScope runId = do
           runId
           regressionFoundation
           maybeAwsScope
+          Nothing
           witness
       )
   initialRun <-
@@ -1052,7 +1054,7 @@ regressionAwsScope :: AwsScope
 regressionAwsScope =
   AwsScope
     (AwsAccountId "111122223333")
-    (AwsRegion "ca-central-1")
+    (AwsRegion canonicalRegressionAwsRegion)
 
 regressionCascadeRunId :: CleanupRunId
 regressionCascadeRunId = mustRight (mkCleanupRunId "recovery-interpreter-cascade")

@@ -88,22 +88,10 @@ import Prodbox.Lifecycle.CleanupRunRunner
   , runWithDurableCleanupWithAttempt
   , runWithDurableCleanupWithContext
   )
-import Prodbox.Lifecycle.ResourceClass (LifecycleClass (PerRun))
-import Prodbox.Lifecycle.ResourceRegistry
-  ( ManagedResource (..)
-  , managedDestroyCapability
-  , perRunManagedResources
-  )
 import Prodbox.Lifecycle.TargetCommitIntent
   ( CredentialGeneration
   , mkCredentialGeneration
   )
-import Prodbox.Test.ManagedCleanupPlan
-  ( compileManagedCleanupPlan
-  , managedCleanupGraph
-  , runManagedCleanupNode
-  )
-import System.Exit (ExitCode (ExitSuccess))
 import TestSupport
 
 cleanupRunSuite :: SuiteBuilder ()
@@ -1014,28 +1002,6 @@ cleanupRunSuite =
         Left failure -> expectationFailure (show failure)
         Right report -> cleanupReportPrimaryOutcome report `shouldBe` CleanupPrimarySucceeded
       scanNonterminalCleanupRuns client `shouldReturn` Right []
-
-    it "compiles managed cleanup from the same capability-bound registry entries it executes" $ do
-      let runId = expectRight (mkCleanupRunId "managed-run")
-          compiled = expectRight (compileManagedCleanupPlan runId perRunManagedResources [])
-      length (cleanupGraphNodes (managedCleanupGraph compiled)) `shouldBe` 3
-      effects <- newIORef ([] :: [Text])
-      let resource =
-            ManagedResource
-              { resourceName = "fixture"
-              , resourceClass = PerRun
-              , resourceEnsureCommand = Nothing
-              , resourceEnsurePresent = Nothing
-              , resourceDestroyCommand = "fixture destroy"
-              , resourceDestroyCapability = managedDestroyCapability "fixture"
-              , resourceDestroy = \_ -> modifyIORef' effects (++ ["destroyed"]) >> pure ExitSuccess
-              }
-          fixturePlan = expectRight (compileManagedCleanupPlan runId [resource] [])
-      case cleanupGraphNodes (managedCleanupGraph fixturePlan) of
-        [fixtureNode] ->
-          runManagedCleanupNode "/tmp" fixturePlan fixtureNode `shouldReturn` CleanupNodeSucceeded
-        other -> expectationFailure ("unexpected managed cleanup nodes: " ++ show other)
-      readIORef effects `shouldReturn` ["destroyed"]
  where
   isTooLarge result = case result of
     Left CleanupRunEnvelopeTooLarge {} -> True

@@ -49,7 +49,7 @@ integrationEnvSuite = do
         exitCode `shouldBe` ExitSuccess
         stderrText `shouldBe` ""
         stdoutText `shouldContain` "aws.access_key_id=Vault:secret/aws/lifecycle-provider#access_key_id"
-        stdoutText `shouldContain` "acme.email=****.com"
+        stdoutText `shouldContain` "acme.email=****test"
         doesFileExist (tmpDir </> "prodbox-config.json") `shouldReturn` False
 
     it "fails fast on invalid config authored beside the binary" $
@@ -163,21 +163,21 @@ invalidResourceConfig =
 -- one, and `CliSuite` already overrode the whole `aws` block.
 envFixtureConfig :: Settings.ConfigFile
 envFixtureConfig =
-  Settings.defaultConfigFile
+  syntheticConfigFile
     { Settings.aws =
-        (Settings.aws Settings.defaultConfigFile)
+        (Settings.aws syntheticConfigFile)
           { Settings.awsCredentialSessionToken =
               Just (envVaultRef (Text.pack "aws/lifecycle-provider") (Text.pack "session_token"))
-          , Settings.awsCredentialRegion = Text.pack "us-east-1"
+          , Settings.awsCredentialRegion = Text.pack (fixtureAwsRegion FixtureUsEast1)
           }
     , Settings.route53 = Settings.Route53Section {Settings.zone_id = Text.pack "Z1234567890ABC"}
     , Settings.domain =
-        (Settings.domain Settings.defaultConfigFile)
-          { Settings.demo_fqdn = Text.pack "test.resolvefintech.com"
+        (Settings.domain syntheticConfigFile)
+          { Settings.demo_fqdn = Text.pack "test.example.test"
           }
     , Settings.acme =
-        (Settings.acme Settings.defaultConfigFile)
-          { Settings.email = Text.pack "test@resolvefintech.com"
+        (Settings.acme syntheticConfigFile)
+          { Settings.email = Text.pack "test@example.test"
           }
     }
 

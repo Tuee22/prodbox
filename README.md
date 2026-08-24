@@ -157,23 +157,24 @@ validation environments.
   [Lifecycle Reconciliation Doctrine](./documents/engineering/lifecycle_reconciliation_doctrine.md)
   and [Lifecycle Control-Plane Architecture §11.0](./documents/engineering/lifecycle_control_plane_architecture.md#110-ordinary-teardown-recovery-profile).
   Until the plan-tracked cutover lands, the current binary still uses the legacy handwritten
-  cascade: it short-circuits to success when local RKE2 is absent — before any phase, before the
-  per-run residue gate, and without rendering the preserved-host-state boundary — and it may
-  uninstall RKE2 after unresolved phases. **Neither exit code is a clean result.** A non-zero cascade
-  is unresolved; a **zero** cascade is also not evidence, because that short-circuit returns success
-  having observed nothing, which is how per-run AWS resources have already been stranded. Preserve
-  `.data/` and the complete output for recovery in both cases, and treat deleting `.data/` as an
-  action that needs a positive disposition of the capabilities it holds rather than a clean-looking
-  exit. Rollout status lives only in
+  cascade. A cascade with no local RKE2 installation reaches no phase and exits non-zero with a
+  `RecoveryPlaneNotEstablished` disposition; local-only delete alone owns the no-install success
+  arm. **Neither cascade exit code is exact AWS-absence evidence.** A non-zero cascade is unresolved,
+  while zero still carries no exact completion receipt. Preserve `.data/` and the complete output
+  for recovery in both cases, and treat deleting `.data/` as an action that needs a positive
+  disposition of the capabilities it holds rather than a clean-looking exit. Rollout status lives only in
   [Development Plan → Resume Here](./DEVELOPMENT_PLAN/README.md#resume-here).
 - This target edge doctrine has substrate-specific lower layers: the home substrate uses MetalLB,
   while the AWS substrate uses the AWS Load Balancer Controller/NLB path. Both substrates provision
   Envoy Gateway, Gateway API, cert-manager, and the same shared application/platform service set through their
   substrate-aware installers.
-- The current shipped edge workloads share the single public hostname
-  `test.resolvefintech.com`, with Keycloak on `/auth`, `vscode` on `/vscode`, the API on `/api`,
-  the WebSocket workload on `/ws`, and the MinIO console on `/minio`. The in-cluster registry has
-  no web UI and therefore no public-edge route.
+- The public-edge topology uses one validated served FQDN per substrate, with Keycloak on `/auth`,
+  `vscode` on `/vscode`, the API on `/api`, the WebSocket workload on `/ws`, and the MinIO console
+  on `/minio`. The home FQDN is operator-authored and fail-closed: generation leaves it empty,
+  setup authors it, and validation retains the narrowed value with no compiled deployment host.
+  Rollout status lives only in
+  the [Development Plan](./DEVELOPMENT_PLAN/README.md#resume-here). The in-cluster registry has no
+  web UI and therefore no public-edge route.
 - The Haskell `prodbox gateway ...` command group and `charts reconcile gateway` manage the separate
   distributed gateway daemon; they are not the Envoy Gateway public edge controller.
 - Vault is the fail-closed KMS, PKI, and post-unseal operational-secret root for every managed
@@ -254,11 +255,11 @@ Internet
   -> Pods
 
 Shared public hostname:
-  https://test.resolvefintech.com/auth   -> Keycloak identity flow
-  https://test.resolvefintech.com/vscode -> Envoy-protected browser app
-  https://test.resolvefintech.com/api    -> JWT-protected API
-  https://test.resolvefintech.com/ws     -> JWT-protected WebSocket workload
-  https://test.resolvefintech.com/minio  -> MinIO console
+  https://<configured-served-fqdn>/auth   -> Keycloak identity flow
+  https://<configured-served-fqdn>/vscode -> Envoy-protected browser app
+  https://<configured-served-fqdn>/api    -> JWT-protected API
+  https://<configured-served-fqdn>/ws     -> JWT-protected WebSocket workload
+  https://<configured-served-fqdn>/minio  -> MinIO console
 ```
 
 ### Network Design
@@ -483,6 +484,14 @@ material, and Vault-gated operational secrets/encrypted state. Their exact conte
 generation rules, and bootstrap protocol are defined only in
 [config_doctrine.md §0](./documents/engineering/config_doctrine.md#0-three-tier-config-model).
 
+Before those secrecy tiers, every value has exactly one ownership. Deployment-varying values —
+the served FQDN and ACME contact, cluster/topology identity, service endpoints, and AWS
+region/network/resource envelope — are authored in Tier-0 or explicitly derived for a test run and
+have no Haskell fallback. Protocol-fixed and prodbox-chosen identities — such as the ZeroSSL
+directory and prodbox's object, stack, namespace, IAM, and Vault-path names — are declared once in
+code and are not exposed as ignored config fields. The exact partition and current gaps are owned by
+[config_doctrine.md §0](./documents/engineering/config_doctrine.md#compiled-protocol-constants-versus-operator-supplied-deployment-values).
+
 Every instance-config or secret-fixture `.dhall` file is generated or locally authored and
 git-ignored: the binary-sibling `prodbox.dhall`, the generated
 `prodbox-config-types.dhall` / `test-secrets-types.dhall` schemas, and `test-secrets.dhall`. Five
@@ -508,6 +517,17 @@ it carries no plaintext secrets, only non-secret topology and role/capability co
 - The current `prodbox config show --show-secrets` flag is pre-cutover legacy tracked in the
   [removal ledger](./DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md). Target `ConfigObserve`
   returns only a role-scoped, validated projection and has no generic secret-reveal capability.
+
+The test harness regenerates its disposable binary-sibling `prodbox.dhall` through the production
+config builder. `test-secrets.dhall` supplies externally chosen non-secret deployment inputs such
+as the served FQDN and ACME contact alongside its test-only secrets. A validated
+`prodbox.test.dhall` variant supplies cluster topology plus Vault/MinIO endpoints; stable
+suite/variant identity derives the ephemeral cluster id and repository-relative `.test-data` root.
+The legacy aggregate carries equivalent explicit fixture fields until its topology cutover. Both
+lanes refuse incomplete input before credential acquisition or infrastructure preparation,
+validate the complete config/context before one atomic Tier-0 write, and never overwrite a
+complete operator-authored sibling. See
+[Test Topology Doctrine §3](./documents/engineering/test_topology_doctrine.md#3-test-run-drives-the-real-deploy-path-across-every-variant).
 
 ### Secret References (SecretRef)
 
@@ -544,8 +564,11 @@ reference and generation. The authoritative model is
 ./.build/prodbox config setup
 ```
 
-The target wizard authors and validates only the non-secret binary-sibling Tier-0 boot/proposal
-coordinates (`./.build/prodbox.dhall`), including Route 53 and ACME choices. Credentialed effects
+The wizard authors and validates only the non-secret binary-sibling Tier-0 boot/proposal
+coordinates (`./.build/prodbox.dhall`), including the served FQDN, ACME contact, cluster and
+machine identities, Vault address, MinIO endpoint, and Route 53 choices. `config generate` instead
+emits an intentionally unauthored skeleton, and no consuming settings/context can be built until
+the required deployment coordinates are supplied. Credentialed effects
 start only from their explicit lifecycle command. For the three AWS-admin proof families, a
 mode-indexed `CredentialProvisionPermit` creates an attested Credential Provisioner, a disjoint
 `AdminActionPermit` creates an Admin Action Runner, and signed-manifest export plus Authority stop
@@ -566,6 +589,11 @@ non-interactively.
 |-------------|-------------|
 | `route53.zone_id` | Route 53 hosted zone ID |
 | `acme.email` | Email for the selected public ACME provider |
+| `domain.demo_fqdn` | Primary public FQDN; there is no compiled deployment hostname |
+| `context.cluster_id` | Deployment cluster identity |
+| `cluster_topology.machines[].machine_id` | One or more deployment machine identities on the home substrate |
+| `context.vault_address` | Vault endpoint URL |
+| `context.minio_endpoint` | MinIO endpoint URL |
 | `aws.region` | Operational AWS region. `prodbox config generate` emits it **empty**, like every other operator-owned coordinate, so an AWS flow refuses by name until you supply it — run `prodbox aws setup`, which the refusal names. There is no compiled fallback, and the admin-credential prompt offers no pre-filled region when the config carries none |
 
 ### Operationally Important Fields
@@ -574,7 +602,6 @@ These fields are not all parser-required, but they matter for normal operation:
 
 | Config Path | Description |
 |-------------|-------------|
-| `domain.demo_fqdn` | Primary public FQDN used by DNS inspection, public-edge diagnostics, and the gateway/public host flow |
 | `deployment.public_edge_advertisement_mode` | Optional MetalLB advertisement mode: `l2` or `bgp` |
 | `deployment.envoy_gateway_controller_scaling` | Envoy Gateway controller scaling policy, per substrate (`home_local`, `aws`), each `Fixed n` or `Elastic {min,max}` |
 | `deployment.envoy_gateway_data_plane_scaling` | Envoy data-plane scaling policy, same shape |
@@ -588,10 +615,13 @@ These fields are not all parser-required, but they matter for normal operation:
 |-------------|-------------|
 | `domain.demo_ttl` | DNS TTL in seconds |
 | `domain.cert_scopes` | Optional list of public-edge certificate scopes (exact hosts or `*.zone` wildcards, wildcards only at a config-delegated zone). Empty (default) means exactly the served host, so the public-edge certificate covers one FQDN until an operator widens scope. See [acme_provider_guide.md → Configurable Certificate Scope](./documents/engineering/acme_provider_guide.md#5-configurable-certificate-scope) |
-| `acme.server` | ZeroSSL ACME directory URL (the issuer for the once-issued, S3-retained public-edge certificate); defaults to the ZeroSSL endpoint |
 | `deployment.bootstrap_public_ip_override` | Bootstrap-only DNS A-record IP override |
 | `deployment.pulumi_enable_dns_bootstrap` | Bootstrap toggle for DNS reconciliation during the supported flow |
 | `deployment.public_edge_bgp_peers` | Optional BGP peer list when `deployment.public_edge_advertisement_mode = Some "bgp"` |
+
+There is no `acme.server` or state-bucket field. ZeroSSL is the one supported ACME provider and its
+directory URL is a compiled protocol identity; `prodbox-state` is the single compiled generic
+object-store identity. Both remain fixed while operator-authored deployment coordinates vary.
 
 The current decoder still accepts the pre-cutover root `aws.session_token` field alongside the
 shared access-key fields named above. It is not part of the target role-scoped configuration and is

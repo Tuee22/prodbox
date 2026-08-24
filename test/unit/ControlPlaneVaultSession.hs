@@ -53,6 +53,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , checkpointAuthorityVaultKeyspace
   , modelBObjectLogicalName
   )
+import Prodbox.Minio.ObjectStoreTypes (defaultObjectStoreBucket)
 import Prodbox.Runtime.Role
 import Prodbox.Secret.VaultInventory qualified as VaultInventory
 import Prodbox.Subprocess (ProcessOutput (..))
@@ -450,13 +451,13 @@ controlPlaneVaultSessionSuite =
     it "accepts only a bounded in-cluster authority store coordinate" $ do
       mkInClusterAuthorityStoreConfig
         "prodbox-home"
-        defaultInClusterAuthorityEndpoint
-        defaultInClusterAuthorityBucket
+        "http://minio.fixture.test:9000"
+        (Text.pack defaultObjectStoreBucket)
         `shouldSatisfy` isRight
       mkInClusterAuthorityStoreConfig
         "prodbox home"
-        defaultInClusterAuthorityEndpoint
-        defaultInClusterAuthorityBucket
+        "http://minio.fixture.test:9000"
+        (Text.pack defaultObjectStoreBucket)
         `shouldHaveLeft` InClusterAuthorityClusterIdContainsWhitespace
       mkInClusterAuthorityStoreConfig "prodbox-home" "127.0.0.1:9000" "prodbox-state"
         `shouldHaveLeft` InClusterAuthorityEndpointInvalid "127.0.0.1:9000"
@@ -466,13 +467,13 @@ controlPlaneVaultSessionSuite =
             mustRight
               ( mkInClusterAuthorityStoreConfig
                   "prodbox-home"
-                  defaultInClusterAuthorityEndpoint
-                  defaultInClusterAuthorityBucket
+                  "http://minio.fixture.test:9000"
+                  (Text.pack defaultObjectStoreBucket)
               )
           coordinates = mustRight (mkLifecycleAuthorityCoordinates storeConfig)
           authority = lifecycleCheckpointAuthority coordinates
       checkpointAuthorityClusterId authority `shouldBe` "prodbox-home"
-      checkpointAuthorityObjectBucket authority `shouldBe` defaultInClusterAuthorityBucket
+      checkpointAuthorityObjectBucket authority `shouldBe` Text.pack defaultObjectStoreBucket
       checkpointAuthorityObjectNamespace authority `shouldBe` "authority"
       checkpointAuthorityVaultKeyspace authority `shouldBe` "secret/lifecycle"
       modelBObjectLogicalName (lifecycleAuthorityAdmissionCoordinate coordinates)

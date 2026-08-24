@@ -567,7 +567,7 @@ fixtureFoundation = LinuxRke2FoundationId "home-linux-rke2"
 
 fixtureAwsScope :: AwsScope
 fixtureAwsScope =
-  AwsScope (AwsAccountId "111122223333") (AwsRegion "ca-central-1")
+  AwsScope (AwsAccountId "111122223333") (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
 
 checkpointVersion :: CheckpointVersion
 checkpointVersion = CheckpointVersion "sha256:checkpoint-v7"
@@ -744,6 +744,7 @@ compiledCascade =
         fixtureCleanupRunId
         fixtureFoundation
         (Just fixtureAwsScope)
+        Nothing
         CascadeSurface
     )
 

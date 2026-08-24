@@ -917,6 +917,7 @@ routeCode route = case route of
   LifecycleRecoveryPlane -> 56
   LifecycleLocalRke2HostObservation -> 57
   LifecycleCascadeRetainedSlot -> 58
+  LifecycleControllerOwner -> 59
   LifecycleFederationRegister -> 47
   LifecycleAwsAdminProvisioner -> 48
   LifecycleAuthorityBackupExport -> 49
@@ -993,4 +994,5 @@ routeFromCode code = case code of
   56 -> Just LifecycleRecoveryPlane
   57 -> Just LifecycleLocalRke2HostObservation
   58 -> Just LifecycleCascadeRetainedSlot
+  59 -> Just LifecycleControllerOwner
   _ -> Nothing

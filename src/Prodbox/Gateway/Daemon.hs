@@ -11,6 +11,7 @@ module Prodbox.Gateway.Daemon
   , productionEmitterRuntimeDependencies
   , runGatewayDaemonWithRuntimeDependencies
   , daemonBootFieldsChanged
+  , daemonPulumiObjectStoreConfig
   )
 where
 
@@ -379,6 +380,7 @@ import Prodbox.Gateway.Types
   , PeerEndpoint (..)
   , PeerHealth (..)
   , defaultDrainDeadlineSeconds
+  , gatewayMinioEndpointUrl
   , peerDialSocketHost
   , validateDaemonTimingAgainstOrders
   )
@@ -3538,7 +3540,6 @@ renderTier0Source :: Tier0Source -> String
 renderTier0Source source = case source of
   Tier0FromConfigMap path -> "configmap:" ++ path
   Tier0FromContainerDefault path -> "container-default:" ++ path
-  Tier0FromCompiledDefault -> "compiled-default"
 
 renderContextKind :: ContextKind -> String
 renderContextKind kind = case kind of
@@ -3893,6 +3894,7 @@ daemonBootFieldsChanged old new =
     -- as Nothing; once a reload can resolve them (Vault ready) that is a boot
     -- change and must drain-restart into full mode, not be discarded.
     || daemonMinioCreds old /= daemonMinioCreds new
+    || daemonMinioEndpoint old /= daemonMinioEndpoint new
     || dnsCredentialReloadRequired (daemonAwsCreds old) (daemonAwsCreds new)
 
 dnsCredentialReloadRequired
@@ -4681,14 +4683,15 @@ daemonPulumiObjectStoreConfig config =
   case daemonMinioCreds config of
     Nothing -> Left "daemon MinIO credentials are not configured"
     Just creds ->
-      Right
-        ObjectStoreConfig
-          { objectStoreEndpoint =
-              fromMaybe "http://minio.prodbox.svc.cluster.local:9000" (daemonMinioEndpointUrl config)
-          , objectStoreBucket = defaultObjectStoreBucket
-          , objectStoreAccessKey = gatewayMinioAccessKey creds
-          , objectStoreSecretKey = gatewayMinioSecretKey creds
-          }
+      do
+        endpoint <- gatewayMinioEndpointUrl (daemonMinioEndpoint config)
+        Right
+          ObjectStoreConfig
+            { objectStoreEndpoint = endpoint
+            , objectStoreBucket = defaultObjectStoreBucket
+            , objectStoreAccessKey = gatewayMinioAccessKey creds
+            , objectStoreSecretKey = gatewayMinioSecretKey creds
+            }
 
 resolveGatewayVaultToken :: DaemonConfig -> IO (Either String (VaultAddress, VaultToken))
 resolveGatewayVaultToken =

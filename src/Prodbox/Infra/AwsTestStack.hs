@@ -47,17 +47,21 @@ import Prodbox.ControlPlane.RegisteredStackCreationSubmitter
   , submitRegisteredStackCreation
   )
 import Prodbox.Error (fatalError)
-import Prodbox.Http.Client (defaultHttpConfig, httpGetText, renderHttpError)
 import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (DestroyRegisteredStack, ReconcileRegisteredStack)
   , ProviderRevision
-  , mkAwsTestProviderStackConfig
+  , ProviderStackConfig
+  , mkAwsTestProfileProviderStackConfig
   , mkProviderRevision
   , mkProviderStackRef
   )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
+import Prodbox.Settings
+  ( requireAwsSubstrateProfile
+  , validateAndLoadSettings
+  )
 import System.Directory (getTemporaryDirectory, removeFile)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.IO (hClose, hPutStr, openTempFile)
@@ -103,16 +107,8 @@ ensureAwsTestStackResourcesWithAuthentication
   -> FilePath
   -> IO ExitCode
 ensureAwsTestStackResourcesWithAuthentication authentication repoRoot = do
-  publicIp <- fetchPublicIpv4
-  case ( mkProviderStackRef "aws-test"
-       , mkProviderRevision 1
-       , case publicIp of
-           Left err -> Left err
-           Right value ->
-             case mkAwsTestProviderStackConfig (Text.pack (value <> "/32")) of
-               Left err -> Left (show err)
-               Right config -> Right config
-       ) of
+  configResult <- loadAwsTestProviderConfig repoRoot
+  case (mkProviderStackRef "aws-test", mkProviderRevision 1, configResult) of
     (Right ref, Right revision, Right config) ->
       -- Sprint 4.84: creation commits this cycle's run-invariant lifecycle
       -- generation, so a later cleanup run can name the stack it created.
@@ -123,10 +119,10 @@ ensureAwsTestStackResourcesWithAuthentication authentication repoRoot = do
         "AWS test Provider receipt: "
         revision
         (ReconcileRegisteredStack ref revision config)
-    (refResult, revisionResult, configResult) ->
+    (refResult, revisionResult, providerConfigResult) ->
       failWith
         ( "build typed AWS test Provider intent: "
-            ++ show (refResult, revisionResult, configResult)
+            ++ show (refResult, revisionResult, providerConfigResult)
         )
 
 destroyAwsTestStack :: FilePath -> Bool -> IO ExitCode
@@ -139,22 +135,30 @@ destroyAwsTestStackWithAuthentication
   -> FilePath
   -> Bool
   -> IO ExitCode
-destroyAwsTestStackWithAuthentication authentication _repoRoot _quietOutput =
-  case ( mkProviderStackRef "aws-test"
-       , mkProviderRevision 1
-       , mkAwsTestProviderStackConfig "127.0.0.1/32"
-       ) of
+destroyAwsTestStackWithAuthentication authentication repoRoot _quietOutput = do
+  configResult <- loadAwsTestProviderConfig repoRoot
+  case (mkProviderStackRef "aws-test", mkProviderRevision 1, configResult) of
     (Right ref, Right revision, Right config) ->
       dispatchStack
         authentication
         "operator-destroy-aws-test"
         "AWS test Provider destroy receipt: "
         (DestroyRegisteredStack ref revision config)
-    (refResult, revisionResult, configResult) ->
+    (refResult, revisionResult, providerConfigResult) ->
       failWith
         ( "build typed AWS test destroy intent: "
-            ++ show (refResult, revisionResult, configResult)
+            ++ show (refResult, revisionResult, providerConfigResult)
         )
+
+loadAwsTestProviderConfig :: FilePath -> IO (Either String ProviderStackConfig)
+loadAwsTestProviderConfig repoRoot = do
+  settingsResult <- validateAndLoadSettings repoRoot
+  pure $ do
+    settings <- settingsResult
+    authoredProfile <- requireAwsSubstrateProfile settings
+    case mkAwsTestProfileProviderStackConfig authoredProfile of
+      Left err -> Left (show err)
+      Right config -> Right config
 
 -- | Sprint 4.84: create a registered stack and commit its lifecycle generation
 -- in one admitted lane.
@@ -322,15 +326,6 @@ assertNoAwsTestStackResidue repoRoot _ = do
     ResidueStatus.ResiduePresent detail -> Left (ResidueStatus.renderResidueDetails detail)
     ResidueStatus.ResidueUnreachable detail ->
       Left (ResidueStatus.renderResidueUnreachableReason detail)
-
-fetchPublicIpv4 :: IO (Either String String)
-fetchPublicIpv4 = do
-  result <- httpGetText defaultHttpConfig "https://api.ipify.org"
-  pure $ case result of
-    Left err -> Left ("failed to fetch public IP: " ++ renderHttpError err)
-    Right body
-      | length (filter (== '.') body) == 3 -> Right body
-      | otherwise -> Left ("unexpected public IP response: " ++ body)
 
 joinComma :: [String] -> String
 joinComma = foldr join ""

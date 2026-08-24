@@ -55,7 +55,11 @@ objectStoreNativeSuite =
         headerValue "x-amz-date" signed `shouldBe` Just "20240101T000000Z"
       it "produces an Authorization with the s3 credential scope" $ do
         fmap BS8.unpack (headerValue "Authorization" signed)
-          `shouldSatisfy` maybe False ("Credential=AKIAEXAMPLE/20240101/us-east-1/s3/aws4_request" `isInfixOf`)
+          `shouldSatisfy` maybe
+            False
+            ( ("Credential=AKIAEXAMPLE/20240101/" <> (fixtureAwsRegion FixtureUsEast1) <> "/s3/aws4_request")
+                `isInfixOf`
+            )
       it "signs exactly host, content-sha256, and date (sorted)" $ do
         fmap BS8.unpack (headerValue "Authorization" signed)
           `shouldSatisfy` maybe False ("SignedHeaders=host;x-amz-content-sha256;x-amz-date" `isInfixOf`)

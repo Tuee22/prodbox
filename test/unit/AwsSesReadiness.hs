@@ -68,12 +68,13 @@ awsSesReadinessSuite =
       mkAwsSesReadinessExpectation
         " Example.COM. "
         " /hostedzone/Z123EXACT "
-        " us-west-2 "
+        (" " <> (fixtureAwsRegion FixtureUsWest2) <> " ")
         " Inbox.Example.COM. "
         "prodbox-ses-capture"
         `shouldBe` Right canonicalExpectation
       awsSesExpectedMxPriority canonicalExpectation `shouldBe` sesInboundMxPriority
-      awsSesExpectedMxTarget canonicalExpectation `shouldBe` sesInboundMxTarget "us-west-2"
+      awsSesExpectedMxTarget canonicalExpectation
+        `shouldBe` sesInboundMxTarget (fixtureAwsRegion FixtureUsWest2)
       awsSesExpectedRuleSetName canonicalExpectation `shouldBe` sesReceiveRuleSetName
       awsSesExpectedRuleName canonicalExpectation `shouldBe` sesReceiveRuleName
       awsSesExpectedCapturePrefix canonicalExpectation `shouldBe` sesCaptureKeyPrefix
@@ -81,13 +82,43 @@ awsSesReadinessSuite =
 
     it "rejects invalid sender, zone, region, receive-subdomain, and bucket inputs" $ do
       forM_
-        [ mkExpectationWith "bad_domain" "Z123EXACT" "us-west-2" "inbox.example.com" "prodbox-ses-capture"
-        , mkExpectationWith "example.com" "bad/zone" "us-west-2" "inbox.example.com" "prodbox-ses-capture"
+        [ mkExpectationWith
+            "bad_domain"
+            "Z123EXACT"
+            (fixtureAwsRegion FixtureUsWest2)
+            "inbox.example.com"
+            "prodbox-ses-capture"
+        , mkExpectationWith
+            "example.com"
+            "bad/zone"
+            (fixtureAwsRegion FixtureUsWest2)
+            "inbox.example.com"
+            "prodbox-ses-capture"
         , mkExpectationWith "example.com" "Z123EXACT" "US_WEST_2" "inbox.example.com" "prodbox-ses-capture"
-        , mkExpectationWith "example.com" "Z123EXACT" "us-west-2" "example.com" "prodbox-ses-capture"
-        , mkExpectationWith "example.com" "Z123EXACT" "us-west-2" "other.test" "prodbox-ses-capture"
-        , mkExpectationWith "example.com" "Z123EXACT" "us-west-2" "inbox.example.com" "192.168.0.1"
-        , mkExpectationWith "example.com" "Z123EXACT" "us-west-2" "inbox.example.com" "Bad_Bucket"
+        , mkExpectationWith
+            "example.com"
+            "Z123EXACT"
+            (fixtureAwsRegion FixtureUsWest2)
+            "example.com"
+            "prodbox-ses-capture"
+        , mkExpectationWith
+            "example.com"
+            "Z123EXACT"
+            (fixtureAwsRegion FixtureUsWest2)
+            "other.test"
+            "prodbox-ses-capture"
+        , mkExpectationWith
+            "example.com"
+            "Z123EXACT"
+            (fixtureAwsRegion FixtureUsWest2)
+            "inbox.example.com"
+            "192.168.0.1"
+        , mkExpectationWith
+            "example.com"
+            "Z123EXACT"
+            (fixtureAwsRegion FixtureUsWest2)
+            "inbox.example.com"
+            "Bad_Bucket"
         ]
         (`shouldSatisfy` isLeft)
 
@@ -268,18 +299,38 @@ awsSesReadinessSuite =
 
     it "rejects wrong, malformed, multiple, or duplicate matching MX semantics" $ do
       forM_
-        [ mxJson [mxRecord "inbox.example.com." "MX" (Just ["20 inbound-smtp.us-west-2.amazonaws.com."])]
-        , mxJson [mxRecord "inbox.example.com." "MX" (Just ["10 inbound-smtp.us-east-1.amazonaws.com."])]
+        [ mxJson
+            [ mxRecord
+                "inbox.example.com."
+                "MX"
+                (Just [("20 inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com.")])
+            ]
+        , mxJson
+            [ mxRecord
+                "inbox.example.com."
+                "MX"
+                (Just [("10 inbound-smtp." <> (fixtureAwsRegion FixtureUsEast1) <> ".amazonaws.com.")])
+            ]
         , mxJson [mxRecord "inbox.example.com." "MX" (Just ["not-an-mx-value"])]
         , mxJson
             [ mxRecord
                 "inbox.example.com."
                 "MX"
-                (Just ["10 inbound-smtp.us-west-2.amazonaws.com.", "20 backup.example.com."])
+                ( Just
+                    [ ("10 inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com.")
+                    , "20 backup.example.com."
+                    ]
+                )
             ]
         , mxJson
-            [ mxRecord "inbox.example.com." "MX" (Just ["10 inbound-smtp.us-west-2.amazonaws.com."])
-            , mxRecord "INBOX.EXAMPLE.COM" "MX" (Just ["10 inbound-smtp.us-west-2.amazonaws.com."])
+            [ mxRecord
+                "inbox.example.com."
+                "MX"
+                (Just [("10 inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com.")])
+            , mxRecord
+                "INBOX.EXAMPLE.COM"
+                "MX"
+                (Just [("10 inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com.")])
             ]
         ]
         (\payload -> classifyMx payload `shouldSatisfy` isFailed)
@@ -525,7 +576,7 @@ canonicalExpectation =
     ( mkAwsSesReadinessExpectation
         "example.com"
         "Z123EXACT"
-        "us-west-2"
+        (fixtureAwsRegion FixtureUsWest2)
         "inbox.example.com"
         "prodbox-ses-capture"
     )
@@ -672,7 +723,7 @@ readyObservation =
               [ mxRecord
                   "inbox.example.com."
                   "MX"
-                  (Just ["10 inbound-smtp.us-west-2.amazonaws.com."])
+                  (Just [("10 inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com.")])
               ]
           )
       )

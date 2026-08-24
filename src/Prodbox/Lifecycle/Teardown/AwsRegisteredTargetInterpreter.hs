@@ -53,6 +53,8 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   )
 import Prodbox.Lifecycle.Teardown.AwsEbsAdapter
 import Prodbox.Lifecycle.Teardown.AwsEksAdapter
+import Prodbox.Lifecycle.Teardown.AwsIamRoleFamilyAdapter
+import Prodbox.Lifecycle.Teardown.AwsLoadBalancerControllerFamilyAdapter
 import Prodbox.Lifecycle.Teardown.AwsRetainedEbsAdapter
 import Prodbox.Lifecycle.Teardown.AwsRoute53ZoneAdapter
 import Prodbox.Lifecycle.Teardown.AwsStackAdapter
@@ -364,6 +366,9 @@ data AwsRegisteredTargetInterpreterError
     -- per-run EBS one so a report cannot attribute a retained-family refusal
     -- to the per-run family.
     AwsRegisteredTargetRetainedEbsInvalid !AwsRetainedEbsAdapterError
+  | AwsRegisteredTargetIamRoleFamilyInvalid !AwsIamRoleFamilyAdapterError
+  | AwsRegisteredTargetLoadBalancerControllerFamilyInvalid
+      !AwsLoadBalancerControllerFamilyAdapterError
   | AwsRegisteredTargetProviderRefInvalid
       !RegisteredResourceKey
       !ProviderRefError
@@ -428,13 +433,18 @@ observeAwsRegisteredTarget interpreter context target =
           fmap verifiedAwsEksExactObservation
             <$> observeVerifiedAwsEksForDecision interpreter context target
         Right GenericStackExecutor -> do
-          observed <-
-            observeStackForDecision
-              interpreter
-              (teardownExecutionOperationId context)
-              (registeredTargetKey target)
-              (teardownExecutionObservationScope context)
-          pure (stackDecisionObservationExact <$> observed)
+          binding <- readBoundStackProviderBinding interpreter context target
+          case binding of
+            Left err -> pure (Left err)
+            Right exactBinding -> do
+              observed <-
+                observeStackForDecision
+                  interpreter
+                  (teardownExecutionOperationId context)
+                  (registeredTargetKey target)
+                  (teardownExecutionObservationScope context)
+                  (internalAwsStackProviderBindingConfig exactBinding)
+              pure (stackDecisionObservationExact <$> observed)
         Right PerRunTestEbsFamilyExecutor ->
           observeEbs
             interpreter
@@ -447,6 +457,16 @@ observeAwsRegisteredTarget interpreter context target =
             context
         Right RetainedEbsFamilyExecutor ->
           observeRetainedEbs
+            interpreter
+            ProviderDecisionObservation
+            context
+        Right EksIamRoleFamilyExecutor ->
+          observeIamRoleFamily
+            interpreter
+            ProviderDecisionObservation
+            context
+        Right EksLoadBalancerControllerFamilyExecutor ->
+          observeLoadBalancerControllerFamily
             interpreter
             ProviderDecisionObservation
             context
@@ -496,6 +516,10 @@ reconcileAwsRegisteredTargetAbsent interpreter context target =
         reconcileValidationZone interpreter context target
       Right RetainedEbsFamilyExecutor ->
         reconcileRetainedEbs interpreter context target
+      Right EksIamRoleFamilyExecutor ->
+        reconcileIamRoleFamily interpreter context target
+      Right EksLoadBalancerControllerFamilyExecutor ->
+        reconcileLoadBalancerControllerFamily interpreter context target
       Right Dns01ChallengeRecordFamilyExecutor ->
         reconcileDns01Challenge interpreter context target
       Left unexecutable ->
@@ -518,13 +542,10 @@ readBackAwsRegisteredTargetAbsent interpreter context target =
   case validateInvocation context target of
     Left err -> pure (Left err)
     Right _ -> case registeredTargetExecutorFor (registeredTargetKey target) of
-      Right EksStackExecutor -> observeEksDesiredAbsence interpreter context
+      Right EksStackExecutor ->
+        readBackBoundStackDesiredAbsence interpreter context target
       Right GenericStackExecutor ->
-        readBackStackDesiredAbsence
-          interpreter
-          (teardownExecutionOperationId context)
-          (registeredTargetKey target)
-          (teardownExecutionObservationScope context)
+        readBackBoundStackDesiredAbsence interpreter context target
       Right PerRunTestEbsFamilyExecutor ->
         observeEbs
           interpreter
@@ -537,6 +558,16 @@ readBackAwsRegisteredTargetAbsent interpreter context target =
           context
       Right RetainedEbsFamilyExecutor ->
         observeRetainedEbs
+          interpreter
+          ProviderAbsenceReadBack
+          context
+      Right EksIamRoleFamilyExecutor ->
+        observeIamRoleFamily
+          interpreter
+          ProviderAbsenceReadBack
+          context
+      Right EksLoadBalancerControllerFamilyExecutor ->
+        observeLoadBalancerControllerFamily
           interpreter
           ProviderAbsenceReadBack
           context
@@ -569,15 +600,17 @@ observeStackForDecision
   -> CleanupOperationId
   -> RegisteredResourceKey
   -> ObservationEvidenceScope
+  -> ProviderStackConfig
   -> m (Either AwsRegisteredTargetInterpreterError StackDecisionObservation)
-observeStackForDecision interpreter operationId key scope =
+observeStackForDecision interpreter operationId key scope config =
   case mkProviderDispatchKey operationId ProviderDecisionObservation of
     Left err -> pure (Left (AwsRegisteredTargetDispatchKeyInvalid err))
     Right dispatchKey ->
-      case mkAwsStackObserveRequest
+      case mkAwsNativeStackObserveRequest
         key
         scope
-        (observationRevisionForProviderDispatchKey dispatchKey) of
+        (observationRevisionForProviderDispatchKey dispatchKey)
+        config of
         Left err -> pure (Left (AwsRegisteredTargetStackBindingInvalid err))
         Right request -> do
           dispatched <-
@@ -605,15 +638,17 @@ readBackStackDesiredAbsence
   -> CleanupOperationId
   -> RegisteredResourceKey
   -> ObservationEvidenceScope
+  -> ProviderStackConfig
   -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
-readBackStackDesiredAbsence interpreter operationId key scope =
+readBackStackDesiredAbsence interpreter operationId key scope config =
   case mkProviderDispatchKey operationId ProviderAbsenceReadBack of
     Left err -> pure (Left (AwsRegisteredTargetDispatchKeyInvalid err))
     Right dispatchKey ->
-      case mkAwsStackDesiredAbsenceReadBackRequest
+      case mkAwsNativeStackDesiredAbsenceReadBackRequest
         key
         scope
-        (observationRevisionForProviderDispatchKey dispatchKey) of
+        (observationRevisionForProviderDispatchKey dispatchKey)
+        config of
         Left err -> pure (Left (AwsRegisteredTargetStackBindingInvalid err))
         Right request -> do
           dispatched <-
@@ -632,6 +667,50 @@ readBackStackDesiredAbsence interpreter operationId key scope =
                 ( awsStackObservationDecodeObservation
                     (decodeAwsStackExecutionResult request result)
                 )
+
+readBackBoundStackDesiredAbsence
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> TeardownExecutionContext surface
+  -> RegisteredTargetBinding
+  -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
+readBackBoundStackDesiredAbsence interpreter context target = do
+  binding <- readBoundStackProviderBinding interpreter context target
+  case binding of
+    Left err -> pure (Left err)
+    Right exactBinding ->
+      readBackStackDesiredAbsence
+        interpreter
+        (teardownExecutionOperationId context)
+        (registeredTargetKey target)
+        (teardownExecutionObservationScope context)
+        (internalAwsStackProviderBindingConfig exactBinding)
+
+readBoundStackProviderBinding
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> TeardownExecutionContext surface
+  -> RegisteredTargetBinding
+  -> m (Either AwsRegisteredTargetInterpreterError AwsStackProviderBinding)
+readBoundStackProviderBinding interpreter context target = do
+  loaded <-
+    awsRegisteredTargetReadStackProviderBinding
+      interpreter
+      operationId
+      key
+      scope
+  pure $ case loaded of
+    Left detail -> Left (AwsRegisteredTargetProviderBindingUnavailable detail)
+    Right binding
+      | awsStackProviderBindingOperationId binding /= operationId
+          || awsStackProviderBindingKey binding /= key
+          || awsStackProviderBindingScope binding /= scope ->
+          Left AwsRegisteredTargetProviderBindingMismatch
+      | otherwise -> Right binding
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context
+  key = registeredTargetKey target
 
 observeEbs
   :: (Monad m)
@@ -747,46 +826,6 @@ observeVerifiedAwsEksForDecision interpreter context target =
   operationId = teardownExecutionOperationId context
   scope = teardownExecutionObservationScope context
 
-observeEksDesiredAbsence
-  :: (Monad m)
-  => AwsRegisteredTargetInterpreter m
-  -> TeardownExecutionContext surface
-  -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
-observeEksDesiredAbsence interpreter context =
-  case mkProviderDispatchKey operationId ProviderAbsenceReadBack of
-    Left err -> pure (Left (AwsRegisteredTargetDispatchKeyInvalid err))
-    Right dispatchKey ->
-      case mkAwsEksDesiredAbsenceReadBackRequest
-        (observationRevisionForProviderDispatchKey dispatchKey)
-        scope of
-        Left err -> pure (Left (AwsRegisteredTargetEksInvalid err))
-        Right request -> do
-          dispatched <-
-            dispatchRegisteredProviderObservation
-              (awsRegisteredTargetProviderBoundary interpreter)
-              dispatchKey
-              (awsEksObservationRequestProviderIntent request)
-          pure $ case dispatched of
-            Left (ProviderDispatchObservationUnobservable detail) ->
-              Right
-                ( awsEksObservationDecodeObservation
-                    (decodeAwsEksObservation request (Left detail))
-                )
-            Left (ProviderDispatchObservationRefused detail) ->
-              Right
-                ( awsEksObservationDecodeObservation
-                    (decodeAwsEksObservation request (Left detail))
-                )
-            Left err -> Left (AwsRegisteredTargetDispatchInvalid err)
-            Right result ->
-              Right
-                ( awsEksObservationDecodeObservation
-                    (decodeAwsEksObservation request (Right result))
-                )
- where
-  operationId = teardownExecutionOperationId context
-  scope = teardownExecutionObservationScope context
-
 reconcileEks
   :: (Monad m)
   => AwsRegisteredTargetInterpreter m
@@ -862,41 +901,54 @@ reconcileStack
   -> RegisteredTargetBinding
   -> m (Either AwsRegisteredTargetInterpreterError RegisteredTargetReconcileResult)
 reconcileStack interpreter context target = do
-  observed <- observeStackForDecision interpreter operationId key scope
-  case observed of
+  loadedBinding <- readBoundStackProviderBinding interpreter context target
+  case loadedBinding of
     Left err -> pure (refusedResult context target err)
-    Right stackObservation ->
-      let exact = stackDecisionObservationExact stackObservation
-          observationRefusal =
-            AwsRegisteredTargetDecisionInputsUnavailable
-              "exact registered stack observation did not authorize a decision"
-       in case exactObservationResult exact of
-            ExactResourceAbsent _ ->
-              pure
-                ( mapResult
-                    (mkAlreadyAbsentRegisteredTargetReconcile operationId target scope exact)
-                )
-            ExactResourcePartial {} -> pure (refusedResult context target observationRefusal)
-            ExactResourceUnobservable {} ->
-              pure (refusedResult context target observationRefusal)
-            ExactResourcePresent _ -> case stackObservation of
-              StackDecisionObservationUnverified _ ->
-                pure (refusedResult context target observationRefusal)
-              StackDecisionObservationVerified verified ->
-                reconcilePresentStack interpreter context target verified
+    Right binding -> do
+      observed <-
+        observeStackForDecision
+          interpreter
+          operationId
+          key
+          scope
+          (internalAwsStackProviderBindingConfig binding)
+      case observed of
+        Left err -> pure (refusedResult context target err)
+        Right stackObservation ->
+          reconcileObserved binding stackObservation
  where
   operationId = teardownExecutionOperationId context
   scope = teardownExecutionObservationScope context
   key = registeredTargetKey target
+  reconcileObserved binding stackObservation =
+    let exact = stackDecisionObservationExact stackObservation
+        observationRefusal =
+          AwsRegisteredTargetDecisionInputsUnavailable
+            "exact registered stack observation did not authorize a decision"
+     in case exactObservationResult exact of
+          ExactResourceAbsent _ ->
+            pure
+              ( mapResult
+                  (mkAlreadyAbsentRegisteredTargetReconcile operationId target scope exact)
+              )
+          ExactResourcePartial {} -> pure (refusedResult context target observationRefusal)
+          ExactResourceUnobservable {} ->
+            pure (refusedResult context target observationRefusal)
+          ExactResourcePresent _ -> case stackObservation of
+            StackDecisionObservationUnverified _ ->
+              pure (refusedResult context target observationRefusal)
+            StackDecisionObservationVerified verified ->
+              reconcilePresentStack interpreter context target binding verified
 
 reconcilePresentStack
   :: (Monad m)
   => AwsRegisteredTargetInterpreter m
   -> TeardownExecutionContext surface
   -> RegisteredTargetBinding
+  -> AwsStackProviderBinding
   -> VerifiedAwsStackObservation 'ObserveStackForDecision
   -> m (Either AwsRegisteredTargetInterpreterError RegisteredTargetReconcileResult)
-reconcilePresentStack interpreter context target verified = do
+reconcilePresentStack interpreter context target binding verified = do
   loadedInputs <-
     awsRegisteredTargetReadStackDecisionInputs interpreter operationId key scope
   case loadedInputs of
@@ -939,34 +991,19 @@ reconcilePresentStack interpreter context target verified = do
     StackDestroyFromVerifiedManifest {}
       | key == AwsEksKey ->
           pure (refused AwsRegisteredTargetEksDrainProofRequired)
-    _ -> destroyWithDecision decision
+    _ -> applyBoundDestroy decision binding
 
-  destroyWithDecision decision =
-    do
-      loadedBinding <-
-        awsRegisteredTargetReadStackProviderBinding interpreter operationId key scope
-      case loadedBinding of
-        Left detail ->
-          pure (refused (AwsRegisteredTargetProviderBindingUnavailable detail))
-        Right binding
-          | awsStackProviderBindingOperationId binding /= operationId
-              || awsStackProviderBindingKey binding /= key
-              || awsStackProviderBindingScope binding /= scope ->
-              pure (refused AwsRegisteredTargetProviderBindingMismatch)
-          | otherwise ->
-              applyBoundDestroy decision binding
-
-  applyBoundDestroy decision binding =
+  applyBoundDestroy decision exactBinding =
     case authorizeAwsStackDestroy
-      (internalAwsStackProviderBindingRevision binding)
+      (internalAwsStackProviderBindingRevision exactBinding)
       verified
       decision of
       Left err -> pure (refused (AwsRegisteredTargetStackDestroyRefused err))
       Right authorization ->
         case mkAwsStackDestroyRequest
           authorization
-          (internalAwsStackProviderBindingRevision binding)
-          (internalAwsStackProviderBindingConfig binding) of
+          (internalAwsStackProviderBindingRevision exactBinding)
+          (internalAwsStackProviderBindingConfig exactBinding) of
           Left err -> pure (refused (AwsRegisteredTargetStackDestroyRefused err))
           Right request ->
             case mkProviderDispatchKey operationId ProviderRegisteredMutation of
@@ -1636,6 +1673,349 @@ reconcileRetainedEbs interpreter context target = do
           Right mutation ->
             mapResult
               ( mkAwsRetainedEbsRegisteredTargetReconcile
+                  operationId
+                  target
+                  scope
+                  authorization
+                  mutation
+              )
+
+-- | Supply the GADT surface witness required by the IAM-family adapter.  The
+-- adapter itself remains the authority on whether the per-run family is
+-- selectable on that surface.
+mkIamRoleFamilyObservationRequest
+  :: ObservationRevision
+  -> ObservationEvidenceScope
+  -> Either
+       AwsIamRoleFamilyAdapterError
+       ExactAwsIamRoleFamilyObservationRequest
+mkIamRoleFamilyObservationRequest revision scope =
+  case evidenceCleanupSurface scope of
+    LocalOnly ->
+      mkExactAwsIamRoleFamilyObservationRequest LocalOnlySurface revision scope
+    Cascade ->
+      mkExactAwsIamRoleFamilyObservationRequest CascadeSurface revision scope
+    ExplicitPerRun ->
+      mkExactAwsIamRoleFamilyObservationRequest
+        ExplicitPerRunSurface
+        revision
+        scope
+    OperationalTeardown ->
+      mkExactAwsIamRoleFamilyObservationRequest
+        OperationalTeardownSurface
+        revision
+        scope
+    ExplicitLongLived ->
+      mkExactAwsIamRoleFamilyObservationRequest
+        ExplicitLongLivedSurface
+        revision
+        scope
+    TotalDecommission ->
+      mkExactAwsIamRoleFamilyObservationRequest
+        TotalDecommissionSurface
+        revision
+        scope
+
+mapIamRoleFamily
+  :: Either AwsIamRoleFamilyAdapterError value
+  -> Either AwsRegisteredTargetInterpreterError value
+mapIamRoleFamily =
+  either (Left . AwsRegisteredTargetIamRoleFamilyInvalid) Right
+
+observeIamRoleFamily
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> ProviderDispatchPurpose
+  -> TeardownExecutionContext surface
+  -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
+observeIamRoleFamily interpreter purpose context =
+  case mkProviderDispatchKey operationId purpose of
+    Left err -> pure (Left (AwsRegisteredTargetDispatchKeyInvalid err))
+    Right dispatchKey ->
+      case mkIamRoleFamilyObservationRequest
+        (observationRevisionForProviderDispatchKey dispatchKey)
+        scope of
+        Left err -> pure (Left (AwsRegisteredTargetIamRoleFamilyInvalid err))
+        Right request -> do
+          dispatched <-
+            dispatchRegisteredProviderObservation
+              (awsRegisteredTargetProviderBoundary interpreter)
+              dispatchKey
+              (awsIamRoleFamilyObservationRequestProviderIntent request)
+          pure $ case dispatched of
+            Left (ProviderDispatchObservationUnobservable detail) ->
+              mapIamRoleFamily
+                (decodeExactAwsIamRoleFamilyObservation request (Left detail))
+            Left (ProviderDispatchObservationRefused detail) ->
+              mapIamRoleFamily
+                (decodeExactAwsIamRoleFamilyObservation request (Left detail))
+            Left err -> Left (AwsRegisteredTargetDispatchInvalid err)
+            Right result ->
+              mapIamRoleFamily
+                (decodeExactAwsIamRoleFamilyObservation request (Right result))
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context
+
+reconcileIamRoleFamily
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> TeardownExecutionContext surface
+  -> RegisteredTargetBinding
+  -> m (Either AwsRegisteredTargetInterpreterError RegisteredTargetReconcileResult)
+reconcileIamRoleFamily interpreter context target = do
+  exactResult <-
+    observeIamRoleFamily interpreter ProviderDecisionObservation context
+  case exactResult of
+    Left err -> pure (refusedResult context target err)
+    Right exact ->
+      case mkProviderDispatchKey operationId ProviderDecisionObservation of
+        Left err ->
+          pure
+            ( refusedResult
+                context
+                target
+                (AwsRegisteredTargetDispatchKeyInvalid err)
+            )
+        Right dispatchKey ->
+          case mkIamRoleFamilyObservationRequest
+            (observationRevisionForProviderDispatchKey dispatchKey)
+            scope of
+            Left err ->
+              pure
+                ( refusedResult
+                    context
+                    target
+                    (AwsRegisteredTargetIamRoleFamilyInvalid err)
+                )
+            Right request ->
+              case authorizeExactAwsIamRoleFamilyReap request exact of
+                Left err ->
+                  pure
+                    ( refusedResult
+                        context
+                        target
+                        (AwsRegisteredTargetIamRoleFamilyInvalid err)
+                    )
+                Right Nothing ->
+                  pure
+                    ( mapResult
+                        ( mkAlreadyAbsentRegisteredTargetReconcile
+                            operationId
+                            target
+                            scope
+                            exact
+                        )
+                    )
+                Right (Just authorization) -> applyReap authorization
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context
+
+  applyReap authorization =
+    case mkProviderDispatchKey operationId ProviderRegisteredMutation of
+      Left err ->
+        pure
+          ( refusedResult
+              context
+              target
+              (AwsRegisteredTargetDispatchKeyInvalid err)
+          )
+      Right dispatchKey -> do
+        attempted <-
+          dispatchRegisteredProviderMutation
+            (awsRegisteredTargetProviderBoundary interpreter)
+            dispatchKey
+            (awsIamRoleFamilyReapProviderIntent authorization)
+        pure $ case attempted of
+          Left err ->
+            refusedResult context target (AwsRegisteredTargetDispatchInvalid err)
+          Right mutation ->
+            mapResult
+              ( mkAwsIamRoleFamilyRegisteredTargetReconcile
+                  operationId
+                  target
+                  scope
+                  authorization
+                  mutation
+              )
+
+mkLoadBalancerControllerFamilyObservationRequest
+  :: ObservationRevision
+  -> ObservationEvidenceScope
+  -> Either
+       AwsLoadBalancerControllerFamilyAdapterError
+       ExactAwsLoadBalancerControllerFamilyObservationRequest
+mkLoadBalancerControllerFamilyObservationRequest revision scope =
+  case evidenceCleanupSurface scope of
+    LocalOnly ->
+      mkExactAwsLoadBalancerControllerFamilyObservationRequest
+        LocalOnlySurface
+        revision
+        scope
+    Cascade ->
+      mkExactAwsLoadBalancerControllerFamilyObservationRequest
+        CascadeSurface
+        revision
+        scope
+    ExplicitPerRun ->
+      mkExactAwsLoadBalancerControllerFamilyObservationRequest
+        ExplicitPerRunSurface
+        revision
+        scope
+    OperationalTeardown ->
+      mkExactAwsLoadBalancerControllerFamilyObservationRequest
+        OperationalTeardownSurface
+        revision
+        scope
+    ExplicitLongLived ->
+      mkExactAwsLoadBalancerControllerFamilyObservationRequest
+        ExplicitLongLivedSurface
+        revision
+        scope
+    TotalDecommission ->
+      mkExactAwsLoadBalancerControllerFamilyObservationRequest
+        TotalDecommissionSurface
+        revision
+        scope
+
+mapLoadBalancerControllerFamily
+  :: Either AwsLoadBalancerControllerFamilyAdapterError value
+  -> Either AwsRegisteredTargetInterpreterError value
+mapLoadBalancerControllerFamily =
+  either
+    (Left . AwsRegisteredTargetLoadBalancerControllerFamilyInvalid)
+    Right
+
+observeLoadBalancerControllerFamily
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> ProviderDispatchPurpose
+  -> TeardownExecutionContext surface
+  -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
+observeLoadBalancerControllerFamily interpreter purpose context =
+  case mkProviderDispatchKey operationId purpose of
+    Left err -> pure (Left (AwsRegisteredTargetDispatchKeyInvalid err))
+    Right dispatchKey ->
+      case mkLoadBalancerControllerFamilyObservationRequest
+        (observationRevisionForProviderDispatchKey dispatchKey)
+        scope of
+        Left err ->
+          pure
+            ( Left
+                (AwsRegisteredTargetLoadBalancerControllerFamilyInvalid err)
+            )
+        Right request -> do
+          dispatched <-
+            dispatchRegisteredProviderObservation
+              (awsRegisteredTargetProviderBoundary interpreter)
+              dispatchKey
+              ( awsLoadBalancerControllerFamilyObservationRequestProviderIntent
+                  request
+              )
+          pure $ case dispatched of
+            Left (ProviderDispatchObservationUnobservable detail) ->
+              mapLoadBalancerControllerFamily
+                ( decodeExactAwsLoadBalancerControllerFamilyObservation
+                    request
+                    (Left detail)
+                )
+            Left (ProviderDispatchObservationRefused detail) ->
+              mapLoadBalancerControllerFamily
+                ( decodeExactAwsLoadBalancerControllerFamilyObservation
+                    request
+                    (Left detail)
+                )
+            Left err -> Left (AwsRegisteredTargetDispatchInvalid err)
+            Right result ->
+              mapLoadBalancerControllerFamily
+                ( decodeExactAwsLoadBalancerControllerFamilyObservation
+                    request
+                    (Right result)
+                )
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context
+
+reconcileLoadBalancerControllerFamily
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> TeardownExecutionContext surface
+  -> RegisteredTargetBinding
+  -> m (Either AwsRegisteredTargetInterpreterError RegisteredTargetReconcileResult)
+reconcileLoadBalancerControllerFamily interpreter context target = do
+  exactResult <-
+    observeLoadBalancerControllerFamily
+      interpreter
+      ProviderDecisionObservation
+      context
+  case exactResult of
+    Left err -> pure (refusedResult context target err)
+    Right exact ->
+      case mkProviderDispatchKey operationId ProviderDecisionObservation of
+        Left err ->
+          pure
+            ( refusedResult
+                context
+                target
+                (AwsRegisteredTargetDispatchKeyInvalid err)
+            )
+        Right dispatchKey ->
+          case mkLoadBalancerControllerFamilyObservationRequest
+            (observationRevisionForProviderDispatchKey dispatchKey)
+            scope of
+            Left err ->
+              pure
+                ( refusedResult
+                    context
+                    target
+                    (AwsRegisteredTargetLoadBalancerControllerFamilyInvalid err)
+                )
+            Right request ->
+              case authorizeExactAwsLoadBalancerControllerFamilyReap request exact of
+                Left err ->
+                  pure
+                    ( refusedResult
+                        context
+                        target
+                        (AwsRegisteredTargetLoadBalancerControllerFamilyInvalid err)
+                    )
+                Right Nothing ->
+                  pure
+                    ( mapResult
+                        ( mkAlreadyAbsentRegisteredTargetReconcile
+                            operationId
+                            target
+                            scope
+                            exact
+                        )
+                    )
+                Right (Just authorization) -> applyReap authorization
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context
+
+  applyReap authorization =
+    case mkProviderDispatchKey operationId ProviderRegisteredMutation of
+      Left err ->
+        pure
+          ( refusedResult
+              context
+              target
+              (AwsRegisteredTargetDispatchKeyInvalid err)
+          )
+      Right dispatchKey -> do
+        attempted <-
+          dispatchRegisteredProviderMutation
+            (awsRegisteredTargetProviderBoundary interpreter)
+            dispatchKey
+            (awsLoadBalancerControllerFamilyReapProviderIntent authorization)
+        pure $ case attempted of
+          Left err ->
+            refusedResult context target (AwsRegisteredTargetDispatchInvalid err)
+          Right mutation ->
+            mapResult
+              ( mkAwsLoadBalancerControllerFamilyRegisteredTargetReconcile
                   operationId
                   target
                   scope

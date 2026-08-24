@@ -11,6 +11,13 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-08-22 on Sprint `1.92` (Standards A/N).** The configuration-ownership audit
+found decoded deployment fields that still lose to compiled answers, plus fixed product/protocol
+identities exposed as operator fields. This phase owns the Tier-0 schema, validation, builders, and
+compiled-value governance, so `1.92` establishes the validated context and removes the two false
+fields. Consumer adoption stays with Sprints `2.52`, `3.42`, `4.90`, and `5.37`; execution order
+lives in [README.md → Resume Here](README.md#resume-here).
+
 🔄 **Reopened 2026-08-19 on Sprint `1.91`** — own-surface reopen (Standard A/N) on the Tier-0
 coordinate surface Sprint `1.89` parsed and Sprint `1.90` began clearing. The phase recloses when
 `1.91` reaches `Done`; until then this entry records an open reopen, not a closure. Three fail-closed rules
@@ -6850,6 +6857,118 @@ pinning is attempted.
 - Record the Phase `1` own-surface reopen in [README.md](README.md) and
   [00-overview.md](00-overview.md); add the AWS-coordinate registry to
   [system-components.md](system-components.md); and open the ledger rows in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 1.92: A Decoded Field and a Compiled Answer Are Two Authorities [✅ Done]
+
+**Status**: Done (2026-08-22) — Phase `1` reclosed on the Tier-0 schema, config builders,
+validation boundary, and compiled-value governance this phase owns.
+**Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/Config/Tier0.hs`,
+`src/Prodbox/Cluster/Topology.hs`, `src/Prodbox/Aws.hs`,
+`src/Prodbox/Minio/ObjectStoreTypes.hs`, `src/Prodbox/CheckCode.hs`, and the generated
+`prodbox-config-types.dhall`.
+**Deployment qualification**: pending — the generated-config identity, bootstrap coordinates, and
+capability wiring change. No historical aggregate proves the replacement identity.
+**Independent Validation**: pure raw-to-validated context smart constructors, config-builder and
+Dhall round trips, negative source/gate fixtures, built-frontend config CLI cases, and
+`prodbox dev check`; no cluster, AWS account, or later phase is required.
+**Docs to update**: `documents/engineering/config_doctrine.md`,
+`documents/engineering/acme_provider_guide.md`, `documents/engineering/vault_doctrine.md`,
+`README.md`, `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Make the config-ownership partition executable. A deployment value is currently able to appear in
+Tier-0, decode successfully, and then lose to a compiled answer: the served FQDN is seeded and
+forced equal to `supportedPublicHostname`; the default cluster and machine identities are compiled;
+and the Tier-0 context exposes Vault/MinIO coordinates while production consumers can use unrelated
+constants. The inverse defect exists beside them: `acme.server` and `context.minio_bucket` look
+operator-selectable even though prodbox supports one ZeroSSL directory and one generically named
+state bucket.
+
+### Deliverables
+
+- `domain.demo_fqdn`, `acme.email`, `context.cluster_id`, the topology machine ids,
+  `context.vault_address`, and `context.minio_endpoint` are raw authoring inputs narrowed exactly
+  once into the validated settings/context carried by commands. Generated skeletons may leave raw
+  operator fields empty, but no consuming validated value can be built until they are authored.
+- Delete `supportedPublicHostname`, its fixed-host setup narration/equality check, the non-empty
+  `defaultConfigFile.domain.demo_fqdn` seed, and the independent `prodbox-home` context/topology
+  seeds. `config setup` prompts for and validates the home served FQDN instead of supplying it.
+- Remove `acme.server` from `AcmeSection`, `ConfigSetupInput`, Tier-0 rendering/schema, and validation.
+  The ZeroSSL directory has one named compiled protocol declaration consumed by the issuer renderer.
+- Remove `context.minio_bucket` from Tier-0. The generic `prodbox-state` bucket is one
+  prodbox-chosen identity exported from the object-store vocabulary; later phase consumers import
+  that identity instead of restating it.
+- Carry a validated `ProdboxContext` (or a narrower proof-equivalent projection) beside
+  `ValidatedSettings`, so a later consumer cannot be forced to re-open the raw Tier-0 document or
+  substitute a default.
+- Add a closed ownership/reach check for this audited field set: every operator field has one
+  narrowing and a reached consumer projection, every fixed field is absent from the Dhall schema,
+  and the retired compiled symbols cannot reappear. The check states its source region and is
+  mutation-proven; it does not claim to decide whether every arbitrary string literal is
+  configuration.
+
+### Validation
+
+1. `config generate` emits empty raw operator coordinates, no `acme.server`, and no
+   `context.minio_bucket`; `config validate` refuses each missing required coordinate by field name.
+2. `config setup` accepts two distinct valid served FQDNs, ACME contacts, cluster/machine identities,
+   Vault addresses, and MinIO endpoints, and re-render/decode preserves each exactly.
+3. The single ZeroSSL directory and state-bucket identities are projected to their consumers while
+   no Dhall field can override them.
+4. Negative gate fixtures reintroducing `supportedPublicHostname`, a non-empty deployment seed, or
+   either retired fixed field fail `prodbox dev check`; a declared field with no reached projection
+   fails too.
+5. `prodbox config schema`, `prodbox dev check`, unit tests, and built-frontend CLI/env suites pass.
+
+### Remaining Work
+
+None on the sprint-owned surface. Gateway runtime, chart rendering, lifecycle/host commands, and
+harness generation remain the independently validatable consumer work owned by Sprints `2.52`,
+`3.42`, `4.90`, and `5.37`; the AWS resource profile remains Sprint `7.37`.
+
+### Closure
+
+Tier-0 generation now emits unauthored raw deployment coordinates and daemon startup refuses a
+missing authored config instead of reconstructing a deployment from compiled defaults. The one
+validation boundary narrows the served host, ACME contact, cluster and machine identities, Vault
+address, and MinIO endpoint into `ValidatedSettings` plus an opaque
+`ValidatedDeploymentContext`. Interactive setup authors those values atomically and preserves
+distinct valid deployments.
+
+The false `acme.server` and `context.minio_bucket` fields, the compiled served-host answer, and the
+production context/topology seeds are deleted. The ZeroSSL directory and `prodbox-state` bucket
+each have one compiled declaration. `checkDeploymentConfigOwnership` closes the audited source
+region and its negative mutation cases prove the retired fields, seeds, symbols, or missing reached
+projections cannot return unnoticed.
+
+The generated schema, unit suite, built-frontend CLI/env suites, and canonical `prodbox dev check`
+pass on this revision. Deployment qualification remains pending under Standard O/P and does not
+hold this code-owned closure open.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/config_doctrine.md` — canonical ownership partition, false-field rule,
+  exact current gaps, and harness source boundary.
+- `documents/engineering/acme_provider_guide.md` — the ZeroSSL directory is a protocol constant,
+  not an operator field.
+- `documents/engineering/vault_doctrine.md` — operator-authored real values are not committed
+  registered-real constants.
+
+**Product docs to create/update:**
+
+- Root `README.md` — concise operator/harness sourcing rule with links to the SSoTs.
+
+**Cross-references to add:**
+
+- Record the Phase `1` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md); add the validated deployment-context component to
+  [system-components.md](system-components.md); register every surviving fallback or false field in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents

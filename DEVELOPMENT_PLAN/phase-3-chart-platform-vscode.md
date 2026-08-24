@@ -10,6 +10,19 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-23 on Sprint `3.43` (Standards A/N/P).** The first destructive Sprint `6.5`
+qualification preflight reached no AWS mutation: local reconcile rendered the operator host's
+`127.0.0.1:39000` MinIO address into the Bootstrap Broker Pod, where it names the Pod rather than
+the retained MinIO Service. The correction gives the Pod-network Service coordinate one compiled
+owner while retaining the authored host coordinate. The rebuilt Broker reached `Ready=True` with
+zero restarts and the exact Service endpoint. The enclosing reconcile then failed at the distinct
+host port-forward startup race owned by Phase 2 Sprint `2.53`.
+
+✅ **Previously reclosed 2026-08-23 on Sprint `3.42` (Standards A/N).** Chart rendering now projects the
+validated deployment endpoint and served host and imports the one product-owned state-bucket
+identity. The earlier `3.41` reopen and its evidence remain unchanged; execution order lives in
+[README.md → Resume Here](README.md#resume-here).
+
 🔄 **Reopened 2026-08-15 on Sprint `3.41` (Standards A/L/P).** The measured teardown
 counterexample reported the external caller ServiceAccount unobservable but, because stderr was
 discarded, did not establish the cause or whether the Kubernetes API was reached. It is not evidence
@@ -4323,6 +4336,142 @@ host cache facts, or the ordinary whole-platform renderer.
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Sprint status lives only in
   the plan suite.
 
+
+## Sprint 3.42: Chart Values Project the Deployment Context [✅ Done]
+
+**Status**: Done — 2026-08-23.
+**Implementation**: `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/PublicEdge.hs`, and focused
+chart-render tests.
+**Deployment qualification**: code-local qualification complete — the generated chart/config
+identity changed intentionally: the Gateway default is empty, the route inventory evaluates the
+supplied host, and all runtime values project the validated context. No live cluster is required by
+the sprint's independent validation boundary.
+**Independent Validation**: pure chart-value renders over two validated contexts, Helm/chart lint,
+negative source fixtures, unit tests, and `prodbox dev check`; no live cluster or later phase.
+**Docs to update**: `documents/engineering/config_doctrine.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/envoy_gateway_edge_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Make chart rendering a projection of the validated deployment context. `ChartPlatform` currently
+restates the MinIO service endpoint and state-bucket name while rendering role configs, even though
+Tier-0 carries the endpoint and the object-store vocabulary owns the bucket identity. A production
+Helm-inventory comment also names one operator's public hostname as if it were platform identity.
+
+### Deliverables
+
+- Chart render entrypoints receive Sprint `1.92`'s validated MinIO endpoint and project it into every
+  surviving role boot/config value; no chart renderer authors the endpoint.
+- Every rendered state-bucket value imports the single prodbox-chosen object-store identity. The
+  chart platform contains no second bucket declaration.
+- Public-edge inventory/render narration names the validated served host supplied to the renderer,
+  never a repository-specific real FQDN.
+- Add a structural render check that changes the supplied endpoint and host and proves every
+  expected chart projection changes, while the product-owned bucket remains identical.
+
+### Validation
+
+1. Two validated contexts render distinct MinIO endpoints and served hosts through all chart
+   consumers with no cross-value fallback.
+2. The state bucket renders from one compiled declaration and cannot be changed by Dhall.
+3. Source/gate proof finds no complete MinIO endpoint or real served-host literal in production
+   chart-rendering Haskell.
+4. Helm/chart lint, chart-focused unit tests, and `prodbox dev check` pass.
+
+### Remaining Work
+
+None.
+
+### Closure Record (2026-08-23)
+
+- `ChartPlatform` reads `deploymentMinioEndpoint` from the opaque validated context and projects it
+  into the Gateway Helm value, Gateway Tier-0 document, Bootstrap Broker store, and Lifecycle
+  Authority primary store. Gateway Tier-0 also projects the validated parameters and Vault address,
+  so unauthored generation defaults never enter the rendered daemon document.
+- Bootstrap Broker and Lifecycle Authority import `defaultObjectStoreBucket`; no second
+  `prodbox-state` declaration remains on the chart-rendering surface.
+- The generic Gateway chart endpoint is empty. The generated public-edge inventory evaluates
+  `.Values.gateway.host`, so committed production Haskell/chart prose carries no deployment host.
+- Two validated contexts prove all four endpoint projections and all six served-host projections
+  change exactly, with neither old value leaking across and both bucket projections unchanged.
+  Mutation cases reject the old endpoint, bucket spelling, real host, and a deleted consumer reach.
+- Validation is green: focused Sprint `3.42` unit proof 5/5, `prodbox dev lint chart`, the complete
+  canonical unit command (including all specialized suites), documentation harmony, HLint with
+  `No hints`, and the warning-clean `prodbox dev check`.
+
+## Sprint 3.43: Host Loopback Is Not a Pod Endpoint [✅ Done]
+
+**Status**: Done (2026-08-23) — opened from the first Sprint `6.5` live qualification preflight and
+closed with the changed Broker projection live-proven.
+**Implementation**: `src/Prodbox/Minio/ObjectStoreTypes.hs`,
+`src/Prodbox/Lib/ChartPlatform.hs`, and `src/Prodbox/CLI/Rke2.hs`.
+**Deployment qualification**: pending — the correction changes live role configuration and must be
+included in the current-revision Sprint `6.5` campaign.
+**Independent Validation**: pure chart-value decoding asserts host loopback never enters a deployed
+Gateway, Bootstrap Broker, or Lifecycle Authority document; local `cluster reconcile` proves the
+Broker crosses its pre-Vault admission against the real MinIO Service.
+**Docs to update**: `documents/engineering/config_doctrine.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Represent the operator-host and Pod network namespaces honestly. Tier-0's authored MinIO endpoint
+remains the host execution coordinate; every deployed in-cluster consumer receives the exact
+Kubernetes Service coordinate from one compiled object-store identity.
+
+### Deliverables
+
+- Give MinIO Service name, namespace, and endpoint one compiled owner shared by base-platform and
+  chart renderers.
+- Keep the Tier-0 endpoint available to host-side consumers without projecting its loopback value
+  into a Pod.
+- Prove the Gateway Helm value and Tier-0 document use the cluster Service coordinate, while the
+  Broker and Authority pure renderers continue to honor an explicitly supplied coordinate.
+- Rerun live local reconcile and observe the Broker reach its following Vault lifecycle boundary.
+
+### Validation
+
+1. Focused chart projection tests distinguish the host endpoint from the in-cluster endpoint.
+2. Warning-clean build, chart lint, unit tests, and `prodbox dev check` pass.
+3. Live `prodbox cluster reconcile` observes a ready Broker using the retained MinIO Service.
+
+### Remaining Work
+
+None on the sprint-owned surface. The same live reconcile subsequently exposed a Broker
+port-forward startup race, recorded as earlier Phase 2 Sprint `2.53`.
+
+### Closure
+
+The focused endpoint projection case passes. Live `prodbox cluster reconcile` built and pushed the
+corrected runtime image, rolled the Broker Deployment to generation 2, and produced a new Pod with
+`Ready=True`, zero restarts, and the exact rebuilt image ID. Its rendered `config.dhall` contains
+`store_endpoint = "http://minio.prodbox.svc.cluster.local:9000"`; the host-only
+`127.0.0.1:39000` coordinate is absent. The enclosing reconcile advanced beyond that dependency and
+failed later because its Service port-forward was started before the Pod was running; Sprint `2.53`
+owns that independently validatable boundary.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/helm_chart_platform_doctrine.md` — deployment-context projection and
+  single compiled bucket identity.
+- `documents/engineering/envoy_gateway_edge_doctrine.md` — one configured served host per
+  substrate, without a compiled home-host default.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `3` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md); register renderer duplicates in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

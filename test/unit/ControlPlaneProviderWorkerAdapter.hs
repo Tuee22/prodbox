@@ -234,6 +234,14 @@ fixtureCapabilities calls applied loseResponse unobservable =
         mutation ("validation-zone-reap:" <> namePrefix)
     , observeRetainedEbsVolumesCapability = \lifecycleValue ->
         readOnly ("retained-ebs-observe:" <> lifecycleValue)
+    , observeEksIamRoleFamilyCapability = \roleNames policyNames ->
+        readOnly ("eks-iam-family-observe:" <> roleNames <> ":" <> policyNames)
+    , reapEksIamRoleFamilyCapability = \roleNames policyNames ->
+        mutation ("eks-iam-family-reap:" <> roleNames <> ":" <> policyNames)
+    , observeEksLoadBalancerControllerFamilyCapability = \name tags ->
+        readOnly ("eks-lbc-family-observe:" <> name <> ":" <> tags)
+    , reapEksLoadBalancerControllerFamilyCapability = \name tags ->
+        mutation ("eks-lbc-family-reap:" <> name <> ":" <> tags)
     , observeDns01ChallengeRecordsCapability = \zoneId recordNamePrefix ->
         readOnly ("dns01-challenge-observe:" <> zoneId <> ":" <> recordNamePrefix)
     , observeOwnedResourceTagsCapability = \query ->
@@ -252,6 +260,8 @@ fixtureCapabilities calls applied loseResponse unobservable =
     , observeProviderReadinessCapability = readOnly . readinessLabel
     , issueEksClientAuthCapability = const (readOnly "eks-client-auth")
     , observeEksClusterIdentityCapability = const (readOnly "eks-cluster-identity")
+    , observeNativeStackFamilyCapability = \_ _ -> readOnly "native-stack-family-observe"
+    , reapNativeStackFamilyCapability = \_ _ _ -> mutation "native-stack-family-reap"
     }
  where
   mutation label =
@@ -402,10 +412,12 @@ allIntents =
           ( mkEksClusterIdentityRequest
               (stackRef "aws-eks")
               "123456789012"
-              "ca-central-1"
+              (fixtureAwsRegion FixtureCaCentral1)
               "aws-eks-test-cluster"
           )
       )
+  , ObserveNativeStackFamily nativeTestRef awsTestConfig
+  , ReapNativeStackFamily nativeTestRef awsTestConfig ["vpc/vpc-fixture"]
   ]
 
 expectedCalls :: ProviderIntent -> [(Text, ProviderIntentCoordinate)]
@@ -429,6 +441,8 @@ expectedCalls intent =
         ObserveTestEbsVolumes _ ->
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
         ObserveEksClusterIdentity _ ->
+          [call "session-open", call ("read:" <> intentLabel), call "session-close"]
+        ObserveNativeStackFamily _ _ ->
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
         _ ->
           [ call "session-open"
@@ -473,11 +487,21 @@ labelFor intent = case intent of
     "retained-ebs-observe:" <> lifecycleValue
   ReapRetainedEbsVolumes lifecycleValue ->
     "retained-ebs-reap:" <> lifecycleValue
+  ObserveEksIamRoleFamily roleNames policyNames ->
+    "eks-iam-family-observe:" <> roleNames <> ":" <> policyNames
+  ReapEksIamRoleFamily roleNames policyNames ->
+    "eks-iam-family-reap:" <> roleNames <> ":" <> policyNames
+  ObserveEksLoadBalancerControllerFamily name tags ->
+    "eks-lbc-family-observe:" <> name <> ":" <> tags
+  ReapEksLoadBalancerControllerFamily name tags ->
+    "eks-lbc-family-reap:" <> name <> ":" <> tags
   ObserveEksClusterIdentity _ -> "eks-cluster-identity"
   ObserveOwnedResourceTags query ->
     "owned-resource-tags:" <> providerOwnedTagQueryKey query
   ObserveDns01ChallengeRecords zoneId recordNamePrefix ->
     "dns01-challenge-observe:" <> zoneId <> ":" <> recordNamePrefix
+  ObserveNativeStackFamily _ _ -> "native-stack-family-observe"
+  ReapNativeStackFamily {} -> "native-stack-family-reap"
 
 readinessLabel :: ProviderReadinessProbe -> Text
 readinessLabel probe = case probe of
@@ -518,6 +542,19 @@ revision = mustRight . mkProviderRevision
 
 awsEksConfig :: ProviderStackConfig
 awsEksConfig = mustRight (mkAwsEksProviderStackConfig "127.0.0.1/32")
+
+awsTestConfig :: ProviderStackConfig
+awsTestConfig = mustRight (mkAwsTestProviderStackConfig "127.0.0.1/32")
+
+nativeTestRef :: ProviderNativeStackFamilyRef
+nativeTestRef =
+  mustRight
+    ( mkProviderNativeStackFamilyRef
+        (stackRef "aws-test")
+        "123456789012"
+        (fixtureAwsRegion FixtureCaCentral1)
+        Nothing
+    )
 
 spotPriceQuery :: ProviderSpotPriceQuery
 spotPriceQuery = mustRight (mkProviderSpotPriceQuery "t3.small" "Linux/UNIX")

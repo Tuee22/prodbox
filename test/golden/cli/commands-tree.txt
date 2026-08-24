@@ -118,6 +118,7 @@ prodbox
       teardown-recovery
       certificate-scope
       clean-room-handoff
+      cascade-qualification
       ha-rke2-aws
       lifecycle
       pulumi
@@ -141,6 +142,7 @@ prodbox
   vault
     status
     init
+    reset-ambiguous-initialization
     unseal
     seal
     reconcile

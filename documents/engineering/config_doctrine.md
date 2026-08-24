@@ -149,15 +149,21 @@ the same way production does — through the **same builder** `config setup` use
 Sprint `1.50`) — so the harness drives the real reconcile/IAM flows against a config it generated,
 not a fixture it carries. This mirrors hostbootstrap's `demoTestConfig`-reuses-`demoInit` idiom.
 
-The harness sources the builder's inputs non-interactively (Sprint `5.10`): the cleartext operator
-ids that a real operator would supply at the interactive prompts come from `test-secrets.dhall`
-(e.g. `route53_zone_id` — the one file where cleartext secrets are allowed), `acme.email` comes from
-a baked operator-email default, and the remaining knobs come from the same defaults the generated
-skeleton already carries. The harness regenerates the binary-sibling `prodbox.dhall` only when the
-operator fields are empty (it refuses to clobber a populated real config), as a preflight before the
-managed AWS IAM harness validates the bootstrap config (`validateAwsBootstrapConfig`). The deferred
-operator ids (`aws_substrate.*`, `ses.*`, `pulumi_state_backend.*`) extend the same way when a run
-needs them.
+> **Target.** The harness supplies every deployment-varying builder input from one of two explicit
+> sources: externally chosen test-deployment values from `test-secrets.dhall`, and ephemeral values
+> derived from the declared `prodbox.test.dhall` run topology. It then renders the per-run
+> `prodbox.dhall` through the same `configFromSetupInput` builder production uses. A Haskell default
+> supplies neither category, and an absent required fixture or derivation refuses before mutation.
+> Status lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+**Current revision.** Both harness paths now supply a complete explicit deployment. Externally
+chosen served-host, ACME, AWS, SES, and retained-backend values come from `test-secrets.dhall`;
+cluster/machine identities, Vault/MinIO endpoints, and the relative storage root come from the
+validated run input. Both paths use `configFromSetupInput`, validate the complete Tier-0 document
+and deployment context, and perform one atomic sibling write. Missing or malformed source fields
+refuse before admin credential acquisition or mutation. The legacy aggregate preserves a complete
+operator-authored binary sibling byte-for-byte, generates one only when the sibling is absent or
+empty, and refuses a partial sibling rather than combining authored and generated answers.
 
 ### The in-force config authority is seeded, then the seed is retired
 
@@ -223,6 +229,49 @@ definition site:
 Anything matching none of the four is deployment-varying by default. "The deployment we happen to
 run uses this one" is not a fifth reason; it is the absence of a reason, stated as a habit.
 
+The partition applies at the consumer as well as at the declaration. An operator-owned field is
+not configuration merely because it decodes: every production consumer of that fact must receive
+the validated value, and no sibling constant, fallback, environment read, or independently seeded
+default may answer the same question. Conversely, a protocol-fixed or prodbox-chosen identity is
+declared once in code and is not also exposed as a Dhall field. A field whose value is ignored or
+overwritten is a false configuration surface and is removed rather than documented as optional.
+
+The resulting ownership inventory for the audited values is:
+
+| Value | Owner and source |
+|---|---|
+| Substrate served FQDN and ACME contact email | Operator-authored Tier-0 values (`domain.demo_fqdn` for home, `aws_substrate.subzone_name` for AWS, and `acme.email`); the harness supplies its test deployment's values through fixture input. |
+| Cluster id, machine id, Vault address, and MinIO endpoint | Operator-authored or explicitly run-derived Tier-0 topology/context values; all consumers use the same validated projection. |
+| AWS region, operator CIDR, network plan, instance/node envelope, and EBS volume class/size | Operator-authored Tier-0 AWS substrate values; the account id remains runtime-observed. |
+| ZeroSSL ACME directory and the generic MinIO state-bucket name | One compiled declaration each: the supported provider protocol and a prodbox-chosen storage identity. They are not operator fields. |
+| Stack, namespace, Kubernetes object, Vault-path, IAM, tag-key, and receipt-prefix names chosen by prodbox | Compiled prodbox protocol identities, each with one declaration and derived projections. |
+
+> **Current revision.** The Tier-0 schema/generator and validation boundary implement this
+> partition: the served FQDN, ACME contact, cluster/machine identity, and Vault/MinIO coordinates
+> have no production seed; `acme.server` and `context.minio_bucket` are absent; and one opaque
+> validated deployment-context projection survives the parse. Gateway continuity access and every
+> chart-rendered Gateway/Broker/Authority store now consume that endpoint exactly, and chart
+> renderers import the single compiled state-bucket identity. Host and lifecycle consumers also
+> project the Vault coordinate from that context: root-lifecycle resolution compares the exact
+> cluster id and Vault address before any effect, deeper gates read the sealed Tier-0 basics, and
+> Pulumi/host tests author another typed context rather than changing production through an
+> endpoint environment variable. The harness consumes the same ownership partition with no
+> compiled deployment answer. `aws_substrate.profile` is absent from the generated home-capable
+> skeleton and is required explicitly by every AWS desired-presence consumer. A present profile is
+> narrowed during Dhall decode into the hidden-constructor `AwsSubstrateProfile`; its resource and
+> network envelope travels inside the signed provider intent to Pulumi, and its validated static
+> EBS class reaches the create request. No provider/destroy path constructs a replacement CIDR or
+> volume class.
+> Implementation, removal, and validation ownership live only in the
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+The profile has no optional members: `operator_cidr`, EKS instance/disk/minimum/maximum values,
+three `aws-test` instance types, three root-volume types and sizes, a static EBS volume type, both
+VPC CIDRs, two EKS subnets, and three `aws-test` subnets. The outer `Optional` expresses only
+"this deployment does not provision AWS". The desired EKS count stays in the established
+`cluster_topology.Eks.node_group_size` wire field, is positive at the Dhall and Haskell seams, and
+is checked against the profile bounds when the exact Pulumi configuration is compiled.
+
 **A seeded non-empty default is a compiled default.** The disguise is the sharp case and it is
 worth naming, because a value that arrives in the operator's own `prodbox.dhall` reads as
 authored even when nobody authored it. If a generator emits a field pre-filled from a Haskell
@@ -233,19 +282,16 @@ refuses.
 
 **AWS vocabulary is where this bites hardest**, because an AWS region, instance type, EBS class, or
 CIDR is a well-formed string in every context — nothing about the value distinguishes a coordinate
-an operator should have chosen from a constant the protocol fixed. That is why the boundary is
-enforced from the other side as a **register-or-fail** rule rather than a ban: a compiled literal
-of AWS shape must declare which of the four reasons covers it, and an unregistered one fails
-`prodbox dev check` through `checkAwsCoordinateLiterals`. The registry is a bijection: a literal
-absent from it fails, a registered literal observed in a file outside its declared set fails, and a
-registry entry whose named symbol no longer exists fails. Its region is `src/` and `app/` — a
-literal inside a checked-in Pulumi program is outside it, and
-[code_quality.md](./code_quality.md) § 3 records that bound with the measurement that justifies the
-matcher's shape. The registry carries a fifth disposition beside the four compiled classes,
-`documentation example`, for a coordinate that appears inside operator-facing prose (a refusal
-message, a generated schema header) and is never a value the program uses; it is registered rather
-than exempted, because a scanner that skipped prose would be one string concatenation away from
-skipping a real coordinate. See
+an operator should have chosen from a constant the protocol fixed. Complete AWS region literals
+are therefore forbidden in every repository-owned Haskell file, including tests and
+operator-facing prose, by `checkAwsCoordinateLiterals`. Deployment regions arrive through
+operator-supplied Tier-0 Dhall; the automation fixture for that field is
+`test-secrets.dhall`. Protocol-fixed AWS region roles are named in `Prodbox.Aws.Region`, and test
+fixtures use the synthetic constructors exported by `TestSupport`, without embedding a complete
+coordinate in either case. The now-empty `awsCoordinateLiteralRegistry` remains only as the pure,
+injection-testable refusal mechanism; production admits no exception. A literal inside a
+checked-in non-Haskell Pulumi program remains outside the scanner, and
+[code_quality.md](./code_quality.md) § 3 records that real bound. See
 [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) § 2.4 for
 the exact AWS inventory on both sides of the line.
 
@@ -774,15 +820,13 @@ The honest limits on that gate, which have accumulated rather than been designed
   capacity plan is proven, the public edge is parsed, and every registered coordinate is the type its
   rule established* — not *every field is known good*.
 
-- **A decoded field is not a read field.** Decoding and validation both operate over the record's
-  declared shape, so a field that no code path consumes passes every ring and still decides nothing.
-  `cluster_topology.Eks.node_group_size` is the standing instance: it is declared in the schema,
-  decoded into the Haskell record, and read by no consumer, so an operator can author it, watch it
-  round-trip through `prodbox config generate`, and get a node group sized by a literal inside a
-  Pulumi program instead. This limit is invisible from the config surface alone — nothing about the
-  field's decode distinguishes it from one that is honoured — and it is closed only by wiring the
-  field to its consumer. Removing the field instead would change the committed Dhall wire format
-  that Sprints `1.88`-`1.90` deliberately preserved.
+- **A decoded field is not automatically a read field.** The former standing instance,
+  `cluster_topology.Eks.node_group_size`, is now closure evidence for that distinction: both Dhall
+  and the Haskell decoder reject zero, `eksNodeGroupSize` projects it, and EKS provider-intent
+  construction uses it for `nodeDesiredSize` while checking the authored profile's minimum and
+  maximum. Changing the topology value changes the exact signed intent and rendered Pulumi key.
+  The field was wired rather than removed, preserving the Dhall wire shape established by Sprints
+  `1.88`-`1.90`.
 
 Neither limit is a reason to distrust the config in normal operation — the generator emits sound
 values. Both are reasons not to read "decoded" or "validated" as "illegal states are
@@ -815,7 +859,7 @@ What that gate does and does not close, stated with the same care as the two lim
   before this gate a hand-edited plan left Ring 1 quietly proving the fit of draws the plan no
   longer implies.
 - It did **not** close a hand edit to a primitive that round-trips unchanged — a re-typed
-  `route53.zone_id` or `acme.server` decodes to that value and re-renders to that value, so the
+  `route53.zone_id` or `domain.demo_ttl` decodes to that value and re-renders to that value, so the
   edited file *is* the generator's output for the record it carries. No text comparison can
   separate the two.
 
@@ -847,19 +891,15 @@ consistently by hand, not a second check.
 The round-trip property is correspondingly restated: `decode ∘ render` is `stampTier0Witness`, not
 `id`. Outside the witness field it remains identity, and the unit cases assert both halves.
 
-- **A decoded field is not a reached field, and one Tier-0 field proves it.**
-  `cluster_topology.Eks.node_group_size` is declared in `dhall/cluster/Schema.dhall` and in
-  `Prodbox.Cluster.Topology`, and the `FromDhall` instance reads it. Nothing else does.
-  `narrowEksTopology` — the decode-seam narrowing that gives this record its smart-constructor
-  rule — constrains only the substrate's residency and passes the size through untouched, so
-  `node_group_size = 0` decodes clean; `validateClusterTopology` checks the same substrate rule and
-  no more; and no module in `src/`, `app/`, or `test/` reads the field. The node-group sizes that
-  actually reach AWS are literals in the `aws-eks` Pulumi program. An operator can set this field,
-  watch it decode, and receive the compiled value — which is worse than having no field, because
-  the config reports success. Decoding proves well-formedness; it proves neither validation nor
-  reach, and those are three separate properties that a green `config validate` does not
-  distinguish. Disposition is scheduled in the
-  [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+- **Decoded, validated, and reached remain distinct properties.**
+  `cluster_topology.Eks.node_group_size` now demonstrates the complete chain. The Dhall
+  `eksOK` predicate and `narrowEksTopology`/`mkEksTopology` reject zero;
+  `validateClusterTopology` preserves that rule for values built outside decoding;
+  `eksNodeGroupSize` is the production projection; and `awsEksStackConfiguration` uses it for
+  `nodeDesiredSize`, refusing a desired count outside the profile's positive authored bounds.
+  Unit coverage changes the topology input and observes the changed stack configuration. This
+  closes the old unreached-field defect without changing its committed Dhall wire shape, while the
+  general warning still holds for any future field lacking a measured consumer.
 
 ## 5. Dhall imports
 
@@ -994,23 +1034,43 @@ lifecycle, backup, TLS-retention, or target-Vault endpoint.
 
 | Field | Type | Source | Canonical value |
 |---|---|---|---|
-| `boot.minio_endpoint_url` | `Optional Text` | rendered inline by `gateway-config-<nodeId>` ConfigMap from chart value `minio.endpointUrl` | `http://minio.prodbox.svc.cluster.local:9000` on the home substrate |
+| `boot.minio_endpoint_url` | `Optional Text` | rendered inline by `gateway-config-<nodeId>` ConfigMap from the compiled in-cluster MinIO Service coordinate | the exact substrate-local Service endpoint, or explicit absence in a chart-only fixture |
 
 The daemon decoder (`Prodbox.Gateway.Settings.DaemonBootDhall.minio_endpoint_url`) treats
-the field as `Optional Text` so chart-only smoke installs without a live MinIO can still
-decode the config; the MinIO-backed config fetch falls back to `127.0.0.1:9000` and fails
-closed — serving the documented unavailable response — when the field is `None` and MinIO (or
-the Vault unseal the decrypt depends on) is unreachable. The MinIO objects are
+the field as `Optional Text` so chart-only smoke installs without a live MinIO can still decode the
+config. It immediately narrows that wire value into `GatewayMinioEndpoint`: `None` is a typed
+unavailable state; an empty, whitespace-bearing, or non-HTTP(S) value is a field-named decode
+refusal; a configured value is retained exactly. The legacy continuity consumer can obtain a URL
+only through `gatewayMinioEndpointUrl`, which refuses the unavailable arm. The production chart
+supplies the compiled in-cluster Service coordinate directly; it is not a connection-failure
+fallback. The MinIO objects are
 Vault-Transit-enveloped, so a sealed Vault leaves the daemon with opaque ciphertext regardless
 of MinIO reachability; see Section 1a and
 [vault_doctrine.md §9](./vault_doctrine.md#9-minio-as-a-ciphertext-store). This field is removed
 from Gateway Runtime after Lifecycle Authority and Bootstrap Broker cutover.
+
+The target projection distinguishes network namespaces. The authored Tier-0
+`context.minio_endpoint` is the operator-host coordinate and remains available to host-side
+clients. A Pod cannot consume a host loopback address: every surviving in-cluster MinIO role
+therefore receives the exact Service coordinate owned by
+`Prodbox.Minio.ObjectStoreTypes`. That compiled coordinate is the same on both equivalent workload
+substrates and is not a fallback selected after connection failure.
+
+Host lifecycle gates follow the same rule. `vaultAddressForDeploymentContext` is the only host
+projection from a validated context; resolving a retained root lifecycle compares both its cluster
+id and Vault address with that context before returning a usable lifecycle. Gates that run below
+the settings loader consume the Vault address from the sealed unencrypted-basics floor instead of
+reconstructing it. The in-cluster Authority store accepts an explicit rendered endpoint and the
+single `defaultObjectStoreBucket` identity; it has no endpoint or bucket default of its own.
 
 ConfigMap and Secret volume updates land in the Pod via the kubelet's atomic `..data`
 symlink swap. The file-watch reload trigger (Section 7) follows that symlink swap rather
 than the leaf-file `mtime`.
 
 ## 6.1 ACME issuer config fields
+
+> **Target.** This subsection describes the accepted field surface. Rollout status lives only in
+> the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 The `acme` config block carries the ACME-issuance inputs consumed by cert-manager
 `ClusterIssuer` rendering. It is decoded into `AcmeSection` in
@@ -1020,18 +1080,22 @@ in the Tier-0 `prodbox.dhall` parameters:
 | Field | Type | Purpose |
 |---|---|---|
 | `acme.email` | `Text` | expiry-notice email; required and non-empty |
-| `acme.server` | `Text` | ZeroSSL ACME directory URL rendered into the `ClusterIssuer` |
 | `acme.eab_key_id` | `Optional SecretRef` | EAB key ID (required for ZeroSSL); `SecretRef.Vault` into `secret/acme/eab#key_id` |
 | `acme.eab_hmac_key` | `Optional SecretRef` | EAB HMAC key (required for ZeroSSL); `SecretRef.Vault` into `secret/acme/eab#hmac_key` |
 
-`acme.server` is a non-empty ACME directory `Text` that defaults to the ZeroSSL directory
-`https://acme.zerossl.com/v2/DV90` and feeds the single `ClusterIssuer` (`zerossl-dns01`).
-ZeroSSL is the only supported ACME provider, so `acme.eab_key_id` / `acme.eab_hmac_key` are
-required and `validateAcmeBinding` rejects a ZeroSSL `acme.server` with either EAB field
-missing. The single-issuer model — one `ClusterIssuer` with a DNS-01 Route 53 solver plus the
+The ZeroSSL ACME directory is a single compiled protocol constant feeding the `zerossl-dns01`
+`ClusterIssuer`, not an operator field. ZeroSSL is the only supported ACME provider, so accepting
+an arbitrary `acme.server` and overwriting it later would be a false configuration surface.
+`acme.eab_key_id` / `acme.eab_hmac_key` are required and validation rejects either field missing.
+The single-issuer model — one `ClusterIssuer` with a DNS-01 Route 53 solver plus the
 S3-backed retain-and-restore of the issued certificate so rebuilds do not re-order it — is
 owned by [acme_provider_guide.md](./acme_provider_guide.md) and
 [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md).
+
+**Current revision.** `acme.server` is absent from `AcmeSection`, both config builders, validation,
+and the generated schema. `Prodbox.Settings.zeroSslAcmeDirectory` is the sole supported directory
+declaration and issuer projection; the ownership gate refuses any reintroduced Dhall field,
+setup-input field, or duplicate production declaration.
 
 **Sprint 7.15 (landed):** `acme.eab_key_id` / `acme.eab_hmac_key` are `Optional SecretRef`
 references into the `secret/acme/eab` Vault KV object (fields `key_id` / `hmac_key`), not
@@ -1259,6 +1323,10 @@ so the prohibition is the intended end state rather than a present-tense fact:
   path is not configuration — no operator can state it, no config records what was chosen, and no
   later run can be compared with an earlier one. Every non-secret input to a checked-in
   infrastructure program comes from validated Tier-0 Dhall and fails closed when absent.
+- A field and a compiled answer to the same question. If a value is operator-owned, every consumer
+  receives its validated projection and there is no constant, fallback, or ambient override. If it
+  is protocol-fixed or a prodbox-chosen identity, code declares it once and the Dhall field is
+  removed. Decoding a field that no consumer honors is a false success.
 
 ## Intent Ownership
 
@@ -1271,8 +1339,10 @@ an operator speaks, which it must be told, and what a value's tier says about wh
   seeded non-empty default is a compiled constant regardless of the file it appears in.
 - Linked dependents: `src/Prodbox/Settings.hs` (`defaultConfigFile`, the coordinate refusals, and
   the canonical Tier-0 renderer), `src/Prodbox/Config/Tier0.hs`, `src/Prodbox/Cluster/Topology.hs`,
+  `src/Prodbox/Vault/Host.hs`, `src/Prodbox/Aws.hs` (interactive and harness config builders),
+  `src/Prodbox/TestRunner.hs`,
   `dhall/cluster/Schema.dhall`, `src/Prodbox/CheckCode.hs` (`checkAwsCoordinateLiterals`, the
-  register-or-fail AWS-coordinate scanner), and the sibling doctrines
+  complete AWS-coordinate literal ban), and the sibling doctrines
   [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md),
   [code_quality.md](./code_quality.md), and
   [cluster_topology_doctrine.md](./cluster_topology_doctrine.md).

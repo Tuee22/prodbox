@@ -27,6 +27,11 @@ controlPlaneDescriptorBoundLifecycleRuntimeSuite =
       descriptorBoundLifecycleRuntimeCascadeHostOperationsExact regression
         `shouldBe` True
 
+    it "routes the three cascade Stage-C nodes to the closed pre-uninstall runtime" $ do
+      regression <- fixedDescriptorBoundLifecycleRuntimeRegression
+      descriptorBoundLifecycleRuntimeCascadePreUninstallOperationsExact regression
+        `shouldBe` True
+
     it "classifies every currently unsupported operation as a refusal" $ do
       regression <- fixedDescriptorBoundLifecycleRuntimeRegression
       descriptorBoundLifecycleRuntimeUnsupportedOperationsExact regression
@@ -78,14 +83,13 @@ controlPlaneDescriptorBoundLifecycleRuntimeSuite =
         sourceImporters
           "src"
           "import Prodbox.ControlPlane.DescriptorBoundLifecycleRuntime.Internal"
-      -- Sprint 4.86: the non-public cascade candidate entrypoint is the
-      -- dispatcher's first caller, recorded here deliberately.  Driving the
-      -- total dispatcher over a durable run is precisely what that entrypoint
-      -- is, and it is itself package-private, so the action still cannot
-      -- escape the library.
+      -- The cascade candidate and validation cleanup composition are the two
+      -- closed callers. Neither exports the dispatcher action or accepts a
+      -- node callback, so construction still cannot escape the library.
       importers
         `shouldBe` [ "src/Prodbox/ControlPlane/DescriptorBoundLifecycleRuntime.hs"
                    , "src/Prodbox/Lifecycle/Teardown/CascadeCandidate/Internal.hs"
+                   , "src/Prodbox/Test/LifecycleCleanupClient.hs"
                    ]
 
       cabal <- readFile "prodbox.cabal"

@@ -10,6 +10,7 @@ module Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor
   , cleanupProgramDescriptorSurface
   , cleanupProgramDescriptorFoundation
   , cleanupProgramDescriptorAwsScope
+  , cleanupProgramDescriptorAwsDnsZone
   , cleanupProgramDescriptorRegistryRevision
   , cleanupProgramDescriptorLifecycleOperation
   , cleanupProgramDescriptorGraphDigest

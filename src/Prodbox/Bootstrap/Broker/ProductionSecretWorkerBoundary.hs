@@ -74,7 +74,7 @@ import Prodbox.Bootstrap.Broker.SecretWorker
   , durableEncryptedInitialization
   , durableFinalizedInitialization
   , durableGeneratedRootCiphertext
-  , durableInitializationIsAmbiguous
+  , durableInitializationAmbiguityCause
   , durablePreparedInitialization
   , durableResumedInitialization
   , durableTransitRotationResult
@@ -592,10 +592,10 @@ projectPhysicalResult call production = do
       requireProjection (durablePreparedInitialization durable)
     PhysicalResumeRootInitRecipients {} ->
       requireProjection (durableResumedInitialization durable)
-    PhysicalInitializeVault {}
-      | durableInitializationIsAmbiguous durable ->
-          Right RootInitAppliedWithoutResponse
-      | otherwise ->
+    PhysicalInitializeVault {} ->
+      case durableInitializationAmbiguityCause durable of
+        Just cause -> Right (RootInitAppliedWithoutResponse cause)
+        Nothing ->
           RootInitEncryptedResponse
             <$> requireProjection (durableEncryptedInitialization durable)
     PhysicalSealFinalUnlockBundle {} ->

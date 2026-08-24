@@ -350,7 +350,7 @@ eabPayload, smtpPayload :: TargetSecretPayload
 eabPayload = AcmeEabMaterial "eab-key-id" "eab-hmac-secret"
 smtpPayload =
   SesSmtpMaterial
-    "email-smtp.us-east-1.amazonaws.com"
+    ("email-smtp." <> (fixtureAwsRegion FixtureUsEast1) <> ".amazonaws.com")
     "587"
     "sender@example.test"
     "Prodbox"

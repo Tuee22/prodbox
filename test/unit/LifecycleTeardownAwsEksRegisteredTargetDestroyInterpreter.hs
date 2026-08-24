@@ -51,8 +51,10 @@ lifecycleTeardownAwsEksRegisteredTargetDestroyInterpreterSuite =
   describe "receipt-gated registered EKS Provider destruction" $ do
     it "fails closed when the opaque Authority stack-reader bundle is unavailable" $ do
       environment <- newEnvironment False
-      runDestroyNode environment
-        `shouldSatisfyIO` failedWith "AwsStackReaderClientMissing"
+      outcome <- runDestroyNode environment
+      if failedWith "AwsStackReaderClientMissing" outcome
+        then pure ()
+        else expectationFailure ("unexpected destroy outcome: " <> show outcome)
       readIORef (fakeReceiptCalls environment) `shouldReturn` []
       readIORef (fakeSessionCalls environment) `shouldReturn` []
       calls <- readIORef (fakeProviderCalls environment)
@@ -234,9 +236,11 @@ sessionEffects =
         pure (EksDrainKubernetesUidPresent fixtureUid)
     , eksDrainClientObserveLoadBalancerServices = pure (EksDrainInventoryComplete [])
     , eksDrainClientObserveIngresses = pure (EksDrainInventoryComplete [])
+    , eksDrainClientObserveControllerOwners = pure (EksDrainInventoryComplete [])
     , eksDrainClientObserveDeletePolicyPvcs = unavailableInventory
     , eksDrainClientDeleteLoadBalancerServices = unavailableMutation
     , eksDrainClientDeleteIngresses = unavailableMutation
+    , eksDrainClientDeleteControllerOwners = unavailableMutation
     , eksDrainClientDeletePvc = const unavailableMutation
     , eksDrainClientObservePvc = \_ ->
         pure
@@ -335,7 +339,8 @@ fixtureCompiled =
     ( compileDesiredAbsenceGraph
         fixtureRunId
         (LinuxRke2FoundationId "home-rke2")
-        (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")))
+        (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
+        Nothing
         CascadeSurface
     )
 
@@ -420,7 +425,7 @@ fixtureProjection =
   mustRight
     ( testEksClientAuthProjection
         "123456789012"
-        "us-east-1"
+        (fixtureAwsRegion FixtureUsEast1)
         "aws-eks-test-cluster"
         fixtureArn
         fixtureEndpoint
@@ -435,7 +440,8 @@ freshDeadline = 1_500
 projectionExpiresAt = 2_000
 
 fixtureArn, fixtureUid, fixtureEndpoint, fixtureCa, fixtureBearer :: Text
-fixtureArn = "arn:aws:eks:us-east-1:123456789012:cluster/aws-eks-test-cluster"
+fixtureArn =
+  ("arn:aws:eks:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123456789012:cluster/aws-eks-test-cluster")
 fixtureUid = "kube-system-uid-a"
 fixtureEndpoint = "https://eks.example.invalid"
 fixtureCa = "safe-fixture-ca"

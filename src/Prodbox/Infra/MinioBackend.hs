@@ -1,8 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Infra.MinioBackend
-  ( minioBackendBucket
-  , minioBackendLocalPort
+  ( minioBackendLocalPort
   , pulumiBackendLoginTimeoutSeconds
   , minioNamespace
   , minioSecretName
@@ -44,7 +43,7 @@ import Data.Maybe (maybeToList)
 import Data.Text qualified as Text
 import Prodbox.CLI.Output (writeOutputLine)
 import Prodbox.Error (AppError)
-import Prodbox.Minio.ObjectStoreTypes (minioSigningRegion)
+import Prodbox.Minio.ObjectStoreTypes (defaultObjectStoreBucket, minioSigningRegion)
 import Prodbox.Minio.RootCredential (minioRootPassword, minioRootUser)
 import Prodbox.Result (Result (..))
 import Prodbox.Service
@@ -70,9 +69,6 @@ import System.Directory
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
-
-minioBackendBucket :: String
-minioBackendBucket = "prodbox-state"
 
 minioBackendLocalPort :: Int
 minioBackendLocalPort = 39000
@@ -110,7 +106,7 @@ minioEndpointUrl localPort = "http://127.0.0.1:" ++ show localPort
 pulumiBackendUrl :: Int -> String
 pulumiBackendUrl localPort =
   "s3://"
-    ++ minioBackendBucket
+    ++ defaultObjectStoreBucket
     ++ "?region="
     ++ minioSigningRegion
     ++ "&endpoint=127.0.0.1:"
@@ -473,7 +469,7 @@ ensureMinioBackendBucket localPort accessKey secretKey = do
   headResult <-
     runMinIOWithEnv
       (Just environment)
-      ["--endpoint-url", endpoint, "s3api", "head-bucket", "--bucket", minioBackendBucket]
+      ["--endpoint-url", endpoint, "s3api", "head-bucket", "--bucket", defaultObjectStoreBucket]
   case headResult of
     Left err -> pure (Left ("failed to check MinIO bucket: " ++ renderMinIOError err))
     Right headOutput ->
@@ -488,7 +484,7 @@ ensureMinioBackendBucket localPort accessKey secretKey = do
               , "s3api"
               , "create-bucket"
               , "--bucket"
-              , minioBackendBucket
+              , defaultObjectStoreBucket
               ]
           case createResult of
             Left err -> pure (Left ("failed to create MinIO bucket: " ++ renderMinIOError err))
@@ -508,7 +504,7 @@ verifyMinioBackendBucketListable endpoint environment = do
       , "s3api"
       , "list-objects-v2"
       , "--bucket"
-      , minioBackendBucket
+      , defaultObjectStoreBucket
       , "--max-keys"
       , "1"
       ]
@@ -533,7 +529,7 @@ bucketObjectCount localPort accessKey secretKey = do
       , "s3api"
       , "list-objects-v2"
       , "--bucket"
-      , minioBackendBucket
+      , defaultObjectStoreBucket
       ]
   case result of
     Left err -> pure (Left ("failed to list MinIO bucket objects: " ++ renderMinIOError err))

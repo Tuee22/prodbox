@@ -191,7 +191,7 @@ configTypesHeader =
     , "-- fields:"
     , "--"
     , "--   let Config = ./prodbox-config-types.dhall"
-    , "--   in  Config::{ aws = Config.default.aws // { region = \"us-west-2\" }, ... }"
+    , "--   in  Config::{ aws = Config.default.aws // { region = \"<operator-region>\" }, ... }"
     , ""
     ]
 

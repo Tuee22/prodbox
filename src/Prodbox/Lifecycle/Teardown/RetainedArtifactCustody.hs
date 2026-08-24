@@ -1021,6 +1021,7 @@ retainedArtifactRepairPlanRefs plan =
     RepairLoadRetainedImage ref -> [ref]
     RepairStartSubstrateService -> []
     RepairAwaitSubstrateApi -> []
+    RepairReconcileRecoveryPlatform _ -> []
     RepairReconcileRecoveryChart _ -> []
 
 -- | Check a rendered repair against an observation of the store.

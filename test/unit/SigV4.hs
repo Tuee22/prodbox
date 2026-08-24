@@ -27,7 +27,7 @@ getVanillaScope :: SigV4Scope
 getVanillaScope =
   SigV4Scope
     { sigV4DateStamp = "20150830"
-    , sigV4Region = "us-east-1"
+    , sigV4Region = (fixtureAwsRegion FixtureUsEast1)
     , sigV4Service = "service"
     }
 
@@ -72,7 +72,7 @@ sigV4Suite =
         toHex
           ( deriveSigningKey
               "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
-              (SigV4Scope "20120215" "us-east-1" "iam")
+              (SigV4Scope "20120215" (fixtureAwsRegion FixtureUsEast1) "iam")
           )
           `shouldBe` "f4780e2d9f65fa895f9c67b32ce1baf0b0d8a43505a000a1a9e090d414db404d"
 
@@ -103,7 +103,10 @@ sigV4Suite =
           `shouldBe` "ea21d6f05e96a897f6000a1a293f0a5bf0f92a00343409e820dce329ca6365ea"
       it "renders the complete Authorization header" $ do
         sigV4AuthorizationHeader getVanillaCredentials getVanillaScope getVanillaAmzDate getVanillaRequest
-          `shouldBe` ( "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, "
+          `shouldBe` ( ( "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/"
+                           <> (fixtureAwsRegion FixtureUsEast1)
+                           <> "/service/aws4_request, "
+                       )
                          <> "SignedHeaders=host;x-amz-date, "
                          <> "Signature=ea21d6f05e96a897f6000a1a293f0a5bf0f92a00343409e820dce329ca6365ea"
                      )

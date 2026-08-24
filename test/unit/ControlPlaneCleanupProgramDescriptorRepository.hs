@@ -72,6 +72,7 @@ import Prodbox.Lifecycle.CleanupRunRunner
   , descriptorBoundCleanupNodeAction
   , descriptorBoundCleanupNodeExecutionContext
   )
+import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
   , authorityTimeFromMicros
@@ -97,6 +98,7 @@ controlPlaneCleanupProgramDescriptorRepositorySuite =
                 cleanupProgramDescriptorSurface descriptor `shouldBe` expectedSurface
                 cleanupProgramDescriptorFoundation descriptor `shouldBe` fixtureFoundation
                 cleanupProgramDescriptorAwsScope descriptor `shouldBe` maybeAwsScope
+                cleanupProgramDescriptorAwsDnsZone descriptor `shouldBe` Nothing
                 cleanupProgramDescriptorRegistryRevision descriptor
                   `shouldBe` lifecycleRegistryRevision
                 cleanupProgramDescriptorLifecycleOperation descriptor
@@ -108,7 +110,7 @@ controlPlaneCleanupProgramDescriptorRepositorySuite =
                 cleanupProgramDescriptorOperationIdentityVersion
                   `shouldBe` "lifecycle-cleanup-operation/v3"
                 cleanupProgramDescriptorCompilerVersion
-                  `shouldBe` "lifecycle-desired-absence-program-compiler/v3"
+                  `shouldBe` "lifecycle-desired-absence-program-compiler/v5"
                 cleanupProgramDescriptorCapabilityCatalogVersion
                   `shouldBe` "lifecycle-recovery-capability-catalog/v1"
                 cleanupProgramDescriptorCapabilitySetVersion
@@ -116,6 +118,40 @@ controlPlaneCleanupProgramDescriptorRepositorySuite =
                 ByteString.length (cleanupProgramDescriptorBytes descriptor)
                   `shouldSatisfy` (<= maximumCleanupProgramDescriptorBytes)
       forM_ surfaceCases checkSurface
+
+    it "round-trips the Sprint 7.38 DNS zone binding and seals it into both identities" $ do
+      (_, _, firstDescriptor) <-
+        expectDescriptorFixture
+          ( descriptorFixtureWithZone
+              CascadeSurface
+              fixtureRunId
+              fixtureFoundation
+              (Just fixtureAwsScope)
+              (Just fixtureAwsDnsZone)
+          )
+      (secondCompiled, _, secondDescriptor) <-
+        expectDescriptorFixture
+          ( descriptorFixtureWithZone
+              CascadeSurface
+              fixtureRunId
+              fixtureFoundation
+              (Just fixtureAwsScope)
+              (Just alternateAwsDnsZone)
+          )
+      cleanupProgramDescriptorFormatVersion `shouldBe` 2
+      cleanupProgramDescriptorAwsDnsZone firstDescriptor
+        `shouldBe` Just fixtureAwsDnsZone
+      cleanupProgramDescriptorAwsDnsZone secondDescriptor
+        `shouldBe` Just alternateAwsDnsZone
+      evidenceAwsDnsZone
+        (compiledDesiredAbsenceObservationScope secondCompiled)
+        `shouldBe` Just alternateAwsDnsZone
+      cleanupProgramDescriptorGraphDigest firstDescriptor
+        `shouldNotBe` cleanupProgramDescriptorGraphDigest secondDescriptor
+      cleanupProgramDescriptorDigest firstDescriptor
+        `shouldNotBe` cleanupProgramDescriptorDigest secondDescriptor
+      cleanupDigestText (cleanupProgramDescriptorDigest firstDescriptor)
+        `shouldBe` "3b0b8bcf6022ec57b7e9bcb400f7ca5a43057d8832ca0bf29456d79fdb1856fc"
 
     it "refuses a transitioned run and any compiled/run identity disagreement" $ do
       case descriptorFixture
@@ -146,7 +182,7 @@ controlPlaneCleanupProgramDescriptorRepositorySuite =
               captureCleanupProgramDescriptor compiled otherInitialRun
                 `shouldSatisfy` isLeft
 
-    it "exercises create/replay, crash readback, conflict, and hostile storage through the real adapter" $ do
+    it "exercises create/replay, hostile storage, and Sprint 7.38 legacy v1 restart" $ do
       regressionResult <- fixedCleanupProgramDescriptorRepositoryRegression
       case regressionResult of
         Left detail -> expectationFailure (Text.unpack detail)
@@ -168,6 +204,8 @@ controlPlaneCleanupProgramDescriptorRepositorySuite =
           cleanupProgramDescriptorRegressionWrongRunRefused regression
             `shouldBe` True
           cleanupProgramDescriptorRegressionRestartReconstructionValidated regression
+            `shouldBe` True
+          cleanupProgramDescriptorRegressionLegacyV1RestartReadable regression
             `shouldBe` True
 
     it "carries only a canonical committed descriptor through the v2 readback response arm" $ do
@@ -532,9 +570,27 @@ descriptorFixture
        Text.Text
        (CompiledDesiredAbsenceProgram surface, CleanupRun, CleanupProgramDescriptor)
 descriptorFixture witness runId foundation maybeAwsScope = do
+  descriptorFixtureWithZone witness runId foundation maybeAwsScope Nothing
+
+descriptorFixtureWithZone
+  :: CleanupSurfaceWitness surface
+  -> CleanupRunId
+  -> LinuxRke2FoundationId
+  -> Maybe AwsScope
+  -> Maybe HostedZoneId
+  -> Either
+       Text.Text
+       (CompiledDesiredAbsenceProgram surface, CleanupRun, CleanupProgramDescriptor)
+descriptorFixtureWithZone witness runId foundation maybeAwsScope maybeAwsDnsZone = do
   compiled <-
     firstShow
-      (compileDesiredAbsenceGraph runId foundation maybeAwsScope witness)
+      ( compileDesiredAbsenceGraph
+          runId
+          foundation
+          maybeAwsScope
+          maybeAwsDnsZone
+          witness
+      )
   initialRun <-
     firstShow
       ( newCleanupRun
@@ -547,6 +603,18 @@ descriptorFixture witness runId foundation maybeAwsScope = do
   descriptor <-
     firstShow (captureCleanupProgramDescriptor compiled initialRun)
   Right (compiled, initialRun, descriptor)
+
+expectDescriptorFixture
+  :: Either
+       Text.Text
+       (CompiledDesiredAbsenceProgram surface, CleanupRun, CleanupProgramDescriptor)
+  -> IO
+       (CompiledDesiredAbsenceProgram surface, CleanupRun, CleanupProgramDescriptor)
+expectDescriptorFixture result = case result of
+  Left detail -> do
+    expectationFailure (Text.unpack detail)
+    error "unreachable"
+  Right fixture -> pure fixture
 
 fixtureRunId :: CleanupRunId
 fixtureRunId = mustRight (mkCleanupRunId "descriptor-unit-run")
@@ -570,7 +638,13 @@ fixtureAwsScope :: AwsScope
 fixtureAwsScope =
   AwsScope
     (AwsAccountId "111122223333")
-    (AwsRegion "ca-central-1")
+    (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
+
+fixtureAwsDnsZone :: HostedZoneId
+fixtureAwsDnsZone = mustRight (mkHostedZoneId "Z0123456789ABCDEFGHIJ")
+
+alternateAwsDnsZone :: HostedZoneId
+alternateAwsDnsZone = mustRight (mkHostedZoneId "ZABCDEFGHIJ0123456789")
 
 authenticatedDescriptorClientFor
   :: [CleanupRunDescriptorResponse]

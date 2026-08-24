@@ -619,7 +619,7 @@ quotaRequest =
     , adminQuotaRequestAuthorityEndpoint = "http://lifecycle-authority.gateway.svc:8080"
     , adminQuotaRequestServiceCode = "vpc"
     , adminQuotaRequestCode = "L-F678F1CE"
-    , adminQuotaRequestRegion = "ca-central-1"
+    , adminQuotaRequestRegion = (fixtureAwsRegion FixtureCaCentral1)
     , adminQuotaRequestDesiredValue = "10"
     }
 
@@ -658,7 +658,7 @@ credentials =
     { access_key_id = "AKIAIOSFODNN7EXAMPLE"
     , secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
     , session_token = Just "fixture-session-token"
-    , region = "ca-central-1"
+    , region = (fixtureAwsRegion FixtureCaCentral1)
     }
 
 operationId :: Text

@@ -70,9 +70,10 @@ The current repository closes on the implemented self-managed public-edge doctri
 2. The current MetalLB runtime supports config-selected L2 or BGP advertisement from repo-owned
    settings, rendered through `IPAddressPool` plus `L2Advertisement` on the L2 path and
    `BGPPeer` plus `BGPAdvertisement` on the BGP path.
-3. The current shipped public workloads are `vscode`, `api`, `websocket`, and MinIO,
-   each delivered through shared-host Gateway API `HTTPRoute` resources on
-   `test.resolvefintech.com`.
+3. The current shipped public workloads are `vscode`, `api`, `websocket`, and MinIO, each delivered
+   through shared-host Gateway API `HTTPRoute` resources on `domain.demo_fqdn`. The current config
+   builder still seeds and force-equals that field to one operator's real hostname; this is a
+   recorded pre-target defect, not public-edge identity.
 4. The supported shared public edge is defined by the `keycloak` chart and deployed into the
    `vscode` namespace: the `keycloak` chart (a dependency of the `vscode` root chart, reconciled
    via `prodbox charts reconcile vscode`) publishes the shared `Gateway`, the listener certificate,
@@ -165,7 +166,8 @@ cert-manager owns listener TLS material for the public edge. It renders one ACME
 `ClusterIssuer` with a DNS-01 Route 53 solver per
 [acme_provider_guide.md](./acme_provider_guide.md):
 
-- `zerossl-dns01` — the ZeroSSL ACME issuer, built from `acme.server` and EAB-authenticated.
+- `zerossl-dns01` — the ZeroSSL ACME issuer, built from the single provider-protocol constant and
+  EAB-authenticated.
 
 The issuer name is DNS-01-honest: the issuer authenticates ACME challenges through a
 **DNS-01 Route 53 solver**, and the name now says so. It is held as one SSoT constant in
@@ -275,7 +277,7 @@ Internet
 
 The supported route model is explicit:
 
-- one shared public hostname, currently `test.resolvefintech.com`
+- one shared public hostname per substrate, supplied by its validated Tier-0 config
 - port `80` is redirect-only and returns a permanent redirect to the same path on HTTPS
 - port `443` is the only public application-routing listener
 - Keycloak on `/auth`
@@ -285,8 +287,7 @@ The supported route model is explicit:
 
 Each substrate has one explicit served FQDN from Tier-0 config, and its Gateway listener, routes,
 and DNS record project that bound hostname. The configured `CertScopeSet` supplies the certificate
-SANs and must cover the bound host; `test.resolvefintech.com` is the default home exact scope, so
-today's single-hostname shape is unchanged until an operator changes scope. A served hostname with
+SANs and must cover the bound host; an empty scope resolves to that configured host exactly. A served hostname with
 no covering configured scope is unrepresentable on the prodbox-managed side — `bindListener`
 returns a `Left` at bind time and config validation fails fast — while a wildcard SAN never
 synthesizes additional listeners, routes, or records. See
@@ -319,6 +320,9 @@ deliberately so. The route→service catalog *is* generated: the canonical six-r
 projection of the typed `PublicEdgeRoute` catalog in `src/Prodbox/PublicEdge.hs`, rendered into
 the chart `HTTPRoute` / `Gateway` manifests by the Sprint `3.12` `route-registry` generated
 sections (`charts/api/...`, `charts/keycloak/...`, `charts/vscode/...`, `charts/websocket/...`).
+The inventory's rendered `PUBLIC_FQDN` line evaluates `.Values.gateway.host`; it therefore names
+the same validated served host as the listener and routes, while the source inventory contains no
+operator deployment hostname.
 Chart-*ownership* of the shared edge resources, however, has **no typed source** to project from:
 
 - The typed catalog encodes only route identity and path prefix

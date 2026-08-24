@@ -945,7 +945,7 @@ fixtureProjection =
   mustRight
     ( testEksClientAuthProjection
         "123456789012"
-        "us-east-1"
+        (fixtureAwsRegion FixtureUsEast1)
         "aws-eks-test-cluster"
         fixtureArn
         fixtureEndpoint
@@ -992,12 +992,12 @@ scopeFor surface runId =
     lifecycleRegistryRevision
     (DurableObservationRunScope (cleanupRunIdText runId))
     (LinuxRke2FoundationId "home-linux-rke2")
-    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion "us-east-1")))
+    (Just (AwsScope (AwsAccountId "123456789012") (AwsRegion (fixtureAwsRegion FixtureUsEast1))))
     ReconcileDesiredAbsent
 
 fixtureArn, fixtureEndpoint, fixtureCertificateAuthority, fixtureBearer :: Text
 fixtureArn =
-  "arn:aws:eks:us-east-1:123456789012:cluster/aws-eks-test-cluster"
+  ("arn:aws:eks:" <> (fixtureAwsRegion FixtureUsEast1) <> ":123456789012:cluster/aws-eks-test-cluster")
 fixtureEndpoint = "https://sensitive.eks.amazonaws.com"
 fixtureCertificateAuthority = "sensitive-ca-plaintext"
 fixtureBearer = "sensitive-bearer-plaintext"

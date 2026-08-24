@@ -1,3 +1,6 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Lib.AwsControlPlaneIsolation
@@ -19,13 +22,17 @@ module Prodbox.Lib.AwsControlPlaneIsolation
   , registerControllerOwnerUid
   , enableControllerOwner
   , registerControllerChildArn
+  , registerControllerChildArns
   , awsFaultDisposition
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.Char (isAsciiLower, isDigit)
+import Data.List (sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import GHC.Generics (Generic)
 import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
 
 data AwsControlPlaneRole
@@ -80,21 +87,23 @@ data ControllerOwnerDescriptor = ControllerOwnerDescriptor
   , controllerOwnerManifestDigest :: Text
   , controllerOwnerTags :: [(Text, Text)]
   }
-  deriving (Eq, Show)
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
 
 data ControllerOwnerState
   = ControllerOwnerRegisteredInert ControllerOwnerDescriptor
   | ControllerOwnerUidRegistered ControllerOwnerDescriptor Text
   | ControllerOwnerEnabled ControllerOwnerDescriptor Text
-  | ControllerChildArnRegistered ControllerOwnerDescriptor Text Text
-  deriving (Eq, Show)
+  | ControllerChildArnsRegistered ControllerOwnerDescriptor Text [Text]
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
 
 data ControllerOwnerRefusal
   = ControllerOwnerWrongPhase
   | ControllerOwnerEmptyUid
   | ControllerOwnerUidConflict
   | ControllerChildEmptyArn
-  | ControllerChildArnConflict
+  | ControllerChildArnDuplicated !Text
   deriving (Eq, Show)
 
 data AwsFaultScenario
@@ -195,7 +204,7 @@ registerControllerOwnerUid uid state
         | observed == uid -> Right (ControllerOwnerUidRegistered descriptor observed)
         | otherwise -> Left ControllerOwnerUidConflict
       ControllerOwnerEnabled _ _ -> Left ControllerOwnerWrongPhase
-      ControllerChildArnRegistered {} -> Left ControllerOwnerWrongPhase
+      ControllerChildArnsRegistered {} -> Left ControllerOwnerWrongPhase
 
 enableControllerOwner
   :: ControllerOwnerState
@@ -203,21 +212,53 @@ enableControllerOwner
 enableControllerOwner state = case state of
   ControllerOwnerUidRegistered descriptor uid -> Right (ControllerOwnerEnabled descriptor uid)
   ControllerOwnerEnabled descriptor uid -> Right (ControllerOwnerEnabled descriptor uid)
+  ControllerChildArnsRegistered {} -> Left ControllerOwnerWrongPhase
   _ -> Left ControllerOwnerWrongPhase
 
 registerControllerChildArn
   :: Text
   -> ControllerOwnerState
   -> Either ControllerOwnerRefusal ControllerOwnerState
-registerControllerChildArn arn state
-  | Text.null (Text.strip arn) = Left ControllerChildEmptyArn
-  | otherwise = case state of
+registerControllerChildArn arn = registerControllerChildArns [arn]
+
+-- | CAS-enrich the controller owner with every exact child ARN observed so
+-- far.  A controller owns a family (load balancer, listeners, target groups,
+-- and security groups), not one resource.  Enrichment is monotone and
+-- idempotent: a retry may repeat an ARN, while a duplicate inside one provider
+-- observation is rejected because it is not a normalized family.
+registerControllerChildArns
+  :: [Text]
+  -> ControllerOwnerState
+  -> Either ControllerOwnerRefusal ControllerOwnerState
+registerControllerChildArns rawArns state = do
+  validatedArns <- traverse validateArn rawArns
+  let arns = sort validatedArns
+  case firstDuplicate validatedArns of
+    Just duplicateArn -> Left (ControllerChildArnDuplicated duplicateArn)
+    Nothing -> case state of
       ControllerOwnerEnabled descriptor uid ->
-        Right (ControllerChildArnRegistered descriptor uid arn)
-      ControllerChildArnRegistered descriptor uid observed
-        | observed == arn -> Right (ControllerChildArnRegistered descriptor uid observed)
-        | otherwise -> Left ControllerChildArnConflict
+        Right (ControllerChildArnsRegistered descriptor uid arns)
+      ControllerChildArnsRegistered descriptor uid observed ->
+        Right
+          ( ControllerChildArnsRegistered
+              descriptor
+              uid
+              (observed ++ filter (`notElem` observed) arns)
+          )
       _ -> Left ControllerOwnerWrongPhase
+ where
+  validateArn raw
+    | Text.null value = Left ControllerChildEmptyArn
+    | otherwise = Right value
+   where
+    value = Text.strip raw
+
+  firstDuplicate values = go [] values
+   where
+    go _ [] = Nothing
+    go seen (value : remaining)
+      | value `elem` seen = Just value
+      | otherwise = go (value : seen) remaining
 
 awsFaultDisposition :: AwsFaultScenario -> AwsFaultDisposition
 awsFaultDisposition _ =

@@ -11,6 +11,13 @@
 
 ## Phase Status
 
+✅ **Configuration-ownership expansion closed 2026-08-23 on Sprint `5.37` (Standards A/N/M).**
+The aggregate and topology harness lanes now generate the binary-sibling `prodbox.dhall` only from
+explicit fixture/run-derived deployment answers through the production builder, validate before
+one atomic write, and preserve a complete operator sibling. The earlier `5.35`/`5.36` reopen and
+its evidence remain unchanged, so the phase stays active only on `5.36`; execution order lives in
+[README.md → Resume Here](README.md#resume-here).
+
 🔄 **Reopened 2026-08-15 on Sprints `5.35` and `5.36` (Standards A/L/P).** The operator
 trace is a taken counterexample that the suite did not compose: the preliminary caller observation
 reported the ServiceAccount unobservable (with cause/API reach unknown because stderr was
@@ -3475,28 +3482,14 @@ phases, and Standard P respectively. The frozen oracle may carry the legacy envi
 as an explicitly ignored negative fixture, never as observation evidence; removal from the old
 integration/`TestRunner` composition is owned by Sprint `5.36`.
 
-## Sprint 5.36: TestRunner Lifecycle Cleanup Client [⏸️ Blocked]
+## Sprint 5.36: TestRunner Lifecycle Cleanup Client [✅ Done]
 
-**Status**: Blocked (opened 2026-08-15; updated 2026-08-21). The descriptor-bound client seam is
-landed and focused-green, and as of 2026-08-21 its entry protocol is indexed by cleanup surface, so
-the harness's `ExplicitPerRun` cleanup has a descriptor it can bind at all. `TestRunner` still uses
-the old graph/executor, and the deletion half of this sprint waits on Sprint `7.36` — see
-`**Blocked by**` below.
-**Blocked by**: Sprint `7.36`.
-**Backward dependency**: Sprint `7.36`. Deleting the harness cleanup graph removes the
-`aws-dns-validation-zones` node, which `destroyValidationHostedZones` makes the only thing in the
-repository that deletes a leaked billable Route 53 validation hosted zone; no compiled program could
-replace it, because `RegisteredResourceKey` had no hosted-zone key and no `ProviderIntent` listed,
-created, or deleted a zone, so the sweep would have been stranded with nothing taking it over until
-Sprint `7.36` landed the Route 53 desired-absence adapter and its registration. Declared under
-[Standard N.2](development_plan_standards.md#n-phase-independence-and-execution-order); the queue
-runs `7.36` first. **The named artifact landed on 2026-08-21** —
-`Prodbox.Lifecycle.Teardown.AwsRoute53ZoneAdapter`, `AwsDnsValidationZoneKey`, and
-`ValidationHostedZoneFamilyExecutor` — so the compiled program can now express the deletion and this
-sprint may delete the harness node without stranding it. The field stays declared because Sprint
-`7.36` is still open and the queue still runs it to closure first.
-**Closure dependency**: the remaining Sprint-`4.85` operation/proof coverage. Sprint `5.35`'s
-frozen oracle is complete and remains the acceptance oracle rather than an open dependency.
+**Status**: Done (opened 2026-08-15; activated and closed 2026-08-23). `TestRunner` now selects exact registered keys and enters the authenticated
+descriptor-bound `ExplicitPerRun` client before its first AWS mutation. Lifecycle core owns graph
+compilation, operation IDs, Authority registration, exact observation, closed dispatch, restart,
+report read-back, and the terminal node-state decision. The callback-era graph/executor, duplicate
+Route 53 sweep, ambient absence fixture, and validation-owned success fold are deleted. Sprint
+`5.35`'s frozen oracle remains the acceptance oracle.
 **Deployment qualification**: pending; this changes suite cleanup composition, while live
 home/AWS campaigns remain separate Standards O/P evidence.
 **Doctrine**: [Integration Fixture Doctrine § 4, “Validation as a Cleanup
@@ -3506,28 +3499,33 @@ graph”](../documents/engineering/lifecycle_reconciliation_doctrine.md#33-resul
 and [Unit Testing Policy § 10, “Always-Run Cleanup
 Validation”](../documents/engineering/unit_testing_policy.md#10-always-run-cleanup-validation).
 **Implementation**: `src/Prodbox/Lifecycle/CleanupRunEntry.hs` owns the validated descriptor-bound
-entry protocol over `Prodbox.ControlPlane.CleanupRunClient` — Sprint `4.86` moved it out of the
-`Prodbox.Test.*` validation-harness namespace, because none of that protocol is validation-specific
-and its first production caller could not reach it there;
-`src/Prodbox/TestRunner.hs` and `src/Prodbox/Test/DurableCleanupComposition.hs` remain to be
-migrated and deleted/narrowed.
+entry protocol over `Prodbox.ControlPlane.CleanupRunClient`;
+`src/Prodbox/Test/LifecycleCleanupClient.hs` is the validation-specific composition over the exact
+selected-key compiler and closed ordinary dispatcher; and `src/Prodbox/TestRunner.hs` supplies only
+suite identity, selected registry keys, environment, and primary body. The deleted
+`Prodbox.Test.ManagedCleanupPlan` and `Prodbox.Test.DurableCleanupComposition` modules have no
+surviving supported caller.
 **Live-proof**: pending; no live substrate is required for code-local closure.
-**Independent Validation** (Standard N.1): fake Lifecycle Authority/kernel endpoint, response-loss
-and restart tables, the installed `prodbox test integration teardown-recovery` command,
-`prodbox test unit`, and `prodbox dev check`. Every validation item is exercised against fakes on
-this sprint's own surface, with no Phase 6 or 7 implementation required — that is N.1, and it stays
-true. Sprint `7.36` is an *execution* prerequisite declared under N.2, not a validation one.
+**Independent Validation** (Standard N.1): complete — fake Lifecycle Authority/kernel endpoint,
+response-loss and restart tables, the installed `prodbox test integration teardown-recovery`
+command, unit and built-frontend integration suites, governed-document gates, and `prodbox dev
+check` pass on this sprint's own surface, with no Phase 6 or 7 implementation required. Exact
+receipts are recorded under Closure Evidence below.
 **Docs to update**: `documents/engineering/integration_fixture_doctrine.md`,
-`documents/engineering/unit_testing_policy.md`, `DEVELOPMENT_PLAN/README.md`,
+`documents/engineering/unit_testing_policy.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/cli_command_surface.md`,
+`documents/engineering/aws_admin_credentials.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
 `DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, and
-`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+`DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
 
 ### Objective
 
 Make `TestRunner` a typed client of the one lifecycle-owned cleanup run, with no second graph,
 executor, operation-ID allocator, or success interpretation in the validation layer.
 
-### Current Implementation Checkpoint (2026-08-16, paused)
+### Historical Implementation Checkpoint (2026-08-16, superseded)
 
 - `LifecycleCleanupDescriptor` captures the canonical `CleanupProgramDescriptor`; registration,
   claim, primary outcome, terminal observation, and compaction use only
@@ -3544,34 +3542,36 @@ executor, operation-ID allocator, or success interpretation in the validation la
 
 ### Deliverables
 
-- Submit or resume the lifecycle cleanup descriptor before config regeneration, optional
-  pre-reconcile, in-force config synchronization, IAM setup, or any later validation mutation, and
-  attach the original validation outcome without converting it to free text.
-- Observe the lifecycle-owned backed-up report and preserve exact failure aggregation and stable
+- ✅ Submit or resume the lifecycle cleanup descriptor before IAM setup or any mutation that can
+  create a selected per-run AWS resource, and attach the original validation outcome without
+  converting an exit failure to free text. The retained Authority necessarily comes after local
+  config/RKE2/Vault desired-presence preparation; the measured correction below explains why those
+  steps are outside the per-run AWS cleanup obligation.
+- ✅ Observe the lifecycle-owned backed-up report and preserve exact failure aggregation and stable
   `CleanupRunId` on incomplete cleanup.
-- Delete the validation-owned generic executor/projection after all callers use the client; keep
+- ✅ Delete the validation-owned generic executor/projection after all callers use the client; keep
   validation-specific oracle and narration code in Phase 5.
-- Route `TEARDOWN-2026-08-15` through the client while every external fact remains supplied by a
+- ✅ Route `TEARDOWN-2026-08-15` through the client while every external fact remains supplied by a
   typed fake at this phase boundary.
-- Remove the old integration-harness `PRODBOX_TEST_RESIDUE_ABSENT` injection and assertions as the
+- ✅ Remove the old integration-harness `PRODBOX_TEST_RESIDUE_ABSENT` injection and assertions as the
   client cutover supplies exact fake observations; an ambient value must not select absence.
-- **Received from Sprint `4.84` on its closure (2026-08-17).** Convert the harness's cleanup callers
+- ✅ **Received from Sprint `4.84` on its closure (2026-08-17).** Convert the harness's cleanup callers
   onto the exact-keyed selection Sprint `4.84` landed: `TestRunner` and
   `Prodbox.Test.DurableCleanupComposition` still reach their targets through the surface- and
   run-keyed creation slot and visible residue, and must reach them through
   `selectRegisteredStackGenerationForCleanup` instead. This lands with the migration above rather
   than in front of it, because converting these callers first would build the new selection on top of
   the very composition this sprint deletes.
-- **Received from Sprint `4.85` on the same re-scope.** Delete `CapabilityBoundCleanupAction` and the
+- ✅ **Received from Sprint `4.85` on the same re-scope.** Delete `CapabilityBoundCleanupAction` and the
   `TestRunner` composition around it. They are the validation harness's live cleanup path, so their
   removal is this sprint's client migration and belongs nowhere earlier.
-- **Received from Sprint `7.36` on 2026-08-21 with the Route 53 adapter.** Delete
+- ✅ **Received from Sprint `7.36` on 2026-08-21 with the Route 53 adapter.** Delete
   `src/Prodbox/Infra/Route53ValidationZone.hs` and its `TestRunner` sweep call site as part of the
   cutover. Sprint `7.36`'s registered `dns-aws-validation-hosted-zone` family now expresses the same
   deletion in the compiled program, so the host-direct `aws` CLI owner is a duplicate rather than the
   only sweep — but until this cutover runs, deleting it would remove a live sweep the harness still
   depends on, so the two must go together.
-- **Registered 2026-08-21, found while landing Sprint `7.36`'s adapter.**
+- ✅ **Registered 2026-08-21, found while landing Sprint `7.36`'s adapter.**
   `nativeMayProvisionPerRunAwsStacks` in `src/Prodbox/TestRunner.hs` omits `ValidationDnsAws`, the
   validation that *creates* the validation hosted zone. A plan containing only that validation
   therefore provisions a billable zone while the sweep node is excluded from the normal action set;
@@ -3583,16 +3583,18 @@ executor, operation-ID allocator, or success interpretation in the validation la
 
 1. A fake endpoint proves submit, replay, response-loss, cancellation, owner restart, and report
    observation use one `CleanupRunId` and do not duplicate a provider effect.
-2. Forced interruption after each of config regeneration, optional pre-reconcile, in-force config
-   synchronization, IAM setup, and body entry resumes the same run and stable node operation IDs;
-   no prefix can mutate before the durable descriptor is re-observable.
+2. Forced interruption across registration, claim, primary attachment, every cleanup boundary, and
+   restart resumes the same run and stable node operation IDs. No mutation that can create a
+   selected per-run AWS resource begins before the descriptor is re-observable. Local
+   config/RKE2/Vault desired-presence preparation is the retained Authority's prerequisite and is
+   not misreported as a per-run AWS cleanup obligation.
 3. Original validation failure and every cleanup failure survive in the terminal result; cleanup
    success never erases validation failure, and incomplete cleanup is never warning-only.
 4. Source/gate proof finds no validation-owned generic graph runner, mutation callback, or second
    operation-ID allocator on the supported composition.
 5. The installed named validation, unit suite, docs checks, and `prodbox dev check` pass.
 
-### Current Implementation Checkpoint (2026-08-21, the entry protocol admits an ordinary surface)
+### Historical Implementation Checkpoint (2026-08-21, ordinary-surface admission)
 
 - **The harness could not bind a descriptor at all, and that was the first thing in its way.**
   `LifecycleCleanupDescriptor` was fixed to `'Cascade`, so there was no value the per-run cleanup
@@ -3610,7 +3612,7 @@ executor, operation-ID allocator, or success interpretation in the validation la
   make that a constructor rather than a `Maybe`, so an ordinary caller cannot reach the cascade's
   record and cannot supply a store it does not use.
 
-### Validation Result (2026-08-21, the entry protocol admits an ordinary surface)
+### Historical Validation Result (2026-08-21, superseded by closure evidence)
 
 - One further case in `test/unit/LifecycleCleanupClient.hs` measures the ordinary binding: it
   admits the compiled `ExplicitPerRun` program and its initial run, carries `NoHostIntent`, and
@@ -3620,10 +3622,10 @@ executor, operation-ID allocator, or success interpretation in the validation la
 - `prodbox dev check` 0, `prodbox dev lint docs` 0, `prodbox dev docs check` 0, `prodbox test unit`
   4410/4411, `prodbox test integration cli` 0, `prodbox test integration env` 0.
 
-### Measured Bounds on the Remaining Cutover (2026-08-21)
+### Measured Bounds Applied at Cutover (2026-08-21)
 
-Two facts were measured while opening this sprint's execution, and both change what its remaining
-deliverables can mean. Recording them here rather than discovering them again mid-migration:
+Two facts were measured while opening this sprint's execution, and both bound what its deliverables
+mean. They remain part of the closure evidence:
 
 - **"Submit the descriptor before config regeneration" cannot mean a host-durable commit for this
   surface.** The durable pre-mutation record the cascade commits is the host cleanup intent, and
@@ -3643,38 +3645,33 @@ deliverables can mean. Recording them here rather than discovering them again mi
 
 ### Remaining Work
 
-Register the lifecycle descriptor before config regeneration or any other mutating prefix; drive the
-descriptor-bound runner through the closed total dispatcher; preserve the structured primary and
-every cleanup result; convert `TestRunner` and `DurableCleanupComposition` onto Sprint `4.84`'s
-exact-keyed selection; and delete `ManagedCleanupPlan`/`DurableCleanupComposition` and
-`CapabilityBoundCleanupAction` from the supported composition. Then run the prefix
-interruption/restart matrix and the installed frozen oracle. Do not treat the landed client library
-as the `TestRunner` cutover. Remove the ambient residue-absence fixture only through the same
-typed-observer cutover, not as an isolated test edit.
+None on Sprint `5.36`'s code-owned surface.
 
-A precondition measured on 2026-08-17 is worth carrying: the harness's cleanup graph sweeps nodes the
-compiled per-run program must be able to express before that graph is deleted. Two are still
-unexpressible, and both are gated mechanically rather than only recorded here.
+The two formerly missing compiled targets are resolved as follows:
 
-- **The `dns-aws` validation hosted zone.** Sprint `4.85` registered it, measured the consequence, and
-  withdrew the registration. A typed descriptor compiles a mandatory absence read-back, and no
-  production executor can discharge one for a Route 53 hosted zone — there is no
-  `ProviderIntent` that lists or deletes one — so registering it made the `Cascade` and
-  `ExplicitPerRun` programs unsatisfiable rather than making the zone swept.
-  `Prodbox.CheckCode.registeredTargetExecutorViolations` now fails the build on that shape. The
-  registration landed with its adapter in Sprint `7.36` on 2026-08-21, so the typed descriptor and
-  its executor now both exist; until this sprint cuts the harness over, the harness's own always-run
-  node over `src/Prodbox/Infra/Route53ValidationZone.hs` is a second, duplicate owner of the same
-  sweep rather than the only one.
-  **That is the measurement behind this sprint's declared `**Backward dependency**` on Sprint
-  `7.36`; the dependency itself is stated only in that field.**
-- **The `aws-operational-teardown` node.** Its `CleanupRequiresSuccess` edges implement Sprint
-  `7.10`'s credential-preservation rule. `OperationalTeardown` still projects zero registered targets
-  — the three operational rows are the pre-cutover identity, superseded rather than pending
-  registration — but as of Sprint `4.85`'s closure the surface is no longer empty: it compiles its own
-  credential revocation and that revocation's mandatory read-back, and mints completion over them.
-  Deleting the harness graph before this sprint converts the harness onto the lifecycle-owned cleanup
-  run would still drop that edge.
+- The registered `AwsDnsValidationZoneKey` now compiles to
+  `ValidationHostedZoneFamilyExecutor`; `TestRunner` selects it for `dns-aws`, and the duplicate
+  harness sweep/module is deleted.
+- Operational credential revocation remains a Sprint-`6.5` closed-dispatcher cutover. Sprint
+  `5.36` does not claim it: the legacy teardown tail now runs only when the lifecycle-owned exact
+  per-run node-state decision permits it, so an incomplete run preserves the credentials needed
+  for recovery. No validation-authored edge or success fold survives.
+
+### Closure Evidence (2026-08-23)
+
+- `prodbox dev check` — exit 0 with the repository-pinned Fourmolu `0.19.0.1`, HLint `No hints`,
+  Cabal-format check, all-target `--enable-tests --ghc-options=-Werror` build, and final binary sync.
+- `prodbox test unit` — 4580/4580 on the final formatted source; focused lifecycle-client and closed
+  descriptor runtime block — 15/15.
+- `prodbox test integration teardown-recovery` — exit 0 with artifact digest
+  `7338a7228fb7c79929d23f64af285d5daa0b180918c7bea694897972a255b76d`, 80 interruption rows,
+  seven typed fake boundaries, and preserved original plus cleanup failure.
+- `prodbox test integration cli` — 62/62; `prodbox test integration env` — 62/62, each through its
+  installed public entrypoint.
+- `prodbox dev lint docs`, `prodbox dev docs check`, and `git diff --check` — exit 0 before the final
+  status-only plan update; rerun below closes that last documentation edit.
+- No live campaign was taken. Deployment qualification remains explicitly pending and non-blocking
+  under Standards O/P.
 
 ## Documentation Requirements
 
@@ -3693,6 +3690,108 @@ unexpressible, and both are gated mechanically rather than only recorded here.
 
 - Link `TEARDOWN-2026-08-15` and the `TestRunner` cleanup client to Sprints `4.84`–`4.86`, `6.5`,
   and `7.36`, and keep live status only in the Deployment Qualification ledger.
+
+## Sprint 5.37: The Harness Authors the Deployment It Tests [✅]
+
+**Status**: Done — Phase `5` own-surface configuration-ownership expansion (Standard A/N/M).
+**Implementation**: `src/Prodbox/Vault/Host.hs` (`TestSecrets`), `src/Prodbox/Aws.hs`
+(`harnessConfigSetupInput`, `regenerateConfigFromTestSecrets`), `src/Prodbox/TestRunner.hs`,
+`src/Prodbox/Config/SchemaDhall.hs`, `test/support/TestSupport.hs`, and the generated
+`test-secrets-types.dhall`.
+**Deployment qualification**: pending — generated-config identity and test/substrate routing
+change; an earlier aggregate cannot qualify the newly authored run identity.
+**Independent Validation**: generated-config goldens over two fixture/topology inputs, missing-field
+refusal tables, synthetic test-value source checks, built-frontend integration suites, and
+`prodbox dev check`; no live infrastructure or later phase is required.
+**Docs to update**: `documents/engineering/config_doctrine.md`,
+`documents/engineering/test_topology_doctrine.md`,
+`documents/engineering/integration_fixture_doctrine.md`, `README.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+The generated run config describes the deployment the harness actually tests. The legacy
+aggregate loads the complete externally selected input set from `test-secrets.dhall`; topology
+runs combine those fields with their validated `RunVariant` and stable run identity. Neither lane
+inherits a deployment answer from the compiled skeleton.
+
+### Deliverables
+
+- Extend the generated `TestSecrets` schema with the externally chosen non-secret inputs the
+  aggregate harness needs, including the test deployment's served FQDN and ACME contact. AWS
+  substrate profile fields remain Phase `7` substrate-config ownership; the harness consumes their
+  validated projection without inventing a fallback.
+- Derive ephemeral cluster/machine identities, endpoints, and storage roots from the validated
+  `prodbox.test.dhall` variant and stable run id. The legacy aggregate path receives equivalent
+  explicit fixture inputs until its topology cutover; neither path inherits deployment answers from
+  `defaultConfigFile`.
+- Delete `harnessAcmeEmail`. `harnessConfigSetupInput` copies every operator-owned input through the
+  production builder, and `regenerateConfigFromTestSecrets` refuses before mutation when a required
+  fixture/derivation is absent instead of preferring a compiled value.
+- Keep `test-secrets.dhall` harness-only and git-ignored. Its secret members remain
+  `TestPlaintext`; its non-secret deployment fields are fixture inputs, not production config and
+  not an excuse to create a second `test-config.dhall`.
+- Replace real deployment literals in Haskell tests with either values injected through the fixture
+  schema or reserved/synthetic constructors in `TestSupport`. Add a source check over the retired
+  real FQDN/email and the harness builder so a compiled live deployment input cannot return.
+
+### Validation
+
+1. Two distinct `test-secrets.dhall`/topology inputs generate two correspondingly distinct
+   `prodbox.dhall` files for served FQDN, email, cluster/machine identity, Vault address, and MinIO
+   endpoint; protocol/product identities remain identical.
+2. Removing each required external or derived input refuses before config write, cluster/AWS
+   preparation, or durable cleanup registration.
+3. A populated operator sibling remains untouched; topology mode writes only its disposable
+   per-run sibling after the production-config absence gate.
+4. The generated `test-secrets-types.dhall` round-trips its default and populated records; no
+   hand-edited schema is accepted.
+5. Source/gate cases prove `harnessAcmeEmail` and the retired real deployment literals are absent
+   from Haskell while reserved synthetic fixtures remain allowed.
+6. Unit, built-frontend CLI/env suites, generated-doc checks, and `prodbox dev check` pass.
+
+### Validation Result (2026-08-23)
+
+- The focused Sprint-`5.37` unit slice is 8/8, including two distinct complete Tier-0 renderings,
+  the external/derived missing-input table, complete-operator-sibling preservation, generated
+  schema round-trips, endpoint refusals, and mutation-proven source-gate cases.
+- The canonical unit command is green: 4550/4550 in the primary suite plus 27/27 Authority
+  admission, 33/33 control-plane authentication, and 29/29 authenticated-transport tests. The
+  populated pre-existing `.build/prodbox.dhall` retained SHA-256
+  `d3b7cba8bbe6740a26daad42db8dd671a294ebe0203d905d8ca8997d200605b1` before and after it.
+- The built-frontend CLI entrypoint is 62/62 in 394.36 seconds and the independent environment
+  entrypoint is 62/62 in 391.17 seconds. `prodbox dev lint docs`, `prodbox dev docs check`, and the
+  canonical warning-clean `prodbox dev check` all exit zero.
+
+### Remaining Work
+
+None on Sprint `5.37`'s code-owned surface. This sprint changes harness sourcing, not the lifecycle
+cleanup-client cutover owned by Sprint `5.36`; deployment qualification remains pending under
+Standard P.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/test_topology_doctrine.md` — the fixture/run-derived/protocol-fixed source
+  partition and the honest current legacy path.
+- `documents/engineering/integration_fixture_doctrine.md` — generated config is derived from
+  production types and explicit fixture inputs, never hand-authored live literals.
+- `documents/engineering/config_doctrine.md` — current and target harness generation contract.
+
+**Product docs to create/update:**
+
+- Root `README.md` — state plainly that the current harness uses `test-secrets.dhall` to generate
+  `prodbox.dhall`, while naming the incomplete source partition.
+
+**Cross-references to add:**
+
+- Record the Phase `5` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md); update the test-configuration inventory in
+  [system-components.md](system-components.md); register the compiled harness defaults in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

@@ -86,7 +86,7 @@ import Prodbox.Runtime.Role
 import Prodbox.Settings
   ( ConfigFile
   , capacity
-  , defaultConfigFile
+  , configGenerationTemplate
   , manual_pv_host_root
   , renderSettingsDisplay
   , storage
@@ -257,6 +257,7 @@ commandPrerequisites command =
       case vaultCommand of
         VaultStatus -> []
         VaultInit -> [K8sClusterReachable]
+        VaultResetAmbiguousInitialization _ -> [K8sClusterReachable]
         VaultUnseal -> [K8sClusterReachable]
         VaultSeal -> [K8sClusterReachable]
         VaultReconcile -> [K8sClusterReachable]
@@ -417,19 +418,19 @@ resolveGenerateConfigFile :: FilePath -> HostFitMode -> IO (Either String (Confi
 resolveGenerateConfigFile _ PortableDefault =
   pure
     ( Right
-        ( defaultConfigFile
+        ( configGenerationTemplate
         , "Using the portable Haskell-default host_capacity (--portable)."
         )
     )
 resolveGenerateConfigFile repoRoot FitObservedHost = do
-  let retainedRoot = repoRoot </> Text.unpack (manual_pv_host_root (storage defaultConfigFile))
+  let retainedRoot = repoRoot </> Text.unpack (manual_pv_host_root (storage configGenerationTemplate))
   createDirectoryIfMissing True retainedRoot
   observed <- observeHostCapacity repoRoot retainedRoot
   pure $ do
     host <- observed
-    fitted <- deriveHostFittingCapacity host (resource_plan (capacity defaultConfigFile))
+    fitted <- deriveHostFittingCapacity host (resource_plan (capacity configGenerationTemplate))
     Right
-      ( withHostCapacity fitted defaultConfigFile
+      ( withHostCapacity fitted configGenerationTemplate
       , "Fitted host_capacity to the observed host."
       )
 

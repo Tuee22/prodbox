@@ -13,24 +13,33 @@ Real-resource cleanup scheduling and execution are owned by
 owns validation-specific preparation, cleanup-obligation registration, and consumption of the
 generic report.
 
-## 1. A test run is fully described by its test Dhall
+## 1. A test run plan is fully described by its test Dhall
 
 A `prodbox` test run is not a mode of the production config; it is authored by a **separate,
 differently-shaped Dhall surface**. `prodbox test init` writes `prodbox.test.dhall` at the
 **executable-sibling path** (`.build/prodbox.test.dhall`, beside the binary — the same resolution
 rule the production config uses, [config_doctrine.md §3](./config_doctrine.md#3-canonical-paths)),
-and that file **is** the run: the HA/failover cluster shape, the suite vocabulary, per-suite
-budgets, and the fixtures each suite needs. Nothing about a run is implicit in ambient machine
-state — the test Dhall is the audit trail of what will be stood up.
+and that file **is** the run plan: the HA/failover cluster shape, the suite vocabulary, per-suite
+budgets, and the fixture/input keys each suite needs. The values of externally chosen test inputs
+are supplied by the separately git-ignored `test-secrets.dhall`; ephemeral coordinates derive from
+the plan and stable run id. Nothing comes from ambient machine state — the test Dhall is the audit
+trail of what will be stood up and which external inputs must be resolved.
 
-The supported topology never rewrites an operator-authored production config from
-`test-secrets.dhall`. `test init` authors the distinct topology file and `test run` generates a
-disposable per-variant Tier-0 `prodbox.dhall` with storage under `.test-data/<case>/`. **Target:**
-before mutation, both generated artifacts become durable obligations in the lifecycle-owned
-always-run cleanup DAG. **Current:** `TestRunner` still uses its pre-cutover process-local cleanup
-composition and enters the cleanup wrapper after some preparation mutations. Implementation,
-cutover, and qualification status live only in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+> **Target.** The supported topology never rewrites an operator-authored production config from
+> `test-secrets.dhall`. `test init` authors the distinct topology file and `test run` generates a
+> disposable per-variant Tier-0 `prodbox.dhall` with storage under `.test-data/<case>/`. Before
+> mutation, both generated artifacts become durable obligations in the lifecycle-owned always-run
+> cleanup DAG. Status lives only in the
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+**Current revision.** The legacy aggregate and topology runners implement the source partition
+below through the production `configFromSetupInput` builder. The fixture supplies every externally
+chosen deployment value; each topology variant supplies explicit Vault/MinIO endpoints, and its
+stable run id derives cluster/machine identities and a relative `.test-data/<case>/` root. The
+complete Tier-0 document and deployment context validate before one atomic sibling write. A missing
+or malformed input refuses before mutation. The aggregate path preserves a complete operator
+sibling byte-for-byte and refuses a partial one. Durable registration of the generated artifact and
+the preparation prefix remains the separate lifecycle-client work described in §5.
 
 `prodbox.test.dhall` is the **authored** half of the per-run-vs-authored split. The **per-run**
 half is the binary-sibling `prodbox.dhall` the harness renders for each variant (§3) plus the
@@ -100,6 +109,19 @@ same builder production uses (`configFromSetupInput`,
 moving on. The existing `TestScope` / `IntegrationSuite` ADT (`src/Prodbox/CLI/Command.hs`) is the
 current-surface seed for the suite vocabulary, and `test init` authors the test Dhall those suites
 read.
+
+The generated Tier-0 document has an explicit three-way source partition:
+
+| Input class | Source |
+|---|---|
+| Operator-chosen values for the test deployment, including its real served FQDN, ACME contact, AWS region/profile, and externally owned coordinates | `test-secrets.dhall`, decoded by the harness and copied through the production builder |
+| Ephemeral run coordinates, including run-scoped identities and storage roots | Derived from the validated `prodbox.test.dhall` variant and stable run id |
+| Protocol-fixed and prodbox-chosen identities | The single compiled declaration owned by [config_doctrine.md §0](./config_doctrine.md#compiled-protocol-constants-versus-operator-supplied-deployment-values), never a fixture override |
+
+A required input absent from its owning source refuses before mutation. In particular, a compiled
+email address, served hostname, cluster identity, endpoint, AWS CIDR, instance type, or EBS class is
+not an acceptable convenience for a test: it would cause the harness to validate a deployment the
+run description never named.
 
 ## 4. Fail-fast preconditions and `.test-data/` isolation
 
@@ -216,8 +238,10 @@ states are:
 
 The generated test Dhall names the fixtures a suite needs and carries **no secret material of any
 kind** — not inline, and not by `SecretRef` either. The sole cleartext-secret-at-rest file remains
-`test-secrets.dhall`, whose values are accepted only by the harness and only through the
-`SecretRef.TestPlaintext` arm. This doc does not restate the reference model:
+`test-secrets.dhall`, whose secret members are accepted only by the harness and only through the
+`SecretRef.TestPlaintext` arm. The same harness-only file also carries the explicit non-secret
+operator choices in §3; that does not make it production config or let a Haskell default answer for
+an absent field. This doc does not restate the reference model:
 [config_doctrine.md §6.2](./config_doctrine.md#62-secretref-typed-secret-references) and
 [vault_doctrine.md](./vault_doctrine.md) own it.
 
@@ -234,17 +258,20 @@ guarantee, not a real one.
 ## Intent Ownership
 
 This SSoT owns the test-topology doctrine: the executable-sibling `prodbox.test.dhall` as the
-explicit, self-validating SSoT of one test run; the `test init` overwrite-refusal; the
+explicit, self-validating SSoT of one test-run plan and required fixture set; the
 `test run <suite>|all` per-variant deploy-path reuse; the two fail-fast preconditions inverting the
 production sibling-config contract; `.test-data/` isolation with a never-touch-`.data/` delete
 guard; and artifact cleanup obligations that retain long-lived resources by lifecycle class.
 
-- Owned target statement: a test run is fully described by its authored `prodbox.test.dhall`, drives
-  the real deploy path across every declared variant, and registers and schedules teardown of its
-  per-run artifacts without targeting production config, production `.data/`, or a long-lived
-  resource. Target completion is constructible only after exact absence is observed; partial or
-  unobservable cleanup remains explicitly incomplete. The current runner remains bounded by the
-  pre-cutover correspondence in §1.
+- Owned target statement: a test run's topology and required inputs are fully declared by its
+  authored `prodbox.test.dhall`; externally chosen values are resolved only from
+  `test-secrets.dhall`, ephemeral coordinates only from the plan/run id, and fixed identities only
+  from their production declaration. The run drives the real deploy path across every declared
+  variant and registers and schedules teardown of its per-run artifacts without targeting
+  production config, production `.data/`, or a long-lived resource. Target completion is
+  constructible only after exact absence is observed; partial or unobservable cleanup remains
+  explicitly incomplete. The current runner remains bounded by the pre-cutover correspondence in
+  §1.
 - Linked dependents: `dhall/TestTopologySchema.dhall`,
   `src/Prodbox/TestTopology.hs`, `src/Prodbox/Repo.hs` (test-Dhall sibling resolution),
   `src/Prodbox/Settings.hs` (test-Dhall decode/validation), and `src/Prodbox/TestRunner.hs`

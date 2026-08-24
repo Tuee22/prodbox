@@ -450,6 +450,21 @@ The assertions are:
 - the primary body error remains primary; and
 - all cleanup failures are retained in the final report.
 
+The repository's validation client is tested as a protocol client, not as another scheduler.
+Focused fakes cover submit/replay, lost responses, cancellation, owner restart, primary attachment,
+same-run adoption, stable operation IDs, exact selected-key order, wrong-key and duplicate-key
+refusal, independent report read-back, and closed-dispatch execution. Source gates additionally
+require that `Prodbox.Test.LifecycleCleanupClient` contain no graph builder, node-ID allocator,
+mutation callback, or node-success fold, and that the retired validation cleanup modules stay
+absent. The installed `prodbox test integration teardown-recovery` command remains the frozen
+80-boundary/typed-failure acceptance surface.
+
+For ordinary per-run AWS cleanup, local config/RKE2/Vault preparation may establish the retained
+Authority before descriptor submission. Tests therefore place the pre-mutation assertion at the
+first operation capable of creating a selected per-run AWS resource: registration and claim are
+independently re-observable before IAM setup or later AWS mutation. A test must not demand the
+cascade-only host-uninstall record on the `ExplicitPerRun` surface.
+
 For destructive lifecycle commands, dry-run goldens derive their resource steps from the managed
 resource registry and use the same closed program as apply. Their oracle keeps exact provider
 inventory, checkpoint-copy observations, and terminal escape-audit evidence as different nominal

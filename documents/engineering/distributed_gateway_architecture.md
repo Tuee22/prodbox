@@ -77,6 +77,12 @@ target Vault KV, or proxy generic object-store operations. Those authorities and
 operation-indexed capability design are owned by
 [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
+The deployed rollback topology still carries one legacy continuity-store client until the
+local-journal cutover. Its boot endpoint is an absent-or-validated `GatewayMinioEndpoint` sourced
+from mounted config. Missing configuration refuses at the consumer, malformed HTTP(S) coordinates
+refuse at decode, and the runtime has no compiled MinIO address or environment fallback. This
+narrow pre-cutover client does not add an object-store route or generic Gateway authority.
+
 DNS mutation is credential-gated as well as ownership-gated: the interpreter may construct a Route
 53 effect only from an authorized plan containing current ownership evidence and an observed,
 usable credential generation. Missing or unobservable credentials refuse the effect before any
@@ -128,7 +134,7 @@ This design assumes:
 4. Nodes promote newer validated Orders promptly, via the restart-based boot-field
    reload path (§7.5), not by mutating Orders version in process.
 5. Every node has a stable peer endpoint in Orders for mesh communication.
-6. Only gateway owner updates the canonical public DNS record `test.resolvefintech.com`.
+6. Only gateway owner updates the configured canonical public DNS record for its substrate.
 7. The convergent, bounded semantic replica state is the runtime decision source of truth. Peers
    exchange bounded cursor deltas/snapshots, while mandatory emitter continuity survives total peer
    restart in each node's retained identity-bound journal; peer recovery never substitutes for that
@@ -223,10 +229,10 @@ acknowledged before its retained write succeeds.
 
 ## 3.3 DNS Plane
 
-1. One canonical public record exists: `test.resolvefintech.com`.
+1. One canonical public record exists, projected from the substrate's validated served FQDN.
 2. Mesh peers discover each other through the stable peer endpoint data carried in Orders and
    rendered by `charts/gateway/`; that peer mesh is not a second public-host doctrine.
-3. Only elected gateway owner updates the canonical public record.
+3. Only elected gateway owner updates that configured canonical public record.
 
 ---
 
@@ -777,12 +783,15 @@ Returns current daemon state:
     "latest_observed_orders_version_utc": 1700000000,
     "dns_write_gate": {
         "zone_id": "Z1234567890",
-        "fqdn": "test.resolvefintech.com",
+        "fqdn": "gateway.example.invalid",
         "ttl": 60,
-        "aws_region": "us-east-1"
+        "aws_region": "configured-region"
     }
 }
 ```
+
+The FQDN and region in this synthetic payload stand for the validated deployment values; neither is
+a Gateway default.
 
 Used by integration tests for observability and by `prodbox gateway status` CLI.
 

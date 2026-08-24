@@ -106,8 +106,16 @@ import Prodbox.ControlPlane.AuthenticatedTransport
 import Prodbox.ControlPlane.AuthorityBackupClient
   ( authorityAggregateBackupClientWithTransport
   )
+import Prodbox.ControlPlane.CascadeReportRepository
+  ( CascadeReportAuthorityClient
+  , modelBCascadeReportRepository
+  )
 import Prodbox.ControlPlane.CascadeRetainedSlotClient
   ( cascadeRetainedSlotModelBAdapter
+  )
+import Prodbox.ControlPlane.CleanupReportBackupClient
+  ( CleanupReportBackupClient
+  , cleanupReportBackupClientWithTransport
   )
 import Prodbox.ControlPlane.CleanupRunClient (cleanupRunClient)
 import Prodbox.ControlPlane.HostCleanupReadinessRepository
@@ -147,6 +155,7 @@ import Prodbox.Lifecycle.HostCleanupRke2 (productionLocalRke2TerminalAdapter)
 import Prodbox.Lifecycle.HostCleanupRunner (HostCleanupRunnerEffects)
 import Prodbox.Lifecycle.Teardown.RecoveryRepairProduction
   ( RecoveryRepairChartReconciler
+  , RecoveryRepairPlatformReconciler
   , SubstrateApiWait
   , productionRecoveryRepairBoundary
   )
@@ -177,6 +186,7 @@ data HostCleanupCompositionInputs = HostCleanupCompositionInputs
   , hostCleanupRecoveryTargetAgent :: !OrdinaryTeardownTargetAgent
   , hostCleanupSubstrateApiWait :: !SubstrateApiWait
   , hostCleanupAdmissionWait :: !LifecycleAuthorityAdmissionWait
+  , hostCleanupPlatformReconciler :: !(RecoveryRepairPlatformReconciler IO)
   , hostCleanupChartReconciler :: !(RecoveryRepairChartReconciler IO)
   -- ^ Reconciling a recovery chart is chart delivery, which sits above the
   -- lifecycle surface; taking it as an input states that dependency rather
@@ -323,6 +333,10 @@ data HostCleanupProductionRuntime = HostCleanupProductionRuntime
   , hostCleanupProductionEffects :: !(HostCleanupRunnerEffects IO)
   , hostCleanupProductionAuthorityTransport
       :: !(AuthenticatedClientTransport 'LifecycleAuthorityRuntime)
+  , hostCleanupProductionCascadeReportAuthority
+      :: !(CascadeReportAuthorityClient IO)
+  , hostCleanupProductionCleanupReportBackup
+      :: !(CleanupReportBackupClient IO)
   }
 
 -- | Resolve the local half, open the two sessions, and hand the assembled
@@ -356,6 +370,12 @@ withHostCleanupProductionSources inputs action = do
                               productionHostCleanupRunnerEffects
                                 (sourcesFor local authorityTransport backupTransport)
                           , hostCleanupProductionAuthorityTransport = authorityTransport
+                          , hostCleanupProductionCascadeReportAuthority =
+                              modelBCascadeReportRepository
+                                (localAuthority local)
+                                (cascadeRetainedSlotModelBAdapter authorityTransport)
+                          , hostCleanupProductionCleanupReportBackup =
+                              cleanupReportBackupClientWithTransport backupTransport
                           }
           )
       pure (flattenAuthentication authenticated)
@@ -390,6 +410,7 @@ withHostCleanupProductionSources inputs action = do
                 (hostCleanupLocalArchitecture local)
                 (localArtifactStore local)
                 (hostCleanupSubstrateApiWait inputs)
+                (hostCleanupPlatformReconciler inputs)
                 (hostCleanupChartReconciler inputs)
             )
       , hostCleanupAuthorityPause = threadDelay . fromIntegral

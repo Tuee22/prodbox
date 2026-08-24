@@ -44,13 +44,19 @@ lifecycleTeardownOwnershipManifestSuite =
       map
         (\edge -> (ownershipEdgeStackKey edge, ownershipEdgeResourceKey edge))
         registeredOwnershipEdges
-        `shouldBe` [(AwsEksKey, AwsEbsPerRunTestKey)]
+        `shouldBe` [ (AwsEksKey, AwsEbsPerRunTestKey)
+                   , (AwsEksKey, AwsEksIamRoleFamilyKey)
+                   , (AwsEksKey, AwsEksLoadBalancerControllerFamilyKey)
+                   ]
 
       -- The join is by cluster name, not by position or by which stack happens
       -- to be listed first: `aws-test` yields a candidate cluster name too, and
       -- the family names the EKS one.
       controllerOwnedFamilies
-        `shouldBe` [(AwsEbsPerRunTestKey, "aws-eks-test-cluster")]
+        `shouldBe` [ (AwsEbsPerRunTestKey, "aws-eks-test-cluster")
+                   , (AwsEksIamRoleFamilyKey, "aws-eks-test-cluster")
+                   , (AwsEksLoadBalancerControllerFamilyKey, "aws-eks-test-cluster")
+                   ]
       lookup AwsEksKey registeredStackClusters `shouldBe` Just "aws-eks-test-cluster"
       lookup AwsTestKey registeredStackClusters `shouldBe` Just "aws-test-cluster"
 
@@ -74,7 +80,13 @@ lifecycleTeardownOwnershipManifestSuite =
             map
               ownershipManifestEntryKey
               (ownershipManifestWriteEntries (initialWriteAheadManifestWrite eksIntent))
-      sort eksEntries `shouldBe` sort [AwsEksKey, AwsEbsPerRunTestKey]
+      sort eksEntries
+        `shouldBe` sort
+          [ AwsEksKey
+          , AwsEbsPerRunTestKey
+          , AwsEksIamRoleFamilyKey
+          , AwsEksLoadBalancerControllerFamilyKey
+          ]
 
     it "Sprint 4.85 distinguishes an owning cluster from a merely sharing one" $ do
       -- `owned` makes the named cluster the owner; `shared` does not, because a
@@ -199,7 +211,7 @@ scopeFor operation =
     ( Just
         ( AwsScope
             (AwsAccountId "111122223333")
-            (AwsRegion "ca-central-1")
+            (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
         )
     )
     operation

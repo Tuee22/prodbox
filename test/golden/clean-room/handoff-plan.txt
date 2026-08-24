@@ -1,11 +1,16 @@
 CLEAN_ROOM_HANDOFF_PLAN
-SCHEMA_VERSION=1
+SCHEMA_VERSION=2
 ROLLBACK=retry-legacy-observation
 STEP=observe-legacy-retained-state
 STEP=import-authority-projections
 STEP=verify-authority-shadow
+STEP=run-qualification-only-cascade-candidate
+STEP=observe-candidate-qualification-receipt
 STEP=freeze-legacy-writer
 STEP=activate-replacement-epoch
+STEP=delete-legacy-cascade-route
+STEP=run-post-activation-qualification
+STEP=observe-post-activation-qualification-receipt
 STEP=refuse-post-cutover-rollback
 STEP=cluster-delete
 STEP=cluster-reconcile

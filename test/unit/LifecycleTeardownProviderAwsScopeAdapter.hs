@@ -367,6 +367,9 @@ providerAwsScopeAdapterSuite =
         `shouldBe` [ "src/Prodbox/ControlPlane/ProviderAwsScopeReceipt.hs"
                    , "src/Prodbox/ControlPlane/ProviderWorkerClient.hs"
                    , "src/Prodbox/ControlPlane/Runtime.hs"
+                   , -- Sprint 6.5's candidate observes the exact executed
+                     -- scope carried by the receipt; it cannot mint one.
+                     "src/Prodbox/Lifecycle/Teardown/CascadeCandidate/Internal.hs"
                    ]
       runtimeSource <- readFile "src/Prodbox/ControlPlane/Runtime.hs"
       runtimeSource `shouldContain` "lifecycleAuthorityProviderAwsScopeReaderInternal"
@@ -522,6 +525,10 @@ capabilities evidence =
     , observeValidationHostedZonesCapability = const unavailableReadOnly
     , reapValidationHostedZonesCapability = const unavailableMutation
     , observeRetainedEbsVolumesCapability = const unavailableReadOnly
+    , observeEksIamRoleFamilyCapability = \_ _ -> unavailableReadOnly
+    , reapEksIamRoleFamilyCapability = \_ _ -> unavailableMutation
+    , observeEksLoadBalancerControllerFamilyCapability = \_ _ -> unavailableReadOnly
+    , reapEksLoadBalancerControllerFamilyCapability = \_ _ -> unavailableMutation
     , observeDns01ChallengeRecordsCapability = \_ _ -> unavailableReadOnly
     , observeOwnedResourceTagsCapability = const unavailableReadOnly
     , reapRetainedEbsVolumesCapability = const unavailableMutation
@@ -531,6 +538,8 @@ capabilities evidence =
     , observeProviderReadinessCapability = const unavailableReadOnly
     , issueEksClientAuthCapability = const unavailableReadOnly
     , observeEksClusterIdentityCapability = const unavailableReadOnly
+    , observeNativeStackFamilyCapability = \_ _ -> unavailableReadOnly
+    , reapNativeStackFamilyCapability = \_ _ _ -> unavailableMutation
     }
 
 unavailableReadOnly :: ProviderReadOnly IO ()
@@ -607,7 +616,7 @@ fixtureAccount :: Text
 fixtureAccount = "123456789012"
 
 fixtureRegion :: Text
-fixtureRegion = "ca-central-1"
+fixtureRegion = (fixtureAwsRegion FixtureCaCentral1)
 
 validEvidence :: Text
 validEvidence = fixtureEvidence 1 fixtureAccount fixtureRegion

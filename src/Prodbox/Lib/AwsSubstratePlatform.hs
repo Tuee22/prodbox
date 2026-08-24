@@ -72,11 +72,13 @@ import Data.Aeson
   )
 import Data.Aeson.Key qualified as Key
 import Data.ByteString.Lazy qualified as BL
-import Data.Char (isAsciiUpper, isSpace, toLower)
+import Data.Char (isAsciiUpper, isDigit, isSpace, toLower)
 import Data.List (isSuffixOf, nub)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Numeric.Natural (Natural)
+import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.CLI.Output
   ( writeError
   , writeOutputLine
@@ -120,7 +122,23 @@ import Prodbox.Config.ComponentGraph
   )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.ControlPlane.CapabilityRequirement (requirementCoordinate')
+import Prodbox.ControlPlane.ControllerOwnerRepository
+  ( ControllerOwnerTransition (..)
+  )
+import Prodbox.ControlPlane.ControllerOwnerTransportClient
+  ( lifecycleAuthorityControllerOwnerAuthenticatedClient
+  )
 import Prodbox.ControlPlane.Coordinate (coordGeneration)
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  , renderLifecycleAuthorityAuthenticationError
+  , withHostLifecycleAuthorityAuthentication
+  , withLifecycleAuthorityAuthenticatedTransport
+  )
+import Prodbox.ControlPlane.ProviderCaller
+  ( dispatchAuthenticatedProviderIntentFresh
+  , renderProviderCallerError
+  )
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.PortForward
   ( GatewayServicePortForward (..)
@@ -179,19 +197,31 @@ import Prodbox.Lifecycle.LiveResidue
   ( awsEksTestStackName
   , fetchPerRunStackOutputs
   )
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent (ObserveEksLoadBalancerControllerFamily)
+  )
 import Prodbox.Lifecycle.ReadinessObservation
   ( BackendRoundTripResult (..)
   , ComponentReadinessTarget (..)
   , ReadinessProbeResult (..)
   , componentReadinessRetryPolicy
   )
+import Prodbox.Lifecycle.Teardown.AwsLoadBalancerControllerFamilyAdapter
+  ( awsLoadBalancerControllerObservationArns
+  )
+import Prodbox.Lifecycle.Teardown.Registry
+  ( awsEksLoadBalancerControllerName
+  , awsEksLoadBalancerControllerTags
+  )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( ConfigFile (..)
   , DeploymentSection (..)
   , ValidatedSettings (..)
+  , requireAwsSubstrateProfile
   , requireOperationalAwsRegion
   )
+import Prodbox.Settings.AwsSubstrateProfile (awsSubstrateStaticEbsVolumeType)
 import Prodbox.Settings.Coordinate (AwsRegion, awsRegionText)
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -749,59 +779,74 @@ awsSubstrateEnvoyGatewayNamespace = "envoy-gateway-system"
 -- supporting CRDs; the controller picks up `Gateway`/`HTTPRoute` resources
 -- created later by the chart-platform layer.
 ensureAwsSubstrateEnvoyGatewayRuntime
-  :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
-ensureAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue = do
-  writeOutputLine
-    ( "Installing Envoy Gateway "
-        ++ awsSubstrateEnvoyGatewayChartVersion
-        ++ " on the AWS-substrate EKS cluster"
-    )
-  installExit <-
-    runStreaming
-      Subprocess
-        { subprocessPath = "helm"
-        , subprocessArguments =
-            [ "upgrade"
-            , "--install"
-            , awsSubstrateEnvoyGatewayReleaseName
-            , awsSubstrateEnvoyGatewayChartRef
-            , "--version"
-            , awsSubstrateEnvoyGatewayChartVersion
-            , "--namespace"
-            , awsSubstrateEnvoyGatewayNamespace
-            , "--create-namespace"
-            , "--wait"
-            , "--atomic"
-            , "--timeout"
-            , "10m0s"
-            , -- Sprint 7.12: pin the control-plane (gateway controller) image
-              -- to the single 'ContainerImage.envoyGatewayRelease' SSoT — the
-              -- same Harbor-mirrored ref the home installer uses — so both
-              -- substrates run the identical Envoy Gateway control plane.
-              "--set"
-            , "deployment.envoyGateway.image.repository="
-                ++ awsSubstrateEnvoyGatewayControlPlaneRepository
-            , "--set"
-            , "deployment.envoyGateway.image.tag="
-                ++ ContainerImage.imageTag controlPlaneImage
-            ]
-        , subprocessEnvironment = Nothing
-        , subprocessWorkingDirectory = Nothing
-        }
-  case installExit of
-    ExitFailure _ -> pure installExit
-    ExitSuccess ->
-      runSequentially
-        [ waitForDeployment awsSubstrateEnvoyGatewayNamespace awsSubstrateEnvoyGatewayReleaseName
-        , waitForCrdEstablished "gatewayclasses.gateway.networking.k8s.io"
-        , waitForCrdEstablished "gateways.gateway.networking.k8s.io"
-        , waitForCrdEstablished "httproutes.gateway.networking.k8s.io"
-        , waitForCrdEstablished "envoyproxies.gateway.envoyproxy.io"
-        , waitForCrdEstablished "securitypolicies.gateway.envoyproxy.io"
-        , applyAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue
-        ]
- where
-  controlPlaneImage = ContainerImage.harborEnvoyGatewayImage
+  :: FilePath
+  -> ValidatedSettings
+  -> String
+  -> String
+  -> AwsEksTestStackSnapshot
+  -> IO ExitCode
+ensureAwsSubstrateEnvoyGatewayRuntime
+  repoRoot
+  settings
+  prodboxId
+  labelValue
+  snapshot = do
+    writeOutputLine
+      ( "Installing Envoy Gateway "
+          ++ awsSubstrateEnvoyGatewayChartVersion
+          ++ " on the AWS-substrate EKS cluster"
+      )
+    installExit <-
+      runStreaming
+        Subprocess
+          { subprocessPath = "helm"
+          , subprocessArguments =
+              [ "upgrade"
+              , "--install"
+              , awsSubstrateEnvoyGatewayReleaseName
+              , awsSubstrateEnvoyGatewayChartRef
+              , "--version"
+              , awsSubstrateEnvoyGatewayChartVersion
+              , "--namespace"
+              , awsSubstrateEnvoyGatewayNamespace
+              , "--create-namespace"
+              , "--wait"
+              , "--atomic"
+              , "--timeout"
+              , "10m0s"
+              , -- Sprint 7.12: pin the control-plane (gateway controller) image
+                -- to the single 'ContainerImage.envoyGatewayRelease' SSoT — the
+                -- same Harbor-mirrored ref the home installer uses — so both
+                -- substrates run the identical Envoy Gateway control plane.
+                "--set"
+              , "deployment.envoyGateway.image.repository="
+                  ++ awsSubstrateEnvoyGatewayControlPlaneRepository
+              , "--set"
+              , "deployment.envoyGateway.image.tag="
+                  ++ ContainerImage.imageTag controlPlaneImage
+              ]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Nothing
+          }
+    case installExit of
+      ExitFailure _ -> pure installExit
+      ExitSuccess ->
+        runSequentially
+          [ waitForDeployment awsSubstrateEnvoyGatewayNamespace awsSubstrateEnvoyGatewayReleaseName
+          , waitForCrdEstablished "gatewayclasses.gateway.networking.k8s.io"
+          , waitForCrdEstablished "gateways.gateway.networking.k8s.io"
+          , waitForCrdEstablished "httproutes.gateway.networking.k8s.io"
+          , waitForCrdEstablished "envoyproxies.gateway.envoyproxy.io"
+          , waitForCrdEstablished "securitypolicies.gateway.envoyproxy.io"
+          , reconcileAwsSubstrateEnvoyGatewayControllerOwner
+              repoRoot
+              settings
+              prodboxId
+              labelValue
+              snapshot
+          ]
+   where
+    controlPlaneImage = ContainerImage.harborEnvoyGatewayImage
 
 -- | The Envoy Gateway control-plane image repository (registry + repo, no
 -- tag) sourced from the single 'ContainerImage.envoyGatewayRelease' SSoT.
@@ -818,14 +863,24 @@ publicEdgeEnvoyProxyName :: String
 publicEdgeEnvoyProxyName = "prodbox-public-edge"
 
 applyAwsSubstrateEnvoyGatewayRuntime
-  :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
-applyAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue = do
+  :: FilePath
+  -> ValidatedSettings
+  -> String
+  -> String
+  -> ControllerOwnerManifestMode
+  -> IO ExitCode
+applyAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue mode = do
   writeOutputLine "Applying AWS-substrate Envoy Gateway runtime (GatewayClass + EnvoyProxy)"
   let manifestList =
         object
           [ "apiVersion" .= ("v1" :: String)
           , "kind" .= ("List" :: String)
-          , "items" .= awsSubstrateEnvoyGatewayRuntimeManifest settings prodboxId labelValue
+          , "items"
+              .= awsSubstrateEnvoyGatewayRuntimeManifest
+                settings
+                prodboxId
+                labelValue
+                mode
           ]
   withTempJsonFile
     repoRoot
@@ -841,8 +896,14 @@ applyAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue = do
             }
     )
 
-awsSubstrateEnvoyGatewayRuntimeManifest :: ValidatedSettings -> String -> String -> [Value]
-awsSubstrateEnvoyGatewayRuntimeManifest settings prodboxId labelValue =
+data ControllerOwnerManifestMode
+  = ControllerOwnerManifestInert
+  | ControllerOwnerManifestEnabled
+  deriving (Eq, Show)
+
+awsSubstrateEnvoyGatewayRuntimeManifest
+  :: ValidatedSettings -> String -> String -> ControllerOwnerManifestMode -> [Value]
+awsSubstrateEnvoyGatewayRuntimeManifest settings prodboxId labelValue mode =
   [ object
       [ "apiVersion" .= ("gateway.envoyproxy.io/v1alpha1" :: String)
       , "kind" .= ("EnvoyProxy" :: String)
@@ -872,7 +933,7 @@ awsSubstrateEnvoyGatewayRuntimeManifest settings prodboxId labelValue =
                         , "envoyService"
                             .= object
                               [ "name" .= ("public-edge" :: String)
-                              , "type" .= ("LoadBalancer" :: String)
+                              , "type" .= controllerOwnerServiceType mode
                               , "annotations"
                                   .= object
                                     [ Key.fromString "service.beta.kubernetes.io/aws-load-balancer-type"
@@ -883,6 +944,10 @@ awsSubstrateEnvoyGatewayRuntimeManifest settings prodboxId labelValue =
                                         .= ("internet-facing" :: String)
                                     , Key.fromString "service.beta.kubernetes.io/aws-load-balancer-ip-address-type"
                                         .= ("ipv4" :: String)
+                                    , Key.fromString "service.beta.kubernetes.io/aws-load-balancer-name"
+                                        .= Text.unpack awsEksLoadBalancerControllerName
+                                    , Key.fromString "service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags"
+                                        .= renderControllerOwnerServiceTags
                                     ]
                               , "labels" .= object [Key.fromString "prodbox.io/id" .= labelValue]
                               ]
@@ -912,6 +977,286 @@ awsSubstrateEnvoyGatewayRuntimeManifest settings prodboxId labelValue =
             ]
       ]
   ]
+
+controllerOwnerServiceType :: ControllerOwnerManifestMode -> String
+controllerOwnerServiceType mode = case mode of
+  ControllerOwnerManifestInert -> "ClusterIP"
+  ControllerOwnerManifestEnabled -> "LoadBalancer"
+
+renderControllerOwnerServiceTags :: String
+renderControllerOwnerServiceTags =
+  Text.unpack
+    ( Text.intercalate
+        ","
+        ( map
+            (\(key, value) -> key <> "=" <> value)
+            awsEksLoadBalancerControllerTags
+        )
+    )
+
+reconcileAwsSubstrateEnvoyGatewayControllerOwner
+  :: FilePath
+  -> ValidatedSettings
+  -> String
+  -> String
+  -> AwsEksTestStackSnapshot
+  -> IO ExitCode
+reconcileAwsSubstrateEnvoyGatewayControllerOwner
+  repoRoot
+  settings
+  prodboxId
+  labelValue
+  snapshot =
+    case controllerOwnerDescriptor settings prodboxId labelValue snapshot of
+      Left detail -> failWith detail
+      Right descriptor -> do
+        authenticated <-
+          withHostLifecycleAuthorityAuthentication
+            LifecycleAuthorityOperator
+            repoRoot
+            ( \authentication -> do
+                transported <-
+                  withLifecycleAuthorityAuthenticatedTransport
+                    authentication
+                    ( \transport ->
+                        runControllerOwnerSequence
+                          authentication
+                          ( lifecycleAuthorityControllerOwnerAuthenticatedClient
+                              transport
+                          )
+                          descriptor
+                    )
+                pure $ case transported of
+                  Left err ->
+                    Left (renderLifecycleAuthorityAuthenticationError err)
+                  Right exitCode -> Right exitCode
+            )
+        case authenticated of
+          Left err -> failWith (renderLifecycleAuthorityAuthenticationError err)
+          Right (Left detail) -> failWith detail
+          Right (Right exitCode) -> pure exitCode
+   where
+    runControllerOwnerSequence authentication client descriptor = do
+      registered <- client (RegisterControllerOwnerInert descriptor)
+      case registered of
+        Left err -> failWith ("register inert controller owner: " ++ show err)
+        Right state -> do
+          uidState <- ensureControllerOwnerUid client descriptor state
+          case uidState of
+            Left exitCode -> pure exitCode
+            Right stateWithUid -> do
+              enabledState <- ensureControllerOwnerEnabled client descriptor stateWithUid
+              case enabledState of
+                Left exitCode -> pure exitCode
+                Right _ -> do
+                  childArns <- observeControllerOwnerChildArns authentication (60 :: Int)
+                  case childArns of
+                    Left detail -> failWith detail
+                    Right arns -> do
+                      registeredChildren <-
+                        client (RegisterControllerOwnerChildArns descriptor arns)
+                      case registeredChildren of
+                        Left err ->
+                          failWith
+                            ("register controller-owned AWS child ARNs: " ++ show err)
+                        Right _ -> pure ExitSuccess
+
+    ensureControllerOwnerUid client descriptor state = case state of
+      AwsIsolation.ControllerOwnerRegisteredInert {} -> applyInertAndRegister client descriptor
+      AwsIsolation.ControllerOwnerUidRegistered _ expectedUid ->
+        applyInertAndConfirm client descriptor expectedUid
+      AwsIsolation.ControllerOwnerEnabled {} -> pure (Right state)
+      AwsIsolation.ControllerChildArnsRegistered {} -> pure (Right state)
+
+    applyInertAndRegister client descriptor = do
+      applied <-
+        applyAwsSubstrateEnvoyGatewayRuntime
+          repoRoot
+          settings
+          prodboxId
+          labelValue
+          ControllerOwnerManifestInert
+      case applied of
+        ExitFailure _ -> pure (Left applied)
+        ExitSuccess -> do
+          uid <- observeControllerOwnerUid repoRoot
+          case uid of
+            Left detail -> Left <$> failWith detail
+            Right observedUid -> do
+              registered <- client (RegisterControllerOwnerUid descriptor observedUid)
+              case registered of
+                Left err ->
+                  Left <$> failWith ("register controller-owner UID: " ++ show err)
+                Right state -> pure (Right state)
+
+    applyInertAndConfirm client descriptor expectedUid = do
+      applied <-
+        applyAwsSubstrateEnvoyGatewayRuntime
+          repoRoot
+          settings
+          prodboxId
+          labelValue
+          ControllerOwnerManifestInert
+      case applied of
+        ExitFailure _ -> pure (Left applied)
+        ExitSuccess -> do
+          uid <- observeControllerOwnerUid repoRoot
+          case uid of
+            Left detail -> Left <$> failWith detail
+            Right observedUid
+              | observedUid /= expectedUid ->
+                  Left
+                    <$> failWith
+                      ( "controller-owner UID changed before enable: expected "
+                          ++ Text.unpack expectedUid
+                          ++ ", observed "
+                          ++ Text.unpack observedUid
+                      )
+              | otherwise -> do
+                  replayed <- client (RegisterControllerOwnerUid descriptor observedUid)
+                  case replayed of
+                    Left err ->
+                      Left <$> failWith ("read back controller-owner UID: " ++ show err)
+                    Right state -> pure (Right state)
+
+    ensureControllerOwnerEnabled client descriptor state = case state of
+      AwsIsolation.ControllerOwnerEnabled {} -> applyEnabled state
+      AwsIsolation.ControllerChildArnsRegistered {} -> applyEnabled state
+      AwsIsolation.ControllerOwnerUidRegistered {} -> do
+        applied <- applyEnabledManifest
+        case applied of
+          ExitFailure _ -> pure (Left applied)
+          ExitSuccess -> do
+            enabled <- client (EnableRegisteredControllerOwner descriptor)
+            case enabled of
+              Left err ->
+                Left <$> failWith ("read back enabled controller owner: " ++ show err)
+              Right enabledState -> pure (Right enabledState)
+      AwsIsolation.ControllerOwnerRegisteredInert {} ->
+        Left <$> failWith "controller owner remained inert after UID registration"
+     where
+      applyEnabled stateValue = do
+        applied <- applyEnabledManifest
+        pure $ case applied of
+          ExitSuccess -> Right stateValue
+          ExitFailure _ -> Left applied
+      applyEnabledManifest =
+        applyAwsSubstrateEnvoyGatewayRuntime
+          repoRoot
+          settings
+          prodboxId
+          labelValue
+          ControllerOwnerManifestEnabled
+
+    observeControllerOwnerChildArns authentication remaining
+      | remaining <= 0 =
+          pure
+            ( Left
+                "AWS Load Balancer Controller did not expose the registered public-edge family before the bounded deadline"
+            )
+      | otherwise = do
+          observed <-
+            dispatchAuthenticatedProviderIntentFresh
+              authentication
+              "aws-public-edge-controller-owner-observe"
+              ( ObserveEksLoadBalancerControllerFamily
+                  awsEksLoadBalancerControllerName
+                  renderedControllerOwnerProviderTags
+              )
+          case observed of
+            Left err ->
+              pure
+                ( Left
+                    ( "observe registered public-edge AWS family: "
+                        ++ renderProviderCallerError err
+                    )
+                )
+            Right evidence ->
+              case awsLoadBalancerControllerObservationArns evidence of
+                Left detail -> pure (Left (Text.unpack detail))
+                Right [] -> do
+                  threadDelay 10000000
+                  observeControllerOwnerChildArns authentication (remaining - 1)
+                Right arns -> pure (Right arns)
+
+controllerOwnerDescriptor
+  :: ValidatedSettings
+  -> String
+  -> String
+  -> AwsEksTestStackSnapshot
+  -> Either String AwsIsolation.ControllerOwnerDescriptor
+controllerOwnerDescriptor settings prodboxId labelValue snapshot = do
+  region <- requireOperationalAwsRegion settings
+  account <- accountFromIamRoleArn (eksSnapshotAwsLbControllerRoleArn snapshot)
+  let canonicalEnabledManifest =
+        encode
+          ( awsSubstrateEnvoyGatewayRuntimeManifest
+              settings
+              prodboxId
+              labelValue
+              ControllerOwnerManifestEnabled
+          )
+      digest =
+        TextEncoding.decodeUtf8
+          (hexSha256 (BL.toStrict canonicalEnabledManifest))
+  Right
+    AwsIsolation.ControllerOwnerDescriptor
+      { AwsIsolation.controllerOwnerAccount = account
+      , AwsIsolation.controllerOwnerRegion = awsRegionText region
+      , AwsIsolation.controllerOwnerCluster =
+          Text.pack (eksSnapshotClusterName snapshot)
+      , AwsIsolation.controllerOwnerResourceName =
+          "envoy-gateway-system.envoyproxy.prodbox-public-edge"
+      , AwsIsolation.controllerOwnerManifestDigest = digest
+      , AwsIsolation.controllerOwnerTags = awsEksLoadBalancerControllerTags
+      }
+
+accountFromIamRoleArn :: String -> Either String Text.Text
+accountFromIamRoleArn raw = case Text.splitOn ":" (Text.pack raw) of
+  ["arn", partition, "iam", "", account, resource]
+    | partition `elem` ["aws", "aws-us-gov", "aws-cn"]
+    , Text.length account == 12
+    , Text.all isDigit account
+    , "role/" `Text.isPrefixOf` resource ->
+        Right account
+  _ -> Left "AWS Load Balancer Controller role ARN did not contain an exact 12-digit account binding"
+
+observeControllerOwnerUid :: FilePath -> IO (Either String Text.Text)
+observeControllerOwnerUid repoRoot = do
+  observed <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
+            [ "-n"
+            , awsSubstrateEnvoyGatewayNamespace
+            , "get"
+            , "envoyproxy.gateway.envoyproxy.io/" ++ publicEdgeEnvoyProxyName
+            , "-o"
+            , "jsonpath={.metadata.uid}"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $ case observed of
+    Failure detail -> Left ("observe controller-owner UID: " ++ detail)
+    Success output -> case processExitCode output of
+      ExitFailure _ ->
+        Left ("observe controller-owner UID: " ++ outputDetail output)
+      ExitSuccess ->
+        let uid = Text.strip (Text.pack (processStdout output))
+         in if Text.null uid
+              then Left "controller-owner UID observation returned an empty UID"
+              else Right uid
+
+renderedControllerOwnerProviderTags :: Text.Text
+renderedControllerOwnerProviderTags =
+  Text.intercalate
+    "|"
+    ( map
+        (\(key, value) -> key <> "=" <> value)
+        awsEksLoadBalancerControllerTags
+    )
 
 configuredEnvoyGatewayDataPlaneReplicas :: ValidatedSettings -> Int
 configuredEnvoyGatewayDataPlaneReplicas settings =
@@ -1272,7 +1617,7 @@ runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endp
         Right region ->
           ensureAwsLoadBalancerControllerRuntime repoRoot region snapshot
     StepAwsClusterBaseReady -> pure ExitSuccess
-    StepAwsRetainedStorage -> ensureAwsSubstrateRetainedStorage repoRoot snapshot
+    StepAwsRetainedStorage -> ensureAwsSubstrateRetainedStorage repoRoot settings snapshot
     StepAwsMinioRuntimeBootstrap ->
       ensureMinioRuntime repoRoot settings SubstrateAws MinioBootstrapPublic
     StepAwsMinioReady -> pure ExitSuccess
@@ -1298,7 +1643,12 @@ runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endp
       runVaultBootstrapViaBroker repoRoot
     StepAwsVaultUnsealedReady -> pure ExitSuccess
     StepAwsEnvoyGatewayRuntime ->
-      ensureAwsSubstrateEnvoyGatewayRuntime repoRoot settings prodboxId labelValue
+      ensureAwsSubstrateEnvoyGatewayRuntime
+        repoRoot
+        settings
+        prodboxId
+        labelValue
+        snapshot
     StepAwsEnvoyGatewayReady -> pure ExitSuccess
     StepAwsPostgresOperatorRuntime ->
       ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
@@ -1645,8 +1995,9 @@ classifyEksNodesReadiness raw =
  where
   trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace
 
-ensureAwsSubstrateRetainedStorage :: FilePath -> AwsEksTestStackSnapshot -> IO ExitCode
-ensureAwsSubstrateRetainedStorage repoRoot snapshot = do
+ensureAwsSubstrateRetainedStorage
+  :: FilePath -> ValidatedSettings -> AwsEksTestStackSnapshot -> IO ExitCode
+ensureAwsSubstrateRetainedStorage repoRoot settings snapshot = do
   writeOutputLine
     ( "Reconciling AWS retained EBS PVs in "
         ++ eksSnapshotRetainedEbsAvailabilityZone snapshot
@@ -1657,15 +2008,18 @@ ensureAwsSubstrateRetainedStorage repoRoot snapshot = do
         mapM
           (EbsVolume.ebsRequiredVolumeFromChartStorageBinding (eksSnapshotRetainedEbsAvailabilityZone snapshot))
           bindings
-  case requiredResult of
-    Left err -> failWith err
-    Right required -> do
+  case (requiredResult, requireAwsSubstrateProfile settings) of
+    (Left err, _) -> failWith err
+    (_, Left err) -> failWith err
+    (Right required, Right authoredProfile) -> do
       environment <- getEnvironment
       ebsBindingsResult <-
         EbsVolume.ensureRetainedEbsVolumes
           EbsVolume.EbsEnsureInput
             { EbsVolume.ebsEnsureEnvironment = environment
             , EbsVolume.ebsEnsureWorkingDirectory = Just repoRoot
+            , EbsVolume.ebsEnsureVolumeType =
+                awsSubstrateStaticEbsVolumeType authoredProfile
             }
           required
       case ebsBindingsResult of
@@ -1944,7 +2298,7 @@ runSequentially (step : rest) = do
 -- normal path, not the exceptional one.__ IRSA role ARNs never embed a
 -- region, so the caller's value is what reaches the controller on every
 -- ordinary install. That is why the caller now supplies an 'AwsRegion'
--- resolved from config: before this sprint it supplied @us-east-1@ whenever
+-- resolved from config: before this sprint it supplied a compiled region whenever
 -- @aws.region@ was unset, which was not a rare degradation but the value
 -- every unconfigured install would have shipped.
 extractRegionFromArn :: String -> String -> String

@@ -17,10 +17,12 @@ module Prodbox.Cluster.Topology
   , clusterType
   , clusterTopologyMachines
   , clusterTopologyWorkerSubstrates
+  , eksNodeGroupSize
   , compute_worker
   , defaultClusterTopology
   , defaultComputeWorker
   , defaultMachine
+  , unconfiguredClusterTopology
   , machineIdText
   , machine_id
   , machine_substrate
@@ -28,6 +30,7 @@ module Prodbox.Cluster.Topology
   , mkMachine
   , mkMachineId
   , mkRke2Topology
+  , mkSingleMachineRke2Topology
   , renderClusterType
   , renderTopologyError
   , validateClusterTopology
@@ -110,6 +113,7 @@ data TopologyError
   | WorkerSubstrateMismatch WorkerSubstrate WorkerSubstrate
   | Rke2TopologyEmpty
   | EksHostResidentSubstrate WorkerSubstrate
+  | EksNodeGroupSizeZero
   deriving (Eq, Show)
 
 -- | Sprint 1.86: run a decoder's result through a smart constructor, so a Dhall
@@ -193,6 +197,7 @@ instance FromDhall EksTopology where
 -- reached at the decode seam instead of only through the constructor.
 narrowEksTopology :: (Natural, WorkerSubstrate) -> Either TopologyError EksTopology
 narrowEksTopology (size, substrate)
+  | size == 0 = Left EksNodeGroupSizeZero
   | residencyIsInCluster (residencyOf substrate) =
       Right EksTopology {node_group_size = size, eks_substrate = substrate}
   | otherwise = Left (EksHostResidentSubstrate substrate)
@@ -226,8 +231,18 @@ mkRke2Topology :: NonEmpty Machine -> ClusterTopology
 mkRke2Topology nonEmptyMachines =
   Rke2 Rke2Topology {machines = NonEmpty.toList nonEmptyMachines}
 
+-- | Build the single-machine home topology authored by @config setup@. The
+-- machine identity crosses the same smart constructors as a decoded topology;
+-- no compiled production identity participates.
+mkSingleMachineRke2Topology :: Text -> Either TopologyError ClusterTopology
+mkSingleMachineRke2Topology rawMachineId = do
+  identifier <- mkMachineId rawMachineId
+  configuredMachine <- mkMachine identifier LinuxCpu defaultComputeWorker
+  Right (mkRke2Topology (configuredMachine :| []))
+
 mkEksTopology :: Natural -> WorkerSubstrate -> Either TopologyError ClusterTopology
 mkEksTopology size substrate
+  | size == 0 = Left EksNodeGroupSizeZero
   | residencyIsInCluster (residencyOf substrate) =
       Right (Eks EksTopology {node_group_size = size, eks_substrate = substrate})
   | otherwise =
@@ -254,6 +269,12 @@ clusterTopologyWorkerSubstrates topology =
     Rke2 rke2Topology -> map machine_substrate (machines rke2Topology)
     Eks eksTopology -> [eks_substrate eksTopology]
 
+-- | The authored EKS desired node count when this topology names EKS.
+eksNodeGroupSize :: ClusterTopology -> Maybe Natural
+eksNodeGroupSize topology = case topology of
+  Eks eksTopology -> Just (node_group_size eksTopology)
+  _ -> Nothing
+
 renderClusterType :: ClusterType -> String
 renderClusterType topologyType =
   case topologyType of
@@ -269,10 +290,10 @@ validateClusterTopology topology =
       case machines rke2Topology of
         [] -> Left Rke2TopologyEmpty
         first : rest -> traverse_ validateMachine (first : rest)
-    Eks eksTopology ->
-      if residencyIsInCluster (residencyOf (eks_substrate eksTopology))
-        then Right ()
-        else Left (EksHostResidentSubstrate (eks_substrate eksTopology))
+    Eks eksTopology
+      | node_group_size eksTopology == 0 -> Left EksNodeGroupSizeZero
+      | residencyIsInCluster (residencyOf (eks_substrate eksTopology)) -> Right ()
+      | otherwise -> Left (EksHostResidentSubstrate (eks_substrate eksTopology))
 
 validateMachine :: Machine -> Either TopologyError ()
 validateMachine machineValue = do
@@ -296,6 +317,8 @@ renderTopologyError err =
     EksHostResidentSubstrate substrate ->
       "cluster_topology eks substrate must be in-cluster, not "
         ++ renderWorkerSubstrate substrate
+    EksNodeGroupSizeZero ->
+      "cluster_topology eks node_group_size must be greater than zero"
 
 defaultComputeWorker :: ComputeWorker
 defaultComputeWorker =
@@ -304,13 +327,28 @@ defaultComputeWorker =
     , manages_all_local_devices = True
     }
 
+-- | Synthetic machine used by test-topology defaults and placement fixtures.
+-- Production Tier-0 generation uses 'unconfiguredClusterTopology' and never
+-- inherits this identity.
 defaultMachine :: Machine
 defaultMachine =
   Machine
-    { machine_id = MachineId "prodbox-home"
+    { machine_id = MachineId "synthetic-test-machine"
     , machine_substrate = LinuxCpu
     , compute_worker = defaultComputeWorker
     }
 
 defaultClusterTopology :: ClusterTopology
 defaultClusterTopology = mkRke2Topology (defaultMachine :| [])
+
+-- | Raw authoring skeleton for production Tier-0. The empty machine id is
+-- intentionally not accepted by the validating Dhall decoder: an operator or
+-- harness must author a deployment identity before the config can be used.
+unconfiguredClusterTopology :: ClusterTopology
+unconfiguredClusterTopology =
+  mkRke2Topology
+    ( defaultMachine
+        { machine_id = MachineId ""
+        }
+        :| []
+    )

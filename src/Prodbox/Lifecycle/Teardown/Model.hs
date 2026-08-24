@@ -213,6 +213,8 @@ data RegisteredResourceKey
   | AwsEbsProductionRetainedKey
   | AwsDnsValidationZoneKey
   | AwsDns01ChallengeRecordKey
+  | AwsEksIamRoleFamilyKey
+  | AwsEksLoadBalancerControllerFamilyKey
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 registeredResourceKeyText :: RegisteredResourceKey -> Text
@@ -225,6 +227,9 @@ registeredResourceKeyText key = case key of
   AwsEbsProductionRetainedKey -> "aws-ebs-volumes-production-retained"
   AwsDnsValidationZoneKey -> "dns-aws-validation-hosted-zone"
   AwsDns01ChallengeRecordKey -> "dns-aws-dns01-challenge-records"
+  AwsEksIamRoleFamilyKey -> "aws-eks-iam-role-family"
+  AwsEksLoadBalancerControllerFamilyKey ->
+    "aws-eks-load-balancer-controller-family"
 
 -- | The inverse of 'registeredResourceKeyText', over the closed enumeration.
 --
@@ -268,6 +273,21 @@ data ManagedResourceCoordinate
       { awsEbsOwnershipTagKey :: !Text
       , awsEbsOwnershipTagValue :: !Text
       }
+  | -- | Sprint 7.36: the deterministic EKS IAM role family and its one
+    -- repository-owned managed policy. The owning cluster is explicit so the
+    -- registry-derived stack/family ordering includes this family.
+    AwsIamRoleFamilyCoordinate
+      { awsIamRoleFamilyOwnerCluster :: !Text
+      , awsIamRoleFamilyRoleNames :: ![Text]
+      , awsIamRoleFamilyManagedPolicyNames :: ![Text]
+      }
+  | -- | Sprint 7.36: the exact AWS family created by the Load Balancer
+    -- Controller for the registered public-edge Kubernetes Service owner.
+    AwsLoadBalancerControllerFamilyCoordinate
+      { awsLoadBalancerControllerOwnerCluster :: !Text
+      , awsLoadBalancerControllerName :: !Text
+      , awsLoadBalancerControllerTags :: ![(Text, Text)]
+      }
   | -- | Sprint 7.36: the @dns-aws@ validation hosted-zone family.
     --
     -- Bounded by the zone-name prefix its creator authors, because the rest of
@@ -303,6 +323,8 @@ coordinateIsAws coordinate = case coordinate of
   AwsPulumiStackCoordinate {} -> True
   AwsEbsPerRunFamilyCoordinate {} -> True
   AwsEbsRetainedFamilyCoordinate {} -> True
+  AwsIamRoleFamilyCoordinate {} -> True
+  AwsLoadBalancerControllerFamilyCoordinate {} -> True
   AwsRoute53ValidationZoneFamilyCoordinate {} -> True
   AwsRoute53Dns01ChallengeRecordFamilyCoordinate {} -> True
 
@@ -348,6 +370,9 @@ coordinateControllerOwnerCluster coordinate = case coordinate of
   -- The retained family is keyed only by its retention marker and carries no
   -- cluster ownership tag, which is exactly what lets it outlive any cluster.
   AwsEbsRetainedFamilyCoordinate {} -> Nothing
+  AwsIamRoleFamilyCoordinate ownerCluster _ _ -> Just ownerCluster
+  AwsLoadBalancerControllerFamilyCoordinate ownerCluster _ _ ->
+    Just ownerCluster
   -- A validation hosted zone is created by a suite validation, not by a
   -- cluster's controllers, so no cluster owns its lifetime.
   AwsRoute53ValidationZoneFamilyCoordinate {} -> Nothing
@@ -369,6 +394,8 @@ coordinateProvisionedClusterName coordinate = case coordinate of
     Just (stackName <> pulumiEksClusterNameSuffix)
   AwsEbsPerRunFamilyCoordinate {} -> Nothing
   AwsEbsRetainedFamilyCoordinate {} -> Nothing
+  AwsIamRoleFamilyCoordinate {} -> Nothing
+  AwsLoadBalancerControllerFamilyCoordinate {} -> Nothing
   AwsRoute53ValidationZoneFamilyCoordinate {} -> Nothing
   AwsRoute53Dns01ChallengeRecordFamilyCoordinate {} -> Nothing
 
@@ -404,6 +431,24 @@ managedResourceCoordinateDigest coordinate =
         ]
     AwsEbsRetainedFamilyCoordinate tagKey tagValue ->
       Text.intercalate "\NUL" ["aws-ebs-retained-family/v1", tagKey, tagValue]
+    AwsIamRoleFamilyCoordinate ownerCluster roleNames policyNames ->
+      Text.intercalate
+        "\NUL"
+        ( "aws-iam-role-family/v1"
+            : ownerCluster
+            : roleNames
+            ++ ["managed-policies"]
+            ++ policyNames
+        )
+    AwsLoadBalancerControllerFamilyCoordinate ownerCluster name tags ->
+      Text.intercalate
+        "\NUL"
+        ( [ "aws-load-balancer-controller-family/v1"
+          , ownerCluster
+          , name
+          ]
+            ++ concatMap (\(key, value) -> [key, value]) tags
+        )
     AwsRoute53ValidationZoneFamilyCoordinate namePrefix ->
       Text.intercalate
         "\NUL"

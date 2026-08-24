@@ -95,8 +95,8 @@ controlPlaneAuthorityBackupEndpointSuite =
             mustRight
               ( mkAuthorityBackupStoreConfig
                   "home"
-                  (awsS3EndpointForRegion "ca-central-1")
-                  "ca-central-1"
+                  (awsS3EndpointForRegion (fixtureAwsRegion FixtureCaCentral1))
+                  (fixtureAwsRegion FixtureCaCentral1)
                   "prodbox-retained"
                   "authority-backup-store/home"
               )
@@ -105,21 +105,21 @@ controlPlaneAuthorityBackupEndpointSuite =
       mkAuthorityBackupStoreConfig
         "home"
         "https://s3.example.invalid"
-        "ca-central-1"
+        (fixtureAwsRegion FixtureCaCentral1)
         "prodbox-retained"
         "authority-backup-store/home"
         `shouldSatisfy` isLeft
       mkAuthorityBackupStoreConfig
         "home"
-        (awsS3EndpointForRegion "ca-central-1")
-        "ca-central-1"
+        (awsS3EndpointForRegion (fixtureAwsRegion FixtureCaCentral1))
+        (fixtureAwsRegion FixtureCaCentral1)
         "prodbox-retained"
         "public-edge-tls/home-local/test.example"
         `shouldSatisfy` isLeft
       mkTlsRetentionStoreConfig
         "home"
-        (awsS3EndpointForRegion "ca-central-1")
-        "ca-central-1"
+        (awsS3EndpointForRegion (fixtureAwsRegion FixtureCaCentral1))
+        (fixtureAwsRegion FixtureCaCentral1)
         "prodbox-retained"
         "home-local"
         "test.example"
@@ -333,7 +333,7 @@ controlPlaneAuthorityBackupEndpointSuite =
               { genesisIntentIamParameters =
                   mustRight
                     ( mkAuthorityBackupIamParameters
-                        "ca-central-1"
+                        (fixtureAwsRegion FixtureCaCentral1)
                         "prodbox-retained"
                         ["authority-backup-store/home"]
                     )
@@ -356,7 +356,7 @@ controlPlaneAuthorityBackupEndpointSuite =
               { genesisIntentIamParameters =
                   mustRight
                     ( mkAuthorityBackupIamParameters
-                        "ca-central-1"
+                        (fixtureAwsRegion FixtureCaCentral1)
                         "prodbox-retained"
                         ["authority-backup-store/home"]
                     )
@@ -376,7 +376,7 @@ controlPlaneAuthorityBackupEndpointSuite =
           providerIam =
             mustRight
               ( mkLifecycleProviderIamParameters
-                  "ca-central-1"
+                  (fixtureAwsRegion FixtureCaCentral1)
                   "123456789012"
                   "prodbox-provider-role"
               )
@@ -394,7 +394,7 @@ controlPlaneAuthorityBackupEndpointSuite =
               { genesisIntentIamParameters =
                   mustRight
                     ( mkAuthorityBackupIamParameters
-                        "ca-central-1"
+                        (fixtureAwsRegion FixtureCaCentral1)
                         "prodbox-retained"
                         ["authority-backup-store/home"]
                     )
@@ -412,7 +412,7 @@ controlPlaneAuthorityBackupEndpointSuite =
               { access_key_id = "AKIATEST"
               , secret_access_key = "secret"
               , session_token = Nothing
-              , region = "ca-central-1"
+              , region = (fixtureAwsRegion FixtureCaCentral1)
               }
           continuation credentialClass memberIndex digestByte =
             AwsAdminFirstReconcileProjection
@@ -434,12 +434,12 @@ controlPlaneAuthorityBackupEndpointSuite =
             LifecycleProviderCredential ->
               firstShow
                 ( mkLifecycleProviderIamParameters
-                    "ca-central-1"
+                    (fixtureAwsRegion FixtureCaCentral1)
                     "123456789012"
                     "prodbox-lifecycle-provider"
                 )
             GatewayDnsCredential ->
-              firstShow (mkGatewayDnsIamParameters "ca-central-1" "Z123456789")
+              firstShow (mkGatewayDnsIamParameters (fixtureAwsRegion FixtureCaCentral1) "Z123456789")
             _ -> Left "unexpected class"
           coordinate _ intent = do
             modifyIORef'
@@ -462,7 +462,7 @@ controlPlaneAuthorityBackupEndpointSuite =
               { genesisIntentIamParameters =
                   mustRight
                     ( mkAuthorityBackupIamParameters
-                        "ca-central-1"
+                        (fixtureAwsRegion FixtureCaCentral1)
                         "prodbox-retained"
                         ["authority-backup-store/home"]
                     )

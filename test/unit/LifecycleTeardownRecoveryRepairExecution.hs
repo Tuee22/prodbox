@@ -200,7 +200,7 @@ lifecycleTeardownRecoveryRepairExecutionSuite =
         fmap fst journal `shouldBe` ["install", "start", "await"]
         fmap (stepShape . fst) (recoveryRepairRunFailure run) `shouldBe` Just "await"
         fmap stepShape (recoveryRepairUnattempted run)
-          `shouldSatisfy` all (`elem` ["load", "chart"])
+          `shouldSatisfy` all (`elem` ["load", "platform", "chart"])
 
       it "stops at a failing chart with the substrate steps already attempted" $ do
         repair <- requireAdmitted LocalRke2RecoveryAbsent (RetainedArtifactStoreMembers matchingMembers)
@@ -334,6 +334,9 @@ recordingBoundary journal decide =
     , repairLoadRetainedImage = \artifact -> do
         record "load" (Text.pack (verifiedRetainedArtifactRelativePath artifact))
         decide "load"
+    , repairReconcileRecoveryPlatform = \platform -> do
+        record "platform" (Text.pack (show platform))
+        decide "platform"
     , repairReconcileRecoveryChart = \chart -> do
         record "chart" (Text.pack chart)
         decide "chart"
@@ -367,6 +370,7 @@ stepShape = \case
   AdmittedStartSubstrateService -> "start"
   AdmittedAwaitSubstrateApi -> "await"
   AdmittedLoadRetainedImage _ -> "load"
+  AdmittedReconcileRecoveryPlatform _ -> "platform"
   AdmittedReconcileRecoveryChart _ -> "chart"
 
 runApply

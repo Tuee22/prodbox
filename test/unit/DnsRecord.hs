@@ -100,18 +100,23 @@ dnsRecordSuite =
       cname "abc123.dkim.amazonses.com." `shouldBe` cname "ABC123.dkim.AmazonSES.com"
       fmap dnsRecordValueText (cname "abc123.dkim.amazonses.com")
         `shouldBe` Right "abc123.dkim.amazonses.com."
-      mx "10 inbound-smtp.us-west-2.amazonaws.com."
-        `shouldBe` mx "10 inbound-smtp.us-west-2.amazonaws.com"
-      fmap dnsRecordValueText (mx "10 inbound-smtp.us-west-2.amazonaws.com")
-        `shouldBe` Right "10 inbound-smtp.us-west-2.amazonaws.com."
+      mx ("10 inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com.")
+        `shouldBe` mx ("10 inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com")
+      fmap
+        dnsRecordValueText
+        (mx ("10 inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com"))
+        `shouldBe` Right ("10 inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com.")
       -- A TXT value keeps its exact bytes, quotes included.
       fmap dnsRecordValueText (mkDnsRecordValue DnsRecordTxt "\"Token\"")
         `shouldBe` Right "\"Token\""
       cname "-leading.example.com" `shouldSatisfy` isLeft
       cname "example..com" `shouldSatisfy` isLeft
-      mx "inbound-smtp.us-west-2.amazonaws.com." `shouldSatisfy` isLeft
-      mx "65536 inbound-smtp.us-west-2.amazonaws.com." `shouldSatisfy` isLeft
-      mx "010 inbound-smtp.us-west-2.amazonaws.com." `shouldSatisfy` isLeft
+      mx ("inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com.")
+        `shouldSatisfy` isLeft
+      mx ("65536 inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com.")
+        `shouldSatisfy` isLeft
+      mx ("010 inbound-smtp." <> (fixtureAwsRegion FixtureUsWest2) <> ".amazonaws.com.")
+        `shouldSatisfy` isLeft
 
     it "ensures with exact authoritative read-back and exact idempotency" $ do
       observations <- newIORef [DnsRecordMissing, DnsRecordObserved recordSet]

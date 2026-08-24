@@ -283,15 +283,13 @@ Four further check families join the canonical quality gate under the Foundation
   and the three-ring boundary of
   [§ 2C](./resource_scaling_doctrine.md#2c-enforcement-rings).
 
-- the **compiled AWS-coordinate registry** (Sprint `1.91`): `checkAwsCoordinateLiterals` reads every
-  AWS-region-shaped token out of the **string literals** of `src/` and `app/` (comments are not
-  values) and refuses one that `awsCoordinateLiteralRegistry` does not admit in that exact file.
-  It is a bijection in the idiom of the legacy-escape registry: an unregistered literal fails, a
-  registered literal seen in a file outside its declared set fails, a registry entry whose named
-  symbol no longer exists fails, and a declared owner missing from the scanned set fails so a rename
-  cannot silently empty the region. Each entry names one of the four compiled classes of
-  [config_doctrine.md](./config_doctrine.md) § 0 — or the fifth `documentation example` disposition
-  that section defines for a coordinate appearing inside operator-facing prose.
+- the **complete AWS-coordinate literal ban** (strengthening Sprint `1.91`):
+  `checkAwsCoordinateLiterals` reads every AWS-region-shaped token out of the **string literals** of
+  every repository-owned `.hs` file, including tests (comments are not values), and refuses every
+  observation. `awsCoordinateLiteralRegistry` is intentionally empty in production. Its
+  parameterized registry mechanics remain so unit tests can inject an exception and prove all four
+  refusal directions, but the worktree admits none. Deployment regions come from Tier-0 Dhall;
+  protocol-fixed roles use `Prodbox.Aws.Region`, and synthetic test values use `TestSupport`.
 
   **The matcher's shape was measured, not guessed.** It requires a two-letter geography and a
   non-zero ordinal, which found **22** (file, value) pairs with **zero** false positives across
@@ -300,11 +298,11 @@ Four further check families join the canonical quality gate under the Foundation
   `cn-northwest-1`, and `us-iso-east-1` match by shape without appearing in the repository —
   the same reasoning `Prodbox.Settings.Coordinate.mkAwsRegion` gives for refusing an allowlist.
 
-  **Its region is `src/` and `app/`, and that bound is real.** A literal inside a checked-in Pulumi
-  program under `pulumi/` is not visible to this gate and is not claimed to be; the AWS substrate
-  resource envelope is a provisioning surface tracked in the
-  [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here). `src/Prodbox/CheckCode.hs`
-  itself is excluded, because the registry necessarily spells the values it registers.
+  **Its region is Haskell, and that bound is real.** A literal inside a checked-in Pulumi program
+  under `pulumi/` is not visible to this gate and is not claimed to be; the AWS substrate resource
+  envelope is a provisioning surface tracked in the
+  [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here). There is no Haskell self-file
+  exclusion.
 
 All of these families run inside `prodbox dev check` on the seconds-fast lint surface and follow
 the same registry discipline as the generated-section and forbidden-path registries: the

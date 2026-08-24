@@ -310,6 +310,7 @@ operationContract operation =
     ObserveBootstrapStatus -> (HttpGet, BodyForbidden)
     EnsureVaultInitialized -> (HttpPost, BodyRequired)
     EnsureVaultUnsealed -> (HttpPost, BodyRequired)
+    ReconcilePostUnsealHandoff -> (HttpPost, BodyRequired)
     SealVault -> (HttpPost, BodyRequired)
     RotateUnlockBundle -> (HttpPost, BodyRequired)
     RotateTransitKey -> (HttpPost, BodyRequired)

@@ -29,6 +29,27 @@ module Prodbox.Bootstrap.Broker.Engine
   , BrokerProgramEvidenceBoundary (..)
   , mkBrokerEngine
   , EngineBoundaryError (..)
+  , BaselinePhysicalStage (..)
+  , renderBaselinePhysicalStage
+  , RootAccessorAbsenceProofRequirement (..)
+  , RootAccessorAbsenceProofHttpOperation (..)
+  , RootAccessorAbsenceProofHttpFailure (..)
+  , RootAccessorAbsenceProofCause (..)
+  , rootAccessorAbsenceProofCauseName
+  , RootAccessorRevocationHttpOperation (..)
+  , RootAccessorRevocationHttpFailure (..)
+  , RootAccessorRevocationCause (..)
+  , rootAccessorRevocationCauseName
+  , RootAccessorInventoryHttpOperation (..)
+  , RootAccessorInventoryHttpFailure (..)
+  , RootAccessorInventoryCause (..)
+  , rootAccessorInventoryCauseName
+  , ProvisionerAccessorCleanupHttpOperation (..)
+  , ProvisionerAccessorCleanupHttpFailure (..)
+  , ProvisionerAccessorCleanupCause (..)
+  , provisionerAccessorCleanupCauseName
+  , ProvisionerPolicyApplicationCause (..)
+  , provisionerPolicyApplicationCauseName
   , BrokerEngineError (..)
 
     -- * Strict route decoding and typed preparation
@@ -157,6 +178,7 @@ import Prodbox.Bootstrap.Broker.Model
   , planPostUnsealHandoff
   , planProvisionerSession
   , planRootSession
+  , provisionerSessionIsReady
   , restartProvisionerSession
   , restartRootSession
   , rootSessionStorageGeneration
@@ -166,11 +188,15 @@ import Prodbox.Bootstrap.Broker.PgpBoundary
   , GeneratedChildRecoveryPublicKey
   , GeneratedChildRecoveryWorkflow (..)
   , GeneratedRootCiphertext
+  , GeneratedRootCoreReconcileCause
+  , GeneratedRootPkiReconcileCause
   , GeneratedRootPublicKey
   , GeneratedRootWorkflow (..)
   , PgpBoundary (..)
   , PgpBoundaryError
   , PreparedInitRecipients
+  , generatedRootCoreReconcileCauseName
+  , generatedRootPkiReconcileCauseName
   , preparedInitBurnPublicKeyBase64
   , preparedInitRecipientShareCount
   , preparedInitRecipientThreshold
@@ -220,6 +246,7 @@ import Prodbox.Bootstrap.Broker.Routes
   )
 import Prodbox.Bootstrap.Broker.SecretWorker
   ( ExecutedSecretWorker
+  , InitializationAmbiguityCause (..)
   , RawSecretWorkerReceipt
   , RunningSecretWorker
   , SecretWorkerDurableResult
@@ -228,10 +255,11 @@ import Prodbox.Bootstrap.Broker.SecretWorker
   , SecretWorkerOperation (..)
   , SecretWorkerReceipt
   , ambiguousInitializationWorkerResult
+  , classifiedAmbiguousInitializationWorkerResult
   , durableEncryptedInitialization
   , durableFinalizedInitialization
   , durableGeneratedRootCiphertext
-  , durableInitializationIsAmbiguous
+  , durableInitializationAmbiguityCause
   , durablePreparedInitialization
   , durableResumedInitialization
   , durableTransitRotationResult
@@ -307,6 +335,7 @@ import Prodbox.Bootstrap.Broker.Types
   , mkRootAccessorInventory
   , postUnsealHandoffConsumer
   , postUnsealHandoffGeneration
+  , postUnsealHandoffObservationDigest
   , preparedInitBinding
   , preparedInitEnvelopeDigest
   , preparedInitRecipientCommitment
@@ -353,7 +382,324 @@ data EngineBoundaryError
   = EngineBoundaryUnavailable !Text
   | EngineBoundaryRefused !Text
   | EngineBoundaryAmbiguous !Text
+  | EngineBoundaryRootAccessorAbsenceProof !RootAccessorAbsenceProofCause
+  | EngineBoundaryRootAccessorRevocation !RootAccessorRevocationCause
+  | EngineBoundaryRootAccessorInventory !RootAccessorInventoryCause
+  | EngineBoundaryProvisionerAccessorCleanup !ProvisionerAccessorCleanupCause
+  | EngineBoundaryProvisionerPolicyApplication
+      !ProvisionerPolicyApplicationCause
   deriving stock (Eq, Show)
+
+-- | Whether a root-accessor observation must prove global stable zero or only
+-- the absence of the exact accessors named by the proof target. Keeping this
+-- distinction in the physical call prevents a target-absence transition from
+-- silently acquiring the stronger global-zero invariant.
+data RootAccessorAbsenceProofRequirement
+  = RootAccessorStableZeroRequired
+  | RootAccessorTargetsAbsentRequired
+  deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+data RootAccessorAbsenceProofHttpOperation
+  = RootAccessorAbsenceAuditorLogin
+  | RootAccessorAbsenceListAccessors
+  | RootAccessorAbsenceLookupAccessorPolicies
+  deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+data RootAccessorAbsenceProofHttpFailure
+  = RootAccessorAbsenceHttpConnectionFailure
+  | RootAccessorAbsenceHttpTimeout
+  | RootAccessorAbsenceHttpStatus !Int
+  | RootAccessorAbsenceHttpDecode
+  deriving stock (Eq, Ord, Show)
+
+-- | Payload-free production causes for the exact root-accessor absence proof.
+-- Raw accessors, bearer tokens, response bodies, paths, and exception text do
+-- not cross this boundary; an HTTP status code is the only carried value.
+data RootAccessorAbsenceProofCause
+  = RootAccessorAbsenceProjectedTokenUnavailable
+  | RootAccessorAbsenceHttpFailure
+      !RootAccessorAbsenceProofHttpOperation
+      !RootAccessorAbsenceProofHttpFailure
+  | RootAccessorAbsenceAuditorLoginInvalid
+  | RootAccessorAbsenceAuditorCleanupUnavailable
+  | RootAccessorAbsenceAuditorCleanupRefused
+  | RootAccessorAbsenceAuditorCleanupAmbiguous
+  | RootAccessorAbsenceObservedAccessorInvalid
+  | RootAccessorAbsenceObservedInventoryTooLarge
+  | RootAccessorAbsenceObservedInventoryDuplicate
+  | RootAccessorAbsenceGenerationMismatch
+  | RootAccessorAbsenceTargetPresent
+  | RootAccessorAbsenceStableZeroMismatch
+  deriving stock (Eq, Ord, Show)
+
+rootAccessorAbsenceProofCauseName :: RootAccessorAbsenceProofCause -> String
+rootAccessorAbsenceProofCauseName cause = case cause of
+  RootAccessorAbsenceProjectedTokenUnavailable -> "projected-token-unavailable"
+  RootAccessorAbsenceHttpFailure operation failure ->
+    "http/"
+      ++ httpOperationName operation
+      ++ "/"
+      ++ httpFailureName failure
+  RootAccessorAbsenceAuditorLoginInvalid -> "auditor-login-invalid"
+  RootAccessorAbsenceAuditorCleanupUnavailable -> "auditor-cleanup-unavailable"
+  RootAccessorAbsenceAuditorCleanupRefused -> "auditor-cleanup-refused"
+  RootAccessorAbsenceAuditorCleanupAmbiguous -> "auditor-cleanup-ambiguous"
+  RootAccessorAbsenceObservedAccessorInvalid -> "observed-accessor-invalid"
+  RootAccessorAbsenceObservedInventoryTooLarge -> "observed-inventory-too-large"
+  RootAccessorAbsenceObservedInventoryDuplicate -> "observed-inventory-duplicate"
+  RootAccessorAbsenceGenerationMismatch -> "generation-mismatch"
+  RootAccessorAbsenceTargetPresent -> "target-present"
+  RootAccessorAbsenceStableZeroMismatch -> "stable-zero-mismatch"
+ where
+  httpOperationName operation = case operation of
+    RootAccessorAbsenceAuditorLogin -> "auditor-login"
+    RootAccessorAbsenceListAccessors -> "list-accessors"
+    RootAccessorAbsenceLookupAccessorPolicies -> "lookup-accessor-policies"
+  httpFailureName failure = case failure of
+    RootAccessorAbsenceHttpConnectionFailure -> "connection-failure"
+    RootAccessorAbsenceHttpTimeout -> "timeout"
+    RootAccessorAbsenceHttpStatus status -> "status-" ++ show status
+    RootAccessorAbsenceHttpDecode -> "decode"
+
+data RootAccessorRevocationHttpOperation
+  = RootAccessorRevocationAuditorLogin
+  | RootAccessorRevocationRequest
+  | RootAccessorRevocationListReadBack
+  deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+data RootAccessorRevocationHttpFailure
+  = RootAccessorRevocationHttpConnectionFailure
+  | RootAccessorRevocationHttpTimeout
+  | RootAccessorRevocationHttpStatus !Int
+  | RootAccessorRevocationHttpDecode
+  deriving stock (Eq, Ord, Show)
+
+data RootAccessorRevocationCause
+  = RootAccessorRevocationProjectedTokenUnavailable
+  | RootAccessorRevocationHttpFailure
+      !RootAccessorRevocationHttpOperation
+      !RootAccessorRevocationHttpFailure
+  | RootAccessorRevocationAuditorLoginInvalid
+  | RootAccessorRevocationAuditorCleanupUnavailable
+  | RootAccessorRevocationAuditorCleanupRefused
+  | RootAccessorRevocationAuditorCleanupAmbiguous
+  | RootAccessorRevocationTargetStillPresent
+  deriving stock (Eq, Ord, Show)
+
+rootAccessorRevocationCauseName :: RootAccessorRevocationCause -> String
+rootAccessorRevocationCauseName cause = case cause of
+  RootAccessorRevocationProjectedTokenUnavailable -> "projected-token-unavailable"
+  RootAccessorRevocationHttpFailure operation failure ->
+    "http/"
+      ++ httpOperationName operation
+      ++ "/"
+      ++ httpFailureName failure
+  RootAccessorRevocationAuditorLoginInvalid -> "auditor-login-invalid"
+  RootAccessorRevocationAuditorCleanupUnavailable -> "auditor-cleanup-unavailable"
+  RootAccessorRevocationAuditorCleanupRefused -> "auditor-cleanup-refused"
+  RootAccessorRevocationAuditorCleanupAmbiguous -> "auditor-cleanup-ambiguous"
+  RootAccessorRevocationTargetStillPresent -> "target-still-present"
+ where
+  httpOperationName operation = case operation of
+    RootAccessorRevocationAuditorLogin -> "auditor-login"
+    RootAccessorRevocationRequest -> "revoke-accessor"
+    RootAccessorRevocationListReadBack -> "list-read-back"
+  httpFailureName failure = case failure of
+    RootAccessorRevocationHttpConnectionFailure -> "connection-failure"
+    RootAccessorRevocationHttpTimeout -> "timeout"
+    RootAccessorRevocationHttpStatus status -> "status-" ++ show status
+    RootAccessorRevocationHttpDecode -> "decode"
+
+data RootAccessorInventoryHttpOperation
+  = RootAccessorInventoryAuditorLogin
+  | RootAccessorInventoryListAccessors
+  | RootAccessorInventoryLookupAccessorPolicies
+  deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+data RootAccessorInventoryHttpFailure
+  = RootAccessorInventoryHttpConnectionFailure
+  | RootAccessorInventoryHttpTimeout
+  | RootAccessorInventoryHttpStatus !Int
+  | RootAccessorInventoryHttpDecode
+  deriving stock (Eq, Ord, Show)
+
+-- | Payload-free production causes for root-accessor inventory. Raw
+-- accessors, policies, bearer tokens, response bodies, paths, and exception
+-- text do not cross this boundary; an HTTP status code is the only carried
+-- value.
+data RootAccessorInventoryCause
+  = RootAccessorInventoryProjectedTokenUnavailable
+  | RootAccessorInventoryHttpFailure
+      !RootAccessorInventoryHttpOperation
+      !RootAccessorInventoryHttpFailure
+  | RootAccessorInventoryAuditorLoginInvalid
+  | RootAccessorInventoryAuditorCleanupUnavailable
+  | RootAccessorInventoryAuditorCleanupRefused
+  | RootAccessorInventoryAuditorCleanupAmbiguous
+  | RootAccessorInventoryObservedAccessorInvalid
+  | RootAccessorInventoryObservedInventoryTooLarge
+  | RootAccessorInventoryObservedInventoryDuplicate
+  deriving stock (Eq, Ord, Show)
+
+rootAccessorInventoryCauseName :: RootAccessorInventoryCause -> String
+rootAccessorInventoryCauseName cause = case cause of
+  RootAccessorInventoryProjectedTokenUnavailable -> "projected-token-unavailable"
+  RootAccessorInventoryHttpFailure operation failure ->
+    "http/"
+      ++ httpOperationName operation
+      ++ "/"
+      ++ httpFailureName failure
+  RootAccessorInventoryAuditorLoginInvalid -> "auditor-login-invalid"
+  RootAccessorInventoryAuditorCleanupUnavailable -> "auditor-cleanup-unavailable"
+  RootAccessorInventoryAuditorCleanupRefused -> "auditor-cleanup-refused"
+  RootAccessorInventoryAuditorCleanupAmbiguous -> "auditor-cleanup-ambiguous"
+  RootAccessorInventoryObservedAccessorInvalid -> "observed-accessor-invalid"
+  RootAccessorInventoryObservedInventoryTooLarge -> "observed-inventory-too-large"
+  RootAccessorInventoryObservedInventoryDuplicate -> "observed-inventory-duplicate"
+ where
+  httpOperationName operation = case operation of
+    RootAccessorInventoryAuditorLogin -> "auditor-login"
+    RootAccessorInventoryListAccessors -> "list-accessors"
+    RootAccessorInventoryLookupAccessorPolicies -> "lookup-accessor-policies"
+  httpFailureName failure = case failure of
+    RootAccessorInventoryHttpConnectionFailure -> "connection-failure"
+    RootAccessorInventoryHttpTimeout -> "timeout"
+    RootAccessorInventoryHttpStatus status -> "status-" ++ show status
+    RootAccessorInventoryHttpDecode -> "decode"
+
+data ProvisionerAccessorCleanupHttpOperation
+  = ProvisionerAccessorCleanupAuditorLogin
+  | ProvisionerAccessorCleanupInitialListAccessors
+  | ProvisionerAccessorCleanupInitialLookupAccessor
+  | ProvisionerAccessorCleanupAuditListAccessors
+  | ProvisionerAccessorCleanupAuditLookupAccessor
+  | ProvisionerAccessorCleanupAuditRevokeAccessor
+  | ProvisionerAccessorCleanupAuditObserveKnownAccessor
+  deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+data ProvisionerAccessorCleanupHttpFailure
+  = ProvisionerAccessorCleanupHttpConnectionFailure
+  | ProvisionerAccessorCleanupHttpTimeout
+  | ProvisionerAccessorCleanupHttpStatus !Int
+  | ProvisionerAccessorCleanupHttpDecode
+  deriving stock (Eq, Ord, Show)
+
+-- | Payload-free production causes for the provisioner role's stable-zero
+-- cleanup. Raw accessors, subjects, roles, bearer tokens, Vault paths,
+-- response bodies, and exception text never cross this boundary.
+data ProvisionerAccessorCleanupCause
+  = ProvisionerAccessorCleanupProjectedTokenUnavailable
+  | ProvisionerAccessorCleanupHttpFailure
+      !ProvisionerAccessorCleanupHttpOperation
+      !ProvisionerAccessorCleanupHttpFailure
+  | ProvisionerAccessorCleanupAuditorLoginInvalid
+  | ProvisionerAccessorCleanupAuditorCleanupUnavailable
+  | ProvisionerAccessorCleanupAuditorCleanupRefused
+  | ProvisionerAccessorCleanupAuditorCleanupAmbiguous
+  | ProvisionerAccessorCleanupAuditIdentityInvalid
+  | ProvisionerAccessorCleanupVisibilityUnavailable
+  | ProvisionerAccessorCleanupVisibilityRefused
+  | ProvisionerAccessorCleanupVisibilityAmbiguous
+  | ProvisionerAccessorCleanupStableAbsenceFailed
+  | ProvisionerAccessorCleanupObservedAccessorInvalid
+  | ProvisionerAccessorCleanupObservedInventoryTooLarge
+  | ProvisionerAccessorCleanupObservedInventoryDuplicate
+  deriving stock (Eq, Ord, Show)
+
+provisionerAccessorCleanupCauseName :: ProvisionerAccessorCleanupCause -> String
+provisionerAccessorCleanupCauseName cause = case cause of
+  ProvisionerAccessorCleanupProjectedTokenUnavailable -> "projected-token-unavailable"
+  ProvisionerAccessorCleanupHttpFailure operation failure ->
+    "http/" ++ httpOperationName operation ++ "/" ++ httpFailureName failure
+  ProvisionerAccessorCleanupAuditorLoginInvalid -> "auditor-login-invalid"
+  ProvisionerAccessorCleanupAuditorCleanupUnavailable -> "auditor-cleanup-unavailable"
+  ProvisionerAccessorCleanupAuditorCleanupRefused -> "auditor-cleanup-refused"
+  ProvisionerAccessorCleanupAuditorCleanupAmbiguous -> "auditor-cleanup-ambiguous"
+  ProvisionerAccessorCleanupAuditIdentityInvalid -> "audit-identity-invalid"
+  ProvisionerAccessorCleanupVisibilityUnavailable -> "visibility-unavailable"
+  ProvisionerAccessorCleanupVisibilityRefused -> "visibility-refused"
+  ProvisionerAccessorCleanupVisibilityAmbiguous -> "visibility-ambiguous"
+  ProvisionerAccessorCleanupStableAbsenceFailed -> "stable-absence-failed"
+  ProvisionerAccessorCleanupObservedAccessorInvalid -> "observed-accessor-invalid"
+  ProvisionerAccessorCleanupObservedInventoryTooLarge -> "observed-inventory-too-large"
+  ProvisionerAccessorCleanupObservedInventoryDuplicate -> "observed-inventory-duplicate"
+ where
+  httpOperationName operation = case operation of
+    ProvisionerAccessorCleanupAuditorLogin -> "auditor-login"
+    ProvisionerAccessorCleanupInitialListAccessors -> "initial-list-accessors"
+    ProvisionerAccessorCleanupInitialLookupAccessor -> "initial-lookup-accessor"
+    ProvisionerAccessorCleanupAuditListAccessors -> "audit-list-accessors"
+    ProvisionerAccessorCleanupAuditLookupAccessor -> "audit-lookup-accessor"
+    ProvisionerAccessorCleanupAuditRevokeAccessor -> "audit-revoke-accessor"
+    ProvisionerAccessorCleanupAuditObserveKnownAccessor -> "audit-observe-known-accessor"
+  httpFailureName failure = case failure of
+    ProvisionerAccessorCleanupHttpConnectionFailure -> "connection-failure"
+    ProvisionerAccessorCleanupHttpTimeout -> "timeout"
+    ProvisionerAccessorCleanupHttpStatus status -> "status-" ++ show status
+    ProvisionerAccessorCleanupHttpDecode -> "decode"
+
+-- | Payload-free causes for the provisioner session's policy-application
+-- stage. The core and PKI folds use the same exhaustive projections as the
+-- generated-root lane; only the stage-specific token-registry failure is new.
+-- Tokens, paths, policy material, response bodies, and free-form text cannot
+-- inhabit this type.
+data ProvisionerPolicyApplicationCause
+  = ProvisionerPolicyApplicationTokenUnavailable
+  | ProvisionerPolicyApplicationCoreReconcile
+      !GeneratedRootCoreReconcileCause
+  | ProvisionerPolicyApplicationPkiReconcile
+      !GeneratedRootPkiReconcileCause
+  deriving stock (Eq, Ord, Show)
+
+provisionerPolicyApplicationCauseName
+  :: ProvisionerPolicyApplicationCause -> String
+provisionerPolicyApplicationCauseName cause = case cause of
+  ProvisionerPolicyApplicationTokenUnavailable -> "token-unavailable"
+  ProvisionerPolicyApplicationCoreReconcile failure ->
+    "core-reconcile/" ++ generatedRootCoreReconcileCauseName failure
+  ProvisionerPolicyApplicationPkiReconcile failure ->
+    "pki-reconcile/" ++ generatedRootPkiReconcileCauseName failure
+
+-- | Secret-free identity of every physical effect in the root/provisioner
+-- baseline program.  The stage is attached where the closed call is built,
+-- never inferred from a free-form Vault error.
+data BaselinePhysicalStage
+  = BaselineCancelIncompleteGenerateRoot
+  | BaselineInventoryStaleRootAccessors
+  | BaselineRevokeStaleRootAccessor
+  | BaselineProveStableRootAccessorAbsence
+  | BaselineStartGeneratedRoot
+  | BaselineAwaitGeneratedRootCiphertext
+  | BaselineProveCurrentRootAccessorAbsent
+  | BaselineInventoryPostBaselineRootAccessors
+  | BaselineRevokePostBaselineRootAccessor
+  | BaselineProvePostBaselineRootAccessorAbsence
+  | BaselineCleanupProvisionerAccessors
+  | BaselineLoginProvisioner
+  | BaselineApplyProvisionerPolicy
+  | BaselineReadBackProvisionerPolicy
+  | BaselineRevokeProvisionerAccessor
+  | BaselineProveProvisionerAccessorAbsent
+  deriving stock (Bounded, Enum, Eq, Ord, Show)
+
+renderBaselinePhysicalStage :: BaselinePhysicalStage -> String
+renderBaselinePhysicalStage stage = case stage of
+  BaselineCancelIncompleteGenerateRoot -> "cancel-incomplete-generate-root"
+  BaselineInventoryStaleRootAccessors -> "inventory-stale-root-accessors"
+  BaselineRevokeStaleRootAccessor -> "revoke-stale-root-accessor"
+  BaselineProveStableRootAccessorAbsence -> "prove-stable-root-accessor-absence"
+  BaselineStartGeneratedRoot -> "start-generated-root"
+  BaselineAwaitGeneratedRootCiphertext -> "await-generated-root-ciphertext"
+  BaselineProveCurrentRootAccessorAbsent -> "prove-current-root-accessor-absent"
+  BaselineInventoryPostBaselineRootAccessors -> "inventory-post-baseline-root-accessors"
+  BaselineRevokePostBaselineRootAccessor -> "revoke-post-baseline-root-accessor"
+  BaselineProvePostBaselineRootAccessorAbsence -> "prove-post-baseline-root-accessor-absence"
+  BaselineCleanupProvisionerAccessors -> "cleanup-provisioner-accessors"
+  BaselineLoginProvisioner -> "login-provisioner"
+  BaselineApplyProvisionerPolicy -> "apply-provisioner-policy"
+  BaselineReadBackProvisionerPolicy -> "read-back-provisioner-policy"
+  BaselineRevokeProvisionerAccessor -> "revoke-provisioner-accessor"
+  BaselineProveProvisionerAccessorAbsent -> "prove-provisioner-accessor-absent"
 
 data BrokerEngineError
   = EngineUnknownRoute
@@ -375,12 +721,13 @@ data BrokerEngineError
   | EnginePgpBoundaryUnavailable
   | EngineGeneratedRootScopeLost
   | EnginePhysicalCallRefused !EngineBoundaryError
+  | EngineBaselinePhysicalCallRefused !BaselinePhysicalStage !EngineBoundaryError
   | EngineStoreRefused !StoreBoundaryError
   | EngineStoreReadBackMismatch
   | EngineStoreVersionConflict
   | EngineCustodyTransitionRefused !Text
   | EngineCustodyPlanLimitExceeded
-  | EngineInitializationAmbiguous !InitAmbiguity
+  | EngineInitializationAmbiguous !InitAmbiguity !InitializationAmbiguityCause
   | EngineMutationReceiptMismatch
   | EngineResponseEvidenceMismatch !BrokerRoute
   deriving stock (Eq, Show)
@@ -421,6 +768,10 @@ data DecodedBrokerCall (operation :: CapabilityKind) result where
     :: !RequestDigest
     -> !BrokerActionRequest
     -> DecodedBrokerCall 'VaultBaselineReconcile BaselineReadBackReceipt
+  DecodedPostUnsealHandoffReconcile
+    :: !RequestDigest
+    -> !BrokerActionRequest
+    -> DecodedBrokerCall 'VaultBootstrapMutate PostUnsealHandoffReceipt
   DecodedVaultPkiStatus
     :: !RequestDigest
     -> DecodedBrokerCall 'VaultPkiOperate VaultPkiStatus
@@ -528,6 +879,14 @@ decodedCallForRoute route requestDigest controllerRequest =
         ( SomeDecodedBrokerCall
             (DecodedVaultBaselineReconcile requestDigest (brokerControllerRequestAction request))
         )
+    (BrokerPostUnsealHandoffReconcile, Just request) ->
+      Right
+        ( SomeDecodedBrokerCall
+            ( DecodedPostUnsealHandoffReconcile
+                requestDigest
+                (brokerControllerRequestAction request)
+            )
+        )
     (BrokerVaultPkiStatus, Nothing) ->
       Right (SomeDecodedBrokerCall (DecodedVaultPkiStatus requestDigest))
     (BrokerVaultPkiIssueTestCertificate, Just request) ->
@@ -591,6 +950,7 @@ decodedRoute call = case call of
   DecodedVaultRotateUnlockBundle _ _ -> BrokerVaultRotateUnlockBundle
   DecodedVaultRotateTransitKey _ _ -> BrokerVaultRotateTransitKey
   DecodedVaultBaselineReconcile _ _ -> BrokerVaultBaselineReconcile
+  DecodedPostUnsealHandoffReconcile _ _ -> BrokerPostUnsealHandoffReconcile
   DecodedVaultPkiStatus _ -> BrokerVaultPkiStatus
   DecodedVaultPkiIssueTestCertificate {} -> BrokerVaultPkiIssueTestCertificate
   DecodedVaultResetAmbiguousInitialization _ _ ->
@@ -611,6 +971,7 @@ decodedRequestDigest call = case call of
   DecodedVaultRotateUnlockBundle digest _ -> digest
   DecodedVaultRotateTransitKey digest _ -> digest
   DecodedVaultBaselineReconcile digest _ -> digest
+  DecodedPostUnsealHandoffReconcile digest _ -> digest
   DecodedVaultPkiStatus digest -> digest
   DecodedVaultPkiIssueTestCertificate digest _ _ -> digest
   DecodedVaultResetAmbiguousInitialization digest _ -> digest
@@ -631,6 +992,7 @@ decodedAction call = case call of
   DecodedVaultRotateUnlockBundle _ action -> Just action
   DecodedVaultRotateTransitKey _ action -> Just action
   DecodedVaultBaselineReconcile _ action -> Just action
+  DecodedPostUnsealHandoffReconcile _ action -> Just action
   DecodedVaultPkiStatus _ -> Nothing
   DecodedVaultPkiIssueTestCertificate _ action _ -> Just action
   DecodedVaultResetAmbiguousInitialization _ action -> Just action
@@ -696,6 +1058,9 @@ data PreparedExecution (operation :: CapabilityKind) result where
     :: !RootSessionId
     -> !RecoveryCustodyReceipt
     -> PreparedExecution 'VaultBaselineReconcile BaselineReadBackReceipt
+  ExecutePostUnsealHandoffReconcile
+    :: !RecoveryCustodyReceipt
+    -> PreparedExecution 'VaultBootstrapMutate PostUnsealHandoffReceipt
   ExecuteVaultPkiStatus
     :: PreparedExecution 'VaultPkiOperate VaultPkiStatus
   ExecuteVaultPkiIssueTestCertificate
@@ -804,6 +1169,18 @@ prepareDecodedCall engine decoded = case decoded of
             decoded
             (ReconcileAllowlistedBaseline custody)
             (ExecuteVaultBaselineReconcile sessionId custody)
+        )
+  DecodedPostUnsealHandoffReconcile _ action -> do
+    evidence <- resolve (resolveUnsealRecoveryCustody evidenceBoundary action)
+    pure $ do
+      custody <- evidence
+      requireRootGeneration route action (recoveryCustodyBinding custody)
+      Right
+        ( makePrepared
+            engine
+            decoded
+            (ReconcilePostUnsealHandoff custody)
+            (ExecutePostUnsealHandoffReconcile custody)
         )
   DecodedVaultPkiStatus _ ->
     pure (Right (makePrepared engine decoded ObserveVaultPkiStatus ExecuteVaultPkiStatus))
@@ -983,7 +1360,7 @@ data EngineFenceUseObservation = EngineFenceUseObservation
 -- lost response is a failure that can be retried.
 data RootInitCallOutcome
   = RootInitEncryptedResponse !EncryptedInitResponseReceipt
-  | RootInitAppliedWithoutResponse
+  | RootInitAppliedWithoutResponse !InitializationAmbiguityCause
   deriving stock (Eq, Show)
 
 -- | Recovery observation for a journal already in the in-flight phase after
@@ -1084,6 +1461,7 @@ data BrokerPhysicalCall (operation :: CapabilityKind) result where
   PhysicalProveRootAccessorsAbsent
     :: CapabilityRef 'VaultBaselineReconcile
     -> BootstrapVaultEffectPermit
+    -> RootAccessorAbsenceProofRequirement
     -> RootAccessorInventory
     -> BrokerPhysicalCall 'VaultBaselineReconcile AccessorAbsenceAttestation
   PhysicalStartGenerateRoot
@@ -1169,6 +1547,7 @@ data BrokerPhysicalCall (operation :: CapabilityKind) result where
   PhysicalProveChildRootAccessorsAbsent
     :: CapabilityRef 'VaultBootstrapMutate
     -> BootstrapVaultEffectPermit
+    -> RootAccessorAbsenceProofRequirement
     -> RootAccessorInventory
     -> BrokerPhysicalCall 'VaultBootstrapMutate AccessorAbsenceAttestation
   PhysicalStartChildGenerateRoot
@@ -1201,7 +1580,7 @@ physicalCallCapabilityOp call = case call of
   PhysicalCancelIncompleteGenerateRoot reference _ _ -> refCapabilityOp reference
   PhysicalInventoryRootAccessors reference _ _ -> refCapabilityOp reference
   PhysicalRevokeRootAccessor reference _ _ -> refCapabilityOp reference
-  PhysicalProveRootAccessorsAbsent reference _ _ -> refCapabilityOp reference
+  PhysicalProveRootAccessorsAbsent reference _ _ _ -> refCapabilityOp reference
   PhysicalStartGenerateRoot reference _ _ _ -> refCapabilityOp reference
   PhysicalAwaitGeneratedRootCiphertext reference _ _ -> refCapabilityOp reference
   PhysicalCleanupProvisionerSessions reference _ _ -> refCapabilityOp reference
@@ -1218,7 +1597,7 @@ physicalCallCapabilityOp call = case call of
   PhysicalCancelChildIncompleteGenerateRoot reference _ _ -> refCapabilityOp reference
   PhysicalInventoryChildRootAccessors reference _ _ -> refCapabilityOp reference
   PhysicalRevokeChildRootAccessor reference _ _ -> refCapabilityOp reference
-  PhysicalProveChildRootAccessorsAbsent reference _ _ -> refCapabilityOp reference
+  PhysicalProveChildRootAccessorsAbsent reference _ _ _ -> refCapabilityOp reference
   PhysicalStartChildGenerateRoot reference _ _ _ -> refCapabilityOp reference
   PhysicalAwaitChildGeneratedRootCiphertext reference _ _ -> refCapabilityOp reference
 
@@ -1345,6 +1724,11 @@ data BrokerInMemoryCall (operation :: CapabilityKind) result where
     -> RootSessionId
     -> RecoveryCustodyReceipt
     -> BrokerInMemoryCall 'VaultBaselineReconcile BaselineReadBackReceipt
+  InMemoryPostUnsealHandoffReconcile
+    :: CapabilityRef 'VaultBootstrapMutate
+    -> BootstrapStoreMutationPermit
+    -> RecoveryCustodyReceipt
+    -> BrokerInMemoryCall 'VaultBootstrapMutate PostUnsealHandoffReceipt
   InMemoryVaultPkiStatus
     :: CapabilityRef 'VaultPkiOperate
     -> BrokerInMemoryCall 'VaultPkiOperate VaultPkiStatus
@@ -1538,6 +1922,8 @@ data BrokerResponse result where
     :: !BootstrapMutationReceipt -> BrokerResponse BootstrapMutationReceipt
   BrokerVaultBaselineResponse
     :: !BaselineReadBackReceipt -> BrokerResponse BaselineReadBackReceipt
+  BrokerPostUnsealHandoffResponse
+    :: !PostUnsealHandoffReceipt -> BrokerResponse PostUnsealHandoffReceipt
   BrokerVaultPkiStatusResponse
     :: !VaultPkiStatus -> BrokerResponse VaultPkiStatus
   BrokerVaultPkiIssueResponse
@@ -1570,6 +1956,7 @@ brokerResponseRoute response = case response of
   BrokerVaultRotateUnlockBundleResponse _ -> BrokerVaultRotateUnlockBundle
   BrokerVaultRotateTransitKeyResponse _ -> BrokerVaultRotateTransitKey
   BrokerVaultBaselineResponse _ -> BrokerVaultBaselineReconcile
+  BrokerPostUnsealHandoffResponse _ -> BrokerPostUnsealHandoffReconcile
   BrokerVaultPkiStatusResponse _ -> BrokerVaultPkiStatus
   BrokerVaultPkiIssueResponse _ -> BrokerVaultPkiIssueTestCertificate
   BrokerVaultResetAmbiguityResponse _ -> BrokerVaultResetAmbiguousInitialization
@@ -1647,6 +2034,15 @@ encodeBrokerResponse = LazyByteString.toStrict . encode . responseObject
         , "root_session_id" .= renderRootSessionId (baselineReadBackSessionId receipt)
         , "read_back_digest" .= renderArtifactDigest (baselineReadBackDigest receipt)
         ]
+    BrokerPostUnsealHandoffResponse receipt ->
+      object
+        [ "operation" .= ("post_unseal_handoff_reconcile" :: Text)
+        , "storage_generation"
+            .= renderVaultStorageGeneration (postUnsealHandoffGeneration receipt)
+        , "consumer" .= postUnsealConsumerText (postUnsealHandoffConsumer receipt)
+        , "observation_digest"
+            .= renderArtifactDigest (postUnsealHandoffObservationDigest receipt)
+        ]
     BrokerVaultPkiStatusResponse status ->
       object
         [ "operation" .= ("vault_pki_status" :: Text)
@@ -1722,6 +2118,10 @@ encodeBrokerResponse = LazyByteString.toStrict . encode . responseObject
     VaultPkiBaselineAbsent -> ("absent" :: Text)
     VaultPkiBaselineReady -> "ready"
 
+  postUnsealConsumerText :: PostUnsealConsumer -> Text
+  postUnsealConsumerText consumer = case consumer of
+    PostUnsealLifecycleAuthority -> "lifecycle_authority"
+
 -- Execution ---------------------------------------------------------------
 
 executeBrokerCall
@@ -1782,7 +2182,7 @@ executePrepared engine context prepared = do
       (Just mutationAttempt, Right response) -> do
         released <- releaseMutationFence engine mutationAttempt
         pure (response <$ released)
-      (Just mutationAttempt, Left ambiguity@(EngineInitializationAmbiguous _)) -> do
+      (Just mutationAttempt, Left ambiguity@(EngineInitializationAmbiguous _ _)) -> do
         -- The init journal has already durably latched the applied-without-
         -- response ambiguity.  Retaining the unrelated request fence would
         -- deadlock the separately bound pristine-reset action until expiry;
@@ -1833,6 +2233,8 @@ observePreparedStorage engine prepared action = do
     ExecuteVaultRotateUnlockBundle custody ->
       requireBinding observed (recoveryCustodyBinding custody)
     ExecuteVaultBaselineReconcile _ custody ->
+      requireBinding observed (recoveryCustodyBinding custody)
+    ExecutePostUnsealHandoffReconcile custody ->
       requireBinding observed (recoveryCustodyBinding custody)
     ExecuteVaultResetAmbiguousInitialization ambiguity proof ->
       if observed == pristineStorageBinding (resetReplacementPristine proof)
@@ -2026,6 +2428,21 @@ executeInMemoryPreparedPlan engine boundary attempt prepared =
             )
             (Left (EngineResponseEvidenceMismatch BrokerVaultBaselineReconcile))
           Right (BrokerVaultBaselineResponse receipt)
+    ExecutePostUnsealHandoffReconcile custody ->
+      withMutationAttempt attempt $ \mutationAttempt -> do
+        result <-
+          runAuthorizedInMemoryStore
+            engine
+            boundary
+            mutationAttempt
+            BootstrapStoreCreatePostUnsealHandoff
+            ( \permit ->
+                InMemoryPostUnsealHandoffReconcile
+                  reference
+                  permit
+                  custody
+            )
+        pure (BrokerPostUnsealHandoffResponse <$> result)
     ExecuteVaultPkiStatus ->
       fmap BrokerVaultPkiStatusResponse
         <$> runInMemory boundary (InMemoryVaultPkiStatus reference)
@@ -2231,16 +2648,10 @@ executePhysicalPreparedPlan engine attempt prepared =
             mutationAttempt
             BootstrapVaultSubmitUnsealShare
             (\permit -> PhysicalUnsealVault reference permit custody)
-        case result >>= \receipt -> validateMutationReceipt prepared receipt >> Right receipt of
-          Left failure -> pure (Left failure)
-          Right receipt -> do
-            handoff <-
-              drivePostUnsealHandoff
-                engine
-                mutationAttempt
-                reference
-                (recoveryCustodyBinding custody)
-            pure (BrokerVaultUnsealResponse receipt <$ handoff)
+        pure $ do
+          receipt <- result
+          validateMutationReceipt prepared receipt
+          Right (BrokerVaultUnsealResponse receipt)
     ExecuteVaultSeal ->
       withMutationAttempt attempt $ \mutationAttempt -> do
         result <-
@@ -2279,16 +2690,22 @@ executePhysicalPreparedPlan engine attempt prepared =
           Right (BrokerVaultRotateTransitKeyResponse receipt)
     ExecuteVaultBaselineReconcile sessionId custody ->
       withMutationAttempt attempt $ \mutationAttempt -> do
-        handoff <-
-          requireObservedPostUnsealHandoff
-            engine
-            (recoveryCustodyBinding custody)
-        case handoff of
+        result <-
+          driveRootSession engine mutationAttempt reference sessionId custody
+        pure (BrokerVaultBaselineResponse <$> result)
+    ExecutePostUnsealHandoffReconcile custody ->
+      withMutationAttempt attempt $ \mutationAttempt -> do
+        baseline <- requireCompletedBaseline engine custody
+        case baseline of
           Left failure -> pure (Left failure)
           Right () -> do
             result <-
-              driveRootSession engine mutationAttempt reference sessionId custody
-            pure (BrokerVaultBaselineResponse <$> result)
+              drivePostUnsealHandoff
+                engine
+                mutationAttempt
+                reference
+                (recoveryCustodyBinding custody)
+            pure (BrokerPostUnsealHandoffResponse <$> result)
     ExecuteVaultPkiStatus -> do
       result <- runPhysical engine (PhysicalObserveVaultPkiStatus reference)
       pure (BrokerVaultPkiStatusResponse <$> result)
@@ -2500,8 +2917,8 @@ encodeSecretWorkerPhysicalResult call result = case call of
               == preparedInitRecipientCommitment envelope
         )
       Right (encryptedInitializationWorkerResult receipt)
-    RootInitAppliedWithoutResponse ->
-      Right ambiguousInitializationWorkerResult
+    RootInitAppliedWithoutResponse cause ->
+      Right (classifiedAmbiguousInitializationWorkerResult cause)
   PhysicalSealFinalUnlockBundle _ _ recipients response -> do
     let envelope =
           preparedRecoveryEnvelope (preparedInitRecoveryRecipient recipients)
@@ -2564,10 +2981,10 @@ decodeSecretWorkerPhysicalResult call receipt durableResult = do
       requireProjection (durablePreparedInitialization durableResult)
     PhysicalResumeRootInitRecipients {} ->
       requireProjection (durableResumedInitialization durableResult)
-    PhysicalInitializeVault {}
-      | durableInitializationIsAmbiguous durableResult ->
-          Right RootInitAppliedWithoutResponse
-      | otherwise ->
+    PhysicalInitializeVault {} ->
+      case durableInitializationAmbiguityCause durableResult of
+        Just cause -> Right (RootInitAppliedWithoutResponse cause)
+        Nothing ->
           RootInitEncryptedResponse
             <$> requireProjection
               (durableEncryptedInitialization durableResult)
@@ -2802,27 +3219,31 @@ persistPostUnsealHandoff engine attempt version state = do
       (\permit -> casPostUnsealHandoff store permit version state)
   pure (persisted >>= writeResultVersion state)
 
-requireObservedPostUnsealHandoff
+requireCompletedBaseline
   :: (Monad m)
   => BrokerEngine m
-  -> RootInitBinding
+  -> RecoveryCustodyReceipt
   -> m (Either BrokerEngineError ())
-requireObservedPostUnsealHandoff engine binding = do
-  let store = engineStoreBoundary (brokerEngineBoundary engine)
-  observed <- readPostUnsealHandoff store binding
-  pure $ case storeReadResult observed of
-    Left failure -> Left failure
-    Right StoreObjectAbsent -> Left EngineStoreReadBackMismatch
-    Right (StoreObjectPresent _ _ state) ->
-      case planPostUnsealHandoff state of
-        PostUnsealHandoffPlanComplete receipt
-          | postUnsealHandoffGeneration receipt
-              == rootInitStorageGeneration binding
-              && postUnsealHandoffConsumer receipt
-                == PostUnsealLifecycleAuthority ->
-              Right ()
-          | otherwise -> Left EngineStoreReadBackMismatch
-        _ -> Left EngineStoreReadBackMismatch
+requireCompletedBaseline engine custody = do
+  let binding = recoveryCustodyBinding custody
+      generation = rootInitStorageGeneration binding
+      store = engineStoreBoundary (brokerEngineBoundary engine)
+  observed <- readRootSessionJournal store generation
+  pure $ do
+    readBack <- storeReadResult observed
+    state <- case readBack of
+      StoreObjectAbsent -> Left EngineStoreReadBackMismatch
+      StoreObjectPresent _ _ value -> Right value
+    when
+      (rootSessionBindingCustody (rootSessionStateBinding state) /= custody)
+      (Left EngineStoreReadBackMismatch)
+    case (planRootSession state, rootSessionStateProvisioner state) of
+      (RootSessionPlanComplete completion, Just provisioner)
+        | provisionerSessionIsReady provisioner
+            && rootSessionStorageGeneration (completedRootSessionBinding completion)
+              == generation ->
+            Right ()
+      _ -> Left EngineStoreReadBackMismatch
 
 -- Root initialization custody --------------------------------------------
 
@@ -2912,8 +3333,8 @@ driveRootInitialization engine attempt reference proof = do
                           armedState
                           (CaptureEncryptedInitResponse receipt)
                       continueRoot steps advanced
-                    Right RootInitAppliedWithoutResponse ->
-                      persistRootAmbiguity armedVersion armedState
+                    Right (RootInitAppliedWithoutResponse cause) ->
+                      persistRootAmbiguity cause armedVersion armedState
         RootPlanAwaitVaultInitResponse binding -> do
           recovered <- runLocal engine (LocalRecoverRootInitCall binding)
           case recovered of
@@ -2952,7 +3373,10 @@ driveRootInitialization engine attempt reference proof = do
                                   (Right receipt)
                                   CaptureEncryptedInitResponse
                               RootInitRecoveredAmbiguity ->
-                                persistRootAmbiguity version state
+                                persistRootAmbiguity
+                                  InitializationCauseUnclassified
+                                  version
+                                  state
                 _ ->
                   pure
                     ( Left
@@ -3066,7 +3490,13 @@ driveRootInitialization engine attempt reference proof = do
               advanceRoot steps version state acknowledged ConfirmRecoveryCustody
             _ -> pure (Left (EngineCustodyTransitionRefused "unexpected recovery-custody acknowledgement phase"))
         RootPlanAmbiguityRequiresPristineReset ambiguity ->
-          pure (Left (EngineInitializationAmbiguous ambiguity))
+          pure
+            ( Left
+                ( EngineInitializationAmbiguous
+                    ambiguity
+                    InitializationCauseUnclassified
+                )
+            )
         RootPlanCancellationLatched _ ->
           pure (Left (EngineCustodyTransitionRefused "root initialization cancellation is latched"))
         RootPlanComplete receipt ->
@@ -3100,7 +3530,7 @@ driveRootInitialization engine attempt reference proof = do
     Left failure -> pure (Left failure)
     Right (nextVersion, nextState) -> rootLoop (steps + 1) nextVersion nextState
 
-  persistRootAmbiguity version state = do
+  persistRootAmbiguity cause version state = do
     advanced <-
       transitionAndPersistRoot
         engine
@@ -3112,7 +3542,7 @@ driveRootInitialization engine attempt reference proof = do
       Left failure -> pure (Left failure)
       Right (_, ambiguousState) -> case rootInitStatePhase ambiguousState of
         RootInitializationAmbiguous ambiguity ->
-          pure (Left (EngineInitializationAmbiguous ambiguity))
+          pure (Left (EngineInitializationAmbiguous ambiguity cause))
         _ ->
           pure (Left (EngineCustodyTransitionRefused "ambiguity transition did not produce ambiguous state"))
 
@@ -3416,6 +3846,15 @@ deletePreparedEnvelope engine attempt prepared = do
 
 -- Short-lived root baseline session --------------------------------------
 
+markBaselinePhysicalRefusal
+  :: BaselinePhysicalStage
+  -> Either BrokerEngineError value
+  -> Either BrokerEngineError value
+markBaselinePhysicalRefusal stage result = case result of
+  Left (EnginePhysicalCallRefused boundary) ->
+    Left (EngineBaselinePhysicalCallRefused stage boundary)
+  _ -> result
+
 driveRootSession
   :: forall m
    . (Monad m)
@@ -3438,6 +3877,7 @@ driveRootSession engine attempt reference sessionId custody = do
     | otherwise = case planRootSession state of
         RootSessionPlanCancelIncompleteGenerateRoot binding ->
           runAndAdvance
+            BaselineCancelIncompleteGenerateRoot
             steps
             version
             state
@@ -3452,6 +3892,7 @@ driveRootSession engine attempt reference sessionId custody = do
           pure (Left EngineGeneratedRootScopeLost)
         RootSessionPlanInventoryStaleAccessors generation ->
           runAndAdvance
+            BaselineInventoryStaleRootAccessors
             steps
             version
             state
@@ -3460,6 +3901,7 @@ driveRootSession engine attempt reference sessionId custody = do
             ConfirmRootAccessorInventory
         RootSessionPlanRevokeStaleAccessor accessor ->
           runAndAdvance
+            BaselineRevokeStaleRootAccessor
             steps
             version
             state
@@ -3468,11 +3910,18 @@ driveRootSession engine attempt reference sessionId custody = do
             (const (ConfirmStaleRootAccessorRevoked accessor))
         RootSessionPlanProveStableAccessorAbsence inventory ->
           runAndAdvance
+            BaselineProveStableRootAccessorAbsence
             steps
             version
             state
             BootstrapVaultInventoryRootAccessors
-            (\permit -> PhysicalProveRootAccessorsAbsent reference permit inventory)
+            ( \permit ->
+                PhysicalProveRootAccessorsAbsent
+                  reference
+                  permit
+                  RootAccessorStableZeroRequired
+                  inventory
+            )
             ConfirmStableRootAccessorAbsence
         RootSessionPlanGenerateShortLivedRoot binding ->
           runGeneratedRootScope steps version state binding
@@ -3505,6 +3954,7 @@ driveRootSession engine attempt reference sessionId custody = do
               pure (Left (EngineCustodyTransitionRefused (Text.pack (show failure))))
             Right proofTarget ->
               runAndAdvance
+                BaselineProveCurrentRootAccessorAbsent
                 steps
                 version
                 state
@@ -3513,11 +3963,13 @@ driveRootSession engine attempt reference sessionId custody = do
                     PhysicalProveRootAccessorsAbsent
                       reference
                       permit
+                      RootAccessorTargetsAbsentRequired
                       proofTarget
                 )
                 ConfirmCurrentRootAccessorAbsent
         RootSessionPlanInventoryPostBaselineAccessors generation ->
           runAndAdvance
+            BaselineInventoryPostBaselineRootAccessors
             steps
             version
             state
@@ -3526,6 +3978,7 @@ driveRootSession engine attempt reference sessionId custody = do
             ConfirmRootAccessorInventory
         RootSessionPlanRevokePostBaselineAccessor accessor ->
           runAndAdvance
+            BaselineRevokePostBaselineRootAccessor
             steps
             version
             state
@@ -3534,11 +3987,18 @@ driveRootSession engine attempt reference sessionId custody = do
             (const (ConfirmStaleRootAccessorRevoked accessor))
         RootSessionPlanProvePostBaselineZero inventory ->
           runAndAdvance
+            BaselineProvePostBaselineRootAccessorAbsence
             steps
             version
             state
             BootstrapVaultInventoryRootAccessors
-            (\permit -> PhysicalProveRootAccessorsAbsent reference permit inventory)
+            ( \permit ->
+                PhysicalProveRootAccessorsAbsent
+                  reference
+                  permit
+                  RootAccessorStableZeroRequired
+                  inventory
+            )
             ConfirmStableRootAccessorAbsence
         RootSessionPlanFinishCancellation attestation ->
           advanceSession
@@ -3565,7 +4025,8 @@ driveRootSession engine attempt reference sessionId custody = do
 
   runAndAdvance
     :: forall value
-     . Natural
+     . BaselinePhysicalStage
+    -> Natural
     -> StoreVersion
     -> RootSessionState
     -> BootstrapVaultEffect
@@ -3574,9 +4035,14 @@ driveRootSession engine attempt reference sessionId custody = do
        )
     -> (value -> RootSessionCommand)
     -> m (Either BrokerEngineError BaselineReadBackReceipt)
-  runAndAdvance steps version state effect buildCall commandFor = do
+  runAndAdvance stage steps version state effect buildCall commandFor = do
     result <- runAuthorizedPhysical engine attempt effect buildCall
-    advanceSession steps version state result commandFor
+    advanceSession
+      steps
+      version
+      state
+      (markBaselinePhysicalRefusal stage result)
+      commandFor
 
   runGeneratedRootScope
     :: Natural
@@ -3658,9 +4124,8 @@ driveProvisionerSession engine attempt reference initialVersion rootState comple
     | otherwise = case planProvisionerSession state of
         ProvisionerPlanCleanupPolicyAccessors generation -> do
           cleaned <-
-            runAuthorizedPhysical
-              engine
-              attempt
+            runProvisionerPhysical
+              BaselineCleanupProvisionerAccessors
               BootstrapVaultInventoryProvisionerAccessors
               (\permit -> PhysicalCleanupProvisionerSessions reference permit generation)
           advance
@@ -3674,9 +4139,8 @@ driveProvisionerSession engine attempt reference initialVersion rootState comple
           advanceValue steps version durableRoot state ArmProvisionerLogin
         ProvisionerPlanLogin generation -> do
           loggedIn <-
-            runAuthorizedPhysical
-              engine
-              attempt
+            runProvisionerPhysical
+              BaselineLoginProvisioner
               BootstrapVaultLoginProvisioner
               (\permit -> PhysicalLoginProvisioner reference permit generation)
           advance
@@ -3690,9 +4154,8 @@ driveProvisionerSession engine attempt reference initialVersion rootState comple
           advanceValue steps version durableRoot state ArmProvisionerBaselineApply
         ProvisionerPlanApplyBaseline receipt -> do
           applied <-
-            runAuthorizedPhysical
-              engine
-              attempt
+            runProvisionerPhysical
+              BaselineApplyProvisionerPolicy
               BootstrapVaultApplyBaseline
               ( \permit ->
                   PhysicalApplyProvisionerBaseline reference permit receipt
@@ -3708,9 +4171,8 @@ driveProvisionerSession engine attempt reference initialVersion rootState comple
           advanceValue steps version durableRoot state ArmProvisionerBaselineReadBack
         ProvisionerPlanReadBackBaseline receipt -> do
           readBack <-
-            runAuthorizedPhysical
-              engine
-              attempt
+            runProvisionerPhysical
+              BaselineReadBackProvisionerPolicy
               BootstrapVaultReadBackBaseline
               ( \permit ->
                   PhysicalReadBackProvisionerBaseline
@@ -3730,9 +4192,8 @@ driveProvisionerSession engine attempt reference initialVersion rootState comple
           advanceValue steps version durableRoot state ArmProvisionerRevocation
         ProvisionerPlanRevoke receipt _ -> do
           revoked <-
-            runAuthorizedPhysical
-              engine
-              attempt
+            runProvisionerPhysical
+              BaselineRevokeProvisionerAccessor
               BootstrapVaultRevokeProvisionerAccessor
               (\permit -> PhysicalRevokeProvisionerSession reference permit receipt)
           advance
@@ -3751,9 +4212,8 @@ driveProvisionerSession engine attempt reference initialVersion rootState comple
             ArmProvisionerAccessorAbsenceCheck
         ProvisionerPlanProveAccessorAbsent receipt _ -> do
           absence <-
-            runAuthorizedPhysical
-              engine
-              attempt
+            runProvisionerPhysical
+              BaselineProveProvisionerAccessorAbsent
               BootstrapVaultInventoryProvisionerAccessors
               (\permit -> PhysicalProveProvisionerSessionAbsent reference permit receipt)
           advance
@@ -3804,6 +4264,18 @@ driveProvisionerSession engine attempt reference initialVersion rootState comple
           )
       Right nextState ->
         persistAndContinue steps version durableRoot nextState
+
+  runProvisionerPhysical
+    :: BaselinePhysicalStage
+    -> BootstrapVaultEffect
+    -> ( BootstrapVaultEffectPermit
+         -> BrokerPhysicalCall 'VaultBaselineReconcile value
+       )
+    -> m (Either BrokerEngineError value)
+  runProvisionerPhysical stage effect buildCall =
+    fmap
+      (markBaselinePhysicalRefusal stage)
+      (runAuthorizedPhysical engine attempt effect buildCall)
 
   persistAndContinue steps version durableRoot nextState = do
     persisted <-
@@ -3868,16 +4340,19 @@ driveGeneratedRootScope engine attempt reference pgpBoundary binding version sta
         runExceptT $ do
           _ <-
             ExceptT
-              ( runAuthorizedPhysical
-                  engine
-                  attempt
-                  BootstrapVaultStartGenerateRoot
-                  ( \permit ->
-                      PhysicalStartGenerateRoot
-                        reference
-                        permit
-                        binding
-                        publicKey
+              ( fmap
+                  (markBaselinePhysicalRefusal BaselineStartGeneratedRoot)
+                  ( runAuthorizedPhysical
+                      engine
+                      attempt
+                      BootstrapVaultStartGenerateRoot
+                      ( \permit ->
+                          PhysicalStartGenerateRoot
+                            reference
+                            permit
+                            binding
+                            publicKey
+                      )
                   )
               )
           (startedVersion, startedState) <-
@@ -3898,12 +4373,18 @@ driveGeneratedRootScope engine attempt reference pgpBoundary binding version sta
               )
           ciphertext <-
             ExceptT
-              ( runPhysical
-                  engine
-                  ( PhysicalAwaitGeneratedRootCiphertext
-                      reference
-                      originatingPermit
-                      binding
+              ( fmap
+                  (markBaselinePhysicalRefusal BaselineAwaitGeneratedRootCiphertext)
+                  ( runAuthorizedSecretWorkerPhysical
+                      engine
+                      attempt
+                      BootstrapVaultSubmitGenerateRootShare
+                      ( \physicalPermit ->
+                          PhysicalAwaitGeneratedRootCiphertext
+                            reference
+                            physicalPermit
+                            binding
+                      )
                   )
               )
           decrypted <-
@@ -4609,7 +5090,13 @@ prepareChildRecoveryDelivery engine attempt reference binding nonce attestation 
             version
             state
             BootstrapVaultInventoryRootAccessors
-            (\permit -> PhysicalProveChildRootAccessorsAbsent reference permit inventory)
+            ( \permit ->
+                PhysicalProveChildRootAccessorsAbsent
+                  reference
+                  permit
+                  RootAccessorStableZeroRequired
+                  inventory
+            )
             ConfirmChildRecoveryStableRootAccessorAbsence
         ChildRecoveryPlanGenerateShortLivedRoot delivery ->
           case enginePgpBoundary (brokerEngineBoundary engine) of
@@ -4667,6 +5154,7 @@ prepareChildRecoveryDelivery engine attempt reference binding nonce attestation 
                     PhysicalProveChildRootAccessorsAbsent
                       reference
                       permit
+                      RootAccessorStableZeroRequired
                       proofTarget
                 )
                 ConfirmChildRecoveryRootAccessorAbsent

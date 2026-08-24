@@ -18,6 +18,7 @@ module Prodbox.CLI.Rke2
   , ensurePostgresOperatorRuntime
   , ensureVaultRuntime
   , ensureRootVaultLifecycle
+  , bindVaultLifecycleContext
   , externalMaterialRequestForObservation
   , reconcileAcmeEabFixture
   , MinioImageSource (..)
@@ -164,6 +165,7 @@ import Prodbox.CLI.Vault
   ( BrokerVaultSealStatus (..)
   , gatewayEndpointFromEnv
   , observeBrokerVaultSealStatus
+  , runPostUnsealHandoffViaBroker
   , runVaultBootstrapViaBroker
   )
 import Prodbox.Capacity.Allocation qualified as CapacityAllocation
@@ -394,7 +396,12 @@ import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.Lifecycle.Teardown.RecoveryPlane
   ( RecoveryPlaneFinalDisposition (RecoveryPlaneNotEstablished)
   )
-import Prodbox.Minio.ObjectStoreTypes (minioSigningRegion)
+import Prodbox.Minio.ObjectStoreTypes
+  ( defaultObjectStoreBucket
+  , minioClusterServiceEndpoint
+  , minioClusterServiceNamespace
+  , minioSigningRegion
+  )
 import Prodbox.Minio.RootCredential (minioRootPassword, minioRootUser)
 import Prodbox.PostgresPlatform
   ( patroniOperatorDeploymentName
@@ -433,10 +440,13 @@ import Prodbox.Settings
   , PublicEdgeAdvertisementMode (..)
   , PulumiStateBackendSection (..)
   , ValidatedCoordinates (..)
+  , ValidatedDeploymentContext
   , ValidatedServedHost (..)
   , ValidatedSettings (..)
   , acme
   , defaultConfigFile
+  , deploymentClusterId
+  , deploymentVaultAddress
   , eab_hmac_key
   , eab_key_id
   , loadConfigFile
@@ -455,6 +465,7 @@ import Prodbox.Settings
   , validateOperationalAwsCredentials
   , validatedConfig
   , validatedCoordinates
+  , validatedDeploymentContext
   , validatedResourcePlan
   )
 import Prodbox.Settings.Coordinate
@@ -493,9 +504,7 @@ import Prodbox.Vault.Client
   , vaultSealStatus
   , vaultWritePolicy
   )
-import Prodbox.Vault.Host
-  ( hostVaultAddress
-  )
+import Prodbox.Vault.Host (vaultAddressForDeploymentContext)
 import Prodbox.Vault.Status (probeVaultStatusLine)
 import System.Directory
   ( doesDirectoryExist
@@ -659,13 +668,10 @@ harborServicePort :: Int
 harborServicePort = 80
 
 minioNamespace :: String
-minioNamespace = prodboxNamespace
+minioNamespace = minioClusterServiceNamespace
 
 minioReleaseName :: String
 minioReleaseName = "minio"
-
-minioServiceName :: String
-minioServiceName = "minio"
 
 minioAdminRouteName :: String
 minioAdminRouteName = "minio-console"
@@ -706,14 +712,11 @@ harborStoragePolicyName = "prodbox-harbor-registry-policy"
 harborRegistryStorageBootstrapJobName :: String
 harborRegistryStorageBootstrapJobName = "harbor-registry-bucket-init"
 
--- | Job name + bucket name + canonical IAM principal and policy name for the
+-- | Job name plus canonical IAM principal and policy name for the
 -- gateway daemon's MinIO object-store surface, provisioned in one unified pass
 -- by 'ensureGatewayMinioBootstrap'.
 gatewayMinioBootstrapJobName :: String
 gatewayMinioBootstrapJobName = "gateway-minio-bootstrap"
-
-gatewayMinioBucket :: String
-gatewayMinioBucket = "prodbox-state"
 
 -- | Namespace where the gateway chart deploys. Reconcile pre-creates it
 -- before @prodbox charts reconcile gateway@ runs.
@@ -736,8 +739,7 @@ lifecycleAuthorityMinioPolicyName :: String
 lifecycleAuthorityMinioPolicyName = "prodbox-lifecycle-authority-policy"
 
 minioClusterEndpoint :: String
-minioClusterEndpoint =
-  "http://" ++ minioServiceName ++ "." ++ minioNamespace ++ ".svc.cluster.local:9000"
+minioClusterEndpoint = minioClusterServiceEndpoint
 
 metallbNamespace :: String
 metallbNamespace = "metallb-system"
@@ -1029,9 +1031,15 @@ runClusterStatus repoRoot = do
           (resourceStatusLines repoRoot defaultResourceStatusRoot)
           defaultResourceStatusPlan
       mapM_ writeOutputLine statusLines
-      (vaultLine, _vaultExit) <- probeVaultStatusLine hostVaultAddress
-      writeOutputLine vaultLine
-      pure (processExitCode serviceOutput)
+      settingsResult <- validateAndLoadSettings repoRoot
+      case settingsResult of
+        Left err -> failWith err
+        Right settings -> do
+          (vaultLine, _vaultExit) <-
+            probeVaultStatusLine
+              (vaultAddressForDeploymentContext (validatedDeploymentContext settings))
+          writeOutputLine vaultLine
+          pure (processExitCode serviceOutput)
  where
   serviceStatusLine output =
     case trimWhitespace (processStdout output) of
@@ -1506,6 +1514,7 @@ data ReconcileStepId
   | StepFederatedVaultLifecycle
   | StepTargetSecretAgentChartReady
   | StepLifecycleAuthorityChartReady
+  | StepPostUnsealHandoff
   | StepAuthorityBackupChartReady
   | StepEstablishAuthorityBackup
   | StepReconcileInForceConfig
@@ -1554,6 +1563,7 @@ reconcileStepToken step = case step of
   StepFederatedVaultLifecycle -> "ensure_federated_vault_lifecycle"
   StepTargetSecretAgentChartReady -> "ensure_target_secret_agent_chart_ready"
   StepLifecycleAuthorityChartReady -> "ensure_lifecycle_authority_chart_ready"
+  StepPostUnsealHandoff -> "reconcile_post_unseal_handoff"
   StepAuthorityBackupChartReady -> "ensure_authority_backup_chart_ready"
   StepEstablishAuthorityBackup -> "establish_authority_backup_admission"
   StepReconcileInForceConfig -> "reconcile_authority_in_force_config"
@@ -1600,6 +1610,7 @@ reconcileStepPhase step = case step of
   StepFederatedVaultLifecycle -> PhaseTransition
   StepTargetSecretAgentChartReady -> PhaseTransition
   StepLifecycleAuthorityChartReady -> PhaseTransition
+  StepPostUnsealHandoff -> PhaseTransition
   StepAuthorityBackupChartReady -> PhaseTransition
   StepEstablishAuthorityBackup -> PhaseTransition
   StepReconcileInForceConfig -> PhaseTransition
@@ -1653,6 +1664,7 @@ reconcileStepAnchor step = case step of
   StepFederatedVaultLifecycle -> ComponentReadiness ComponentVaultUnsealed
   StepTargetSecretAgentChartReady -> ComponentReadiness ComponentChartTargetSecretAgent
   StepLifecycleAuthorityChartReady -> ComponentReadiness ComponentChartLifecycleAuthority
+  StepPostUnsealHandoff -> ComponentReadiness ComponentChartLifecycleAuthority
   StepAuthorityBackupChartReady -> ComponentMutation ComponentChartAuthorityBackup
   StepEstablishAuthorityBackup -> TransitionFor ComponentChartAuthorityBackup
   StepReconcileInForceConfig -> TransitionFor ComponentChartAuthorityBackup
@@ -1728,7 +1740,8 @@ stepsForComponent component = case component of
   -- native reconcile deploys each release and ends its component group at the
   -- chart's own rollout/readiness barrier.
   ComponentChartBootstrapBroker -> [StepBootstrapBrokerChartReady]
-  ComponentChartLifecycleAuthority -> [StepLifecycleAuthorityChartReady]
+  ComponentChartLifecycleAuthority ->
+    [StepLifecycleAuthorityChartReady, StepPostUnsealHandoff]
   ComponentChartProviderWorker -> [StepProviderWorkerChartReady]
   ComponentChartAuthorityBackup ->
     [ StepAuthorityBackupChartReady
@@ -1921,7 +1934,10 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
   case bootstrapOutcome of
     Left bootstrapExit -> pure bootstrapExit
     Right bootstrapAdmissions -> do
-      vaultLifecycleResult <- ensureFederatedVaultLifecycleDetailed repoRoot
+      vaultLifecycleResult <-
+        ensureFederatedVaultLifecycleDetailed
+          repoRoot
+          (validatedDeploymentContext bootstrapSettings)
       case vaultLifecycleExitCode vaultLifecycleResult of
         ExitFailure _ -> pure (vaultLifecycleExitCode vaultLifecycleResult)
         ExitSuccess -> do
@@ -2067,6 +2083,7 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
     StepLoadInForceSettings -> wrongPhaseStep PhaseBootstrap step
     StepTargetSecretAgentChartReady -> wrongPhaseStep PhaseBootstrap step
     StepLifecycleAuthorityChartReady -> wrongPhaseStep PhaseBootstrap step
+    StepPostUnsealHandoff -> wrongPhaseStep PhaseBootstrap step
     StepAuthorityBackupChartReady -> wrongPhaseStep PhaseBootstrap step
     StepEstablishAuthorityBackup -> wrongPhaseStep PhaseBootstrap step
     StepReconcileInForceConfig -> wrongPhaseStep PhaseBootstrap step
@@ -2098,6 +2115,7 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
         bootstrapSettings
         SubstrateHomeLocal
         ComponentChartLifecycleAuthority
+    StepPostUnsealHandoff -> runPostUnsealHandoffViaBroker repoRoot
     StepAuthorityBackupChartReady ->
       ensureInternalControlPlaneChartReady
         repoRoot
@@ -2211,6 +2229,7 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
     StepLoadInForceSettings -> wrongPhaseStep PhaseSteady step
     StepTargetSecretAgentChartReady -> wrongPhaseStep PhaseSteady step
     StepLifecycleAuthorityChartReady -> wrongPhaseStep PhaseSteady step
+    StepPostUnsealHandoff -> wrongPhaseStep PhaseSteady step
     StepAuthorityBackupChartReady -> wrongPhaseStep PhaseSteady step
     StepEstablishAuthorityBackup -> wrongPhaseStep PhaseSteady step
     StepReconcileInForceConfig -> wrongPhaseStep PhaseSteady step
@@ -4189,7 +4208,8 @@ ensureVaultRuntime repoRoot settings =
   case workloadStorageSize (validatedResourcePlan settings) "vault" of
     Left err -> failWith err
     Right storageSize -> do
-      lifecycleResult <- resolveVaultLifecycle repoRoot
+      lifecycleResult <-
+        resolveVaultLifecycle repoRoot (validatedDeploymentContext settings)
       case lifecycleResult of
         Left err -> failWith err
         Right lifecycle ->
@@ -4278,12 +4298,19 @@ data OperationalAwsCredentialGate
 -- @vault unseal@ is a no-op for an already-unsealed Vault; @vault reconcile@
 -- applies the baseline mounts, policies, auth, roles, and generated KV seed
 -- objects only after Vault is initialized and unsealed.
-ensureRootVaultLifecycle :: FilePath -> IO ExitCode
-ensureRootVaultLifecycle repoRoot =
-  vaultLifecycleExitCode <$> ensureRootVaultLifecycleDetailed repoRoot
+ensureRootVaultLifecycle :: FilePath -> ValidatedDeploymentContext -> IO ExitCode
+ensureRootVaultLifecycle repoRoot context = do
+  lifecycleResult <- resolveVaultLifecycle repoRoot context
+  case lifecycleResult of
+    Left err -> failWith err
+    Right RootVaultLifecycle {} ->
+      vaultLifecycleExitCode <$> ensureRootVaultLifecycleDetailed repoRoot context
+    Right ChildVaultLifecycle {} ->
+      failWith "root Vault lifecycle refused: the validated deployment context names a child lifecycle"
 
-ensureRootVaultLifecycleDetailed :: FilePath -> IO VaultLifecycleResult
-ensureRootVaultLifecycleDetailed repoRoot = do
+ensureRootVaultLifecycleDetailed
+  :: FilePath -> ValidatedDeploymentContext -> IO VaultLifecycleResult
+ensureRootVaultLifecycleDetailed repoRoot context = do
   testLifecycle <- lookupEnv "PRODBOX_TEST_ROOT_VAULT_LIFECYCLE"
   case testLifecycle of
     Just "ready" -> do
@@ -4302,17 +4329,20 @@ ensureRootVaultLifecycleDetailed repoRoot = do
         -- unseals, and reconciles Vault inside the cluster. The host still owns
         -- the non-secret Tier-0 floor beside the binary, so guarantee it after
         -- the daemon reports Vault ready.
-        floorResult <- ensureBasicsFloor repoRoot (unVaultAddress hostVaultAddress)
+        floorResult <- ensureBasicsFloor repoRoot context
         case floorResult of
           Left err -> lifecycleFailure <$> failWith err
           Right () -> pure (VaultLifecycleResult ExitSuccess)
 
-ensureFederatedVaultLifecycleDetailed :: FilePath -> IO VaultLifecycleResult
-ensureFederatedVaultLifecycleDetailed repoRoot = do
-  lifecycleResult <- resolveVaultLifecycle repoRoot
+ensureFederatedVaultLifecycleDetailed
+  :: FilePath
+  -> ValidatedDeploymentContext
+  -> IO VaultLifecycleResult
+ensureFederatedVaultLifecycleDetailed repoRoot context = do
+  lifecycleResult <- resolveVaultLifecycle repoRoot context
   case lifecycleResult of
     Left err -> lifecycleFailure <$> failWith err
-    Right (RootVaultLifecycle _ _) -> ensureRootVaultLifecycleDetailed repoRoot
+    Right (RootVaultLifecycle _ _) -> ensureRootVaultLifecycleDetailed repoRoot context
     Right (ChildVaultLifecycle childId _ parent) ->
       ensureChildVaultLifecycleDetailed repoRoot childId parent
 
@@ -4334,15 +4364,49 @@ lifecycleFailure exitCode =
     { vaultLifecycleExitCode = exitCode
     }
 
-resolveVaultLifecycle :: FilePath -> IO (Either String FederatedVaultLifecycle)
-resolveVaultLifecycle repoRoot = do
+resolveVaultLifecycle
+  :: FilePath
+  -> ValidatedDeploymentContext
+  -> IO (Either String FederatedVaultLifecycle)
+resolveVaultLifecycle repoRoot context = do
   basicsResult <- loadUnencryptedBasics repoRoot
   pure $ case basicsResult of
-    Left err
-      | "Missing unencrypted basics file:" `isPrefixOf` err ->
-          Right (RootVaultLifecycle "prodbox-home" (unVaultAddress hostVaultAddress))
-      | otherwise -> Left err
-    Right basics -> vaultLifecycleFromBasics basics
+    Left err -> Left err
+    Right basics -> vaultLifecycleFromBasics basics >>= bindVaultLifecycleContext context
+
+-- | Bind observation and execution to one cluster/Vault identity. A lifecycle
+-- decoded from stale or foreign Tier-0 data cannot authorize effects for the
+-- validated command context.
+bindVaultLifecycleContext
+  :: ValidatedDeploymentContext
+  -> FederatedVaultLifecycle
+  -> Either String FederatedVaultLifecycle
+bindVaultLifecycleContext context lifecycle =
+  let (lifecycleClusterId, lifecycleVaultAddress) = case lifecycle of
+        RootVaultLifecycle clusterId address -> (clusterId, address)
+        ChildVaultLifecycle clusterId address _ -> (clusterId, address)
+      expectedClusterId = deploymentClusterId context
+      expectedVaultAddress = deploymentVaultAddress context
+   in if lifecycleClusterId /= expectedClusterId
+        then
+          Left
+            ( "lifecycle context mismatch: sealed cluster id `"
+                ++ Text.unpack lifecycleClusterId
+                ++ "` does not match validated context.cluster_id `"
+                ++ Text.unpack expectedClusterId
+                ++ "`"
+            )
+        else
+          if lifecycleVaultAddress /= expectedVaultAddress
+            then
+              Left
+                ( "lifecycle context mismatch: sealed Vault address `"
+                    ++ Text.unpack lifecycleVaultAddress
+                    ++ "` does not match validated context.vault_address `"
+                    ++ Text.unpack expectedVaultAddress
+                    ++ "`"
+                )
+            else Right lifecycle
 
 readChildTransitSealToken :: FilePath -> IO (Either String VaultToken)
 readChildTransitSealToken repoRoot = do
@@ -4770,7 +4834,7 @@ gatewayMinioBootstrapManifestItems =
                                               , "mc alias set local "
                                                   ++ minioClusterEndpoint
                                                   ++ " \"$MINIO_ROOT_USER\" \"$MINIO_ROOT_PASSWORD\""
-                                              , "mc mb --ignore-existing local/" ++ gatewayMinioBucket
+                                              , "mc mb --ignore-existing local/" ++ defaultObjectStoreBucket
                                               , "mc admin user add local \"$GW_USER\" \"$GW_PASS\""
                                               , "cat > /tmp/policy.json <<'POLICY_EOF'"
                                               , gatewayMinioPolicyJson
@@ -4832,12 +4896,12 @@ gatewayMinioPolicyJson =
     , "    {"
     , "      \"Effect\": \"Allow\","
     , "      \"Action\": [\"s3:GetObject\", \"s3:PutObject\", \"s3:DeleteObject\"],"
-    , "      \"Resource\": [\"arn:aws:s3:::" ++ gatewayMinioBucket ++ "/*\"]"
+    , "      \"Resource\": [\"arn:aws:s3:::" ++ defaultObjectStoreBucket ++ "/*\"]"
     , "    },"
     , "    {"
     , "      \"Effect\": \"Allow\","
     , "      \"Action\": [\"s3:ListBucket\"],"
-    , "      \"Resource\": [\"arn:aws:s3:::" ++ gatewayMinioBucket ++ "\"]"
+    , "      \"Resource\": [\"arn:aws:s3:::" ++ defaultObjectStoreBucket ++ "\"]"
     , "    }"
     , "  ]"
     , "}"

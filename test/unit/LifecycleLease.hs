@@ -185,14 +185,16 @@ lifecycleLeaseSuite =
     it "round-trips the physical owner/fence guard without exposing payload bytes" $ do
       let wireGuard =
             AuthorityObjectLeaseGuard
-              { authorityLeaseGuardLogicalName = "leases/123456789012/ca-central-1/aws-ses"
+              { authorityLeaseGuardLogicalName =
+                  ("leases/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
               , authorityLeaseGuardExpectedVersion = "lease-etag"
               , authorityLeaseGuardOwnerNonce = "owner-a"
               , authorityLeaseGuardFencingToken = 7
               }
           request =
             AuthorityObjectCasRequest
-              { authorityObjectCasLogicalName = "target-commit-intents/123456789012/ca-central-1/aws-ses"
+              { authorityObjectCasLogicalName =
+                  ("target-commit-intents/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
               , authorityObjectCasExpectedVersion = Just "intent-etag"
               , authorityObjectCasLeaseGuard = Just wireGuard
               , authorityObjectCasPayload = "sensitive-payload"
@@ -243,7 +245,8 @@ lifecycleLeaseSuite =
       leaseAcquireDeadline request `shouldBe` at 1100
       case decideLeaseAcquire policy (at 1000) request Nothing ModelBMissing of
         LeaseAcquireCompareAndSwap (ModelBInitialize coordinate projection) -> do
-          modelBObjectLogicalName coordinate `shouldBe` "leases/123456789012/ca-central-1/aws-ses"
+          modelBObjectLogicalName coordinate
+            `shouldBe` ("leases/123456789012/" <> (fixtureAwsRegion FixtureCaCentral1) <> "/aws-ses")
           let grant = activeGrant projection
           fencingTokenValue (leaseGrantFencingToken grant) `shouldBe` 1
           leaseGrantExpiresAt grant `shouldBe` at 2000
@@ -847,7 +850,7 @@ lifecycleLeaseSuite =
         Left err -> expectationFailure ("identity discovery failed: " ++ show err)
         Right discoveredKey -> do
           leaseKeyAccount discoveredKey `shouldBe` "123456789012"
-          leaseKeyRegion discoveredKey `shouldBe` "ca-central-1"
+          leaseKeyRegion discoveredKey `shouldBe` (fixtureAwsRegion FixtureCaCentral1)
           leaseKeyResource discoveredKey `shouldBe` "aws-ses"
       discoverAwsSesLeaseKeyWith
         (\_ -> pure (Right "1234-not-account"))
@@ -1005,7 +1008,7 @@ targetSink =
     )
 
 key :: Prodbox.Lifecycle.Lease.LeaseKey
-key = expectRight (mkLeaseKey "123456789012" "ca-central-1" "aws-ses")
+key = expectRight (mkLeaseKey "123456789012" (fixtureAwsRegion FixtureCaCentral1) "aws-ses")
 
 ownerA :: Prodbox.Lifecycle.Lease.OwnerNonce
 ownerA = expectRight (mkOwnerNonce "owner-a")
@@ -1309,7 +1312,7 @@ sampleAdminCredentials =
     { access_key_id = "AKIARAWADMINEXAMPLE"
     , secret_access_key = "raw-admin-secret"
     , session_token = Nothing
-    , region = "ca-central-1"
+    , region = (fixtureAwsRegion FixtureCaCentral1)
     }
 
 sampleMintedCredentials :: Credentials
@@ -1318,7 +1321,7 @@ sampleMintedCredentials =
     { access_key_id = "ASIAMINTEDEXAMPLE"
     , secret_access_key = "minted-session-secret"
     , session_token = Just "minted-session-token"
-    , region = "ca-central-1"
+    , region = (fixtureAwsRegion FixtureCaCentral1)
     }
 
 defaultLeaseUsePermit :: Prodbox.Lifecycle.Lease.LeaseUsePermit

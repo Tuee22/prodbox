@@ -29,6 +29,7 @@ data StackCleanupAuthority
   | VerifiedOwnershipManifest
       !OwnershipManifestProvenance
       !OwnershipManifestVersion
+      ![ObservedResourceIdentity]
   deriving (Eq, Show)
 
 data StackDecisionRefusal
@@ -46,6 +47,7 @@ data StackDecisionRefusal
   | StackOwnershipManifestPartial !(NonEmpty ObservationFailure)
   | StackOwnershipManifestUnobservable !(NonEmpty ObservationFailure)
   | StackOwnershipManifestPresentWithoutCompleteEvidence
+  | StackOwnershipManifestEntryMissing !RegisteredResourceKey
   deriving (Eq, Show)
 
 data StackDesiredAbsenceDecision
@@ -181,11 +183,11 @@ decideExact exact checkpointPair manifest =
         StackRestoreBackupThenDestroy
           stackKey
           (VerifiedBackupCheckpoint provenance version)
-      Left backupRefusal -> case manifestAuthority manifest of
-        Right (provenance, version) ->
+      Left backupRefusal -> case manifestAuthority stackKey manifest of
+        Right (provenance, version, identities) ->
           StackDestroyFromVerifiedManifest
             stackKey
-            (VerifiedOwnershipManifest provenance version)
+            (VerifiedOwnershipManifest provenance version identities)
         Left manifestRefusal ->
           StackDesiredAbsenceRefused
             stackKey
@@ -222,16 +224,16 @@ backupCheckpointAuthority observation = case checkpointObservationResult observa
     Left (StackBackupCheckpointUnobservable failures)
 
 manifestAuthority
-  :: OwnershipManifestDecisionEvidence
+  :: RegisteredResourceKey
+  -> OwnershipManifestDecisionEvidence
   -> Either
        StackDecisionRefusal
-       (OwnershipManifestProvenance, OwnershipManifestVersion)
-manifestAuthority evidence = case ownershipManifestDecisionView evidence of
+       (OwnershipManifestProvenance, OwnershipManifestVersion, [ObservedResourceIdentity])
+manifestAuthority key evidence = case ownershipManifestDecisionView evidence of
   OwnershipManifestDecisionComplete provenance version ->
-    Right
-      ( provenance
-      , version
-      )
+    case ownershipManifestDecisionEntryIdentities key evidence of
+      Nothing -> Left (StackOwnershipManifestEntryMissing key)
+      Just identities -> Right (provenance, version, identities)
   OwnershipManifestDecisionObservation observation ->
     case ownershipManifestResult observation of
       OwnershipManifestPresent _ ->

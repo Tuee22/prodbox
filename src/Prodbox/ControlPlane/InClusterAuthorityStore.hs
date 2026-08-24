@@ -16,8 +16,6 @@ module Prodbox.ControlPlane.InClusterAuthorityStore
   , InClusterAuthorityStoreError (..)
   , InClusterAuthorityStore
   , mkInClusterAuthorityStoreConfig
-  , defaultInClusterAuthorityEndpoint
-  , defaultInClusterAuthorityBucket
   , inClusterAuthorityStoreClusterId
   , inClusterAuthorityStoreEndpoint
   , inClusterAuthorityStoreBucket
@@ -113,7 +111,6 @@ import Prodbox.Minio.ObjectStoreTypes
   , ObjectStoreConfig (..)
   , ObjectVersion (..)
   , VersionedObject (..)
-  , defaultObjectStoreBucket
   )
 import Prodbox.Vault.Client
   ( vaultKvReadV2
@@ -154,12 +151,6 @@ data InClusterAuthorityStore = InClusterAuthorityStore
   , authorityStoreHmacKey :: !ByteString
   , authorityStoreClusterIdentity :: !Text
   }
-
-defaultInClusterAuthorityEndpoint :: Text
-defaultInClusterAuthorityEndpoint = "http://minio.prodbox.svc.cluster.local:9000"
-
-defaultInClusterAuthorityBucket :: Text
-defaultInClusterAuthorityBucket = Text.pack defaultObjectStoreBucket
 
 inClusterAuthorityStoreClusterId :: InClusterAuthorityStoreConfig -> Text
 inClusterAuthorityStoreClusterId = authorityStoreClusterId

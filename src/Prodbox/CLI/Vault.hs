@@ -10,6 +10,7 @@ module Prodbox.CLI.Vault
   , validateLifecycleProviderAwsRegion
   , gatewayEndpointFromEnv
   , runVaultBootstrapViaBroker
+  , runPostUnsealHandoffViaBroker
   , BrokerVaultSealStatus (..)
   , observeBrokerVaultSealStatus
   )
@@ -43,8 +44,10 @@ import Prodbox.Bootstrap.Broker.Client
   , mkBrokerActionRequest
   , queryVaultPkiStatus
   , queryVaultStatus
+  , reconcilePostUnsealHandoff
   , reconcileVaultBaseline
   , renderBrokerError
+  , resetAmbiguousVaultInitialization
   , rotateVaultTransitKey
   , rotateVaultUnlockBundle
   , sealVault
@@ -59,8 +62,10 @@ import Prodbox.Bootstrap.Broker.HostSecretWorker
   )
 import Prodbox.Bootstrap.Broker.PortForward
   ( BrokerHostConnection (..)
+  , BrokerHostConnectionError
   , renderBrokerHostConnectionError
   , withBrokerHostConnection
+  , withBrokerHostRecoveryConnection
   )
 import Prodbox.Bootstrap.Broker.Program
   ( PkiIssueRequest
@@ -124,6 +129,8 @@ runVaultCommand repoRoot command =
   case command of
     VaultStatus -> runBrokerVaultStatus repoRoot
     VaultInit -> runBrokerVaultInitialize repoRoot
+    VaultResetAmbiguousInitialization confirmed ->
+      runBrokerVaultResetAmbiguousInitialization repoRoot confirmed
     VaultUnseal -> runBrokerVaultUnseal repoRoot
     VaultReconcile -> runBrokerVaultBaselineReconcile repoRoot
     VaultSeal -> runBrokerVaultSeal repoRoot
@@ -221,6 +228,32 @@ runBrokerVaultInitializeWith repoRoot status payload =
     payload
     initializeVault
 
+runBrokerVaultResetAmbiguousInitialization :: FilePath -> Bool -> IO ExitCode
+runBrokerVaultResetAmbiguousInitialization repoRoot confirmed
+  | not confirmed =
+      failBrokerCommand
+        "Vault ambiguous-initialization reset"
+        "Refusing to replace the ambiguous Vault storage generation without --yes confirmation"
+  | otherwise = do
+      let connect =
+            withBrokerHostRecoveryConnection (brokerHostConnection repoRoot)
+      observed <- queryObservedBrokerStatusWith connect
+      case observed of
+        Left err -> failBrokerCommand "Vault ambiguous-initialization reset" err
+        Right status
+          | not (observedInitializationAmbiguous status) ->
+              failBrokerCommand
+                "Vault ambiguous-initialization reset"
+                "Broker does not report an ambiguous initialization"
+          | otherwise ->
+              runBrokerMutationWith
+                connect
+                "Vault ambiguous-initialization reset"
+                BrokerVaultResetAmbiguousInitialization
+                (observedStorageGeneration status)
+                "reset-ambiguous-initialization"
+                resetAmbiguousVaultInitialization
+
 runBrokerVaultUnseal :: FilePath -> IO ExitCode
 runBrokerVaultUnseal repoRoot = do
   observed <- queryObservedBrokerStatus repoRoot
@@ -278,6 +311,15 @@ runBrokerVaultBaselineReconcileWith repoRoot status payload =
     [SecretWorkerCompleteGeneratedRoot]
     payload
     reconcileVaultBaseline
+
+runPostUnsealHandoffViaBroker :: FilePath -> IO ExitCode
+runPostUnsealHandoffViaBroker repoRoot =
+  runObservedBrokerMutation
+    repoRoot
+    "Vault post-unseal handoff reconcile"
+    BrokerPostUnsealHandoffReconcile
+    "post-unseal-handoff-reconcile"
+    reconcilePostUnsealHandoff
 
 runBrokerVaultSeal :: FilePath -> IO ExitCode
 runBrokerVaultSeal repoRoot =
@@ -388,8 +430,15 @@ decodeObservedBrokerStatus =
       <*> fields .: "initialization_ambiguous"
 
 queryObservedBrokerStatus :: FilePath -> IO (Either String ObservedBrokerStatus)
-queryObservedBrokerStatus repoRoot = do
-  result <- brokerQuery repoRoot queryVaultStatus
+queryObservedBrokerStatus repoRoot =
+  queryObservedBrokerStatusWith
+    (withBrokerHostConnection (brokerHostConnection repoRoot))
+
+queryObservedBrokerStatusWith
+  :: BrokerValueConnector
+  -> IO (Either String ObservedBrokerStatus)
+queryObservedBrokerStatusWith connect = do
+  result <- brokerQueryWith connect queryVaultStatus
   pure (result >>= decodeObservedBrokerStatus)
 
 observeBrokerVaultSealStatus :: FilePath -> IO (Either String BrokerVaultSealStatus)
@@ -415,15 +464,27 @@ type BrokerMutation =
   -> BrokerActionRequest
   -> IO (Either BrokerError Value)
 
+type BrokerValueConnector =
+  IdempotencyKey
+  -> (BrokerEndpoint -> BrokerCallContext -> IO (Either BrokerError Value))
+  -> IO (Either BrokerHostConnectionError (Either BrokerError Value))
+
 brokerQuery :: FilePath -> BrokerQuery -> IO (Either String Value)
-brokerQuery repoRoot query = do
+brokerQuery repoRoot =
+  brokerQueryWith
+    (withBrokerHostConnection (brokerHostConnection repoRoot))
+
+brokerQueryWith
+  :: BrokerValueConnector
+  -> BrokerQuery
+  -> IO (Either String Value)
+brokerQueryWith connect query = do
   keyResult <- freshVaultIdempotencyKey
   case keyResult of
     Left err -> pure (Left err)
     Right key -> do
       connected <-
-        withBrokerHostConnection
-          (brokerHostConnection repoRoot)
+        connect
           key
           (\endpoint context -> query endpoint context)
       pure $ case connected of
@@ -459,6 +520,23 @@ runBrokerMutation
   -> BrokerMutation
   -> IO ExitCode
 runBrokerMutation repoRoot label route generation actionBinding mutation =
+  runBrokerMutationWith
+    (withBrokerHostConnection (brokerHostConnection repoRoot))
+    label
+    route
+    generation
+    actionBinding
+    mutation
+
+runBrokerMutationWith
+  :: BrokerValueConnector
+  -> String
+  -> BrokerRoute
+  -> VaultStorageGeneration
+  -> Text
+  -> BrokerMutation
+  -> IO ExitCode
+runBrokerMutationWith connect label route generation actionBinding mutation =
   case prepareBrokerAction route generation actionBinding of
     Left err -> failBrokerCommand label err
     Right (action, _, _) -> do
@@ -467,8 +545,7 @@ runBrokerMutation repoRoot label route generation actionBinding mutation =
         Left err -> failBrokerCommand label err
         Right key -> do
           connected <-
-            withBrokerHostConnection
-              (brokerHostConnection repoRoot)
+            connect
               key
               (\endpoint context -> mutation endpoint context action)
           case connected of

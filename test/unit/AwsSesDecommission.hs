@@ -158,8 +158,8 @@ awsSesDecommissionSuite =
       lookup "AWS_ACCESS_KEY_ID" environment `shouldBe` Just "explicit-access"
       lookup "AWS_SECRET_ACCESS_KEY" environment `shouldBe` Just "explicit-secret"
       lookup "AWS_SESSION_TOKEN" environment `shouldBe` Just "explicit-token"
-      lookup "AWS_REGION" environment `shouldBe` Just "us-east-1"
-      lookup "AWS_DEFAULT_REGION" environment `shouldBe` Just "us-east-1"
+      lookup "AWS_REGION" environment `shouldBe` Just (fixtureAwsRegion FixtureUsEast1)
+      lookup "AWS_DEFAULT_REGION" environment `shouldBe` Just (fixtureAwsRegion FixtureUsEast1)
       lookup "AWS_EC2_METADATA_DISABLED" environment `shouldBe` Just "true"
       lookup "AWS_PAGER" environment `shouldBe` Just ""
       lookup "AWS_CLI_AUTO_PROMPT" environment `shouldBe` Just "off"
@@ -215,7 +215,7 @@ awsSesDecommissionSuite =
                 | userGone -> noSuchEntityProcess
                 | otherwise -> successfulProcess exactUser
               _ -> failedProcess "unexpected command"
-          environment = [("AWS_REGION", "us-east-1")]
+          environment = [("AWS_REGION", (fixtureAwsRegion FixtureUsEast1))]
           operation =
             runSesSmtpIamCapability
               ( awsSesSmtpIamCapability
@@ -425,5 +425,5 @@ explicitCredentials =
     { access_key_id = "explicit-access"
     , secret_access_key = "explicit-secret"
     , session_token = Just "explicit-token"
-    , region = "us-east-1"
+    , region = (fixtureAwsRegion FixtureUsEast1)
     }

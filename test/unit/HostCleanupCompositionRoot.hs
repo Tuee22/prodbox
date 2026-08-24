@@ -60,6 +60,7 @@ hostCleanupCompositionRootSuite =
       , hostCleanupRecoveryTargetAgent = OrdinaryTeardownWithoutTargetAgent
       , hostCleanupSubstrateApiWait = requiredApiWait
       , hostCleanupAdmissionWait = requiredAdmissionWait
+      , hostCleanupPlatformReconciler = \_ -> pure (Right ())
       , hostCleanupChartReconciler = \_ -> pure (Right ())
       }
 

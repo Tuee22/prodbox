@@ -52,6 +52,8 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Text qualified as Text
 import Prodbox.Aws.AdminCredentials (acquireAdminAwsCredentials)
+import Prodbox.Config.Basics (UnencryptedBasics (basicsVaultAddress))
+import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
 import Prodbox.Observation.AbsenceMarker
   ( AbsenceProbe (..)
   , reportsAbsence
@@ -68,13 +70,12 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessResult
   )
-import Prodbox.Vault.Client (vaultSealStatus)
+import Prodbox.Vault.Client (VaultAddress (VaultAddress), vaultSealStatus)
 import Prodbox.Vault.Gate
   ( VaultGateDecision (..)
   , vaultGateAllows
   , vaultGateDecision
   )
-import Prodbox.Vault.Host (resolveHostVaultAddress)
 import System.Environment (getEnvironment, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
 
@@ -713,7 +714,7 @@ getLongLivedObject
   -> IO (Either String Bool)
 getLongLivedObject workingDir environment section key outputPath =
   do
-    gate <- queryLongLivedObjectVaultGate
+    gate <- queryLongLivedObjectVaultGate workingDir
     if vaultGateAllows gate
       then getLongLivedObjectUnlocked workingDir environment section key outputPath
       else pure (Left (renderLongLivedObjectVaultGateBlock gate))
@@ -757,10 +758,14 @@ getLongLivedObjectUnlocked workingDir environment section key outputPath =
                       ++ processStderr output
                   )
 
-queryLongLivedObjectVaultGate :: IO VaultGateDecision
-queryLongLivedObjectVaultGate = do
-  address <- resolveHostVaultAddress
-  vaultGateDecision <$> vaultSealStatus address
+queryLongLivedObjectVaultGate :: FilePath -> IO VaultGateDecision
+queryLongLivedObjectVaultGate repoRoot = do
+  basicsResult <- loadUnencryptedBasics repoRoot
+  case basicsResult of
+    Left err -> pure (VaultGateBlockUnreachable err)
+    Right basics ->
+      vaultGateDecision
+        <$> vaultSealStatus (VaultAddress (basicsVaultAddress basics))
 
 renderLongLivedObjectVaultGateBlock :: VaultGateDecision -> String
 renderLongLivedObjectVaultGateBlock gate =

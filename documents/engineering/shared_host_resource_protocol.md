@@ -4,108 +4,354 @@
 **Supersedes**: N/A
 **Generated sections**: none
 
-> **Purpose**: Record what participation in the shared host claim ledger would mean for prodbox, and what
-> adopting it would require.
+> **Purpose**: The host resource coordination policy prodbox would implement, why it has the shape it has, and
+> what adopting it would require.
 
-## 1. What this records
+## 1. Why this document changed
 
-No code in this repository reads or writes the ledger, and no command depends on it. This file records what
-participation would mean, so that a later decision starts from a written position rather than from nothing.
-Writing it creates no dependency on another project.
+Earlier revisions described a *mechanism* — a per-user root under the home directory, fixed-size checksummed
+records, a "claim ledger" vocabulary — and asked each project to adopt it. Independent review in each project
+falsified it on four counts, and measurement then falsified two of my own corrections. Recorded so the same
+ground is not re-argued:
 
-The ledger is host configuration owned by the machine's operator, in the same category as an `/etc` file or a
-port assignment. Every participant resolves one fixed path and no other: `$HOME/.hostclaim` on Linux and
-Darwin, `%UserProfile%\.hostclaim` on Windows. Its authority is that installed root and the `spec-version`
-the root carries, never a copy of a document in any repository, including this one.
+| Claim | Outcome |
+|---|---|
+| A root under the home directory, "never selected by an environment variable" | **Contradictory.** `$HOME` *is* an environment variable; it differs under `sudo`, service managers, and every container |
+| `%ProgramData%` as the Windows root | **Same defect.** Also an environment variable |
+| A machine is one coordination domain | **False.** A single developer machine runs several kernels at once |
+| "`flock` and `fcntl` do not interoperate on Linux **or macOS**" | **Half wrong.** True on Linux, false on Darwin — measured, §6.2 |
+| Atomic rename for record content | **A bug.** `rename(2)` repoints the name at a new inode, orphaning the lock held on the old one |
+| Two grant kinds, one proved by re-observation | **Unnecessary.** A resource only contends while something runs, and whatever runs can hold the lock |
 
-The path is never repository-relative, never version-suffixed, and never selected by an environment
-variable. Two participants that resolve different paths silently fail to coordinate, which is the one
-failure the ledger exists to prevent, so the resolution rule admits no configuration.
+The conclusion is the change: **a mechanism cannot be universal, because it is per-kernel and per-language.
+A policy can.**
 
-## 2. What the ledger is
+## 2. Terms
 
-A per-user root holding one fixed-size record per claim, plus a budget the operator edits and a single lock
-that serializes admission. Installation is creating a directory. Enrolling a participant is creating one
-directory named after it. There is no privileged installer, no signing ceremony, and no key custody.
+- **Participant** — a program that implements this policy.
+- **Scope** — one kernel. A lock arbitrates inside one scope and across none.
+- **Domain** — an opaque identifier for a thing that can be contended.
+- **Grant** — a held lock naming the domains a participant occupies, for as long as it occupies them.
+- **Reserve** — standing capacity, declared once by the operator, held by nobody.
+- **Rendezvous** — the fixed location where grants are taken.
 
-Five properties carry the design:
+MUST / MUST NOT / SHOULD carry their usual force.
 
-- **A participant writes only beneath its own directory.** Every record has exactly one writer, so a torn
-  write is the only reachable corruption and its cost falls on its own author.
-- **Free is a positive value a writer must deliberately produce.** A truncated file, an unfamiliar revision,
-  and a corrupted byte all decode as occupied, so no failure of the encoding can release capacity.
-- **Every claim is created inside one short critical section.** Participants never hold a partial set of
-  objects and never acquire objects in different orders, so no ordering rule is needed.
-- **Charges are declared in a frozen set of dimensions**, so two participants that have never heard of each
-  other still add their consumption the same way.
-- **Conflicts are a prefix test over opaque identifiers.** A participant that has never heard of a hardware
-  family still refuses to double-book its domains, so adding hardware costs no revision.
+## 3. Scopes
 
-Each claim declares one of two kinds, and the kind is a statement about what the holder's death proves.
-`Transient` means the operating system has reclaimed everything charged. `Persistent` means the holder's
-death proves nothing, and is required for anything that outlives a process — a container, a cluster, a
-virtual machine, a mount, retained bytes, or a request to an external system that may still complete.
+**The unit of coordination is a kernel, not a machine.**
 
-## 3. What a granted claim establishes, and what it does not
+| Machine | Scopes |
+|---|---|
+| Linux | The host. Its containers share that kernel, so they are the same scope |
+| Darwin | The host, **plus one per virtual machine** used for containers |
+| Windows | The Windows kernel, **plus one** shared by all WSL2 distributions |
 
-A granted claim establishes two things: no other conforming participant holds a conflicting domain, and the
-sum of declared charges plus the operator's reserve fits the budget.
+Measured on a Darwin host: `Darwin 25.5.0 arm64` alongside a Colima guest running `Linux 6.8.0-100-generic`
+— two kernels, one machine, before Windows is involved.
 
-That is a statement about **declarations**, not about behaviour. No limit is applied and no device is
-fenced. A participant that declares four gibibytes and then allocates twelve is not detected. The ledger is
-advisory between cooperating programs on one machine, offers no defence against a program that does not
-participate, and none against a hostile process running as the same operating-system user.
+**A participant MUST take its grant in the scope where the resource lives**, not where the process runs. Work
+inside a guest that creates something on the host consumes host capacity. A participant that cannot reach the
+scope owning the resource MUST report `Unsupported` — it MUST NOT take a guest-local lock and treat that as
+coordination, because admission against an empty guest-local rendezvous succeeds every time.
 
-Stating this plainly is the design rather than an apology for it. The failure the ledger actually prevents
-is the common one: two programs that each observed the machine correctly, and each then started work the
-machine cannot hold together.
+**Crossing scopes is nesting, never a shared lock.** A guest's whole capacity is one domain in its parent
+scope. Nothing spans two kernels because nothing attempts to.
 
-## 4. Release-directed work is always admissible
+## 4. Grants and reserves
 
-Work directed at releasing a claim the participant already holds is never refused.
+| | Reserve | Grant |
+|---|---|---|
+| For | Standing capacity expected to persist — a continuously-running cluster, a VM's memory pledge | Per-run contention — a build, a test run, a foreground workload |
+| Expressed as | A domain listed in `<root>/reserved` | A domain in a held slot |
+| Holder | **None** — it is permanently held by declaration | The live process doing the work |
 
-Without that rule the protocol deadlocks against itself, because tearing something down is also a mutation
-of the host. A refused admission would prevent cleanup; absent cleanup there is no evidence the effect is
-gone; absent that evidence the claim cannot be released; and the contention persists. A participant must
-therefore never make its own cleanup path conditional on an admission it could be refused.
+`<root>/reserved` is a line-oriented list of domains, edited by the operator and by nobody else. **Admission
+treats every domain listed there as permanently held**, so a reserve conflicts exactly as a grant does. This
+is what lets a continuously-running cluster or a VM pledge be expressed without a holder, and it works at
+version 1 because a reserve is a *domain*, not a quantity.
 
-## 5. What the ledger does not cover
+**If it outlives the session and is expected to persist, it is a reserve; if it is per-run, it is a grant.**
 
-Admission is taken once, when the claim is made. It cannot observe a participant that declares honestly and
-then consumes progressively — a store that fills during a long run, a cache that grows, an image set that
-accumulates. Contention of that shape is the kind a shared development machine produces most often, and it
-is outside what a one-shot admission decision can see.
+This is why there is one grant kind rather than two. A resource only contends while something runs; whatever
+runs can hold the lock; and anything standing is declared instead. No record outlives its holder, so there is
+no reclaim rule, no time-to-live, no boot identity and no operator escape hatch.
 
-This is a real limit, not a gap awaiting a patch. A participant that needs a bound on progressive
-consumption applies its own mechanism and does not expect the ledger to supply one.
+**A participant MUST NOT rely on inheriting a grant across process creation.** Every process that consumes
+capacity acquires its own. This is stricter than POSIX permits, and deliberately so — see §11.
 
-## 6. The complementary mechanism
+## 5. The domain algebra
 
-Observing foreign work at the point of use is a different mechanism with a different reach, and the two are
-complementary rather than alternatives.
+Pure, total, and identical in every participant. No I/O, no syscall, no platform.
 
-Observation binds a peer that never opted in, needs no installed root and no agreement, and is available to
-any participant unilaterally. What it cannot see is capacity with no process to observe: an idle cluster, a
-stopped virtual machine, a registered guest, or retained bytes on disk. It also does not reach across
-language ecosystems, because it must already know what a peer's processes are called.
+```
+domain   = family ":" segment *( "/" segment )
+family   = 1*( ALPHA / DIGIT / "-" )
+segment  = 1*( ALPHA / DIGIT / "-" / "." / "_" )
+```
 
-The ledger covers exactly what observation cannot — persistent, processless, cross-language capacity — and
-observation covers what a one-shot declaration cannot. Neither subsumes the other, and a participant may
-adopt either without the other.
+Two domains **conflict** when either segment list is a prefix of the other, splitting on both `:` and `/`:
 
-## 7. What adoption would require
+```python
+def segments(d):        # "gpu:0/part1" -> ["gpu", "0", "part1"]
+    head, _, rest = d.partition(":")
+    return [head] + [s for s in rest.split("/") if s]
 
-Adoption is not a document change, and the work is a participant's own. Three obligations hold for any
-participant, and none of them is stated here for any particular one:
+def conflicts(a, b):
+    x, y = segments(a), segments(b)
+    n = min(len(x), len(y))
+    return x[:n] == y[:n]
 
-- **Name the seams.** Every path that acquires capacity needs a claim, and every path that releases it needs
-  a release. A participant that names one seam covers one seam; the paths it did not name stay uncovered,
-  and a claim taken on one of them says nothing about the others.
-- **Derive the charge once.** A participant that already computes what it needs converts that figure rather
-  than authoring a second one. Two independently authored figures drift, and the drift is silent.
-- **Establish release evidence.** A claim is only as good as its release. What counts as established is the
-  participant's business, but a `Persistent` claim released without evidence is worse than no claim, because
-  it reports capacity that is still spent.
+assert     conflicts("gpu:0", "gpu:0/part1")   # a device and its partition
+assert not conflicts("gpu:0", "gpu:01")        # segment boundary, not string prefix
+assert not conflicts("gpu:0", "gpu:1")
+```
 
-A participant that cannot meet these keeps observing the machine and says so, rather than writing a record
-nothing consults.
+Domains are compared **byte for byte and are case-sensitive**: `GPU:0` and `gpu:0` are different domains.
+A participant MUST reject a domain that does not match the grammar rather than parse it loosely — an empty
+segment, a missing `:`, or trailing whitespace is a malformed domain, not a domain that conflicts with
+nothing. Two participants that disagree about well-formedness disagree about conflict, which is the failure
+this policy exists to prevent.
+
+```python
+import re
+_DOMAIN = re.compile(r"^[A-Za-z0-9-]+:[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$")
+
+def valid(d):
+    return bool(_DOMAIN.match(d))
+
+assert     valid("gpu:0/part1")
+assert not valid("gpu:")        # empty segment
+assert not valid("hostmemory")  # no family separator
+assert not valid("gpu:0 ")      # trailing space
+```
+
+Reserved families at version 1: `host:memory`, `host:cpu`, `gpu:<id>`, `disk:<fs-id>`, `vm:<name>`. Every
+other family is open.
+
+**The extension asymmetry is the point.** A new device family — a new accelerator, a neural engine, anything
+not yet imagined — costs **nothing**: no revision, no agreement, no change in any other participant, because
+the only operations on a domain are equality and prefix. A new *quantity* costs a revision.
+
+## 6. The rendezvous and the mechanism
+
+### 6.1 Location
+
+| Scope | Root | Mechanism |
+|---|---|---|
+| Linux host, and its containers | `/var/lib/hostgrant` | **OFD lock** |
+| Darwin host | `/var/lib/hostgrant` | **OFD lock** |
+| Guest kernel used for containers | `/var/lib/hostgrant` inside the guest | **OFD lock** |
+| Windows host | `SHGetKnownFolderPath(FOLDERID_ProgramData)` + `hostgrant` | `LockFileEx`, **one byte** |
+
+Established once per machine by the operator. Measured on Darwin under SIP:
+
+```console
+$ sudo mkdir -p -m 1777 /var/lib/hostgrant      # exit 0 — SIP does not protect /private/var/lib
+$ ls -ld /var/lib/hostgrant
+drwxrwxrwt  2 root  wheel  64 /var/lib/hostgrant
+```
+
+A non-root participant can then create its own directory inside, and the sticky bit stops one user removing
+another's. The root MUST be on a **local** filesystem: `flock` over NFS is emulated as `fcntl`, which would
+silently merge two families that are otherwise distinct.
+
+Containers participate by bind-mounting the root at the same absolute path — the same pattern both projects
+already use for the Docker socket. **A path that is not a bind mount is a different inode and arbitrates with
+nobody**, so a participant that cannot prove its root is shared MUST report `Unsupported`.
+
+### 6.2 Why OFD, measured
+
+Three POSIX mechanisms exist, not two. Full 3×3 matrix, negative control before every cell:
+
+**Linux** — `Linux 6.8.0-100-generic aarch64`, Ubuntu 24.04.4, glibc 2.39, ext4:
+
+| holder \ prober | `flock` | `fcntl` | **OFD** |
+|---|---|---|---|
+| **`flock`** | BLOCKED | ACQUIRED | ACQUIRED |
+| **`fcntl`** | ACQUIRED | BLOCKED | BLOCKED |
+| **OFD** | ACQUIRED | BLOCKED | BLOCKED |
+
+**Darwin** — `Darwin 25.5.0 arm64`, APFS: **all nine cells BLOCKED.** One family.
+
+So Linux has **two families, `{flock}` and `{fcntl, OFD}`**, and Darwin has one. A mixed deployment works by
+accident on a Mac and fails silently on Linux — invisible on the platform people develop on, catastrophic on
+the platform things deploy to.
+
+Lifetime, measured identically on **both** platforms:
+
+| | `flock` | `fcntl` | **OFD** |
+|---|---|---|---|
+| Process opens a second descriptor to the same file and closes it | SURVIVED | **LOST** | SURVIVED |
+| `fork`, parent exits, child keeps the descriptor | SURVIVED | **LOST** | SURVIVED |
+
+**OFD is mandated because it is the only mechanism with both properties**: it has `flock`'s
+open-file-description lifetime — so an unrelated `close()` cannot silently drop it — *and* it arbitrates with
+`fcntl`, so a participant that has not migrated yet is **blocked rather than ignored**. Migration is therefore
+incremental and safe.
+
+Three of the four projects were verified directly to use `fcntl` at their host-scope call sites — infernix
+(`Service.hs`, the host-scope `engine.lock`), jitML (`Checkpoint/Store.hs`) and prodbox
+(`Config/LocalRetainedRoot/Internal.hs`) — so they are already in the `{fcntl, OFD}` family. **hostbootstrap
+is unverified**: it reaches locking through `base`'s `hLock`, whose backend is reported to prefer OFD on
+Linux, but only compiled interface files are present on this machine and the claim could not be checked. It
+is recorded in the unverified register rather than asserted.
+
+```python
+import fcntl, os, struct, sys
+
+if sys.platform == "darwin":
+    F_OFD_SETLK = 90
+    _lk = lambda: struct.pack("qqihh", 0, 0, 0, fcntl.F_WRLCK, 0)   # start,len,pid,type,whence
+else:
+    F_OFD_SETLK = 37
+    _lk = lambda: struct.pack("hhqqi", fcntl.F_WRLCK, 0, 0, 0, 0)   # type,whence,start,len,pid
+
+def take_grant(fd):
+    """Raises OSError if another participant holds it."""
+    fcntl.fcntl(fd, F_OFD_SETLK, _lk())
+```
+
+`FD_CLOEXEC` MUST be clear on the grant descriptor. Measured on Linux: with it set, the lock is **released at
+`exec`** and the workload runs ungranted while appearing granted.
+
+On Windows the lock is **mandatory rather than advisory**, and enforcement is confined to the locked range.
+Measured: locking byte 0 leaves bytes 1..EOF readable, while locking the whole file makes **every** read fail
+with `ERROR_LOCK_VIOLATION` (33). **Windows scopes MUST lock exactly one byte, byte 0.** Byte 0 is reserved on **every** platform and the
+domain list starts at offset 1 everywhere, so the slot format is identical across scopes even though POSIX
+does not need the reservation. `msvcrt.locking` and `LockFileEx` arbitrate with each other, so Windows has one family.
+
+## 7. Slots and admission
+
+Slots are **pre-created and never unlinked at runtime**, so nothing is left over after a crash or a reboot —
+the files are permanent fixtures.
+
+```
+<root>/protocol-version                 one integer
+<root>/reserved                         operator-declared domains, permanently held
+<root>/admission.lock                   serializes decide-and-write; held for milliseconds
+<root>/slots/<participant>/<n>          a slot: OFD lock + domain list as content
+```
+
+Content is written **in place while `admission.lock` is held**, never by rename — a rename would repoint the
+name at a new inode and orphan the lock. Because every reader takes `admission.lock` first, no reader can
+observe a partial write, which is why no checksum and no fixed-size padding are needed.
+
+**A participant MUST NOT create a slot at runtime.** Its slot count is fixed when it is registered; needing
+more concurrency than it has slots is a `NoSlot` refusal, never a new file. This is the rule that keeps the
+pool bounded, and it is the one an implementation could plausibly get wrong.
+
+**Zero files are created per run**, so nothing can be orphaned. Measured on Linux — 300 acquire/release
+cycles across two participants with three slots each, including **76 simulated hard crashes** where the
+descriptor was dropped with no cleanup whatsoever:
+
+```console
+  files after install:     8
+  cycles=300 grants=300 simulated-crashes=76
+  files after 300 cycles:  8
+  RESULT: file count CONSTANT (8 -> 8)
+```
+
+The pool is bounded by `participants x slots-per-participant`, fixed at registration. There are exactly two
+ways the file set changes at all, and neither is a runtime event:
+
+| Vector | Bound |
+|---|---|
+| Registering a new participant | One directory plus its fixed slots, once. Bounded by the number of projects on the machine |
+| Retiring a participant | Its directory remains until an **operator** removes it. Bounded by the number of projects that have ever existed |
+
+No temporary files exist at any point, because content is written in place rather than renamed into position.
+
+```
+acquire(demand):
+    lock admission.lock                      # non-blocking; on failure -> Busy
+    if any domain in <root>/reserved conflicts with demand: unlock; return Conflicted
+    for each slot s in <root>/slots/*/*:
+        if grant-lock on s is free: continue          # dead holder, or never used
+        if any domain in s conflicts with demand: unlock; return Conflicted
+    pick a free slot of my own; take its OFD lock     # MUST precede publishing
+    write my domain list in place
+    unlock admission.lock
+    return Grant(fd)                          # released by the kernel when this process dies
+```
+
+A participant MUST read `<root>/protocol-version` before anything else and **refuse every operation** if it
+does not implement that exact revision, naming the mismatch. This is the only compatibility mechanism; there
+is no negotiation and no forward compatibility.
+
+Four refusal classes, kept distinct because collapsing them produces retry loops that never terminate:
+`Busy` (contended; retry may succeed), `Conflicted` (a live grant holds a conflicting domain), `NoSlot`
+(this participant's slots are all in use), `Unsupported` (this participant cannot resolve this scope's
+rendezvous — reported, never silently treated as success).
+
+## 8. The obligation
+
+> **A function that starts governed host work MUST NOT be callable without a grant, and the grant MUST NOT be
+> constructible outside the module that obtained it under `admission.lock`.**
+
+Each project discharges this in its own idiom — a hidden constructor, an opaque newtype, a rank-2 region.
+The technique is not the point; a path that starts host work without a grant should fail to compile rather
+than fail a check, because a check that can be forgotten is not a boundary.
+
+A granted lock is **coordination, not evidence**. It is not typed evidence for any state transition, it
+applies no limit, and it fences no device. Existing enforcement is unaffected and is not replaced.
+
+## 9. Crash, reboot and non-graceful shutdown
+
+| Event | Outcome |
+|---|---|
+| `SIGKILL` of a grant holder | **No resource leaks.** The kernel releases the lock; domains are free immediately |
+| `SIGKILL` holding `admission.lock` | **No wedge.** Kernel-released |
+| Crash mid-write | **No torn read.** Content is written under `admission.lock`, which every reader holds first |
+| **Reboot** | **Nothing held, by construction.** No process survives. Slots are pre-created fixtures, so nothing is left to clean |
+| PID reuse | **Not relied on.** Liveness is the held lock, never a recorded PID |
+
+Measured end to end on the real rendezvous (Darwin, APFS): a second holder is BLOCKED; a reader **succeeds**
+while the slot is locked (POSIX locks are advisory); and after the holder is killed the slot is immediately
+ACQUIRED by the next taker.
+
+## 10. What this policy does not do
+
+- **Progressive consumption is invisible.** A store that fills during a long run, a cache that grows, an image
+  set that accumulates: none is caught by a decision taken once. This is the only shared-host failure two of
+  these projects have actually recorded. A participant that needs a bound on its own growth applies one.
+- **Non-participants are unconstrained**, and on POSIX the lock is advisory.
+- **A declaration is not behaviour.** A participant that declares one domain and touches another is not
+  detected.
+- **No limit is applied and no device is fenced.**
+
+## 11. Conformance, and what is not verified
+
+Conformance is behavioural: two independently built participants contending on one real rendezvous either
+serialize or do not. Matching prose and matching digests establish nothing.
+
+**The conformance test is only meaningful on Linux, on a local filesystem.** Darwin arbitrates all three
+mechanisms against each other, so a non-conforming participant **passes there** — the platform everyone
+develops on cannot detect the defect. Over NFS `flock` is emulated as `fcntl`, which merges the families the
+same way.
+
+```sh
+# One cell of the conformance matrix. Control first, then the contended case.
+holder=$(mktemp)
+python3 hostgrant_probe.py try  "$holder" ofd     # control -> must print ACQUIRED
+python3 hostgrant_probe.py hold "$holder" ofd 10 &
+sleep 0.5
+python3 hostgrant_probe.py try  "$holder" ofd     # contended -> must print BLOCKED
+```
+
+**Not verified, and treated as unknown rather than assumed:**
+
+- **Windows `CreateProcess` handle inheritance.** Documented to behave *opposite* to the POSIX `exec` result.
+  §4's rule — never rely on inheriting a grant — removes the dependency, so this is recorded rather than
+  blocking.
+- **`%ProgramData%` divergence.** Three contexts agreed on one default-configured machine, which does not
+  show the two *cannot* differ. The Known Folder API is mandated on the same footing as the `$HOME` case.
+- **`\\wsl.localhost`** — the mirror of the measured `/mnt/c` direction — untested.
+- **Windows shared locks.** `msvcrt.locking` has no shared mode. Unused here; exclusive only.
+- **Cross-user delete denial** on Windows is inferred from the ACL, not measured.
+- **Windows containers.** No analogue of the bind-mount test was run.
+- **hostbootstrap's lock family.** Its `hLock` backend is reported to prefer OFD on Linux; only compiled
+  interface files were available here, so this is documented rather than measured. It affects the migration
+  cost for one project, not the correctness of the mandate.
+- **`/mnt/wsl` is tmpfs** and does not survive `wsl --shutdown`. It is a correct arbitration point and a poor
+  place for anything expected to persist.

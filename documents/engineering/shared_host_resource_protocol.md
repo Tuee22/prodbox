@@ -190,12 +190,15 @@ open-file-description lifetime — so an unrelated `close()` cannot silently dro
 `fcntl`, so a participant that has not migrated yet is **blocked rather than ignored**. Migration is therefore
 incremental and safe.
 
-Three of the four projects were verified directly to use `fcntl` at their host-scope call sites — infernix
-(`Service.hs`, the host-scope `engine.lock`), jitML (`Checkpoint/Store.hs`) and prodbox
-(`Config/LocalRetainedRoot/Internal.hs`) — so they are already in the `{fcntl, OFD}` family. **hostbootstrap
-is unverified**: it reaches locking through `base`'s `hLock`, whose backend is reported to prefer OFD on
-Linux, but only compiled interface files are present on this machine and the claim could not be checked. It
-is recorded in the unverified register rather than asserted.
+This matters for adoption cost. A survey of the programs sharing a development host found most of them
+already taking classic `fcntl` record locks at the call sites that arbitrate host capacity — that is, already
+inside the `{fcntl, OFD}` family. Moving such a participant to OFD is a change of one call, and until it is
+made the participant is still excluded correctly. Moving it to `flock` would instead take it *out* of the
+family and make it invisible to everyone else. That asymmetry, not tidiness, is why the mandate is OFD.
+
+Where a participant reaches locking through a runtime library rather than a direct syscall, the family it
+lands in is a property of that library's build and MUST be established by measurement rather than assumed —
+see the conformance test.
 
 ```python
 import fcntl, os, struct, sys
@@ -350,8 +353,10 @@ python3 hostgrant_probe.py try  "$holder" ofd     # contended -> must print BLOC
 - **Windows shared locks.** `msvcrt.locking` has no shared mode. Unused here; exclusive only.
 - **Cross-user delete denial** on Windows is inferred from the ACL, not measured.
 - **Windows containers.** No analogue of the bind-mount test was run.
-- **hostbootstrap's lock family.** Its `hLock` backend is reported to prefer OFD on Linux; only compiled
-  interface files were available here, so this is documented rather than measured. It affects the migration
-  cost for one project, not the correctness of the mandate.
+- **Runtime-library lock backends.** A participant that locks through a language runtime rather than a direct
+  syscall may land in either family depending on how that runtime was built, and at least one such backend is
+  reported to prefer OFD on Linux without that being checkable from compiled artefacts alone. This affects
+  migration cost, not the correctness of the mandate, and is why the conformance test measures the family
+  rather than trusting a library's documentation.
 - **`/mnt/wsl` is tmpfs** and does not survive `wsl --shutdown`. It is a correct arbitration point and a poor
   place for anything expected to persist.

@@ -54,6 +54,7 @@ data TargetRetainedMaterialRewrapClientError
   | TargetRetainedMaterialRewrapClientHttpStatus !Int
   | TargetRetainedMaterialRewrapClientRefused !Text
   | TargetRetainedMaterialRewrapClientUnavailable !Text
+  | TargetRetainedMaterialRewrapClientUnexpectedResponse
   deriving stock (Eq, Show)
 
 targetRetainedMaterialRewrapClient
@@ -84,6 +85,10 @@ targetRetainedMaterialRewrapClient transport =
           Left (TargetRetainedMaterialRewrapClientRefused detail)
         TargetRetainedMaterialRewrapUnavailable detail ->
           Left (TargetRetainedMaterialRewrapClientUnavailable detail)
+        TargetRetainedMaterialSourceObserved _ ->
+          Left TargetRetainedMaterialRewrapClientUnexpectedResponse
+        TargetRetainedMaterialSourceAbsent _ ->
+          Left TargetRetainedMaterialRewrapClientUnexpectedResponse
 
 targetRetainedMaterialRewrapClientWith
   :: ( TargetRetainedMaterialRewrapRequest

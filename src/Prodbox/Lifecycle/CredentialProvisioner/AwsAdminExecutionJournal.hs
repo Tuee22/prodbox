@@ -37,8 +37,10 @@ import Prodbox.ControlPlane.TargetSecretWorker
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   ( SignedAwsAdminPermit
+  , awsAdminPermitIntentCleanupPredecessor
   , decodeSignedAwsAdminPermit
   , encodeSignedAwsAdminPermit
+  , signedAwsAdminPermitIntent
   , withSomeSignedAwsAdminPermit
   )
 import Prodbox.Lifecycle.CredentialProvisioner.Execution
@@ -102,7 +104,12 @@ data AwsAdminExecutionJournalError
 initialAwsAdminExecutionJournal
   :: SignedAwsAdminPermit -> AwsAdminExecutionJournal
 initialAwsAdminExecutionJournal permit =
-  AwsAdminExecutionJournal permit (AwsAdminExecutionIntentCommitted False)
+  AwsAdminExecutionJournal permit initialPhase
+ where
+  initialPhase =
+    case awsAdminPermitIntentCleanupPredecessor (signedAwsAdminPermitIntent permit) of
+      Just _ -> AwsAdminExecutionCleanupRequired False
+      Nothing -> AwsAdminExecutionIntentCommitted False
 
 awsAdminExecutionJournalPermit
   :: AwsAdminExecutionJournal -> SignedAwsAdminPermit

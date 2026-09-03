@@ -7,7 +7,14 @@
 module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminKubernetes
   ( AwsAdminJobResources
   , mkAwsAdminJobResources
+  , oneShotAwsAdminJobResources
   , AwsAdminKubernetesError (..)
+  , AwsAdminPodConvergence (..)
+  , AwsAdminWorkerReceiptCaptureSource (..)
+  , awaitAwsAdminPodObservationWith
+  , decodeAwsAdminWorkerReceiptCapture
+  , recoverEmptyAwsAdminWorkerReceiptCaptureWith
+  , renderAwsAdminWorkerReceiptCaptureSource
   , renderAwsAdminJob
   , productionAwsAdminKubernetesBoundary
   )
@@ -28,14 +35,20 @@ import Data.Aeson
   , (.=)
   )
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.List (find)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.CLI.Output (writeDiagnosticLine)
+import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.Render qualified as CapacityRender
+import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.ControlPlane.AwsAdminProvisionerClient
   ( AwsAdminPreparedProvisioning (..)
   )
@@ -48,8 +61,15 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminCoordinator
   ( AwsAdminCleanupBinding (..)
   , AwsAdminKubernetesBoundary (..)
   )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
+  ( classifyAwsAdminWorkerReceiptTransport
+  , decodeAwsAdminWorkerReceipt
+  , decodeAwsAdminWorkerReceiptTextEnvelope
+  , renderAwsAdminWorkerReceiptTransportObservation
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
-  ( AwsAdminPermitIntent
+  ( AwsAdminCleanupRecoveryProgram (..)
+  , AwsAdminPermitIntent
   , AwsAdminPermitKind (..)
   , SignedAwsAdminPermit
   , awsAdminJobNameForPermit
@@ -68,8 +88,12 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , awsAdminWorkerServiceAccount
   , signedAwsAdminPermitBinding
   )
+import Prodbox.Lifecycle.CredentialProvisioner.ImageIdentity
+  ( credentialProvisionerRuntimeManifestDigest
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.KubernetesJob
   ( CredentialProvisionerJobConnection (..)
+  , credentialProvisionerKubectlArguments
   )
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( firstReconcilePermitMemberIndex
@@ -77,6 +101,11 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   , firstReconcilePermitPriorReceiptDigest
   , operatorMaterialOperationIdText
   , operatorMaterialPermitIdText
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.RuntimeSecurity
+  ( credentialProvisionerKubernetesApiVolume
+  , credentialProvisionerKubernetesApiVolumeMount
+  , credentialProvisionerPodSecurityContext
   )
 import Prodbox.Lifecycle.Lease (authorityTimeMicros)
 import Prodbox.Lifecycle.TargetCommitIntent (targetValueDigestText)
@@ -96,6 +125,7 @@ import System.Exit (ExitCode (..))
 data AwsAdminJobResources = AwsAdminJobResources
   { awsAdminJobCpu :: !Text
   , awsAdminJobMemory :: !Text
+  , awsAdminJobEphemeralStorage :: !Text
   }
   deriving stock (Eq, Show)
 
@@ -103,7 +133,29 @@ mkAwsAdminJobResources :: Text -> Text -> Either AwsAdminKubernetesError AwsAdmi
 mkAwsAdminJobResources cpu memory = do
   validCpu <- boundedField "cpu" 32 cpu
   validMemory <- boundedField "memory" 32 memory
-  pure (AwsAdminJobResources validCpu validMemory)
+  pure
+    ( AwsAdminJobResources
+        validCpu
+        validMemory
+        ( Text.pack
+            ( CapacityRender.memoryQuantity
+                (Capacity.ephemeral_storage_mib workerVector)
+            )
+        )
+    )
+ where
+  workerVector = Capacity.limit Capacity.oneShotSecretWorkerEnvelope
+
+oneShotAwsAdminJobResources :: AwsAdminJobResources
+oneShotAwsAdminJobResources =
+  AwsAdminJobResources
+    { awsAdminJobCpu = Text.pack (CapacityRender.cpuQuantity (Capacity.milli_cpu workerVector))
+    , awsAdminJobMemory = Text.pack (CapacityRender.memoryQuantity (Capacity.memory_mib workerVector))
+    , awsAdminJobEphemeralStorage =
+        Text.pack (CapacityRender.memoryQuantity (Capacity.ephemeral_storage_mib workerVector))
+    }
+ where
+  workerVector = Capacity.limit Capacity.oneShotSecretWorkerEnvelope
 
 data AwsAdminKubernetesError
   = AwsAdminKubernetesRenderInvalid !Text
@@ -114,6 +166,69 @@ data AwsAdminKubernetesError
   | AwsAdminKubernetesAbsenceUnobservable !Text
   | AwsAdminKubernetesStillPresent
   deriving stock (Eq, Show)
+
+data AwsAdminPodConvergence
+  = AwsAdminPodAbsent
+  | AwsAdminPodTransitional
+  | AwsAdminPodReady !AwsAdminPodObservation
+  deriving stock (Eq, Show)
+
+data AwsAdminWorkerReceiptCaptureSource
+  = AwsAdminWorkerReceiptFromAttach
+  | AwsAdminWorkerReceiptFromPodLog
+  deriving stock (Eq, Show, Enum, Bounded)
+
+renderAwsAdminWorkerReceiptCaptureSource
+  :: AwsAdminWorkerReceiptCaptureSource -> Text
+renderAwsAdminWorkerReceiptCaptureSource source = case source of
+  AwsAdminWorkerReceiptFromAttach -> "attach"
+  AwsAdminWorkerReceiptFromPodLog -> "pod-log"
+
+-- | Recover only the live-observed successful-but-empty attach shape.  The
+-- fallback cannot replace non-empty attach bytes, and failure preserves the
+-- original empty capture so the existing canonical decoder refusal survives.
+recoverEmptyAwsAdminWorkerReceiptCaptureWith
+  :: (Monad m)
+  => ByteString
+  -> m (Maybe ByteString)
+  -> m (AwsAdminWorkerReceiptCaptureSource, ByteString)
+recoverEmptyAwsAdminWorkerReceiptCaptureWith attached fallback
+  | not (ByteString.null attached) =
+      pure (AwsAdminWorkerReceiptFromAttach, attached)
+  | otherwise = do
+      recovered <- fallback
+      pure $ case recovered of
+        Just bytes -> (AwsAdminWorkerReceiptFromPodLog, bytes)
+        Nothing -> (AwsAdminWorkerReceiptFromAttach, attached)
+
+-- | Admit only the fixed-version canonical ASCII envelope introduced for the
+-- live-observed line-oriented transport. Attach must be exactly one leading
+-- record separator plus the envelope. Pod logs must have the observed final LF
+-- and exactly one canonical envelope line; no match or ambiguity fails closed.
+decodeAwsAdminWorkerReceiptCapture
+  :: AwsAdminWorkerReceiptCaptureSource -> ByteString -> Maybe ByteString
+decodeAwsAdminWorkerReceiptCapture source captured = case source of
+  AwsAdminWorkerReceiptFromAttach -> do
+    envelope <- ByteString.stripPrefix "\n" captured
+    if ByteString.elem 10 envelope
+      then Nothing
+      else decodeCanonicalEnvelopeLine envelope
+  AwsAdminWorkerReceiptFromPodLog
+    | ByteString.isSuffixOf "\r\n" captured -> Nothing
+    | ByteString.isSuffixOf "\n" captured ->
+        let payload = ByteString.dropEnd 1 captured
+         in if ByteString.isSuffixOf "\n" payload
+              then Nothing
+              else case mapMaybe decodeCanonicalEnvelopeLine (ByteString.split 10 payload) of
+                [receiptBytes] -> Just receiptBytes
+                _ -> Nothing
+    | otherwise -> Nothing
+
+decodeCanonicalEnvelopeLine :: ByteString -> Maybe ByteString
+decodeCanonicalEnvelopeLine line = do
+  receiptBytes <-
+    either (const Nothing) Just (decodeAwsAdminWorkerReceiptTextEnvelope line)
+  either (const Nothing) (const (Just receiptBytes)) (decodeAwsAdminWorkerReceipt receiptBytes)
 
 credentialProvisionerNamespace :: Text
 credentialProvisionerNamespace = "credential-provisioner"
@@ -127,8 +242,9 @@ renderAwsAdminJob
   -> Natural
   -> AwsAdminPreparedProvisioning
   -> Either AwsAdminKubernetesError Value
-renderAwsAdminJob imageRepository resources heartbeat prepared = do
-  repository <- boundedField "image repository" 512 imageRepository
+renderAwsAdminJob executionImageReference resources heartbeat prepared = do
+  imageReference <- boundedField "execution image reference" 512 executionImageReference
+  targetWorkerRepository <- imageRepositoryWithoutTag imageReference
   unless
     (heartbeat > 0 && heartbeat < deadline)
     (Left (AwsAdminKubernetesRenderInvalid "heartbeat/deadline binding is invalid"))
@@ -158,20 +274,16 @@ renderAwsAdminJob imageRepository resources heartbeat prepared = do
                           [ "serviceAccountName" .= awsAdminWorkerServiceAccount
                           , "automountServiceAccountToken" .= False
                           , "restartPolicy" .= ("Never" :: Text)
-                          , "securityContext"
-                              .= object
-                                [ "runAsNonRoot" .= True
-                                , "seccompProfile" .= object ["type" .= ("RuntimeDefault" :: Text)]
-                                ]
+                          , "securityContext" .= credentialProvisionerPodSecurityContext
                           , "containers"
                               .= [ object
                                      [ "name" .= workerContainerName
-                                     , "image" .= repository
+                                     , "image" .= imageReference
                                      , "imagePullPolicy" .= ("Always" :: Text)
                                      , "stdin" .= True
                                      , "stdinOnce" .= True
                                      , "tty" .= False
-                                     , "args" .= workerArguments intent
+                                     , "args" .= workerArguments targetWorkerRepository intent
                                      , "securityContext"
                                          .= object
                                            [ "allowPrivilegeEscalation" .= False
@@ -190,6 +302,7 @@ renderAwsAdminJob imageRepository resources heartbeat prepared = do
                                                 , "mountPath" .= ("/var/run/secrets/prodbox" :: Text)
                                                 , "readOnly" .= True
                                                 ]
+                                            , credentialProvisionerKubernetesApiVolumeMount
                                             ]
                                      ]
                                  ]
@@ -227,6 +340,7 @@ renderAwsAdminJob imageRepository resources heartbeat prepared = do
                                                   ]
                                            ]
                                      ]
+                                 , credentialProvisionerKubernetesApiVolume
                                  ]
                           ]
                     ]
@@ -245,20 +359,22 @@ renderAwsAdminJob imageRepository resources heartbeat prepared = do
       , ("app.kubernetes.io/component", "one-shot-worker")
       , ("app.kubernetes.io/managed-by", "prodbox")
       , ("prodbox.io/chart-root", "credential-provisioner")
+      , ("prodbox.io/ingress-schema", "aws-admin")
       ]
   annotations = awsAdminAnnotations heartbeat intent
   resourceValues =
     object
       [ "cpu" .= awsAdminJobCpu resources
       , "memory" .= awsAdminJobMemory resources
+      , "ephemeral-storage" .= awsAdminJobEphemeralStorage resources
       ]
 
 downwardItem :: Text -> Text -> Value
 downwardItem path fieldPath =
   object ["path" .= path, "fieldRef" .= object ["fieldPath" .= fieldPath]]
 
-workerArguments :: AwsAdminPermitIntent -> [Text]
-workerArguments intent =
+workerArguments :: Text -> AwsAdminPermitIntent -> [Text]
+workerArguments targetWorkerRepository intent =
   [ "credential-provisioner"
   , "run"
   , "--ingress-schema"
@@ -275,6 +391,8 @@ workerArguments intent =
   , Text.pack (show (authorityTimeMicros (awsAdminPermitIntentDeadline intent)))
   , "--image-digest"
   , awsAdminPermitIntentImageDigest intent
+  , "--target-worker-image-repository"
+  , targetWorkerRepository
   , "--authority-scope"
   , awsAdminPermitIntentAuthorityScope intent
   , "--authority-endpoint"
@@ -291,6 +409,8 @@ workerArguments intent =
     NormalOperatorMaterialKind -> "normal"
     GenesisBackupKind _ -> "genesis-backup"
     BackupRepairFrozenKind _ -> "backup-repair"
+    CleanupRecoveryKind NormalOperatorMaterialCleanupProgram _ -> "normal"
+    CleanupRecoveryKind (GenesisBackupCleanupProgram _) _ -> "genesis-backup"
 
 awsAdminAnnotations :: Natural -> AwsAdminPermitIntent -> Map Text Text
 awsAdminAnnotations heartbeat intent =
@@ -318,6 +438,8 @@ awsAdminAnnotations heartbeat intent =
     NormalOperatorMaterialKind -> "normal"
     GenesisBackupKind _ -> "genesis-backup"
     BackupRepairFrozenKind _ -> "backup-repair"
+    CleanupRecoveryKind NormalOperatorMaterialCleanupProgram _ -> "normal"
+    CleanupRecoveryKind (GenesisBackupCleanupProgram _) _ -> "genesis-backup"
   planAnnotations = case awsAdminPermitIntentPlanBinding intent of
     Nothing -> []
     Just binding ->
@@ -333,18 +455,19 @@ productionAwsAdminKubernetesBoundary
   :: CredentialProvisionerJobConnection
   -> Text
   -> AwsAdminJobResources
-  -> Natural
+  -> IO (Either Text Natural)
   -> AwsAdminKubernetesBoundary IO
-productionAwsAdminKubernetesBoundary connection imageRepository resources heartbeat =
+productionAwsAdminKubernetesBoundary connection imageRepository resources acquireHeartbeat =
   AwsAdminKubernetesBoundary
-    { createAwsAdminJob = createJob
+    { acquireAwsAdminJobHeartbeat = acquireHeartbeat
+    , createAwsAdminJob = createJob
     , observeAwsAdminJob = observeJobPod
     , attachAwsAdminWorker = attachWorker
     , deleteAwsAdminJob = deleteJob
     , observeAwsAdminJobAbsent = observeAbsent
     }
  where
-  createJob prepared = do
+  createJob heartbeat prepared = do
     case renderAwsAdminJob imageRepository resources heartbeat prepared of
       Left err -> pure (Left (renderError err))
       Right manifest -> do
@@ -362,10 +485,14 @@ productionAwsAdminKubernetesBoundary connection imageRepository resources heartb
               Right Nothing -> Left "Job create failed and exact Job is absent"
               Left err -> Left (renderError err)
 
-  observeJobPod prepared =
+  observeJobPod heartbeat prepared =
     fmap
       (either (Left . renderError) Right)
-      (observeExactPod connection imageRepository heartbeat prepared)
+      ( awaitAwsAdminPodObservationWith
+          podObservationAttempts
+          (threadDelay observationDelayMicros)
+          (observeExactPodOnce connection imageRepository heartbeat prepared)
+      )
 
   attachWorker permit frame = do
     let podName = awsAdminCleanupPodName (bindingForPermit permit)
@@ -380,13 +507,46 @@ productionAwsAdminKubernetesBoundary connection imageRepository resources heartb
         , "--container"
         , Text.unpack workerContainerName
         ]
-    pure $ case attempted of
-      Left err -> Left (errorMsg err)
+    case attempted of
+      Left err -> pure (Left (errorMsg err))
       Right output -> case processExitCode output of
-        ExitSuccess -> Right (ByteString8.pack (processStdout output))
-        ExitFailure _ -> Left (Text.pack (processStderr output))
+        ExitSuccess -> do
+          let attachedBytes = ByteString8.pack (processStdout output)
+          writeReceiptTransportDiagnostic AwsAdminWorkerReceiptFromAttach attachedBytes
+          (source, receiptBytes) <-
+            recoverEmptyAwsAdminWorkerReceiptCaptureWith
+              attachedBytes
+              (readWorkerReceiptLog podName)
+          case source of
+            AwsAdminWorkerReceiptFromAttach -> pure ()
+            AwsAdminWorkerReceiptFromPodLog ->
+              writeReceiptTransportDiagnostic source receiptBytes
+          pure
+            ( Right
+                ( fromMaybe
+                    ByteString.empty
+                    (decodeAwsAdminWorkerReceiptCapture source receiptBytes)
+                )
+            )
+        ExitFailure _ -> pure (Left (Text.pack (processStderr output)))
 
-  deleteJob prepared supplied = do
+  readWorkerReceiptLog podName = do
+    attempted <-
+      runBounded
+        receiptLogLimits
+        connection
+        [ "logs"
+        , "pod/" <> Text.unpack podName
+        , "--container"
+        , Text.unpack workerContainerName
+        ]
+    pure $ case attempted of
+      Right output
+        | processExitCode output == ExitSuccess ->
+            Just (ByteString8.pack (processStdout output))
+      _ -> Nothing
+
+  deleteJob heartbeat prepared supplied = do
     observed <- observeExactJob connection imageRepository heartbeat prepared
     case observed of
       Left err -> pure (Left (renderError err))
@@ -560,17 +720,42 @@ decodeAndValidateJob imageRepository heartbeat prepared bytes = do
       | image == imageRepository -> Right job
     _ -> Left (AwsAdminKubernetesObservationFailed "Job immutable worker image drifted")
 
-observeExactPod
+awaitAwsAdminPodObservationWith
+  :: Int
+  -> IO ()
+  -> IO (Either AwsAdminKubernetesError AwsAdminPodConvergence)
+  -> IO (Either AwsAdminKubernetesError (Maybe AwsAdminPodObservation))
+awaitAwsAdminPodObservationWith attempts waitForNext observe = seek attempts
+ where
+  seek remaining
+    | remaining <= 0 = pure observationBudgetExhausted
+    | otherwise = do
+        observed <- observe
+        case observed of
+          Left err -> pure (Left err)
+          Right AwsAdminPodAbsent -> pure (Right Nothing)
+          Right (AwsAdminPodReady pod) -> pure (Right (Just pod))
+          Right AwsAdminPodTransitional
+            | remaining == 1 -> pure observationBudgetExhausted
+            | otherwise -> waitForNext >> seek (remaining - 1)
+
+  observationBudgetExhausted =
+    Left
+      ( AwsAdminKubernetesObservationFailed
+          "exact Pod did not become ready before the observation budget expired"
+      )
+
+observeExactPodOnce
   :: CredentialProvisionerJobConnection
   -> Text
   -> Natural
   -> AwsAdminPreparedProvisioning
-  -> IO (Either AwsAdminKubernetesError (Maybe AwsAdminPodObservation))
-observeExactPod connection imageRepository heartbeat prepared = do
+  -> IO (Either AwsAdminKubernetesError AwsAdminPodConvergence)
+observeExactPodOnce connection imageRepository heartbeat prepared = do
   jobResult <- observeExactJob connection imageRepository heartbeat prepared
   case jobResult of
     Left err -> pure (Left err)
-    Right Nothing -> pure (Right Nothing)
+    Right Nothing -> pure (Right AwsAdminPodAbsent)
     Right (Just job) -> do
       podsResult <-
         runBounded
@@ -600,7 +785,7 @@ observeExactPod connection imageRepository heartbeat prepared = do
           firstText
             AwsAdminKubernetesObservationFailed
             (eitherDecodeStrict' (ByteString8.pack (processStdout saOutput)))
-        Just <$> validatePod imageRepository heartbeat prepared job saName saUid pod
+        validatePod imageRepository heartbeat prepared job saName saUid pod
 
 validatePod
   :: Text
@@ -610,7 +795,7 @@ validatePod
   -> Text
   -> Text
   -> PodDto
-  -> Either AwsAdminKubernetesError AwsAdminPodObservation
+  -> Either AwsAdminKubernetesError AwsAdminPodConvergence
 validatePod imageRepository heartbeat prepared job serviceAccountName serviceAccountUid pod = do
   let intent = awsAdminPreparedCanonicalIntent prepared
       expectedAnnotations = awsAdminAnnotations heartbeat intent
@@ -623,27 +808,45 @@ validatePod imageRepository heartbeat prepared job serviceAccountName serviceAcc
         && podDtoServiceAccount pod == awsAdminWorkerServiceAccount
         && serviceAccountName == awsAdminWorkerServiceAccount
         && mapContains expectedAnnotations (podDtoAnnotations pod)
-        && podDtoPhase pod == "Running"
     )
-    (Left (AwsAdminKubernetesObservationFailed "Pod identity, ownership, or runtime phase drifted"))
-  case ( findContainer workerContainerName (podDtoContainers pod)
-       , findStatus workerContainerName (podDtoStatuses pod)
-       ) of
-    (Just (ContainerDto _ image), Just (ContainerStatusDto _ True 0 runtimeImageId))
-      | image == imageRepository
-          && runtimeImageDigest runtimeImageId == Just (awsAdminPermitIntentImageDigest intent) ->
-          Right
-            AwsAdminPodObservation
-              { awsAdminObservedJobName = jobDtoName job
-              , awsAdminObservedJobUid = jobDtoUid job
-              , awsAdminObservedPodName = podDtoName pod
-              , awsAdminObservedPodUid = podDtoUid pod
-              , awsAdminObservedImageDigest = awsAdminPermitIntentImageDigest intent
-              , awsAdminObservedServiceAccount = serviceAccountName
-              , awsAdminObservedServiceAccountUid = serviceAccountUid
-              , awsAdminObservedHeartbeatMicros = heartbeat
-              }
-    _ -> Left (AwsAdminKubernetesObservationFailed "worker container is not exact, immutable, and ready")
+    (Left (AwsAdminKubernetesObservationFailed "Pod identity or ownership drifted"))
+  case findContainer workerContainerName (podDtoContainers pod) of
+    Just (ContainerDto _ image)
+      | image == imageRepository -> classifyRuntime intent
+    _ -> Left (AwsAdminKubernetesObservationFailed "worker container image specification drifted")
+ where
+  classifyRuntime intent = case podDtoPhase pod of
+    "" -> transitionalIfExact intent
+    "Pending" -> transitionalIfExact intent
+    "Running" -> case findStatus workerContainerName (podDtoStatuses pod) of
+      Just (ContainerStatusDto _ True 0 runtimeImageId)
+        | credentialProvisionerRuntimeManifestDigest runtimeImageId
+            == Just (awsAdminPermitIntentImageDigest intent) ->
+            Right (AwsAdminPodReady (readyObservation intent))
+      _ -> transitionalIfExact intent
+    _ -> Left (AwsAdminKubernetesObservationFailed "worker Pod entered a terminal or unknown phase")
+
+  transitionalIfExact intent =
+    case findStatus workerContainerName (podDtoStatuses pod) of
+      Nothing -> Right AwsAdminPodTransitional
+      Just (ContainerStatusDto _ False 0 runtimeImageId)
+        | Text.null runtimeImageId
+            || credentialProvisionerRuntimeManifestDigest runtimeImageId
+              == Just (awsAdminPermitIntentImageDigest intent) ->
+            Right AwsAdminPodTransitional
+      _ -> Left (AwsAdminKubernetesObservationFailed "worker container runtime identity drifted")
+
+  readyObservation intent =
+    AwsAdminPodObservation
+      { awsAdminObservedJobName = jobDtoName job
+      , awsAdminObservedJobUid = jobDtoUid job
+      , awsAdminObservedPodName = podDtoName pod
+      , awsAdminObservedPodUid = podDtoUid pod
+      , awsAdminObservedImageDigest = awsAdminPermitIntentImageDigest intent
+      , awsAdminObservedServiceAccount = serviceAccountName
+      , awsAdminObservedServiceAccountUid = serviceAccountUid
+      , awsAdminObservedHeartbeatMicros = heartbeat
+      }
 
 stableAbsence
   :: CredentialProvisionerJobConnection
@@ -747,7 +950,7 @@ kubectl :: CredentialProvisionerJobConnection -> [String] -> Subprocess
 kubectl connection arguments =
   Subprocess
     { subprocessPath = "kubectl"
-    , subprocessArguments = ["--namespace", Text.unpack credentialProvisionerNamespace] <> arguments
+    , subprocessArguments = credentialProvisionerKubectlArguments connection arguments
     , subprocessEnvironment = credentialProvisionerJobEnvironment connection
     , subprocessWorkingDirectory = Just (credentialProvisionerJobWorkingDirectory connection)
     }
@@ -764,15 +967,6 @@ findContainer name = find (\(ContainerDto actual _) -> actual == name)
 
 findStatus :: Text -> [ContainerStatusDto] -> Maybe ContainerStatusDto
 findStatus name = find (\(ContainerStatusDto actual _ _ _) -> actual == name)
-
-runtimeImageDigest :: Text -> Maybe Text
-runtimeImageDigest value =
-  let candidate = case Text.breakOnEnd "://" value of
-        (prefix, suffix) | not (Text.null prefix) -> suffix
-        _ -> value
-   in if "sha256:" `Text.isPrefixOf` candidate && Text.length candidate == 71
-        then Just candidate
-        else Nothing
 
 mapContains :: Map Text Text -> Map Text Text -> Bool
 mapContains expected actual = all (\(key, value) -> Map.lookup key actual == Just value) (Map.toList expected)
@@ -792,6 +986,19 @@ boundedField name maximumLength raw =
         then Left (AwsAdminKubernetesRenderInvalid (name <> " is invalid"))
         else Right value
 
+imageRepositoryWithoutTag :: Text -> Either AwsAdminKubernetesError Text
+imageRepositoryWithoutTag imageReference = do
+  image <-
+    firstText
+      (const (AwsAdminKubernetesRenderInvalid "execution image reference is invalid"))
+      (ContainerImage.parseImageRef (Text.unpack imageReference))
+  boundedField
+    "target worker image repository"
+    512
+    ( Text.pack
+        (ContainerImage.imageRegistry image ++ "/" ++ ContainerImage.imageRepository image)
+    )
+
 renderError :: AwsAdminKubernetesError -> Text
 renderError = Text.pack . show
 
@@ -805,12 +1012,34 @@ firstApp
   -> Either errorValue value
 firstApp wrap = either (Left . wrap . Text.pack . show) Right
 
-createLimits, observeLimits, attachLimits, deleteLimits :: BoundedSubprocessLimits
+writeReceiptTransportDiagnostic
+  :: AwsAdminWorkerReceiptCaptureSource -> ByteString -> IO ()
+writeReceiptTransportDiagnostic source bytes =
+  writeDiagnosticLine
+    ( "aws-admin/worker-receipt-transport source="
+        <> Text.unpack (renderAwsAdminWorkerReceiptCaptureSource source)
+        <> "/"
+        <> Text.unpack
+          ( renderAwsAdminWorkerReceiptTransportObservation
+              (classifyAwsAdminWorkerReceiptTransport bytes)
+          )
+    )
+
+createLimits
+  , observeLimits
+  , attachLimits
+  , receiptLogLimits
+  , deleteLimits
+    :: BoundedSubprocessLimits
 createLimits = BoundedSubprocessLimits (256 * 1024) (64 * 1024) (16 * 1024) (30 * 1000 * 1000)
 observeLimits = BoundedSubprocessLimits 1 (256 * 1024) (16 * 1024) (10 * 1000 * 1000)
 attachLimits = BoundedSubprocessLimits (64 * 1024) (16 * 1024) (16 * 1024) (10 * 60 * 1000 * 1000)
+receiptLogLimits = BoundedSubprocessLimits 1 (64 * 1024) (16 * 1024) (10 * 1000 * 1000)
 deleteLimits = BoundedSubprocessLimits (16 * 1024) (64 * 1024) (16 * 1024) (30 * 1000 * 1000)
 
 observationDelayMicros, visibilityGraceMicros :: Int
 observationDelayMicros = 250000
 visibilityGraceMicros = 1000000
+
+podObservationAttempts :: Int
+podObservationAttempts = 60

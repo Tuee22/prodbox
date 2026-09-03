@@ -4,8 +4,9 @@ provider role actually needs — DNS, the Vault API (fenced
 `secret/aws/lifecycle-provider` read), the authenticated Lifecycle Authority
 operation/checkpoint surface, and external HTTPS to the AWS / Pulumi control
 plane. The worker has NO mesh, object-store, authority-CAS, or target-secret
-egress. Ingress is restricted to its own namespace; kubelet
-liveness/readiness probes are node-local and unaffected.
+egress. Ingress is restricted to its own namespace and the exact Lifecycle
+Authority Pod identity; kubelet liveness/readiness probes are node-local and
+unaffected.
 */ -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -27,6 +28,12 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Values.global.namespace }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: lifecycle-authority
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-lifecycle-authority
       ports:
         - protocol: TCP
           port: provider

@@ -40,6 +40,8 @@ import CertificateScopeServing (certificateScopeServingSuite)
 import CleanRoomHandoff (cleanRoomHandoffSuite)
 import CleanupRun (cleanupRunSuite)
 import ClusterDeleteEntryArm (clusterDeleteEntryArmSuite)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (SomeException, finally, try)
 import Control.Monad (forM_, unless, when)
@@ -460,6 +462,7 @@ import Prodbox.Aws
   , SessionTokenPromptShape (..)
   , SpotPriceRequest (..)
   , VaultProbe (..)
+  , attachedUserPolicyDetachArguments
   , authorityBackupIamUserName
   , awsErrorCodeIsTransient
   , awsRegionQuotaPreflightFromStatuses
@@ -471,9 +474,11 @@ import Prodbox.Aws
   , configFromSetupInput
   , existingHarnessConfigDisposition
   , harnessConfigSetupInputFrom
+  , harnessDeploymentInputForSubstrate
   , harnessGeneratedConfig
   , harnessPostflightResiduePolicy
   , harnessReceiveSubdomainLabel
+  , inlineUserPolicyDeleteArguments
   , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
   , operationalCredentialsClearedDecision
@@ -607,10 +612,13 @@ import Prodbox.CLI.Rke2
   , RegistryStorageEdgeObservation (..)
   , RegistryStorageEdgeReadiness (..)
   , RetainedStorageInventoryEntry (..)
+  , Rke2ImageImportDecision (..)
+  , RuntimeImageRetentionObservationError (..)
   , acmeClusterIssuerSpec
   , acmeRuntimeManifestWith
   , adminPublicEdgeManifestItems
   , aggregateCascadeExit
+  , authorityBackupReadinessChecks
   , bindVaultLifecycleContext
   , buildNativeDeletePlan
   , buildNativeInstallExecutionPlan
@@ -620,16 +628,23 @@ import Prodbox.CLI.Rke2
   , classifyGatewayFullModeProbe
   , classifyKubernetesReadiness
   , classifyRegistryStorageEdgeProbe
+  , componentReadinessRetryPolicyFor
+  , decideRke2ImageImport
   , derivedPhase
   , gatewayDaemonWorkloadRefs
   , harborRegistryStorageBackend
+  , harborRegistryStorageDeleteArguments
+  , harborRegistryStorageWaitArguments
+  , harborStorageBackendManifestItems
   , homeSubstratePlatformComponents
   , independentPhase
   , inferCascadeSubstrate
   , isMinioSecretKeyArgumentSafe
   , isRetryableHarborPublicationFailure
   , isRetryableHelmFailure
+  , managedRuntimeImageRetentionInventoryArguments
   , nativeComponentReadinessTarget
+  , nativeHarnessBootstrapFloorStepOrder
   , nativeInstallStepOrder
   , nativeInstallStepOrderRespectsGraph
   , operationalAwsCredentialGateFromResult
@@ -645,6 +660,7 @@ import Prodbox.CLI.Rke2
   , renderRke2SystemdResourceDropIn
   , retainedStateNoticePerRunLine
   , retainedStorageInventoryEntries
+  , selectManagedDanglingRuntimeImageIds
   , stepsForComponent
   )
 import Prodbox.CLI.Spec
@@ -665,8 +681,12 @@ import Prodbox.Capacity.Allocation qualified as Allocation
 import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Capacity.HostProbe (parseHostCapacityObservation)
 import Prodbox.Capacity.ObservedHost qualified as ObservedHost
+import Prodbox.Capacity.ProviderWorkerBudget qualified as ProviderWorkerBudget
+import Prodbox.Capacity.RetainedMaterialDeliveryBudget qualified as RetainedMaterialDeliveryBudget
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 import Prodbox.Capacity.Storage qualified as Storage
+import Prodbox.Capacity.TargetWorkerBudget qualified as TargetWorkerBudget
+import Prodbox.Capacity.TlsRetentionWorkflowBudget qualified as TlsRetentionWorkflowBudget
 import Prodbox.Cbor qualified as Cbor
 import Prodbox.CheckCode
   ( AwsCoordinateLiteral (..)
@@ -689,6 +709,7 @@ import Prodbox.CheckCode
   , executionOrderViolations
   , extractMarkdownLinkTargets
   , extractStringLiterals
+  , forceViolationFindings
   , generatedSectionsReconcilerViolations
   , governedDocStatusValues
   , governedDocStatusViolations
@@ -701,6 +722,7 @@ import Prodbox.CheckCode
   , isCitedSourcePath
   , isEnvironmentVariableName
   , isRelativeLinkTarget
+  , lintSubprocessArgs
   , listRepoOwnedPaths
   , managedResourceRegistryParityViolations
   , matchesSprintToken
@@ -718,6 +740,7 @@ import Prodbox.CheckCode
   , relativeLinkResolves
   , removedLegacyTransportSourcePaths
   , retiredCitedSourcePaths
+  , runFailFastPhases
   , scannedCredentialPatternsPresent
   , scannedCredentialViolations
   , serviceErrorRetryableLiteralViolations
@@ -855,9 +878,20 @@ import Prodbox.Config.Tier0
   )
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.ControlPlane.AuthenticatedRuntime qualified as AuthenticatedRuntime
 import Prodbox.ControlPlane.AuthenticationRegistry
   ( controlPlaneSigningKeyInventory
   , controlPlaneSigningKeyName
+  )
+import Prodbox.ControlPlane.AuthorityBackupReconcileProduction
+  ( normalAwsAdminOperationIdForScope
+  )
+import Prodbox.ControlPlane.AwsAdminProvisionerClient
+  ( AwsAdminProvisionerClientError (..)
+  , classifyAwsAdminProvisionerHttpResponse
+  )
+import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
+  ( AwsAdminProvisionerResponse (..)
   )
 import Prodbox.ControlPlane.CapabilityKind (CapabilityOp (..))
 import Prodbox.ControlPlane.CapabilityRequirement
@@ -866,9 +900,18 @@ import Prodbox.ControlPlane.CapabilityRequirement
   , resolveProvision
   , resolveRequirement
   )
-import Prodbox.ControlPlane.Client (controlPlaneEndpointText)
+import Prodbox.ControlPlane.Capacity qualified as ControlPlaneCapacity
+import Prodbox.ControlPlane.Client
+  ( ControlPlaneResponse (..)
+  , controlPlaneEndpointText
+  )
+import Prodbox.ControlPlane.Codec
+  ( ControlPlaneRequestCodecError (ControlPlaneRequestInvalid)
+  , encodeControlPlaneResponse
+  )
 import Prodbox.ControlPlane.InClusterAuthorityStore
-  ( inClusterAuthorityStoreClusterId
+  ( InClusterAuthorityStoreError (..)
+  , inClusterAuthorityStoreClusterId
   , inClusterAuthorityStoreEndpoint
   , mkInClusterAuthorityStoreConfig
   )
@@ -878,10 +921,24 @@ import Prodbox.ControlPlane.ListenPort
   , controlPlaneListenPort
   )
 import Prodbox.ControlPlane.LocalClient
-  ( authorityBackupRemotePort
+  ( AuthorityBackupForwardStartupObservation (..)
+  , LocalAuthorityBackupError (..)
+  , authorityBackupForwardTarget
+  , authorityBackupRemotePort
+  , classifyAuthorityBackupForwardStartup
+  , continueAuthorityBackupForwardAfterStartupWith
+  , lifecycleAuthorityForwardTarget
+  , lifecycleAuthorityHttpConfig
   , lifecycleAuthorityRemotePort
+  , lifecycleAuthorityRetainedDeliveryHttpConfig
+  , lifecycleAuthorityTlsWorkflowHttpConfig
+  , localClientStartupProbePath
+  , providerWorkerForwardTarget
   , providerWorkerRemotePort
+  , retryAuthorityBackupForwardWith
+  , targetSecretAgentForwardTarget
   , targetSecretAgentRemotePort
+  , tlsRetentionForwardTarget
   , tlsRetentionRemotePort
   )
 import Prodbox.ControlPlane.Observation
@@ -891,10 +948,23 @@ import Prodbox.ControlPlane.Observation
   , roundTripWitnessVersion
   )
 import Prodbox.ControlPlane.Observation.Internal (mintRoundTripWitness)
+import Prodbox.ControlPlane.ProviderProduction qualified as ProviderProduction
+import Prodbox.ControlPlane.RoleReadiness qualified as RoleReadiness
 import Prodbox.ControlPlane.Runtime qualified as ControlPlaneRuntime
+import Prodbox.ControlPlane.TargetMaterialEndpoint qualified as TargetMaterial
 import Prodbox.ControlPlane.TargetMaterialFixture
   ( seedAcmeEabFromTestSecrets
   )
+import Prodbox.ControlPlane.TargetMaterialRegistry
+  ( TargetSecretId (TargetSesSmtp)
+  , allTargetMaterialIds
+  , compiledTargetSecretSink
+  , targetSecretIdToken
+  )
+import Prodbox.ControlPlane.TargetSecretAgentExecution
+  ( targetAgentIdentityText
+  )
+import Prodbox.ControlPlane.TransitRequestAuthentication qualified as TransitAuthentication
 import Prodbox.Crypto.Envelope
   ( DekCipher (..)
   , EnvelopeError (..)
@@ -1058,7 +1128,9 @@ import Prodbox.Lib.ChartPlatform
   , resolveChart
   , resolveChartSecrets
   , resolveDependencyOrder
+  , resolvedCustomImageTargetAgentIdentity
   , retainedPublicEdgeTlsSecretManifest
+  , selectRepositoryManifestDigest
   , supportedChartNames
   , validateOperatorGatesWith
   , valuesForAuthorityBackup
@@ -1081,12 +1153,18 @@ import Prodbox.Lib.Storage
   )
 import Prodbox.Lifecycle.CapabilityReadinessBarrier (evidenceFor)
 import Prodbox.Lifecycle.CheckpointAuthority
-  ( mkModelBObjectVersion
+  ( ModelBObservation (..)
+  , mkModelBObjectVersion
   , modelBObjectVersionText
+  , targetSecretSinkIdentity
   )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorker qualified as AwsAdminWorker
 import Prodbox.Lifecycle.CredentialProvisioner.Execution
   ( consumeExternalAcmeEabIngressFrame
   , withExternalAcmeEabIngressFrame
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
+  ( AwsCredentialClass (GatewayDnsCredential, LifecycleProviderCredential)
   )
 import Prodbox.Lifecycle.Decommission.Manifest qualified as Manifest
 import Prodbox.Lifecycle.Decommission.ProgramTag qualified as DecommissionProgramTag
@@ -1222,6 +1300,7 @@ import Prodbox.Retry
   ( PollOutcome (..)
   , RetryPolicyError (..)
   , compiledRetryPolicies
+  , componentReadinessRetryPolicy
   , customImagePushRetryPolicy
   , defaultJitterFraction
   , idempotentOperation
@@ -1236,6 +1315,7 @@ import Prodbox.Retry
   , retryPolicyJitterFraction
   , retryPolicyMaxAttempts
   )
+import Prodbox.Runtime.Role (RuntimeRole (..))
 import Prodbox.Scaling.Autoscaler qualified as Autoscaler
 import Prodbox.Scaling.Spot qualified as Spot
 import Prodbox.Secret.VaultInventory qualified as VaultInventory
@@ -1341,7 +1421,8 @@ import Prodbox.Settings.SecretRef
   , validateProductionSecretRef
   )
 import Prodbox.Subprocess
-  ( ProcessOutput (..)
+  ( BoundedSubprocessLimits (..)
+  , ProcessOutput (..)
   , renderSubprocess
   , pattern Subprocess
   )
@@ -1385,6 +1466,7 @@ import Prodbox.TestRunner
   , awsSubstrateBootstrapRestorePlan
   , awsSubstrateBootstrapRestoreSteps
   , guardTestDelete
+  , harnessPostCredentialRuntimeCommand
   , integrationRunbookCommandArgs
   , lifecycleCleanupTargetsForSuite
   , nativeMayProvisionPerRunAwsStacks
@@ -1455,9 +1537,11 @@ import Prodbox.Vault.Client
   , KubernetesRoleReadback (..)
   , KubernetesRoleRequest (..)
   , KvV2ReadResponse (..)
+  , KvV2SecretMetadata (..)
   , KvV2WriteRequest (..)
   , PkiIssueCertificateRequest (..)
   , PkiIssueCertificateResponse (..)
+  , PolicyReadback (..)
   , SealStatus (..)
   , TokenCreateRequest (..)
   , TokenCreateResponse (..)
@@ -1515,10 +1599,13 @@ import Prodbox.Vault.Reconcile
   , VaultTransitKeySpec (..)
   , bootstrapControlPlaneClientRole
   , bootstrapPkiOperatorRole
+  , bootstrapPolicyRepairRole
+  , bootstrapProvisionerPolicySpec
   , bootstrapProvisionerRole
   , bootstrapSealRole
   , decideVaultPkiRoot
   , defaultVaultReconcilePlan
+  , provisionerVaultReconcilePlan
   , runVaultReconcileWith
   )
 import Prodbox.Vault.RoleId
@@ -1533,6 +1620,7 @@ import Prodbox.Vault.Seal
   , renderVaultSealHcl
   , transitSealPolicyDocument
   )
+import Prodbox.Vault.Session qualified as VaultSession
 import Prodbox.Vault.Status
   ( renderSealStatus
   )
@@ -1980,15 +2068,678 @@ runtimeMemoryTestInputs heapCap containerLimit childSchedule =
 
 defaultGatewayRuntimeMemoryProfile :: Capacity.RuntimeMemoryProfile
 defaultGatewayRuntimeMemoryProfile =
-  case Capacity.defaultRuntimeMemoryProfiles of
-    [profile] -> profile
-    profiles -> error ("expected one default runtime-memory profile, got " ++ show profiles)
+  defaultRuntimeMemoryProfile "gateway"
+
+defaultProviderWorkerRuntimeMemoryProfile :: Capacity.RuntimeMemoryProfile
+defaultProviderWorkerRuntimeMemoryProfile =
+  defaultRuntimeMemoryProfile "provider-worker"
+
+defaultRuntimeMemoryProfile :: Text.Text -> Capacity.RuntimeMemoryProfile
+defaultRuntimeMemoryProfile requested =
+  case find ((== requested) . Capacity.runtime_profile_id) Capacity.defaultRuntimeMemoryProfiles of
+    Just profile -> profile
+    Nothing -> error ("expected default runtime-memory profile " ++ show requested)
 
 -- Existing unit fixtures use a valid synthetic baseline. The production value
 -- with this historical local name is intentionally unauthored after Sprint
 -- 1.92 and is tested explicitly through @Settings.defaultConfigFile@.
 defaultConfigFile :: ConfigFile
 defaultConfigFile = syntheticConfigFile
+
+targetSecretAgentStartupDiagnosticSuite :: SuiteBuilder ()
+targetSecretAgentStartupDiagnosticSuite =
+  describe "Sprints 2.83-2.87 protected control-plane diagnostics" $ do
+    it "Sprint 2.97 pins the exact standing Authority readiness inventory" $ do
+      ControlPlaneRuntime.lifecycleAuthorityReadinessDependencies
+        `shouldBe` [ ControlPlaneRuntime.LifecycleAuthorityReadinessObjectStore
+                   , ControlPlaneRuntime.LifecycleAuthorityReadinessBootstrapHandoff
+                   ]
+    it "exhausts the closed payload-free cause vocabulary" $ do
+      map
+        ControlPlaneRuntime.renderTargetSecretAgentStartupCause
+        ControlPlaneRuntime.allTargetSecretAgentStartupCauses
+        `shouldBe` [ "config/decode"
+                   , "config/validation"
+                   , "vault/configuration"
+                   , "target-agent-identity/validation"
+                   , "authentication/topology"
+                   , "authentication/trust-resolution"
+                   , "authentication/session-acquire/forbidden"
+                   , "authentication/session-acquire/sealed"
+                   , "authentication/session-acquire/unavailable"
+                   , "authentication/session-relogin/forbidden"
+                   , "authentication/session-relogin/sealed"
+                   , "authentication/session-relogin/unavailable"
+                   , "authentication/trust-read/status-403"
+                   , "authentication/trust-read/status-404"
+                   , "authentication/trust-read/status-other"
+                   , "authentication/trust-read/connection"
+                   , "authentication/trust-read/timeout"
+                   , "authentication/trust-read/decode"
+                   , "authentication/trust-read/identity-mismatch"
+                   , "authentication/trust-registry/construction"
+                   , "authentication/signer-resolution"
+                   , "handler/boundaries"
+                   , "handler/boundaries/target-sink"
+                   , "handler/boundaries/trusted-sink"
+                   , "handler/boundaries/tombstone-boundary"
+                   , "handler/boundaries/tombstone-binding"
+                   , "handler/boundaries/tombstone-registry"
+                   , "handler/boundaries/retained-custody"
+                   , "handler/one-shot-boundary"
+                   , "handler/authority-manifest"
+                   ]
+    it "logs only for the Target Secret Agent and preserves exit 1" $
+      forM_ ControlPlaneRuntime.allTargetSecretAgentStartupCauses $ \cause -> do
+        ControlPlaneRuntime.targetSecretAgentStartupRefusalDisposition
+          TargetSecretAgentRuntime
+          cause
+          `shouldBe` ( Just (ControlPlaneRuntime.renderTargetSecretAgentStartupCause cause)
+                     , ExitFailure 1
+                     )
+        ControlPlaneRuntime.targetSecretAgentStartupRefusalDisposition
+          LifecycleAuthorityRuntime
+          cause
+          `shouldBe` (Nothing, ExitFailure 1)
+    it "exhausts the closed payload-free Lifecycle Authority startup vocabulary" $ do
+      let rendered =
+            map
+              ControlPlaneRuntime.renderLifecycleAuthorityStartupCause
+              ControlPlaneRuntime.allLifecycleAuthorityStartupCauses
+      rendered
+        `shouldBe` [ "config/decode"
+                   , "config/validation"
+                   , "vault/configuration"
+                   , "target-agent-identity/validation"
+                   , "authentication/topology"
+                   , "authentication/trust-resolution"
+                   , "authentication/session-acquire/forbidden"
+                   , "authentication/session-acquire/sealed"
+                   , "authentication/session-acquire/unavailable"
+                   , "authentication/session-relogin/forbidden"
+                   , "authentication/session-relogin/sealed"
+                   , "authentication/session-relogin/unavailable"
+                   , "authentication/trust-read/status-403"
+                   , "authentication/trust-read/status-404"
+                   , "authentication/trust-read/status-other"
+                   , "authentication/trust-read/connection"
+                   , "authentication/trust-read/timeout"
+                   , "authentication/trust-read/decode"
+                   , "authentication/trust-read/identity-mismatch"
+                   , "authentication/trust-registry/construction"
+                   , "authentication/signer-resolution"
+                   , "primary-store/vault-read/credentials"
+                   , "primary-store/vault-read/hmac"
+                   , "primary-store/vault-read/other"
+                   , "primary-store/field-missing/minio-access-key"
+                   , "primary-store/field-missing/minio-secret-key"
+                   , "primary-store/field-missing/hmac-key"
+                   , "primary-store/field-missing/other"
+                   , "primary-store/field-empty/minio-access-key"
+                   , "primary-store/field-empty/minio-secret-key"
+                   , "primary-store/field-empty/hmac-key"
+                   , "primary-store/field-empty/other"
+                   , "coordinates/construction"
+                   , "interpreter/registered-clients"
+                   , "interpreter/initial-admission/registration-coordinate"
+                   , "interpreter/initial-admission/registration-corrupt"
+                   , "interpreter/initial-admission/registration-endpoint-unready"
+                   , "interpreter/initial-admission/registration-unobservable/coordinate-authority"
+                   , "interpreter/initial-admission/registration-unobservable/store-endpoint"
+                   , "interpreter/initial-admission/registration-unobservable/store-request"
+                   , "interpreter/initial-admission/registration-unobservable/store-http/authentication"
+                   , "interpreter/initial-admission/registration-unobservable/store-http/authorization/access-denied"
+                   , "interpreter/initial-admission/registration-unobservable/store-http/authorization/invalid-access-key"
+                   , "interpreter/initial-admission/registration-unobservable/store-http/authorization/signature-mismatch"
+                   , "interpreter/initial-admission/registration-unobservable/store-http/authorization/request-time-skewed"
+                   , "interpreter/initial-admission/registration-unobservable/store-http/authorization/authorization-header-malformed"
+                   , "interpreter/initial-admission/registration-unobservable/store-http/authorization/expired-token"
+                   , "interpreter/initial-admission/registration-unobservable/store-http/authorization/other"
+                   , "interpreter/initial-admission/registration-unobservable/store-http/authorization/malformed-or-unknown"
+                   , "interpreter/initial-admission/registration-unobservable/store-http/client-other"
+                   , "interpreter/initial-admission/registration-unobservable/store-http/server"
+                   , "interpreter/initial-admission/registration-unobservable/store-http/unexpected-non-error"
+                   , "interpreter/initial-admission/registration-unobservable/store-http/unknown"
+                   , "interpreter/initial-admission/registration-unobservable/store-version"
+                   , "interpreter/initial-admission/registration-unobservable/envelope-open"
+                   , "interpreter/initial-admission/registration-unobservable/model-b-version"
+                   , "interpreter/initial-admission/registration-unobservable/other"
+                   , "interpreter/initial-admission/clean-install"
+                   , "interpreter/initial-admission/migration"
+                   , "interpreter/authority-scope"
+                   , "interpreter/transport-bounds"
+                   , "interpreter/authentication-lifetime"
+                   , "interpreter/replay-clock-skew"
+                   , "interpreter/replay-limits"
+                   , "interpreter/replay-cas-attempts"
+                   , "interpreter/backup/endpoint"
+                   , "interpreter/backup/client"
+                   , "interpreter/target-agent/endpoint"
+                   , "interpreter/target-agent/client"
+                   , "interpreter/tls-retention/endpoint"
+                   , "interpreter/tls-retention/client"
+                   , "interpreter/local-authority/endpoint"
+                   , "interpreter/local-authority/client"
+                   , "interpreter/provider/endpoint"
+                   , "interpreter/provider/client"
+                   , "interpreter/recovery-plane/observer"
+                   , "interpreter/admission/read"
+                   , "interpreter/manifest-signer/read"
+                   , "interpreter/target-worker/image"
+                   , "interpreter/authenticated-runtime/install"
+                   , "other"
+                   ]
+      length rendered `shouldBe` length (nub rendered)
+      forM_ ControlPlaneRuntime.allLifecycleAuthorityStartupCauses $ \cause -> do
+        ControlPlaneRuntime.lifecycleAuthorityStartupRefusalDisposition
+          LifecycleAuthorityRuntime
+          cause
+          `shouldBe` ( Just (ControlPlaneRuntime.renderLifecycleAuthorityStartupCause cause)
+                     , ExitFailure 1
+                     )
+        ControlPlaneRuntime.lifecycleAuthorityStartupRefusalDisposition
+          TargetSecretAgentRuntime
+          cause
+          `shouldBe` (Nothing, ExitFailure 1)
+    it "exhausts the closed payload-free Lifecycle Authority interpreter vocabulary" $ do
+      let rendered =
+            map
+              ControlPlaneRuntime.renderLifecycleAuthorityInterpreterCause
+              ControlPlaneRuntime.allLifecycleAuthorityInterpreterCauses
+      rendered
+        `shouldBe` [ "registered-clients"
+                   , "initial-admission/registration-coordinate"
+                   , "initial-admission/registration-corrupt"
+                   , "initial-admission/registration-endpoint-unready"
+                   , "initial-admission/registration-unobservable/coordinate-authority"
+                   , "initial-admission/registration-unobservable/store-endpoint"
+                   , "initial-admission/registration-unobservable/store-request"
+                   , "initial-admission/registration-unobservable/store-http/authentication"
+                   , "initial-admission/registration-unobservable/store-http/authorization/access-denied"
+                   , "initial-admission/registration-unobservable/store-http/authorization/invalid-access-key"
+                   , "initial-admission/registration-unobservable/store-http/authorization/signature-mismatch"
+                   , "initial-admission/registration-unobservable/store-http/authorization/request-time-skewed"
+                   , "initial-admission/registration-unobservable/store-http/authorization/authorization-header-malformed"
+                   , "initial-admission/registration-unobservable/store-http/authorization/expired-token"
+                   , "initial-admission/registration-unobservable/store-http/authorization/other"
+                   , "initial-admission/registration-unobservable/store-http/authorization/malformed-or-unknown"
+                   , "initial-admission/registration-unobservable/store-http/client-other"
+                   , "initial-admission/registration-unobservable/store-http/server"
+                   , "initial-admission/registration-unobservable/store-http/unexpected-non-error"
+                   , "initial-admission/registration-unobservable/store-http/unknown"
+                   , "initial-admission/registration-unobservable/store-version"
+                   , "initial-admission/registration-unobservable/envelope-open"
+                   , "initial-admission/registration-unobservable/model-b-version"
+                   , "initial-admission/registration-unobservable/other"
+                   , "initial-admission/clean-install"
+                   , "initial-admission/migration"
+                   , "authority-scope"
+                   , "transport-bounds"
+                   , "authentication-lifetime"
+                   , "replay-clock-skew"
+                   , "replay-limits"
+                   , "replay-cas-attempts"
+                   , "backup/endpoint"
+                   , "backup/client"
+                   , "target-agent/endpoint"
+                   , "target-agent/client"
+                   , "tls-retention/endpoint"
+                   , "tls-retention/client"
+                   , "local-authority/endpoint"
+                   , "local-authority/client"
+                   , "provider/endpoint"
+                   , "provider/client"
+                   , "recovery-plane/observer"
+                   , "admission/read"
+                   , "manifest-signer/read"
+                   , "target-worker/image"
+                   , "authenticated-runtime/install"
+                   ]
+      length rendered `shouldBe` length (nub rendered)
+      map
+        ( ControlPlaneRuntime.renderLifecycleAuthorityStartupCause
+            . ControlPlaneRuntime.LifecycleAuthorityStartupInterpreterConstruction
+        )
+        ControlPlaneRuntime.allLifecycleAuthorityInterpreterCauses
+        `shouldBe` map ("interpreter/" <>) rendered
+    it "classifies initial-admission observations without retaining boundary detail" $ do
+      ControlPlaneRuntime.lifecycleAuthorityInitialAdmissionModeFromRegistration
+        (ModelBMissing :: ModelBObservation ())
+        `shouldBe` Right ControlPlaneRuntime.AuthorityCleanInstallStartup
+      version <- either (fail . show) pure (mkModelBObjectVersion "initial-admission-version-1")
+      ControlPlaneRuntime.lifecycleAuthorityInitialAdmissionModeFromRegistration
+        (ModelBObserved version ())
+        `shouldBe` Right ControlPlaneRuntime.AuthorityMigrationStartup
+      ControlPlaneRuntime.lifecycleAuthorityInitialAdmissionModeFromRegistration
+        (ModelBCorrupt "decoder detail one" :: ModelBObservation ())
+        `shouldBe` Left ControlPlaneRuntime.LifecycleAuthorityInitialAdmissionRegistrationCorrupt
+      ControlPlaneRuntime.lifecycleAuthorityInitialAdmissionModeFromRegistration
+        (ModelBCorrupt "decoder detail two" :: ModelBObservation ())
+        `shouldBe` Left ControlPlaneRuntime.LifecycleAuthorityInitialAdmissionRegistrationCorrupt
+      ControlPlaneRuntime.lifecycleAuthorityInitialAdmissionModeFromRegistration
+        (ModelBEndpointUnready "endpoint detail" :: ModelBObservation ())
+        `shouldBe` Left ControlPlaneRuntime.LifecycleAuthorityInitialAdmissionRegistrationEndpointUnready
+      ControlPlaneRuntime.lifecycleAuthorityInitialAdmissionModeFromRegistration
+        (ModelBUnobservable "transport detail" :: ModelBObservation ())
+        `shouldBe` Left
+          ( ControlPlaneRuntime.LifecycleAuthorityInitialAdmissionRegistrationUnobservable
+              ControlPlaneRuntime.LifecycleAuthorityRegistrationOther
+          )
+      map
+        ControlPlaneRuntime.renderLifecycleAuthorityInitialAdmissionCause
+        ControlPlaneRuntime.allLifecycleAuthorityInitialAdmissionCauses
+        `shouldBe` [ "registration-coordinate"
+                   , "registration-corrupt"
+                   , "registration-endpoint-unready"
+                   , "registration-unobservable/coordinate-authority"
+                   , "registration-unobservable/store-endpoint"
+                   , "registration-unobservable/store-request"
+                   , "registration-unobservable/store-http/authentication"
+                   , "registration-unobservable/store-http/authorization/access-denied"
+                   , "registration-unobservable/store-http/authorization/invalid-access-key"
+                   , "registration-unobservable/store-http/authorization/signature-mismatch"
+                   , "registration-unobservable/store-http/authorization/request-time-skewed"
+                   , "registration-unobservable/store-http/authorization/authorization-header-malformed"
+                   , "registration-unobservable/store-http/authorization/expired-token"
+                   , "registration-unobservable/store-http/authorization/other"
+                   , "registration-unobservable/store-http/authorization/malformed-or-unknown"
+                   , "registration-unobservable/store-http/client-other"
+                   , "registration-unobservable/store-http/server"
+                   , "registration-unobservable/store-http/unexpected-non-error"
+                   , "registration-unobservable/store-http/unknown"
+                   , "registration-unobservable/store-version"
+                   , "registration-unobservable/envelope-open"
+                   , "registration-unobservable/model-b-version"
+                   , "registration-unobservable/other"
+                   , "clean-install"
+                   , "migration"
+                   ]
+    it "classifies registration unobservability without retaining boundary detail" $ do
+      let cases =
+            [
+              ( "Model-B coordinate does not belong to the configured long-lived checkpoint authority"
+              , ControlPlaneRuntime.LifecycleAuthorityRegistrationCoordinateAuthority
+              )
+            ,
+              ( "failed to fetch encrypted object: invalid object-store endpoint: endpoint detail"
+              , ControlPlaneRuntime.LifecycleAuthorityRegistrationStoreEndpoint
+              )
+            ,
+              ( "failed to fetch encrypted object: object-store request failed: exception detail"
+              , ControlPlaneRuntime.LifecycleAuthorityRegistrationStoreRequest
+              )
+            ,
+              ( "failed to fetch encrypted object: object-store GET failed (403): response detail"
+              , ControlPlaneRuntime.LifecycleAuthorityRegistrationStoreHttp
+                  ( ControlPlaneRuntime.LifecycleAuthorityRegistrationStoreHttpAuthorization
+                      ControlPlaneRuntime.ObjectStoreS3MalformedOrUnknown
+                  )
+              )
+            ,
+              ( "failed to fetch encrypted object: object-store GET failed (403): <Error><Code>SignatureDoesNotMatch</Code><Message>sensitive detail</Message></Error>"
+              , ControlPlaneRuntime.LifecycleAuthorityRegistrationStoreHttp
+                  ( ControlPlaneRuntime.LifecycleAuthorityRegistrationStoreHttpAuthorization
+                      ControlPlaneRuntime.ObjectStoreS3SignatureMismatch
+                  )
+              )
+            ,
+              ( "failed to fetch encrypted object: object-store GET succeeded but returned no ETag version"
+              , ControlPlaneRuntime.LifecycleAuthorityRegistrationStoreVersion
+              )
+            ,
+              ( "failed to open encrypted object: envelope detail"
+              , ControlPlaneRuntime.LifecycleAuthorityRegistrationEnvelopeOpen
+              )
+            ,
+              ( "AuthorityCoordinateContainsWhitespace \"model_b_object_version\""
+              , ControlPlaneRuntime.LifecycleAuthorityRegistrationModelBVersion
+              )
+            ,
+              ( "unclassified transport detail"
+              , ControlPlaneRuntime.LifecycleAuthorityRegistrationOther
+              )
+            ]
+      forM_ cases $ \(detail, expected) -> do
+        ControlPlaneRuntime.lifecycleAuthorityRegistrationUnobservableCause detail
+          `shouldBe` expected
+        ControlPlaneRuntime.lifecycleAuthorityInitialAdmissionModeFromRegistration
+          (ModelBUnobservable detail :: ModelBObservation ())
+          `shouldBe` Left
+            (ControlPlaneRuntime.LifecycleAuthorityInitialAdmissionRegistrationUnobservable expected)
+      map
+        ControlPlaneRuntime.renderLifecycleAuthorityRegistrationUnobservableCause
+        ControlPlaneRuntime.allLifecycleAuthorityRegistrationUnobservableCauses
+        `shouldBe` [ "coordinate-authority"
+                   , "store-endpoint"
+                   , "store-request"
+                   , "store-http/authentication"
+                   , "store-http/authorization/access-denied"
+                   , "store-http/authorization/invalid-access-key"
+                   , "store-http/authorization/signature-mismatch"
+                   , "store-http/authorization/request-time-skewed"
+                   , "store-http/authorization/authorization-header-malformed"
+                   , "store-http/authorization/expired-token"
+                   , "store-http/authorization/other"
+                   , "store-http/authorization/malformed-or-unknown"
+                   , "store-http/client-other"
+                   , "store-http/server"
+                   , "store-http/unexpected-non-error"
+                   , "store-http/unknown"
+                   , "store-version"
+                   , "envelope-open"
+                   , "model-b-version"
+                   , "other"
+                   ]
+      let protectedRender detail =
+            either
+              ControlPlaneRuntime.renderLifecycleAuthorityInitialAdmissionCause
+              (const "admitted")
+              ( ControlPlaneRuntime.lifecycleAuthorityInitialAdmissionModeFromRegistration
+                  (ModelBUnobservable detail :: ModelBObservation ())
+              )
+      protectedRender
+        "failed to fetch encrypted object: object-store GET failed (403): <Error><Code>AccessDenied</Code><Message>first sensitive body</Message></Error>"
+        `shouldBe` protectedRender
+          "failed to fetch encrypted object: object-store GET failed (403): <Error><Code>AccessDenied</Code><Message>second sensitive body</Message></Error>"
+      protectedRender
+        "failed to fetch encrypted object: object-store GET failed (403): <Error><Code>AccessDenied</Code></Error>"
+        `shouldNotBe` protectedRender
+          "failed to fetch encrypted object: object-store GET failed (403): <Error><Code>SignatureDoesNotMatch</Code></Error>"
+      protectedRender
+        "failed to fetch encrypted object: object-store GET failed (403): <Error><Code>AccessDenied</Code></Error>"
+        `shouldNotBe` protectedRender
+          "failed to fetch encrypted object: object-store GET failed (500): response detail"
+    it "classifies primary-store failures without retaining path, field, or HTTP detail" $ do
+      ControlPlaneRuntime.lifecycleAuthorityStartupCauseFromStoreError
+        (InClusterAuthorityVaultReadFailed "minio/lifecycle-authority" "secret detail one")
+        `shouldBe` ControlPlaneRuntime.LifecycleAuthorityStartupPrimaryStoreCredentialRead
+      ControlPlaneRuntime.lifecycleAuthorityStartupCauseFromStoreError
+        (InClusterAuthorityVaultReadFailed "object-store/hmac" "secret detail two")
+        `shouldBe` ControlPlaneRuntime.LifecycleAuthorityStartupPrimaryStoreHmacRead
+      ControlPlaneRuntime.lifecycleAuthorityStartupCauseFromStoreError
+        (InClusterAuthorityVaultReadFailed "arbitrary/path" "secret detail three")
+        `shouldBe` ControlPlaneRuntime.LifecycleAuthorityStartupPrimaryStoreOtherRead
+      ControlPlaneRuntime.lifecycleAuthorityStartupCauseFromStoreError
+        (InClusterAuthorityVaultFieldMissing "minio/lifecycle-authority" "minio_access_key")
+        `shouldBe` ControlPlaneRuntime.LifecycleAuthorityStartupPrimaryStoreAccessKeyMissing
+      ControlPlaneRuntime.lifecycleAuthorityStartupCauseFromStoreError
+        (InClusterAuthorityVaultFieldEmpty "object-store/hmac" "key")
+        `shouldBe` ControlPlaneRuntime.LifecycleAuthorityStartupPrimaryStoreHmacKeyEmpty
+      ControlPlaneRuntime.lifecycleAuthorityStartupCauseFromStoreError
+        (InClusterAuthorityVaultFieldMissing "arbitrary/path" "arbitrary_field")
+        `shouldBe` ControlPlaneRuntime.LifecycleAuthorityStartupPrimaryStoreOtherFieldMissing
+    it "binds the production tombstone to the compiled sink identity, not the cluster ID" $ do
+      case compiledTargetSecretSink TargetSesSmtp of
+        Left err -> expectationFailure (Text.unpack err)
+        Right sink -> do
+          ControlPlaneRuntime.targetSecretAgentTombstoneReference sink
+            `shouldBe` targetSecretSinkIdentity sink
+          ControlPlaneRuntime.targetSecretAgentTombstoneReference sink
+            `shouldBe` "ses-smtp"
+          ControlPlaneRuntime.targetSecretAgentTombstoneReference sink
+            `shouldNotBe` "prodbox-home"
+    it "exhausts the closed Target Agent readiness cause vocabulary" $ do
+      let materialCauses constructor =
+            [ constructor target stage
+            | target <- allTargetMaterialIds
+            , stage <- TargetMaterial.allTargetMaterialReadinessStages
+            ]
+          expected =
+            [ ControlPlaneRuntime.TargetSecretAgentReadinessStarting
+            , ControlPlaneRuntime.TargetSecretAgentReadinessStale
+            ]
+              <> materialCauses ControlPlaneRuntime.TargetSecretAgentReadinessTargetMaterialUnavailable
+              <> [ ControlPlaneRuntime.TargetSecretAgentReadinessAuthorityClockUnavailable
+                 , ControlPlaneRuntime.TargetSecretAgentReadinessProjectedTokenUnavailable
+                 , ControlPlaneRuntime.TargetSecretAgentReadinessRetainedEpochUnavailable
+                 , ControlPlaneRuntime.TargetSecretAgentReadinessReplayProjectionUnavailable
+                 , ControlPlaneRuntime.TargetSecretAgentReadinessOtherUnavailable
+                 ]
+              <> materialCauses ControlPlaneRuntime.TargetSecretAgentReadinessTargetMaterialIdentityRejected
+              <> [ ControlPlaneRuntime.TargetSecretAgentReadinessAuthorityClockIdentityRejected
+                 , ControlPlaneRuntime.TargetSecretAgentReadinessProjectedTokenIdentityRejected
+                 , ControlPlaneRuntime.TargetSecretAgentReadinessRetainedEpochIdentityRejected
+                 , ControlPlaneRuntime.TargetSecretAgentReadinessReplayProjectionIdentityRejected
+                 , ControlPlaneRuntime.TargetSecretAgentReadinessOtherIdentityRejected
+                 ]
+          rendered =
+            map
+              ControlPlaneRuntime.renderTargetSecretAgentReadinessCause
+              ControlPlaneRuntime.allTargetSecretAgentReadinessCauses
+      ControlPlaneRuntime.allTargetSecretAgentReadinessCauses `shouldBe` expected
+      length rendered `shouldBe` length (nub rendered)
+      rendered `shouldContain` ["readiness/dependency-unavailable/target-material/ses-smtp/metadata-read"]
+      rendered
+        `shouldContain` ["readiness/identity-rejected/target-material/ses-smtp/metadata-validation"]
+    it "classifies composed readiness facts without dependency detail payloads" $ do
+      let observed label observation =
+            RoleReadiness.RoleReadinessFacts
+              { RoleReadiness.roleFactDependencies = [(label, observation)]
+              , RoleReadiness.roleFactObservedAtMicros = Just 1
+              }
+          unavailable label expected =
+            ControlPlaneRuntime.targetSecretAgentReadinessCause
+              (RoleReadiness.RoleReadinessDependencyUnavailable "secret-adjacent detail")
+              (observed label (RoleReadiness.RoleDependencyUnavailable "different secret detail"))
+              `shouldBe` Just expected
+          rejected label expected =
+            ControlPlaneRuntime.targetSecretAgentReadinessCause
+              (RoleReadiness.RoleReadinessIdentityRejected "secret-adjacent detail")
+              (observed label (RoleReadiness.RoleDependencyIdentityRejected "different secret detail"))
+              `shouldBe` Just expected
+          dependencyCases =
+            [
+              ( TargetMaterial.targetMaterialReadinessDependencyLabel
+                  TargetSesSmtp
+                  TargetMaterial.TargetMaterialMetadataRead
+              , ControlPlaneRuntime.TargetSecretAgentReadinessTargetMaterialUnavailable
+                  TargetSesSmtp
+                  TargetMaterial.TargetMaterialMetadataRead
+              , ControlPlaneRuntime.TargetSecretAgentReadinessTargetMaterialIdentityRejected
+                  TargetSesSmtp
+                  TargetMaterial.TargetMaterialMetadataRead
+              )
+            ,
+              ( "authority-clock"
+              , ControlPlaneRuntime.TargetSecretAgentReadinessAuthorityClockUnavailable
+              , ControlPlaneRuntime.TargetSecretAgentReadinessAuthorityClockIdentityRejected
+              )
+            ,
+              ( "projected-service-account-token"
+              , ControlPlaneRuntime.TargetSecretAgentReadinessProjectedTokenUnavailable
+              , ControlPlaneRuntime.TargetSecretAgentReadinessProjectedTokenIdentityRejected
+              )
+            ,
+              ( "retained-authority-epoch"
+              , ControlPlaneRuntime.TargetSecretAgentReadinessRetainedEpochUnavailable
+              , ControlPlaneRuntime.TargetSecretAgentReadinessRetainedEpochIdentityRejected
+              )
+            ,
+              ( "request-replay-projection"
+              , ControlPlaneRuntime.TargetSecretAgentReadinessReplayProjectionUnavailable
+              , ControlPlaneRuntime.TargetSecretAgentReadinessReplayProjectionIdentityRejected
+              )
+            ,
+              ( "unknown-dependency"
+              , ControlPlaneRuntime.TargetSecretAgentReadinessOtherUnavailable
+              , ControlPlaneRuntime.TargetSecretAgentReadinessOtherIdentityRejected
+              )
+            ]
+      forM_ dependencyCases $ \(label, unavailableCause, rejectedCause) -> do
+        unavailable label unavailableCause
+        rejected label rejectedCause
+      ControlPlaneRuntime.targetSecretAgentReadinessCause
+        (RoleReadiness.RoleReadinessStarting "secret-adjacent detail")
+        RoleReadiness.RoleReadinessFacts
+          { RoleReadiness.roleFactDependencies =
+              [("target-material:ses-smtp", RoleReadiness.RoleDependencyUnobserved)]
+          , RoleReadiness.roleFactObservedAtMicros = Nothing
+          }
+        `shouldBe` Just ControlPlaneRuntime.TargetSecretAgentReadinessStarting
+      ControlPlaneRuntime.targetSecretAgentReadinessCause
+        (RoleReadiness.RoleReadinessStarting "secret-adjacent detail")
+        (observed "target-material:ses-smtp" RoleReadiness.RoleDependencyReady)
+        `shouldBe` Just ControlPlaneRuntime.TargetSecretAgentReadinessStale
+      ControlPlaneRuntime.targetSecretAgentReadinessCause
+        RoleReadiness.RoleReadinessReady
+        (observed "target-material:ses-smtp" RoleReadiness.RoleDependencyReady)
+        `shouldBe` Nothing
+      forM_
+        [ RoleReadiness.RoleReadinessStarting "arbitrary starting detail"
+        , RoleReadiness.RoleReadinessDependencyUnavailable "arbitrary unavailable detail"
+        , RoleReadiness.RoleReadinessIdentityRejected "arbitrary rejection detail"
+        , RoleReadiness.RoleReadinessReady
+        ]
+        ( \state ->
+            snd
+              ( ControlPlaneRuntime.targetSecretAgentReadinessDiagnosticDisposition
+                  state
+                  (observed "unknown-dependency" RoleReadiness.RoleDependencyReady)
+              )
+              `shouldBe` state
+        )
+    it "refines target-material failures without changing their readiness observations" $ do
+      forM_ allTargetMaterialIds $ \target ->
+        forM_ TargetMaterial.allTargetMaterialReadinessStages $ \stage -> do
+          let label = TargetMaterial.targetMaterialReadinessDependencyLabel target stage
+          TargetMaterial.decodeTargetMaterialReadinessDependencyLabel label
+            `shouldBe` Just (target, stage)
+      TargetMaterial.decodeTargetMaterialReadinessDependencyLabel
+        "target-material:arbitrary:metadata-read"
+        `shouldBe` Nothing
+      let readFailure = Left "arbitrary Vault or HTTP detail"
+          emptyLegacyMetadata =
+            KvV2SecretMetadata
+              { kvV2SecretMetadataCurrentVersion = 1
+              , kvV2SecretMetadataCustom = Map.empty
+              }
+          zeroVersionEmptyMetadata =
+            emptyLegacyMetadata {kvV2SecretMetadataCurrentVersion = 0}
+          invalidMetadata =
+            emptyLegacyMetadata
+              { kvV2SecretMetadataCustom =
+                  Map.singleton TargetMaterial.targetMaterialMetadataGenerationField "1"
+              }
+          digest = Text.replicate 64 "0"
+          validMetadata =
+            KvV2SecretMetadata
+              { kvV2SecretMetadataCurrentVersion = 1
+              , kvV2SecretMetadataCustom =
+                  Map.fromList
+                    [ (TargetMaterial.targetMaterialMetadataGenerationField, "1")
+                    , (TargetMaterial.targetMaterialMetadataVaultVersionField, "1")
+                    , (TargetMaterial.targetMaterialMetadataCommitmentField, "vault:v1:opaque")
+                    , (TargetMaterial.targetMaterialMetadataOwnerNonceField, "owner-1")
+                    , (TargetMaterial.targetMaterialMetadataFencingTokenField, "1")
+                    , (TargetMaterial.targetMaterialMetadataRequestDigestField, digest)
+                    , (TargetMaterial.targetMaterialMetadataActionDigestField, digest)
+                    , (TargetMaterial.targetMaterialMetadataPodUidField, "pod-1")
+                    , (TargetMaterial.targetMaterialMetadataImageDigestField, "sha256:image")
+                    ]
+              }
+          ready =
+            ( "target-material:" <> targetSecretIdToken TargetSesSmtp
+            , RoleReadiness.RoleDependencyReady
+            )
+      TargetMaterial.targetMaterialReadinessObservation TargetSesSmtp readFailure
+        `shouldBe` ( TargetMaterial.targetMaterialReadinessDependencyLabel
+                       TargetSesSmtp
+                       TargetMaterial.TargetMaterialMetadataRead
+                   , RoleReadiness.RoleDependencyUnavailable "arbitrary Vault or HTTP detail"
+                   )
+      TargetMaterial.targetMaterialReadinessObservation TargetSesSmtp (Right Nothing)
+        `shouldBe` ready
+      TargetMaterial.targetMaterialReadinessObservation
+        TargetSesSmtp
+        (Right (Just emptyLegacyMetadata))
+        `shouldBe` ready
+      TargetMaterial.targetMaterialReadinessObservation
+        TargetSesSmtp
+        (Right (Just zeroVersionEmptyMetadata))
+        `shouldBe` ( TargetMaterial.targetMaterialReadinessDependencyLabel
+                       TargetSesSmtp
+                       TargetMaterial.TargetMaterialMetadataValidation
+                   , RoleReadiness.RoleDependencyUnavailable "target metadata field set is not canonical"
+                   )
+      TargetMaterial.targetMaterialReadinessObservation TargetSesSmtp (Right (Just invalidMetadata))
+        `shouldBe` ( TargetMaterial.targetMaterialReadinessDependencyLabel
+                       TargetSesSmtp
+                       TargetMaterial.TargetMaterialMetadataValidation
+                   , RoleReadiness.RoleDependencyUnavailable "target metadata field set is not canonical"
+                   )
+      TargetMaterial.targetMaterialReadinessObservation TargetSesSmtp (Right (Just validMetadata))
+        `shouldBe` ready
+    it "classifies typed trust failures without their payloads" $
+      case controlPlaneSigningKeyInventory of
+        [] -> expectationFailure "expected a closed control-plane signing-key inventory"
+        keyRef : _ -> do
+          let classify operationFailure =
+                ControlPlaneRuntime.targetSecretAgentTrustResolutionCause
+                  ( AuthenticatedRuntime.RouteTrustPublicGenerationUnavailable
+                      keyRef
+                      (TransitAuthentication.TransitPublicGenerationVaultFailure operationFailure)
+                  )
+          classify
+            ( VaultSession.VaultSessionAcquisitionFailed
+                (VaultSession.VaultSessionForbidden "secret-adjacent login body")
+            )
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationSessionAcquireForbidden
+          classify
+            ( VaultSession.VaultSessionAcquisitionFailed
+                (VaultSession.VaultSessionSealed "secret-adjacent sealed body")
+            )
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationSessionAcquireSealed
+          classify
+            ( VaultSession.VaultSessionAcquisitionFailed
+                (VaultSession.VaultSessionUnavailable "secret-adjacent unavailable detail")
+            )
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationSessionAcquireUnavailable
+          classify
+            ( VaultSession.VaultSessionReloginFailed
+                (VaultSession.VaultSessionForbidden "secret-adjacent login body")
+            )
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationSessionReloginForbidden
+          classify
+            ( VaultSession.VaultSessionReloginFailed
+                (VaultSession.VaultSessionSealed "secret-adjacent sealed body")
+            )
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationSessionReloginSealed
+          classify
+            ( VaultSession.VaultSessionReloginFailed
+                (VaultSession.VaultSessionUnavailable "secret-adjacent unavailable detail")
+            )
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationSessionReloginUnavailable
+          classify
+            (VaultSession.VaultSessionRequestFailed (HttpStatus 403 "secret-adjacent ACL body"))
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationTrustReadForbidden
+          classify
+            (VaultSession.VaultSessionRequestFailed (HttpStatus 404 "secret-adjacent missing body"))
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationTrustReadMissing
+          classify
+            (VaultSession.VaultSessionRequestFailed (HttpStatus 500 "secret-adjacent server body"))
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationTrustReadStatus
+          classify
+            ( VaultSession.VaultSessionRequestFailed
+                (HttpConnectionFailure "secret-adjacent connection detail")
+            )
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationTrustReadConnection
+          classify
+            (VaultSession.VaultSessionRequestFailed (HttpTimeout "secret-adjacent timeout detail"))
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationTrustReadTimeout
+          classify
+            (VaultSession.VaultSessionRequestFailed (HttpDecode "secret-adjacent decode detail"))
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationTrustReadDecode
+          ControlPlaneRuntime.targetSecretAgentTrustResolutionCause
+            ( AuthenticatedRuntime.RouteTrustPublicGenerationUnavailable
+                keyRef
+                TransitAuthentication.TransitPublicGenerationIdentityMismatch
+            )
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationTrustIdentityMismatch
+          ControlPlaneRuntime.targetSecretAgentTrustResolutionCause
+            ( AuthenticatedRuntime.RouteTrustConfigurationInvalid
+                AuthenticatedRuntime.ControlPlaneAuthenticationRouteCallerTopologyMismatch
+            )
+            `shouldBe` ControlPlaneRuntime.TargetSecretAgentStartupAuthenticationTrustConstruction
 
 main :: IO ()
 main = do
@@ -2000,6 +2751,7 @@ main = do
 
 unitSuite :: SuiteBuilder ()
 unitSuite = do
+  targetSecretAgentStartupDiagnosticSuite
   adminActionQuotaJournalSuite
   adminActionLifecycleSuite
   parserSuite
@@ -2370,6 +3122,8 @@ unitSuite = do
           ( object ["policy" .= ("path \"secret/*\" { capabilities = [\"read\"] }" :: Text.Text)]
               :: Value
           )
+      (eitherDecode "{\"data\":{\"policy\":\"exact-policy-document\"}}" :: Either String PolicyReadback)
+        `shouldBe` Right (PolicyReadback "exact-policy-document")
       eitherDecode (encode (TransitKeyRequest "aes256-gcm96"))
         `shouldBe` Right (object ["type" .= ("aes256-gcm96" :: Text.Text)] :: Value)
       eitherDecode (encode (TransitKeyRequest "ed25519"))
@@ -2988,6 +3742,19 @@ unitSuite = do
           Text.unpack (vaultPolicySpecDocument policy)
             `shouldContain` "path \"transit/decrypt/prodbox-child-*\""
         _ -> expectationFailure "expected one prodbox-federation-custody Vault policy"
+      let policyNamed name =
+            find
+              ((== name) . vaultPolicySpecName)
+              (vaultReconcilePolicies defaultVaultReconcilePlan)
+          custodyHmacPath =
+            "path \"transit/hmac/prodbox-retained-material-commitment\""
+      case (policyNamed "prodbox-lifecycle-authority", policyNamed "prodbox-target-secret-worker") of
+        (Just authorityPolicy, Just targetWorkerPolicy) -> do
+          Text.unpack (vaultPolicySpecDocument authorityPolicy)
+            `shouldNotContain` custodyHmacPath
+          Text.unpack (vaultPolicySpecDocument targetWorkerPolicy)
+            `shouldContain` custodyHmacPath
+        other -> expectationFailure ("expected Authority and Target-worker Vault policies: " ++ show other)
       case filter
         ((== "keycloak-smtp") . vaultKubernetesRoleSpecName)
         (vaultReconcileKubernetesRoles defaultVaultReconcilePlan) of
@@ -3034,6 +3801,7 @@ unitSuite = do
           , bootstrapSealRole
           , bootstrapPkiOperatorRole
           , bootstrapControlPlaneClientRole
+          , bootstrapPolicyRepairRole
           ]
           $ \role ->
             fmap vaultKubernetesRoleSpecTokenType (roleNamed role)
@@ -3044,10 +3812,41 @@ unitSuite = do
               `shouldContain` "path \"sys/seal\""
           Nothing -> expectationFailure "missing dedicated Bootstrap seal policy"
         case policyNamed bootstrapProvisionerRole of
-          Just provisionerPolicy ->
-            Text.unpack (vaultPolicySpecDocument provisionerPolicy)
-              `shouldNotContain` "path \"sys/seal\""
+          Just provisionerPolicy -> do
+            let policyDocument = vaultPolicySpecDocument provisionerPolicy
+                document = Text.unpack policyDocument
+                rolePathPrefix = "path \"auth/kubernetes/role/"
+            document `shouldNotContain` "path \"sys/seal\""
+            document `shouldNotContain` "sys/policies/acl"
+            document `shouldNotContain` "auth/kubernetes/role/prodbox-*"
+            document `shouldNotContain` "auth/kubernetes/role/*"
+            document `shouldNotContain` "\"sudo\""
+            Text.count rolePathPrefix policyDocument
+              `shouldBe` length roles
+            forM_ roles $ \role ->
+              document
+                `shouldContain` ( Text.unpack rolePathPrefix
+                                    ++ Text.unpack (vaultKubernetesRoleSpecName role)
+                                    ++ "\""
+                                )
+            provisionerPolicy `shouldBe` bootstrapProvisionerPolicySpec
           Nothing -> expectationFailure "missing Bootstrap provisioner policy"
+        case (policyNamed bootstrapPolicyRepairRole, roleNamed bootstrapPolicyRepairRole) of
+          (Just repairPolicy, Just repairRole) -> do
+            let document = Text.unpack (vaultPolicySpecDocument repairPolicy)
+            document
+              `shouldContain` "path \"sys/policies/acl/prodbox-bootstrap-provisioner\""
+            document `shouldContain` "\"sudo\""
+            document `shouldNotContain` "sys/policies/acl/*"
+            document `shouldNotContain` "sys/policies/acl/prodbox-bootstrap-policy-repair"
+            vaultKubernetesRoleSpecTokenType repairRole
+              `shouldBe` VaultKubernetesBatchToken
+            vaultKubernetesRoleSpecPolicies repairRole
+              `shouldBe` [bootstrapPolicyRepairRole]
+          other -> expectationFailure ("missing exact policy-repair role/policy: " ++ show other)
+        vaultReconcilePolicies provisionerVaultReconcilePlan `shouldBe` []
+        vaultReconcileKubernetesRoles provisionerVaultReconcilePlan
+          `shouldBe` roles
     it "keeps each adapter workload policy and Kubernetes identity on its exact credential path" $ do
       let policies = vaultReconcilePolicies defaultVaultReconcilePlan
           roles = vaultReconcileKubernetesRoles defaultVaultReconcilePlan
@@ -3067,10 +3866,10 @@ unitSuite = do
       case (roleNamed "prodbox-authority-backup", roleNamed "prodbox-tls-retention") of
         (Just backupRole, Just tlsRole) -> do
           vaultKubernetesRoleSpecServiceAccounts backupRole `shouldBe` ["prodbox-authority-backup"]
-          vaultKubernetesRoleSpecNamespaces backupRole `shouldBe` ["gateway"]
+          vaultKubernetesRoleSpecNamespaces backupRole `shouldBe` ["authority-backup"]
           vaultKubernetesRoleSpecPolicies backupRole `shouldBe` ["prodbox-authority-backup"]
           vaultKubernetesRoleSpecServiceAccounts tlsRole `shouldBe` ["prodbox-tls-retention"]
-          vaultKubernetesRoleSpecNamespaces tlsRole `shouldBe` ["gateway"]
+          vaultKubernetesRoleSpecNamespaces tlsRole `shouldBe` ["tls-retention"]
           vaultKubernetesRoleSpecPolicies tlsRole `shouldBe` ["prodbox-tls-retention"]
         other -> expectationFailure ("expected both dedicated adapter Vault roles, got " ++ show other)
     it "includes automatically managed chart-secret seed objects in the default Vault reconcile plan" $ do
@@ -3624,6 +4423,7 @@ unitSuite = do
               [ ComponentVaultUnsealed
               , ComponentChartLifecycleAuthority
               , ComponentChartAuthorityBackup
+              , ComponentChartProviderWorker
               , ComponentMinio
               ]
           fmap readiness (lookupComponentNode ComponentGatewayDaemonFull dag)
@@ -3637,6 +4437,16 @@ unitSuite = do
       classifyKubernetesReadiness check "2:1:1:1" `shouldSatisfy` isPending
       classifyKubernetesReadiness check "2:2:1:0" `shouldSatisfy` isPending
       classifyKubernetesReadiness check "" `shouldSatisfy` isPending
+      retryPolicyMaxAttempts (componentReadinessRetryPolicyFor ComponentChartBootstrapBroker)
+        `shouldBe` 60
+      retryPolicyMaxAttempts (componentReadinessRetryPolicyFor ComponentChartAuthorityBackup)
+        `shouldBe` 60
+      retryPolicyMaxAttempts (componentReadinessRetryPolicyFor ComponentMinio)
+        `shouldBe` retryPolicyMaxAttempts componentReadinessRetryPolicy
+      authorityBackupReadinessChecks
+        `shouldBe` [ DeploymentRevisionObserved "authority-backup" "authority-backup"
+                   , DeploymentAvailable "authority-backup" "authority-backup"
+                   ]
     it "declares every registry-backed native platform dependency explicitly" $ do
       case validateComponentGraph defaultComponentGraph of
         Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
@@ -4117,6 +4927,21 @@ unitSuite = do
       result `shouldBe` Right ReadinessProbeReady
       readIORef callsRef `shouldReturn` 2
   describe "EffectDAG-driven reconcile ordering + deep registry->MinIO gate (Sprint 4.45)" $ do
+    it "derives a retry-stable, scope/class/generation-bound harness credential operation" $ do
+      let operationId scope credentialClass generation =
+            normalAwsAdminOperationIdForScope scope credentialClass generation
+          current = operationId "cascade-qualification:pre-1" LifecycleProviderCredential 2
+      current `shouldSatisfy` isRight
+      operationId "cascade-qualification:pre-1" LifecycleProviderCredential 2
+        `shouldBe` current
+      operationId "cascade-qualification:pre-2" LifecycleProviderCredential 2
+        `shouldNotBe` current
+      operationId "cascade-qualification:pre-1" LifecycleProviderCredential 3
+        `shouldNotBe` current
+      operationId "cascade-qualification:pre-1" GatewayDnsCredential 2
+        `shouldNotBe` current
+      operationId "cascade-qualification:pre-1" LifecycleProviderCredential 0
+        `shouldSatisfy` isLeft
     it "derives the complete native component order directly from the validated graph" $ do
       case validateComponentGraph defaultComponentGraph of
         Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
@@ -4131,9 +4956,14 @@ unitSuite = do
       stepsForComponent ComponentChartTargetSecretAgent
         `shouldBe` [StepTargetSecretAgentChartReady]
       stepsForComponent ComponentChartLifecycleAuthority
-        `shouldBe` [StepLifecycleAuthorityChartReady, StepPostUnsealHandoff]
+        `shouldBe` [ StepGatewayMinioBootstrap
+                   , StepLifecycleAuthorityChartReady
+                   , StepPostUnsealHandoff
+                   ]
       stepsForComponent ComponentChartAuthorityBackup
-        `shouldBe` [ StepAuthorityBackupChartReady
+        `shouldBe` [ StepCredentialProvisionerSubstrateReady
+                   , StepAuthorityBackupChartReady
+                   , StepAuthorityBackupRolloutReady
                    , StepEstablishAuthorityBackup
                    , StepReconcileInForceConfig
                    , StepLoadInForceSettings
@@ -4152,12 +4982,18 @@ unitSuite = do
           indexOf StepBootstrapBrokerChartReady
             `shouldSatisfy` (`indexPrecedes` indexOf StepFederatedVaultLifecycle)
           indexOf StepTargetSecretAgentChartReady
+            `shouldSatisfy` (`indexPrecedes` indexOf StepGatewayMinioBootstrap)
+          indexOf StepGatewayMinioBootstrap
             `shouldSatisfy` (`indexPrecedes` indexOf StepLifecycleAuthorityChartReady)
           indexOf StepLifecycleAuthorityChartReady
             `shouldSatisfy` (`indexPrecedes` indexOf StepPostUnsealHandoff)
           indexOf StepPostUnsealHandoff
+            `shouldSatisfy` (`indexPrecedes` indexOf StepCredentialProvisionerSubstrateReady)
+          indexOf StepCredentialProvisionerSubstrateReady
             `shouldSatisfy` (`indexPrecedes` indexOf StepAuthorityBackupChartReady)
           indexOf StepAuthorityBackupChartReady
+            `shouldSatisfy` (`indexPrecedes` indexOf StepAuthorityBackupRolloutReady)
+          indexOf StepAuthorityBackupRolloutReady
             `shouldSatisfy` (`indexPrecedes` indexOf StepEstablishAuthorityBackup)
           indexOf StepEstablishAuthorityBackup
             `shouldSatisfy` (`indexPrecedes` indexOf StepReconcileInForceConfig)
@@ -4165,11 +5001,53 @@ unitSuite = do
             `shouldSatisfy` (`indexPrecedes` indexOf StepLoadInForceSettings)
           indexOf StepLoadInForceSettings
             `shouldSatisfy` (`indexPrecedes` indexOf StepProviderWorkerChartReady)
+          indexOf StepProviderWorkerChartReady
+            `shouldSatisfy` (`indexPrecedes` indexOf StepGatewayChartReady)
+          indexOf StepProviderWorkerChartReady
+            `shouldSatisfy` (`indexPrecedes` indexOf StepRootChartNamespaceGuardrails)
           indexOf StepLifecycleAuthorityChartReady
             `shouldSatisfy` (`indexPrecedes` indexOf StepTlsRetentionChartReady)
           indexOf StepLifecycleAuthorityChartReady
             `shouldSatisfy` (`indexPrecedes` indexOf StepGatewayChartReady)
           nativeInstallStepOrderRespectsGraph dag order `shouldBe` Right ()
+          let bootstrapFloor = nativeHarnessBootstrapFloorStepOrder order
+          bootstrapFloor `shouldContain` [StepCredentialProvisionerSubstrateReady]
+          bootstrapFloor `shouldContain` [StepLifecycleAuthorityChartReady]
+          bootstrapFloor `shouldContain` [StepAuthorityBackupRolloutReady]
+          bootstrapFloor `shouldContain` [StepReconcileInForceConfig]
+          bootstrapFloor `shouldContain` [StepLoadInForceSettings]
+          bootstrapFloor `shouldNotContain` [StepProviderWorkerChartReady]
+          bootstrapFloor `shouldNotContain` [StepTlsRetentionChartReady]
+          bootstrapFloor `shouldNotContain` [StepGatewayChartReady]
+          bootstrapFloor `shouldNotContain` [StepCertManagerRuntime]
+    it
+      "uses pre-seed settings for Authority Backup establishment before in-force loading (Sprint 2.101)"
+      $ do
+        repoRoot <- getCurrentDirectory
+        source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+        let sourceLines = lines source
+            blockFromTo startMarker endMarker =
+              takeWhile
+                (not . isInfixOf endMarker)
+                (dropWhile (not . isInfixOf startMarker) sourceLines)
+            transitionBlock =
+              blockFromTo
+                "transitionStepAction step ="
+                "The @PhaseSteady@ executor"
+            establishmentBlock =
+              blockFromTo
+                "requireEstablishedAuthorityBackupAdmission ::"
+                "authorityBackupRuntimeInputs"
+        transitionBlock
+          `shouldSatisfy` any
+            (isInfixOf "requireEstablishedAuthorityBackupAdmission repoRoot bootstrapSettings")
+        establishmentBlock
+          `shouldSatisfy` any
+            (isInfixOf "requireEstablishedAuthorityBackupAdmission repoRoot settings")
+        establishmentBlock
+          `shouldSatisfy` ( not
+                              . any (isInfixOf "loadPostMinioLifecycleSettings")
+                          )
     it "binds every installed control-plane chart to an authoritative rollout target" $ do
       let settings = testValidatedSettings "/tmp/prodbox/.data"
           componentsToCheck =
@@ -6257,6 +7135,9 @@ unitSuite = do
               `shouldBe` ["harness-machine-b"]
             aws configA `shouldBe` aws configB
             pulumi_state_backend configA `shouldBe` pulumi_state_backend configB
+            aws_substrate configA `shouldBe` aws_substrate configB
+            subzone_name (aws_substrate configA) `shouldBe` "aws.alpha.example.test"
+            profile (aws_substrate configA) `shouldBe` Just populatedHarnessAwsSubstrateProfile
             let rootA = tmpDir </> "a"
                 rootB = tmpDir </> "b"
             createDirectoryIfMissing True rootA
@@ -6310,6 +7191,14 @@ unitSuite = do
               , ("ses_receive_subdomain", populatedHarnessTestSecrets {ses_receive_subdomain = ""})
               , ("ses_capture_bucket", populatedHarnessTestSecrets {ses_capture_bucket = ""})
               ,
+                ( "aws_substrate_subzone_name"
+                , populatedHarnessTestSecrets {aws_substrate_subzone_name = ""}
+                )
+              ,
+                ( "aws_substrate_profile"
+                , populatedHarnessTestSecrets {aws_substrate_profile = Nothing}
+                )
+              ,
                 ( "pulumi_state_backend_bucket_name"
                 , populatedHarnessTestSecrets {pulumi_state_backend_bucket_name = ""}
                 )
@@ -6352,6 +7241,17 @@ unitSuite = do
           build secrets deploymentInput `shouldSatisfy` leftContains field
         forM_ missingDerivedCases $ \(field, input) ->
           build populatedHarnessTestSecrets input `shouldSatisfy` leftContains field
+
+    it "authors an EKS topology from the explicit AWS harness fixture" $ do
+      case harnessDeploymentInputForSubstrate SubstrateAws populatedHarnessTestSecrets of
+        Left err -> expectationFailure err
+        Right input ->
+          ClusterTopology.eksNodeGroupSize (harnessDeploymentTopology input)
+            `shouldBe` Just 2
+      harnessDeploymentInputForSubstrate
+        SubstrateAws
+        (populatedHarnessTestSecrets {aws_eks_node_group_size = 0})
+        `shouldSatisfy` leftContains "node_group_size"
 
     it "normalizes only the sender-bound legacy SES receive fixture" $ do
       let sender = ses_sender_domain populatedHarnessTestSecrets
@@ -6399,9 +7299,174 @@ unitSuite = do
             Tier0.writeTier0AtPath (tmpDir </> "prodbox.dhall") projectConfig
               `shouldReturn` Right ()
             before <- BS.readFile (tmpDir </> "prodbox.dhall")
-            existingHarnessConfigDisposition tmpDir config projectConfig True
+            existingHarnessConfigDisposition tmpDir config projectConfig True SubstrateHomeLocal
               `shouldReturn` Right True
             BS.readFile (tmpDir </> "prodbox.dhall") `shouldReturn` before
+
+    it "allows the exact canonical unauthored skeleton to be regenerated for AWS" $
+      withSystemTempDirectory "prodbox-harness-canonical-skeleton" $ \tmpDir ->
+        existingHarnessConfigDisposition
+          tmpDir
+          Settings.defaultConfigFile
+          Tier0.defaultProjectConfig
+          True
+          SubstrateAws
+          `shouldReturn` Right False
+
+    it "refreshes a harness-owned config whose canonical capacity profile is stale" $
+      withSystemTempDirectory "prodbox-harness-stale-capacity" $ \tmpDir -> do
+        let topology =
+              either
+                (error . ClusterTopology.renderTopologyError)
+                id
+                (ClusterTopology.mkSingleMachineRke2Topology "capacity-harness-machine")
+            context =
+              DeploymentContextInput
+                "capacity-harness-cluster"
+                "http://capacity-vault.fixture:8200"
+                "http://capacity-minio.fixture:9000"
+            deploymentInput = HarnessDeploymentInput context topology ".test-data/capacity"
+            credentials = configSetupAdminCredentialsInput sampleConfigSetupInput
+            generated = do
+              input <-
+                harnessConfigSetupInputFrom
+                  Settings.defaultConfigFile
+                  PolicyFull
+                  populatedHarnessTestSecrets
+                  credentials
+                  deploymentInput
+              let current = harnessGeneratedConfig Settings.defaultConfigFile populatedHarnessTestSecrets input
+                  stalePlan =
+                    (Capacity.resource_plan (capacity current))
+                      { Capacity.rke2_reserved = Capacity.ResourceVector 1000 2048 10240 1024
+                      }
+                  stale =
+                    current
+                      { capacity =
+                          (capacity current)
+                            { Capacity.resource_plan = stalePlan
+                            }
+                      }
+              Right (input, stale)
+        case generated of
+          Left err -> expectationFailure err
+          Right (input, stale) -> do
+            capacity (harnessGeneratedConfig stale populatedHarnessTestSecrets input)
+              `shouldBe` capacity Settings.defaultConfigFile
+            existingHarnessConfigDisposition
+              tmpDir
+              stale
+              (harnessProjectConfig stale context)
+              True
+              SubstrateHomeLocal
+              `shouldReturn` Right False
+
+    it "refreshes only a stale harness-owned config when the requested substrate changes" $
+      withSystemTempDirectory "prodbox-harness-stale-owned-config" $ \tmpDir -> do
+        let topology =
+              either
+                (error . ClusterTopology.renderTopologyError)
+                id
+                (ClusterTopology.mkSingleMachineRke2Topology "stale-harness-machine")
+            context =
+              DeploymentContextInput
+                "stale-harness-cluster"
+                "http://stale-vault.fixture:8200"
+                "http://stale-minio.fixture:9000"
+            staleHarnessConfig =
+              syntheticConfigFile
+                { aws_substrate =
+                    AwsSubstrateSection
+                      { hosted_zone_id = ""
+                      , subzone_name = ""
+                      , profile = Nothing
+                      }
+                , cluster_topology = topology
+                , storage =
+                    (storage syntheticConfigFile)
+                      { manual_pv_host_root = ".test-data/legacy-aggregate"
+                      }
+                }
+            staleProjectConfig = harnessProjectConfig staleHarnessConfig context
+            operatorConfig =
+              staleHarnessConfig
+                { storage =
+                    (storage staleHarnessConfig)
+                      { manual_pv_host_root = "/srv/operator-owned"
+                      }
+                }
+            operatorProjectConfig = harnessProjectConfig operatorConfig context
+        existingHarnessConfigDisposition
+          tmpDir
+          staleHarnessConfig
+          staleProjectConfig
+          True
+          SubstrateAws
+          `shouldReturn` Right False
+        operatorDisposition <-
+          existingHarnessConfigDisposition
+            tmpDir
+            operatorConfig
+            operatorProjectConfig
+            True
+            SubstrateAws
+        operatorDisposition `shouldSatisfy` isLeft
+
+    it "plans complete IAM user policy dependency removal before user deletion" $ do
+      inlineUserPolicyDeleteArguments
+        "legacy-operational-user"
+        (object ["PolicyNames" .= (["current-inline", "historical-inline"] :: [Text.Text])])
+        `shouldBe` Right
+          [
+            [ "iam"
+            , "delete-user-policy"
+            , "--user-name"
+            , "legacy-operational-user"
+            , "--policy-name"
+            , "current-inline"
+            ]
+          ,
+            [ "iam"
+            , "delete-user-policy"
+            , "--user-name"
+            , "legacy-operational-user"
+            , "--policy-name"
+            , "historical-inline"
+            ]
+          ]
+      attachedUserPolicyDetachArguments
+        "legacy-operational-user"
+        ( object
+            [ "AttachedPolicies"
+                .= [ object
+                       [ "PolicyName" .= ("first" :: Text.Text)
+                       , "PolicyArn" .= ("arn:aws:iam::123:policy/first" :: Text.Text)
+                       ]
+                   , object
+                       [ "PolicyName" .= ("second" :: Text.Text)
+                       , "PolicyArn" .= ("arn:aws:iam::123:policy/second" :: Text.Text)
+                       ]
+                   ]
+            ]
+        )
+        `shouldBe` Right
+          [
+            [ "iam"
+            , "detach-user-policy"
+            , "--user-name"
+            , "legacy-operational-user"
+            , "--policy-arn"
+            , "arn:aws:iam::123:policy/first"
+            ]
+          ,
+            [ "iam"
+            , "detach-user-policy"
+            , "--user-name"
+            , "legacy-operational-user"
+            , "--policy-arn"
+            , "arn:aws:iam::123:policy/second"
+            ]
+          ]
 
     goldenTest
       "renders the gateway start plan deterministically"
@@ -6484,12 +7549,19 @@ unitSuite = do
           lifecycleIndex = elemIndex "STEP=ensure_federated_vault_lifecycle" steps
           targetAgentIndex = elemIndex "STEP=ensure_target_secret_agent_chart_ready" steps
           authorityIndex = elemIndex "STEP=ensure_lifecycle_authority_chart_ready" steps
+          provisionerSubstrateIndex =
+            elemIndex "STEP=ensure_credential_provisioner_substrate_ready" steps
+          authorityBackupEstablishmentIndex =
+            elemIndex "STEP=establish_authority_backup_admission" steps
           steadyGatewayIndex = elemIndex "STEP=ensure_gateway_chart_ready" steps
       minioIndex `shouldSatisfy` (`indexPrecedes` vaultRuntimeIndex)
       vaultRuntimeIndex `shouldSatisfy` (`indexPrecedes` brokerIndex)
       brokerIndex `shouldSatisfy` (`indexPrecedes` lifecycleIndex)
       lifecycleIndex `shouldSatisfy` (`indexPrecedes` targetAgentIndex)
       targetAgentIndex `shouldSatisfy` (`indexPrecedes` authorityIndex)
+      authorityIndex `shouldSatisfy` (`indexPrecedes` provisionerSubstrateIndex)
+      provisionerSubstrateIndex
+        `shouldSatisfy` (`indexPrecedes` authorityBackupEstablishmentIndex)
       authorityIndex `shouldSatisfy` (`indexPrecedes` steadyGatewayIndex)
 
     it "classifies absent operational AWS Vault credentials as a skippable public-edge gate" $ do
@@ -6537,12 +7609,117 @@ unitSuite = do
       let rendered = renderRke2ResourceGuardrailConfig Capacity.defaultResourcePlan
       rendered `shouldContain` "# Managed by `prodbox cluster reconcile`"
       rendered `shouldContain` "kubelet-arg:"
-      rendered `shouldContain` "\"system-reserved=cpu=500m,memory=1024Mi,ephemeral-storage=5120Mi\""
-      rendered `shouldContain` "\"kube-reserved=cpu=500m,memory=1024Mi,ephemeral-storage=5120Mi\""
+      rendered `shouldContain` "\"system-reserved=cpu=250m,memory=768Mi,ephemeral-storage=4864Mi\""
+      rendered `shouldContain` "\"kube-reserved=cpu=250m,memory=768Mi,ephemeral-storage=4864Mi\""
       rendered
         `shouldContain` "\"eviction-hard=memory.available<1024Mi,nodefs.available<10240Mi,imagefs.available<10240Mi\""
       rendered `shouldContain` "\"image-gc-high-threshold=70\""
       rendered `shouldContain` "\"container-log-max-size=50Mi\""
+
+    it "skips a home runtime-image import only for the exact current containerd config identity" $ do
+      let imageRef = "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-machine"
+          digestA = "sha256:" ++ replicate 64 'a'
+          digestB = "sha256:" ++ replicate 64 'b'
+          dockerIdentity digest = Just (digest ++ "\n")
+          containerdIdentity mediaType digest =
+            Just
+              ( unlines
+                  [ imageRef
+                  , "\9492\9472\9472 application/vnd.oci.image.manifest.v1+json @" ++ digestB ++ " (1 bytes)"
+                  , "    \9500\9472\9472 " ++ mediaType ++ " @" ++ digest ++ " (1 bytes)"
+                  ]
+              )
+          dockerConfigMediaType = "application/vnd.docker.container.image.v1+json"
+          ociConfigMediaType = "application/vnd.oci.image.config.v1+json"
+          dockerContainerdIdentity = containerdIdentity dockerConfigMediaType
+          ociContainerdIdentity = containerdIdentity ociConfigMediaType
+          cases =
+            [
+              ( "exact current Docker archive"
+              , dockerIdentity digestA
+              , dockerContainerdIdentity digestA
+              , Rke2ImageAlreadyCurrent
+              )
+            ,
+              ( "exact current OCI image"
+              , dockerIdentity digestA
+              , ociContainerdIdentity digestA
+              , Rke2ImageAlreadyCurrent
+              )
+            , ("mismatched", dockerIdentity digestA, dockerContainerdIdentity digestB, Rke2ImageImportRequired)
+            , ("docker observation failed", Nothing, dockerContainerdIdentity digestA, Rke2ImageImportRequired)
+            , ("containerd observation failed", dockerIdentity digestA, Nothing, Rke2ImageImportRequired)
+            ,
+              ( "docker identity malformed"
+              , Just "sha256:not-a-digest\n"
+              , dockerContainerdIdentity digestA
+              , Rke2ImageImportRequired
+              )
+            , ("containerd identity absent", dockerIdentity digestA, Just imageRef, Rke2ImageImportRequired)
+            ,
+              ( "wrong containerd tag"
+              , dockerIdentity digestA
+              , fmap ("other:tag\n" ++) (dockerContainerdIdentity digestA)
+              , Rke2ImageImportRequired
+              )
+            ,
+              ( "ambiguous containerd identity"
+              , dockerIdentity digestA
+              , fmap
+                  (++ "    \9500\9472\9472 application/vnd.oci.image.config.v1+json @" ++ digestA ++ " (1 bytes)\n")
+                  (dockerContainerdIdentity digestA)
+              , Rke2ImageImportRequired
+              )
+            ,
+              ( "unrecognized config media type"
+              , dockerIdentity digestA
+              , containerdIdentity "application/example.config+json" digestA
+              , Rke2ImageImportRequired
+              )
+            ,
+              ( "noncanonical docker ending"
+              , Just (digestA ++ "\n\n")
+              , dockerContainerdIdentity digestA
+              , Rke2ImageImportRequired
+              )
+            ]
+      forM_ cases $ \(label, dockerOutput, containerdOutput, expected) -> do
+        let actual = decideRke2ImageImport imageRef dockerOutput containerdOutput
+        when (actual /= expected) $
+          expectationFailure (label ++ ": expected " ++ show expected ++ ", got " ++ show actual)
+
+    it "Sprint 2.116 selects only canonical dangling managed runtime image IDs" $ do
+      let runtimeRepository = "127.0.0.1:30080/prodbox/prodbox-runtime"
+          digestA = "sha256:" ++ replicate 64 'a'
+          digestB = "sha256:" ++ replicate 64 'b'
+          foreignDigest = "sha256:" ++ replicate 64 'c'
+          row repository imageId = repository ++ "\t" ++ imageId
+      managedRuntimeImageRetentionInventoryArguments
+        `shouldBe` [ "image"
+                   , "ls"
+                   , "--filter"
+                   , "dangling=true"
+                   , "--no-trunc"
+                   , "--format"
+                   , "{{.Repository}}\t{{.ID}}"
+                   ]
+      selectManagedDanglingRuntimeImageIds
+        ( unlines
+            [ row runtimeRepository digestA
+            , row "example.invalid/foreign" foreignDigest
+            , row runtimeRepository digestB
+            ]
+        )
+        `shouldBe` Right [digestA, digestB]
+      selectManagedDanglingRuntimeImageIds (row "example.invalid/foreign" "not-an-id")
+        `shouldBe` Right []
+      selectManagedDanglingRuntimeImageIds (row runtimeRepository "sha256:not-canonical")
+        `shouldBe` Left RuntimeImageRetentionInvalidManagedImageId
+      selectManagedDanglingRuntimeImageIds "missing-machine-delimiter"
+        `shouldBe` Left RuntimeImageRetentionMalformedRow
+      selectManagedDanglingRuntimeImageIds
+        (unlines [row runtimeRepository digestA, row runtimeRepository digestA])
+        `shouldBe` Left RuntimeImageRetentionDuplicateManagedImageId
 
     it "renders a bounded systemd drop-in for the RKE2 service tree" $ do
       let rendered = renderRke2SystemdResourceDropIn Capacity.defaultResourcePlan
@@ -6675,6 +7852,18 @@ unitSuite = do
       dockerfile `shouldNotContain` "--mount="
       dockerfile `shouldNotContain` "type=cache"
 
+    it "Sprint 2.116 excludes ephemeral Cabal output from the runtime build layer" $ do
+      repoRoot <- getCurrentDirectory
+      dockerfile <- readFile (repoRoot </> "docker" </> "prodbox.Dockerfile")
+
+      dockerfile
+        `shouldContain` unlines
+          [ "    && rm -rf \\"
+          , "        .build \\"
+          , "        /root/.cache/cabal \\"
+          , "        /root/.local/state/cabal"
+          ]
+
     it "keeps the Haskell quality gate on repo-owned formatter and lint inputs" $ do
       repoRoot <- getCurrentDirectory
       checkCode <- readFile (repoRoot </> "src" </> "Prodbox" </> "CheckCode.hs")
@@ -6690,6 +7879,41 @@ unitSuite = do
       hlintConfig `shouldContain` "--cpp-simple"
       editorConfig `shouldContain` "indent_style = space"
       editorConfig `shouldContain` "indent_size = 2"
+
+    it "isolates lint leaves and preserves canonical gate failure short-circuiting" $ do
+      lintSubprocessArgs
+        `shouldBe` [ ["dev", "lint", "files"]
+                   , ["dev", "lint", "docs"]
+                   , ["dev", "lint", "haskell"]
+                   , ["dev", "lint", "chart"]
+                   ]
+
+      successfulOrder <- newIORef ([] :: [String])
+      let record ref label = modifyIORef' ref (++ [label])
+      successfulExit <-
+        runFailFastPhases
+          [ record successfulOrder "files" >> pure ExitSuccess
+          , record successfulOrder "docs" >> pure ExitSuccess
+          , record successfulOrder "haskell" >> pure ExitSuccess
+          ]
+      successfulExit `shouldBe` ExitSuccess
+      readIORef successfulOrder `shouldReturn` ["files", "docs", "haskell"]
+
+      failedOrder <- newIORef ([] :: [String])
+      failedExit <-
+        runFailFastPhases
+          [ record failedOrder "files" >> pure ExitSuccess
+          , record failedOrder "docs" >> pure (ExitFailure 17)
+          , record failedOrder "haskell" >> pure ExitSuccess
+          ]
+      failedExit `shouldBe` ExitFailure 17
+      readIORef failedOrder `shouldReturn` ["files", "docs"]
+
+    it "forces each Haskell-style finding batch before the next repository scan" $ do
+      forced <-
+        try (forceViolationFindings (pure ["first", error "unforced finding"]))
+          :: IO (Either SomeException [String])
+      forced `shouldSatisfy` isLeft
 
     it "flags unsupported workflow and hook surfaces in the quality gate policy scan" $ do
       doctrineViolationsInPaths
@@ -7463,6 +8687,8 @@ unitSuite = do
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
               nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
               nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
+              harnessPostCredentialRuntimeCommand suitePlan
+                `shouldBe` Just (Rke2Reconcile (PlanOptions False Nothing) False)
               nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` False
               lifecycleCleanupTargetsForSuite suitePlan
                 `shouldBe` completeLifecyclePerRunTargets
@@ -7601,6 +8827,7 @@ unitSuite = do
                 `shouldBe` ["aws_iam_harness_ready", "tool_aws"]
               nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
+              harnessPostCredentialRuntimeCommand suitePlan `shouldBe` Nothing
             DelegatedSuite _ -> expectationFailure "expected native aws-iam plan"
 
     it "includes curl in the gateway-daemon validation prerequisites" $ do
@@ -8254,6 +9481,31 @@ unitSuite = do
       rke2Source `shouldNotContain` "vault-minio-root"
       rke2Source `shouldNotContain` "readMinioRootCredentials"
       rke2Source `shouldNotContain` "secretKeyRef"
+
+    it "Sprint 3.44 keeps Harbor bootstrap evidence until its exact waiter observes it" $ do
+      let rendered =
+            BL8.unpack
+              (encode (harborStorageBackendManifestItems "test-access" "test-secret"))
+
+      rendered `shouldContain` "harbor-registry-bucket-init"
+      rendered `shouldNotContain` "ttlSecondsAfterFinished"
+      harborRegistryStorageWaitArguments
+        `shouldBe` [ "wait"
+                   , "--for=condition=complete"
+                   , "job/harbor-registry-bucket-init"
+                   , "-n"
+                   , "prodbox"
+                   , "--timeout=300s"
+                   ]
+      harborRegistryStorageDeleteArguments
+        `shouldBe` [ "delete"
+                   , "job"
+                   , "harbor-registry-bucket-init"
+                   , "-n"
+                   , "prodbox"
+                   , "--ignore-not-found=true"
+                   , "--wait=true"
+                   ]
 
     it "retries transient Harbor publication failures during custom and mirrored image publication" $ do
       repoRoot <- getCurrentDirectory
@@ -9090,10 +10342,20 @@ unitSuite = do
         (ProcessOutput (ExitFailure 1) "" "rendered manifests contain an invalid resource")
         `shouldBe` ReconcileTerminalFailureAbsent
 
-    it "applies the pre-Vault Bootstrap Broker without waiting on post-Vault readiness" $ do
-      helmUpgradeWaitArguments "bootstrap-broker" `shouldBe` []
-      helmUpgradeWaitArguments "lifecycle-authority"
-        `shouldBe` ["--wait", "--timeout", "30m0s"]
+    it "omits Helm readiness only for the two pre-dependency releases" $ do
+      let waitArgs = ["--wait", "--timeout", "30m0s"]
+      map helmUpgradeWaitArguments ["bootstrap-broker", "authority-backup"]
+        `shouldBe` replicate 2 []
+      map
+        helmUpgradeWaitArguments
+        [ "lifecycle-authority"
+        , "provider-worker"
+        , "tls-retention"
+        , "target-secret-agent"
+        , "gateway"
+        , "keycloak"
+        ]
+        `shouldBe` replicate 6 waitArgs
 
     it "needs no retry-classifier lint allowance" $ do
       let inlineClassifier classifierName =
@@ -9599,7 +10861,7 @@ unitSuite = do
               { resolvedCustomImageRepository = "harbor.test/prodbox/runtime"
               , resolvedCustomImageTag = "projection-test"
               , resolvedCustomImageRolloutToken = Just ("sha256:" ++ replicate 64 'a')
-              , resolvedCustomImageRuntimeDigest = Just ("sha256:" ++ replicate 64 'b')
+              , resolvedCustomImageManifestDigest = Just ("sha256:" ++ replicate 64 'b')
               }
           imageResolver _ = pure (Right (Just runtimeImage))
           renderedProjection endpoint plan = do
@@ -9706,7 +10968,7 @@ unitSuite = do
               { resolvedCustomImageRepository = "harbor.test/prodbox/runtime"
               , resolvedCustomImageTag = "projection-test"
               , resolvedCustomImageRolloutToken = Just ("sha256:" ++ replicate 64 'c')
-              , resolvedCustomImageRuntimeDigest = Just ("sha256:" ++ replicate 64 'd')
+              , resolvedCustomImageManifestDigest = Just ("sha256:" ++ replicate 64 'd')
               }
           imageResolver _ = pure (Right (Just runtimeImage))
           renderPlans settings =
@@ -9909,7 +11171,7 @@ unitSuite = do
               { resolvedCustomImageRepository = "127.0.0.1:30080/prodbox/prodbox-runtime"
               , resolvedCustomImageTag = "broker-test-tag"
               , resolvedCustomImageRolloutToken = Nothing
-              , resolvedCustomImageRuntimeDigest = Nothing
+              , resolvedCustomImageManifestDigest = Nothing
               }
       case valuesForBootstrapBroker
         "prodbox-home"
@@ -9988,7 +11250,7 @@ unitSuite = do
               { resolvedCustomImageRepository = "127.0.0.1:30080/prodbox/prodbox-runtime"
               , resolvedCustomImageTag = "control-plane-test"
               , resolvedCustomImageRolloutToken = Just ("sha256:" ++ replicate 64 'a')
-              , resolvedCustomImageRuntimeDigest = Just ("sha256:" ++ replicate 64 'b')
+              , resolvedCustomImageManifestDigest = Just ("sha256:" ++ replicate 64 'b')
               }
           extractRoleDhall value = case value of
             Object payload -> case KeyMap.lookup (Key.fromString "config") payload of
@@ -10152,7 +11414,7 @@ unitSuite = do
                             SubstrateHomeLocal -> "prodbox-machine-fixture"
                             SubstrateAws -> "prodbox-aws-substrate"
                         , resolvedCustomImageRolloutToken = Nothing
-                        , resolvedCustomImageRuntimeDigest = Nothing
+                        , resolvedCustomImageManifestDigest = Nothing
                         }
                   )
               )
@@ -15140,6 +16402,44 @@ unitSuite = do
         selectedCandidate `shouldBe` Just readableCandidate
 
   describe "container image mapping" $ do
+    it "uses the repository manifest, not the Docker rollout token, for the Target Agent identity" $ do
+      let rolloutDigest = "sha256:" ++ replicate 64 'a'
+          manifestDigest = "sha256:" ++ replicate 64 'b'
+          image =
+            ResolvedCustomImage
+              { resolvedCustomImageRepository = "127.0.0.1:30080/prodbox/prodbox-runtime"
+              , resolvedCustomImageTag = "target-agent-identity-test"
+              , resolvedCustomImageRolloutToken = Just rolloutDigest
+              , resolvedCustomImageManifestDigest = Just manifestDigest
+              }
+          withoutManifest = image {resolvedCustomImageManifestDigest = Nothing}
+      fmap targetAgentIdentityText (resolvedCustomImageTargetAgentIdentity "prodbox-home" image)
+        `shouldBe` Right (Text.pack ("prodbox-home@" ++ manifestDigest))
+      resolvedCustomImageTargetAgentIdentity "prodbox-home" withoutManifest
+        `shouldBe` Left
+          "The runtime image has no immutable repository manifest digest for the Target Agent identity."
+
+    it "selects one exact repository manifest digest without accepting config-shaped substitutes" $ do
+      let repository = "127.0.0.1:30080/prodbox/prodbox-runtime"
+          manifestDigest = "sha256:" ++ replicate 64 'a'
+          configDigest = "sha256:" ++ replicate 64 'b'
+      selectRepositoryManifestDigest
+        repository
+        [ repository ++ "@" ++ manifestDigest
+        , "registry.example/other@" ++ configDigest
+        ]
+        `shouldBe` Just manifestDigest
+      selectRepositoryManifestDigest repository [configDigest]
+        `shouldBe` Nothing
+      selectRepositoryManifestDigest
+        repository
+        [repository ++ "@" ++ manifestDigest, repository ++ "@" ++ configDigest]
+        `shouldBe` Nothing
+      selectRepositoryManifestDigest
+        repository
+        [repository ++ "@sha256:" ++ replicate 64 'A']
+        `shouldBe` Nothing
+
     it "keeps the supported platform image mirrors on explicit Harbor targets" $ do
       mapM_
         (\expectedPair -> ContainerImage.requiredPublicImagePairs `shouldContain` [expectedPair])
@@ -15685,6 +16985,7 @@ unitSuite = do
                      , "observeAwsVaultUnsealedReady"
                      , "ensureInternalControlPlaneChartReady SubstrateAws target-secret-agent"
                      , "observeAwsTargetSecretAgentReady"
+                     , "ensureGatewayMinioBootstrap"
                      , "ensureInternalControlPlaneChartReady SubstrateAws lifecycle-authority"
                      , "observeAwsLifecycleAuthorityReady"
                      , "ensureInternalControlPlaneChartReady SubstrateAws authority-backup"
@@ -15695,11 +16996,10 @@ unitSuite = do
                      , "observeAwsCertManagerReady"
                      , "ensurePostgresOperatorRuntime"
                      , "observeAwsPostgresOperatorReady"
-                     , "ensureGatewayMinioBootstrap"
-                     , "ensureGatewayChartReadyPostVaultAt SubstrateAws"
-                     , "observeAwsGatewayFullReady"
                      , "ensureInternalControlPlaneChartReady SubstrateAws provider-worker"
                      , "observeAwsProviderWorkerReady"
+                     , "ensureGatewayChartReadyPostVaultAt SubstrateAws"
+                     , "observeAwsGatewayFullReady"
                      , "ensureInternalControlPlaneChartReady SubstrateAws tls-retention"
                      , "observeAwsTlsRetentionReady"
                      , "ensureAwsSubstrateAcmeRuntime"
@@ -15816,9 +17116,12 @@ unitSuite = do
         $ do
           let brokerIndex = elemIndex "ensureInternalControlPlaneChartReady SubstrateAws bootstrap-broker" steps
               vaultIndex = elemIndex "runVaultBootstrapViaBroker" steps
+              minioIamIndex = elemIndex "ensureGatewayMinioBootstrap" steps
               authorityIndex = elemIndex "ensureInternalControlPlaneChartReady SubstrateAws lifecycle-authority" steps
               fullIndex = elemIndex "ensureGatewayChartReadyPostVaultAt SubstrateAws" steps
           brokerIndex `shouldSatisfy` (`indexPrecedes` vaultIndex)
+          vaultIndex `shouldSatisfy` (`indexPrecedes` minioIamIndex)
+          minioIamIndex `shouldSatisfy` (`indexPrecedes` authorityIndex)
           vaultIndex `shouldSatisfy` (`indexPrecedes` authorityIndex)
           authorityIndex `shouldSatisfy` (`indexPrecedes` fullIndex)
       it "does not retain the redundant steady-state MinIO reinstall" $
@@ -16399,6 +17702,10 @@ unitSuite = do
       rendered `shouldContain` "vault-materialized"
       rendered `shouldContain` "key_id"
       rendered `shouldContain` "hmac_key"
+      rendered `shouldContain` "${#key_id}"
+      rendered `shouldContain` "-le 512"
+      rendered `shouldContain` "grep -Eq '^[A-Za-z0-9._~-]+$'"
+      rendered `shouldNotContain` "[A-Za-z0-9._~-]{1,512}"
       rendered `shouldContain` "/apis/cert-manager.io/v1/clusterissuers/"
       rendered `shouldNotContain` "test-eab-hmac-key"
       rendered `shouldNotContain` "test-eab-key-id"
@@ -18890,6 +20197,168 @@ unitSuite = do
         ]
           `shouldBe` replicate 5 controlPlaneListenPort
 
+      it "uses liveness only for pre-credential Authority Backup establishment" $ do
+        localClientStartupProbePath AuthorityBackupRuntime `shouldBe` "/healthz"
+        map
+          localClientStartupProbePath
+          (filter (/= AuthorityBackupRuntime) [minBound .. maxBound :: RuntimeRole])
+          `shouldBe` replicate 6 "/readyz"
+
+      it "uses the Recreate Deployment only for pre-readiness Authority Backup forwarding (Sprint 2.103)" $ do
+        authorityBackupForwardTarget `shouldBe` "deployment/authority-backup"
+        [ lifecycleAuthorityForwardTarget
+          , providerWorkerForwardTarget
+          , targetSecretAgentForwardTarget
+          , tlsRetentionForwardTarget
+          ]
+          `shouldBe` [ "service/lifecycle-authority"
+                     , "service/provider-worker"
+                     , "service/target-secret-agent"
+                     , "service/tls-retention"
+                     ]
+        deployment <- readFile "charts/authority-backup/templates/deployment.yaml"
+        deployment `shouldContain` "strategy:\n    type: Recreate"
+
+      it "requires the exact bounded loopback-forward acknowledgement before probing (Sprint 2.104)" $ do
+        let localPort = 45124
+            liveness detail = Left (LocalAuthorityBackupLivenessFailed detail)
+        map
+          (classifyAuthorityBackupForwardStartup localPort)
+          [ AuthorityBackupForwardStartupLine "Forwarding from 127.0.0.1:45124 -> 8600"
+          , AuthorityBackupForwardStartupLine "Forwarding from [::1]:45124 -> 8600"
+          ]
+          `shouldBe` [Right (), Right ()]
+        classifyAuthorityBackupForwardStartup localPort AuthorityBackupForwardStartupTimedOut
+          `shouldBe` liveness "startup acknowledgement timed out"
+        classifyAuthorityBackupForwardStartup localPort AuthorityBackupForwardStartupReadFailed
+          `shouldBe` liveness "startup acknowledgement unavailable"
+        map
+          (classifyAuthorityBackupForwardStartup localPort . AuthorityBackupForwardStartupLine)
+          [ "Forwarding from 0.0.0.0:45124 -> 8600"
+          , "Forwarding from 127.0.0.1:45125 -> 8600"
+          , "Forwarding from 127.0.0.1:45124 -> 8601"
+          , "Forwarding from 127.0.0.1:45124 -> 8600 trailing"
+          ]
+          `shouldBe` replicate 4 (liveness "startup acknowledgement did not match the compiled loopback mapping")
+
+        eventsRef <- newIORef ([] :: [String])
+        let record event = modifyIORef' eventsRef (++ [event])
+            awaitSuccess = record "acknowledge" >> pure (Right ())
+            continue = record "probe" >> pure (Right ("complete" :: String))
+        continueAuthorityBackupForwardAfterStartupWith awaitSuccess continue
+          `shouldReturn` Right "complete"
+        readIORef eventsRef `shouldReturn` ["acknowledge", "probe"]
+
+        writeIORef eventsRef []
+        let awaitFailure =
+              record "acknowledge-failed"
+                >> pure (liveness "startup acknowledgement timed out")
+        continueAuthorityBackupForwardAfterStartupWith awaitFailure continue
+          `shouldReturn` liveness "startup acknowledgement timed out"
+        readIORef eventsRef `shouldReturn` ["acknowledge-failed"]
+
+      it "sizes retained replay by role and gives outer refusals precedence (Sprints 2.105/2.127)" $ do
+        ControlPlaneRuntime.lifecycleAuthorityFirstReconcileRequestMaximum `shouldBe` 56
+        ControlPlaneRuntime.lifecycleAuthorityReconcileAttemptRequestMaximum `shouldBe` 60
+        ControlPlaneRuntime.lifecycleAuthorityReplayCapacity `shouldBe` 120
+        ControlPlaneRuntime.lifecycleAuthorityReplayCapacity
+          `shouldBe` (2 * ControlPlaneRuntime.lifecycleAuthorityReconcileAttemptRequestMaximum)
+        ControlPlaneRuntime.authorityBackupReconcileAttemptRequestMaximum `shouldBe` 9
+        ControlPlaneRuntime.authorityBackupReplayCapacity `shouldBe` 18
+        ControlPlaneRuntime.authorityBackupReplayCapacity
+          `shouldBe` (2 * ControlPlaneRuntime.authorityBackupReconcileAttemptRequestMaximum)
+        ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum `shouldBe` 27
+        ControlPlaneRuntime.targetSecretAgentReplayCapacity `shouldBe` 54
+        ControlPlaneRuntime.targetSecretAgentReplayCapacity
+          `shouldBe` (2 * ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum)
+        ControlPlaneRuntime.targetSecretAgentReplayMaximumEncodedBytes
+          `shouldBe` (112 * 1024 * 1024)
+        vaultConfig <- readFile "charts/vault/templates/configmap.yaml"
+        vaultConfig `shouldContain` "max_request_size = 167772160"
+
+        classifyAwsAdminProvisionerHttpResponse
+          (ControlPlaneResponse 503 "authenticated-replay-capacity-exhausted\n")
+          `shouldBe` Left (AwsAdminProvisionerClientHttpStatus 503)
+        classifyAwsAdminProvisionerHttpResponse
+          ( ControlPlaneResponse
+              503
+              ( BL.toStrict
+                  (encodeControlPlaneResponse (AwsAdminProvisioningUnavailable "authority-unavailable"))
+              )
+          )
+          `shouldBe` Left (AwsAdminProvisionerClientUnavailable "authority-unavailable")
+        classifyAwsAdminProvisionerHttpResponse (ControlPlaneResponse 200 "not-cbor")
+          `shouldBe` Left (AwsAdminProvisionerClientResponseInvalid ControlPlaneRequestInvalid)
+        classifyAwsAdminProvisionerHttpResponse
+          ( ControlPlaneResponse
+              200
+              (BL.toStrict (encodeControlPlaneResponse (AwsAdminFirstReconcileObserved Nothing)))
+          )
+          `shouldBe` Right (AwsAdminFirstReconcileObserved Nothing)
+
+      it "restarts and cleans the disposable Authority Backup forward on liveness only (Sprint 2.102)" $ do
+        eventsRef <- newIORef ([] :: [String])
+        startsRef <- newIORef (0 :: Int)
+        let record event = modifyIORef' eventsRef (++ [event])
+            acquire = do
+              attempt <- (+ 1) <$> readIORef startsRef
+              writeIORef startsRef attempt
+              record ("start-" ++ show attempt)
+              pure (Right attempt)
+            release started = case started of
+              Left _ -> pure ()
+              Right attempt -> record ("cleanup-" ++ show attempt)
+            use attempt = do
+              record ("probe-" ++ show attempt)
+              if attempt < 3
+                then pure (Left (LocalAuthorityBackupLivenessFailed ("pending-" ++ show attempt)))
+                else record "action" >> pure (Right ("complete" :: String))
+            delay = record "delay"
+        retryAuthorityBackupForwardWith 5 delay acquire release use
+          `shouldReturn` Right "complete"
+        readIORef eventsRef
+          `shouldReturn` [ "start-1"
+                         , "probe-1"
+                         , "cleanup-1"
+                         , "delay"
+                         , "start-2"
+                         , "probe-2"
+                         , "cleanup-2"
+                         , "delay"
+                         , "start-3"
+                         , "probe-3"
+                         , "action"
+                         , "cleanup-3"
+                         ]
+
+        terminalCallsRef <- newIORef (0 :: Int)
+        let terminalAcquire = do
+              modifyIORef' terminalCallsRef (+ 1)
+              pure
+                (Left (LocalAuthorityBackupProcessStartFailed "terminal") :: Either LocalAuthorityBackupError Int)
+        retryAuthorityBackupForwardWith
+          5
+          (pure ())
+          terminalAcquire
+          (const (pure ()))
+          (const (pure (Right ("unused" :: String))))
+          `shouldReturn` Left (LocalAuthorityBackupProcessStartFailed "terminal")
+        readIORef terminalCallsRef `shouldReturn` 1
+
+        exhaustionRef <- newIORef (0 :: Int)
+        let exhaustedAttempt = do
+              attempt <- (+ 1) <$> readIORef exhaustionRef
+              writeIORef exhaustionRef attempt
+              pure (Right attempt)
+            exhaustedUse attempt =
+              pure
+                ( Left (LocalAuthorityBackupLivenessFailed ("last-" ++ show attempt))
+                    :: Either LocalAuthorityBackupError String
+                )
+        retryAuthorityBackupForwardWith 2 (pure ()) exhaustedAttempt (const (pure ())) exhaustedUse
+          `shouldReturn` Left (LocalAuthorityBackupLivenessFailed "last-2")
+        readIORef exhaustionRef `shouldReturn` 2
+
       it "renders an in-cluster role endpoint from the owned port" $ do
         controlPlaneClusterServiceUrl "lifecycle-authority" "lifecycle-authority"
           `shouldBe` "http://lifecycle-authority.lifecycle-authority.svc.cluster.local:8600"
@@ -20555,6 +22024,153 @@ unitSuite = do
       Capacity.runtimeMemoryPlanForProfile Capacity.defaultCapacitySection "api"
         `shouldSatisfy` leftContains "is missing profile `api`"
 
+    it "serializes the four request lanes and readiness observer onto one child-process permit" $ do
+      Capacity.validateCapacitySection Capacity.defaultCapacitySection `shouldBe` Right ()
+      let requestWorkers =
+            ControlPlaneCapacity.rawWorkerCount ControlPlaneRuntime.controlPlaneCapacityInputs
+          configuredChild = Capacity.child_process_budget defaultProviderWorkerRuntimeMemoryProfile
+      requestWorkers `shouldBe` 4
+      Capacity.permit_capacity configuredChild `shouldBe` Just 1
+      Capacity.action_deadline_milliseconds configuredChild `shouldBe` Just 300000
+      Capacity.simultaneous_peak_bytes configuredChild
+        `shouldBe` [80 * 1024 * 1024]
+      boundedSubprocessTimeoutMicros ProviderProduction.providerAwsCliLimits
+        `shouldBe` (30 * 1000 * 1000)
+      boundedSubprocessMaximumStdoutBytes ProviderProduction.providerAwsCliLimits
+        `shouldBe` (4 * 1024 * 1024)
+      boundedSubprocessMaximumStderrBytes ProviderProduction.providerAwsCliLimits
+        `shouldBe` (1024 * 1024)
+
+    it "contains every admitted Provider child deadline inside its Provider-only HTTP budget" $ do
+      ProviderWorkerBudget.providerWorkerMaximumChildDeadlineMilliseconds
+        `shouldBe` 300000
+      ProviderWorkerBudget.providerWorkerResponseOverheadMilliseconds
+        `shouldBe` 30000
+      ProviderWorkerBudget.providerWorkerResponseTimeoutMicros
+        `shouldBe` (330 * 1000 * 1000)
+      Prodbox.Http.Client.httpRequestTimeoutMicros
+        ControlPlaneRuntime.lifecycleAuthorityProviderHttpConfig
+        `shouldBe` ProviderWorkerBudget.providerWorkerResponseTimeoutMicros
+      Prodbox.Http.Client.httpRequestTimeoutMicros Prodbox.Http.Client.defaultHttpConfig
+        `shouldBe` (10 * 1000 * 1000)
+      ProviderWorkerBudget.validateProviderWorkerChildDeadlineMilliseconds 300000
+        `shouldBe` Right ()
+      ProviderWorkerBudget.validateProviderWorkerChildDeadlineMilliseconds 300001
+        `shouldSatisfy` isLeft
+
+      let overlongProvider profile
+            | Capacity.runtime_profile_id profile == "provider-worker" =
+                profile
+                  { Capacity.child_process_budget =
+                      (Capacity.child_process_budget profile)
+                        { Capacity.action_deadline_milliseconds = Just 300001
+                        }
+                  }
+            | otherwise = profile
+          overlongSection =
+            Capacity.defaultCapacitySection
+              { Capacity.runtime_memory_profiles =
+                  fmap overlongProvider Capacity.defaultRuntimeMemoryProfiles
+              }
+      Capacity.validateCapacitySection overlongSection
+        `shouldSatisfy` leftContains "ProviderWorkerChildDeadlineExceedsTransportMaximum"
+
+    it "contains retained delivery inside route-specific host and worker HTTP budgets" $ do
+      RetainedMaterialDeliveryBudget.retainedMaterialDeliveryOperationLifetimeMicros
+        `shouldBe` (300 * 1000 * 1000)
+      RetainedMaterialDeliveryBudget.retainedMaterialDeliveryResponseOverheadMicros
+        `shouldBe` (30 * 1000 * 1000)
+      RetainedMaterialDeliveryBudget.retainedMaterialDeliveryResponseTimeoutMicros
+        `shouldBe` (330 * 1000 * 1000)
+      Prodbox.Http.Client.httpRequestTimeoutMicros
+        lifecycleAuthorityRetainedDeliveryHttpConfig
+        `shouldBe` RetainedMaterialDeliveryBudget.retainedMaterialDeliveryResponseTimeoutMicros
+      Prodbox.Http.Client.httpRequestTimeoutMicros lifecycleAuthorityHttpConfig
+        `shouldBe` (30 * 1000 * 1000)
+      Prodbox.Http.Client.httpRequestTimeoutMicros
+        AwsAdminWorker.awsAdminRetainedDeliveryHttpConfig
+        `shouldBe` RetainedMaterialDeliveryBudget.retainedMaterialDeliveryResponseTimeoutMicros
+      Prodbox.Http.Client.httpRequestTimeoutMicros AwsAdminWorker.awsAdminAuthorityHttpConfig
+        `shouldBe` (10 * 1000 * 1000)
+      Prodbox.Http.Client.httpRequestTimeoutMicros Prodbox.Http.Client.defaultHttpConfig
+        `shouldBe` (10 * 1000 * 1000)
+
+    it "contains Target one-shot execution inside its route-specific HTTP budget" $ do
+      TargetWorkerBudget.targetWorkerMaximumRuntimeSeconds
+        `shouldBe` 180
+      TargetWorkerBudget.targetOneShotAuthorizationLifetimeMicros
+        `shouldBe` (15 * 60 * 1000 * 1000)
+      TargetWorkerBudget.targetOneShotResponseOverheadMicros
+        `shouldBe` (30 * 1000 * 1000)
+      TargetWorkerBudget.targetOneShotResponseTimeoutMicros
+        `shouldBe` (930 * 1000 * 1000)
+      (TargetWorkerBudget.targetWorkerMaximumRuntimeSeconds * 1000000)
+        `shouldSatisfy` (<= TargetWorkerBudget.targetOneShotAuthorizationLifetimeMicros)
+      Prodbox.Http.Client.httpRequestTimeoutMicros
+        ControlPlaneRuntime.lifecycleAuthorityTargetOneShotHttpConfig
+        `shouldBe` TargetWorkerBudget.targetOneShotResponseTimeoutMicros
+      Prodbox.Http.Client.httpRequestTimeoutMicros
+        ControlPlaneRuntime.lifecycleAuthorityTargetObservationHttpConfig
+        `shouldBe` (10 * 1000 * 1000)
+      Prodbox.Http.Client.httpRequestTimeoutMicros Prodbox.Http.Client.defaultHttpConfig
+        `shouldBe` (10 * 1000 * 1000)
+
+    it "contains the closed TLS workflow inside its host route budget" $ do
+      TlsRetentionWorkflowBudget.tlsRetentionWorkflowMaximumTargetOneShotCalls
+        `shouldBe` 4
+      TlsRetentionWorkflowBudget.tlsRetentionWorkflowMaximumShortCalls
+        `shouldBe` 4
+      TlsRetentionWorkflowBudget.tlsRetentionWorkflowShortCallTimeoutMicros
+        `shouldBe` (10 * 1000 * 1000)
+      TlsRetentionWorkflowBudget.tlsRetentionWorkflowResponseOverheadMicros
+        `shouldBe` (30 * 1000 * 1000)
+      TlsRetentionWorkflowBudget.tlsRetentionWorkflowResponseTimeoutMicros
+        `shouldBe` (3790 * 1000 * 1000)
+      Prodbox.Http.Client.httpRequestTimeoutMicros lifecycleAuthorityTlsWorkflowHttpConfig
+        `shouldBe` TlsRetentionWorkflowBudget.tlsRetentionWorkflowResponseTimeoutMicros
+      Prodbox.Http.Client.httpRequestTimeoutMicros lifecycleAuthorityHttpConfig
+        `shouldBe` (30 * 1000 * 1000)
+      Prodbox.Http.Client.httpRequestTimeoutMicros
+        lifecycleAuthorityRetainedDeliveryHttpConfig
+        `shouldBe` (330 * 1000 * 1000)
+
+    it "physically admits at most one Provider child action at a time" $ do
+      activeAndPeak <- newIORef (0 :: Int, 0 :: Int)
+      let action =
+            ProviderProduction.withProviderChildProcessPermit $ do
+              modifyIORef' activeAndPeak $ \(active, peak) ->
+                let nowActive = active + 1
+                 in (nowActive, max peak nowActive)
+              threadDelay 20000
+              modifyIORef' activeAndPeak $ \(active, peak) -> (active - 1, peak)
+      concurrently_ action action
+      readIORef activeAndPeak `shouldReturn` (0, 1)
+
+    it "proves the measured Provider Worker child reserve and exact 176 MiB cgroup envelope" $ do
+      Allocation.compileResourcePlanUncertified Capacity.defaultResourcePlan
+        `shouldSatisfy` isRight
+      case Capacity.runtimeMemoryPlanForProfile Capacity.defaultCapacitySection "provider-worker" of
+        Left err -> expectationFailure err
+        Right plan -> do
+          let childBudget = RuntimeMemory.runtimeMemoryChildBudget plan
+          RuntimeMemory.childProcessPermitCount childBudget `shouldBe` 1
+          RuntimeMemory.childProcessDeadlineMicros childBudget `shouldBe` 300000000
+          RuntimeMemory.positiveBytesValue
+            (RuntimeMemory.childProcessReservedPeakBytes childBudget)
+            `shouldBe` (80 * 1024 * 1024)
+          RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryHeapRequiredBytes plan)
+            `shouldBe` (56 * 1024 * 1024)
+          RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryHeapCapBytes plan)
+            `shouldBe` (64 * 1024 * 1024)
+          RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryOuterRequiredBytes plan)
+            `shouldBe` (176 * 1024 * 1024)
+          RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryContainerLimitBytes plan)
+            `shouldBe` (176 * 1024 * 1024)
+          RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryHighWaterBytes plan)
+            `shouldBe` (168 * 1024 * 1024)
+          RuntimeMemory.runtimeMemoryRtsArguments plan
+            `shouldBe` ["+RTS", "-M67108864", "-RTS"]
+
     it "derives the runtime container ceiling from the matching ResourceEnvelope memory limit" $ do
       let lowerGatewayLimit profile =
             if Capacity.profile_id profile == "gateway"
@@ -20643,6 +22259,58 @@ unitSuite = do
                     `shouldBe` Just GatewayProbe.gatewayLifecycleProbeValues
                 Right _ -> expectationFailure "expected gateway values object"
             _ -> expectationFailure "expected one gateway release"
+
+    it "injects the Provider Worker RTS policy and 176 MiB Guaranteed-QoS envelope" $ do
+      let runtimeImage =
+            ResolvedCustomImage
+              { resolvedCustomImageRepository = "harbor.test/prodbox/runtime"
+              , resolvedCustomImageTag = "provider-memory-test"
+              , resolvedCustomImageRolloutToken = Just ("sha256:" ++ replicate 64 'a')
+              , resolvedCustomImageManifestDigest = Just ("sha256:" ++ replicate 64 'b')
+              }
+          imageResolver _ = pure (Right (Just runtimeImage))
+      result <-
+        buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
+          imageResolver
+          SubstrateAws
+          "/tmp/prodbox"
+          (testValidatedSettings "/tmp/prodbox/.data")
+          "provider-worker"
+          testChartSecrets
+          Map.empty
+      case result of
+        Left err -> expectationFailure err
+        Right deploymentPlan ->
+          case filter
+            ((== "provider-worker") . chartReleasePlanReleaseName)
+            (chartDeploymentPlanReleases deploymentPlan) of
+            [release] ->
+              case eitherDecode (BL8.pack (chartReleasePlanValuesJson release)) :: Either String Value of
+                Left err -> expectationFailure err
+                Right (Object payload) -> do
+                  case KeyMap.lookup (Key.fromString "runtime") payload of
+                    Just (Object runtimePayload) ->
+                      KeyMap.lookup (Key.fromString "rtsArguments") runtimePayload
+                        `shouldBe` Just
+                          ( Array
+                              ( Vector.fromList
+                                  [ String "+RTS"
+                                  , String "-M67108864"
+                                  , String "-RTS"
+                                  ]
+                              )
+                          )
+                    _ -> expectationFailure "expected Provider Worker runtime values"
+                  case KeyMap.lookup (Key.fromString "resources") payload of
+                    Just (Object resourcesPayload) ->
+                      case KeyMap.lookup (Key.fromString "providerWorker") resourcesPayload of
+                        Just (Object envelopePayload) -> do
+                          expectResourceVector envelopePayload "requests" ("100m", "176Mi", "256Mi")
+                          expectResourceVector envelopePayload "limits" ("100m", "176Mi", "256Mi")
+                        _ -> expectationFailure "expected Provider Worker resource envelope"
+                    _ -> expectationFailure "expected Provider Worker resources"
+                Right _ -> expectationFailure "expected Provider Worker values object"
+            _ -> expectationFailure "expected one Provider Worker release"
 
   describe "settings" $ do
     it "Sprint 1.92: keeps production generation defaults unauthored" $ do
@@ -21054,12 +22722,20 @@ unitSuite = do
       Allocation.compileResourcePlanUncertified overReservedPlan `shouldSatisfy` isLeft
       Allocation.compileResourcePlanUncertified overCommittedPlan `shouldSatisfy` isLeft
 
-    it "reserves a fitting capacity slot for the Bootstrap Broker (Sprint 3.26)" $ do
+    it "reserves fitting capacity slots for the Broker and one-shot secret workers" $ do
       -- Sprint 3.26 (Increment C): the over-provisioned vscode ceiling was
       -- The dedicated Guaranteed-QoS workload profile makes control-plane demand
       -- explicit and the single-node plan still fits.
       let plan = Capacity.defaultResourcePlan
       any ((== Text.pack "bootstrap-broker") . Capacity.profile_id) (Capacity.workload_profiles plan)
+        `shouldBe` True
+      any
+        ((== Text.pack "bootstrap-secret-worker") . Capacity.profile_id)
+        (Capacity.workload_profiles plan)
+        `shouldBe` True
+      any
+        ((== Text.pack "credential-provisioner-secret-workers") . Capacity.profile_id)
+        (Capacity.workload_profiles plan)
         `shouldBe` True
       Allocation.compileResourcePlanUncertified plan `shouldSatisfy` isRight
 
@@ -21538,7 +23214,34 @@ populatedHarnessTestSecrets =
     , ses_capture_bucket = "prodbox-test-ses-capture"
     , pulumi_state_backend_bucket_name = "prodbox-state"
     , pulumi_state_backend_region = fixtureAwsRegion FixtureUsEast2
+    , aws_substrate_subzone_name = "aws.alpha.example.test"
+    , aws_substrate_profile = Just populatedHarnessAwsSubstrateProfile
+    , aws_eks_node_group_size = 2
     }
+
+populatedHarnessAwsSubstrateProfile :: AwsSubstrateProfile.AwsSubstrateProfile
+populatedHarnessAwsSubstrateProfile =
+  either
+    (error . AwsSubstrateProfile.renderAwsSubstrateProfileError)
+    id
+    ( AwsSubstrateProfile.mkAwsSubstrateProfile
+        AwsSubstrateProfile.AwsSubstrateProfileInput
+          { AwsSubstrateProfile.operator_cidr = "203.0.113.44/32"
+          , AwsSubstrateProfile.eks_node_instance_type = "t3.large"
+          , AwsSubstrateProfile.eks_node_disk_size_gib = 50
+          , AwsSubstrateProfile.eks_node_min_size = 2
+          , AwsSubstrateProfile.eks_node_max_size = 2
+          , AwsSubstrateProfile.aws_test_instance_types = replicate 3 "t3.large"
+          , AwsSubstrateProfile.aws_test_root_volume_types = replicate 3 "gp3"
+          , AwsSubstrateProfile.aws_test_root_volume_sizes_gib = replicate 3 30
+          , AwsSubstrateProfile.static_ebs_volume_type = "gp3"
+          , AwsSubstrateProfile.eks_vpc_cidr = "10.91.0.0/16"
+          , AwsSubstrateProfile.eks_subnet_cidrs = ["10.91.0.0/24", "10.91.1.0/24"]
+          , AwsSubstrateProfile.aws_test_vpc_cidr = "10.90.0.0/16"
+          , AwsSubstrateProfile.aws_test_subnet_cidrs =
+              ["10.90.0.0/24", "10.90.1.0/24", "10.90.2.0/24"]
+          }
+    )
 
 harnessProjectConfig :: ConfigFile -> DeploymentContextInput -> ProdboxProjectConfig
 harnessProjectConfig config input =

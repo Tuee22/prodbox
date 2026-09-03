@@ -127,6 +127,7 @@ import Prodbox.Capacity.Config
   , WorkloadResourceProfile (..)
   , defaultCapacitySection
   , validateCapacitySection
+  , validateOneShotSecretWorkerCapacity
   )
 import Prodbox.Cluster.Topology
   ( ClusterTopology
@@ -1134,6 +1135,7 @@ validateConfigWithContext repoRoot contextInput config = do
       mapLeft
         Allocation.renderCompileError
         (Allocation.compileResourcePlanUncertified (resource_plan (capacity config)))
+    validateOneShotSecretWorkerCapacity (resource_plan (capacity config))
     -- Sprint 1.83: the public-edge parse is retained rather than repeated. The
     -- same call inside `validateLocalConfig` above is the refusal; this is the
     -- value, and it is the only one any consumer sees.

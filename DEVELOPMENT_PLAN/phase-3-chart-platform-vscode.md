@@ -10,6 +10,18 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-28 on Sprint `3.46` (Standards A/N/P).** Generation 61 reconciles the frozen
+failed Lifecycle Authority release to observed absence before upgrade, creates one fresh exact-image
+Pod, reaches Ready, and crosses the post-unseal handoff. The later Authority Backup authentication
+refusal belongs to the standing Vault-role surface registered as Phase-2 Sprint `2.98`.
+
+🔄 **Reopened 2026-08-28 on Sprint `3.46` (Standards A/N/P).** Stable live counterexample
+`HELM-RETRY-2026-08-28` proves the chart platform preserves a readiness timeout correctly in its
+originating invocation but fails to recover the resulting terminal `failed` release before a later
+retry. Helm applies the replacement StatefulSet template, while Kubernetes retains the unready old
+ordinal and reports distinct current/update revisions forever. Sprint `3.46` owns the typed
+pre-upgrade observation and exact-absence recovery; deployment qualification is pending.
+
 ✅ **Reclosed 2026-08-23 on Sprint `3.43` (Standards A/N/P).** The first destructive Sprint `6.5`
 qualification preflight reached no AWS mutation: local reconcile rendered the operator host's
 `127.0.0.1:39000` MinIO address into the Bootstrap Broker Pod, where it names the Pod rather than
@@ -2868,9 +2880,10 @@ readiness, deployment cardinality, and failure domains match their typed authori
 - **Capacity funding resolved (Increment G, above).** The operator-approved home gateway 3 → 2
   reduction frees `800m CPU / 544 MiB` of single-node headroom, which sizes the five **standing**
   control-plane workloads (Guaranteed-QoS, `request == limit`): Lifecycle Authority (`150m / 128Mi`,
-  StatefulSet), fenced Provider Worker (`100m / 112Mi`), Authority Backup Adapter (`60m / 80Mi`),
-  TLS Retention Adapter (`60m / 80Mi`), Target Secret Agent (`60m / 80Mi`) — concurrent sum
-  `6130m / 12736 MiB ≤ 6500m / 12800 MiB`.
+  StatefulSet), fenced Provider Worker (`100m / 176Mi` after Sprint `2.132` measured its serialized
+  child lane), Authority Backup Adapter (`60m / 80Mi`), TLS Retention Adapter (`60m / 80Mi`), Target
+  Secret Agent (`60m / 80Mi`) — concurrent sum
+  `6130m / 12800 MiB ≤ 6500m / 12800 MiB`.
 - **Increment H landed** (the five standing control-plane role charts): `charts/lifecycle-authority/`
   (a StatefulSet with a retained journal `volumeClaimTemplate`), `charts/provider-worker/`,
   `charts/authority-backup/`, `charts/tls-retention/`, and `charts/target-secret-agent/` (Deployments)
@@ -4472,6 +4485,197 @@ owns that independently validatable boundary.
 - Record the Phase `3` own-surface reopen in [README.md](README.md) and
   [00-overview.md](00-overview.md); register renderer duplicates in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 3.44: Registry Bootstrap Evidence Outlives Its Waiter [✅ Done]
+
+**Status**: Done and live-proven — opened and closed 2026-08-26.
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` and focused validation under `test/unit/`.
+**Deployment qualification**: proven — the supported live reconcile observed the exact named Job
+complete before explicit deletion, reached a ready registry, and advanced into image publication.
+**Independent Validation**: pure rendering proves the wait-owned Job has no TTL controller and the
+reconciler still owns bounded completion observation plus explicit deletion; unit tests and
+`prodbox dev check` require no later phase.
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Keep the registry storage bootstrap Job observable until the same reconcile that created it has
+observed an exact terminal result and explicitly removed it.
+
+### Live Counterexample (2026-08-26)
+
+The first supported Sprint `2.75` diagnostic deployment upgraded retained MinIO and Vault, applied
+`harbor-registry-bucket-init`, then timed out after 300 seconds waiting for that exact Job. The Job
+was already absent when inspected, because its manifest delegates terminal collection to
+`ttlSecondsAfterFinished = 60` while the host reconcile independently owns a bounded `kubectl wait`
+and an explicit `kubectl delete`. The retained registry exposed no ready Service endpoint and
+answered direct `/v2/` storage health probes with HTTP 503. The run never built, published, or
+deployed the new Broker image, so this is not evidence about Sprint `2.75`'s invariant.
+
+### Deliverables
+
+- Remove the competing TTL collector from the wait-owned Harbor storage bootstrap Job; its exact
+  creator/waiter remains the sole cleanup owner.
+- Preserve the 300-second completion bound, fail-closed wait result, and explicit post-observation
+  deletion.
+- Assert the rendered Job has no TTL collection field while the production sequence still waits
+  for the exact name and deletes it only after success.
+- Reconcile live, retain any failed Job long enough to observe its exact log/condition, correct only
+  evidenced follow-on failure, and continue through a healthy registry endpoint.
+
+### Validation
+
+1. Focused render cases prove the wait-owned Job has no `ttlSecondsAfterFinished` and preserves its
+   fixed name, completion wait, and explicit deletion owner.
+2. Warning-clean all-target build, full unit suite, documentation lint, and `prodbox dev check`
+   pass before the live retry.
+3. `prodbox cluster reconcile` observes the exact bootstrap Job terminal result and a stable
+   registry endpoint, then reaches Sprint `2.75`'s Broker deployment boundary.
+
+### Remaining Work
+
+1. ~~Implement and validate the single-owner Job lifetime.~~ Done 2026-08-26: the actual render,
+   exact wait/delete vectors, **4649** primary unit cases plus **27/33/29** authority suites,
+   documentation lint, warning-clean all-target build, and canonical `prodbox dev check` pass.
+2. ~~Rerun the supported live reconcile and reach the Broker deployment boundary.~~ Done
+   2026-08-26: `harbor-registry-bucket-init` reached `Complete`, the waiter consumed that result,
+   the explicit owner deleted it, the registry became Ready, and image publication proceeded.
+
+## Sprint 3.45: Broker Revision Observation Outlives Controller Jitter [✅ Done]
+
+**Status**: Done and live-proven — opened and closed 2026-08-26.
+**Implementation**: `src/Prodbox/Retry.hs` and focused validation under `test/unit/`.
+**Deployment qualification**: proven — the corrected bounded observer consumed Broker generation
+32 during the same supported reconcile and advanced into Vault initialize/unseal/baseline.
+**Independent Validation**: pure retry-policy cases prove the observation window is bounded and
+long enough for the measured controller delay; the closed Deployment revision predicate remains
+unchanged and unit tests plus `prodbox dev check` require no later phase.
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Give the intentionally no-wait Bootstrap Broker Helm apply a bounded Deployment-revision
+observation window that covers ordinary RKE2 controller/scheduling jitter without weakening what
+counts as the requested revision being observed.
+
+### Live Counterexample (2026-08-26)
+
+After Sprint `3.44` crossed, the reconcile built local image `sha256:6994f87f…`, published registry
+digest `sha256:693f8276…`, imported OCI manifest `sha256:9f7e1afe…`, and applied Broker generation
+31. The generic component observer made only three one-second attempts and refused on
+`31:31:1:` because `status.updatedReplicas` was not populated yet. Fourteen seconds later that
+exact Deployment was ready 1/1 with zero restarts. Helm deliberately omits `--wait` for this release
+because post-Vault readiness cannot precede the bootstrap transition; therefore the revision
+observer is the sole owner of this pre-transition convergence wait.
+
+### Deliverables
+
+- Extend only the bounded component revision-observation window to at least the measured
+  controller delay while retaining jitter and a finite deadline.
+- Preserve the exact generation/observed-generation/desired/updated predicate and keep
+  post-Vault readiness out of this pre-transition barrier.
+- Assert the compiled bound and the unchanged closed predicate, then cross the same supported live
+  reconcile into Sprint `2.75`'s protected diagnostic.
+
+### Validation
+
+1. Focused pure cases prove the compiled policy covers the measured 14-second delay and remains
+   bounded, while `31:31:1:` stays pending and `31:31:1:1` is ready.
+2. Warning-clean all-target build, full unit suite, documentation lint, and `prodbox dev check`
+   pass before the live retry.
+3. `prodbox cluster reconcile` consumes the requested Broker revision and reaches the protected
+   baseline call without an operator retry substituting for the observer.
+
+### Remaining Work
+
+1. ~~Implement the bounded observation correction and focused proof.~~ Done 2026-08-26: only the
+   Broker selects the 60-attempt policy, all other components retain three attempts, and the exact
+   revision predicate remains unchanged.
+2. ~~Run the complete local gate.~~ Done 2026-08-26: the focused case, all **4649** primary unit
+   cases plus **27/33/29** authority suites, documentation lint, warning-clean all-target build,
+   and canonical `prodbox dev check` pass.
+3. ~~Rerun the supported live reconcile and consume the exact Broker revision.~~ Done 2026-08-26:
+   generation 32 runs local image `sha256:c47c7ed6…`, registry digest `sha256:c03fa77c…`, and
+   containerd manifest `sha256:e0759ddd…`, ready 1/1 with zero restarts; the same reconcile reached
+   Vault baseline without an operator retry. Sprint `2.76` owns the distinct earlier-stage Vault
+   invariant observed there before `2.75` resumes.
+
+## Sprint 3.46: Terminal Failed Helm Revision Is Reconciled Before Retry [✅ Done]
+
+**Status**: Done and live-proven 2026-08-28.
+**Implementation**: `src/Prodbox/Lifecycle/HelmRelease.hs`,
+`src/Prodbox/Lib/ChartPlatform.hs`, and focused validation under `test/unit/`.
+**Deployment qualification**: proven — the frozen generation-59 failed revision is removed and
+observed absent; generation 61 becomes the sole running revision and the enclosing reconcile
+completes Authority readiness plus Bootstrap Broker handoff.
+**Independent Validation**: a closed pure preparation decision and effect-trace tests distinguish
+absent/deployed, terminal failed, concurrent pending, and unobservable observations without a live
+cluster; complete unit and canonical local gates exercise the integrated chart platform.
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make a later reconcile recover the terminal Helm revision left by an earlier readiness timeout
+before beginning another upgrade. Preserve the non-destructive timeout rule in the originating
+attempt, refuse concurrent or unobservable release states, and require exact absence read-back
+before retrying installation.
+
+### Live Counterexample (`HELM-RETRY-2026-08-28`)
+
+Generation 59 timed out at 0/1 Ready and Helm recorded the revision as `failed`, correctly retaining
+its diagnostic state. The next supported generation-60 reconcile invoked `helm upgrade --install`
+directly. Helm accepted revision 2 and wrote the generation-60 StatefulSet template, but Kubernetes
+kept Pod `d0b1f1af-45ef-4714-ab5c-4894126d0e99` on generation 59 because that ordinal was already
+unready. The StatefulSet reports `currentRevision=lifecycle-authority-55d7df9b44`,
+`updateRevision=lifecycle-authority-974cbf56b`, and zero updated replicas while Helm remains
+`pending-upgrade`; retrying the same write cannot establish a new readiness observation.
+
+### Deliverables
+
+- Decode the authoritative pre-upgrade release observation into a closed preparation decision.
+- Admit absent and deployed releases directly; reconcile a terminal failed release to exact absence
+  before upgrade; refuse pending/uninstalling and unobservable states without mutation.
+- Preserve the existing rule that a readiness timeout is non-terminal within the invocation that
+  observed it and leaves the release installed for diagnosis.
+- Add deterministic effect traces for every preparation arm and a regression for the frozen
+  generation-59 → generation-60 retry shape.
+- Run the complete local gate, deploy the exact replacement, and complete Authority readiness and
+  Bootstrap Broker handoff read-back.
+
+### Validation
+
+1. Pure table cases exhaust every `HelmReleaseStatus` and pin its pre-upgrade preparation arm.
+2. Effect-trace cases prove failed → observe/uninstall/observe/upgrade, absence/deployed → upgrade,
+   and pending/unobservable → refusal with no uninstall or upgrade.
+3. Warning-clean all-target build, full unit/authority suites, documentation lint,
+   `git diff --check`, and exact `prodbox dev check` pass.
+4. The supported live retry first proves exact absence of the frozen failed revision, then runs one
+   exact generation-60 Pod to Ready and completes the broker handoff read-back.
+
+### Remaining Work
+
+1. ~~Implement the closed preparation decision and exact pre-upgrade reconciliation.~~ Done
+   2026-08-28: `HelmUpgradePreparationDecision` exhausts all eight statuses; absent/deployed admit,
+   failed/uninstalled/superseded require the shared exact-absence reconciler, and every
+   pending/uninstalling or unobservable arm refuses. `helmUpgradeInstall` cannot start until that
+   preparation succeeds.
+2. ~~Run focused and complete local validation.~~ Done 2026-08-28: both focused effect/decision
+   cases pass, all **4685** primary plus **27/33/29** authority cases pass, the warning-clean
+   all-target build, pinned Fourmolu/HLint (`No hints`), documentation lint, `git diff --check`, and
+   exact canonical `prodbox dev check` pass. The refreshed binary is `sha256:446bd0ef…`; RKE2 stayed
+   on PID `3499229` with zero restarts and its False MemoryPressure transition unchanged across the
+   canonical gate.
+3. ~~Complete current-revision live qualification and update the sole status ledger.~~ Done
+   2026-08-28: generation-61 local/registry/OCI identities are `sha256:56c7c3c8…`,
+   `sha256:3f44873d…`, and `sha256:46631647…`. Fresh Pod
+   `c300d852-c83c-464f-bffe-2865e0fadb80` is Ready with annotation and image ID equal to the local
+   image; the same reconcile crosses handoff and reaches the next component.
 
 ## Related Documents
 

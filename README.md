@@ -211,7 +211,10 @@ The development-plan target architecture centers the local public edge on:
   restored before issuance evaluation, so rebuilds reuse that set without ordering again. Its
   `dnsNames` are a total projection of the operator-configured `CertScopeSet`
   (`domain.cert_scopes`), which defaults to the single served host; listeners/routes/DNS remain
-  explicit served-host bindings and are never enumerated from wildcard SAN coverage (see
+  explicit served-host bindings and are never enumerated from wildcard SAN coverage. Host chart
+  orchestration triggers retain/restore only through the closed Lifecycle Authority workflow;
+  Authority alone authenticates to its TLS fold, ciphertext Adapter, and exact Target TLS routes
+  (see
   [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md) and
   [acme_provider_guide.md → Configurable Certificate Scope](./documents/engineering/acme_provider_guide.md#5-configurable-certificate-scope))
 - **Keycloak** as the OIDC identity provider

@@ -233,6 +233,7 @@ registeredLegacyCutoverFragments =
   [ ("src/Prodbox/CLI/Rke2.hs", "runNativeDeleteCascade")
   , ("src/Prodbox/Legacy/EscapeRegistry.hs", "runNativeDeleteCascade")
   , ("src/Prodbox/Lifecycle/ResourceRegistry.hs", "runNativeDeleteCascade")
+  , ("src/Prodbox/Test/CascadeQualification.hs", "runNativeDeleteCascade")
   , ("src/Prodbox/CLI/Rke2.hs", "runAuthorizedDeleteCascade")
   , ("src/Prodbox/CLI/Rke2.hs", "queryAwsLayerForPerRun")
   , ("src/Prodbox/CLI/Rke2.hs", "inferCascadeSubstrate")

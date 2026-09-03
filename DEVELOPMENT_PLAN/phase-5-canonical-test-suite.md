@@ -11,6 +11,41 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-31 on Sprint `5.43` (Standards A/N).** Sprints `5.38` through `5.43` are
+Done: fake Helm status, Docker retention/repository identity, Credential Provisioner substrate
+observations, and Authority Backup target/startup/liveness/teardown now project their exact
+production contracts. Both complete installed entrypoints pass 63/63 and no later fixture
+counterexample remains.
+
+🔄 **Registers Sprint `5.40` on 2026-08-31 before behavior change (Standards A/N).** The
+Sprint-`5.39` correction crosses runtime-image retention and exposes a distinct later fixture
+boundary: the Credential Provisioner substrate `kubectl get --filename=-` observation receives
+exit-zero empty output from the fake and production correctly refuses invalid JSON.
+
+🔄 **Registers Sprint `5.41` on 2026-08-31 before behavior change (Standards A/N).** The
+Sprint-`5.40` correction admits the independently read-back Credential Provisioner substrate and
+advances to Authority Backup, where the fake Docker interpreter answers production's JSON
+repository-digest inventory request with its plain config-digest line.
+
+🔄 **Registers Sprint `5.42` on 2026-08-31 before behavior change (Standards A/N).** The
+Sprint-`5.41` correction selects the repository manifest and reaches the Authority Backup
+port-forward. The fake recognizes only `service/authority-backup` while production requests
+`deployment/authority-backup`, so the exact request reaches a silent generic arm with neither
+server nor acknowledgement; production correctly refuses before HTTP and exhausts bounded
+liveness retry.
+
+🔄 **Registers Sprint `5.43` on 2026-08-31 before behavior change (Standards A/N).** The exact
+Sprint-`5.42` target and acknowledgement are admitted, but the fake writes the line before `exec`
+binds the fixture listener. Production's immediate post-ack probe correctly gets connection
+refused and bounded retry remains fail-closed.
+
+🔄 **Reopened 2026-08-28 on Sprint `5.38` (Standards A/N).** The first current installed-frontend
+CLI rerun exposes `FAKE-HELM-STATUS-2026-08-28`: the production chart lifecycle now observes
+`helm status --output json` before every upgrade, but the generic fake rejects that command and the
+RKE2 fake answers success with an empty document for non-Harbor releases. Eight of 63 cases fail at
+fixture setup before reaching their owned validation bodies. Sprint `5.38` owns the total absent
+versus explicitly deployed fake projection and a two-sided regression.
+
 ✅ **Configuration-ownership expansion closed 2026-08-23 on Sprint `5.37` (Standards A/N/M).**
 The aggregate and topology harness lanes now generate the binary-sibling `prodbox.dhall` only from
 explicit fixture/run-derived deployment answers through the production builder, validate before
@@ -3770,6 +3805,407 @@ inherits a deployment answer from the compiled skeleton.
 None on Sprint `5.37`'s code-owned surface. This sprint changes harness sourcing, not the lifecycle
 cleanup-client cutover owned by Sprint `5.36`; deployment qualification remains pending under
 Standard P.
+
+## Sprint 5.38: Fake Helm Status Mirrors the Authoritative Upgrade Observation [✅ Done]
+
+**Status**: Done — both fake interpreters implement the exact closed status observation and the
+installed boundary proves absent and explicitly deployed results.
+**Implementation**: `test/integration/CliSuite.hs`.
+**Independent Validation**: an installed fake-tool regression exercises both absent and explicitly
+deployed status results without a cluster, Helm installation, or later phase.
+**Docs to update**: `documents/engineering/integration_fixture_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make each built-frontend fake Helm interpreter project the same closed pre-upgrade observation as
+production so integration cases reach the validation bodies they claim to exercise. Absence is an
+exact not-found failure; presence is canonical JSON carrying an explicit supported status; a
+successful empty document is unobservable and is never silently accepted.
+
+### Stable Counterexample (2026-08-28)
+
+The current CLI suite fails 8 of 63 cases. The generic chart fake rejects
+`status keycloak-postgres --namespace vscode --output json` as unsupported. The RKE2 fake handles
+only Harbor by name and exits zero without output for `bootstrap-broker`, so production correctly
+returns `HelmReleaseInitialObservationFailed "helm status reported no recognisable .info.status:
+"`. Resource guardrails, Gateway stability, RKE2 reconcile, mirror fallback, and ZeroSSL cases all
+stop at that shared preparation boundary before their owned bodies run.
+
+### Deliverables
+
+- Give the generic chart fake a `status` arm that reads its explicit fake release inventory:
+  listed releases emit canonical `.info.status` JSON and all others emit the exact not-found
+  failure production classifies as absence.
+- Give the RKE2 fake the same default-absence result for every non-Harbor release while preserving
+  Harbor's existing present-before-uninstall and absent-after-uninstall state machine.
+- Add a focused two-sided installed-boundary case that would fail for unsupported status,
+  successful empty output, or an invalid JSON shape.
+- Rerun the complete CLI and environment entrypoints plus the repository's unit and canonical
+  gates; preserve any distinct later failure rather than weakening its assertion.
+
+### Validation
+
+1. Focused fake-tool cases observe an unlisted release as absent and an explicitly listed release
+   as deployed through the production classifier.
+2. `prodbox test integration cli` and `prodbox test integration env` pass all 63 cases.
+3. Full unit/auxiliary suites, warning-clean all-target build, docs/diff checks, and exact
+   `prodbox dev check` pass.
+
+### Validation Result (2026-08-31)
+
+- The focused installed-boundary case passes **1/1** in 22.44 seconds. Its first generic reconcile
+  decodes exact absence from an empty inventory; its second decodes canonical deployed JSON from an
+  explicit inventory. The same case proves the RKE2 fake's exact non-Harbor absence plus Harbor's
+  present/uninstall/absent transition.
+- Both complete installed entrypoints advance from **55/63** to **57/63**: `cli` runs in 208.43
+  seconds and `env` in 210.16 seconds. All six remaining failures carry only
+  `Managed runtime-image retention observation is unavailable or malformed`, the separately
+  registered Sprint-`5.39` boundary; no Helm-status failure remains, and all four environment cases
+  pass.
+- The primary unit suite passes **4759/4759** and auxiliaries pass **27/33/33**. Pinned Fourmolu,
+  HLint (`No hints`), warning-clean all-target compilation, documentation/diff checks, and canonical
+  `prodbox dev check` pass.
+
+### Remaining Work
+
+None.
+
+## Sprint 5.39: Fake Docker Projects Runtime-Image Retention Inventory [✅ Done]
+
+**Status**: Done — the fake Docker interpreter projects observable absence and the exact
+populated/remove/read-back transition through production's machine classifier.
+**Implementation**: `test/integration/CliSuite.hs`.
+**Independent Validation**: an installed fake-tool regression exercises empty and explicitly
+populated managed-dangling inventories, including removal and absence read-back, without Docker or a
+cluster.
+**Docs to update**: `documents/engineering/integration_fixture_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make the RKE2 fake Docker interpreter project production's closed, machine-formatted managed
+runtime-image retention observation. An empty inventory is successful observable absence; a listed
+canonical managed dangling image is removed and read back absent; malformed rows and command
+failure remain refusals in production.
+
+### Stable Counterexample (2026-08-31)
+
+Both current installed entrypoints reproduce the same 55/63 result. Production invokes `docker
+image ls --filter dangling=true --no-trunc --format ...` before RKE2 reconciliation and selects the
+exact managed repository only after decoding each machine row. The fake Docker `image` arm supports only
+`inspect` and exits 1 for this inventory. Production therefore correctly reports its closed
+malformed/unobservable runtime-image-retention result, and affected cases stop during fixture setup.
+Stable counterexample `FAKE-RKE2-DOCKER-RUNTIME-RETENTION-INVENTORY-2026-08-31` is distinct from
+the fake Helm status shape owned by Sprint `5.38`.
+
+### Deliverables
+
+- Give the fake Docker `image ls` arm an explicit machine-formatted inventory source whose default
+  is observable empty output.
+- Model `docker image rm` and the subsequent read-back so one explicitly listed canonical managed
+  dangling image transitions to exact absence; never make an arbitrary malformed row pass.
+- Extend the installed RKE2 boundary case with both empty and populated projections.
+- Rerun the complete CLI/environment entrypoints and local gates; register any distinct later
+  failure before changing its behavior.
+
+### Validation
+
+1. Focused fake-tool evidence proves empty inventory succeeds and an explicit managed dangling image
+   is removed then read back absent through the production classifier.
+2. `prodbox test integration cli` and `prodbox test integration env` advance every affected case
+   beyond Docker retention; a separately registered later refusal may remain.
+3. Full unit/auxiliary suites, warning-clean all-target build, docs/diff checks, and exact
+   `prodbox dev check` pass.
+
+### Remaining Work
+
+None.
+
+### Closure Evidence (2026-08-31)
+
+- A focused fake-tool case passes **1/1** and invokes the process boundary with
+  `managedRuntimeImageRetentionInventoryArguments`. Default output classifies as exact absence; a
+  canonical seeded managed row classifies as the sole target, is removed, and independently reads
+  back empty.
+- Both complete installed entrypoints remain **57/63**: `cli` runs in 407.66 seconds and `env` in
+  405.58 seconds. Every one of the six failures advances past Docker retention and carries only
+  Sprint `5.40`'s registered Credential Provisioner substrate observation refusal; all four
+  environment cases pass.
+- The primary unit suite passes **4759/4759**, auxiliaries pass **27/33/33**, and canonical
+  `prodbox dev check` passes pinned Fourmolu, HLint (`No hints`), documentation/diff, and
+  warning-clean all-target compilation.
+
+## Sprint 5.40: Fake Kubernetes Reads Back Credential Provisioner Substrate [✅ Done]
+
+**Status**: Done — successful exact apply persists the nine-object manifest and the exact get reads
+that stored projection back independently; absence and malformed bytes remain refusals.
+**Implementation**: `test/integration/CliSuite.hs`.
+**Independent Validation**: an installed fake-tool regression applies the exact substrate list,
+observes that stored list through the production `--filename=-` read-back, and proves an empty or
+malformed observation remains rejected without a cluster.
+**Docs to update**: `documents/engineering/integration_fixture_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make the RKE2 fake Kubernetes interpreter store the exact applied Credential Provisioner substrate
+manifest and return that stored projection for production's independent filename-based read-back.
+Exit-zero empty output is unobservable, never an alias for an empty object set or successful apply.
+
+### Stable Counterexample (2026-08-31)
+
+After Sprint `5.39` removes and reads back the seeded managed dangling image, the installed RKE2
+reconcile advances through Bootstrap Broker, Target Agent, and Lifecycle Authority. Production
+applies the nine-object Credential Provisioner substrate, then invokes `kubectl get --filename=-
+--output=json --ignore-not-found=true` with the desired list on stdin. The fake `get` dispatcher
+interprets `--filename=-` as an unknown resource and returns exit 0 with empty stdout. Production
+correctly reports `CredentialProvisionerSubstrateObservationUnavailable "invalid Kubernetes
+observation: Unexpected end-of-input, expecting JSON value"`. Stable counterexample
+`FAKE-RKE2-CREDENTIAL-PROVISIONER-SUBSTRATE-OBSERVATION-EMPTY-2026-08-31` is later and independent
+of both Helm status and Docker retention inventory.
+
+### Deliverables
+
+- Persist the exact stdin manifest only when the fake `kubectl apply --filename=-` succeeds.
+- Return that stored manifest for the exact `get --filename=- --output=json
+  --ignore-not-found=true` observation; unknown commands and absent/malformed stored state must not
+  become successful empty output.
+- Extend the installed RKE2 boundary assertions with the apply/read-back command pair and exact
+  object projection.
+- Rerun both installed entrypoints and local gates; register any distinct later refusal before
+  changing its behavior.
+
+### Validation
+
+1. Focused installed evidence proves the exact applied nine-object list is independently read back
+   and admitted by the production comparator, while its existing pure refusals stay green.
+2. `prodbox test integration cli` and `prodbox test integration env` advance every affected case
+   beyond this boundary; a separately registered later refusal may remain.
+3. Full unit/auxiliary suites, warning-clean all-target build, docs/diff checks, and canonical
+   `prodbox dev check` pass.
+
+### Remaining Work
+
+None.
+
+### Closure Evidence (2026-08-31)
+
+- The focused fake-tool case passes **1/1** in 15.79 seconds. Exact get before apply refuses;
+  successful exact apply stores the nine-object JSON; exact get returns those stored bytes and the
+  production comparator admits them; deliberately malformed stored bytes fail JSON decoding.
+- Both complete installed entrypoints remain **57/63**: `cli` runs in 397.28 seconds and `env` in
+  396.31 seconds. All six failures cross the substrate observation and carry only Sprint `5.41`'s
+  registered repository-manifest refusal; all four environment cases pass.
+- The primary unit suite passes **4759/4759**, auxiliaries pass **27/33/33**, and canonical
+  `prodbox dev check` passes pinned Fourmolu, HLint (`No hints`), documentation/diff, and
+  warning-clean all-target compilation.
+
+## Sprint 5.41: Fake Docker Projects Repository Manifest Inventory [✅ Done]
+
+**Status**: Done — exact inspect formats now return distinct config/image and repository-manifest
+observations, and the production selector admits only the repository-qualified manifest identity.
+**Implementation**: `test/integration/CliSuite.hs`.
+**Independent Validation**: an installed fake-tool regression invokes both exact image-inspect
+formats and feeds the repository inventory through `selectRepositoryManifestDigest`.
+**Docs to update**: `documents/engineering/integration_fixture_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make the RKE2 fake Docker interpreter distinguish the local image rollout-token observation from
+the repository-resolvable manifest observation. `{{.Id}}` returns one canonical config/image ID;
+`{{json .RepoDigests}}` returns a JSON array containing the exact managed repository at one distinct
+canonical manifest digest. Malformed, foreign-only, or ambiguous inventories remain refusals in
+production.
+
+### Stable Counterexample (2026-08-31)
+
+After Sprint `5.40` stores and independently reads back the exact nine-object Credential
+Provisioner substrate, the installed RKE2 reconcile advances through its admission and deploys the
+Authority Backup chart. `resolveLocalImageManifestDigest` invokes `docker image inspect --format
+{{json .RepoDigests}} <managed-reference>`. The fake's generic `image inspect` arm ignores the
+format and returns the plain `sha256:...` line used by the separate `{{.Id}}` observation. That is
+not a JSON array of repository-qualified digests, so production correctly reports `The runtime
+image has no immutable repository manifest digest.` Stable counterexample
+`FAKE-RKE2-DOCKER-REPOSITORY-MANIFEST-INVENTORY-2026-08-31` is later and independent of the
+runtime-retention and Credential Provisioner substrate observations.
+
+### Deliverables
+
+- Parse the fake `image inspect --format` request and return format-specific output; do not make one
+  syntactically valid digest stand for both observation layers.
+- Return a JSON repository-digest inventory containing exactly the requested managed repository and
+  one distinct canonical manifest digest.
+- Replace the obsolete `buildx imagetools inspect --raw` installed assertion with the two actual
+  production image-inspect commands and a focused classifier proof.
+- Rerun both installed entrypoints and local gates; register any distinct later refusal before
+  changing its behavior.
+
+### Validation
+
+1. Focused fake-tool evidence proves `{{.Id}}` and `{{json .RepoDigests}}` return distinct canonical
+   shapes and only the repository-qualified inventory selects the manifest digest.
+2. `prodbox test integration cli` and `prodbox test integration env` advance beyond this boundary.
+3. Full unit/auxiliary suites, warning-clean all-target build, docs/diff checks, and canonical
+   `prodbox dev check` pass.
+
+### Remaining Work
+
+None.
+
+### Closure Evidence (2026-08-31)
+
+- The focused fake-tool case passes **1/1** in 16.96 seconds. `{{.Id}}` returns the canonical local
+  config/image identity; `{{json .RepoDigests}}` returns a distinct repository-qualified manifest,
+  and `selectRepositoryManifestDigest` selects exactly that manifest.
+- Both complete installed entrypoints remain **57/63**: `cli` runs in 2210.33 seconds and `env` in
+  2206.36 seconds. All six failures cross repository-manifest resolution and carry only Sprint
+  `5.42`'s registered missing forwarding acknowledgement; every unaffected case and all four
+  environment cases pass.
+- The primary unit suite passes **4759/4759**, auxiliaries pass **27/33/33**, and canonical
+  `prodbox dev check` passes pinned Fourmolu, HLint (`No hints`), documentation/diff, and
+  warning-clean all-target compilation.
+
+## Sprint 5.42: Fake Authority Backup Port-Forward Acknowledges Startup [✅ Done]
+
+**Status**: Done — the fake models the exact target and acknowledgement contract, and the distinct
+listener-ordering refusal is registered independently under Sprint `5.43`.
+**Implementation**: `test/integration/CliSuite.hs`.
+**Independent Validation**: a process-boundary regression starts the exact fake Authority Backup
+forward, reads its first stdout line, and classifies that line with production's exact startup
+classifier before probing the loopback server.
+**Docs to update**: `documents/engineering/integration_fixture_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make the RKE2 fake Kubernetes interpreter model kubectl's exact Authority Backup port-forward
+target and startup acknowledgement before handing the socket to the fixture server. The dispatch
+must recognize `deployment/authority-backup`; the line must bind the requested loopback port and
+compiled remote port exactly. Missing, foreign-address, wrong-port, and trailing-text lines remain
+refusals in production.
+
+### Stable Counterexample (2026-08-31)
+
+After Sprint `5.41` supplies distinct rollout and repository-manifest observations, the installed
+RKE2 reconcile deploys Authority Backup and starts `kubectl --namespace authority-backup
+port-forward deployment/authority-backup <reserved>:8600`. The fake starts its loopback Authority
+server only for an obsolete `service/authority-backup` target. The production request therefore
+enters the fake's silent generic-forward loop and writes no stdout line. Production waits for the
+exact forwarding acknowledgement before its HTTP liveness probe, correctly classifies each missing line as
+`LocalAuthorityBackupLivenessFailed "startup acknowledgement timed out"`, retires each child, and
+exhausts its bounded retry in 335.60 seconds. Stable counterexample
+`FAKE-RKE2-AUTHORITY-BACKUP-PORT-FORWARD-ACK-MISSING-2026-08-31` is later and independent of the
+image and substrate observations.
+
+### Deliverables
+
+- Emit `Forwarding from 127.0.0.1:<requested> -> 8600` on stdout only for the exact Authority
+  Backup port-forward, before the fixture server replaces the shell.
+- Recognize production's exact `deployment/authority-backup` target and reject the obsolete
+  `service/authority-backup` spelling.
+- Derive both ports from the exact requested mapping rather than maintaining a second local-port
+  value; keep unrelated port-forward behavior unchanged.
+- Add a focused process-boundary assertion through `classifyAuthorityBackupForwardStartup` and
+  retain its existing wrong-line refusal matrix.
+- Rerun both installed entrypoints and local gates; register any distinct later refusal before
+  changing its behavior.
+
+### Validation
+
+1. Focused fake-tool evidence reads and admits the exact startup line before a successful loopback
+   probe; existing pure tests continue to reject missing or mismatched lines.
+2. `prodbox test integration cli` and `prodbox test integration env` advance beyond this boundary.
+3. Full unit/auxiliary suites, warning-clean all-target build, docs/diff checks, and canonical
+   `prodbox dev check` pass.
+
+### Remaining Work
+
+None.
+
+### Closure Evidence (2026-08-31)
+
+- The focused process-boundary case passes **1/1** in 16.13 seconds. It proves the exact
+  `deployment/authority-backup` request, derived local/remote mapping, production classifier
+  admission, and explicit obsolete `service/authority-backup` refusal.
+- Both complete installed entrypoints remain **57/63**: `cli` runs in 772.44 seconds and `env` in
+  765.62 seconds. All six failures cross target and acknowledgement classification and carry only
+  Sprint `5.43`'s registered immediate connection-refused diagnostic; every unaffected case and all
+  four environment cases pass.
+- The primary unit suite passes **4759/4759**, auxiliaries pass **27/33/33**, and canonical
+  `prodbox dev check` passes pinned Fourmolu, HLint (`No hints`), documentation/diff, and
+  warning-clean all-target compilation.
+
+## Sprint 5.43: Fake Authority Backup Acknowledges Only A Live Listener [✅ Done]
+
+**Status**: Done — the acknowledgement follows exact listener readiness, teardown owns the child,
+and both complete installed entrypoints pass.
+**Implementation**: `test/integration/CliSuite.hs`.
+**Independent Validation**: a process-boundary regression reads the exact acknowledgement and
+immediately performs the same one-shot `/readyz` probe production performs, without a test-side
+retry that can hide pre-listener acknowledgement.
+**Docs to update**: `documents/engineering/integration_fixture_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Make the fake Authority Backup forward emit kubectl's exact startup acknowledgement only after its
+fixture listener is demonstrably bound. Once the line is readable, the immediate production HTTP
+probe must succeed; the fake must also retire its fixture child when the forwarding process is
+terminated.
+
+### Stable Counterexample (2026-08-31)
+
+Sprint `5.42` recognizes `deployment/authority-backup`, derives the exact mapping, prints
+`Forwarding from 127.0.0.1:<requested> -> 8600`, and then `exec`s the fixture server. The print
+precedes the server's bind. Production admits the exact line, then intentionally gives the already
+acknowledged listener one immediate HTTP probe. The socket is not yet present, so every attempt
+gets `LocalAuthorityBackupLivenessFailed "HTTP connection failure: ... Connection refused"` and
+the focused installed reconcile exhausts in 95.64 seconds. Stable counterexample
+`FAKE-RKE2-AUTHORITY-BACKUP-ACK-BEFORE-LISTENER-2026-08-31` is later and independent of target
+and line classification.
+
+### Deliverables
+
+- Start the fixture server as an owned child, prove its exact loopback port accepts a connection,
+  and only then emit the derived acknowledgement.
+- Propagate TERM/INT to that child and wait for it so the fake forward leaves no process residue.
+- Remove the focused test's post-ack polling allowance and require the first immediate `/readyz`
+  request to succeed.
+- Rerun both installed entrypoints and local gates; register any distinct later refusal before
+  changing its behavior.
+
+### Validation
+
+1. Focused process-boundary evidence admits the exact first line and immediately receives `/readyz`
+   200 from the same forward; teardown proves the child exits.
+2. `prodbox test integration cli` and `prodbox test integration env` advance beyond this boundary.
+3. Full unit/auxiliary suites, warning-clean all-target build, docs/diff checks, and canonical
+   `prodbox dev check` pass.
+
+### Remaining Work
+
+None.
+
+### Closure Evidence (2026-08-31)
+
+- The focused process-boundary case passes **1/1** in 14.56 seconds: it admits the exact first line,
+  immediately receives `/readyz` without polling, terminates the forward, and reads back the owned
+  child as stopped.
+- The full installed RKE2 reconcile/delete case passes **1/1** in 39.41 seconds and exposes no later
+  counterexample.
+- Both complete installed entrypoints pass **63/63**: `cli` in 430.89 seconds and `env` in 425.66
+  seconds.
+- The primary unit suite passes **4759/4759**, auxiliaries pass **27/33/33**, and canonical
+  `prodbox dev check` passes pinned Fourmolu, HLint (`No hints`), documentation/diff, and
+  warning-clean all-target compilation.
 
 ## Documentation Requirements
 

@@ -63,6 +63,10 @@ spec:
       restartPolicy: Never
       securityContext:
         runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -127,6 +131,11 @@ spec:
             - name: identity-token
               mountPath: /var/run/secrets/prodbox
               readOnly: true
+{{ if eq .Values.ingressSchema "aws-admin" }}
+            - name: kubernetes-api-identity
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+{{ end }}
       volumes:
         - name: runtime
           emptyDir:
@@ -147,4 +156,22 @@ spec:
                     - path: pod-uid
                       fieldRef:
                         fieldPath: metadata.uid
+{{ if eq .Values.ingressSchema "aws-admin" }}
+        - name: kubernetes-api-identity
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace
+{{ end }}
 {{- end }}

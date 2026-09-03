@@ -18,6 +18,7 @@ module Prodbox.Lib.ChartPlatform
   , KubernetesApiEgressCoordinate (..)
   , kubernetesApiEgressChartNames
   , recoveryObserverRbacChartNames
+  , readKubernetesApiEgressCoordinate
   , parseKubernetesApiEgressCoordinate
   , classifyPublicEdgePreserve
   , deleteChartPlan
@@ -40,7 +41,9 @@ module Prodbox.Lib.ChartPlatform
   , retainedPublicEdgeTlsSecretManifest
   , resolveChart
   , resolveChartSecrets
+  , resolvedCustomImageTargetAgentIdentity
   , resolveRuntimeChartImageForSubstrate
+  , selectRepositoryManifestDigest
   , resolveDependencyOrder
   , supportedChartNames
   , validateOperatorGatesWith
@@ -89,6 +92,7 @@ import Data.List
   , find
   , intercalate
   , isInfixOf
+  , isPrefixOf
   , nub
   , sort
   , sortOn
@@ -142,6 +146,7 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , renderLifecycleAuthorityAuthenticationError
   , withHostLifecycleAuthorityAuthentication
   , withLifecycleAuthorityAuthenticatedTransport
+  , withLifecycleAuthorityTlsWorkflowAuthenticatedTransport
   , withSelectedTargetSecretAgentAuthenticatedTransport
   , withTargetSecretAgentAuthenticatedTransport
   , withTlsRetentionAuthenticatedTransport
@@ -152,7 +157,8 @@ import Prodbox.ControlPlane.Route
   , routesForRole
   )
 import Prodbox.ControlPlane.TargetSecretAgentExecution
-  ( mkTargetAgentRolloutIdentity
+  ( TargetAgentIdentity
+  , mkTargetAgentRolloutIdentity
   , targetAgentIdentityText
   , targetAgentRolloutDigest
   )
@@ -169,6 +175,11 @@ import Prodbox.ControlPlane.TlsRetentionWorkflow
   , TlsWorkflowRetainOutcome (..)
   , restorePublicEdgeTlsWorkflow
   , retainPublicEdgeTlsWorkflow
+  )
+import Prodbox.ControlPlane.TlsRetentionWorkflowAuthorityEndpoint
+  ( TlsRetentionWorkflowAuthorityRequest (..)
+  , TlsRetentionWorkflowAuthorityResponse (..)
+  , requestTlsRetentionWorkflowAuthority
   )
 import Prodbox.ControlPlane.TlsTargetAgentClient
   ( tlsTargetAgentClientWithTransport
@@ -458,9 +469,24 @@ data ResolvedCustomImage = ResolvedCustomImage
   { resolvedCustomImageRepository :: String
   , resolvedCustomImageTag :: String
   , resolvedCustomImageRolloutToken :: Maybe String
-  , resolvedCustomImageRuntimeDigest :: Maybe String
+  , resolvedCustomImageManifestDigest :: Maybe String
   }
   deriving (Eq, Show)
+
+-- | The selected Target Agent identity feeds an @Always@-pull one-shot worker
+-- attestation.  Its image component is therefore the independently observed
+-- repository-manifest digest, not Docker's host-local rollout token.
+resolvedCustomImageTargetAgentIdentity
+  :: Text.Text -> ResolvedCustomImage -> Either String TargetAgentIdentity
+resolvedCustomImageTargetAgentIdentity clusterId image = do
+  manifestDigest <-
+    maybe
+      (Left "The runtime image has no immutable repository manifest digest for the Target Agent identity.")
+      Right
+      (resolvedCustomImageManifestDigest image)
+  first
+    Text.unpack
+    (mkTargetAgentRolloutIdentity clusterId (Text.pack manifestDigest))
 
 data PatroniClusterReadiness
   = PatroniClusterReady
@@ -2257,7 +2283,7 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
           valuesForLifecycleAuthority clusterId minioEndpoint namespace rootChart maybeRuntimeImage
       "provider-worker" ->
         requireControlPlaneClusterId >>= \clusterId ->
-          valuesForProviderWorker clusterId namespace rootChart maybeRuntimeImage
+          valuesForProviderWorker settings clusterId namespace rootChart maybeRuntimeImage
       "authority-backup" ->
         requireControlPlaneClusterId >>= \clusterId ->
           valuesForAuthorityBackup
@@ -2883,15 +2909,12 @@ valuesForControlPlaneRole clusterId runtimeRole chartName serviceAccountValue va
     case maybeRuntimeImage of
       Just imageInfo -> Right imageInfo
       Nothing -> Left (chartName ++ " chart requires a resolved image reference")
-  rolloutToken <-
+  _ <-
     maybe
       (Left (chartName ++ " chart requires an immutable runtime image rollout digest"))
       Right
       (resolvedCustomImageRolloutToken resolvedImage)
-  targetAgentIdentity <-
-    first
-      Text.unpack
-      (mkTargetAgentRolloutIdentity clusterId (Text.pack rolloutToken))
+  targetAgentIdentity <- resolvedCustomImageTargetAgentIdentity clusterId resolvedImage
   pure
     ( object
         [ "global"
@@ -3030,20 +3053,43 @@ valuesForLifecycleAuthority clusterId minioEndpoint namespace rootChart maybeRun
   s = AuthorityStatics.lifecycleAuthorityChartStatics
 
 valuesForProviderWorker
-  :: Text.Text -> String -> String -> Maybe ResolvedCustomImage -> Either String Value
-valuesForProviderWorker clusterId namespace rootChart maybeRuntimeImage =
-  valuesForControlPlaneRole
-    clusterId
-    ProviderWorkerRuntime
-    "provider-worker"
-    ProviderWorkerStatics.providerWorkerChartStaticsServiceAccountValue
-    (ProviderWorkerStatics.providerWorkerStaticVaultRole s)
-    (ProviderWorkerStatics.providerWorkerStaticLivenessPath s)
-    (ProviderWorkerStatics.providerWorkerStaticReadinessPath s)
-    roleStoreProviderWorkerDhall
-    namespace
-    rootChart
-    maybeRuntimeImage
+  :: ValidatedSettings
+  -> Text.Text
+  -> String
+  -> String
+  -> Maybe ResolvedCustomImage
+  -> Either String Value
+valuesForProviderWorker settings clusterId namespace rootChart maybeRuntimeImage = do
+  runtimeMemoryPlan <-
+    Capacity.runtimeMemoryPlanForProfile (capacity (validatedConfig settings)) "provider-worker"
+  base <-
+    valuesForControlPlaneRole
+      clusterId
+      ProviderWorkerRuntime
+      "provider-worker"
+      ProviderWorkerStatics.providerWorkerChartStaticsServiceAccountValue
+      (ProviderWorkerStatics.providerWorkerStaticVaultRole s)
+      (ProviderWorkerStatics.providerWorkerStaticLivenessPath s)
+      (ProviderWorkerStatics.providerWorkerStaticReadinessPath s)
+      roleStoreProviderWorkerDhall
+      namespace
+      rootChart
+      maybeRuntimeImage
+  case base of
+    Object payload ->
+      Right
+        ( Object
+            ( KeyMap.insert
+                (Key.fromString "runtime")
+                ( object
+                    [ "rtsArguments"
+                        .= RuntimeMemory.runtimeMemoryRtsArguments runtimeMemoryPlan
+                    ]
+                )
+                payload
+            )
+        )
+    _ -> Left "provider-worker chart values must be an object"
  where
   s = ProviderWorkerStatics.providerWorkerChartStatics
 
@@ -3755,7 +3801,7 @@ resolveCustomImageTag repository = do
           let imageTag = take 63 ("prodbox-" ++ machineId)
               imageRef = repository ++ ":" ++ imageTag
           maybeRolloutToken <- resolveLocalImageBuildToken imageRef
-          maybeRuntimeDigest <- resolveLocalImageRuntimeDigest imageRef
+          maybeManifestDigest <- resolveLocalImageManifestDigest repository imageRef
           pure
             ( Right
                 ( Just
@@ -3763,7 +3809,7 @@ resolveCustomImageTag repository = do
                       { resolvedCustomImageRepository = repository
                       , resolvedCustomImageTag = imageTag
                       , resolvedCustomImageRolloutToken = maybeRolloutToken
-                      , resolvedCustomImageRuntimeDigest = maybeRuntimeDigest
+                      , resolvedCustomImageManifestDigest = maybeManifestDigest
                       }
                 )
             )
@@ -3771,7 +3817,8 @@ resolveCustomImageTag repository = do
 resolveCustomImageFixedTag :: String -> String -> IO (Either String (Maybe ResolvedCustomImage))
 resolveCustomImageFixedTag repository imageTag = do
   maybeRolloutToken <- resolveLocalImageBuildToken (repository ++ ":" ++ imageTag)
-  maybeRuntimeDigest <- resolveLocalImageRuntimeDigest (repository ++ ":" ++ imageTag)
+  maybeManifestDigest <-
+    resolveLocalImageManifestDigest repository (repository ++ ":" ++ imageTag)
   pure
     ( Right
         ( Just
@@ -3779,7 +3826,7 @@ resolveCustomImageFixedTag repository imageTag = do
               { resolvedCustomImageRepository = repository
               , resolvedCustomImageTag = imageTag
               , resolvedCustomImageRolloutToken = maybeRolloutToken
-              , resolvedCustomImageRuntimeDigest = maybeRuntimeDigest
+              , resolvedCustomImageManifestDigest = maybeManifestDigest
               }
         )
     )
@@ -3804,13 +3851,19 @@ resolveLocalImageBuildToken imageRef = do
              in if null buildToken then Nothing else Just buildToken
           ExitFailure _ -> Nothing
 
-resolveLocalImageRuntimeDigest :: String -> IO (Maybe String)
-resolveLocalImageRuntimeDigest imageRef = do
+resolveLocalImageManifestDigest :: String -> String -> IO (Maybe String)
+resolveLocalImageManifestDigest repository imageRef = do
   result <-
     captureSubprocessResult
       Subprocess
         { subprocessPath = "docker"
-        , subprocessArguments = ["buildx", "imagetools", "inspect", "--raw", imageRef]
+        , subprocessArguments =
+            [ "image"
+            , "inspect"
+            , "--format"
+            , "{{json .RepoDigests}}"
+            , imageRef
+            ]
         , subprocessEnvironment = Nothing
         , subprocessWorkingDirectory = Nothing
         }
@@ -3820,15 +3873,28 @@ resolveLocalImageRuntimeDigest imageRef = do
       | processExitCode output /= ExitSuccess -> Nothing
       | otherwise ->
           case eitherDecode (BL8.pack (processStdout output)) of
-            Right (Object manifest) ->
-              case KeyMap.lookup "config" manifest of
-                Just (Object config) ->
-                  case KeyMap.lookup "digest" config of
-                    Just (String digest)
-                      | "sha256:" `Text.isPrefixOf` digest -> Just (Text.unpack digest)
-                    _ -> Nothing
-                _ -> Nothing
+            Right references -> selectRepositoryManifestDigest repository references
             _ -> Nothing
+
+selectRepositoryManifestDigest :: String -> [String] -> Maybe String
+selectRepositoryManifestDigest repository references =
+  case nub (mapMaybeReference references) of
+    [digest] -> Just digest
+    _ -> Nothing
+ where
+  mapMaybeReference = foldr collect []
+  collect reference digests =
+    case stripPrefix (repository ++ "@") reference of
+      Just digest
+        | isManifestDigest digest -> digest : digests
+      _ -> digests
+
+  isManifestDigest digest =
+    length digest == 71
+      && "sha256:" `isPrefixOf` digest
+      && all isLowerHex (drop 7 digest)
+
+  isLowerHex character = isDigit character || character `elem` ['a' .. 'f']
 
 renderStatusRelease
   :: Map String ChartInstallSnapshot
@@ -4298,6 +4364,7 @@ data KubernetesApiEgressCoordinate = KubernetesApiEgressCoordinate
 kubernetesApiEgressChartNames :: [String]
 kubernetesApiEgressChartNames =
   [ "bootstrap-broker"
+  , "credential-provisioner"
   , "lifecycle-authority"
   , "target-secret-agent"
   ]
@@ -4450,15 +4517,14 @@ preservePublicEdgeTlsSecretBeforeDelete plan
           )
       Just scopeSet -> do
         retained <-
-          runPublicEdgeTlsWorkflow
+          retainPublicEdgeTls
             (chartDeploymentPlanRepoRoot plan)
             (chartDeploymentPlanSubstrate plan)
             scopeSet
-            (`retainPublicEdgeTlsWorkflow` KeyRotationNotApproved)
         case retained of
           Left err -> pure (Left err)
-          Right (TlsWorkflowRetained _) -> pure (Right PreservedToRetentionStore)
-          Right TlsWorkflowNothingToRetain -> classifyMissingSource
+          Right True -> pure (Right PreservedToRetentionStore)
+          Right False -> classifyMissingSource
  where
   classifyMissingSource = do
     observed <-
@@ -4495,15 +4561,14 @@ retainReadyPublicEdgeCertificate repoRoot substrate = do
             Left err -> pure (Left err)
             Right scopeSet -> do
               retained <-
-                runPublicEdgeTlsWorkflow
+                retainPublicEdgeTls
                   repoRoot
                   substrate
                   scopeSet
-                  (`retainPublicEdgeTlsWorkflow` KeyRotationNotApproved)
               pure $ case retained of
                 Left err -> Left err
-                Right TlsWorkflowNothingToRetain -> Right PreserveNothingToRetain
-                Right (TlsWorkflowRetained _) -> Right PreservedToRetentionStore
+                Right False -> Right PreserveNothingToRetain
+                Right True -> Right PreservedToRetentionStore
 
 restorePublicEdgeTlsSecretAfterNamespaceCreate :: ChartDeploymentPlan -> IO (Either String ())
 restorePublicEdgeTlsSecretAfterNamespaceCreate plan
@@ -4511,19 +4576,90 @@ restorePublicEdgeTlsSecretAfterNamespaceCreate plan
   | otherwise = case chartDeploymentPlanCertScopeSet plan of
       Nothing -> pure (Right ())
       Just scopeSet -> do
-        trustedNow <- currentTrustedTlsTime
-        restored <-
-          runPublicEdgeTlsWorkflow
-            (chartDeploymentPlanRepoRoot plan)
-            (chartDeploymentPlanSubstrate plan)
-            scopeSet
-            (`restorePublicEdgeTlsWorkflow` trustedNow)
-        pure $ case restored of
-          Left err -> Left err
-          Right TlsWorkflowIssuancePermitted -> Right ()
-          Right (TlsWorkflowRestored _) -> Right ()
+        restorePublicEdgeTls
+          (chartDeploymentPlanRepoRoot plan)
+          (chartDeploymentPlanSubstrate plan)
+          scopeSet
 
-runPublicEdgeTlsWorkflow
+retainPublicEdgeTls :: FilePath -> Substrate -> CertScopeSet -> IO (Either String Bool)
+retainPublicEdgeTls repoRoot substrate scopeSet = case substrate of
+  SubstrateHomeLocal -> do
+    response <-
+      requestAuthorityPublicEdgeTlsWorkflow
+        repoRoot
+        ( TlsRetentionWorkflowAuthorityRetain
+            (Text.pack (substrateId substrate))
+            (renderCertScopeSet scopeSet)
+            KeyRotationNotApproved
+        )
+    pure $ case response of
+      Left err -> Left err
+      Right TlsRetentionWorkflowAuthorityNothingToRetain -> Right False
+      Right TlsRetentionWorkflowAuthorityRetained -> Right True
+      Right (TlsRetentionWorkflowAuthorityRefused failure) -> Left (show failure)
+      Right other -> Left ("Lifecycle Authority TLS retain response mismatch: " ++ show other)
+  SubstrateAws -> do
+    retained <-
+      runDirectPublicEdgeTlsWorkflow
+        repoRoot
+        substrate
+        scopeSet
+        (`retainPublicEdgeTlsWorkflow` KeyRotationNotApproved)
+    pure $ case retained of
+      Left err -> Left err
+      Right TlsWorkflowNothingToRetain -> Right False
+      Right (TlsWorkflowRetained _) -> Right True
+
+restorePublicEdgeTls :: FilePath -> Substrate -> CertScopeSet -> IO (Either String ())
+restorePublicEdgeTls repoRoot substrate scopeSet = case substrate of
+  SubstrateHomeLocal -> do
+    response <-
+      requestAuthorityPublicEdgeTlsWorkflow
+        repoRoot
+        ( TlsRetentionWorkflowAuthorityRestore
+            (Text.pack (substrateId substrate))
+            (renderCertScopeSet scopeSet)
+        )
+    pure $ case response of
+      Left err -> Left err
+      Right TlsRetentionWorkflowAuthorityRestored -> Right ()
+      Right TlsRetentionWorkflowAuthorityIssuancePermitted -> Right ()
+      Right (TlsRetentionWorkflowAuthorityRefused failure) -> Left (show failure)
+      Right other -> Left ("Lifecycle Authority TLS restore response mismatch: " ++ show other)
+  SubstrateAws -> do
+    trustedNow <- currentTrustedTlsTime
+    restored <-
+      runDirectPublicEdgeTlsWorkflow
+        repoRoot
+        substrate
+        scopeSet
+        (`restorePublicEdgeTlsWorkflow` trustedNow)
+    pure $ case restored of
+      Left err -> Left err
+      Right TlsWorkflowIssuancePermitted -> Right ()
+      Right (TlsWorkflowRestored _) -> Right ()
+
+requestAuthorityPublicEdgeTlsWorkflow
+  :: FilePath
+  -> TlsRetentionWorkflowAuthorityRequest
+  -> IO (Either String TlsRetentionWorkflowAuthorityResponse)
+requestAuthorityPublicEdgeTlsWorkflow repoRoot request = do
+  opened <-
+    withHostLifecycleAuthorityAuthentication
+      LifecycleAuthorityOperator
+      repoRoot
+      ( \authentication -> do
+          transported <-
+            withLifecycleAuthorityTlsWorkflowAuthenticatedTransport authentication $ \transport ->
+              first show <$> requestTlsRetentionWorkflowAuthority transport request
+          pure (flattenAuthentication transported)
+      )
+  pure (flattenAuthentication opened)
+
+-- | Compatibility path for the AWS selected-Agent transport. Home TLS is
+-- Authority-routed above; AWS cross-cluster transport remains independently
+-- owned by the AWS substrate surface.
+runDirectPublicEdgeTlsWorkflow
   :: FilePath
   -> Substrate
   -> CertScopeSet
@@ -4531,7 +4667,7 @@ runPublicEdgeTlsWorkflow
        -> IO (Either TlsRetentionWorkflowError value)
      )
   -> IO (Either String value)
-runPublicEdgeTlsWorkflow repoRoot substrate scopeSet action = do
+runDirectPublicEdgeTlsWorkflow repoRoot substrate scopeSet action = do
   selectedEnvironment <- getEnvironment
   opened <-
     withHostLifecycleAuthorityAuthentication
@@ -4787,50 +4923,77 @@ deleteKubectlObject args = do
                 Left ("kubectl " ++ unwords args ++ " failed: " ++ processStderr output ++ processStdout output)
 
 helmUpgradeInstall :: ChartReleasePlan -> IO (Either String ())
-helmUpgradeInstall release =
-  withTempFile (chartReleasePlanReleaseName release ++ "-values-") $ \path handle -> do
-    BL8.hPutStr handle (BL8.pack (chartReleasePlanValuesJson release))
-    hClose handle
-    outputResult <-
-      runCaptured
-        "helm upgrade --install"
-        "helm"
-        ( [ "upgrade"
-          , "--install"
-          ]
-            ++ helmUpgradeWaitArguments (chartReleasePlanReleaseName release)
-            ++ [ chartReleasePlanReleaseName release
-               , chartReleasePlanChartDir release
-               , "--namespace"
-               , chartReleasePlanNamespace release
-               , "--create-namespace"
-               , "--values"
-               , path
-               ]
-        )
-    case outputResult of
-      Left err -> pure (Left err)
-      Right output ->
-        case processExitCode output of
-          ExitSuccess -> pure (Right ())
-          ExitFailure _ -> do
-            diagnostics <- helmUpgradeFailureDiagnostics release
-            cleanupDetail <-
-              case helmUpgradeFailureDisposition output of
-                PreserveTimedOutRelease ->
-                  pure
-                    "\nFailed release cleanup skipped: readiness timeout is a non-terminal convergence observation; the release remains installed."
-                ReconcileTerminalFailureAbsent -> reconcileFailedReleaseAbsent release
-            pure
-              ( Left
-                  ( "helm upgrade --install "
-                      ++ chartReleasePlanReleaseName release
-                      ++ " failed: "
-                      ++ renderProcessOutput output
-                      ++ diagnostics
-                      ++ cleanupDetail
+helmUpgradeInstall release = do
+  preparation <- prepareReleaseForUpgrade release
+  case preparation of
+    Left err -> pure (Left err)
+    Right () ->
+      withTempFile (chartReleasePlanReleaseName release ++ "-values-") $ \path handle -> do
+        BL8.hPutStr handle (BL8.pack (chartReleasePlanValuesJson release))
+        hClose handle
+        outputResult <-
+          runCaptured
+            "helm upgrade --install"
+            "helm"
+            ( [ "upgrade"
+              , "--install"
+              ]
+                ++ helmUpgradeWaitArguments (chartReleasePlanReleaseName release)
+                ++ [ chartReleasePlanReleaseName release
+                   , chartReleasePlanChartDir release
+                   , "--namespace"
+                   , chartReleasePlanNamespace release
+                   , "--create-namespace"
+                   , "--values"
+                   , path
+                   ]
+            )
+        case outputResult of
+          Left err -> pure (Left err)
+          Right output ->
+            case processExitCode output of
+              ExitSuccess -> pure (Right ())
+              ExitFailure _ -> do
+                diagnostics <- helmUpgradeFailureDiagnostics release
+                cleanupDetail <-
+                  case helmUpgradeFailureDisposition output of
+                    PreserveTimedOutRelease ->
+                      pure
+                        "\nFailed release cleanup skipped: readiness timeout is a non-terminal convergence observation; the release remains installed."
+                    ReconcileTerminalFailureAbsent -> reconcileFailedReleaseAbsent release
+                pure
+                  ( Left
+                      ( "helm upgrade --install "
+                          ++ chartReleasePlanReleaseName release
+                          ++ " failed: "
+                          ++ renderProcessOutput output
+                          ++ diagnostics
+                          ++ cleanupDetail
+                      )
                   )
-              )
+
+-- | Sprint 3.46: preserve a timeout in the invocation that observes it, but do
+-- not layer the next invocation over the terminal failed revision it leaves.
+-- Exact absence read-back completes before @helm upgrade@ can be launched.
+prepareReleaseForUpgrade :: ChartReleasePlan -> IO (Either String ())
+prepareReleaseForUpgrade release =
+  case HelmRelease.mkHelmReleaseCoordinate
+    (chartReleasePlanReleaseName release)
+    (chartReleasePlanNamespace release) of
+    Left err -> pure (Left ("invalid Helm release coordinate before upgrade: " ++ show err))
+    Right coordinate -> do
+      preparation <- HelmRelease.prepareHelmReleaseForUpgrade "." coordinate
+      pure $ case preparation of
+        Right _ -> Right ()
+        Left failure ->
+          Left
+            ( "refusing Helm upgrade preparation for `"
+                ++ chartReleasePlanReleaseName release
+                ++ "` in namespace `"
+                ++ chartReleasePlanNamespace release
+                ++ "`: "
+                ++ show failure
+            )
 
 -- | Whether a failed Helm convergence may enter destructive cleanup. A
 -- readiness timeout says only that the release is not ready yet; preserving it
@@ -4852,13 +5015,12 @@ helmUpgradeFailureDisposition output
     , "timeout waiting for"
     ]
 
--- | The Bootstrap Broker is installed before the Vault lifecycle transition
--- it participates in. Applying that release must therefore establish desired
--- state without waiting for post-Vault readiness. Every other release keeps
--- Helm's bounded readiness barrier.
+-- | These releases are installed before the lifecycle transition that makes
+-- their full readiness possible. Applying them establishes desired state;
+-- later graph nodes own their capability-backed readiness observations.
 helmUpgradeWaitArguments :: String -> [String]
 helmUpgradeWaitArguments releaseName
-  | releaseName == "bootstrap-broker" = []
+  | releaseName `elem` ["bootstrap-broker", "authority-backup"] = []
   | otherwise = ["--wait", "--timeout", "30m0s"]
 
 -- | Sprint 3.31: what a failed @helm upgrade --install@ does about the release

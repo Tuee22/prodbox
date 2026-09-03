@@ -25,6 +25,7 @@ import Control.Exception
 import Data.ByteString (ByteString)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text (Text)
+import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AwsAdminProvisionerClient
   ( AwsAdminPreparedProvisioning (..)
   , AwsAdminProvisionerClient
@@ -50,6 +51,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   ( AwsAdminJobBinding
   , AwsAdminPermitIntent
   , SignedAwsAdminPermit
+  , awsAdminJobHeartbeat
   , awsAdminJobPodName
   , awsAdminJobPodUid
   , awsAdminJobUid
@@ -65,21 +67,27 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorkerProtocol
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( operatorMaterialOperationIdText
   )
+import Prodbox.Lifecycle.Lease (authorityTimeMicros)
 import Prodbox.Settings (Credentials)
 
 data AwsAdminKubernetesBoundary m = AwsAdminKubernetesBoundary
-  { createAwsAdminJob
-      :: AwsAdminPreparedProvisioning
+  { acquireAwsAdminJobHeartbeat
+      :: m (Either Text Natural)
+  , createAwsAdminJob
+      :: Natural
+      -> AwsAdminPreparedProvisioning
       -> m (Either Text ())
   , observeAwsAdminJob
-      :: AwsAdminPreparedProvisioning
+      :: Natural
+      -> AwsAdminPreparedProvisioning
       -> m (Either Text (Maybe AwsAdminPodObservation))
   , attachAwsAdminWorker
       :: SignedAwsAdminPermit
       -> ByteString
       -> m (Either Text ByteString)
   , deleteAwsAdminJob
-      :: AwsAdminPreparedProvisioning
+      :: Natural
+      -> AwsAdminPreparedProvisioning
       -> Maybe AwsAdminCleanupBinding
       -> m (Either Text ())
   , observeAwsAdminJobAbsent
@@ -98,6 +106,7 @@ data AwsAdminCleanupBinding = AwsAdminCleanupBinding
 data AwsAdminCoordinatorError
   = AwsAdminCoordinatorPrepareFailed !AwsAdminProvisionerClientError
   | AwsAdminCoordinatorObserveFailed !AwsAdminProvisionerClientError
+  | AwsAdminCoordinatorHeartbeatUnavailable !Text
   | AwsAdminCoordinatorCreateFailed !Text
   | AwsAdminCoordinatorObservationFailed !Text
   | AwsAdminCoordinatorWorkloadAbsent
@@ -130,20 +139,31 @@ coordinateAwsAdminProvisioning client kubernetes credentials requestedIntent = d
         Left err -> pure (Left err)
         Right (Just (permit, receipt)) ->
           mask_ $ do
+            let heartbeat =
+                  authorityTimeMicros
+                    (awsAdminJobHeartbeat (signedAwsAdminPermitBinding permit))
             cleanup <-
-              cleanupAwsAdminJob kubernetes prepared (Just (cleanupBinding permit))
+              cleanupAwsAdminJob
+                kubernetes
+                heartbeat
+                prepared
+                (Just (cleanupBinding permit))
             pure (receipt <$ cleanup)
-        Right Nothing -> coordinatePrepared prepared
+        Right Nothing -> do
+          heartbeatResult <- acquireAwsAdminJobHeartbeat kubernetes
+          case heartbeatResult of
+            Left detail -> pure (Left (AwsAdminCoordinatorHeartbeatUnavailable detail))
+            Right heartbeat -> coordinatePrepared heartbeat prepared
  where
   operationId =
     operatorMaterialOperationIdText
       (awsAdminPermitIntentOperationId requestedIntent)
 
-  coordinatePrepared prepared = mask $ \restore -> do
+  coordinatePrepared heartbeat prepared = mask $ \restore -> do
     cleanupRef <- newIORef Nothing
     attempted <- tryAny $ do
-      created <- restore (createAwsAdminJob kubernetes prepared)
-      observed <- restore (observeAwsAdminJob kubernetes prepared)
+      created <- restore (createAwsAdminJob kubernetes heartbeat prepared)
+      observed <- restore (observeAwsAdminJob kubernetes heartbeat prepared)
       case observed of
         Left detail ->
           pure
@@ -188,7 +208,7 @@ coordinateAwsAdminProvisioning client kubernetes credentials requestedIntent = d
                               Left err -> pure (Left (AwsAdminCoordinatorReceiptRejected err))
                               Right () -> pure (Right confirmed)
     binding <- readIORef cleanupRef
-    cleanup <- cleanupAwsAdminJob kubernetes prepared binding
+    cleanup <- cleanupAwsAdminJob kubernetes heartbeat prepared binding
     case attempted of
       Left exception | isAsyncException exception -> throwIO exception
       _ -> pure $ case cleanup of
@@ -251,11 +271,12 @@ completionFromObservation observation = case awsAdminObservedPhase observation o
 
 cleanupAwsAdminJob
   :: AwsAdminKubernetesBoundary IO
+  -> Natural
   -> AwsAdminPreparedProvisioning
   -> Maybe AwsAdminCleanupBinding
   -> IO (Either AwsAdminCoordinatorError ())
-cleanupAwsAdminJob kubernetes prepared binding = do
-  _ <- deleteAwsAdminJob kubernetes prepared binding
+cleanupAwsAdminJob kubernetes heartbeat prepared binding = do
+  _ <- deleteAwsAdminJob kubernetes heartbeat prepared binding
   absent <- observeAwsAdminJobAbsent kubernetes prepared binding
   pure $ case absent of
     Left detail -> Left (AwsAdminCoordinatorAbsenceUnobservable detail)

@@ -11,6 +11,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminRetainedCustody
   )
 where
 
+import Data.Bifunctor (first)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.ControlPlane.RetainedMaterialWorker
@@ -43,6 +44,8 @@ import Prodbox.Lifecycle.Authority.RetainedMaterial
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   ( AwsAdminDeliveryBoundary (..)
+  , AwsAdminTargetDeliveryCause (AwsAdminTargetDeliveryRetainedCustody)
+  , AwsAdminTargetObservationCause (..)
   , mkAwsAdminDeliveryBoundary
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
@@ -87,9 +90,9 @@ productionRetainedCustodyAwsAdminDelivery session observedAt deliverRetained fal
     Just identity ->
       withProvisionedTargetMaterial
         material
-        (\_ _ _ _ _ -> pure (Left "non-SMTP material entered SMTP custody"))
+        (\_ _ _ _ _ -> pure (Left AwsAdminTargetDeliveryRetainedCustody))
         (sealSmtp permit identity)
-        (\_ _ _ -> pure (Left "EAB material entered AWS-admin custody"))
+        (\_ _ _ -> pure (Left AwsAdminTargetDeliveryRetainedCustody))
   revoke = revokeFallback
   observe prepared permit = case smtpIdentity permit of
     Nothing -> observeFallback prepared permit
@@ -105,12 +108,19 @@ productionRetainedCustodyAwsAdminDelivery session observedAt deliverRetained fal
               == awsAdminPermitIntentGeneration (signedAwsAdminPermitIntent permit) ->
               do
                 delivered <- deliverSource permit source
-                pure (Just <$> delivered)
+                pure
+                  ( first
+                      (const AwsAdminTargetObservationRetainedDeliveryFailed)
+                      (Just <$> delivered)
+                  )
         RetainedCustodyPositivelyAbsent _ -> pure (Right Nothing)
-        RetainedCustodyPresent _ -> pure (Left "retained SMTP generation mismatched")
-        RetainedCustodyCorrupt _ -> pure (Left "retained SMTP custody is corrupt")
-        RetainedCustodyDigestMismatch _ _ -> pure (Left "retained SMTP custody digest mismatched")
-        RetainedCustodyUnobservable _ -> pure (Left "retained SMTP custody is unobservable")
+        RetainedCustodyPresent _ ->
+          pure (Left AwsAdminTargetObservationRetainedGenerationMismatch)
+        RetainedCustodyCorrupt _ -> pure (Left AwsAdminTargetObservationRetainedCorrupt)
+        RetainedCustodyDigestMismatch _ _ ->
+          pure (Left AwsAdminTargetObservationRetainedDigestMismatch)
+        RetainedCustodyUnobservable _ ->
+          pure (Left AwsAdminTargetObservationRetainedUnobservable)
 
   deliverFallback = internalDeliverCredentialTarget fallback
   revokeFallback = internalRevokeCredentialTarget fallback
@@ -118,7 +128,7 @@ productionRetainedCustodyAwsAdminDelivery session observedAt deliverRetained fal
 
   sealSmtp permit identity username password region _generation = do
     case retainedIntent permit of
-      Left detail -> pure (Left detail)
+      Left _ -> pure (Left AwsAdminTargetDeliveryRetainedCustody)
       Right intent -> do
         sealed <-
           sealRetainedCustody
@@ -128,14 +138,16 @@ productionRetainedCustodyAwsAdminDelivery session observedAt deliverRetained fal
             intent
             (sesSmtpPayloadForIdentity identity region username password)
         case sealed of
-          Left err -> pure (Left (showText err))
+          Left _ -> pure (Left AwsAdminTargetDeliveryRetainedCustody)
           Right result -> deliverSource permit (sealedSource result)
 
   deliverSource permit source = do
     delivered <- deliverRetained source permit
     pure $ do
-      _ <- delivered
-      receiptForSource permit source
+      _ <- first (const AwsAdminTargetDeliveryRetainedCustody) delivered
+      first
+        (const AwsAdminTargetDeliveryRetainedCustody)
+        (receiptForSource permit source)
 
 sesSmtpPayloadForIdentity :: Text -> Text -> Text -> Text -> TargetSecretPayload
 sesSmtpPayloadForIdentity identity region username password =

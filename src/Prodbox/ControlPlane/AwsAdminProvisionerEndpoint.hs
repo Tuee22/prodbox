@@ -34,8 +34,11 @@ import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler (..)
   )
 import Prodbox.ControlPlane.AwsAdminPreparedTargetProduction
-  ( AwsAdminPreparedTargetLifecycle (..)
+  ( AwsAdminPrepareAuthorityPhase (..)
+  , AwsAdminPreparedTargetLifecycle (..)
   , FirstReconcileContinuation (..)
+  , awsAdminPreparedTargetPrepareErrorCause
+  , renderAwsAdminPreparedTargetPrepareCause
   )
 import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal (..))
 import Prodbox.ControlPlane.Codec
@@ -60,13 +63,19 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
   , AwsAdminAuthorityRepositoryError (..)
   , AwsAdminAuthorityState (..)
   , AwsAdminAuthorityStateError (AwsAdminAuthorityTransitionRefused)
+  , AwsAdminAuthorizedRecoveryError (..)
+  , AwsAdminAuthorizedRecoveryProof
   , AwsAdminPreparedTargetBoundary (..)
   , attestAwsAdminAuthority
   , authorizeAwsAdminAuthority
   , awsAdminAuthorityCurrentIntent
+  , bindAwsAdminAuthorizedRecoveryIntent
+  , bindAwsAdminPreparedRenewalIntent
   , completeAwsAdminAuthority
   , observeAwsAdminAuthority
   , prepareAwsAdminAuthority
+  , prepareAwsAdminAuthorityAuthorizedRecovery
+  , prepareAwsAdminAuthorityRenewal
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   ( decodeAwsAdminWorkerReceipt
@@ -123,6 +132,14 @@ data AwsAdminProvisionerRequest
   | ObserveAwsAdminFirstReconcile
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+data AwsAdminPreparationTransition
+  = AwsAdminPreparationStandard
+  | AwsAdminPreparationPreparedRenewal !AuthorityTime !AwsAdminPermitIntent
+  | AwsAdminPreparationAuthorizedRecovery
+      !AwsAdminAuthorizedRecoveryProof
+      !AuthorityTime
+      !AwsAdminPermitIntent
 
 -- | Exact Kubernetes GET readback. Job and Pod UIDs are both mandatory so
 -- name-reuse and owner-reference substitution cannot satisfy attestation.
@@ -244,15 +261,8 @@ awsAdminProvisionerAuthenticatedHandler
       PrepareAwsAdminProvisioning intentBytes ->
         case decodeAwsAdminPermitIntent intentBytes of
           Left _ -> pure (refused "intent-codec-rejected")
-          Right draft -> do
-            prepared <- prepareAndReadBackAwsAdminPreparedTarget targetLifecycle draft
-            case prepared of
-              Left _ -> pure (unavailable "target-outbox-unavailable")
-              Right intent -> withIntentRepository intent $ \repository -> do
-                result <- prepareAwsAdminAuthority repository targetBoundary intent
-                pure $ case result of
-                  Left err -> responseForError err
-                  Right _ -> AwsAdminProvisioningPrepared (challengeFor intent)
+          Right draft ->
+            withIntentRepository draft (prepareRequest draft)
       AttestAwsAdminProvisioning operationId observation ->
         withOperationRepository operationId $ \repository -> do
           current <- observeAwsAdminAuthority repository
@@ -311,6 +321,121 @@ awsAdminProvisionerAuthenticatedHandler
     withIntentRepository intent action =
       withOperationRepository (operationIdForIntent intent) action
 
+    prepareRequest draft repository = do
+      current <- observeAwsAdminAuthority repository
+      case current of
+        Left err -> pure (responseForError err)
+        Right state -> do
+          recordAwsAdminPrepareAuthorityPhase targetLifecycle (prepareAuthorityPhase state)
+          case state of
+            AwsAdminAuthorityCompleted permit _
+              | signedAwsAdminPermitIntent permit == draft ->
+                  pure
+                    ( AwsAdminProvisioningPrepared
+                        (challengeFor (signedAwsAdminPermitIntent permit))
+                    )
+              | otherwise -> pure (refused "completed-operation-mismatch")
+            _ -> do
+              transitionResult <- transitionForState state
+              case transitionResult of
+                Left response -> pure response
+                Right transition -> prepareTargetAndState repository transition draft
+
+    transitionForState state = case state of
+      AwsAdminAuthorityPrepared retained -> do
+        nowResult <- observeNow
+        pure $ case nowResult of
+          Left _ -> Left (unavailable "authority-time-unavailable")
+          Right now
+            | authorityTimeMicros (awsAdminPermitIntentDeadline retained)
+                <= authorityTimeMicros now ->
+                Right (AwsAdminPreparationPreparedRenewal now retained)
+            | otherwise -> Right AwsAdminPreparationStandard
+      AwsAdminAuthorityAuthorized permit -> do
+        nowResult <- observeNow
+        case nowResult of
+          Left _ -> pure (Left (unavailable "authority-time-unavailable"))
+          Right now
+            | authorityTimeMicros now
+                < authorityTimeMicros
+                  (awsAdminPermitIntentDeadline (signedAwsAdminPermitIntent permit)) ->
+                pure (Right AwsAdminPreparationStandard)
+            | otherwise -> do
+                proofResult <-
+                  proveAwsAdminAuthorizedAttemptRecovery
+                    targetLifecycle
+                    now
+                    permit
+                pure $ case proofResult of
+                  Left err ->
+                    Left
+                      ( unavailable
+                          ( "attempt-recovery/"
+                              <> renderAwsAdminAuthorizedRecoveryError err
+                          )
+                      )
+                  Right proof ->
+                    Right
+                      ( AwsAdminPreparationAuthorizedRecovery
+                          proof
+                          now
+                          (signedAwsAdminPermitIntent permit)
+                      )
+      _ -> pure (Right AwsAdminPreparationStandard)
+
+    prepareAuthorityPhase state = case state of
+      AwsAdminAuthorityVacant -> AwsAdminPrepareAuthorityVacant
+      AwsAdminAuthorityPrepared _ -> AwsAdminPrepareAuthorityPrepared
+      AwsAdminAuthorityAttested _ _ -> AwsAdminPrepareAuthorityAttested
+      AwsAdminAuthorityAuthorized _ -> AwsAdminPrepareAuthorityAuthorized
+      AwsAdminAuthorityCompleted _ _ -> AwsAdminPrepareAuthorityCompleted
+
+    prepareTargetAndState repository transition draft = do
+      case intentForTransition transition draft of
+        Left _ -> pure (unavailable "recovery-intent-rejected")
+        Right transitionDraft -> do
+          prepared <-
+            prepareAndReadBackAwsAdminPreparedTarget
+              targetLifecycle
+              (outboxRenewal transition)
+              transitionDraft
+          case prepared of
+            Left err ->
+              pure
+                ( unavailable
+                    ( "prepared-target/"
+                        <> renderAwsAdminPreparedTargetPrepareCause
+                          (awsAdminPreparedTargetPrepareErrorCause err)
+                    )
+                )
+            Right intent -> do
+              result <- case transition of
+                AwsAdminPreparationStandard ->
+                  prepareAwsAdminAuthority repository targetBoundary intent
+                AwsAdminPreparationPreparedRenewal now retained ->
+                  prepareAwsAdminAuthorityRenewal
+                    repository
+                    targetBoundary
+                    now
+                    retained
+                    intent
+                AwsAdminPreparationAuthorizedRecovery proof _ _ ->
+                  prepareAwsAdminAuthorityAuthorizedRecovery
+                    repository
+                    targetBoundary
+                    proof
+                    intent
+              pure $ case result of
+                Left err -> responseForError err
+                Right _ -> AwsAdminProvisioningPrepared (challengeFor intent)
+
+    intentForTransition transition draft = case transition of
+      AwsAdminPreparationStandard -> Right draft
+      AwsAdminPreparationPreparedRenewal _ retained ->
+        bindAwsAdminPreparedRenewalIntent retained draft
+      AwsAdminPreparationAuthorizedRecovery proof _ _ ->
+        bindAwsAdminAuthorizedRecoveryIntent proof draft
+
     completeProvisioning operationId permitBytes receiptBytes repository =
       case (decodeSignedAwsAdminPermit permitBytes, decodeAwsAdminWorkerReceipt receiptBytes) of
         (Right somePermit, Right receipt) ->
@@ -341,6 +466,26 @@ awsAdminProvisionerAuthenticatedHandler
     targetBoundary =
       AwsAdminPreparedTargetBoundary
         (reobserveRetainedAwsAdminPreparedTarget targetLifecycle)
+
+outboxRenewal
+  :: AwsAdminPreparationTransition
+  -> Maybe (AuthorityTime, AwsAdminPermitIntent)
+outboxRenewal transition = case transition of
+  AwsAdminPreparationStandard -> Nothing
+  AwsAdminPreparationPreparedRenewal now retained -> Just (now, retained)
+  AwsAdminPreparationAuthorizedRecovery _ now retained -> Just (now, retained)
+
+renderAwsAdminAuthorizedRecoveryError
+  :: AwsAdminAuthorizedRecoveryError -> Text
+renderAwsAdminAuthorizedRecoveryError err = case err of
+  AwsAdminAuthorizedRecoveryNotAuthorized -> "state-not-authorized"
+  AwsAdminAuthorizedRecoveryDeadlineActive -> "deadline-active"
+  AwsAdminAuthorizedRecoveryJobPresent -> "job-present"
+  AwsAdminAuthorizedRecoveryJobUnobservable -> "job-unobservable"
+  AwsAdminAuthorizedRecoveryPodPresent -> "pod-present"
+  AwsAdminAuthorizedRecoveryPodUnobservable -> "pod-unobservable"
+  AwsAdminAuthorizedRecoveryJournalPresent -> "journal-present"
+  AwsAdminAuthorizedRecoveryJournalUnobservable -> "journal-unobservable"
 
 intentForOperation
   :: Text
@@ -457,7 +602,7 @@ continuationProjection continuation =
 
 callerAllowed :: VerifiedCallerSlot -> AwsAdminProvisionerRequest -> Bool
 callerAllowed caller request = case request of
-  CompleteAwsAdminProvisioning {} -> principal == CallerCredentialProvisioner
+  CompleteAwsAdminProvisioning {} -> principal == CallerCredentialProvisionerCompletion
   _ -> principal == CallerOperatorCli || principal == CallerTestHarness
  where
   principal = verifiedCallerSlotPrincipal caller

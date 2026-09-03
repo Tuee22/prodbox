@@ -59,6 +59,7 @@ import Prodbox.Aws.Native.Wire
   )
 import Prodbox.Aws.Native.Xml (extractAll, extractFirst, xmlEscape)
 import Prodbox.Aws.Region (awsGlobalServiceRegion)
+import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Lifecycle.OwnedResourceTags
   ( OwnedResourceTag
   , longLivedPulumiStateBucketTags
@@ -382,7 +383,8 @@ signS3Request handle timestamp method bucket query body =
     headers
  where
   region = credentialHandleRegion handle
-  headers
+  headers = ("x-amz-content-sha256", hexSha256 body) : contentHeaders
+  contentHeaders
     | method == "PUT" && not (null query) =
         [ ("content-type", "application/xml")
         , ("content-md5", contentMd5 body)

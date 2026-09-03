@@ -11,17 +11,25 @@
 -- connected to live interpreters.
 module Prodbox.Bootstrap.Broker.ProductionEngine
   ( BrokerReadinessCache
+  , BaselineSessionIdentityPlan (..)
   , brokerReadinessCacheRefresh
   , classifyRootAccessorAbsenceHttpFailure
   , classifyRootAccessorAbsenceListing
   , classifyRootAccessorInventoryHttpFailure
   , classifyRootAccessorInventoryListing
   , classifyRootAccessorRevocationHttpFailure
+  , classifyRootAccessorRevocationListing
   , classifyProvisionerAccessorCleanupHttpFailure
   , classifyProvisionerAccessorCleanupListing
+  , classifyProvisionerAccessorRevocationHttpFailure
+  , classifyProvisionerAccessorRevocationListing
+  , classifyProvisionerAccessorAbsenceHttpFailure
+  , classifyProvisionerAccessorAbsenceListing
+  , classifyProvisionerPolicyRepairHttpFailure
   , classifyProvisionerPolicyCoreReconcileFailure
   , classifyProvisionerPolicyPkiReconcileFailure
   , decideRootAccessorAbsenceProof
+  , planBaselineSessionIdentity
   , productionBrokerEngine
   )
 where
@@ -62,9 +70,15 @@ import Prodbox.Bootstrap.Broker.Engine
   , BrokerProgramEvidenceBoundary (..)
   , EngineBoundaryError (..)
   , EngineFenceUseObservation (..)
+  , ProvisionerAccessorAbsenceCause (..)
+  , ProvisionerAccessorAbsenceHttpFailure (..)
+  , ProvisionerAccessorAbsenceHttpOperation (..)
   , ProvisionerAccessorCleanupCause (..)
   , ProvisionerAccessorCleanupHttpFailure (..)
   , ProvisionerAccessorCleanupHttpOperation (..)
+  , ProvisionerAccessorRevocationCause (..)
+  , ProvisionerAccessorRevocationHttpFailure (..)
+  , ProvisionerAccessorRevocationHttpOperation (..)
   , ProvisionerPolicyApplicationCause (..)
   , RootAccessorAbsenceProofCause (..)
   , RootAccessorAbsenceProofHttpFailure (..)
@@ -120,11 +134,13 @@ import Prodbox.Bootstrap.Broker.Model
   , RootSessionBinding (..)
   , RootSessionPhase (..)
   , RootSessionState (..)
+  , rootSessionBaselineIsCurrent
   , rootSessionIsCancelledClean
   , rootSessionIsComplete
   )
 import Prodbox.Bootstrap.Broker.PgpBoundary
-  ( generatedChildRecoveryPublicKeyBase64
+  ( GeneratedRootCoreHttpFailure (..)
+  , generatedChildRecoveryPublicKeyBase64
   , generatedRootPublicKeyBase64
   )
 import Prodbox.Bootstrap.Broker.PristineJournal
@@ -343,10 +359,12 @@ import Prodbox.Vault.Client qualified as Vault
 import Prodbox.Vault.Reconcile
   ( bootstrapControlPlaneClientRole
   , bootstrapPkiOperatorRole
+  , bootstrapPolicyRepairRole
+  , bootstrapProvisionerPolicySpec
   , bootstrapProvisionerRole
   , bootstrapSealRole
-  , defaultVaultReconcilePlan
   , observeVaultPkiBaseline
+  , provisionerVaultReconcilePlan
   , reconcileVaultPkiBaseline
   , runVaultReconcile
   , tokenAccessorAuditorRole
@@ -922,10 +940,24 @@ baselineEvidence store action = do
       case observed of
         Left failure -> pure (Left (storeBoundaryError failure))
         Right StoreObjectAbsent -> fmap (fmap (custody,)) freshRootSessionId
-        Right (StoreObjectPresent _ _ state)
-          | rootSessionIsComplete state || rootSessionIsCancelledClean state ->
-              pure (Right (custody, rootSessionBindingId (rootSessionStateBinding state)))
-          | otherwise -> fmap (fmap (custody,)) freshRootSessionId
+        Right (StoreObjectPresent _ _ state) ->
+          case planBaselineSessionIdentity state of
+            ReuseRetainedRootSessionId sessionId ->
+              pure (Right (custody, sessionId))
+            MintFreshRootSessionId -> fmap (fmap (custody,)) freshRootSessionId
+
+data BaselineSessionIdentityPlan
+  = ReuseRetainedRootSessionId !RootSessionId
+  | MintFreshRootSessionId
+  deriving stock (Eq, Show)
+
+planBaselineSessionIdentity :: RootSessionState -> BaselineSessionIdentityPlan
+planBaselineSessionIdentity state
+  | rootSessionIsComplete state && rootSessionBaselineIsCurrent state = reuse
+  | rootSessionIsCancelledClean state = reuse
+  | otherwise = MintFreshRootSessionId
+ where
+  reuse = ReuseRetainedRootSessionId (rootSessionBindingId (rootSessionStateBinding state))
 
 freshRootSessionId :: IO (Either EngineBoundaryError RootSessionId)
 freshRootSessionId = do
@@ -1536,17 +1568,14 @@ revokeRootAccessor settings accessor = do
             )
         Right () -> do
           listed <- Vault.vaultListTokenAccessors address token
-          pure $ case listed of
+          pure $ case classifyRootAccessorRevocationListing listed of
             Left failure ->
               Left
                 ( EngineBoundaryRootAccessorRevocation
-                    ( RootAccessorRevocationHttpFailure
-                        RootAccessorRevocationListReadBack
-                        (classifyRootAccessorRevocationHttpFailure failure)
-                    )
+                    failure
                 )
-            Right observation
-              | rawAccessor `notElem` Vault.tokenAccessorKeys observation -> Right ()
+            Right accessors
+              | rawAccessor `notElem` accessors -> Right ()
               | otherwise ->
                   Left
                     ( EngineBoundaryRootAccessorRevocation
@@ -1701,6 +1730,8 @@ classifyRootAccessorAuditorCleanup failure = case failure of
   EngineBoundaryRootAccessorRevocation _ -> RootAccessorAuditorCleanupRefused
   EngineBoundaryRootAccessorInventory _ -> RootAccessorAuditorCleanupRefused
   EngineBoundaryProvisionerAccessorCleanup _ -> RootAccessorAuditorCleanupRefused
+  EngineBoundaryProvisionerAccessorRevocation _ -> RootAccessorAuditorCleanupRefused
+  EngineBoundaryProvisionerAccessorAbsence _ -> RootAccessorAuditorCleanupRefused
   EngineBoundaryProvisionerPolicyApplication _ ->
     RootAccessorAuditorCleanupRefused
 
@@ -1792,6 +1823,22 @@ classifyRootAccessorRevocationHttpFailure failure = case failure of
   HttpStatus status _ -> RootAccessorRevocationHttpStatus status
   HttpDecode _ -> RootAccessorRevocationHttpDecode
 
+-- | Vault answers an empty token-accessor collection with LIST HTTP 404. This
+-- interpretation belongs only to the authoritative post-revocation read-back;
+-- every other failure remains a closed revocation cause.
+classifyRootAccessorRevocationListing
+  :: Either HttpError Vault.TokenAccessorListing
+  -> Either RootAccessorRevocationCause [Text]
+classifyRootAccessorRevocationListing listing = case listing of
+  Right observed -> Right (Vault.tokenAccessorKeys observed)
+  Left (HttpStatus 404 _) -> Right []
+  Left failure ->
+    Left
+      ( RootAccessorRevocationHttpFailure
+          RootAccessorRevocationListReadBack
+          (classifyRootAccessorRevocationHttpFailure failure)
+      )
+
 classifyRootAccessorInventoryHttpFailure
   :: HttpError -> RootAccessorInventoryHttpFailure
 classifyRootAccessorInventoryHttpFailure failure = case failure of
@@ -1836,6 +1883,43 @@ classifyProvisionerAccessorCleanupListing operation listing = case listing of
   Left (HttpStatus 404 _) -> Right []
   Left failure -> Left (provisionerAccessorCleanupHttpCause operation failure)
 
+classifyProvisionerAccessorRevocationHttpFailure
+  :: HttpError -> ProvisionerAccessorRevocationHttpFailure
+classifyProvisionerAccessorRevocationHttpFailure failure = case failure of
+  HttpConnectionFailure _ -> ProvisionerAccessorRevocationHttpConnectionFailure
+  HttpTimeout _ -> ProvisionerAccessorRevocationHttpTimeout
+  HttpStatus status _ -> ProvisionerAccessorRevocationHttpStatus status
+  HttpDecode _ -> ProvisionerAccessorRevocationHttpDecode
+
+-- | Vault returns 404 when either token-accessor LIST observes an empty
+-- collection. Sprints 2.75 and 2.81 licensed those exact operation/status
+-- pairs independently; non-list operations and every other failure refuse.
+classifyProvisionerAccessorRevocationListing
+  :: ProvisionerAccessorRevocationHttpOperation
+  -> Either HttpError Vault.TokenAccessorListing
+  -> Either ProvisionerAccessorRevocationCause [Text]
+classifyProvisionerAccessorRevocationListing operation listing = case listing of
+  Right observed -> Right (Vault.tokenAccessorKeys observed)
+  Left failure@(HttpStatus 404 _) -> case operation of
+    ProvisionerAccessorRevocationInitialListAccessors -> Right []
+    ProvisionerAccessorRevocationPostListAccessors -> Right []
+    ProvisionerAccessorRevocationAuditorLogin -> refused failure
+    ProvisionerAccessorRevocationTargetLookupAccessor -> refused failure
+    ProvisionerAccessorRevocationRevokeAccessor -> refused failure
+    ProvisionerAccessorRevocationPostLookupAccessor -> refused failure
+  Left failure -> Left (provisionerAccessorRevocationHttpCause operation failure)
+ where
+  refused = Left . provisionerAccessorRevocationHttpCause operation
+
+provisionerAccessorRevocationHttpCause
+  :: ProvisionerAccessorRevocationHttpOperation
+  -> HttpError
+  -> ProvisionerAccessorRevocationCause
+provisionerAccessorRevocationHttpCause operation failure =
+  ProvisionerAccessorRevocationHttpFailure
+    operation
+    (classifyProvisionerAccessorRevocationHttpFailure failure)
+
 provisionerAccessorCleanupHttpCause
   :: ProvisionerAccessorCleanupHttpOperation
   -> HttpError
@@ -1867,6 +1951,8 @@ classifyProvisionerAccessorCleanupVisibility failure = case failure of
   EngineBoundaryRootAccessorRevocation _ -> ProvisionerAccessorCleanupVisibilityRefused
   EngineBoundaryRootAccessorInventory _ -> ProvisionerAccessorCleanupVisibilityRefused
   EngineBoundaryProvisionerAccessorCleanup _ -> ProvisionerAccessorCleanupVisibilityRefused
+  EngineBoundaryProvisionerAccessorRevocation _ -> ProvisionerAccessorCleanupVisibilityRefused
+  EngineBoundaryProvisionerAccessorAbsence _ -> ProvisionerAccessorCleanupVisibilityRefused
   EngineBoundaryProvisionerPolicyApplication _ ->
     ProvisionerAccessorCleanupVisibilityRefused
 
@@ -1893,6 +1979,22 @@ provisionerAccessorCleanupAuditorCause failure = case failure of
   RootAccessorAuditorCleanupRefused -> ProvisionerAccessorCleanupAuditorCleanupRefused
   RootAccessorAuditorCleanupAmbiguous -> ProvisionerAccessorCleanupAuditorCleanupAmbiguous
 
+provisionerAccessorRevocationAuditorCause
+  :: RootAccessorAuditorFailure -> ProvisionerAccessorRevocationCause
+provisionerAccessorRevocationAuditorCause failure = case failure of
+  RootAccessorAuditorProjectedTokenUnavailable ->
+    ProvisionerAccessorRevocationProjectedTokenUnavailable
+  RootAccessorAuditorLoginHttpFailure httpFailure ->
+    ProvisionerAccessorRevocationHttpFailure
+      ProvisionerAccessorRevocationAuditorLogin
+      (provisionerAccessorRevocationHttpFailure httpFailure)
+  RootAccessorAuditorLoginInvalid -> ProvisionerAccessorRevocationAuditorLoginInvalid
+  RootAccessorAuditorCleanupUnavailable ->
+    ProvisionerAccessorRevocationAuditorCleanupUnavailable
+  RootAccessorAuditorCleanupRefused -> ProvisionerAccessorRevocationAuditorCleanupRefused
+  RootAccessorAuditorCleanupAmbiguous ->
+    ProvisionerAccessorRevocationAuditorCleanupAmbiguous
+
 provisionerAccessorCleanupHttpFailure
   :: RootAccessorAbsenceProofHttpFailure
   -> ProvisionerAccessorCleanupHttpFailure
@@ -1901,6 +2003,75 @@ provisionerAccessorCleanupHttpFailure failure = case failure of
   RootAccessorAbsenceHttpTimeout -> ProvisionerAccessorCleanupHttpTimeout
   RootAccessorAbsenceHttpStatus status -> ProvisionerAccessorCleanupHttpStatus status
   RootAccessorAbsenceHttpDecode -> ProvisionerAccessorCleanupHttpDecode
+
+provisionerAccessorRevocationHttpFailure
+  :: RootAccessorAbsenceProofHttpFailure
+  -> ProvisionerAccessorRevocationHttpFailure
+provisionerAccessorRevocationHttpFailure failure = case failure of
+  RootAccessorAbsenceHttpConnectionFailure ->
+    ProvisionerAccessorRevocationHttpConnectionFailure
+  RootAccessorAbsenceHttpTimeout -> ProvisionerAccessorRevocationHttpTimeout
+  RootAccessorAbsenceHttpStatus status -> ProvisionerAccessorRevocationHttpStatus status
+  RootAccessorAbsenceHttpDecode -> ProvisionerAccessorRevocationHttpDecode
+
+classifyProvisionerAccessorAbsenceHttpFailure
+  :: HttpError -> ProvisionerAccessorAbsenceHttpFailure
+classifyProvisionerAccessorAbsenceHttpFailure failure = case failure of
+  HttpConnectionFailure _ -> ProvisionerAccessorAbsenceHttpConnectionFailure
+  HttpTimeout _ -> ProvisionerAccessorAbsenceHttpTimeout
+  HttpStatus status _ -> ProvisionerAccessorAbsenceHttpStatus status
+  HttpDecode _ -> ProvisionerAccessorAbsenceHttpDecode
+
+-- | Vault's final role-wide accessor LIST uses HTTP 404 for the empty
+-- collection. Sprint 2.82's deployed diagnostic licensed only this exact
+-- operation/status; lookup and every other failure remain refusals.
+classifyProvisionerAccessorAbsenceListing
+  :: Either HttpError Vault.TokenAccessorListing
+  -> Either ProvisionerAccessorAbsenceCause [Text]
+classifyProvisionerAccessorAbsenceListing listing = case listing of
+  Right observed -> Right (Vault.tokenAccessorKeys observed)
+  Left (HttpStatus 404 _) -> Right []
+  Left failure ->
+    Left
+      ( ProvisionerAccessorAbsenceHttpFailure
+          ProvisionerAccessorAbsenceListAccessors
+          (classifyProvisionerAccessorAbsenceHttpFailure failure)
+      )
+
+provisionerAccessorAbsenceHttpFailure
+  :: RootAccessorAbsenceProofHttpFailure
+  -> ProvisionerAccessorAbsenceHttpFailure
+provisionerAccessorAbsenceHttpFailure failure = case failure of
+  RootAccessorAbsenceHttpConnectionFailure ->
+    ProvisionerAccessorAbsenceHttpConnectionFailure
+  RootAccessorAbsenceHttpTimeout -> ProvisionerAccessorAbsenceHttpTimeout
+  RootAccessorAbsenceHttpStatus status -> ProvisionerAccessorAbsenceHttpStatus status
+  RootAccessorAbsenceHttpDecode -> ProvisionerAccessorAbsenceHttpDecode
+
+provisionerAccessorAbsenceAuditorCause
+  :: RootAccessorAuditorFailure -> ProvisionerAccessorAbsenceCause
+provisionerAccessorAbsenceAuditorCause failure = case failure of
+  RootAccessorAuditorProjectedTokenUnavailable ->
+    ProvisionerAccessorAbsenceProjectedTokenUnavailable
+  RootAccessorAuditorLoginHttpFailure httpFailure ->
+    ProvisionerAccessorAbsenceHttpFailure
+      ProvisionerAccessorAbsenceAuditorLogin
+      (provisionerAccessorAbsenceHttpFailure httpFailure)
+  RootAccessorAuditorLoginInvalid -> ProvisionerAccessorAbsenceAuditorLoginInvalid
+  RootAccessorAuditorCleanupUnavailable ->
+    ProvisionerAccessorAbsenceAuditorCleanupUnavailable
+  RootAccessorAuditorCleanupRefused -> ProvisionerAccessorAbsenceAuditorCleanupRefused
+  RootAccessorAuditorCleanupAmbiguous ->
+    ProvisionerAccessorAbsenceAuditorCleanupAmbiguous
+
+classifyProvisionerAccessorAbsenceValueFailure
+  :: BootstrapValueError -> ProvisionerAccessorAbsenceCause
+classifyProvisionerAccessorAbsenceValueFailure failure = case failure of
+  BootstrapAccessorInventoryTooLarge {} ->
+    ProvisionerAccessorAbsenceObservedInventoryTooLarge
+  BootstrapProvisionerAccessorInventoryDuplicate {} ->
+    ProvisionerAccessorAbsenceObservedInventoryDuplicate
+  _ -> ProvisionerAccessorAbsenceObservedAccessorInvalid
 
 decideRootAccessorAbsenceProof
   :: RootAccessorAbsenceProofRequirement
@@ -2161,67 +2332,157 @@ revokeProvisionerSession
   -> ProvisionerLoginReceipt
   -> IO (Either EngineBoundaryError ())
 revokeProvisionerSession settings registry receipt =
-  withVaultBatchRole settings tokenAccessorAuditorRole $ \auditor -> do
-    let token = Vault.vaultLoginToken auditor
-        accessor = renderProvisionerAccessor (provisionerLoginAccessor receipt)
-    listing <- Vault.vaultListTokenAccessors address token
-    case listing of
-      Left _ -> boundaryUnavailable "provisioner accessor inventory is unavailable"
-      Right listingObservation -> do
-        revoked <-
-          if accessor `elem` Vault.tokenAccessorKeys listingObservation
-            then do
-              info <- Vault.vaultLookupTokenAccessorInfo address token accessor
-              case info of
-                Right accessorInfo
-                  | vaultAccessorMatchesSubject
-                      (bootstrapBrokerRoleSubject bootstrapProvisionerRole)
-                      accessorInfo ->
-                      fmap
-                        (mapLeft (const (EngineBoundaryUnavailable "provisioner accessor revocation failed")))
-                        (Vault.vaultRevokeTokenAccessor address token accessor)
-                _ -> boundaryRefused "provisioner accessor policy mismatch"
-            else pure (Right ())
-        case revoked of
-          Left failure -> pure (Left failure)
-          Right () -> do
-            remaining <- roleAccessorsWithToken settings token bootstrapProvisionerRole
-            case remaining of
-              Right [] -> do
-                modifyIORef' registry (Map.delete (provisionerLoginAccessor receipt))
-                pure (Right ())
-              Right _ -> boundaryRefused "another provisioner accessor remains after exact revocation"
-              Left failure -> pure (Left failure)
+  do
+    loggedIn <- loginRootAccessorAuditor settings
+    case loggedIn of
+      Left failure -> refused (provisionerAccessorRevocationAuditorCause failure)
+      Right auditor -> do
+        let token = Vault.vaultLoginToken auditor
+            accessor = renderProvisionerAccessor (provisionerLoginAccessor receipt)
+        listing <- Vault.vaultListTokenAccessors address token
+        case classifyProvisionerAccessorRevocationListing
+          ProvisionerAccessorRevocationInitialListAccessors
+          listing of
+          Left failure -> refused failure
+          Right initialAccessors -> do
+            revoked <-
+              if accessor `elem` initialAccessors
+                then revokeTarget token accessor
+                else pure (Right ())
+            case revoked of
+              Left failure -> refused failure
+              Right () -> do
+                absence <- proveTargetAndRoleAbsent token accessor
+                case absence of
+                  Left failure -> refused failure
+                  Right () -> do
+                    modifyIORef' registry (Map.delete (provisionerLoginAccessor receipt))
+                    pure (Right ())
  where
   address = Vault.VaultAddress (brokerVaultAddress settings)
+  refused = pure . Left . EngineBoundaryProvisionerAccessorRevocation
+  revokeTarget token accessor = do
+    info <- Vault.vaultLookupTokenAccessorInfo address token accessor
+    case info of
+      Left failure ->
+        pure
+          ( Left
+              ( provisionerAccessorRevocationHttpCause
+                  ProvisionerAccessorRevocationTargetLookupAccessor
+                  failure
+              )
+          )
+      Right accessorInfo
+        | vaultAccessorMatchesSubject
+            (bootstrapBrokerRoleSubject bootstrapProvisionerRole)
+            accessorInfo ->
+            fmap
+              ( mapLeft
+                  ( provisionerAccessorRevocationHttpCause
+                      ProvisionerAccessorRevocationRevokeAccessor
+                  )
+              )
+              (Vault.vaultRevokeTokenAccessor address token accessor)
+        | otherwise -> pure (Left ProvisionerAccessorRevocationTargetIdentityInvalid)
+  proveTargetAndRoleAbsent token target = do
+    listing <- Vault.vaultListTokenAccessors address token
+    case classifyProvisionerAccessorRevocationListing
+      ProvisionerAccessorRevocationPostListAccessors
+      listing of
+      Left failure -> pure (Left failure)
+      Right rawAccessors -> do
+        classified <- traverse (matchesProvisionerSubject token) rawAccessors
+        pure $ do
+          matchingRole <- sequence classified
+          if target `elem` rawAccessors
+            then Left ProvisionerAccessorRevocationTargetStillPresent
+            else
+              if or matchingRole
+                then Left ProvisionerAccessorRevocationRoleAccessorStillPresent
+                else Right ()
+  matchesProvisionerSubject token accessor = do
+    info <- Vault.vaultLookupTokenAccessorInfo address token accessor
+    pure $ case info of
+      Left failure ->
+        Left
+          ( provisionerAccessorRevocationHttpCause
+              ProvisionerAccessorRevocationPostLookupAccessor
+              failure
+          )
+      Right observed ->
+        Right
+          ( vaultAccessorMatchesSubject
+              (bootstrapBrokerRoleSubject bootstrapProvisionerRole)
+              observed
+          )
 
 proveProvisionerSessionAbsent
   :: BootstrapBrokerSettings
   -> ProvisionerLoginReceipt
   -> IO (Either EngineBoundaryError ProvisionerAccessorAbsenceAttestation)
-proveProvisionerSessionAbsent settings receipt =
-  withVaultBatchRole settings tokenAccessorAuditorRole $ \auditor -> do
-    let token = Vault.vaultLoginToken auditor
-        target = provisionerLoginAccessor receipt
-    remaining <- roleAccessorsWithToken settings token bootstrapProvisionerRole
-    pure $ do
-      accessors <- remaining
-      if null accessors
-        && renderProvisionerAccessor target `notElem` accessors
-        then do
-          inventory <-
-            mapLeft
-              (EngineBoundaryRefused . Text.pack . show)
-              ( mkProvisionerAccessorInventory
-                  (provisionerLoginStorageGeneration receipt)
-                  [target]
+proveProvisionerSessionAbsent settings receipt = do
+  loggedIn <- loginRootAccessorAuditor settings
+  case loggedIn of
+    Left failure -> refused (provisionerAccessorAbsenceAuditorCause failure)
+    Right auditor -> do
+      let token = Vault.vaultLoginToken auditor
+          target = provisionerLoginAccessor receipt
+      remaining <- provisionerRoleAccessorsForAbsence settings token
+      pure $ do
+        accessors <- mapLeft EngineBoundaryProvisionerAccessorAbsence remaining
+        if null accessors
+          && renderProvisionerAccessor target `notElem` accessors
+          then do
+            inventory <-
+              mapLeft
+                ( EngineBoundaryProvisionerAccessorAbsence
+                    . classifyProvisionerAccessorAbsenceValueFailure
+                )
+                ( mkProvisionerAccessorInventory
+                    (provisionerLoginStorageGeneration receipt)
+                    [target]
+                )
+            Right
+              ( mkProvisionerAccessorAbsenceAttestation
+                  inventory
+                  (digestSerialised ("provisioner-accessor-absence-v1" :: Text, inventory, accessors))
               )
-          Right
-            ( mkProvisionerAccessorAbsenceAttestation
-                inventory
-                (digestSerialised ("provisioner-accessor-absence-v1" :: Text, inventory, accessors))
-            )
-        else Left (EngineBoundaryRefused "provisioner accessor absence was not exact")
+          else
+            Left
+              ( EngineBoundaryProvisionerAccessorAbsence
+                  ProvisionerAccessorAbsenceRoleAccessorStillPresent
+              )
+ where
+  refused = pure . Left . EngineBoundaryProvisionerAccessorAbsence
+
+provisionerRoleAccessorsForAbsence
+  :: BootstrapBrokerSettings
+  -> Vault.VaultToken
+  -> IO (Either ProvisionerAccessorAbsenceCause [Text])
+provisionerRoleAccessorsForAbsence settings token = do
+  listing <- Vault.vaultListTokenAccessors address token
+  case classifyProvisionerAccessorAbsenceListing listing of
+    Left failure -> pure (Left failure)
+    Right rawAccessors -> do
+      classified <- traverse classify rawAccessors
+      pure (fmap concat (sequence classified))
+ where
+  address = Vault.VaultAddress (brokerVaultAddress settings)
+  classify accessor = do
+    info <- Vault.vaultLookupTokenAccessorInfo address token accessor
+    pure $ case info of
+      Left failure ->
+        Left
+          ( ProvisionerAccessorAbsenceHttpFailure
+              ProvisionerAccessorAbsenceLookupAccessor
+              (classifyProvisionerAccessorAbsenceHttpFailure failure)
+          )
+      Right observed
+        | vaultAccessorMatchesSubject
+            (bootstrapBrokerRoleSubject bootstrapProvisionerRole)
+            observed ->
+            Right [accessor]
+        | otherwise -> Right []
 
 loginProvisioner
   :: BootstrapBrokerSettings
@@ -2266,23 +2527,28 @@ applyProvisionerBaseline settings registry receipt = do
     Left failure ->
       pure (Left (EngineBoundaryProvisionerPolicyApplication failure))
     Right token -> do
-      reconciled <-
-        runVaultReconcile
-          (Vault.VaultAddress (brokerVaultAddress settings))
-          token
-          defaultVaultReconcilePlan
-      case mapLeft classifyProvisionerPolicyCoreReconcileFailure reconciled of
+      repaired <- repairProvisionerPolicy settings
+      case repaired of
         Left failure ->
           pure (Left (EngineBoundaryProvisionerPolicyApplication failure))
-        Right _ -> do
-          pki <-
-            reconcileVaultPkiBaseline
+        Right () -> do
+          reconciled <-
+            runVaultReconcile
               (Vault.VaultAddress (brokerVaultAddress settings))
               token
-          pure $ case mapLeft classifyProvisionerPolicyPkiReconcileFailure pki of
+              provisionerVaultReconcilePlan
+          case mapLeft classifyProvisionerPolicyCoreReconcileFailure reconciled of
             Left failure ->
-              Left (EngineBoundaryProvisionerPolicyApplication failure)
-            Right _ -> Right ()
+              pure (Left (EngineBoundaryProvisionerPolicyApplication failure))
+            Right _ -> do
+              pki <-
+                reconcileVaultPkiBaseline
+                  (Vault.VaultAddress (brokerVaultAddress settings))
+                  token
+              pure $ case mapLeft classifyProvisionerPolicyPkiReconcileFailure pki of
+                Left failure ->
+                  Left (EngineBoundaryProvisionerPolicyApplication failure)
+                Right _ -> Right ()
 
 readBackProvisionerBaseline
   :: BootstrapBrokerSettings
@@ -2300,21 +2566,26 @@ readBackProvisionerBaseline settings registry receipt expected
         case tokenResult of
           Left failure -> pure (Left failure)
           Right token -> do
-            reconciled <-
-              runVaultReconcile
-                (Vault.VaultAddress (brokerVaultAddress settings))
-                token
-                defaultVaultReconcilePlan
-            pki <-
-              observeVaultPkiBaseline
-                (Vault.VaultAddress (brokerVaultAddress settings))
-                token
-            pure $ do
-              _ <- mapReconcileResult reconciled
-              status <- mapReconcileResult pki
-              if status == VaultReconcile.VaultPkiBaselineReady
-                then Right expected
-                else Left (EngineBoundaryRefused "Vault PKI baseline read-back was not exact")
+            policy <- observeProvisionerPolicy settings
+            case policy of
+              Left cause ->
+                pure (Left (EngineBoundaryProvisionerPolicyApplication cause))
+              Right () -> do
+                reconciled <-
+                  runVaultReconcile
+                    (Vault.VaultAddress (brokerVaultAddress settings))
+                    token
+                    provisionerVaultReconcilePlan
+                pki <-
+                  observeVaultPkiBaseline
+                    (Vault.VaultAddress (brokerVaultAddress settings))
+                    token
+                pure $ do
+                  _ <- mapReconcileResult reconciled
+                  status <- mapReconcileResult pki
+                  if status == VaultReconcile.VaultPkiBaselineReady
+                    then Right expected
+                    else Left (EngineBoundaryRefused "Vault PKI baseline read-back was not exact")
 
 provisionerReceiptFromLogin
   :: VaultStorageGeneration
@@ -2359,6 +2630,74 @@ lookupProvisionerPolicyApplicationToken registry receipt = do
   pure $ case Map.lookup (provisionerLoginAccessor receipt) tokens of
     Just token -> Right token
     Nothing -> Left ProvisionerPolicyApplicationTokenUnavailable
+
+repairProvisionerPolicy
+  :: BootstrapBrokerSettings
+  -> IO (Either ProvisionerPolicyApplicationCause ())
+repairProvisionerPolicy settings = do
+  acquired <- loginVaultBatchRole settings bootstrapPolicyRepairRole
+  case acquired of
+    Left _ -> pure (Left ProvisionerPolicyApplicationRepairAuthorityUnavailable)
+    Right login -> do
+      let token = Vault.vaultLoginToken login
+          spec = bootstrapProvisionerPolicySpec
+      written <-
+        Vault.vaultWritePolicy
+          address
+          token
+          (VaultReconcile.vaultPolicySpecName spec)
+          (VaultReconcile.vaultPolicySpecDocument spec)
+      case written of
+        Left failure ->
+          pure
+            ( Left
+                ( ProvisionerPolicyApplicationRepairWriteHttp
+                    (classifyProvisionerPolicyRepairHttpFailure failure)
+                )
+            )
+        Right () -> observeProvisionerPolicyWithToken address token
+ where
+  address = Vault.VaultAddress (brokerVaultAddress settings)
+
+observeProvisionerPolicy
+  :: BootstrapBrokerSettings
+  -> IO (Either ProvisionerPolicyApplicationCause ())
+observeProvisionerPolicy settings = do
+  acquired <- loginVaultBatchRole settings bootstrapPolicyRepairRole
+  case acquired of
+    Left _ -> pure (Left ProvisionerPolicyApplicationRepairAuthorityUnavailable)
+    Right login ->
+      observeProvisionerPolicyWithToken
+        (Vault.VaultAddress (brokerVaultAddress settings))
+        (Vault.vaultLoginToken login)
+
+observeProvisionerPolicyWithToken
+  :: Vault.VaultAddress
+  -> Vault.VaultToken
+  -> IO (Either ProvisionerPolicyApplicationCause ())
+observeProvisionerPolicyWithToken address token = do
+  let spec = bootstrapProvisionerPolicySpec
+  observed <-
+    Vault.vaultReadPolicy address token (VaultReconcile.vaultPolicySpecName spec)
+  pure $ case observed of
+    Left failure ->
+      Left
+        ( ProvisionerPolicyApplicationRepairReadBackHttp
+            (classifyProvisionerPolicyRepairHttpFailure failure)
+        )
+    Right readBack
+      | Vault.policyReadbackDocument readBack
+          == VaultReconcile.vaultPolicySpecDocument spec ->
+          Right ()
+      | otherwise -> Left ProvisionerPolicyApplicationRepairReadBackMismatch
+
+classifyProvisionerPolicyRepairHttpFailure
+  :: HttpError -> GeneratedRootCoreHttpFailure
+classifyProvisionerPolicyRepairHttpFailure failure = case failure of
+  HttpConnectionFailure _ -> GeneratedRootCoreHttpConnectionFailure
+  HttpTimeout _ -> GeneratedRootCoreHttpTimeout
+  HttpStatus status _ -> GeneratedRootCoreHttpStatus status
+  HttpDecode _ -> GeneratedRootCoreHttpDecode
 
 classifyProvisionerPolicyCoreReconcileFailure
   :: VaultReconcile.VaultReconcileError

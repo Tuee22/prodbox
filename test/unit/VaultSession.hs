@@ -166,6 +166,58 @@ vaultSessionSuite =
         result `shouldBe` Left (HttpStatus 500 "boom")
         loginCount >>= (`shouldBe` 1)
 
+      it "retains initial session-acquisition provenance" $ do
+        (_setClock, clock) <- mkFakeClock 0
+        session <-
+          newVaultSession
+            (VaultAddress "addr")
+            clock
+            (pure (Left (VaultSessionForbidden "login denied")))
+        result <-
+          withSessionTokenDetailed
+            session
+            (\_ -> pure (Right ("unreachable" :: String)))
+        result
+          `shouldBe` Left
+            (VaultSessionAcquisitionFailed (VaultSessionForbidden "login denied"))
+
+      it "retains relogin provenance after a request 403" $ do
+        (_setClock, clock) <- mkFakeClock 0
+        loginCount <- newIORef (0 :: Int)
+        let login = do
+              count <- readIORef loginCount
+              writeIORef loginCount (count + 1)
+              pure $
+                if count == 0
+                  then
+                    Right
+                      LoginLease
+                        { loginLeaseToken = VaultToken "initial"
+                        , loginLeaseSeconds = 90
+                        , loginLeaseRenewable = True
+                        }
+                  else Left (VaultSessionSealed "sealed during relogin")
+        session <- newVaultSession (VaultAddress "addr") clock login
+        result <-
+          withSessionTokenDetailed
+            session
+            (\_ -> pure (Left (HttpStatus 403 "stale") :: Either HttpError String))
+        result
+          `shouldBe` Left
+            (VaultSessionReloginFailed (VaultSessionSealed "sealed during relogin"))
+
+      it "retains request provenance without response-payload interpretation" $ do
+        (_setClock, clock) <- mkFakeClock 0
+        (_loginCount, login) <- mkCountingLogin 90
+        session <- newVaultSession (VaultAddress "addr") clock login
+        result <-
+          withSessionTokenDetailed
+            session
+            (\_ -> pure (Left (HttpStatus 404 "arbitrary body") :: Either HttpError String))
+        result
+          `shouldBe` Left
+            (VaultSessionRequestFailed (HttpStatus 404 "arbitrary body"))
+
 sampleCached :: Int -> Double -> CachedToken
 sampleCached leaseSeconds obtainedAt =
   CachedToken

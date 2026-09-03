@@ -79,6 +79,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   , FirstReconcilePlanError (..)
   , mkFirstReconcileProvisioningPlan
   , defaultFirstReconcileProvisioningPlan
+  , firstReconcileHardMaximum
   , firstReconcilePlanDigest
   , firstReconcilePlanDeadline
   , firstReconcilePlanMembers

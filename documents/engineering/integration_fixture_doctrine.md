@@ -48,6 +48,29 @@ not a claim that target cleanup has cut over.
   path, and one of the two had a silent catch-all arm that answered empty stdout with exit 0 — so
   the production observer read `""` and refused on a shape rather than on an absence. A fake's
   catch-all arm is a fail-open default; prefer an explicit refusal naming the unhandled request.
+- A fake Docker retention inventory uses production's exact machine-formatted `image ls` request.
+  Exit-zero empty output is observable absence. A populated arm emits only canonical repository/ID
+  rows, models each exact `image rm`, and returns absence on the independent read-back; command
+  failure and malformed rows remain refusals in the production classifier (Sprint `5.39`,
+  2026-08-31).
+- A fake image inspection distinguishes the local config/image identity from the repository
+  manifest inventory by the exact requested format. The former is one canonical digest line; the
+  latter is a JSON array containing an exact repository-qualified, distinct manifest digest.
+  Foreign-only, malformed, and ambiguous inventories remain refusals in the production selector
+  (Sprint `5.41`, 2026-08-31).
+- A fake filename-based Kubernetes apply persists the bytes accepted by its exact apply request and
+  serves that stored observation—not the observation request's stdin—on the exact subsequent get.
+  Missing stored state refuses, and malformed stored bytes remain malformed for the production
+  decoder; exit-zero empty output is never Kubernetes absence (Sprint `5.40`, 2026-08-31).
+- A fake Authority Backup port-forward recognizes production's exact
+  `deployment/authority-backup` target, derives the local and remote ports from that request, and
+  emits only kubectl's exact loopback-forward acknowledgement for the production startup
+  classifier. The obsolete `service/authority-backup` target refuses explicitly rather than
+  entering a silent generic arm. The fake owns the fixture server as a child, proves `/readyz` on
+  the exact requested loopback port, and only then writes the acknowledgement; the production
+  client's first immediate post-ack request must therefore succeed. TERM, INT, and ordinary exit
+  retire and wait for the child, so a fake forward cannot leave its listener behind (Sprints
+  `5.42`/`5.43`, 2026-08-31).
 
 ## 1. Scope
 
@@ -91,6 +114,17 @@ Ownership rules:
    registered desired-present program consumed by the operator CLI after its backend is ready. The
    suite is a peer lifecycle client: it does not shell or wrap the public command, hide the mutation
    in a prerequisite, or add the retained resource to per-run cleanup.
+
+For a cluster-backed managed-AWS suite, setup has two graph-derived local-runtime projections
+around Lifecycle-provider credential repair. The pre-credential projection establishes only the
+retained Authority/config transition and deliberately stops before Provider Worker deep readiness,
+because that readiness consumes the credential being repaired. After the Credential Provisioner
+reports the exact current generation, the harness re-enters ordinary local-only `cluster
+reconcile` before ACME EAB ingress or any AWS-backed prerequisite. That reconcile must establish
+the Provider Service and pass its normal deep STS readiness gate; it has no edge/AWS target
+mutation enabled. Pure IAM-harness suites create no local runtime and use neither projection. This
+ordering is not permission to install a Provider chart directly or to weaken normal Provider
+readiness.
 
 The harness never interprets an admin prompt mutation in-process. Identity/store setup submits the
 stable backup-receipted `OperatorMaterialPermit` (or the first-run `GenesisBackupPermit`) and sends
@@ -388,6 +422,10 @@ cleanup governed independently by `LifecycleClass`. Specifically:
 
 - Fixtures may be reused across substrates because they fake a boundary (`aws` CLI, `dig`,
   `kubectl`) rather than represent the substrate itself.
+- A fake Helm boundary is total over the production pre-upgrade observation contract. It emits an
+  exact not-found failure for an absent release and canonical `.info.status` JSON for an explicitly
+  present release. Unsupported `status` and successful empty output are fixture defects, never
+  aliases for absence.
 - Substrate config (e.g. `aws_substrate.hosted_zone_id`, `route53.zone_id`) is required and
   substrate-locked per
   [`DEVELOPMENT_PLAN/development_plan_standards.md` § M — Substrate coverage and independence (no fallback)](../../DEVELOPMENT_PLAN/development_plan_standards.md#substrate-coverage-and-independence-no-fallback).

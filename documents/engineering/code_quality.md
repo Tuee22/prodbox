@@ -31,6 +31,22 @@ fail-fast lint stages and then the warning-clean build:
 5. `cabal build --builddir=.build all --enable-tests --ghc-options=-Werror`;
 6. operator-binary sync to `.build/prodbox`.
 
+The fail-fast lint stages are also resource-lifetime boundaries. The aggregate gate invokes the
+current executable's four exact leaf arms — `dev lint files`, `dev lint docs`,
+`dev lint haskell`, and `dev lint chart` — as sequential child processes. Each leaf dispatches
+directly to its implementation and cannot recurse into the aggregate path. The parent waits for
+each child to exit before starting the next leaf or the warning-clean Cabal build, so OS process
+teardown reclaims each repository-reading graph rather than depending on Haskell heap reachability
+or collection behavior. This prevents one family's working set from overlapping the next family,
+the build, and the retained local RKE2 control plane while preserving the exact checks, order, and
+fail-fast exit result.
+
+The Haskell-style leaf has a second, inner lifetime rule: each repository-reading check must fully
+evaluate its complete finding list before the next check begins. A successful empty list is still a
+result that must be forced; otherwise its lazy scan may retain the source contents until the leaf's
+final result concatenation. The forcing boundary changes only evaluation lifetime—finding order,
+text, and failure behavior remain exact.
+
 Note the scope of step 5, which is not cosmetic. The formatter and the linter are explicitly scoped
 `app src test`; the type-checking build is scoped **`all --enable-tests`**, because with this
 `cabal.project` (no `tests:` stanza) bare `all` resolves to `lib` and `exe:prodbox` and no test

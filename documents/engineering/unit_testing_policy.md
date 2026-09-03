@@ -164,6 +164,9 @@ constructor. Required control-plane tables include:
 - service identity, substrate, authority scope, and epoch validation;
 - admission open/saturated/degraded/expired/unobservable;
 - authority `decide` and `evolve` commands/events;
+- TLS workflow request/response/status exhaustiveness, stable route identity, and exact trust
+  topology: operator/test harness may trigger the Authority workflow, Authority may self-call its
+  TLS fold, and only Authority may call any Target TLS route;
 - closed `RetainedMaterialSchema` SMTP/EAB permit matching, flat custody observations, and every
   pending/current/per-target/superseded/tombstone transition;
 - target generation duplicate/regression/digest conflict;

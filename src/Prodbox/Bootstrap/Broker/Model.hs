@@ -29,6 +29,7 @@ module Prodbox.Bootstrap.Broker.Model
   , applyRootSessionCommand
   , planRootSession
   , restartRootSession
+  , rootSessionBaselineIsCurrent
   , rootSessionInvariantViolations
   , rootSessionCompletion
   , rootSessionIsComplete
@@ -444,7 +445,8 @@ restartRootSession
   -> RootSessionState
   -> Either RootSessionError RootSessionState
 restartRootSession replacementSessionId state
-  | rootSessionIsComplete state || rootSessionIsCancelledClean state = Right state
+  | rootSessionIsComplete state && rootSessionBaselineIsCurrent state = Right state
+  | rootSessionIsCancelledClean state = Right state
   | replacementSessionId == rootSessionBindingId oldBinding =
       Left RootSessionRestartMustAdvanceSessionId
   | otherwise =
@@ -460,6 +462,14 @@ restartRootSession replacementSessionId state
           }
  where
   oldBinding = rootSessionStateBinding state
+
+rootSessionBaselineIsCurrent :: RootSessionState -> Bool
+rootSessionBaselineIsCurrent state =
+  case rootSessionCompletion state of
+    Just completion ->
+      baselineTargetsAreCurrent
+        (baselineReadBackTargets (completedRootBaselineReadBack completion))
+    Nothing -> False
 
 rootSessionInvariantViolations
   :: RootSessionState -> [RootSessionInvariantViolation]
@@ -872,7 +882,7 @@ phaseInvariantViolations binding phase =
     RootSessionPostBaselineZeroProofPending receipt inventory ->
       baselineViolations binding receipt ++ inventoryViolations binding inventory
     RootSessionClosed receipt absence ->
-      baselineViolations binding receipt
+      retainedClosedBaselineViolations binding receipt
         ++ absenceGenerationViolations binding absence
     RootSessionCancelledClean absence ->
       absenceGenerationViolations binding absence
@@ -910,14 +920,207 @@ baselineViolations
   -> BaselineReadBackReceipt
   -> [RootSessionInvariantViolation]
 baselineViolations binding receipt =
+  baselineBindingViolations binding receipt
+    ++ [ RootSessionBaselineTargetsDiffer (baselineReadBackTargets receipt)
+       | baselineReadBackTargets receipt /= requiredRootBaselineTargets
+       ]
+
+-- A completed older receipt is safe only as restart input.  The store admits
+-- only the exact registered terminal target sets so the engine can replace one
+-- through orphan cleanup and a fresh generated-root baseline; no construction
+-- or in-progress transition accepts an older target set.
+retainedClosedBaselineViolations
+  :: RootSessionBinding
+  -> BaselineReadBackReceipt
+  -> [RootSessionInvariantViolation]
+retainedClosedBaselineViolations binding receipt =
+  baselineBindingViolations binding receipt
+    ++ [ RootSessionBaselineTargetsDiffer targets
+       | targets /= requiredRootBaselineTargets
+           && targets /= prePolicyRepairBaselineTargets
+           && targets /= preTargetSecretAgentRoleBaselineTargets
+           && targets /= preLifecycleAuthorityRoleBaselineTargets
+           && targets /= preStandingRoleNamespaceBaselineTargets
+           && targets /= preAwsAdminJournalObserverBaselineTargets
+           && targets /= preCredentialProvisionerCompletionPrincipalBaselineTargets
+           && targets /= preCredentialProvisionerAuditorLeaseBaselineTargets
+       ]
+ where
+  targets = baselineReadBackTargets receipt
+
+prePolicyRepairBaselineTargets :: [BaselineTarget]
+prePolicyRepairBaselineTargets =
+  [ BaselineKvV2Mount
+  , BaselineTransitMount
+  , BaselinePkiMount
+  , BaselineKubernetesAuthMethod
+  , BaselineBootstrapProvisionerPolicy
+  , BaselineBootstrapProvisionerRole
+  , BaselineBootstrapPkiOperatorPolicy
+  , BaselineBootstrapPkiOperatorRole
+  , BaselineTokenAccessorAuditorPolicy
+  , BaselineTokenAccessorAuditorRole
+  , BaselineAuthorityGenesisSigningKey
+  , BaselinePkiTestRole
+  ]
+
+-- This exact terminal target set predates the Target Secret Agent standing
+-- role's namespace repair. It remains decodable only so restart can advance
+-- the session identity and re-enter the generated-root baseline; it is never
+-- current and no in-progress state may carry it.
+preTargetSecretAgentRoleBaselineTargets :: [BaselineTarget]
+preTargetSecretAgentRoleBaselineTargets =
+  [ BaselineKvV2Mount
+  , BaselineTransitMount
+  , BaselinePkiMount
+  , BaselineKubernetesAuthMethod
+  , BaselineBootstrapProvisionerPolicy
+  , BaselineBootstrapProvisionerRole
+  , BaselineBootstrapPkiOperatorPolicy
+  , BaselineBootstrapPkiOperatorRole
+  , BaselineTokenAccessorAuditorPolicy
+  , BaselineTokenAccessorAuditorRole
+  , BaselineAuthorityGenesisSigningKey
+  , BaselinePkiTestRole
+  , BaselineBootstrapPolicyRepairPolicy
+  , BaselineBootstrapPolicyRepairRole
+  ]
+
+-- This exact terminal target set predates the Lifecycle Authority standing
+-- role's namespace repair. It remains decodable only so restart can advance
+-- the session identity and re-enter the generated-root baseline; it is never
+-- current and no in-progress state may carry it.
+preLifecycleAuthorityRoleBaselineTargets :: [BaselineTarget]
+preLifecycleAuthorityRoleBaselineTargets =
+  [ BaselineKvV2Mount
+  , BaselineTransitMount
+  , BaselinePkiMount
+  , BaselineKubernetesAuthMethod
+  , BaselineBootstrapProvisionerPolicy
+  , BaselineBootstrapProvisionerRole
+  , BaselineBootstrapPkiOperatorPolicy
+  , BaselineBootstrapPkiOperatorRole
+  , BaselineTokenAccessorAuditorPolicy
+  , BaselineTokenAccessorAuditorRole
+  , BaselineAuthorityGenesisSigningKey
+  , BaselinePkiTestRole
+  , BaselineBootstrapPolicyRepairPolicy
+  , BaselineBootstrapPolicyRepairRole
+  , BaselineTargetSecretAgentStandingRole
+  ]
+
+-- This exact terminal target set predates the semantic revision that binds
+-- every separately deployed standing role to its own workload namespace.  The
+-- desired Vault objects changed while the inventory did not, so this append is
+-- the durable signal that forces one complete generated-root reapplication.
+preStandingRoleNamespaceBaselineTargets :: [BaselineTarget]
+preStandingRoleNamespaceBaselineTargets =
+  [ BaselineKvV2Mount
+  , BaselineTransitMount
+  , BaselinePkiMount
+  , BaselineKubernetesAuthMethod
+  , BaselineBootstrapProvisionerPolicy
+  , BaselineBootstrapProvisionerRole
+  , BaselineBootstrapPkiOperatorPolicy
+  , BaselineBootstrapPkiOperatorRole
+  , BaselineTokenAccessorAuditorPolicy
+  , BaselineTokenAccessorAuditorRole
+  , BaselineAuthorityGenesisSigningKey
+  , BaselinePkiTestRole
+  , BaselineBootstrapPolicyRepairPolicy
+  , BaselineBootstrapPolicyRepairRole
+  , BaselineTargetSecretAgentStandingRole
+  , BaselineLifecycleAuthorityStandingRole
+  ]
+
+-- This exact terminal target set predates the Lifecycle Authority's
+-- read-only AWS-admin execution-journal observer. The policy document changed
+-- while every earlier baseline target remained present, so the append is the
+-- durable signal that forces one complete generated-root reapplication.
+preAwsAdminJournalObserverBaselineTargets :: [BaselineTarget]
+preAwsAdminJournalObserverBaselineTargets =
+  [ BaselineKvV2Mount
+  , BaselineTransitMount
+  , BaselinePkiMount
+  , BaselineKubernetesAuthMethod
+  , BaselineBootstrapProvisionerPolicy
+  , BaselineBootstrapProvisionerRole
+  , BaselineBootstrapPkiOperatorPolicy
+  , BaselineBootstrapPkiOperatorRole
+  , BaselineTokenAccessorAuditorPolicy
+  , BaselineTokenAccessorAuditorRole
+  , BaselineAuthorityGenesisSigningKey
+  , BaselinePkiTestRole
+  , BaselineBootstrapPolicyRepairPolicy
+  , BaselineBootstrapPolicyRepairRole
+  , BaselineTargetSecretAgentStandingRole
+  , BaselineLifecycleAuthorityStandingRole
+  , BaselineStandingRoleNamespaceBindings
+  ]
+
+-- This exact terminal target set predates the disjoint Credential Provisioner
+-- completion principal. The caller key and derived worker/Authority policies
+-- changed while every earlier target remained present, so the append forces
+-- one complete generated-root reapplication before code 104 can be trusted.
+preCredentialProvisionerCompletionPrincipalBaselineTargets :: [BaselineTarget]
+preCredentialProvisionerCompletionPrincipalBaselineTargets =
+  [ BaselineKvV2Mount
+  , BaselineTransitMount
+  , BaselinePkiMount
+  , BaselineKubernetesAuthMethod
+  , BaselineBootstrapProvisionerPolicy
+  , BaselineBootstrapProvisionerRole
+  , BaselineBootstrapPkiOperatorPolicy
+  , BaselineBootstrapPkiOperatorRole
+  , BaselineTokenAccessorAuditorPolicy
+  , BaselineTokenAccessorAuditorRole
+  , BaselineAuthorityGenesisSigningKey
+  , BaselinePkiTestRole
+  , BaselineBootstrapPolicyRepairPolicy
+  , BaselineBootstrapPolicyRepairRole
+  , BaselineTargetSecretAgentStandingRole
+  , BaselineLifecycleAuthorityStandingRole
+  , BaselineStandingRoleNamespaceBindings
+  , BaselineLifecycleAuthorityAwsAdminJournalObserver
+  ]
+
+-- This exact terminal target set predates containment of the AWS-admin
+-- session-closure auditor lease. The role's maximum TTL changed while every
+-- earlier target remained present, so the append forces one complete
+-- generated-root reapplication before that longer lease can be trusted.
+preCredentialProvisionerAuditorLeaseBaselineTargets :: [BaselineTarget]
+preCredentialProvisionerAuditorLeaseBaselineTargets =
+  [ BaselineKvV2Mount
+  , BaselineTransitMount
+  , BaselinePkiMount
+  , BaselineKubernetesAuthMethod
+  , BaselineBootstrapProvisionerPolicy
+  , BaselineBootstrapProvisionerRole
+  , BaselineBootstrapPkiOperatorPolicy
+  , BaselineBootstrapPkiOperatorRole
+  , BaselineTokenAccessorAuditorPolicy
+  , BaselineTokenAccessorAuditorRole
+  , BaselineAuthorityGenesisSigningKey
+  , BaselinePkiTestRole
+  , BaselineBootstrapPolicyRepairPolicy
+  , BaselineBootstrapPolicyRepairRole
+  , BaselineTargetSecretAgentStandingRole
+  , BaselineLifecycleAuthorityStandingRole
+  , BaselineStandingRoleNamespaceBindings
+  , BaselineLifecycleAuthorityAwsAdminJournalObserver
+  , BaselineCredentialProvisionerCompletionPrincipal
+  ]
+
+baselineBindingViolations
+  :: RootSessionBinding
+  -> BaselineReadBackReceipt
+  -> [RootSessionInvariantViolation]
+baselineBindingViolations binding receipt =
   [ RootSessionBaselineIdDiffers expectedId actualId
   | actualId /= expectedId
   ]
     ++ [ RootSessionBaselineGenerationDiffers expectedGeneration actualGeneration
        | actualGeneration /= expectedGeneration
-       ]
-    ++ [ RootSessionBaselineTargetsDiffer (baselineReadBackTargets receipt)
-       | baselineReadBackTargets receipt /= requiredRootBaselineTargets
        ]
  where
   expectedId = rootSessionBindingId binding

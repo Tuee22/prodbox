@@ -14,6 +14,12 @@ module Prodbox.ControlPlane.TargetMaterialEndpoint
   , TargetMaterialObservation (..)
   , TargetMaterialObserveResponse (..)
   , TargetMaterialRepository (..)
+  , TargetMaterialReadinessStage (..)
+  , allTargetMaterialReadinessStages
+  , renderTargetMaterialReadinessStage
+  , targetMaterialReadinessDependencyLabel
+  , decodeTargetMaterialReadinessDependencyLabel
+  , targetMaterialReadinessObservation
   , vaultTargetMaterialRepository
   , observeVaultTargetMaterialDependencies
   , targetMaterialObservationAuthenticatedHandler
@@ -34,7 +40,7 @@ import Codec.Serialise (Serialise)
 import Data.Bifunctor qualified
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
-import Data.Foldable (traverse_)
+import Data.List (find)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import GHC.Generics (Generic)
@@ -132,6 +138,44 @@ data TargetMaterialRepository m = TargetMaterialRepository
   , targetMaterialRepositoryReadiness :: !RoleReadinessSource
   }
 
+-- | The closed stage at which a target-material readiness observation can
+-- fail. The target itself is carried separately as 'TargetSecretId'; neither
+-- component can retain a Vault response, decoder detail, or physical path.
+data TargetMaterialReadinessStage
+  = TargetMaterialMetadataRead
+  | TargetMaterialMetadataValidation
+  deriving stock (Bounded, Enum, Eq, Show)
+
+allTargetMaterialReadinessStages :: [TargetMaterialReadinessStage]
+allTargetMaterialReadinessStages = [minBound .. maxBound]
+
+renderTargetMaterialReadinessStage :: TargetMaterialReadinessStage -> Text
+renderTargetMaterialReadinessStage stage = case stage of
+  TargetMaterialMetadataRead -> "metadata-read"
+  TargetMaterialMetadataValidation -> "metadata-validation"
+
+targetMaterialReadinessDependencyLabel
+  :: TargetSecretId -> TargetMaterialReadinessStage -> Text
+targetMaterialReadinessDependencyLabel target stage =
+  Text.intercalate
+    ":"
+    [ "target-material"
+    , targetSecretIdToken target
+    , renderTargetMaterialReadinessStage stage
+    ]
+
+-- | Decode only labels constructed from the closed target and stage
+-- inventories. Arbitrary tokens and legacy family-only labels are rejected.
+decodeTargetMaterialReadinessDependencyLabel
+  :: Text -> Maybe (TargetSecretId, TargetMaterialReadinessStage)
+decodeTargetMaterialReadinessDependencyLabel label = case Text.splitOn ":" label of
+  ["target-material", targetToken, stageToken] -> do
+    target <- find ((== targetToken) . targetSecretIdToken) allTargetMaterialIds
+    stage <-
+      find ((== stageToken) . renderTargetMaterialReadinessStage) allTargetMaterialReadinessStages
+    pure (target, stage)
+  _ -> Nothing
+
 targetMaterialResponseMaximumBytes :: Int
 targetMaterialResponseMaximumBytes = 64 * 1024
 
@@ -181,11 +225,30 @@ observeVaultTargetMaterialDependencies session =
  where
   observeOne target = do
     observed <- readVaultTargetMaterialMetadata session target
-    pure
-      ( "target-material:" <> targetSecretIdToken target
-      , roleDependencyFromOutcome
-          (observed >>= traverse_ validateTargetMaterialMetadataReadinessInternal)
-      )
+    pure (targetMaterialReadinessObservation target observed)
+
+-- | Refine the diagnostic label while preserving the exact pre-Sprint-2.86
+-- readiness observation: read/validation failure is unavailable, while a
+-- missing or valid target is ready.
+targetMaterialReadinessObservation
+  :: TargetSecretId
+  -> Either Text (Maybe KvV2SecretMetadata)
+  -> (Text, RoleDependencyObservation)
+targetMaterialReadinessObservation target observed = case observed of
+  Left detail ->
+    ( targetMaterialReadinessDependencyLabel target TargetMaterialMetadataRead
+    , roleDependencyFromOutcome (Left detail)
+    )
+  Right Nothing -> ready
+  Right (Just metadata) ->
+    case validateTargetMaterialMetadataReadinessInternal metadata of
+      Left detail ->
+        ( targetMaterialReadinessDependencyLabel target TargetMaterialMetadataValidation
+        , roleDependencyFromOutcome (Left detail)
+        )
+      Right () -> ready
+ where
+  ready = ("target-material:" <> targetSecretIdToken target, roleDependencyFromOutcome (Right ()))
 
 observeVaultTargetMaterialMetadata
   :: VaultSession

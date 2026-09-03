@@ -265,6 +265,8 @@ allocationSuite =
       it "requires every standing control-plane workload to be tagged Guaranteed" $ do
         let controlPlaneIds =
               [ "bootstrap-broker"
+              , "bootstrap-secret-worker"
+              , "credential-provisioner-secret-workers"
               , "lifecycle-authority"
               , "provider-worker"
               , "authority-backup"
@@ -277,6 +279,60 @@ allocationSuite =
                 `shouldBe` Left (ControlPlaneQoSNotGuaranteed profileId)
           )
           controlPlaneIds
+
+      it "BOOTSTRAP-SECRET-WORKER-ABSENT-FROM-CAPACITY-PLAN-2026-09-02" $ do
+        let profiles = C.workload_profiles C.defaultResourcePlan
+            profile profileId =
+              case [candidate | candidate <- profiles, C.profile_id candidate == profileId] of
+                candidate : _ -> candidate
+                [] -> error ("default plan is missing " ++ show profileId)
+            bootstrapWorker = profile "bootstrap-secret-worker"
+            deliveryWorkers = profile "credential-provisioner-secret-workers"
+            workerProfileIds =
+              [ "bootstrap-secret-worker"
+              , "credential-provisioner-secret-workers"
+              ]
+            supersededPlan =
+              C.defaultResourcePlan
+                { C.rke2_reserved = C.ResourceVector 1000 2048 10240 1024
+                , C.workload_profiles =
+                    filter
+                      ((`notElem` workerProfileIds) . C.profile_id)
+                      (C.workload_profiles C.defaultResourcePlan)
+                }
+            compiled plan =
+              either (error . renderCompileError) id (compileResourcePlanUncertified plan)
+            causalTotal plan =
+              C.rke2_reserved plan
+                `C.plusResourceVector` C.eviction_floor plan
+                `C.plusResourceVector` planTotalDraw (compiled plan)
+            frozenScheduledRequestMilliCpu = 6945
+            restoredRedisAndWebsocketMilliCpu = 300
+            bootstrapWorkerMilliCpu = C.milli_cpu (C.request (C.resources bootstrapWorker))
+            supersededNodeAllocatableMilliCpu = 7000
+            correctedNodeAllocatableMilliCpu = 7500
+        C.resources bootstrapWorker `shouldBe` C.oneShotSecretWorkerEnvelope
+        C.resources deliveryWorkers `shouldBe` C.oneShotSecretWorkerEnvelope
+        C.replicas bootstrapWorker `shouldBe` 1
+        C.replicas deliveryWorkers `shouldBe` 2
+        C.workload_concurrency bootstrapWorker
+          `shouldBe` C.ExclusiveWindow C.oneShotSecretWorkerWindow
+        C.workload_concurrency deliveryWorkers
+          `shouldBe` C.ExclusiveWindow C.oneShotSecretWorkerWindow
+        C.validateOneShotSecretWorkerCapacity C.defaultResourcePlan `shouldBe` Right ()
+        C.validateOneShotSecretWorkerCapacity supersededPlan
+          `shouldBe` Left
+            "capacity.resource_plan must carry the exact one-shot worker profile `bootstrap-secret-worker`"
+        C.host_capacity C.defaultResourcePlan `shouldBe` C.host_capacity supersededPlan
+        causalTotal C.defaultResourcePlan `shouldBe` causalTotal supersededPlan
+        (frozenScheduledRequestMilliCpu + bootstrapWorkerMilliCpu)
+          `shouldSatisfy` (> supersededNodeAllocatableMilliCpu)
+        ( frozenScheduledRequestMilliCpu
+            + restoredRedisAndWebsocketMilliCpu
+            + bootstrapWorkerMilliCpu
+          )
+          `shouldSatisfy` (<= correctedNodeAllocatableMilliCpu)
+        compileResourcePlanUncertified C.defaultResourcePlan `shouldSatisfy` isRightOutcome
 
       it "makes a non-Guaranteed envelope unrepresentable for a Guaranteed demand" $ do
         let badPlan =

@@ -14,15 +14,26 @@ module Prodbox.ControlPlane.LocalClient
 
   --   All five are the one compiled 'controlPlaneListenPort'; exported so the
   --   unit suite can pin that against the constants rather than in a comment.
-    authorityBackupRemotePort
+    authorityBackupForwardTarget
+  , authorityBackupRemotePort
+  , lifecycleAuthorityForwardTarget
   , lifecycleAuthorityRemotePort
+  , providerWorkerForwardTarget
   , providerWorkerRemotePort
+  , targetSecretAgentForwardTarget
   , targetSecretAgentRemotePort
+  , tlsRetentionForwardTarget
   , tlsRetentionRemotePort
+  , localClientStartupProbePath
   , LocalLifecycleAuthorityError (..)
   , renderLocalLifecycleAuthorityError
   , withLocalLifecycleAuthorityClient
   , withLocalLifecycleAuthorityAuthenticatedTransport
+  , withLocalLifecycleAuthorityRetainedDeliveryAuthenticatedTransport
+  , withLocalLifecycleAuthorityTlsWorkflowAuthenticatedTransport
+  , lifecycleAuthorityHttpConfig
+  , lifecycleAuthorityRetainedDeliveryHttpConfig
+  , lifecycleAuthorityTlsWorkflowHttpConfig
   , LocalProviderWorkerError (..)
   , renderLocalProviderWorkerError
   , withLocalProviderWorkerClient
@@ -34,7 +45,11 @@ module Prodbox.ControlPlane.LocalClient
   , withTargetSecretAgentClientUsingEnvironment
   , withTargetSecretAgentAuthenticatedTransportUsingEnvironment
   , LocalAuthorityBackupError (..)
+  , AuthorityBackupForwardStartupObservation (..)
+  , classifyAuthorityBackupForwardStartup
+  , continueAuthorityBackupForwardAfterStartupWith
   , renderLocalAuthorityBackupError
+  , retryAuthorityBackupForwardWith
   , withLocalAuthorityBackupClient
   , withLocalAuthorityBackupAuthenticatedTransport
   , LocalTlsRetentionError (..)
@@ -61,6 +76,8 @@ import Network.Socket
   , tupleToHostAddress
   , withSocketsDo
   )
+import Prodbox.Capacity.RetainedMaterialDeliveryBudget qualified as RetainedMaterialDeliveryBudget
+import Prodbox.Capacity.TlsRetentionWorkflowBudget qualified as TlsRetentionWorkflowBudget
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientProviders
   , AuthenticatedClientTransport
@@ -86,22 +103,16 @@ import Prodbox.Http.Client
   , renderHttpError
   )
 import Prodbox.Infra.MinioBackend (resolveLocalKubeconfig)
-import Prodbox.Runtime.Role
-  ( RuntimeRole
-      ( AuthorityBackupRuntime
-      , LifecycleAuthorityRuntime
-      , ProviderWorkerRuntime
-      , TargetSecretAgentRuntime
-      , TlsRetentionRuntime
-      )
-  )
+import Prodbox.Runtime.Role (RuntimeRole (..))
 import Prodbox.Subprocess
-  ( BackgroundProcess
+  ( BackgroundProcess (..)
   , Subprocess (..)
   , startBackgroundProcess
   , stopBackgroundProcess
   )
 import System.Environment (getEnvironment)
+import System.IO (hGetLine)
+import System.Timeout (timeout)
 
 data LocalLifecycleAuthorityError
   = LocalLifecycleAuthorityKubeconfigFailed !String
@@ -127,7 +138,18 @@ renderLocalLifecycleAuthorityError err = case err of
 withLocalLifecycleAuthorityClient
   :: (ControlPlaneClient 'LifecycleAuthorityRuntime -> IO value)
   -> IO (Either LocalLifecycleAuthorityError value)
-withLocalLifecycleAuthorityClient action = do
+withLocalLifecycleAuthorityClient =
+  withLocalLifecycleAuthorityClientUsing lifecycleAuthorityClient
+
+withLocalLifecycleAuthorityClientUsing
+  :: ( Int
+       -> Either
+            ControlPlaneClientError
+            (ControlPlaneClient 'LifecycleAuthorityRuntime)
+     )
+  -> (ControlPlaneClient 'LifecycleAuthorityRuntime -> IO value)
+  -> IO (Either LocalLifecycleAuthorityError value)
+withLocalLifecycleAuthorityClientUsing buildClient action = do
   kubeconfigResult <- resolveLocalKubeconfig
   case kubeconfigResult of
     Left detail -> pure (Left (LocalLifecycleAuthorityKubeconfigFailed detail))
@@ -145,12 +167,12 @@ withLocalLifecycleAuthorityClient action = do
  where
   runWithForward _ (Left err) = pure (Left err)
   runWithForward localPort (Right _) = do
-    ready <- waitUntilReady localPort readinessAttempts
+    ready <- waitUntilStartupProbe LifecycleAuthorityRuntime localPort readinessAttempts
     case ready of
       Left detail ->
         pure (Left (LocalLifecycleAuthorityReadinessFailed detail))
       Right () ->
-        case lifecycleAuthorityClient localPort of
+        case buildClient localPort of
           Left err -> pure (Left (LocalLifecycleAuthorityClientInvalid err))
           Right client -> Right <$> action client
 
@@ -165,6 +187,30 @@ withLocalLifecycleAuthorityAuthenticatedTransport
   -> IO (Either LocalLifecycleAuthorityError value)
 withLocalLifecycleAuthorityAuthenticatedTransport bounds providers action =
   withLocalLifecycleAuthorityClient
+    (action . mkAuthenticatedClientTransport bounds providers)
+
+-- | Open the same exact Authority endpoint with only the response budget of
+-- the retained-delivery route widened to contain its persisted operation.
+withLocalLifecycleAuthorityRetainedDeliveryAuthenticatedTransport
+  :: AuthenticatedTransportBounds
+  -> AuthenticatedClientProviders IO
+  -> (AuthenticatedClientTransport 'LifecycleAuthorityRuntime -> IO value)
+  -> IO (Either LocalLifecycleAuthorityError value)
+withLocalLifecycleAuthorityRetainedDeliveryAuthenticatedTransport bounds providers action =
+  withLocalLifecycleAuthorityClientUsing
+    lifecycleAuthorityRetainedDeliveryClient
+    (action . mkAuthenticatedClientTransport bounds providers)
+
+-- | Open the same exact Authority endpoint with only the response budget of
+-- the closed TLS retention workflow widened to contain its longest program.
+withLocalLifecycleAuthorityTlsWorkflowAuthenticatedTransport
+  :: AuthenticatedTransportBounds
+  -> AuthenticatedClientProviders IO
+  -> (AuthenticatedClientTransport 'LifecycleAuthorityRuntime -> IO value)
+  -> IO (Either LocalLifecycleAuthorityError value)
+withLocalLifecycleAuthorityTlsWorkflowAuthenticatedTransport bounds providers action =
+  withLocalLifecycleAuthorityClientUsing
+    lifecycleAuthorityTlsWorkflowClient
     (action . mkAuthenticatedClientTransport bounds providers)
 
 data LocalProviderWorkerError
@@ -208,7 +254,7 @@ withLocalProviderWorkerClient action = do
  where
   runWithProviderForward _ (Left err) = pure (Left err)
   runWithProviderForward localPort (Right _) = do
-    ready <- waitUntilReady localPort readinessAttempts
+    ready <- waitUntilStartupProbe ProviderWorkerRuntime localPort readinessAttempts
     case ready of
       Left detail -> pure (Left (LocalProviderWorkerReadinessFailed detail))
       Right () -> case providerWorkerClient localPort of
@@ -273,7 +319,7 @@ withTargetSecretAgentClientUsingEnvironment environment action = do
  where
   runWithTargetForward _ (Left err) = pure (Left err)
   runWithTargetForward localPort (Right _) = do
-    ready <- waitUntilReady localPort readinessAttempts
+    ready <- waitUntilStartupProbe TargetSecretAgentRuntime localPort readinessAttempts
     case ready of
       Left detail ->
         pure (Left (LocalTargetSecretAgentReadinessFailed detail))
@@ -306,8 +352,14 @@ data LocalAuthorityBackupError
   = LocalAuthorityBackupKubeconfigFailed !String
   | LocalAuthorityBackupPortReservationFailed !String
   | LocalAuthorityBackupProcessStartFailed !String
-  | LocalAuthorityBackupReadinessFailed !String
+  | LocalAuthorityBackupLivenessFailed !String
   | LocalAuthorityBackupClientInvalid !ControlPlaneClientError
+  deriving stock (Eq, Show)
+
+data AuthorityBackupForwardStartupObservation
+  = AuthorityBackupForwardStartupTimedOut
+  | AuthorityBackupForwardStartupReadFailed
+  | AuthorityBackupForwardStartupLine !String
   deriving stock (Eq, Show)
 
 renderLocalAuthorityBackupError :: LocalAuthorityBackupError -> String
@@ -317,9 +369,9 @@ renderLocalAuthorityBackupError err = case err of
   LocalAuthorityBackupPortReservationFailed detail ->
     "reserve Authority Backup loopback port: " ++ detail
   LocalAuthorityBackupProcessStartFailed detail ->
-    "start Authority Backup Service port-forward: " ++ detail
-  LocalAuthorityBackupReadinessFailed detail ->
-    "Authority Backup Service is not ready: " ++ detail
+    "start Authority Backup Deployment port-forward: " ++ detail
+  LocalAuthorityBackupLivenessFailed detail ->
+    "Authority Backup listener is not live: " ++ detail
   LocalAuthorityBackupClientInvalid detail ->
     "construct Authority Backup client: " ++ show detail
 
@@ -337,21 +389,62 @@ withLocalAuthorityBackupClient action = do
           pure (Left (LocalAuthorityBackupPortReservationFailed detail))
         Right localPort -> do
           environment <- homeKubectlEnvironment kubeconfig
-          bracket
+          retryAuthorityBackupForwardWith
+            readinessAttempts
+            (threadDelay 250000)
             (startAuthorityBackupForward environment localPort)
             cleanupAuthorityBackupForward
             (runWithAuthorityBackupForward localPort)
  where
-  runWithAuthorityBackupForward _ (Left err) = pure (Left err)
-  runWithAuthorityBackupForward localPort (Right _) = do
-    ready <- waitUntilReady localPort readinessAttempts
+  runWithAuthorityBackupForward localPort process =
+    continueAuthorityBackupForwardAfterStartupWith
+      (waitForAuthorityBackupForwardStartup localPort process)
+      (runAfterAuthorityBackupForwardStartup localPort)
+  runAfterAuthorityBackupForwardStartup localPort = do
+    ready <- waitUntilStartupProbe AuthorityBackupRuntime localPort 1
     case ready of
       Left detail ->
-        pure (Left (LocalAuthorityBackupReadinessFailed detail))
+        pure (Left (LocalAuthorityBackupLivenessFailed detail))
       Right () ->
         case authorityBackupClient localPort of
           Left err -> pure (Left (LocalAuthorityBackupClientInvalid err))
           Right client -> Right <$> action client
+
+continueAuthorityBackupForwardAfterStartupWith
+  :: IO (Either LocalAuthorityBackupError ())
+  -> IO (Either LocalAuthorityBackupError value)
+  -> IO (Either LocalAuthorityBackupError value)
+continueAuthorityBackupForwardAfterStartupWith awaitStartup continue = do
+  startup <- awaitStartup
+  case startup of
+    Left err -> pure (Left err)
+    Right () -> continue
+
+-- | Retry the complete disposable Authority Backup port-forward lifecycle.
+-- Only listener liveness is pending: setup/client failures are terminal, and
+-- the user action is inside a successful attempt so its result is never
+-- repeated. 'bracket' retires the current child before the inter-attempt delay.
+retryAuthorityBackupForwardWith
+  :: Int
+  -> IO ()
+  -> IO (Either LocalAuthorityBackupError process)
+  -> (Either LocalAuthorityBackupError process -> IO ())
+  -> (process -> IO (Either LocalAuthorityBackupError value))
+  -> IO (Either LocalAuthorityBackupError value)
+retryAuthorityBackupForwardWith attemptBudget delay acquire release use =
+  go (max 1 attemptBudget)
+ where
+  go remaining = do
+    result <-
+      bracket acquire release runStarted
+    case result of
+      Left err@(LocalAuthorityBackupLivenessFailed _)
+        | remaining > 1 -> delay >> go (remaining - 1)
+        | otherwise -> pure (Left err)
+      _ -> pure result
+  runStarted started = case started of
+    Left err -> pure (Left err)
+    Right process -> use process
 
 withLocalAuthorityBackupAuthenticatedTransport
   :: AuthenticatedTransportBounds
@@ -403,7 +496,7 @@ withLocalTlsRetentionClient action = do
  where
   runWithTlsRetentionForward _ (Left err) = pure (Left err)
   runWithTlsRetentionForward localPort (Right _) = do
-    ready <- waitUntilReady localPort readinessAttempts
+    ready <- waitUntilStartupProbe TlsRetentionRuntime localPort readinessAttempts
     case ready of
       Left detail -> pure (Left (LocalTlsRetentionReadinessFailed detail))
       Right () -> case tlsRetentionClient localPort of
@@ -425,6 +518,9 @@ lifecycleAuthorityNamespace = "lifecycle-authority"
 lifecycleAuthorityService :: String
 lifecycleAuthorityService = "lifecycle-authority"
 
+lifecycleAuthorityForwardTarget :: String
+lifecycleAuthorityForwardTarget = "service/" ++ lifecycleAuthorityService
+
 -- | Sprint 3.35: all five per-role ports are the one compiled
 -- 'controlPlaneListenPort'. They stay separately named because each is read
 -- beside its own namespace/service pair, but they no longer restate the value:
@@ -439,6 +535,9 @@ targetSecretAgentNamespace = "target-secret-agent"
 targetSecretAgentService :: String
 targetSecretAgentService = "target-secret-agent"
 
+targetSecretAgentForwardTarget :: String
+targetSecretAgentForwardTarget = "service/" ++ targetSecretAgentService
+
 targetSecretAgentRemotePort :: Int
 targetSecretAgentRemotePort = controlPlaneListenPort
 
@@ -448,14 +547,23 @@ providerWorkerNamespace = "provider-worker"
 providerWorkerService :: String
 providerWorkerService = "provider-worker"
 
+providerWorkerForwardTarget :: String
+providerWorkerForwardTarget = "service/" ++ providerWorkerService
+
 providerWorkerRemotePort :: Int
 providerWorkerRemotePort = controlPlaneListenPort
 
 authorityBackupNamespace :: String
 authorityBackupNamespace = "authority-backup"
 
-authorityBackupService :: String
-authorityBackupService = "authority-backup"
+authorityBackupDeployment :: String
+authorityBackupDeployment = "authority-backup"
+
+-- Genesis must reach the live process before credential-backed readiness can
+-- publish it as a Service endpoint. The chart's Recreate strategy makes the
+-- Deployment selector single-generation during this pre-readiness interval.
+authorityBackupForwardTarget :: String
+authorityBackupForwardTarget = "deployment/" ++ authorityBackupDeployment
 
 authorityBackupRemotePort :: Int
 authorityBackupRemotePort = controlPlaneListenPort
@@ -465,6 +573,9 @@ tlsRetentionNamespace = "tls-retention"
 
 tlsRetentionService :: String
 tlsRetentionService = "tls-retention"
+
+tlsRetentionForwardTarget :: String
+tlsRetentionForwardTarget = "service/" ++ tlsRetentionService
 
 tlsRetentionRemotePort :: Int
 tlsRetentionRemotePort = controlPlaneListenPort
@@ -485,7 +596,7 @@ startForward environment localPort = do
             [ "--namespace"
             , lifecycleAuthorityNamespace
             , "port-forward"
-            , "service/" ++ lifecycleAuthorityService
+            , lifecycleAuthorityForwardTarget
             , show localPort ++ ":" ++ show lifecycleAuthorityRemotePort
             ]
         , subprocessEnvironment = Just environment
@@ -516,7 +627,7 @@ startTargetForward environment localPort = do
             [ "--namespace"
             , targetSecretAgentNamespace
             , "port-forward"
-            , "service/" ++ targetSecretAgentService
+            , targetSecretAgentForwardTarget
             , show localPort ++ ":" ++ show targetSecretAgentRemotePort
             ]
         , subprocessEnvironment = Just environment
@@ -547,7 +658,7 @@ startProviderForward environment localPort = do
             [ "--namespace"
             , providerWorkerNamespace
             , "port-forward"
-            , "service/" ++ providerWorkerService
+            , providerWorkerForwardTarget
             , show localPort ++ ":" ++ show providerWorkerRemotePort
             ]
         , subprocessEnvironment = Just environment
@@ -578,7 +689,7 @@ startAuthorityBackupForward environment localPort = do
             [ "--namespace"
             , authorityBackupNamespace
             , "port-forward"
-            , "service/" ++ authorityBackupService
+            , authorityBackupForwardTarget
             , show localPort ++ ":" ++ show authorityBackupRemotePort
             ]
         , subprocessEnvironment = Just environment
@@ -596,6 +707,55 @@ cleanupAuthorityBackupForward result = case result of
   Left _ -> pure ()
   Right process -> stopBackgroundProcess process
 
+waitForAuthorityBackupForwardStartup
+  :: Int
+  -> BackgroundProcess
+  -> IO (Either LocalAuthorityBackupError ())
+waitForAuthorityBackupForwardStartup localPort process =
+  case backgroundStdoutHandle process of
+    Nothing ->
+      pure
+        ( classifyAuthorityBackupForwardStartup
+            localPort
+            AuthorityBackupForwardStartupReadFailed
+        )
+    Just stdoutHandle -> do
+      observed <-
+        timeout
+          authorityBackupForwardStartupTimeoutMicros
+          (try (hGetLine stdoutHandle) :: IO (Either IOException String))
+      pure
+        ( classifyAuthorityBackupForwardStartup
+            localPort
+            ( case observed of
+                Nothing -> AuthorityBackupForwardStartupTimedOut
+                Just (Left _) -> AuthorityBackupForwardStartupReadFailed
+                Just (Right line) -> AuthorityBackupForwardStartupLine line
+            )
+        )
+
+classifyAuthorityBackupForwardStartup
+  :: Int
+  -> AuthorityBackupForwardStartupObservation
+  -> Either LocalAuthorityBackupError ()
+classifyAuthorityBackupForwardStartup localPort observation =
+  case observation of
+    AuthorityBackupForwardStartupTimedOut -> refused "startup acknowledgement timed out"
+    AuthorityBackupForwardStartupReadFailed -> refused "startup acknowledgement unavailable"
+    AuthorityBackupForwardStartupLine line
+      | line `elem` expectedLines -> Right ()
+      | otherwise -> refused "startup acknowledgement did not match the compiled loopback mapping"
+ where
+  refused = Left . LocalAuthorityBackupLivenessFailed
+  expectedLines =
+    [ "Forwarding from 127.0.0.1:" ++ show localPort ++ mappingSuffix
+    , "Forwarding from [::1]:" ++ show localPort ++ mappingSuffix
+    ]
+  mappingSuffix = " -> " ++ show authorityBackupRemotePort
+
+authorityBackupForwardStartupTimeoutMicros :: Int
+authorityBackupForwardStartupTimeoutMicros = 1000000
+
 startTlsRetentionForward
   :: [(String, String)]
   -> Int
@@ -609,7 +769,7 @@ startTlsRetentionForward environment localPort = do
             [ "--namespace"
             , tlsRetentionNamespace
             , "port-forward"
-            , "service/" ++ tlsRetentionService
+            , tlsRetentionForwardTarget
             , show localPort ++ ":" ++ show tlsRetentionRemotePort
             ]
         , subprocessEnvironment = Just environment
@@ -627,21 +787,34 @@ cleanupTlsRetentionForward result = case result of
   Left _ -> pure ()
   Right process -> stopBackgroundProcess process
 
-waitUntilReady :: Int -> Int -> IO (Either String ())
-waitUntilReady localPort remaining = do
+waitUntilStartupProbe :: RuntimeRole -> Int -> Int -> IO (Either String ())
+waitUntilStartupProbe role localPort remaining = do
   result <-
     httpRequestNoBody
       readinessHttpConfig
       "GET"
       []
-      (loopbackEndpoint localPort ++ "/readyz")
+      (loopbackEndpoint localPort ++ localClientStartupProbePath role)
   case result of
     Right () -> pure (Right ())
     Left err
       | remaining <= 1 -> pure (Left (renderHttpError err))
       | otherwise -> do
           threadDelay 250000
-          waitUntilReady localPort (remaining - 1)
+          waitUntilStartupProbe role localPort (remaining - 1)
+
+-- | Authority Backup is contacted during genesis before its S3 credential
+-- exists, so that one local client waits only for listener liveness. Every
+-- other role retains capability-backed readiness as its startup barrier.
+localClientStartupProbePath :: RuntimeRole -> String
+localClientStartupProbePath role = case role of
+  BootstrapBroker -> "/readyz"
+  GatewayRuntime -> "/readyz"
+  LifecycleAuthorityRuntime -> "/readyz"
+  ProviderWorkerRuntime -> "/readyz"
+  AuthorityBackupRuntime -> "/healthz"
+  TlsRetentionRuntime -> "/readyz"
+  TargetSecretAgentRuntime -> "/readyz"
 
 readinessHttpConfig :: HttpConfig
 readinessHttpConfig =
@@ -655,7 +828,49 @@ lifecycleAuthorityClient
 lifecycleAuthorityClient localPort = do
   endpoint <- mkLifecycleAuthorityEndpoint (Text.pack (loopbackEndpoint localPort))
   newControlPlaneClient
-    defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
+    lifecycleAuthorityHttpConfig
+    (100 * 1024 * 1024)
+    endpoint
+
+lifecycleAuthorityHttpConfig :: HttpConfig
+lifecycleAuthorityHttpConfig =
+  defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
+
+lifecycleAuthorityRetainedDeliveryHttpConfig :: HttpConfig
+lifecycleAuthorityRetainedDeliveryHttpConfig =
+  defaultHttpConfig
+    { httpRequestTimeoutMicros =
+        RetainedMaterialDeliveryBudget.retainedMaterialDeliveryResponseTimeoutMicros
+    }
+
+lifecycleAuthorityRetainedDeliveryClient
+  :: Int
+  -> Either
+       ControlPlaneClientError
+       (ControlPlaneClient 'LifecycleAuthorityRuntime)
+lifecycleAuthorityRetainedDeliveryClient localPort = do
+  endpoint <- mkLifecycleAuthorityEndpoint (Text.pack (loopbackEndpoint localPort))
+  newControlPlaneClient
+    lifecycleAuthorityRetainedDeliveryHttpConfig
+    (100 * 1024 * 1024)
+    endpoint
+
+lifecycleAuthorityTlsWorkflowHttpConfig :: HttpConfig
+lifecycleAuthorityTlsWorkflowHttpConfig =
+  defaultHttpConfig
+    { httpRequestTimeoutMicros =
+        TlsRetentionWorkflowBudget.tlsRetentionWorkflowResponseTimeoutMicros
+    }
+
+lifecycleAuthorityTlsWorkflowClient
+  :: Int
+  -> Either
+       ControlPlaneClientError
+       (ControlPlaneClient 'LifecycleAuthorityRuntime)
+lifecycleAuthorityTlsWorkflowClient localPort = do
+  endpoint <- mkLifecycleAuthorityEndpoint (Text.pack (loopbackEndpoint localPort))
+  newControlPlaneClient
+    lifecycleAuthorityTlsWorkflowHttpConfig
     (100 * 1024 * 1024)
     endpoint
 

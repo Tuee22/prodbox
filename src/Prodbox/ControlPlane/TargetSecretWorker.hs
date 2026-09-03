@@ -12,7 +12,9 @@
 -- directly to 'executeTargetWorkerMaterialization'.
 module Prodbox.ControlPlane.TargetSecretWorker
   ( TargetWorkerIngressSchema (..)
+  , allTargetWorkerIngressSchemas
   , targetWorkerSchemaToken
+  , parseTargetWorkerIngressSchema
   , targetWorkerSchemaForTarget
   , targetWorkerSchemaAcceptsTarget
   , TargetWorkerImageDigest
@@ -47,6 +49,8 @@ module Prodbox.ControlPlane.TargetSecretWorker
   , RawTargetWorkerPodObservation (..)
   , TargetWorkerAttestation
   , TargetWorkerAttestationError (..)
+  , allTargetWorkerAttestationErrors
+  , renderTargetWorkerAttestationError
   , attestTargetWorkerPod
   , targetWorkerAttestedJobUid
   , targetWorkerAttestedPodUid
@@ -194,8 +198,11 @@ data TargetWorkerIngressSchema
   | TargetWorkerFederationRecoveryPrepare
   | TargetWorkerFederationRecoveryObserve
   | TargetWorkerFederationRecoveryCommit
-  deriving stock (Eq, Ord, Show, Generic)
+  deriving stock (Bounded, Enum, Eq, Ord, Show, Generic)
   deriving anyclass (Serialise)
+
+allTargetWorkerIngressSchemas :: [TargetWorkerIngressSchema]
+allTargetWorkerIngressSchemas = [minBound .. maxBound]
 
 targetWorkerSchemaToken :: TargetWorkerIngressSchema -> Text
 targetWorkerSchemaToken schema = case schema of
@@ -212,6 +219,16 @@ targetWorkerSchemaToken schema = case schema of
   TargetWorkerFederationRecoveryPrepare -> "federation-recovery-prepare"
   TargetWorkerFederationRecoveryObserve -> "federation-recovery-observe"
   TargetWorkerFederationRecoveryCommit -> "federation-recovery-commit"
+
+parseTargetWorkerIngressSchema :: Text -> Either Text TargetWorkerIngressSchema
+parseTargetWorkerIngressSchema raw =
+  case filter ((== raw) . targetWorkerSchemaToken) allTargetWorkerIngressSchemas of
+    [schema] -> Right schema
+    _ ->
+      Left
+        ( "Target worker schema must be exactly one of: "
+            <> Text.intercalate ", " (map targetWorkerSchemaToken allTargetWorkerIngressSchemas)
+        )
 
 targetWorkerSchemaForTarget
   :: TargetSecretId -> Either TargetWorkerIntentError TargetWorkerIngressSchema
@@ -521,6 +538,47 @@ data TargetWorkerAttestationError
   | TargetWorkerAttestationRestarted
   | TargetWorkerAttestationDeleting
   deriving stock (Eq, Show)
+
+allTargetWorkerAttestationErrors :: [TargetWorkerAttestationError]
+allTargetWorkerAttestationErrors =
+  [ TargetWorkerAttestationDeadlineReached
+  , TargetWorkerAttestationJobMismatch
+  , TargetWorkerAttestationJobUidInvalid
+  , TargetWorkerAttestationPodNameInvalid
+  , TargetWorkerAttestationPodUidInvalid
+  , TargetWorkerAttestationImageMismatch
+  , TargetWorkerAttestationServiceAccountMismatch
+  , TargetWorkerAttestationServiceAccountUidInvalid
+  , TargetWorkerAttestationTargetMismatch
+  , TargetWorkerAttestationAgentIdentityMismatch
+  , TargetWorkerAttestationSchemaMismatch
+  , TargetWorkerAttestationRequestMismatch
+  , TargetWorkerAttestationDeadlineMismatch
+  , TargetWorkerAttestationNotRunning
+  , TargetWorkerAttestationNotReady
+  , TargetWorkerAttestationRestarted
+  , TargetWorkerAttestationDeleting
+  ]
+
+renderTargetWorkerAttestationError :: TargetWorkerAttestationError -> Text
+renderTargetWorkerAttestationError err = case err of
+  TargetWorkerAttestationDeadlineReached -> "deadline-reached"
+  TargetWorkerAttestationJobMismatch -> "job-mismatch"
+  TargetWorkerAttestationJobUidInvalid -> "job-uid-invalid"
+  TargetWorkerAttestationPodNameInvalid -> "pod-name-invalid"
+  TargetWorkerAttestationPodUidInvalid -> "pod-uid-invalid"
+  TargetWorkerAttestationImageMismatch -> "image-mismatch"
+  TargetWorkerAttestationServiceAccountMismatch -> "service-account-mismatch"
+  TargetWorkerAttestationServiceAccountUidInvalid -> "service-account-uid-invalid"
+  TargetWorkerAttestationTargetMismatch -> "target-mismatch"
+  TargetWorkerAttestationAgentIdentityMismatch -> "agent-identity-mismatch"
+  TargetWorkerAttestationSchemaMismatch -> "schema-mismatch"
+  TargetWorkerAttestationRequestMismatch -> "request-mismatch"
+  TargetWorkerAttestationDeadlineMismatch -> "deadline-mismatch"
+  TargetWorkerAttestationNotRunning -> "not-running"
+  TargetWorkerAttestationNotReady -> "not-ready"
+  TargetWorkerAttestationRestarted -> "restarted"
+  TargetWorkerAttestationDeleting -> "deleting"
 
 attestTargetWorkerPod
   :: AuthorityTime

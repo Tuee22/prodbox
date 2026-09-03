@@ -22,14 +22,3837 @@ the same queue.
 
 The queue is in **execution order**, which is numerical order except where a declared backward
 dependency licenses the deviation ([Standard N.2](development_plan_standards.md#n-phase-independence-and-execution-order)).
-No current open row requires such a deviation.
 
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
-| 1 | `2.75` | 2 | Next | — |
-| 2 | `6.5` | 6 | Parked | — |
+| 1 | `6.5` | 6 | Next | — |
 
-**Resume at Sprint `2.75`: provisioner-accessor revocation needs an exact cause.** Diagnostic-only
+**Resume at Sprint `6.5`: activate and qualify the typed teardown single-writer cutover.**
+Sprints `2.129` through `2.133` are Done and live-proven on their owned surfaces.
+Generation 150 publishes local runtime image
+`sha256:2214fe3e...` and registry manifest `sha256:91cb4717...`, then exits at the expected
+rollout-transition config timeout. Unchanged Generation 151 reads back the current config, rolls
+Provider Worker revision 2 onto that exact image, and proves its zero-restart Ready Pod plus Service
+endpoint `10.42.0.195:8600`. The first Provider readiness request still reaches exact
+`HttpTimeout \"connection timeout\"`; the deployed eleven-stage diagnostic emits no
+`socket-ingress`. The exact `provider-worker-isolation` read-back explains why: its only Provider
+port ingress peer selects namespace `provider-worker`, excluding the registered caller in namespace
+`lifecycle-authority`. Stable counterexample
+`PROVIDER-WORKER-LIFECYCLE-AUTHORITY-INGRESS-DENIED-2026-08-31` licenses one exact
+namespace-plus-Pod ingress peer and no broader behavior change. Local Sprint-2.129 closure passes
+focused **25/25**, primary **4753/4753**, auxiliaries **27/33/33**, and canonical `prodbox dev
+check`; its gate-built binary is exact at `sha256:7ba6d449...`. The exact ingress correction now
+renders only the namespace-local peer plus the `lifecycle-authority` namespace joined to the
+`prodbox-lifecycle-authority` Pod label. Focused **26/26**, primary **4754/4754**, auxiliaries
+**27/33/33**, and canonical `dev check` pass. Generation 152 reads back that exact policy as
+generation 2 while holding the exact binary, image, Service, and Ready endpoint constant. The
+request still times out without `socket-ingress`; reciprocal policy read-back proves
+`lifecycle-authority-isolation` contains no Provider Worker egress destination. Stable
+counterexample `PROVIDER-WORKER-LIFECYCLE-AUTHORITY-EGRESS-DENIED-2026-08-31` licenses only the
+matching `provider-worker` namespace plus `prodbox-provider-worker` Pod egress peer. That exact
+rule and the paired-policy regression are now local-green at focused **26/26**, primary
+**4754/4754**, auxiliaries **27/33/33**, and canonical `dev check`; unchanged-command live proof
+Generation 153 reads back both directional policy generations 2 and admits the request at
+14:06:43. The trace completes through credential binding and ends at
+`capability-execution/started`; the client reports the distinct response timeout, and Kubernetes
+records the exact Provider container `OOMKilled` with exit 137 under its 112 MiB limit before a
+single successful restart. Stable counterexample
+`PROVIDER-WORKER-CAPABILITY-EXECUTION-OOM-112MIB-2026-08-31` licenses only a measured change to the
+typed Provider Worker resource/runtime-memory owner. The packaged AWS CLI measures 74,052 KiB peak;
+the plan rounds it to one 80 MiB slot and physically serializes every AWS/Pulumi launch across the
+four request workers and independent readiness observer. The resulting `100m / 176Mi`
+Guaranteed-QoS envelope proves `64 + 16 + 80 + 8 + 8 = 176 MiB`, projects
+`+RTS -M67108864 -RTS`, keeps the complete portable standing-workload sum exactly within its 12,800
+MiB allocatable ceiling, and adds a 30-second/output-bounded AWS CLI runner. Focused
+runtime-memory/capacity/chart regressions pass **17/17**, the complete primary suite passes
+**4758/4758**, and auxiliaries pass **27/33/33**. Repository policy, pinned Fourmolu, HLint
+(`No hints`), Cabal formatting, warning-clean all-target compilation, generated Dhall schemas,
+generated docs, docs drift, and binary-sibling config validation pass; canonical `prodbox dev
+check` exits 0. The gate-built binary is exact at
+`sha256:1c25a5648d10ea2ac5d04b5926ead7a4b73dbe1f29d54b5ef2e46eb4281e1145`. Both installed
+`cli` and `env` entrypoints reproduce only Sprint `5.38`'s already-registered fake-tool
+counterexample at **55/63**: the four environment cases pass, and all eight failures occur in
+fixture setup before any Sprint-2.132-owned Provider assertion. The unchanged supported live
+reconcile is the only remaining Sprint `2.132` work. Generation 154 builds local image
+`sha256:0e6e645e03c74b41582648160721478278b579379d1861aea556a81e447b44ae` in 1123.7 seconds,
+publishes registry manifest
+`sha256:cd334b2858cee7f7f8cb7a5529c518c8722f3bf11a209560dbbaf43cbd5057c1`, imports OCI manifest
+`sha256:72de7fd0410fdcad2a28c8de10cda0ef33f66f4be9225c6972bfc440bfb1ee26` in 94.1 seconds, and
+removes only the superseded local image `sha256:2214fe3e...`. It rolls Lifecycle Authority
+generation 30 to a zero-restart Ready Pod, then exits non-zero at the expected rollout-transition
+config observation timeout before reconciling Provider Worker's new resources. Unchanged
+Generation 155 reads back the in-force Authority config and deploys Provider Worker generation 3
+on the exact new image with `100m / 176Mi`, `+RTS -M67108864 -RTS`, zero restarts, no prior
+termination, and 52 MiB observed after the request. The protected trace enters at
+19:56:04.557Z, completes capability execution at 19:56:14.869Z, and completes the socket write at
+19:56:14.960Z. That closes Sprint `2.132`: execution no longer OOMs and the complete response path
+is proven. Lifecycle Authority nevertheless reports response timeout because its Provider client
+still uses the generic 10-second HTTP default, shorter than this 10.40-second observed response and
+the Provider's typed five-minute child schedule. Stable counterexample
+`PROVIDER-WORKER-RESPONSE-AFTER-DEFAULT-HTTP-DEADLINE-2026-08-31` is registered under Sprint
+`2.133` before changing the client budget. One capacity-level budget now owns the 300-second
+maximum child deadline plus a 30-second bounded protocol margin and derives the Provider-only
+330-second HTTP timeout. Capacity validation rejects 300,001 ms; the generic ten-second default
+and every sibling client remain unchanged. Focused runtime-memory/transport regressions pass
+**18/18**; primary **4759/4759** and auxiliaries **27/33/33** pass. Generated schemas/docs/config,
+documentation/diff, repository policy, pinned Fourmolu, HLint (`No hints`), Cabal formatting,
+warning-clean all-target compilation, and canonical `prodbox dev check` pass. The exact gate-built
+binary is `sha256:3895099483b8a08616bde0ef734a8168cdee913622313c59c2cdea6778931a2b`; only the
+unchanged-command live proof remains. Generation 156 builds local image
+`sha256:d15dc2f66ec1d3707dd257265ab4ccbb98977590049f9db735da2cc97455d5b9` in 1138.6 seconds,
+publishes registry manifest
+`sha256:0c7dcb853832b998ea3aed9911c5edd3b0b5e12e87a059961389a9632aa1f76c`, imports OCI manifest
+`sha256:923b10116be83f05fb1678a8efd29d39f1a444172f2ec3719111fbfd90c4cee0` in 88.6 seconds, and
+removes only Generation 154's superseded local image `sha256:0e6e645e...`. It rolls Lifecycle
+Authority onto the new image, then exits at the expected rollout-transition config observation
+timeout before the unchanged-generation read-back. Generation 157 repeats the supported command
+unchanged, reads back the current Authority config, and reuses the exact image, registry manifest,
+and containerd import. Provider Worker deployment generation 4 is Ready with zero restarts, exact
+`100m / 176Mi` request/limit, `+RTS -M67108864 -RTS`, and image ID `sha256:d15dc2f...`. Its
+protected trace enters at 21:00:44.290Z, completes capability execution at 21:00:51.946Z, and
+completes the socket write at 21:00:51.950Z. The client receives that response, the reconcile
+advances through Gateway and TLS-retention, and the unchanged command exits 0. Sprint `2.133` and
+Phase 2 therefore reclose. Sprint `5.38` now owns the already-registered installed-suite fixture
+drift: both `cli` and `env` currently reach **55/63**, with eight setup failures caused by incomplete
+fake Helm status and fake Docker runtime-image inventory projections. The Helm defect remains Sprint
+`5.38`'s exact surface. Stable counterexample
+`FAKE-RKE2-DOCKER-RUNTIME-RETENTION-INVENTORY-2026-08-31` is separately registered under Sprint
+`5.39` before changing the fake Docker interpreter: production issues its closed, machine-formatted
+`docker image ls --filter dangling=true` observation, while the fake handles only `image inspect`,
+exits non-zero, and is correctly classified as a malformed/unobservable retention inventory.
+Sprint `5.38` is Done: the generic fake derives exact deployed or absent status from its explicit
+release inventory, and the RKE2 fake returns exact absence for all non-Harbor releases while
+preserving Harbor's present/uninstall/absent transition. The focused installed-boundary case passes
+**1/1** in 22.44 seconds. Both complete installed entrypoints advance from **55/63** to **57/63**
+(`cli` in 208.43 seconds, `env` in 210.16 seconds); their six remaining failures all carry only
+Sprint `5.39`'s exact managed-runtime-image-retention diagnostic, and the four environment cases
+pass. The primary unit suite remains **4759/4759**, auxiliaries **27/33/33**, and canonical
+`prodbox dev check` passes with pinned formatting, HLint `No hints`, and warning-clean all-target
+compilation.
+The Sprint-`5.39` correction then crosses its registered boundary: a seeded canonical managed
+dangling image is removed exactly once, read-back is empty, and the installed RKE2 reconcile
+advances through Bootstrap Broker, Target Agent, and Lifecycle Authority. It exposes the distinct
+later counterexample
+`FAKE-RKE2-CREDENTIAL-PROVISIONER-SUBSTRATE-OBSERVATION-EMPTY-2026-08-31`, registered under Sprint
+`5.40` before changing the fake Kubernetes interpreter. Production applies the nine-object
+Credential Provisioner substrate and independently runs
+`kubectl get --filename=- --output=json --ignore-not-found=true`; the fake has no `--filename=-`
+resource arm, returns exit-zero empty output, and production correctly refuses it as invalid JSON.
+Sprint `5.39` is Done: a focused process-boundary case passes **1/1**, proving the default empty
+inventory and a canonical populated/remove/empty-read-back transition through production's exact
+arguments and classifier. Both complete installed entrypoints remain **57/63** (`cli` in 407.66
+seconds, `env` in 405.58 seconds); every one of their six failures crosses Docker retention and
+stops only at Sprint `5.40`'s registered Credential Provisioner substrate observation. All four
+environment cases pass. Primary unit **4759/4759**, auxiliaries **27/33/33**, documentation/diff,
+pinned Fourmolu, HLint (`No hints`), warning-clean all-target compilation, and canonical `prodbox
+dev check` pass. Execution advances to Sprint `5.40`.
+The Sprint-`5.40` stored apply/read-back correction then crosses its registered boundary and admits
+the exact nine-object projection. The installed RKE2 reconcile advances to Authority Backup and
+exposes the distinct later counterexample
+`FAKE-RKE2-DOCKER-REPOSITORY-MANIFEST-INVENTORY-2026-08-31`, registered under Sprint `5.41`
+before changing the fake Docker interpreter. Production separately observes the local rollout token
+with `docker image inspect --format {{.Id}}` and the registry-resolvable manifest identity with
+`docker image inspect --format {{json .RepoDigests}}`. The fake returns its plain config-digest line
+for both formats; the latter is not a JSON repository-digest inventory, so production correctly
+leaves the immutable repository manifest digest absent.
+Sprint `5.40` is Done: the focused process-boundary case passes **1/1** in 15.79 seconds, proving
+absent state refuses, exact apply persists the nine-object manifest, exact get independently reads
+the stored bytes and passes the production comparator, and malformed stored bytes remain a parse
+refusal. Both complete installed entrypoints stay **57/63** (`cli` in 397.28 seconds, `env` in
+396.31 seconds); every affected case crosses the substrate observation and stops only at Sprint
+`5.41`'s registered repository-manifest refusal, while all four environment cases pass. Primary
+unit **4759/4759**, auxiliaries **27/33/33**, documentation/diff, pinned Fourmolu, HLint (`No
+hints`), warning-clean all-target compilation, and canonical `prodbox dev check` pass. Execution
+advances to Sprint `5.41`.
+The Sprint-`5.41` format-specific image correction then crosses its registered boundary. The
+installed RKE2 reconcile reaches the caller-bound Authority Backup port-forward, but the fake
+recognizes only the obsolete `service/authority-backup` target while production requests
+`deployment/authority-backup`. The exact request therefore enters the silent generic-forward arm,
+starting neither the loopback server nor kubectl's exact forwarding acknowledgement. Production
+correctly refuses before the HTTP probe and exhausts its bounded liveness retries in 335.60 seconds
+with `LocalAuthorityBackupLivenessFailed "startup acknowledgement timed out"`. Stable
+counterexample `FAKE-RKE2-AUTHORITY-BACKUP-PORT-FORWARD-ACK-MISSING-2026-08-31` is registered
+under Sprint `5.42` before changing the fake Kubernetes interpreter.
+Sprint `5.41` is Done: the focused process-boundary case passes **1/1** in 16.96 seconds and proves
+distinct canonical `{{.Id}}` and JSON repository-digest shapes plus exact manifest selection. Both
+complete installed entrypoints stay **57/63** (`cli` in 2210.33 seconds, `env` in 2206.36 seconds);
+all six failures cross repository-manifest resolution and end only at Sprint `5.42`'s registered
+missing acknowledgement, while every unaffected case and all four environment cases pass. Primary
+unit **4759/4759**, auxiliaries **27/33/33**, documentation/diff, pinned Fourmolu, HLint (`No
+hints`), warning-clean all-target compilation, and canonical `prodbox dev check` pass. Execution
+advances to Sprint `5.42`.
+The Sprint-`5.42` exact target/acknowledgement correction crosses the registered boundary, but the
+fake writes the line before `exec` binds the fixture listener. Production correctly treats the
+acknowledgement as proof the forward is already live and makes its one immediate HTTP probe, which
+returns connection refused. The bounded installed reconcile ends in 95.64 seconds at
+`LocalAuthorityBackupLivenessFailed "HTTP connection failure: ... Connection refused"`. Stable
+counterexample `FAKE-RKE2-AUTHORITY-BACKUP-ACK-BEFORE-LISTENER-2026-08-31` is registered under
+Sprint `5.43` before changing fake startup ordering.
+Sprint `5.42` is Done: the exact `deployment/authority-backup` target derives both ports from the
+requested mapping, emits the exact loopback acknowledgement consumed by production's classifier,
+and explicitly refuses the obsolete Service target. The focused process-boundary case passes
+**1/1** in 16.13 seconds. Both complete installed entrypoints remain **57/63** (`cli` in 772.44
+seconds, `env` in 765.62 seconds); all six failures cross target and acknowledgement classification
+and stop only at Sprint `5.43`'s registered pre-listener acknowledgement refusal, while every
+unaffected case and all four environment cases pass. Primary unit **4759/4759**, auxiliaries
+**27/33/33**, documentation/diff, pinned Fourmolu, HLint (`No hints`), warning-clean all-target
+compilation, and canonical `prodbox dev check` pass. Execution advances to Sprint `5.43`.
+Sprint `5.43` and Phase 5 are Done. The fake owns the Authority Backup fixture server as a child,
+proves `/readyz` on the exact requested loopback port before writing the kubectl acknowledgement,
+and traps termination to retire and wait for that child. The focused immediate-probe/teardown case
+passes **1/1** in 14.56 seconds, and the full installed RKE2 reconcile/delete case passes **1/1**
+in 39.41 seconds. Both complete installed entrypoints now pass **63/63** (`cli` in 430.89 seconds,
+`env` in 425.66 seconds). Primary unit **4759/4759**, auxiliaries **27/33/33**,
+documentation/diff, pinned Fourmolu, HLint (`No hints`), warning-clean all-target compilation, and
+canonical `prodbox dev check` pass. No later counterexample remains, so execution advances in
+numerical order to Sprint `6.5`.
+Sprint `6.5`'s pre-activation code-local gate now passes after adding the evidence-schema occurrence
+of `runNativeDeleteCascade` to the exact bounded legacy inventory. The first live candidate command,
+cycle `pre-1`, builds runtime image `sha256:5789285c...`, publishes registry manifest
+`sha256:43583754...`, and imports it into RKE2 before stopping prior to AWS harness setup. Authority
+Backup is applied without Helm waiting; the graph then attempts backup admission before observing
+the requested Deployment revision. The client times out while the Recreate rollout is in flight,
+and the new Pod becomes Ready immediately afterward. Stable counterexample
+`AUTHORITY-BACKUP-ROLLOUT-USE-BEFORE-READY-2026-08-31` is registered in Sprint `6.5`; no
+qualification artifact or activation witness exists yet. The counterexample is now closed in the
+reconcile graph: `observe_authority_backup_rollout_ready` is a component-readiness step between the
+no-wait chart mutation and first admission request, observes both the exact requested Deployment
+revision and availability, and owns the 60-attempt controller-convergence budget. The two affected
+golden plans, focused graph/readiness assertions, installed clean-room validation, all **4759/4759**
+primary unit tests, and canonical `prodbox dev check` pass. Resume by rerunning live cycle `pre-1`
+on this corrected current revision; the legacy public writer remains sole and no activation witness
+exists. That rerun live-proves the new Authority Backup barrier and completes the entire home
+reconcile on image `sha256:7d8f4318...` / registry manifest `sha256:20488c96...`, then stops before
+candidate execution because the executable-sibling Tier-0 file is still the deliberately
+unauthored portable skeleton: AWS IAM harness setup refuses `aws_substrate.subzone_name must not be
+empty` and preserves operational credentials because exact terminal cleanup was not proved. Stable
+qualification counterexample `AWS-QUALIFICATION-TIER0-UNAUTHORED-2026-08-31` is configuration, not
+an adapter mutation failure. Its code cause is now closed: Sprint `7.37` added the authored
+`aws_substrate.profile` and EKS topology requirement without extending the non-interactive harness
+config generator. The Haskell-owned `TestSecrets` schema now carries an explicit subzone, narrowed
+profile, and EKS desired size; AWS runs generate an EKS topology while home runs retain RKE2, and
+the generated Tier-0 config receives the complete profile rather than a compiled fallback. The
+operator fixture restores the historically deployed AWS envelope and binds ingress to the current
+observed `/32`. A direct hand edit was rejected by the generated-artifact drift gate and removed;
+the schema was regenerated from Haskell, focused generation/refusal/round-trip tests pass, the full
+primary suite passes **4760/4760**, installed `clean-room-handoff` passes, and canonical `prodbox dev
+check` passes. The first exact retry stops before mutation at the preservation classifier. An
+exact-canonical-default guard and focused regression pass, but the next exact retry proves the
+on-disk input is instead the harness-owned prior home-run config at
+`.test-data/legacy-aggregate`: its older schema has populated home fields but no AWS subzone/profile
+and an RKE2 topology. Stable counterexample
+`AWS-HARNESS-OWNED-PRIOR-CONFIG-PRESERVATION-2026-09-01` is now closed by regenerating only a config
+under the exact harness-owned storage root when required authored fields are absent or its topology
+does not match the requested substrate. An otherwise identical operator-owned path still refuses.
+Both focused guards pass **1/1**, the full primary suite passes **4762/4762**, installed
+`clean-room-handoff` passes, and canonical `prodbox dev check` passes. Resume by rerunning `pre-1`;
+its harness must generate and admit the authored proposal before AWS IAM setup. That rerun does so,
+live-proves the Authority Backup barrier again, and completes the retained-home reconcile on local
+image `sha256:7b3f87f4...`, registry manifest `sha256:c0060e43...`, and reported OCI import manifest
+`sha256:129f4e4e...`. It then stops before candidate execution in IAM setup: cleanup of the prior
+configured operational identity attempts `iam delete-user` after deleting only the current fixed
+inline-policy name, and AWS refuses `DeleteConflict` because other policy dependencies remain.
+Stable counterexample `AWS-OPERATIONAL-USER-POLICY-DEPENDENCY-ORDER-2026-09-01` is now closed in the
+cleanup program by listing and deleting every inline policy, listing and detaching every attached
+managed policy, and only then deleting either the fixed or associated operational user. The focused
+regression passes **1/1**, the full primary suite passes **4763/4763**, installed
+`clean-room-handoff` passes, and canonical `prodbox dev check` passes. Rerun `pre-1`; no
+qualification artifact or activation witness exists. That exact retry builds local image
+`sha256:1d7e0f9f26b364c7a3c7a1d6b755177172a23c35ef772f523bbe3d3d1205b1d5`, publishes registry
+manifest `sha256:6be52e65e013068ab7c855bf5644c8bd3b0c7e3411b0f2b7a5abc93d2dfd3d77`, and imports OCI
+manifest `sha256:5e9f85025351d961b893783b1f628e3aa5b468f9cf629476ef656990f6d7e35b`. It again proves the
+Authority Backup barrier, then Provider Worker remains zero-restart but returns only HTTP 503 from
+`/readyz` until Helm reaches the Deployment progress deadline; failed-release cleanup uninstalls
+the release and independently verifies its absence. The preceding partial legacy IAM cleanup had
+deleted the stale configured user's keys before its policy-order failure, so Provider deep readiness
+cannot pass STS, while the harness's full pre-IAM reconcile waits for that readiness before it can
+refresh the credential. Stable counterexample
+`AWS-HARNESS-PRE-IAM-PROVIDER-READINESS-CYCLE-2026-09-01` names this bootstrap cycle; the run never
+reaches IAM setup or candidate execution and produces no artifact or witness. The correction is now
+landed for code-local validation: the harness projects the ordinary reconcile graph only through
+the retained Authority/config transition, excluding every steady component; it then observes the
+Lifecycle-provider Target generation and drives an install-or-rotate operation through the
+authenticated, attested Credential Provisioner under a stable per-cycle identity. A retained
+operation is recovered byte-for-byte after response loss. Normal public `cluster reconcile` keeps
+its strict Provider readiness barrier, and a successful typed qualification no longer invokes the
+legacy IAM teardown after its own credential-revocation node. The focused graph/operation group
+passes **14/14**, the full primary suite passes **4764/4764**, installed `clean-room-handoff`
+passes, and canonical `prodbox dev check` passes. The gate-built executable is exact at
+`sha256:3eb8d96a676a1de0f91c4598026d01594a36567280bd44b0beae8029ba7febff`; rerun live cycle
+`pre-1` on the final documentation-inclusive revision.
+That live retry builds local runtime image
+`sha256:859e6e5cadef767428139ca327a4c9e772e4d5949d5c03317852526c8310ceba`, publishes registry
+manifest `sha256:510b0d8ffc76203f2fe714cfd5a39714d6d1ed5cf1210f3c49201ee34bf431a6`, and imports OCI
+manifest `sha256:4550a097c65450212304388b81d3a42ebab75cb44d7eec4f670b1b7142a72c93`. The retained-home
+bootstrap floor completes and the authenticated Credential Provisioner rotates the
+Lifecycle-provider credential to Generation 2. The following managed ACME EAB Authority ingress
+then fails closed with `ExternalMaterialWorkflowJobFailed (CredentialProvisionerJobCreateFailed
+"Job create was not recovered and stable absence was proven")`; the candidate is not entered,
+operational credentials are preserved, and no qualification artifact or activation witness is
+produced. Stable counterexample
+`AWS-HARNESS-ACME-EAB-JOB-CREATE-ABSENT-2026-09-01` owns this distinct post-rotation Job-creation
+boundary. Diagnose its exact typed request/identity and Kubernetes observation path before changing
+implementation; the legacy public writer remains sole. The exact Kubernetes server-side dry run
+reproduces the refusal: the full `eab-` plus 64-hex permit is 68 bytes, while the renderer put it in
+both Job and Pod label values whose maximum is 63 bytes. That inspection also proves attestation
+reads the exact permit from `prodbox.io/permit-id` annotation although the renderer omitted that
+annotation. The counterexample is closed code-locally by removing the full permit from labels and
+placing it in the secret-free exact Job/Pod annotations. The focused regression passes **1/1**, and
+the corrected long-permit manifest passes Kubernetes server-side admission under the exact
+test-harness impersonation. The full primary suite passes **4765/4765** in 89.14 seconds and
+canonical `prodbox dev check` passes with HLint `No hints` and warning-clean all-target compilation.
+The synchronized executable is exact at
+`sha256:9baf5bffba04fd21dff30d94e568d8d2e0378338f62b62407aee1597f1f5721c`; rerun live `pre-1`
+on this final documentation-inclusive revision.
+That retry builds local image
+`sha256:30940c3767222de19303e5f737f428900013153b7ceffc877b5d0f4bfd1a1267`, publishes registry
+manifest `sha256:9416b5aecbd58ee976dfe7f9b1328c3e591acda135b17650fca0d9f84f0b4b5f`, and imports OCI
+manifest `sha256:4bf91af0dca3951dd71847c6464425f5fb8e8b15e1a2743278118865c0c601e0`. It reaches the
+retained Lifecycle-provider credential before ACME EAB ingress, but the reused `pre-1` operation
+is prepared with its original absolute deadline and now refuses at
+`AwsAdminCoordinatorPrepareFailed (AwsAdminProvisionerClientUnavailable
+"prepared-target/deadline-expired")`. Stable counterexample
+`AWS-HARNESS-RETAINED-CREDENTIAL-DEADLINE-REPLAY-2026-09-01` owns this retry boundary. The run does
+not enter the EAB job or candidate and preserves operational credentials; no artifact or witness
+exists. The protected Authority diagnostic confirms `aws-admin/prepare authority-phase=completed`:
+the endpoint was sending an exact completed replay through deadline-gated prepared-target
+publication before the coordinator could recover its authenticated receipt and prove Job absence.
+The counterexample is closed code-locally by returning the retained prepared challenge only for a
+byte-for-byte completed intent; divergent completed requests remain refused, and the existing
+coordinator still owns exact receipt recovery plus UID-bound Job/Pod absence. The focused endpoint
+regression passes **1/1** and proves that completed replay reads neither Authority time nor the
+prepared-target effect; the full primary suite passes **4766/4766** in 88.35 seconds. Canonical
+`prodbox dev check` passes with HLint `No hints` and warning-clean all-target compilation. The
+synchronized executable is exact at
+`sha256:c8ee0dc4cb36be814dab2f266c83f2396846f02ee61125b98f7cfb4a849edcae`; rerun live `pre-1`
+on this documentation-inclusive revision.
+That retry builds local image
+`sha256:06b9c1e4f606b2b157da4928d7c4fd62208f0ddf31a7075e6ba4a85a9612af5d`, publishes registry
+manifest `sha256:f98865f20657ef236620f62bc8ee3e873afeb06f1103924f6968e94a9283d4e5`, and imports OCI
+manifest `sha256:3c47184277e18701194c383e9c02d366c2ba43935454aa0c1c7c50a1103078c5`. The exact completed
+Lifecycle-provider replay returns Generation 2, live-closing
+`AWS-HARNESS-RETAINED-CREDENTIAL-DEADLINE-REPLAY-2026-09-01`. Managed ACME EAB ingress then fails
+closed at `ExternalMaterialWorkflowCleanupFailed CredentialProvisionerJobStillPresent`; candidate
+execution is not reached, operational credentials are preserved, and no qualification artifact or
+activation witness exists. Stable counterexample
+`AWS-HARNESS-ACME-EAB-JOB-CLEANUP-STILL-PRESENT-2026-09-01` owns this post-execution cleanup
+boundary. Diagnose the exact retained Job/Pod identity and deletion/absence observations before
+changing implementation; the legacy public writer remains sole. Read-only inspection finds the
+same exact-UID Job and owned Pod still `Running` with no deletion timestamp, while authorization
+checks prove the harness owns create/get/list/delete on that namespace. The deletion boundary never
+spawned `kubectl`: `deleteLimits` admitted only one input byte although the mandatory
+UID-preconditioned `DeleteOptions` JSON is larger, so bounded-subprocess admission rejected its own
+payload and the later absence probe correctly reported presence. Close this code-locally with one
+small explicit delete-payload ceiling and a regression that proves the canonical payload is both
+nonempty and admitted before rerunning code-local gates. The 4 KiB bounded-input fix passes its
+focused regression **1/1**, and the full primary suite passes **4766/4766** in 88.31 seconds.
+Canonical `prodbox dev check` passes with HLint `No hints` and warning-clean all-target
+compilation. The synchronized executable is exact at
+`sha256:7fd102a94adb10f975b0b8c9f3bafe673fd6d704a8840e6946ceb84aebcdf245`; rerun live `pre-1`
+to recover the retained exact Job and continue qualification on this documentation-inclusive
+revision.
+That recovery retry builds local image
+`sha256:afff39c1659ee27a92ad77d62cb9410ea89bcdf928c5c0c175d19bb804a7f26e`, publishes registry
+manifest `sha256:f1ef4d39e6ac0d6a8b265eabf1f75879b5fb5f1b7b09eeac69e19909801e5408`, and imports OCI
+manifest `sha256:52e9d05f23cd6c12cc1a1adfa1161477f3827586c8373e17c5dd8b52da0203dd`. It no longer reports
+`CredentialProvisionerJobStillPresent`; recovery instead observes the retained EAB Job after its
+owned Pod has disappeared and fails closed at `ExternalMaterialWorkflowJobFailed
+(CredentialProvisionerJobObservationFailed "Job has no Pod")`. Candidate execution is not reached,
+credentials are preserved, and no artifact or witness exists. Stable counterexample
+`AWS-HARNESS-ACME-EAB-RECOVERY-JOB-WITHOUT-POD-2026-09-01` owns this distinct retained-job
+topology. Inspect exact post-run Job/Pod absence and the committed Authority phase before changing
+recovery semantics; the legacy public writer remains sole. Post-run observation proves both the
+exact Job and every owned Pod absent; Kubernetes events show the Job controller removed the Pod at
+the original active deadline, and the corrected UID-preconditioned cleanup then removed the Job.
+This live-closes `AWS-HARNESS-ACME-EAB-JOB-CLEANUP-STILL-PRESENT-2026-09-01`. Re-enter the same
+supported cycle on the unchanged executable to expose the now-absent retained Authority branch and
+its exact deadline disposition before changing intent or recovery semantics.
+That unchanged cached-image rerun retains local image
+`sha256:afff39c1659ee27a92ad77d62cb9410ea89bcdf928c5c0c175d19bb804a7f26e` and registry manifest
+`sha256:f1ef4d39e6ac0d6a8b265eabf1f75879b5fb5f1b7b09eeac69e19909801e5408`. The nonterminal
+Authority operation creates a successor Job after stable absence, but its retained challenge is
+bound to the prior registry manifest while the stable repository tag now resolves to the current
+manifest; Pod attestation fails closed at `ExternalMaterialWorkflowJobFailed
+(CredentialProvisionerJobObservationFailed "\"container image digest mismatch\"")`. Candidate
+execution is not reached, credentials are preserved, and no artifact or witness exists. Stable
+counterexample `AWS-HARNESS-ACME-EAB-CONTAINER-IMAGE-DIGEST-MISMATCH-2026-09-01` owns this exact
+retained-intent/mutable-tag conflict. Prove terminal Job/Pod absence, then make the Job pull the
+intent-bound immutable manifest rather than weakening attestation or rebinding retained intent.
+Post-run observation again proves exact Job/Pod absence, and read-only registry inspection proves
+both the retained and current manifests remain addressable by digest. Close this code-locally by
+rendering the supplied repository/tag with the intent-owned `@sha256:` manifest selector and by
+regressing that no mutable-only image reference reaches the Pod spec. The implementation uses one
+opaque `CredentialProvisionerImagePullReference` constructor to validate repository shape,
+canonical manifest identity, and total length before the Kubernetes renderer can obtain text; the
+Pod manifest never assembles a digest reference itself. The focused renderer/compiled-ownership
+regressions pass **2/2**, and the full primary suite passes **4766/4766** in 89.66 seconds.
+Canonical `prodbox dev check` passes with HLint `No hints` and warning-clean all-target
+compilation. The synchronized executable is exact at
+`sha256:89957264fee4467ff477b7193293c471f4c5a9603f03eec193d4a04f83f31384`; rerun live `pre-1`
+on this documentation-inclusive revision.
+That retry builds local image
+`sha256:e53123ffa08da63895ab553a567e62a3d5470c88d41caf06a676c1fe7e00b686`, publishes registry
+manifest `sha256:e2ff4f9443695ed2e4a55dd5c172ac86a71cbe8b1e65055bc0cec417327ac512`, and imports OCI
+manifest `sha256:a823ff67bb97019a4bbcf9e364391074edd3753708e94639f3ddc5da06d1ca10`. The immutable
+intent-bound image pull succeeds and live-closes
+`AWS-HARNESS-ACME-EAB-CONTAINER-IMAGE-DIGEST-MISMATCH-2026-09-01`; attestation then rejects the
+retained operation's original expired absolute deadline at `ExternalMaterialWorkflowJobFailed
+(CredentialProvisionerJobAttestationFailed "CredentialProvisionerDeadlineExpired")`. Candidate
+execution is not reached, operational credentials are preserved, and no qualification artifact or
+activation witness exists. Stable counterexample
+`AWS-HARNESS-ACME-EAB-RETAINED-DEADLINE-EXPIRED-2026-09-01` owns this exact retained-intent
+deadline boundary. Prove terminal Job/Pod absence and inspect the nonterminal Authority phase
+before adding any renewal transition; the legacy public writer remains sole.
+Post-run observation proves the exact Job and every owned Pod absent. Kubernetes events prove the
+intent-bound `sha256:510b0d8ffc76203f2fe714cfd5a39714d6d1ed5cf1210f3c49201ee34bf431a6`
+manifest was pulled and the worker started before UID cleanup. The retained phase is exactly
+`ExternalMaterialIngressIntentCommitted`: the prior mutable-tag attempt failed before Authority
+authorization, and this run reached the first authorization against the same immutable intent.
+Close the counterexample code-locally with an exact prepared-only renewal transition: old deadline
+expired at Authority time, replacement deadline still active and strictly later, and the operator
+request plus permit binding byte-for-byte unchanged; image and active deadline may advance. Every
+attested, permitted, completed, binding-drifted, or active-deadline state remains refused. The
+current-observation selector requests that renewal only for the same expired intent-committed
+operation and otherwise retains exact replay/next-generation behavior.
+The exact prepared-only renewal and selector regressions pass in the focused lifecycle group
+**16/16**, and the full primary suite passes **4767/4767** in 89.26 seconds. Canonical
+`prodbox dev check` passes with HLint `No hints` and warning-clean all-target compilation. The
+synchronized executable is exact at
+`sha256:302b1374df9fb32caae2784e538ffb81fcadfcba811d9763825d9c331171f126`; rerun live `pre-1`
+on this documentation-inclusive revision.
+That retry builds local image
+`sha256:a7d15ce52ce799742cc2e8035b11824d7d8bd0f1cab0a8798641d5dc64f5a7b9`, publishes registry
+manifest `sha256:7d75458066551352e068fd6543da807668cc48bdf987154b99a9a43fefd33456`, and imports OCI
+manifest `sha256:0153cd66c0b8864350a7b9b3bb11a117ea539503618dff7821e3a5d5b586c7ef`. Prepared-only
+renewal succeeds and live-closes
+`AWS-HARNESS-ACME-EAB-RETAINED-DEADLINE-EXPIRED-2026-09-01`; the renewed worker then fails at
+`ExternalMaterialWorkflowJobFailed (CredentialProvisionerJobReceiptInvalid
+"ExternalMaterialTargetReceiptDecodeFailed")`. Candidate execution is not reached, operational
+credentials are preserved, and no qualification artifact or activation witness exists. Stable
+counterexample `AWS-HARNESS-ACME-EAB-RENEWED-RECEIPT-DECODE-FAILED-2026-09-01` owns this exact
+post-worker receipt-codec boundary. Prove terminal Job/Pod absence and distinguish attach stdout
+framing from worker receipt encoding before changing either side; the legacy public writer remains
+sole.
+Post-run observation proves the exact Job and every owned Pod absent. Kubernetes events prove the
+renewed worker pulled the exact current registry manifest, ran for 13 seconds, and was then
+UID-cleaned. The worker writes canonical binary receipt bytes, and the controller requires those
+bytes byte-for-byte; the `kubectl attach` subprocess omitted `--quiet`, whose documented contract
+is “only print output from the remote session,” so the transport did not guarantee an uncontaminated
+binary stdout stream. Close this code-locally by binding `--quiet` in the sole attach constructor
+and regressing its exact argv. Do not weaken canonical receipt decoding or treat the line-oriented
+Pod log fallback as the primary binary transport.
+The exact attach-argv regression passes in the focused lifecycle group **17/17**, and the full
+primary suite passes **4768/4768** in 86.07 seconds. Canonical `prodbox dev check` passes with HLint
+`No hints` and warning-clean all-target compilation. The synchronized executable is exact at
+`sha256:e0e539b964277f9a6ad06fc322a01f726a547f1af1a2284c2346319d4c63b343`; rerun live `pre-1`
+on this documentation-inclusive revision.
+That retry builds local image
+`sha256:9f67e270f0125245ca361544c699e7e0d046454ffcd2cdb6f19e12367b38f26a`, publishes registry
+manifest `sha256:b88adf31863ac50d7ccb9e07ff108008514532bcd33e99cd0c1a54841cab79ef`, and imports OCI
+manifest `sha256:b40ab9cedc5e852ce72c6a09f8c6b0305114b3ceb9677d6bbcde5affc2082a1a`. The retained
+Authority phase is already beyond intent after the prior worker effect and its Job is absent, so
+the corrected attach is not re-entered; recovery fails closed at
+`ExternalMaterialWorkflowCommittedJobLost`. Candidate execution is not reached, operational
+credentials are preserved, and no qualification artifact or activation witness exists. Stable
+counterexample `AWS-HARNESS-ACME-EAB-COMMITTED-JOB-LOST-2026-09-01` owns this exact committed-phase
+plus absent-Job topology. Prove exact Job/Pod absence and the retained phase/permit binding before
+adding recovery; `AWS-HARNESS-ACME-EAB-RENEWED-RECEIPT-DECODE-FAILED-2026-09-01` remains
+code-locally corrected but not yet live-closed, and the legacy public writer remains sole.
+Read-only postflight now proves the credential-provisioner namespace has no Job or Pod. Source
+closure makes the retained phase exact: the worker could receive stdin only after Authority
+attestation and durable permit-outbox commit, and the prior failure occurred while decoding the
+worker's post-effect receipt, so the retained state is `ExternalMaterialIngressPermitCommitted`.
+The effect boundary is already receipt-recoverable: retained-home custody records an opaque
+generation, commitment, ciphertext digest, and Vault read-back version, and an exact replay returns
+that same source without resealing or reminting. Close this counterexample by letting the Authority
+ask the authenticated home Target Agent for that schema-closed, permit/generation-bound source
+observation, reconstruct the existing `ExternalMaterialTargetReceipt`, and CAS-read-back the
+ordinary completion transition before returning the prepared replay. Missing, mismatched,
+corrupt, or unobservable custody remains a closed refusal; no successor Job, caller-asserted
+absence, direct Authority Vault access, or weakened receipt decoder is licensed.
+That recovery is now landed. The authenticated Target Agent observation returns only the exact
+schema, permit-operation, generation, opaque receipt reference, opaque commitment, ciphertext
+digest, and Vault read-back version already held by retained custody. Lifecycle Authority
+reconstructs the ordinary receipt, validates it through the existing commit transition, and
+CAS-reads back completion; any missing or divergent observation remains unavailable. The focused
+external-material lifecycle group passes **18/18**, including the exact expired
+`PermitCommitted`/absent-Job replay; the full primary suite passes **4769/4769** in 85.93 seconds,
+and canonical `prodbox dev check` passes with pinned formatting, HLint `No hints`, and
+warning-clean all-target compilation. The synchronized executable is exact at
+`sha256:17cc83074644d1767d070f23db643b7d59cb688eb96377aadba17efe085cc0bc`; rerun live `pre-1`
+on this documentation-inclusive revision. The legacy public writer remains sole and no
+qualification artifact or activation witness exists yet.
+That live retry builds local image
+`sha256:4ada2f7e2ad6b4231b66ca567a05a0675b59717540a300820ff47e88e4fc7b27` in 1008.4 seconds,
+publishes registry manifest
+`sha256:e9d2f6465b022dff86acba9ba359a67c5f2cbac55637408d2ddcf25234cd4966`, and imports OCI
+manifest `sha256:b913c4ad81bdcdc11d1f42dd0f3eb71eb9eb1d0a1e25a178f6bfeba3c2976a99` in 99.8 seconds.
+The retained Lifecycle-provider credential reads back current at Generation 2, and managed ACME
+EAB ingress reaches the new committed-effect recovery but fails closed at
+`ExternalMaterialIngressClientUnavailable "retained-receipt-recovery/target-source-unavailable"`.
+Candidate execution is not reached, operational credentials are preserved, and no qualification
+artifact or activation witness exists. Stable counterexample
+`AWS-HARNESS-ACME-EAB-RETAINED-SOURCE-UNAVAILABLE-2026-09-01` owns this exact authenticated Target
+source-observation refusal. Diagnose the retained target/schema/operation/generation coordinates
+and custody observation result before changing recovery semantics; the legacy public writer
+remains sole.
+Read-only Pod/log inspection proves the new Target Agent and Lifecycle Authority are both Ready
+with zero restarts, but the Authority currently collapses every Target transport, codec, status,
+refusal, unavailable, and unexpected-response result to the same `target-source-unavailable` token
+without a diagnostic. The exact retained-custody branch therefore cannot yet be distinguished.
+Before altering recovery behavior, add a closed payload-free diagnostic classifier at this
+composition boundary and rerun the supported cycle; it may expose only the error constructor/cause
+class, never returned detail or custody values.
+The behavior-neutral classifier is now landed. It exhausts transport, codec, status, known
+refusal/unavailable, unexpected, and unknown-detail branches; private response text collapses to
+`refused-other` or `unavailable-other`, and only the closed token is logged. The focused lifecycle
+group passes **19/19**, the full primary suite passes **4770/4770** in 86.69 seconds, and canonical
+`prodbox dev check` passes with HLint `No hints` and warning-clean all-target compilation. The
+synchronized executable is exact at
+`sha256:439e7351281a0e307f77d185eb36ae2040cf3af019f288020c8529b7f89104ef`; rerun live `pre-1`
+on this documentation-inclusive diagnostic revision before changing recovery behavior.
+That diagnostic retry builds local image
+`sha256:720c563bb2374e944f9ae7bc44671bd4896bc112b626aee6294c9ecdacab8749` in 1064.2 seconds,
+publishes registry manifest
+`sha256:c85c2663da5fdb2513bc09f97211a4db4c5ceb1a4d6a54d0aefa90f69de636a5`, and imports OCI
+manifest `sha256:e7f1a6d2a0f2ef87c8c747673f826d3c98e401b6ec61009c26809836a94a6bfe` in 96.5 seconds.
+The protected Authority log classifies the authenticated Target response exactly as
+`source-absent`: retained ACME EAB custody has neither data nor metadata. The earlier attach decode
+failure therefore did not prove the worker effect, and the committed-permit ambiguity is now
+resolved by the effect boundary's authoritative positive absence. Candidate execution remains
+unreached, credentials remain preserved, and no artifact or witness exists. Close
+`AWS-HARNESS-ACME-EAB-RETAINED-SOURCE-UNAVAILABLE-2026-09-01` with an exact
+permit-committed/expired/positive-source-absence recovery transition that preserves the immutable
+request binding and obtains a fresh bounded authorization before any successor Job; present,
+mismatched, corrupt, or unobservable custody must never authorize a retry.
+The exact absence-authorized recovery is now landed. Positive absence is a distinct typed Target
+response, not a refusal string. Lifecycle Authority may consume it only while the old signed permit
+and retained intent are expired, the replacement deadline is active and strictly later, and the
+operator request plus permit ID are byte-for-byte unchanged; it CAS-read-backs a reset to the fresh
+`IntentCommitted` state. The workflow must still prove the exact old Job stably absent before it
+creates the successor, whose new attestation receives a fresh signed permit. A recovered source
+instead commits/returns the old receipt, while target mismatch, corruption, unobservability, active
+permit, deadline drift, and binding drift remain closed. The focused lifecycle group passes
+**20/20**, the full primary suite passes **4771/4771** in 86.18 seconds, and canonical `prodbox dev
+check` passes with HLint `No hints` and warning-clean all-target compilation. The synchronized
+executable is exact at
+`sha256:32a629772f44b35be763c1270de5e83deaccc153885f4da92adc1c9e0ead8612`; rerun live `pre-1`
+on this documentation-inclusive revision.
+That retry builds local image
+`sha256:8c8f786b6c81ad4ab0b45e3b010d665ffc1c18e28de52e7c34a25c42a316774c`, publishes registry
+manifest `sha256:1d99d8b7fac629ece765f3060fb990b32c2c8acda0c4f9a9b10b044651afd522`, and imports OCI
+manifest `sha256:b4631f49ef5b5bb3bff710384f60d384773b093634ee357e0378a6a2c8182146`. The retained
+Lifecycle-provider credential reads back current at Generation 2 and the exact positive-absence
+recovery reaches its fresh successor worker, but managed ACME EAB ingress fails at
+`ExternalMaterialWorkflowJobFailed (CredentialProvisionerJobReceiptInvalid
+"ExternalMaterialTargetReceiptDecodeFailed")`. Candidate execution is not reached, operational
+credentials are preserved, and no qualification artifact or activation witness exists. Stable
+counterexample `AWS-HARNESS-ACME-EAB-ABSENCE-RETRY-RECEIPT-DECODE-FAILED-2026-09-01` owns this
+exact successor-worker receipt boundary. Preserve the retained operation and diagnose the exact
+Job/Pod disposition plus binary attach stdout before changing the codec or recovery transition;
+the legacy public writer remains sole.
+Read-only postflight proves the exact successor Job and Pod absent. Events prove the Pod pulled the
+bound registry digest, started, ran for 13 seconds, and was UID-cleaned. The repeated decode failure
+with `--quiet` falsifies the earlier assumption that banner suppression makes raw CBOR a stable
+Kubernetes record. The repository's already live-proven AWS-admin worker boundary establishes the
+actual source-specific grammar: attach carries one leading LF record separator and Pod logs carry
+one terminal LF, so an unchanged canonical binary receipt needs a fixed-version canonical-base64
+ASCII envelope. Close this counterexample with a distinct external-material envelope prefix;
+accept attach only as exactly separator plus envelope, admit the Pod-log recovery only for an exact
+empty attach and exactly one whole canonical envelope line with the required terminal LF, and keep
+the decoded inner receipt subject to the unchanged canonical binary decoder. Generic trimming,
+substring selection, cross-schema envelopes, non-empty-attach fallback, and weakened receipt
+validation remain forbidden.
+The source-specific carrier correction is now landed. The worker writes one LF plus
+`prodbox-external-material-target-receipt-v1:<canonical-base64>`; attach accepts only that complete
+record, and only an exact empty attach admits the same attested Pod/container's log with one final
+LF and exactly one canonical whole envelope line. The inner receipt still passes the unchanged
+canonical binary decoder and exact intent binding. Focused external-material lifecycle tests pass
+**22/22**, including raw/missing-separator/trailing-LF/CRLF/ambiguous-envelope rejection and
+non-empty-attach fallback suppression. The full primary suite passes **4773/4773** in 85.43 seconds.
+Canonical `prodbox dev check` passes with pinned formatting, HLint `No hints`, and warning-clean
+all-target compilation. The synchronized executable is exact at
+`sha256:b93b857931b945b126dca309fe8b7bfc0f2801c9fbd7e138de9a4bbe6cb50955`; rerun live `pre-1`
+on this documentation-inclusive revision. The legacy public writer remains sole.
+That retry builds local image
+`sha256:545f7a4a05159166a92e69a0539e594cd699faccbf3693672eb6512b33276933` in 1017.4 seconds,
+publishes registry manifest
+`sha256:cb0d01d122f659eead7f4f6a79cd94d74fad47d95efdfb9461a9c586c70ab18b`, and imports OCI
+manifest `sha256:c41f5f9668a07700798e8549e57fe9454528a6f9c2c6403553d8a247be42d01a` in 91.6 seconds.
+The retained Lifecycle-provider credential reads back current at Generation 2, but managed ACME
+EAB ingress fails at `ExternalMaterialWorkflowJobFailed (CredentialProvisionerJobReceiptInvalid
+"ExternalMaterialTargetReceiptEnvelopeInvalid")`. Candidate execution is not reached,
+operational credentials are preserved, and no qualification artifact or activation witness
+exists. Stable counterexample `AWS-HARNESS-ACME-EAB-TEXT-ENVELOPE-INVALID-2026-09-01` owns this
+exact source-specific carrier-shape refusal. Read-only postflight proves the exact Job and Pod
+absent after a 13-second run of the bound registry manifest, while the Authority's retained receipt
+recovery reports `target-source=source-absent`. Static inspection also proves the worker revokes its
+session exactly once; the duplicate revocation suspected from interleaved inspection output does
+not exist. The remaining carrier error therefore collapses an exact worker terminal refusal from
+the merged Pod-log stream into an envelope error. Before changing effect semantics, add one closed,
+value-free worker terminal-cause vocabulary and classify only a unique exact whole terminal line
+from attach stderr or the Pod-log recovery. Unknown, absent, or ambiguous terminal lines remain
+transport/receipt refusals; raw stderr, stdin, Vault bodies, tokens, provider output, counts, and
+wire values remain excluded. The legacy public writer remains sole.
+That value-free classifier is now landed without changing the worker effect program. The worker
+exhaustively collapses its internal error constructors to fourteen unique fixed terminal tokens;
+attach and Pod-log recovery recognize only one exact whole prefixed line. Unknown, absent, or
+multiple prefixed lines retain the existing generic transport/receipt refusal, and attach no longer
+retains raw stderr. Focused external-material lifecycle tests pass **23/23**; the full primary suite
+passes **4774/4774** in 86.83 seconds. Canonical `prodbox dev check` passes with
+generated-artifact/documentation policy, pinned formatting, HLint `No hints`, and warning-clean
+all-target compilation. The synchronized executable is exact at
+`sha256:a320aa1985df95d9b381ee2ef19d6de24f510185759d5d41b27f2a42feb2473f`.
+Rerun live `pre-1` on this documentation-inclusive revision to obtain the exact worker refusal; no
+preactivation cycle has passed and the legacy public writer remains sole.
+That retry builds local image
+`sha256:65a4c384b28099cc16f85d03b0303e94b7e55d87fe87e3c64661b82cdc291000` in 1052.0 seconds,
+publishes registry manifest
+`sha256:cc9b87f1e714065172d9c8ab29c72fe221bdd7bf81a7bc77c5774794a5a9f81d`, and imports OCI
+manifest `sha256:c3dcebca427107997f16f1bbe0a25160f35834476fdf606d085f69bf2ebee375`
+in 88.0 seconds. The exact successor Pod pulls that new registry manifest, runs for 13 seconds, and
+is UID-cleaned with its Job; both are absent. Authority recovery again reports
+`target-source=source-absent`, while the public result remains
+`ExternalMaterialTargetReceiptEnvelopeInvalid`. Thus the classifier observed no unique exact known
+terminal line; stable counterexample `AWS-HARNESS-ACME-EAB-TEXT-ENVELOPE-INVALID-2026-09-01`
+remains open. Before changing worker or custody semantics, add a behavior-neutral closed observation
+over attach stdout/stderr and Pod-log stdout/stderr that records only process-exit, empty/nonempty
+capture, and terminal-line none/known/unrecognized/ambiguous disposition. Raw bytes, text, values,
+and counts remain forbidden. No qualification artifact or activation witness exists; the legacy
+public writer remains sole.
+The behavior-neutral capture observation is now landed. Failed attach and only the final failed
+Pod-log recovery emit the closed source/process/stdout/stderr topology; exact tests prove an
+injected captured marker and numeric exit code cannot render. Focused external-material lifecycle
+tests pass **24/24** and the full primary suite passes **4775/4775** in 87.33 seconds. Canonical
+`prodbox dev check` passes with pinned formatting, HLint `No hints`, and warning-clean all-target
+compilation. The synchronized executable is exact at
+`sha256:e886e1c525a2b7386e1bfddc55fd23ce97ba8de22a741bda2e863321f27f5f03`.
+Rerun live `pre-1` on this documentation-inclusive revision; no preactivation cycle has passed and
+the legacy public writer remains sole.
+That retry builds local image
+`sha256:86372e4aa2d4ac39264966f99b330bbe45f04bc02299be5ccebd57838c62009c` in 1003.7 seconds,
+publishes registry manifest
+`sha256:cfcb06752ad8231c79f2fc1a55b051dba939810a162210acf9a27e154892964b`, and imports OCI
+manifest `sha256:28a65168a8f5b53c2afb77898152c3e98021a7a4ee999bfdd148f86c3f7bf526`
+in 96.2 seconds. Both closed observations are exact:
+`source=attach/process=success/stdout=empty/stdout-terminal=none/stderr=empty/stderr-terminal=none`
+and the identical empty/no-terminal shape from `source=pod-log`. Events prove the exact Pod pulls
+the new manifest, remains alive for 13 seconds, and is killed only by exact UID cleanup; its Job and
+Pod are absent, and Authority source recovery remains positively absent. This rules out a worker
+refusal and live-proves that the worker is blocked waiting for stdin EOF. The native
+external-material Job has `stdin: true` but omits `stdinOnce: true`, unlike the already working
+AWS-admin renderer and chart reference, so detach leaves the container stream open. Close stable
+counterexample `AWS-HARNESS-ACME-EAB-TEXT-ENVELOPE-INVALID-2026-09-01` by adding the missing
+`stdinOnce: true` lifecycle binding and pinning it in the native manifest regression; retain the
+now-proven value-free observation. No qualification artifact or activation witness exists; the
+legacy public writer remains sole.
+The native Job now binds `stdinOnce: true` and the manifest regression requires it. Focused
+external-material lifecycle tests pass **24/24**; the full primary suite passes **4775/4775** in
+86.38 seconds. Canonical `prodbox dev check` passes with pinned formatting, HLint `No hints`, and
+warning-clean all-target compilation. The synchronized executable is exact at
+`sha256:55b2d252f29ec44e03cf2853f1e4a3bfacc70e8786cbca043d5ec79795fab9d0`.
+Rerun live `pre-1` on this documentation-inclusive revision. No preactivation cycle has passed and
+the legacy public writer remains sole.
+That corrected retry builds local image
+`sha256:3e4e9a9adc2004a7cd621c78abcdd4efc5c2b97d37b4a2c2644e78827dcad01f`, publishes
+registry manifest
+`sha256:d18ca466b85e9bdd138500155793b629b16796dab92b8c965156d131dde12164`, and imports OCI
+manifest `sha256:64ad7f49995bf6b7866881488a7b0db7442c09c8353072774fc90123f0a184bc` in 105.5
+seconds. The external-material worker now receives EOF, seals the retained source, returns its
+canonical receipt, and is UID-cleaned with its Job; both one-shot kinds are absent. The workflow
+then crosses Authority receipt commit and reaches retained Target delivery, where the Target Agent
+refuses exact `retained source binding mismatch`. Stable counterexample
+`AWS-HARNESS-ACME-EAB-RETAINED-SOURCE-RECEIPT-BINDING-MISMATCH-2026-09-01` owns this new boundary.
+The receipt currently carries the retained commitment, ciphertext digest, generation, and Vault
+version but omits the retained custody HMAC receipt ref; the host delivery projection consequently
+invents the permit id as that source receipt, which cannot equal the Target Agent's observed source.
+Close only that lossy projection by carrying and validating the exact custody source receipt in the
+canonical external-material receipt and using it for delivery/recovery. Candidate execution is not
+reached, exact terminal cleanup is not proved, operational credentials are preserved, no
+qualification artifact or activation witness exists, and the legacy public writer remains sole.
+The counterexample is now closed code-locally. The external-material canonical receipt includes
+the validated exact custody HMAC source receipt, its carrier advances to the distinct
+`prodbox-external-material-target-receipt-v2:` prefix, worker and retained-source recovery both
+populate the binding, and delivery consumes it without substitution. The retained state advances
+to version 3; a canonical completed v2 state is validated and migrates only to its signed
+permit-committed phase so the existing authoritative Target-source recovery must reconstruct and
+CAS-commit the complete receipt before delivery. The focused external-material group passes
+**25/25**, including the v2 migration, invalid-source-receipt refusal, and exact delivery projection;
+the full primary suite passes **4776/4776** in 86.26 seconds. Canonical `prodbox dev check` passes
+with pinned formatting, HLint `No hints`, generated/documentation policy, and warning-clean
+all-target compilation. The synchronized executable is exact at
+`sha256:aaea893f7e2e2ed6e695a76e2fddfed9ee0d113e1c474d0b2f8f57a0b585bb00`.
+Rerun documentation-inclusive canonical validation, then live `pre-1`; no preactivation cycle has
+passed, no artifact or witness exists, and the legacy public writer remains sole.
+That live retry builds local image
+`sha256:7e345ff3299eeb44b527f58db2aa60d91dd1b37a21e0ece0bcd531f8255ab55e` in 1008.4
+seconds, publishes registry manifest
+`sha256:b2875957738413e28551b8a8f61850ef9e3a9bc3d2bca279e7332a91cd2effbe`, and imports OCI
+manifest `sha256:fdcd7b342994c39b52fa2f03105ca6534e9c68d172ed0b1a5ad439e25a6a83cc` in 110.5
+seconds. It live-proves the state-v2 migration and exact custody-source-receipt correction by
+crossing the former `retained source binding mismatch`. The next refusal is exact
+`retained delivery expired without an observed Target receipt; use a successor operation`: the
+previous failed attempt left the Authority-owned delivery outbox pending past its absolute deadline
+before Target materialization, but the host reconstructs the same fixed `delivery-<ingress-operation>`
+identity on every replay. Stable counterexample
+`AWS-HARNESS-ACME-EAB-RETAINED-DELIVERY-EXPIRED-OPERATION-REUSE-2026-09-01` owns this successor
+boundary. Close it inside the retained delivery coordinator: after durably expiring an unobserved
+pending intent, derive and persist one deterministic successor operation from that predecessor
+rather than asking the caller to invent or select an identity; exact replay must resume the same
+successor and may not rerun the expired effect. Both Credential Provisioner Job and Pod kinds are
+absent after the attempt. Candidate execution is not reached, exact terminal cleanup is not proved,
+operational credentials are preserved, no qualification artifact or activation witness exists,
+and the legacy public writer remains sole.
+Code-local closure for
+`AWS-HARNESS-ACME-EAB-RETAINED-DELIVERY-EXPIRED-OPERATION-REUSE-2026-09-01` is now complete.
+`ReplaceExpiredRetainedMaterialDelivery` atomically swaps only a strictly expired pending
+predecessor for the Authority-derived SHA-256 successor operation; source receipt, target,
+generation, and attestation remain exact, while the ephemeral key must differ and the successor
+deadline must be fresh and later. Initial and successor attempts receive an Authority-time
+five-minute deadline rather than reusing the ingress deadline. The coordinator recognizes only the
+base operation plus 256 deterministic successors with the exact logical binding, and an
+applied-without-response replacement replays as `RetainedDeliveryAlreadyReplaced` before executing
+with the same in-memory key. The focused retained-material group passes **14/14**; the full primary
+suite passes **4779/4779** in 87.24 seconds. Canonical `prodbox dev check` passes with pinned
+formatting, HLint `No hints`, generated/documentation policy, and warning-clean all-target
+compilation. The synchronized executable is exact at
+`sha256:de4010d6a06adff4cae7b5f3e8ea2647126df9e7cf7b8cc922df6782b771930b`.
+Rerun documentation-inclusive canonical validation, then live `pre-1`; the counterexample is not
+live-closed by local evidence. No preactivation cycle has passed, no artifact or witness exists,
+and the legacy public writer remains sole.
+The documentation-inclusive canonical gate passes, then the live retry builds local image
+`sha256:5fff1a65b39268b913b72fa46c18cef045a46d732e9ae097cdc5b2aa39198efd` in 1002.0
+seconds, publishes registry manifest
+`sha256:4602c8fda12fe168083a174ab4e658c6687f5656adbef058b05330388580a967`, and imports OCI
+manifest `sha256:67c6d74cbd91072e403d2312893e4c5d1e801dfaa4e2d0e62b46f3296946614b` in 108.6
+seconds. Home reconcile and retained credential generation complete, but ACME EAB delivery refuses
+before successor recovery at `RetainedSealDeadlineExpired`. Stable counterexample
+`AWS-HARNESS-ACME-EAB-RETAINED-SOURCE-SEAL-DEADLINE-REUSE-2026-09-01` owns this boundary:
+`ensureRetainedMaterialCurrentSource` reconstructs its metadata-only catalog seal using the expired
+external-ingress request deadline for both admission and predecessor grace. Source-catalog
+reconciliation is a fresh Authority transaction and must receive its own bounded Authority-time
+deadline; replaying an old ingress request must not mint time for the ingress effect or cause an
+already receipt-backed source to be refused solely because that request expired. The candidate did
+not reach successor execution, so the preceding counterexample is not yet live-closed. Exact
+terminal cleanup is not proved, operational credentials are preserved, no qualification artifact
+or activation witness exists, and the legacy public writer remains sole.
+Code-local closure for
+`AWS-HARNESS-ACME-EAB-RETAINED-SOURCE-SEAL-DEADLINE-REUSE-2026-09-01` is complete.
+`ensureRetainedMaterialCurrentSource` no longer accepts a delivery request and therefore cannot
+reuse its deadline. Source-catalog and outbox metadata admission now derive the same fresh
+Authority-time five-minute bound as delivery attempts, and use it for both the metadata seal
+deadline and predecessor grace without reauthorizing the already receipt-backed custody effect.
+Both production schema arms use that narrower interface. The focused retained-material group
+passes **14/14**, including rotation invoked after the historical ingress deadline; the full
+primary suite passes **4779/4779** in 86.23 seconds. Canonical `prodbox dev check` passes with pinned
+formatting, HLint `No hints`, generated/documentation policy, and warning-clean all-target
+compilation. The synchronized executable is exact at
+`sha256:91766b241d7cced4e8acdac96ed2bf91f163ffb946606485cf6cf1ef01be20d6`.
+Rerun documentation-inclusive canonical validation, then live `pre-1`; neither retained-delivery
+counterexample is live-closed yet. No preactivation cycle has passed, no artifact or witness exists,
+and the legacy public writer remains sole.
+The documentation-inclusive gate passes, then the live retry builds local image
+`sha256:eedd04e1441795fa6bd009bdc985e00b6fb14cfb771dcd9f6fb508f15d351fd1` in 1001.0
+seconds, publishes registry manifest
+`sha256:8750ae97ee9d09864b7bfd3adf48332c3ccdcba2acdec38ad76e52526446b86d`, and imports OCI
+manifest `sha256:239de4659c67ae97fe4cc8c835fb6452a265f343ac4eda37533053579f337bfe` in 107.3
+seconds. It crosses `RetainedSealDeadlineExpired`, live-closing the fresh source-metadata deadline
+correction, then refuses at `RetainedDeliverySourceMismatch`. Stable counterexample
+`AWS-HARNESS-ACME-EAB-RETAINED-LEGACY-SOURCE-RECEIPT-CORRECTION-2026-09-01` owns the exact
+legacy repair. The retained-material v1 catalog was written before the Target receipt carried its
+HMAC source receipt: its current source and expired pending delivery therefore use the permit/source
+operation as the source receipt. `sourceMatchesSeal` compares only operation and generation, so
+source reconciliation returns `RetainedSealAlreadyCommitted` for that legacy current value and the
+coordinator accepts it; exact delivery admission then correctly rejects the recovered HMAC receipt.
+Repair must be an explicit narrow Authority transition admitted only for this legacy shape: same
+generation, operation, ciphertext digest, commitment, and Vault version; old receipt exactly equal
+to the operation; different observed receipt; no completed delivery using the old receipt. Exact
+replay is idempotent. An expired unobserved pending delivery may advance atomically to its
+deterministic successor using the corrected current receipt only after exact Target absence; it may
+not rewrite or rerun the old envelope. Candidate execution is not reached, exact terminal cleanup
+is not proved, operational credentials are preserved, no qualification artifact or activation
+witness exists, and the legacy public writer remains sole.
+Code-local closure for
+`AWS-HARNESS-ACME-EAB-RETAINED-LEGACY-SOURCE-RECEIPT-CORRECTION-2026-09-01` is complete.
+The explicit `ObserveLegacyRetainedMaterialSourceReceiptCorrection` transition admits only a
+current `receipt == operation` source, an observed different receipt with otherwise exact
+generation/operation/ciphertext/commitment/Vault-version identity and non-regressing observation
+time, and no completed delivery referencing the legacy receipt. It changes only current metadata,
+is idempotent after response loss, and is retried by the coordinator with the same observation.
+Request matching recognizes the old pending envelope without rewriting it. Only exact Target
+absence after strict expiry reaches `ReplaceExpiredRetainedMaterialDelivery`; that transition may
+advance the source receipt only from the legacy operation value to the exact corrected current
+receipt while retaining deterministic successor identity, target, generation, attestation, fresh
+key, and fresh deadline. The focused retained-material group passes **16/16**, the adjacent
+external-material group **25/25**, and the full primary suite **4781/4781** in 84.68 seconds.
+Canonical `prodbox dev check` passes with pinned formatting, HLint `No hints`,
+generated/documentation policy, and warning-clean all-target compilation. The synchronized
+executable is exact at
+`sha256:2c7c8a8a93dd1bcb2bad9bbb5559a166a78dc9f90743ebdd73194d6886389ff3`.
+Rerun documentation-inclusive canonical validation, then live `pre-1`; the legacy receipt and
+delivery-successor counterexamples remain live-open. No preactivation cycle has passed, no artifact
+or witness exists, and the legacy public writer remains sole.
+The corrected live retry uses local image
+`sha256:8be228601ebbc8d5d79e9d9d40abe24d93c9cdf7c3e98c091418497966c9fb86`, registry
+manifest `sha256:e14767051212f786d07c40fee542797f0f2b240ee0c926ed7ad2c1bc181b42bf`, and OCI
+manifest `sha256:588203910fbab1c2893ce60ccc457dd77634ed32b3a68533e5090681be61f822`.
+It crosses the legacy source-receipt correction and persists the exact deterministic delivery
+successor, live-closing both retained counterexamples. The successor effect does not yield an
+observable Target receipt. An immediate supported replay observes exact absence but exits at the
+intentional five-minute safety hold, `retained delivery remains pending until its absolute
+deadline`; the focused recovery cases prove this arm does not rerun the effect. This is a bounded
+recovery wait, not a new semantic counterexample: resume the same `pre-1` command after the
+persisted deadline so the Authority can replace that successor with its next deterministic
+successor. Exact terminal cleanup is not proved, operational credentials are preserved, no
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+The post-deadline replay advances to the next exact successor and executes it, live-closing the
+bounded recovery hold. It then refuses at
+`TargetMaterializationIntentIssueFailed (TargetIntentAuthorityTransportFailed ... HttpTimeout
+"connection timeout")`. Read-back of the deployed `lifecycle-authority-isolation` generation 2
+policy proves the causal route: retained delivery constructs an authenticated
+`localAuthorityTransport` to `lifecycle-authority.lifecycle-authority.svc`, ingress admits the
+namespace-local caller, but the default-deny egress inventory has no same-Pod Service lane. The
+zero-restart Ready Authority Pod therefore cannot reach its own Target-intent route. Stable
+counterexample
+`AWS-HARNESS-ACME-EAB-LIFECYCLE-AUTHORITY-SELF-ROUTE-EGRESS-DENIED-2026-09-01` licenses only an
+exact namespace-plus-name-plus-release self egress peer on the control-plane port, with a canonical
+gate and focused regression. The Target worker is not created, exact terminal cleanup is not
+proved, operational credentials are preserved, no qualification artifact or activation witness
+exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+Code-local closure for
+`AWS-HARNESS-ACME-EAB-LIFECYCLE-AUTHORITY-SELF-ROUTE-EGRESS-DENIED-2026-09-01` is complete.
+The Lifecycle Authority NetworkPolicy now admits its authenticated Service route only back to a Pod
+jointly selected by the exact namespace, `prodbox-lifecycle-authority` name, and Helm release
+instance on the control-plane port. The canonical checker rejects removal or widening of that exact
+shape. The focused isolated-Provider/Authority policy group passes **26/26** and the full primary
+suite passes **4781/4781** in 85.74 seconds. Canonical `prodbox dev check` and `git diff --check`
+pass; the synchronized executable is exact at
+`sha256:7418869cd5d9c397ba11bd0f28861e33aa46e30f4e7bb95124ffc4f027846847`.
+Rerun documentation-inclusive canonical validation, then live `pre-1`; the self-route
+counterexample is not live-closed by local evidence. No qualification artifact or activation
+witness exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+The documentation-inclusive retry builds local image
+`sha256:36ed5d849ab6e441ba71971e430ebfe6f00329e82e49785c4399e1f28a62166c` in 1021.0
+seconds, publishes registry manifest
+`sha256:fd4d4aa041f60abf68893e6b17a0b106846b8b2d1af10086c3b2d458be5c977d`, and imports OCI
+manifest `sha256:6495759e4700dbb86398f41ac356ae32b251f32d5111cb76a042a7fc4a136091`
+in 100.8 seconds. It crosses the prior connection timeout and receives the authenticated
+Target-intent refusal `receipt-digest-mismatch`, live-closing the exact self-route policy
+counterexample. Stable counterexample
+`AWS-HARNESS-ACME-EAB-TARGET-INTENT-RECEIPT-DIGEST-SUBSTITUTION-2026-09-01` owns the next
+boundary. The delivery request's attestation field is the exact external-material custody-receipt
+digest retained by the prepared Target intent, but `productionRetainedMaterialDeliveryWithKeyPair`
+substitutes `sha256TargetValueDigest opening` when asking the Authority to issue that intent. The
+opening digest remains worker material binding and cannot stand in for the prepared receipt.
+Project the exact validated delivery-attestation digest into `TargetMaterializationRequest` while
+retaining the distinct envelope/opening digests for their existing purposes. The Target worker is
+not created, exact terminal cleanup is not proved, operational credentials are preserved, no
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+Code-local closure for
+`AWS-HARNESS-ACME-EAB-TARGET-INTENT-RECEIPT-DIGEST-SUBSTITUTION-2026-09-01` is complete.
+`retainedTargetIntentReceiptDigest` validates and projects the durable delivery attestation into
+Target-intent issuance; the opening is still passed only to the worker materializer, and the
+rewrapped envelope keeps its separately checked digest. The focused retained-material group passes
+**17/17**, the adjacent external-material group passes **25/25**, and the full primary suite passes
+**4782/4782** in 86.67 seconds. Canonical `prodbox dev check` and `git diff --check` pass; the
+synchronized executable is exact at
+`sha256:75f76ef8f87a9599adcf756b02e1b1d8ca53a31a4c88c1c1781d66f4d42504f6`.
+Rerun documentation-inclusive canonical validation, then live `pre-1`; the digest-substitution
+counterexample is not live-closed by local evidence. No qualification artifact or activation
+witness exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+The corrected live retry builds local image
+`sha256:fb2661df9441f3ac639e947cccce84b987fbb6dddcde2bba604f0cf3728c2cf7`, publishes registry
+manifest `sha256:150fa1c7e868b57ed6c7c985df1ed53c2c9564eb293ee06c26a5aa9445c7e220`, and imports OCI
+manifest `sha256:f2f5fc07a3a966f75e71f879acf23f2db9a5a8d54b4143f77ec7e725d1354028`
+in 108.4 seconds. It crosses receipt-digest validation and receives the authenticated
+Target-intent refusal `intent-deadline-reached`, live-closing the digest-substitution
+counterexample. Stable counterexample
+`AWS-HARNESS-ACME-EAB-RETAINED-TARGET-INTENT-DEADLINE-EXPIRED-2026-09-01` owns the next boundary.
+The recovered delivery successor carries a fresh delivery deadline, but the Target-intent issuer
+still projects the expired external-ingress intent deadline into the authorized prepared intent.
+Exact terminal cleanup is not proved, operational credentials are preserved, no qualification
+artifact or activation witness exists, no preactivation cycle has passed, and the legacy public
+writer remains sole.
+Code-local closure for
+`AWS-HARNESS-ACME-EAB-RETAINED-TARGET-INTENT-DEADLINE-EXPIRED-2026-09-01` is complete.
+ACME Target-intent issuance now derives the delivery outbox coordinate from the registered Agent
+and selects exactly one pending operation whose source receipt, target, generation, and prepared
+custody-receipt attestation match the authenticated request. Its signed deadline is that persisted
+delivery successor's fresh deadline; the completed external-ingress deadline is not consulted.
+The focused retained-material group passes **18/18**, the adjacent external-material group passes
+**25/25**, and the full primary suite passes **4783/4783** in 85.05 seconds. Canonical `prodbox dev
+check` and `git diff --check` pass; the synchronized executable is exact at
+`sha256:9d2db6efc68d3e6b6f131b20d7057086e8352d61d9566beffe100cd90d5fab61`.
+Rerun documentation-inclusive canonical validation, then live `pre-1`; the retained-deadline
+counterexample is not live-closed by local evidence. No qualification artifact or activation
+witness exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+The documentation-inclusive live retry builds local image
+`sha256:a762a0c152e1419ee9206bdd30ee0ca254bce899b94f57b3076fd60dec7dbaeb` in 1013.8
+seconds, publishes registry manifest
+`sha256:c6594615f605055fbc04ea4830eebe498c1d0ac2aec39bfeda365d636b2ea878`, and imports OCI
+manifest `sha256:ac89be4390dff7844835182c7abdfc91d69c6f9c0aff6b2eb6ee78eee91f9c96`
+in 110.6 seconds. It crosses the expired Target-intent refusal, live-closing the retained-deadline
+counterexample, then the outer authenticated retained-delivery call ends at
+`ControlPlaneTransportFailed (HttpTimeout "response timeout")` before an observable delivery
+receipt. Stable counterexample
+`AWS-HARNESS-ACME-EAB-RETAINED-DELIVERY-RESPONSE-BUDGET-2026-09-02` owns this next boundary.
+The Authority-side delivery now includes the bounded rewrap, Target-intent, one-shot worker, and
+read-back path, while its caller still exhausts the generic transport response budget. Exact
+terminal cleanup is not proved, operational credentials are preserved, no qualification artifact
+or activation witness exists, no preactivation cycle has passed, and the legacy public writer
+remains sole.
+Code-local closure for
+`AWS-HARNESS-ACME-EAB-RETAINED-DELIVERY-RESPONSE-BUDGET-2026-09-02` is complete. One typed
+capacity constant now binds the persisted five-minute delivery lifetime to 30 seconds of response
+overhead. Only the host EAB and in-cluster SES retained-delivery clients consume the resulting
+330-second timeout; the ordinary host Authority route remains 30 seconds and the worker's ordinary
+Authority route remains the generic 10 seconds. The focused budget regression passes **1/1**, the
+retained-material group passes **18/18**, the adjacent external-material group passes **25/25**,
+and the full primary suite passes **4784/4784** in 85.67 seconds. Canonical `prodbox dev check` and
+`git diff --check` pass; the synchronized executable is exact at
+`sha256:e2269d9f3c859dda994781a12f6c26b18a4765a7a7697cc1de60136e3597316e`.
+Documentation-inclusive canonical validation also passes. Rerun live `pre-1`; the response-budget
+counterexample is not live-closed by local evidence. No qualification artifact or activation
+witness exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+The documentation-inclusive live retry builds local image
+`sha256:2196a24ccd7205a95bcc45bc21b0a096867216c33a3cdf107b7cbe1045b701ca` in 1015.3
+seconds, publishes registry manifest
+`sha256:6b3a67fa63aa7e5d2093a2a81cae23f20e66ebe497853b3c5b71c9fd7fa8dfb5`, and imports OCI
+manifest `sha256:d7d9a08d767180701c2adfee89e3b09d130f8a1aa585a221fb95b2f8f6aa92e0`
+in 109.8 seconds. The retained-delivery request remains open beyond the superseded 30-second budget
+and returns the authenticated refusal
+`TargetMaterializationWorkerFailed TargetWorkerCoordinatorWorkloadAbsent`, live-closing the
+response-budget counterexample. Stable counterexample
+`AWS-HARNESS-ACME-EAB-RETAINED-TARGET-WORKER-WORKLOAD-ABSENT-2026-09-02` owns this next
+boundary. Exact terminal cleanup is not proved, operational credentials are preserved, no
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+Code-local closure for
+`AWS-HARNESS-ACME-EAB-RETAINED-TARGET-WORKER-WORKLOAD-ABSENT-2026-09-02` is complete. Read-only
+live evidence proves the exact Target worker Job and Pod were created, scheduled, and started at
+`2026-09-02T05:23:35Z`/`05:23:36Z`, remained present until their bounded deadline, and were deleted
+at `05:26:35Z`; the reported clean absence was therefore a false terminal classification. The
+coordinator now retains the last typed observation failure across clean absence retries and returns
+it if the final sample is absent; an all-clean-absence history still reports workload absence,
+while an observed result or current failure remains authoritative. The focused Target-worker suite
+passes **35/35** and the full primary suite passes **4785/4785** in 85.53 seconds. Canonical
+`prodbox dev check` and `git diff --check` pass; the synchronized executable is exact at
+`sha256:c8b80bc44d397c19bc2d9ba08dd6b0ea2e0ee614e938b3f548028c4c105925e4`.
+Documentation-inclusive canonical validation also passes. Rerun live `pre-1` to expose the exact
+prior observation failure. The workload-absence counterexample is not live-closed by local
+evidence; no qualification artifact or activation witness exists, no preactivation cycle has
+passed, and the legacy public writer remains sole.
+The corrected live retry builds local image
+`sha256:4ffe731e997d775a8af4d925cf5643f4c8c6a27267acc481dd935c21d4cceb3d` in 1009.9
+seconds, publishes registry manifest
+`sha256:83b7c943cca81bb0ce85684eec618c19eb4dfd6005fc376f00638d021aabde75`, and imports OCI
+manifest `sha256:511f1cabf105c1759421812dd4eca05756f3f33da62f0178507b915e979bd0ae`
+in 108.5 seconds. It returns the retained prior typed observation failure
+`TargetWorkerCoordinatorObservationFailed "Target worker image digest mismatch"`, live-closing
+the false workload-absence counterexample. Stable counterexample
+`AWS-HARNESS-ACME-EAB-RETAINED-TARGET-WORKER-IMAGE-DIGEST-MISMATCH-2026-09-02` owns the next
+boundary. Exact terminal cleanup is not proved, operational credentials are preserved, no
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+Code-local closure for
+`AWS-HARNESS-ACME-EAB-RETAINED-TARGET-WORKER-IMAGE-DIGEST-MISMATCH-2026-09-02` is complete.
+Read-only evidence shows the deployed Target Agent identity and Docker-local runtime token were the
+config identity `sha256:4ffe731e997d775a8af4d925cf5643f4c8c6a27267acc481dd935c21d4cceb3d`,
+while the exact published repository manifest was
+`sha256:83b7c943cca81bb0ce85684eec618c19eb4dfd6005fc376f00638d021aabde75`;
+the downstream Job's `Always`-pull observation requires the latter. One typed resolver now derives
+the registered Target Agent identity from the independently selected repository manifest in both
+deployed control-plane values and first-reconcile permit construction. The Docker-local image ID
+remains only the Pod rollout trigger, and the observed declared tag remains only the pull address.
+The focused substitution regression passes **1/1** and the full primary suite passes **4786/4786**
+in 84.52 seconds. Canonical `prodbox dev check`, documentation lint, and `git diff --check` pass;
+the synchronized executable is exact at
+`sha256:0d891541c75bc0b61926b4466c9be6828969bc76e1f4fc8e1537af4f99c935aa`.
+Rerun live `pre-1`; the image-digest counterexample is not live-closed by local evidence. No
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+The manifest-identity live retry builds local image
+`sha256:672cdf751ca108fe7fdce185f0f2710cfe69c26a1c2d245d411bf27d09464ff6` in 1013.1
+seconds, publishes registry manifest
+`sha256:5c61858c84773f6b1523740459cbe4d54a9f70d50e0d036ed86aa13a664850c6`, and imports OCI
+manifest `sha256:4f2cc59fe5beb4a64b8b5d6fe029d68fa462a20fb1053e86b2ecde671f62f42d`
+in 117.9 seconds. It crosses Target-worker runtime image attestation, live-closing the image-digest
+counterexample, and reaches execution-permit issuance before returning
+`TargetIntentAuthorityUnavailable "target-trust-install-unavailable/client/response-codec/invalid"`.
+Stable counterexample
+`AWS-HARNESS-ACME-EAB-TARGET-TRUST-INSTALL-RESPONSE-CODEC-2026-09-02` owns this next
+boundary. Exact terminal cleanup is not proved, operational credentials are preserved, no
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+Code-local closure for
+`AWS-HARNESS-ACME-EAB-TARGET-TRUST-INSTALL-RESPONSE-CODEC-2026-09-02` is implemented.
+The Target-trust decoder now preserves only the closed HTTP status class for a codec-invalid
+non-server response and, for a codec-invalid server response, the existing exact static
+authenticated-role response classification or `other`. It retains neither response bytes nor a
+numeric status and changes no trust installation, CAS, read-back, response, retry, cleanup, remint,
+permit, journal, or delivery behavior. The focused Sprint-2.116 regression passes **1/1**; full
+primary validation passes **4786/4786** in 85.98 seconds. Canonical `prodbox dev check`,
+documentation lint, and `git diff --check` pass; the synchronized executable is exact at
+`sha256:1b8ca067de7da05e0718a00fe29697cb82d19794925068c05a03c3890894978f`. A live
+`pre-1` replay remains required to expose the exact closed cause and live-close the counterexample.
+No qualification artifact or activation witness exists, no preactivation cycle has passed, and
+the legacy public writer remains sole.
+The status-aware live retry builds local image
+`sha256:a1a7899b835fbee52e84ec6cda2bb8d354cef92e797da132e3da345783036d90` in 1009.4
+seconds, publishes registry manifest
+`sha256:77a45781258525502a2a42c447c930e88b4764bee689fa49cccbdf273fd6cef3`, and imports OCI
+manifest `sha256:c22b3fde8cd8bf7c28f67aaf97db0d1a49cf8673f120add37bfd906fa4b6457a`
+in 112.1 seconds. The retained root session, baseline digest, and storage generation remain exact;
+the run reaches Target trust installation and returns the exact fixed authenticated-role cause
+`target-trust-install-unavailable/client/response-codec/invalid/status/server/replay-capacity-exhausted`,
+live-closing the generic response-codec counterexample. Stable counterexample
+`AWS-HARNESS-ACME-EAB-TARGET-TRUST-INSTALL-REPLAY-CAPACITY-EXHAUSTED-2026-09-02` owns
+the next boundary. The command exits 1, exact terminal cleanup is not proved, and operational
+credentials are preserved. No qualification artifact or activation witness exists, no
+preactivation cycle has passed, and the legacy public writer remains sole.
+Source closure proves the complete Target Agent preflight envelope is five requests: one provider
+credential observation, one committed external-material source recovery observation, then the
+retained delivery's Target observation, rewrap, and trust installation. The correction derives
+capacity `2 * 5 = 10` for one whole attempt and its immediate unchanged retry while the earlier
+requests remain inside the deadline-plus-skew horizon. It also gives only this role a 24 MiB encoded
+projection bound so ten accepted 2 MiB responses plus metadata fit; TLS Retention and Provider
+Worker remain at generic capacity four/12 MiB. The retained codec advances to v7 and admits
+canonical v6/capacity-four state under the widened Target limits without dropping its non-empty
+entries; response-size/skew drift, shrink, corruption, and clearing remain refused. The focused
+authenticated-transport suite passes **35/35**, including the exact fourth/fifth refusal trace, two
+complete attempt envelopes, non-empty v6-to-v7 migration, and a ten-maximum-response projection
+that exceeds the old 12 MiB ceiling but fits and round-trips under 24 MiB. Full primary validation
+passes **4786/4786** in 87.57 seconds; canonical `prodbox dev check` passes policy, formatting,
+HLint (`No hints`), and warning-clean all-target compilation. Documentation lint, generated-doc
+check, and `git diff --check` pass, and the synchronized executable is exact at
+`sha256:1e84d716b3fba16052e31d3e7f2cac16c3fe9776aab0b77e01a6434f3147aec8`. A live exact
+`pre-1` replay remains pending. No qualification artifact or activation witness exists, no
+preactivation cycle has passed, and the legacy public writer remains sole.
+The corrected live `pre-1` replay builds local image
+`sha256:3334b9937d5ce0bda911cee41d888021f297b78f0039fec9614c4c155d5eba12` in 1022.3
+seconds, publishes registry manifest
+`sha256:e0ac098341fe329ab5258125c32f5a8fa7aee72c264285f3a457a639aacc0341`, and imports
+OCI manifest `sha256:dc7384ca8f12da899b9e3ca0e3eff7020c35a1481bbcf520375a2c12d4e3e587`
+in 107.0 seconds. Managed retention removes only the superseded prior image. Root session
+`root-session-9c54db6ad0a352d81a4313f7f2613735c056a2b635618cc095bba021a6b21a5b`, baseline
+digest `a57561193057a71d62986c9dcc39ca5d59274bd464a413ef445ed3a3b9f77df6`, and storage
+generation `vault-a290544ececcff87892b19c03dcbf1a06ad3eb800614aaf413af5b81f42ad422`
+remain exact. The run reconciles Target Agent, Lifecycle Authority, post-unseal handoff, and
+Authority Backup, then reports that the lifecycle-provider credential is current at generation 2.
+This live-closes
+`AWS-HARNESS-ACME-EAB-TARGET-TRUST-INSTALL-REPLAY-CAPACITY-EXHAUSTED-2026-09-02`.
+The later AWS-credential validation reaches the authenticated Authority/Provider lane but the
+Authority's Provider client cannot resolve
+`provider-worker.provider-worker.svc.cluster.local`; the exact closed terminal is
+`AuthorityProviderRemoteRefused 503 "ProviderWorkerTransportFailed
+(AuthenticatedClientTransportFailed (ControlPlaneTransportFailed (HttpConnectionFailure ... does
+not exist (Name or service not known))))"`. Stable counterexample
+`AWS-HARNESS-PROVIDER-WORKER-SERVICE-DNS-UNAVAILABLE-2026-09-02` owns that next boundary. The
+command exits 1, exact terminal cleanup is not proved, and operational credentials are preserved.
+No qualification artifact or activation witness exists, no preactivation cycle has passed, and
+the legacy public writer remains sole.
+Source diagnosis proves the endpoint identity is canonical and the Service belongs to the ordinary
+reconcile graph, but the harness proceeded directly from its deliberately Provider-free
+pre-credential bootstrap floor to AWS prerequisites. The code-local correction preserves that
+floor, repairs the Lifecycle-provider generation, then re-enters ordinary local-only `cluster
+reconcile` before ACME EAB ingress or `aws_credentials_valid`. That graph-rooted reconcile enables
+neither edge nor AWS-target mutation and retains the normal Provider deep-readiness gate; pure
+IAM-only harness suites still create no runtime. Unit coverage fixes the exact command selection
+for both suite classes. Haskell formatting/HLint passes with `No hints`, `git diff --check` passes,
+the full primary suite passes **4786/4786** in 87.73 seconds, and canonical `prodbox dev check`
+passes. The synchronized executable is exact at
+`sha256:0610acc3476b0b073a1b1b44c0819807a20576a6f113228f5deba072c0df8898`. A live `pre-1`
+replay remains pending. No qualification artifact or activation witness exists, no preactivation
+cycle has passed, and the legacy public writer remains sole.
+The corrected live `pre-1` replay builds local image
+`sha256:1245c499a0a71f714cd3579c5b16f6005623f1d6cb695d927f87154faca02f13` in 1004.8
+seconds, publishes registry manifest
+`sha256:4c1e12edeafd8645d2b4614bf993e69dd1656ce11a8ebd59381526768d3e8a14`, and imports
+OCI manifest `sha256:48c0a3298e42730a3794b3992224f2b1fa1669874b1ec356c0454b82d2249c5e`
+in 112.2 seconds. Managed retention removes only the prior manifest/image. Root session
+`root-session-9c54db6ad0a352d81a4313f7f2613735c056a2b635618cc095bba021a6b21a5b`, baseline
+digest `a57561193057a71d62986c9dcc39ca5d59274bd464a413ef445ed3a3b9f77df6`, and storage
+generation `vault-a290544ececcff87892b19c03dcbf1a06ad3eb800614aaf413af5b81f42ad422`
+remain exact. Credential generation 2 is confirmed before the new ordinary local-only reconcile;
+that reconcile installs Provider Worker, passes its strict deep readiness, and advances through
+Gateway and TLS Retention, live-closing
+`AWS-HARNESS-PROVIDER-WORKER-SERVICE-DNS-UNAVAILABLE-2026-09-02`. The following existing
+`--with-edge` runbook creates the managed DNS01/EAB materializer resources but exits 1 with exact
+terminal `ACME EAB materializer did not complete.` Stable counterexample
+`AWS-HARNESS-ACME-EAB-MATERIALIZER-NOT-COMPLETE-2026-09-02` owns this next boundary.
+Exact terminal cleanup is not proved and operational credentials are preserved. No qualification
+artifact or activation witness exists, no preactivation cycle has passed, and the legacy public
+writer remains sole. Diagnose the exact Job/Pod observation and logs before changing its lifecycle.
+The supported diagnostic rerun reproduces one failed Pod with both init and main containers
+started; the retained Job reports `BackoffLimitExceeded`, while the sibling home-DNS01 Job
+completes. Before foreground cleanup, the exact main-container terminal is `grep: bad regex
+'^[A-Za-z0-9._~-]{1,512}$': Invalid contents of {}`, followed by the closed unsupported-shape
+message. The curl image's grep rejects the repetition bound itself, so it misclassifies every valid
+key ID. The code-local correction separates the same 1..512 contract into nonempty and POSIX-shell
+`${#key_id}` upper-bound checks, then applies an unbounded allowed-ASCII-character regex; it neither
+widens the accepted alphabet nor exposes the key ID. The rendered-manifest regression pins the new
+length and alphabet checks and excludes the invalid bounded regex. Formatting and validation remain
+pending before another live `pre-1`; the legacy public writer remains sole.
+The first full primary rerun compiles the correction but reports **1/4786** failed: the new test
+searched JSON-encoded manifest text for an unescaped double-quoted shell fragment. Production
+rendering is exact in the failure output. The test now pins `${#key_id}` and `-le 512` independently
+so JSON string escaping cannot masquerade as a command-shape failure; the alphabet and old-bound
+assertions are unchanged. The corrected focused regression passes **1/1**, Haskell
+formatting/HLint passes with `No hints`, `git diff --check` passes, and the full primary suite passes
+**4786/4786** in 88.50 seconds. Canonical `prodbox dev check` passes, and the synchronized
+executable is exact at
+`sha256:e675de068683a1177c472a1c0716e19cedb749b743acf8c4726b5c0437a4b900`. A live `pre-1`
+replay remains pending.
+That replay builds local runtime image
+`sha256:d2d8f884049bae42e9d7a7ada872692e63c678d67dfed012bdb84c3e0626faf2`, publishes
+registry manifest `sha256:15195e7bed16b94bca561e4271f3c6fe80a731e35242edfaa1b6d501eccc6718`,
+and imports OCI manifest
+`sha256:9134409efb1df86a4b8bcee02b74d16d9bc7b50e3e411661d626e300e8d501f4`.
+It retains the exact root session, baseline digest, storage generation, and credential generation 2;
+the post-credential ordinary reconcile restores Provider Worker, Gateway, and TLS Retention. The
+corrected EAB materializer completes and `zerossl-dns01` reaches Ready, live-closing
+`AWS-HARNESS-ACME-EAB-MATERIALIZER-NOT-COMPLETE-2026-09-02`. The next exact failure is
+`TlsWorkflowHomeAgentFailed (TlsTargetAgentClientHttpStatus 401)`: the host TLS workflow signs its
+direct home Target Agent request as `CallerOperatorCli`, while every Target TLS route correctly
+admits only `CallerService LifecycleAuthorityRuntime`. Stable counterexample
+`HOME-TLS-WORKFLOW-BYPASSES-LIFECYCLE-AUTHORITY-2026-09-02` owns the routing correction; do not
+widen Target trust to the operator. The command exits 1 and its restore aggregate also fails VS Code
+deletion, WebSocket restoration because Redis cannot schedule under the current CPU draw, and
+public-edge readiness. Exact terminal cleanup is therefore not proved, operational credentials are
+preserved, no qualification artifact or activation witness exists, no preactivation cycle has
+passed, and the legacy public writer remains sole.
+The code-local routing correction keeps all six Target TLS routes exact-Authority-only and adds the
+closed stable-code-60 Authority workflow route. Home ChartPlatform can now submit only retain or
+restore plus the compiled substrate/scope slot; the retained Authority authenticates its own TLS
+state fold and is the sole caller of the home Target Agent and ciphertext Adapter. The paired
+NetworkPolicies admit only the exact Authority-to-Adapter workload lane. The two authentication
+suites pass **34/34** and **36/36**, and the complete primary suite passes **4789/4789** after its
+closed startup-vocabulary fixtures gained the two new endpoint/client causes. The
+documentation-inclusive canonical `prodbox dev check` also passes with HLint `No hints`,
+warning-clean all-target compilation, generated/documentation policy, and diff hygiene. The
+synchronized executable is exact at
+`sha256:a7142a4a08ace977c1536bc337abab116f25fc8fa3d465adebafcdf26c32fc80`. The unchanged
+live `pre-1` replay remains pending. No
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+That replay builds local runtime image
+`sha256:5339ad0c4dc08d0f8f3e58b748403ace2ff78a656e2ed0f6913e028e4225926b`, publishes
+registry manifest `sha256:620a9243925d64b2f1b61369ec302179a32ee86f751ff5a6112091e9d7feb360`, and imports
+OCI manifest `sha256:93a468947efa4ada5003f67a5245984248443f0f60488f6985b95c5e56333bd1`.
+It stops before the corrected TLS boundary, AWS harness setup, or candidate execution while
+unsealing Vault. The exact `bootstrap-secret-worker` Pod requests `250m / 256Mi`, but the node has
+`6945m` CPU requests against `7000m` allocatable; Kubernetes leaves the Pod without container
+status and records `0/1 nodes are available: 1 Insufficient cpu`. Host attestation retries that
+non-started observation for its complete bounded window and then fails closed; postflight deletes
+the one-shot Pod. The typed resource plan contains the standing `bootstrap-broker` but no
+one-shot secret-worker draw, so the preceding host-capacity success did not reserve capacity for
+the operation it immediately invoked. Stable counterexample
+`BOOTSTRAP-SECRET-WORKER-ABSENT-FROM-CAPACITY-PLAN-2026-09-02` owns this exact scheduler boundary.
+Close it with a repository-owned zero-growth resource-envelope reproducer and explicit one-shot
+capacity projected into the production Pod; do not weaken attestation, lengthen its already
+exhausted wait, invent host capacity, or reduce the established gateway sufficiency envelope.
+No qualification artifact or activation witness exists, no preactivation cycle has passed, and
+the legacy public writer remains sole.
+Code-local closure for
+`BOOTSTRAP-SECRET-WORKER-ABSENT-FROM-CAPACITY-PLAN-2026-09-02` is complete without increasing the
+topology-normalized host envelope. The repository-owned reproducer holds host capacity, eviction,
+standing load, gateway sufficiency, and all four resource axes constant: superseded
+`rke2_reserved (1000m, 2048Mi, 10240Mi ephemeral, 1024Mi durable) + zero one-shot draw` maps
+exactly to `rke2_reserved (500m, 1536Mi, 9728Mi ephemeral, 1024Mi durable) + one exclusive-window
+maximum (500m, 512Mi, 512Mi ephemeral, 0 durable)`. The production plan now carries
+`bootstrap-secret-worker` at one replica and `credential-provisioner-secret-workers` at two
+replicas in the shared `one-shot-secret-workers` window. Both derive one hidden common Guaranteed
+envelope of `250m / 256Mi / 256Mi ephemeral / 0 durable`; Bootstrap, Credential Provisioner,
+Target Secret, and AWS-admin Job/Pod renderers consume that same value. Production settings reject
+a missing, partial, differently named, differently sized, non-Guaranteed, or non-exclusive
+profile, and the AWS harness refreshes only stale harness-owned capacity while preserving complete
+operator-owned configs. The reproducer pins the old live refusal (`6945m + 250m > 7000m`) and the
+replacement pressure schedule (`6945m + 300m restored Redis/WebSocket + 250m < 7500m`); kubelet
+reservation exposes that 7500m node allocatable while the compiler continues to subtract the
+separate 500m eviction budget. Systemd containment remains byte-semantically at its prior
+two-worker peak, and neither attestation timing nor the gateway envelope changed. The complete
+primary suite passes **4791/4791**, auxiliaries pass **27/34/36**, canonical `prodbox dev check`
+exits 0 with Fourmolu, HLint `No hints`, conformance, and warning-clean all-target compilation, and
+the synchronized executable is exact at
+`sha256:b3e8d9ef22d94bb59f20f89e8c21c1e51cc9c09e04c3d80bfe7e3067817851e8`.
+The unchanged live `pre-1` replay proves that correction. It writes the kubelet guardrail, restarts
+RKE2, and independently reads `8` CPU capacity / `7500m` allocatable. It builds local runtime image
+`sha256:79673fcd37a2a596d6df57785898b5c1dd191f55e56246790a01032f52f5a57a`, publishes registry
+manifest `sha256:0ebd0ca830f448a9b889c0085377a207bf1fd77c53d6bd3d7af2f6b4eb2092a1`, and imports OCI
+manifest `sha256:431f4877205c5ead0a25b083223a4738d7467b5704033257218951817bd26f28`. The exact bootstrap
+worker now starts, Vault unseal succeeds, the retained root/baseline/storage identities remain
+exact, credential generation 2 remains current, and home reconcile crosses Provider Worker,
+Gateway, TLS Retention, both secret materializers, and Ready `zerossl-dns01`. The next candidate
+failure is `TlsRetentionWorkflowAuthorityHomeAgentUnavailable` during chart cleanup. Stable
+counterexample `TLS-WORKFLOW-AUTHORITY-HOME-AGENT-UNAVAILABLE-2026-09-02` owns that exact
+Authority-workflow availability boundary; do not restore a direct operator-to-Target call or widen
+Target trust. The restore aggregate separately fails VS Code delete/reconcile against the
+three-existing-PVC topology and public-edge readiness because Gateway-DNS write authority is not
+ready. The command exits 1 and preserves operational credentials because exact terminal cleanup is
+not proved. No qualification artifact or activation witness exists, no preactivation cycle has
+passed, and the legacy public writer remains sole.
+The code-local diagnostic for
+`TLS-WORKFLOW-AUTHORITY-HOME-AGENT-UNAVAILABLE-2026-09-02` is complete without changing replay
+capacity or TLS behavior. `TlsTargetAgentClient` now classifies only an exact static
+authenticated-role HTTP status/body pair into the closed response observation; arbitrary response
+bytes remain `other` and never enter the error or Authority response. The Authority workflow adds
+distinct home/selected Target replay-capacity failure constructors and otherwise preserves the
+existing availability projections. The focused exact-pair/payload-redaction regression passes
+**1/1**, the complete primary suite passes **4792/4792**, auxiliaries pass **27/34/36**, canonical
+`prodbox dev check` exits 0 with Fourmolu, HLint `No hints`, conformance, and warning-clean
+all-target compilation, `git diff --check` passes, and the synchronized diagnostic executable is
+exact at `sha256:e4ae6d14662c9843ee2df684f14ec639f0573bdc8ac8e0f7fbfb6cf17bcf21bc`. Rerun live
+`pre-1` unchanged to expose the exact closed Target response before changing the retained replay
+bound. No qualification artifact or activation witness exists, no preactivation cycle has passed,
+and the legacy public writer remains sole.
+The unchanged diagnostic `pre-1` replay builds local runtime image
+`sha256:bc11e162bfa19e75a4b774c878adf89b8743537eb493d1b5a08f4f870532ab2e`, publishes registry
+manifest `sha256:4978a39924b120f3b8f6ff0463a4a6f2f17c4d010f519cd6494d9698bef42767`, and imports OCI
+manifest `sha256:e185dcaa8fc5784cb81f90bfedf7bc365bf56146c20ae9aa19644505ef740d7b`; managed retention
+removes only the superseded prior runtime image. Both home reconcile passes cross Bootstrap
+Broker, Target Secret Agent, Lifecycle Authority, Authority Backup, Provider Worker, Gateway, TLS
+Retention, both secret materializers, and Ready `zerossl-dns01`. During supported-runtime restore,
+the first owned-certificate turnover still returns
+`TlsRetentionWorkflowAuthorityHomeAgentUnavailable`, not the new exact replay-capacity
+constructor. The behavior-neutral diagnostic therefore falsifies the narrow claim that an exact
+Target replay-capacity response reaches this Authority call; it does not license changing the
+replay bound. The restore aggregate again records successful Websocket, API, and Gateway deletion,
+failed VS Code deletion/reconcile against the same three discovered Percona PVCs, successful
+Gateway/API/Websocket reconcile, and failed public-edge readiness because Gateway-DNS write
+authority is not Ready. The command exits 1 and preserves operational credentials because exact
+terminal cleanup is not proved. Diagnose the deployed Authority-to-home-Agent transport/status
+path while holding capacity, TLS effects, retry, and trust constant. No qualification artifact or
+activation witness exists, no preactivation cycle has passed, and the legacy public writer remains
+sole.
+The next behavior-neutral diagnostic checkpoint preserves those same bounds and effects. The
+Target-intent Authority client now classifies only the exact static authenticated-role status/body
+pair for a nested replay-capacity refusal before its CBOR decode; every other response remains the
+existing payload-free invalid-response cause. The Target Agent and TLS workflow runtime emit only
+closed, value-free cause tokens at their existing refusal boundaries, and ordinary diagnostic-write
+failure cannot replace the owned workflow result. No replay capacity, request/response envelope,
+deadline, retry, trust edge, TLS effect, or worker action changes. The exact nested-pair and private-
+body redaction regression passes **1/1**, the complete primary suite passes **4793/4793**,
+auxiliaries pass **27/34/36**, canonical `prodbox dev check` exits 0 with repository-pinned
+Fourmolu, HLint `No hints`, conformance, and warning-clean all-target compilation, and `git diff
+--check` passes. The synchronized diagnostic executable is exact at
+`sha256:80adeeee8ea1cad2c23d95dae31887e83228027b4366bec8d2547b2b3668703d`. Rerun the same live
+`pre-1` unchanged and inspect only the closed deployed Target-Agent/Authority diagnostic tokens
+after terminal return; this checkpoint does not license changing either retained replay bound. No
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+The unchanged diagnostic live `pre-1` builds local runtime image
+`sha256:3308656686330a700b88d11dc7e5003a9489525445757424817f130a669183a6`, publishes registry
+manifest `sha256:4e85a04762909f9dd5f092dbcca4bddac34b8e04b49c290aa26782444036279b`, and imports OCI
+manifest `sha256:2efbdf2bb2c6827ddc7143d256f29d8cac4336c26a2099571b8590586120dd70`; managed retention
+removes only the superseded prior diagnostic image. All repeated home passes preserve the exact
+Vault identities and cross Bootstrap Broker, Target Secret Agent, Lifecycle Authority, Authority
+Backup, Provider Worker, Gateway, TLS Retention, both secret materializers, and Ready
+`zerossl-dns01`. The first owned-certificate turnover remains host-visible as
+`TlsRetentionWorkflowAuthorityHomeAgentUnavailable`, while the new deployed closed diagnostics
+identify `target-one-shot/tls-prepare failure=intent/transport-failed` at Target Agent and
+`tls-retention/workflow failure=home-agent/transport-failed` at Authority; Lifecycle Authority
+receives no matching request. Read-only deployed-policy inspection proves the missing edge in both
+directions: Target Agent egress admits only DNS, Vault, and Kubernetes API, and Lifecycle Authority
+ingress omits the Target Agent namespace/principal. Stable counterexample
+`TLS-TARGET-INTENT-AUTHORITY-NETWORKPOLICY-DENY-2026-09-02` owns that exact denied authenticated
+Target-intent route. Correct only the two least-privilege NetworkPolicy arms and add an exact
+rendered-topology reproducer while holding replay capacity, envelopes, deadlines, retry, trust,
+TLS effects, and worker actions constant. The restore aggregate retains the same secondary VS Code
+three-PVC and Gateway-DNS readiness failures; exit is 1 and credentials remain preserved. No
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+Code-local closure for `TLS-TARGET-INTENT-AUTHORITY-NETWORKPOLICY-DENY-2026-09-02` adds exactly
+the missing two halves of the already-authenticated route: Target Agent egress selects namespace
+`lifecycle-authority`, Pod label `prodbox-lifecycle-authority`, and the value-bound TCP 8600
+control-plane port; Authority ingress selects namespace `target-secret-agent`, Pod label
+`prodbox-target-secret-agent`, and its named `lifecycle` port. The old→new topology mapping is
+therefore `no Target→Authority policy edge` to `one exact bidirectional NetworkPolicy admission`
+with process topology, resource/load envelopes, replay capacity, deadlines, retries, trust, TLS
+effects, and worker actions unchanged. The stable reproducer passes only with both exact arms and
+replays either superseded omission as a failure (**1/1**); both charts render successfully with the
+closed selectors and port. The complete primary suite passes **4794/4794**, auxiliaries pass
+**27/34/36**, canonical `prodbox dev check` exits 0 with repository-pinned Fourmolu, HLint `No
+hints`, conformance, and warning-clean all-target compilation, and `git diff --check` passes. The
+synchronized executable remains exact at
+`sha256:80adeeee8ea1cad2c23d95dae31887e83228027b4366bec8d2547b2b3668703d`; rerun live
+`pre-1` to prove the policy edge before diagnosing or changing any later cause. No qualification
+artifact or activation witness exists, no preactivation cycle has passed, and the legacy public
+writer remains sole.
+The corrected live `pre-1` reuses exact local runtime image
+`sha256:3308656686330a700b88d11dc7e5003a9489525445757424817f130a669183a6` and registry manifest
+`sha256:4e85a04762909f9dd5f092dbcca4bddac34b8e04b49c290aa26782444036279b`, then live-proves the
+topology correction: deployed Target Agent policy generation 2 contains the exact Authority
+egress arm and deployed Authority policy generation 5 contains the exact Target Agent ingress arm.
+The first owned-certificate turnover advances past intent transport and now emits
+`target-one-shot/tls-prepare failure=coordinator/attestation-failed`; the host/Authority projection
+remains the expected payload-free home-Agent unavailability. Stable counterexample
+`TLS-TARGET-WORKER-ATTESTATION-FAILED-2026-09-02` owns this next exact one-shot attestation
+boundary. Diagnose it without changing replay capacity, the now-proved policies, envelopes,
+deadlines, retry, trust, TLS effects, or worker actions. The restore aggregate again records the
+same VS Code three-PVC and Gateway-DNS readiness failures, exits 1, and preserves operational
+credentials because terminal cleanup is unproved. No qualification artifact or activation witness
+exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+The behavior-neutral diagnostic for `TLS-TARGET-WORKER-ATTESTATION-FAILED-2026-09-02` preserves
+the coordinator, observation schedule, cleanup, and all effect bounds. The existing closed
+17-constructor `TargetWorkerAttestationError` algebra now has one exhaustive, payload-free token
+renderer, and only the Target Agent's already-added closed diagnostic refines
+`attestation-failed` with that token; operational error projection remains unchanged. The complete
+17-arm vocabulary/hook regression passes **1/1**, the primary suite passes **4795/4795**,
+auxiliaries pass **27/34/36**, canonical `prodbox dev check` exits 0 with repository-pinned
+Fourmolu, HLint `No hints`, conformance, and warning-clean all-target compilation, and `git diff
+--check` passes. The synchronized diagnostic executable is exact at
+`sha256:327aff7c9f0df575afd5e43e8a8d1423f55f65b4d4427d392a0242945d9d74bd`. Rerun live
+`pre-1` unchanged to identify the exact attestation arm before changing timing or worker behavior.
+No qualification artifact or activation witness exists, no preactivation cycle has passed, and
+the legacy public writer remains sole.
+The unchanged diagnostic live `pre-1` builds local runtime image
+`sha256:47cda70bd0f278b2372989db5c03acfbb8845481997d55a9fd12dadaaef1b1b4`, publishes registry
+manifest `sha256:5452befa761e9c31c603b580a3054f56454df7c7dd3a30c2f83a3c6ebcbba391`, and imports OCI
+manifest `sha256:3f1722c9a1f1d9dd524b432ba563090edaf7d69e7980772c87c4d1a254558db9`. The first
+owned-certificate turnover stays host-visible as `TlsRetentionWorkflowAuthorityHomeAgentUnavailable`,
+while the Target Agent identifies the exact closed arm
+`target-one-shot/tls-prepare failure=coordinator/attestation-failed/not-running`; the Authority
+retains its payload-free `tls-retention/workflow failure=home-agent/transport-failed` projection.
+Kubernetes events prove the exact one-shot Pod was scheduled, pulled, created, and started, then
+the Job reached `BackoffLimitExceeded`; the Pod was removed before a direct terminal-status or log
+observation. Stable counterexample `TLS-TARGET-WORKER-NOT-RUNNING-2026-09-02` owns this exact
+started-then-terminal worker/attestation boundary. Diagnose the worker command and exit path before
+changing observation timing: the present evidence does not license treating `not-running` as a
+readiness race. Hold the existing observation schedule, resource/load envelopes, replay capacity,
+deadlines, policies, trust, TLS effects, and worker action constant. The cleanup aggregate again
+fails VS Code delete/reconcile because the same three historical Percona PVCs are present and
+fails public-edge readiness because Gateway-DNS write authority is not ready; it exits 1 and
+preserves operational credentials because exact terminal cleanup is unproved. No qualification
+artifact or activation witness exists, no preactivation cycle has passed, and the legacy public
+writer remains sole.
+Code-local closure for `TLS-TARGET-WORKER-NOT-RUNNING-2026-09-02` proves the worker process was
+not racing readiness: the rendered Job passes `--material-schema tls-prepare`, but the executable
+parser admitted only the three material-delivery schemas and exited before entering the worker
+runtime. The stable parser-boundary reproducer first failed **1/1**, expecting
+`TargetWorkerTlsPrepare` and receiving that exact three-schema refusal. The schema ADT now derives
+one exhaustive bounded enumeration, and the CLI parses the inverse of the existing canonical token
+renderer, admitting all thirteen already-implemented material/TLS/federation worker operations.
+The old→new mapping is `three parser-admitted schema tokens` to `the exact thirteen-constructor
+TargetWorkerIngressSchema vocabulary`; process topology, command arguments emitted by the Job,
+observation/cleanup schedules, resource and load envelopes, replay capacity, deadlines, policies,
+trust, TLS effects, and worker actions are unchanged. The focused reproducer passes **1/1**, the
+generated CLI output suite passes **3/3**, the complete primary suite passes **4796/4796**, and
+auxiliaries pass **27/34/36**. Canonical `prodbox dev check` passes with repository-pinned
+Fourmolu, whole-tree HLint `No hints`, conformance, generated-artifact checks, and warning-clean
+all-target compilation; `git diff --check` passes. The synchronized executable is exact at
+`sha256:43d3c8da1c03bb5dea10b283d7ce709d5dc89f03d2b899402e2651199d1ccff6`. Rerun live
+`pre-1` to prove the worker crosses parsing and expose only the next exact closed boundary. No
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+The corrected live `pre-1` reuses local runtime image
+`sha256:47d1fc71d3098fc0626009db0535dc51c2411a1150bf975b004f449749b3a34b` and registry
+manifest `sha256:31e86d899b025abf84c58c6c28db218a18ed08f9bb7cc4794e3de73b95569093`. It proves the
+parser correction: the exact `tls-prepare` one-shot Pod is scheduled, pulls that manifest, starts
+without `BackoffLimitExceeded`, and is removed by the coordinator; the Target Agent emits no
+closed failure diagnostic. Lifecycle Authority nevertheless records
+`tls-retention/workflow failure=home-agent/transport-failed` at `09:37:24.969-04:00`. The
+authenticated request necessarily reached the Agent because that handler alone created the
+observed Job, while its Lifecycle-Authority client is still the generic 10-second HTTP default and
+the Target operation owns a 15-minute authorization lifetime plus a 180-second worker runtime.
+Stable counterexample `TLS-TARGET-ONE-SHOT-EXCEEDS-DEFAULT-HTTP-DEADLINE-2026-09-03` owns this
+exact caller/child-schedule mismatch. Derive a Target-one-shot-only response budget from the closed
+operation lifetime plus bounded protocol overhead, leaving ordinary Target observations, every
+sibling client, worker runtime, authorization deadline, replay capacity, topology, envelopes,
+retry, trust, and TLS effects unchanged. The terminal restore aggregate repeats the same three
+historical VS Code Percona PVC failures and Gateway-DNS write-authority readiness failure, exits 1,
+and preserves operational credentials because exact terminal cleanup is unproved. No
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+Code-local closure for `TLS-TARGET-ONE-SHOT-EXCEEDS-DEFAULT-HTTP-DEADLINE-2026-09-03` gives the
+Target one-shot schedule one capacity owner. The existing 15-minute authorization lifetime and a
+30-second bounded admission/framing/response margin derive a 930-second response timeout; the
+existing 180-second Kubernetes worker deadline is now projected from that same owner and remains
+unchanged. Lifecycle Authority uses a distinct transport only for TLS worker operations, retained
+material rewrap, and federation custody. Ordinary Target material/source/trust/decommission
+observations and every sibling client retain the generic 10-second default. The exact old→new
+mapping is therefore `Target one-shot calls: 10,000,000 µs; observations: 10,000,000 µs` to
+`Target one-shot calls: 930,000,000 µs; observations: 10,000,000 µs`; process topology, request
+and worker concurrency, resource/load envelopes, authorization and worker deadlines, replay
+capacity, policies, retry, trust, TLS effects, and operation results are unchanged. The focused
+relationship regression passes **1/1**, the complete primary suite passes **4797/4797**, and
+auxiliaries pass **27/34/36**. Canonical `prodbox dev check` passes with the repository-pinned
+formatter, full-tree HLint `No hints`, conformance, and warning-clean all-target compilation;
+documentation lint and `git diff --check` pass. The synchronized executable is exact at
+`sha256:8713ebc64c16195f18c498e94d8e2750e52afde08c0b1cd00998bb5199d119c1`. Rerun the same live
+`pre-1` unchanged to prove the response crosses this derived budget before diagnosing or changing
+either secondary cleanup failure. No qualification artifact or activation witness exists, no
+preactivation cycle has passed, and the legacy public writer remains sole.
+The unchanged live `pre-1` builds local runtime image
+`sha256:d62d3e2d1352921f70312797d864513959182bc255c64fd2485ebd9b64460217`, publishes registry
+manifest `sha256:c36567b9dbb1d79cc2987fa9a4d7dcbf771d9424c9f88978c122e2ffd368be0a`, and imports OCI
+manifest `sha256:ccb41763c42c3e8b8b53efe702a5ad9cfe62f2fabb10ce15b5c2f6f65c45bf84`; retention removes
+only the superseded prior image. It live-proves the inner Target response-budget correction: the
+failure moves outward from Authority's `home-agent/transport-failed` projection to the host's exact
+`TlsRetentionWorkflowAuthorityClientTransportFailed (AuthenticatedClientTransportFailed
+(ControlPlaneTransportFailed (HttpTimeout "response timeout")))`. The host's generic Lifecycle
+Authority transport still waits 30 seconds, but the Authority-side retain program can invoke four
+sequential Target one-shot operations, each with the already-derived 930-second response bound.
+Stable counterexample `TLS-AUTHORITY-WORKFLOW-EXCEEDS-HOST-HTTP-DEADLINE-2026-09-03` owns this
+next exact outer-caller/program-schedule mismatch. Give only the host TLS-workflow route a response
+budget derived from that closed four-operation program plus bounded non-Target protocol overhead;
+leave generic Authority calls, retained-material delivery, all inner budgets, topology,
+concurrency, envelopes, deadlines, replay, retry, trust, and TLS effects unchanged. The terminal
+restore aggregate repeats the same three historical VS Code Percona PVC failures and Gateway-DNS
+write-authority readiness failure, exits 1, and preserves operational credentials because exact
+terminal cleanup is unproved. No qualification artifact or activation witness exists, no
+preactivation cycle has passed, and the legacy public writer remains sole.
+Code-local closure for `TLS-AUTHORITY-WORKFLOW-EXCEEDS-HOST-HTTP-DEADLINE-2026-09-03` gives the
+closed host TLS workflow one capacity owner. Its longest retain arm performs at most four serial
+Target one-shot calls, four ordinary ten-second Authority/adapter calls, and 30 seconds of bounded
+host admission, authenticated framing, response encoding, and final socket-write overhead. The
+derived TLS-workflow response timeout is therefore `4 × 930,000,000 µs + 4 × 10,000,000 µs +
+30,000,000 µs = 3,790,000,000 µs`. The local Authority client exposes a distinct authenticated
+transport for only that route, and the home chart workflow selects it. The exact old→new mapping
+is `host TLS-workflow call: 30,000,000 µs` to `host TLS-workflow call: 3,790,000,000 µs`; generic
+Authority calls remain `30,000,000 µs`, retained-material delivery remains `330,000,000 µs`, and
+all inner budgets, topology, concurrency, resource/load envelopes, authorization and worker
+deadlines, replay capacity, policies, retry, trust, TLS effects, and operation results are
+unchanged. The focused relationship regression passes **1/1**, the complete primary suite passes
+**4798/4798**, and auxiliaries pass **27/34/36**. Canonical `prodbox dev check` passes with the
+repository-pinned formatter, full-tree HLint `No hints`, conformance, generated-artifact checks,
+and warning-clean all-target compilation. Documentation lint and `git diff --check` pass. The
+synchronized executable is exact at
+`sha256:3fbc41a6cc81b8fde750afb0a3975540f7f229ab9f66a359a92aec0f66f800d8`. Rerun the same live
+`pre-1` unchanged to prove the host observes the workflow response before diagnosing or changing
+either secondary cleanup failure. No qualification artifact or activation witness exists, no
+preactivation cycle has passed, and the legacy public writer remains sole.
+The unchanged live `pre-1` builds local runtime image
+`sha256:0ead9a00cd94a6e276a9a5d230f9cbe563ffa15fd3b1ab9c94752d05a7947a3a`, publishes registry
+manifest `sha256:3fb2dbab244369b578189da349e1a43f5bbc09cddc6413c9126d0a70af27c3cd`, and imports OCI
+manifest `sha256:964d0e978eeaa326088ef935c2096f9c334b1972e673dd20b611652b986af78c` in 93.2 seconds;
+retention removes only the superseded `d62d3e2d…` image. It live-proves the host TLS-workflow
+response-budget correction: the request returns the next typed Authority result instead of
+`HttpTimeout`, namely `TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`. Stable
+counterexample `TLS-AUTHORITY-SELECTED-AGENT-UNAVAILABLE-2026-09-03` owns this exact next closed
+boundary. Diagnose its retained selected-Agent observation and correct only the proven cause; do
+not change either secondary cleanup failure first. The terminal restore aggregate repeats only the
+same historical VS Code delete/reconcile failures over claims `prodbox-vscode-pg-instance1-2drb-
+pgdata`, `prodbox-vscode-pg-instance1-g7rp-pgdata`, and `prodbox-vscode-pg-instance1-rzmk-pgdata`,
+plus Gateway-DNS write-authority readiness; it exits 1 and preserves operational credentials
+because exact terminal cleanup is unproved. No qualification artifact or activation witness
+exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+Code-local diagnostic closure for `TLS-AUTHORITY-SELECTED-AGENT-UNAVAILABLE-2026-09-03` preserves
+the refusal and exposes only its already-closed attach category. Production constructs exactly
+three attach failures—transport unavailable, invalid cleanup acknowledgement, or inconsistent
+terminal status—but the protected Target coordinator previously collapsed every one to
+`coordinator/attach-failed`. It now renders those cases as `attach-failed/transport-unavailable`,
+`attach-failed/cleanup-ack-invalid`, or `attach-failed/terminal-status-inconsistent`; arbitrary
+injected detail collapses to `attach-failed/other` and no subprocess text, byte, count, exit
+integer, or secret crosses the diagnostic boundary. The exact old→new mapping is therefore
+`target-one-shot/<schema> failure=coordinator/attach-failed` to that same prefix plus one closed
+value-free subcause. Process topology, request/worker concurrency, all budgets and deadlines,
+resource/load envelopes, replay capacity, policy, retry, trust, TLS effects, HTTP response, and
+cleanup are unchanged. The focused diagnostic regression passes **1/1**, the complete primary
+suite passes **4799/4799**, and auxiliaries pass **27/34/36**. Canonical `prodbox dev check` passes
+with repository-pinned Fourmolu, full-tree HLint `No hints`, conformance, generated-artifact
+checks, and warning-clean all-target compilation; documentation lint and `git diff --check` pass.
+The synchronized executable is exact at
+`sha256:83b6f931a8ad7f96a310cd04c2b92995e99de6e8411a67a6e46c0e953326245d`. Rerun live `pre-1`
+unchanged to select the exact attach subcause before changing behavior. No qualification artifact
+or activation witness exists, no preactivation cycle has passed, and the legacy public writer
+remains sole.
+The diagnostic-only live `pre-1` builds local runtime image
+`sha256:725cfd3dd398deca36b6711cff6698d547c484bfd18e8da1e1b208e8bc32b8a7` in 1,218.2 seconds,
+publishes registry manifest `sha256:f5c13c2fac2d9fcb99816696eb2fe3465a23dce70624e4d93b32f960da12280f`, and imports OCI
+manifest `sha256:5634d4ba2a8de94c0b68164a852d6cc6e93498e85f47ec2c7cc87fb25074b9d4` in 96.4 seconds;
+retention removes only the superseded `0ead9a00…` image. The same host response is now refined by
+the protected Target log to exact `target-one-shot/tls-retain failure=coordinator/attach-failed/
+terminal-status-inconsistent`; Authority retains the outer `selected-agent/http-status/other`
+classification. Stable counterexample `TLS-RETAIN-TERMINAL-STATUS-INCONSISTENT-2026-09-03` owns
+this exact provisional-outcome/process-exit mismatch. Diagnose the closed worker outcome and exit
+mapping, then correct only the proven inconsistency; do not change either secondary cleanup
+failure first. The command process is no longer active, but its final PTY buffer did not survive
+the session rollover, so this diagnostic run makes no terminal aggregate-cleanup claim beyond the
+already captured three-claim Percona restore refusal. No qualification artifact or activation
+witness exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+Code-local closure for `TLS-RETAIN-TERMINAL-STATUS-INCONSISTENT-2026-09-03` separates the
+authenticated worker domain result from the local attach transport result. The old mapping
+required provisional success plus `kubectl` `ExitSuccess`, or provisional refusal plus
+`ExitFailure`; the corrected mapping accepts either exact decoded provisional outcome only with
+`kubectl` `ExitSuccess`, because that exit reports completion of the local attach stream rather
+than the remote container's domain disposition. `ExitFailure` refuses either outcome. A controller
+decision refusal is likewise preserved only after the exact cleanup acknowledgement and successful
+attach-stream completion; the cleanup frame remains mandatory, and no process exit can manufacture
+a provisional outcome. Worker protocol, authentication, cleanup authorization, exact Job/Pod/SA
+cleanup, policy, retry, deadlines, resources, and TLS effects are unchanged. The focused regression
+passes **1/1**, the complete primary suite passes **4800/4800**, and auxiliaries pass
+**27/34/36**. Canonical `prodbox dev check` passes with repository-pinned Fourmolu, HLint `No
+hints`, conformance, generated-artifact checks, and warning-clean all-target compilation. The
+synchronized executable is exact at
+`sha256:dc309d8b9797acdc74b1cb50e90f150f9358f8f6747e590c3d59ccbdcbb901b3`. Rerun live
+`pre-1` unchanged; no qualification artifact or activation witness exists, no preactivation cycle
+has passed, and the legacy public writer remains sole.
+The corrected live `pre-1` builds local runtime image
+`sha256:16e34d563cb34626f17631b43130c61e85bf7fdf480ba81a4383fb1d4c9ce479` in 1,165.6 seconds,
+publishes registry manifest `sha256:fa9257b236c251f64aaafb13bd6cd3c718724d77bcf44580a07ed1c4a7056c72`,
+and imports OCI manifest `sha256:461f6d603582e61cb2729aa7ec999f953b1402771b18a2902bd8193fd93eba05`
+in 98.7 seconds; retention removes only the superseded `725cfd3d…` image. It crosses the former
+terminal-status inconsistency, completes the retained-home/runbook reconciles through a Ready
+ZeroSSL issuer, and then retains the same outer
+`TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`. The protected Target log now identifies
+exact `target-one-shot/tls-retain failure=coordinator/materialization-refused`; Authority retains
+`selected-agent/http-status/other`. Stable counterexample
+`TLS-RETAIN-WORKER-MATERIALIZATION-REFUSED-2026-09-03` owns this worker-domain refusal. Add one
+closed value-free worker failure diagnostic before changing the TLS retain effect, Vault session,
+source material, policy, or retry behavior. The command exits 1 after the total restore graph
+reports exact failures only for VS Code delete/reconcile and public-edge wait: the same three stale
+Percona claims (`…-2drb`, `…-g7rp`, `…-rzmk`) prevent its expected claim set, and Gateway-DNS write
+authority is not ready. Websocket, API, and Gateway delete/reconcile plus Gateway MinIO bootstrap
+succeed. Exact terminal cleanup is not proved, so operational credentials are preserved. No
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+Code-local diagnostic closure for `TLS-RETAIN-WORKER-MATERIALIZATION-REFUSED-2026-09-03`
+preserves the authenticated provisional-refusal protocol and refines only its closed value-free
+detail. Existing non-TLS runtime failures retain `target-worker-materialization-refused`; TLS retain
+now distinguishes production-boundary unavailable, bad request, and every typed Target-agent cause
+without nested error values or size counts. The protected Target renderer admits only that exact
+vocabulary, keeps the established generic token unchanged, and collapses arbitrary injected text to
+`materialization-refused/other`. The old→new live mapping is therefore
+`coordinator/materialization-refused` to
+`coordinator/materialization-refused/tls-retain/<closed-cause>`. Worker effect, protocol,
+authentication, session cleanup, Target Job cleanup, retry, policy, resources, HTTP response, and
+TLS workflow behavior are unchanged. The focused regression passes **1/1**, the complete primary
+suite passes **4801/4801**, and auxiliaries pass **27/34/36**. Canonical `prodbox dev check` passes
+with repository-pinned Fourmolu, HLint `No hints`, conformance, generated-artifact checks, and
+warning-clean all-target compilation. The synchronized executable is exact at
+`sha256:25cfd9615f50350fb93a8f4a6bd51ab0c6a6787e1e90dd122506b6e4c5459ab2`. Rerun live
+`pre-1` unchanged to select the exact TLS-retain cause before changing behavior. No qualification
+artifact or activation witness exists, no preactivation cycle has passed, and the legacy public
+writer remains sole.
+The diagnostic live `pre-1` builds local runtime image
+`sha256:6e03748cd2f2e8b3c94e90dbee7a5e938dc188dd62f9972f7416facc3a0339c8` in 1,154.6 seconds,
+publishes registry manifest `sha256:dd4952435ac3435b8ea859dfe52ec9611fa6dd34090a013e3875dbb604593901`,
+and imports OCI manifest `sha256:7fc372f0f39caf887d74d38a71d18d8af84aeeeba57c71d0ca85f0e8b5544e0a`
+in 94.6 seconds; retention removes only the superseded `16e34d56…` image. The long-lived Target
+Agent's protected log selects exact `target-one-shot/tls-retain
+failure=coordinator/materialization-refused/tls-retain/secret-invalid`; Authority retains
+`selected-agent/http-status/other`. Stable counterexample
+`TLS-RETAIN-PUBLIC-EDGE-SECRET-INVALID-2026-09-03` owns this exact selected Target secret-shape
+refusal. Compare only the non-secret live Secret shape and certificate metadata with the closed
+parser contract before changing parsing, certificate issuance, source selection, policy, or retry.
+The command exits 1 with the unchanged three-claim VS Code restore and Gateway-DNS readiness
+failures; every other restore node succeeds and operational credentials remain preserved. No
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+Code-local closure for `TLS-RETAIN-PUBLIC-EDGE-SECRET-INVALID-2026-09-03` accepts cert-manager's
+canonical empty optional adoption-annotation values. Read-only live shape evidence proves exact
+type `kubernetes.io/tls`, exact data keys `tls.crt`/`tls.key`, present UID/resourceVersion, and a
+valid ZeroSSL certificate for `test.resolvefintech.com` through 2026-12-01; only
+`cert-manager.io/ip-sans`, `issuer-group`, and `uri-sans` have zero-length values. The parser
+previously applied its required-nonempty text validator to those optional values. It now permits
+empty values while retaining the control-character and 4,096-character bounds; annotation names
+remain cert-manager-prefixed, required-nonempty, and bounded, and every TLS type/data/certificate,
+source-identity, encoded-size, and cryptographic check is unchanged. The focused regression proves
+empty optional values accepted plus control and oversize values refused at **1/1**; the complete
+primary suite passes **4802/4802**, and auxiliaries pass **27/34/36**. Canonical `prodbox dev check`
+passes with repository-pinned Fourmolu, HLint `No hints`, conformance, generated-artifact checks,
+and warning-clean all-target compilation. The synchronized executable is exact at
+`sha256:41bbd1553ce79fa7cf2af430e945a3a760a477516c017696133a69be4eac9470`. Rerun live
+`pre-1` unchanged. No qualification artifact or activation witness exists, no preactivation cycle
+has passed, and the legacy public writer remains sole.
+The corrected live `pre-1` builds local runtime image
+`sha256:7fec010c40717f2cdfe071839309480694b4003d5fb5ca125a761f2b52f8ad2b` in 1,018.8 seconds,
+publishes registry manifest `sha256:4c04daca271b2d81f2505dea51a054fb9d3c75e98bfb9264b36386c152d62937`,
+and imports OCI manifest `sha256:adacbeec021d23f89364f0dd62e3f23532c4b93adfb88c6517c82c05a07c4562`
+in 95.8 seconds; retention removes only the superseded `6e03748c…` image. It crosses the exact
+TLS-retain secret parser barrier, completes both retained-home/runbook reconciles through a Ready
+ZeroSSL issuer, and advances into supported-runtime restoration. The next TLS verify transaction
+returns `TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`; after terminal one-shot cleanup,
+the protected Target Agent log selects exact `target-one-shot/tls-verify
+failure=intent/unavailable/trust-install/client/response-codec/invalid/status/server/
+replay-capacity-exhausted`, while Authority retains `selected-agent/http-status/other`. Stable
+counterexample `TLS-VERIFY-TRUST-INSTALL-REPLAY-CAPACITY-EXHAUSTED-2026-09-03` owns this exact
+authenticated Target-intent replay-window refusal. Derive the complete Target Agent request
+envelope across the retained TLS workflow and the immediately unchanged attempt before changing
+the role-specific replay bound or encoded projection; do not clear non-empty replay state, weaken
+authentication, widen trust, or retry an unclassified refusal. The command exits 1 after the total
+restore graph repeats only the known VS Code delete/reconcile failure against claims `…-2drb`,
+`…-g7rp`, and `…-rzmk` plus Gateway-DNS write-authority readiness; all other restore nodes
+succeed. Exact terminal cleanup is not proved, so operational credentials remain preserved. No
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+Code-local closure for `TLS-VERIFY-TRUST-INSTALL-REPLAY-CAPACITY-EXHAUSTED-2026-09-03` derives the
+complete finite Target Agent envelope instead of raising the old isolated credential bound by
+guesswork. One supported qualification attempt has five credential/source/delivery requests;
+TLS retain has four one-shot requests plus four Authority trust installations; restore has three
+plus three; and retain-on-ready has another four plus four. Capacity is therefore
+`2 * (5 + 8 + 6 + 8) = 54` for the complete attempt and its immediately unchanged retry inside
+the deadline-plus-skew horizon. Fifty-four accepted 2 MiB responses plus replay metadata fit the
+new 112 MiB encoded bound. The Vault listener now has an explicit finite 160 MiB request ceiling,
+which covers the projection's at-most 149.34 MiB Base64 expansion plus its bounded KV JSON
+envelope. The replay codec advances to v8 and admits canonical non-empty v2–v7 projections only
+when response-size/skew match and prior capacity does not exceed the new bound; it preserves every
+entry, while shrink, drift, corruption, and evidence clearing remain refused. TLS behavior,
+authentication, trust, request lifetime/skew, retry, and all other roles' replay bounds are
+unchanged. The focused primary regression passes **1/1**, the complete primary suite passes
+**4802/4802**, and auxiliaries pass **27/34/36**. The Vault chart renders the exact listener bound
+and Helm lint passes. Canonical `prodbox dev check` passes with repository-pinned Fourmolu, HLint
+`No hints`, conformance, generated/documentation policy, and warning-clean all-target compilation.
+The synchronized executable is exact at
+`sha256:793445b5ac2fcc2119266ef56fefbf787f314888adb3649a0d6f0babc0d8c9d1`. Rerun live
+`pre-1` unchanged. No qualification artifact or activation witness exists, no preactivation cycle
+has passed, and the legacy public writer remains sole.
+Generation
+141 live-proves Sprint `2.126` and identifies exact
+`AuthenticatedRoleReplayCapacityExhausted` at the in-force-config response. Generation 126 had live-proved Sprint `2.116` and
+exposed the Authority Backup export-response boundary. The supported reconcile starts at 14:23:05 EDT,
+builds local image `sha256:0ae58422…` in 989.2 seconds, publishes registry manifest
+`sha256:63e529a2…`, imports OCI manifest `sha256:74a390fb…` in 128.0 seconds, and deletes only
+Generation 125's superseded local image. Retained root session `root-session-9c54db6a…` and digest
+`a5756119…` remain exact. The Target Agent rolls at 14:46:26/14:46:28; the credential worker starts
+at 14:47:14, and the Target worker is created/started at 14:47:25/14:47:26. The Target worker is
+cleaned at 14:47:31 and the credential worker at 14:47:34. Its exact worker-receipt observation has
+a unique canonical envelope line and the run advances through Target delivery, closing Sprint
+`2.116`. The later terminal is
+`AuthorityBackupGenesisCopyFailed "AuthorityBackupExportResponseInvalid ControlPlaneRequestInvalid"`:
+register `AUTHORITY-BACKUP-EXPORT-200-RESPONSE-INVALID-2026-08-30` under Sprint `2.117` and add a
+closed value-free response-shape diagnostic before changing export, authentication, replay,
+copying, or admission behavior. Postflight proves no one-shot residue, NetworkPolicy generation 48
+with exact `192.168.2.46/32:6443`, exact-image Ready Target Agent generation 71 and Lifecycle
+Authority generation 13, a pressure/taint-free Ready node, and 42 GiB free. The conservative
+retained-attempt fence runs through 15:17:55 EDT; no Generation 127 command may start before
+15:17:56.
+The behavior-neutral Sprint-2.117 diagnostic confirms the source-level codec split without
+accepting it: the endpoint writes a canonical `Either Text AuthorityBackupExportResponse`, while
+the client still requires the direct response. Its five value-free shape tokens are unique, and
+distinct private success/failure values collapse to the same tokens. The Authority Backup group
+passes **18/18**, primary **4738/4738**, and auxiliary suites **27/33/31**. Repository policy,
+Fourmolu, HLint (`No hints`), warning-clean all-target compilation, documentation, and diff gates
+pass; canonical `prodbox dev check` exits 0. Its gate-built and installed executable is
+byte-identical at `sha256:f6b8abba0b1afccb27dc5b4781c47214db0833116cb0e276513ef72048b82cf5`.
+Generation 127 starts after explicit 15:18:02 EDT admission, builds local image
+`sha256:7ea3130e…` in 991.1 seconds, publishes registry manifest `sha256:7bccc219…`, and imports
+OCI manifest `sha256:37e0e3ee…` in 135.5 seconds. It removes only Generation 126's superseded
+local image. Retained root session and digest remain exact. The Target Agent and Lifecycle
+Authority roll onto the exact image at 15:41:55 and 15:42:26; retained admission resumes directly
+at backup export without creating a credential or Target worker. The terminal is exact
+`AuthorityBackupExportResponseInvalid ControlPlaneRequestInvalid AuthorityBackupExportResponseEndpointSuccess`,
+live-proving the endpoint-result success wrapper and licensing only direct canonical success
+encoding. Error statuses retain their bounded plain summaries; the client, authentication, replay,
+request, digest, copy, and admission paths are unchanged. Postflight proves no one-shot residue,
+NetworkPolicy generation 49 with exact `192.168.2.46/32:6443`, exact-image Ready Agent generation
+72 and Authority generation 14, a pressure/taint-free Ready node, and 38 GiB free. No new
+credential-worker permit was created, so there is no successor worker fence.
+The direct-success correction is locally complete. The endpoint's HTTP-200 body now decodes as the
+direct canonical response and every non-200 case retains its closed plain summary. The complete
+Authority Backup group passes **18/18**, primary **4738/4738**, and auxiliary suites **27/33/31**.
+Repository policy, Fourmolu, HLint (`No hints`), warning-clean all-target compilation,
+documentation, and diff gates pass; canonical `prodbox dev check` exits 0. Its gate-built and
+installed executable is byte-identical at
+`sha256:753f18a42af42abac3b73cd4cb6c2e2ef7ac24e4d0fba1fa9b9670f86fb03642`.
+
+Generation 128 starts after explicit 15:58:31 EDT admission, builds local image
+`sha256:54c4fdddc8a90cbc07ede062faf86d62519898e9f2d2faad12bb3a6ae865fa3c` in 1001.8
+seconds, publishes registry manifest
+`sha256:04245737a22229a1dc57082576a26c6d6b66c5229f05cc84b968aab7ee780c9d`, and imports OCI
+manifest `sha256:89653645fdbd3eb08ac0da46e70bf835be6a0e6e131a0dde9eca3e539746f587` in
+147.0 seconds. It removes only Generation 127's superseded local image and untagged registry
+manifest. Exact-image Target Agent generation 73 and Lifecycle Authority generation 15 start at
+16:23:40 and 16:24:07 EDT. Authority Backup export/copy succeeds, live-proving and closing Sprint
+`2.117`. Retained first-reconcile continuation then creates credential worker
+`credential-provisioner-first-reconcile-d142c8895122fdc2` at 16:24:28; its container starts at
+16:24:29 and is killed at 16:24:36. The closed receipt diagnostic reports exact
+`execution-failed/iam-prerequisite-failed/aws/create-lifecycle-role/service/other-client`, while the
+public terminal remains `AwsAdminCoordinatorReceiptRejected AwsAdminWorkerReceiptDecodeFailed`.
+Register `AWS-ADMIN-CREATE-LIFECYCLE-ROLE-OTHER-CLIENT-2026-08-30` under Sprint `2.118` and refine
+only the finite service fault code before changing IAM requests, retry, receipt, or admission
+behavior. Postflight at 16:25:02 proves no one-shot residue, NetworkPolicy generation 50 with exact
+`192.168.2.46/32:6443`, both retained workloads Ready on the exact image, a pressure/taint-free
+Ready node, and 38 GiB free. The conservative retained-attempt fence runs through 16:54:56 EDT; no
+Generation 129 command may start before 16:54:57.
+The behavior-neutral Sprint-2.118 diagnostic refines exactly the documented `CreateRole`
+client-side faults that formerly collapsed into `other-client`: concurrent modification, invalid
+input, limit exceeded, and malformed policy document. `EntityAlreadyExists` remains in its existing
+class, `ServiceFailure` remains server-classified, and unknown 4xx codes retain the fallback.
+Distinct provider messages and request identifiers collapse to the same token for every new cause;
+request, retry, receipt, cleanup, and admission behavior are unchanged. Focused Sprint-2.118 and
+pre-existing exhaustive tests pass **1/1** each, primary **4739/4739**, and auxiliary suites
+**27/33/31**. Repository policy, Fourmolu, HLint (`No hints`), warning-clean all-target compilation,
+documentation, and diff gates pass; canonical `prodbox dev check` exits 0. Its gate-built and
+installed executable is byte-identical at
+`sha256:e3f64647ed48d473136cef4266e41a13ce0feed307bf5fabe3d5288ad9e1cbb6`.
+Generation 129 starts after explicit 16:55:06 EDT admission, builds local image
+`sha256:7fa9bcc2cf7c0cb9465c45fff6d4a17ede18cedd5b4a55e425a84d4fbf524ddf` in 994.1
+seconds, publishes registry manifest
+`sha256:a76d401ad379176806075704c5872c59c55e734e8ec5a1b88a90d34a20edb7b2`, and imports OCI
+manifest `sha256:c5a8fe6f21587e4ff6557e21b22a7c02d7fda9b23e45fba489893fb4415ce943` in
+148.5 seconds. It removes only Generation 128's superseded local image and untagged registry
+manifest. Retained root session and digest remain exact. Exact-image Target Agent generation 74
+and Lifecycle Authority generation 16 start at 17:19:38 and 17:20:06 EDT. The earlier
+`create-lifecycle-role/service/other-client` condition does not recur; execution crosses it and
+reaches the later exact terminal `execution-failed/iam-prerequisite-failed/role-read-back-mismatch`,
+closing Sprint `2.118` and registering
+`AWS-ADMIN-LIFECYCLE-ROLE-READ-BACK-MISMATCH-2026-08-30` under Sprint `2.119`. The credential
+worker is created at 17:20:26, starts at 17:20:27, and is killed at 17:20:33. Postflight at
+17:20:54 proves no one-shot residue, NetworkPolicy generation 51 with exact
+`192.168.2.46/32:6443`, both retained workloads Ready on the exact image, a pressure/taint-free
+Ready node, and 42 GiB free. The conservative retained-attempt fence runs through 17:50:53 EDT; no
+Generation 130 command may start before 17:50:54.
+The behavior-neutral Sprint-2.119 diagnostic replaces the private role read-back mismatch text with
+the exhaustive value-free set `absent`, `name-mismatch`, `arn-mismatch`, and
+`trust-policy-mismatch`. All four tokens are unique, and observed role names, ARNs, or policy bytes
+are unrepresentable; role creation, update, exact comparison, retry, receipt, cleanup, and admission
+behavior are unchanged. Focused Sprint-2.119 passes **1/1**, primary **4740/4740**, and auxiliary
+suites **27/33/31**. Repository policy, Fourmolu, HLint (`No hints`), warning-clean all-target
+compilation, documentation, and diff gates pass; canonical `prodbox dev check` exits 0. Its
+gate-built and installed executable is byte-identical at
+`sha256:beb4342f6c5ef4118225d7dc864e2e3033d597a7a195ea49dc02ebef52c67360`.
+Generation 130 starts after explicit 17:51:02 EDT admission, builds local image
+`sha256:dd5128d60b61978491fff8c41e6f4d4e9cb865aaac29f2607e0ded32990c3bef` in 989.1
+seconds, publishes registry manifest
+`sha256:6b81ecf2a4ff5205bf905d83086a3f517dd54623ce95d138db784c3f9eb167dc`, and imports OCI
+manifest `sha256:d135c437a544062b97b48e69173775571c6521a8cbd6d9bea55c4c76c9246179` in
+141.7 seconds. It removes only Generation 129's superseded local image and untagged registry
+manifest. Retained root session and digest remain exact. Exact-image Target Agent generation 75
+and Lifecycle Authority generation 17 start at 18:15:09 and 18:15:36 EDT. The credential worker
+is created at 18:15:56, starts at 18:15:57, and is killed at 18:16:03. Its exact closed terminal is
+`execution-failed/iam-prerequisite-failed/role-read-back-mismatch/trust-policy-mismatch`, closing
+Sprint `2.119` and registering `AWS-ADMIN-LIFECYCLE-ROLE-TRUST-POLICY-SHAPE-2026-08-30` under
+Sprint `2.120`. Add a value-free classifier for invalid, IAM singleton-shape-equivalent, or other
+policy mismatch before accepting a different representation. Postflight at 18:16:19 proves no
+one-shot residue, NetworkPolicy generation 52 with exact `192.168.2.46/32:6443`, both retained
+workloads Ready on the exact image, a pressure/taint-free Ready node, and 42 GiB free. The
+conservative retained-attempt fence runs through 18:46:23 EDT; no Generation 131 command may start
+before 18:46:24.
+The behavior-neutral Sprint-2.120 classifier now distinguishes invalid JSON, equality after only
+the IAM grammar's documented singleton `Statement`, `Action`, and `Principal.AWS` forms, or other
+policy difference. The production role acceptance comparator remains exact. Its three tokens are
+unique; two distinct private policies collapse to the same singleton-equivalent cause while a
+changed action remains `other`. Focused Sprint-2.120 passes **1/1**, primary **4741/4741**, and
+auxiliary suites **27/33/31**. Repository policy, Fourmolu, HLint (`No hints`), warning-clean
+all-target compilation, documentation, and diff gates pass; canonical `prodbox dev check` exits 0.
+Its gate-built and installed executable is byte-identical at
+`sha256:5f88e3358f94394dcad185c864f0f8f3d56827f4539fd1e7a6a7e2fdede38d26`.
+Generation 131 starts after explicit 18:46:33 EDT admission, builds local image
+`sha256:216a433bcfe27be110d92ae5f2e55972e41196a455366a965d4b278c3f4b8f8c` in 986.5
+seconds, publishes registry manifest
+`sha256:88ff9d5a71f40ca31b639338af59525e5f9480c417a6e65cea4063c9def578ba`, and imports OCI
+manifest `sha256:e61860c9647e43f6513b7b90b0f415de2dc3d3494a12a342c36e3dc4af92dcb3` in
+140.7 seconds. It removes only Generation 130's superseded local image and untagged registry
+manifest. Retained root session and digest remain exact. Exact-image Target Agent generation 76
+and Lifecycle Authority generation 18 start at 19:10:44 and 19:11:11 EDT. The credential worker
+is created and starts at 19:11:32, then is killed at 19:11:38. Its exact terminal is
+`execution-failed/iam-prerequisite-failed/role-read-back-mismatch/trust-policy-mismatch/iam-singleton-equivalent`,
+closing Sprint `2.120` and licensing Sprint `2.121` to accept only exact policy equality or equality
+after the documented `Statement`, `Action`, and `Principal.AWS` singleton normalizations. Postflight
+at 19:11:53 proves no one-shot residue, NetworkPolicy generation 53 with exact
+`192.168.2.46/32:6443`, both retained workloads Ready on the exact image, a pressure/taint-free
+Ready node, and 42 GiB free. The conservative retained-attempt fence runs through 19:41:58 EDT; no
+Generation 132 command may start before 19:41:59.
+The Sprint-2.121 correction now uses a trust-policy-specific comparator that accepts exact decoded
+equality or equality after only the live-proven `Statement`, `Action`, and `Principal.AWS`
+singleton normalizations. User and role permissions-policy equality remains exact. Pure cases
+cover each singleton form, their mixed form, and invalid/action/principal/statement/version/
+extra-field refusals; an injected native IAM seam admits the singleton action response and rejects
+a changed action with the closed `other` cause. Focused Sprint-2.121 passes **2/2**, primary
+**4743/4743**, and auxiliary suites **27/33/31**. Repository policy, Fourmolu, HLint (`No hints`),
+warning-clean all-target compilation, documentation, and diff gates pass; canonical
+`prodbox dev check` exits 0. Its gate-built and installed executable is byte-identical at
+`sha256:008e2e6f7c0dd4ed1109f59105fec0c2d42561a4967da5ec6a4409f8bf771369`.
+Generation 132 starts after explicit 19:42:04 EDT admission, builds local image
+`sha256:6aa223b3241972e19e008902a2843baf6df21ae858646893800af606aa3281a4` in 985.2
+seconds, publishes registry manifest
+`sha256:2cb0d1c30c56452d3dc064960a1fb56567451d342643b1e50f26cf890c7d96f9`, and imports OCI
+manifest `sha256:d73d4bff2c8f199229d0ca8512a81e7e5257a7327b075f05d8eb347ef630e059` in
+151.4 seconds. It removes only Generation 131's untagged registry manifest and superseded local
+image. Retained root session and digest remain exact. Exact-image Target Agent generation 77 and
+Lifecycle Authority generation 19 start at 20:06:13 and 20:06:39 EDT. The resumed credential
+flow creates a Target worker at 20:07:08; its container starts at 20:07:09, and the owning
+credential worker is killed at 20:07:17. A successor credential worker starts at 20:07:21 and is
+killed at 20:07:30. Its exact terminal is
+`execution-failed/target-observation-unobservable/client/response-codec/invalid`, proving the
+trust-policy singleton correction and closing Sprint `2.121`. Register
+`TARGET-MATERIAL-RESPONSE-CODEC-INVALID-2026-08-30` under Sprint `2.122`; refine only the HTTP
+status attached to the codec-invalid response before changing Target observation, authentication,
+replay, response decoding, or admission behavior. Postflight at 20:07:52 proves no credential or
+Target one-shot residue, NetworkPolicy generation 54 with exact `192.168.2.46/32:6443`, both
+retained workloads Ready on the exact image, a Ready pressure/taint-free node, and 42 GiB free. The
+conservative retained-attempt fence runs through 20:37:50 EDT; no Generation 133 command may start
+before 20:37:51.
+The behavior-neutral Sprint-2.122 diagnostic now retains the HTTP status accompanying a
+codec-invalid Target-material body only as the existing closed semantic class. The raw body and
+numeric status cannot enter the cause; all other transport, codec, response-status, and remote
+refusal causes retain their prior tokens and behavior. Boundary cases cover every exact and range
+status class, distinct private bodies collapse to the same token, and the production response seam
+uses the status-aware constructor. Focused Sprint-2.122 and the pre-existing exhaustive
+Target-observation case pass **1/1** each, primary **4744/4744**, and auxiliary suites
+**27/33/31**. Repository policy, Fourmolu, HLint (`No hints`), warning-clean all-target
+compilation, documentation, and diff gates pass; canonical `prodbox dev check` exits 0. Its
+gate-built and installed executable is byte-identical at
+`sha256:679f2ef80e2b18907dd6d99e2b7b5e1c1c2b40f3dfbe58e158d3545d3f911010`.
+Generation 133 starts after explicit 20:37:59 EDT admission and a final 20:38:12 preflight. It
+builds local image `sha256:255d7693415ecfe268fb402db2984fd7a2c5aaf65f781b88657a200b40c0e3c4`,
+publishes registry manifest
+`sha256:ca4aac58ddb374f32008c0678ef43b8518916a92e8329eb924ed2b83698efb88`, and imports OCI
+manifest `sha256:c0ef0c55b21466cfa90a4f78a6c76c473476ec533c08579aeee1e33cd79e8bc3` in
+123.7 seconds. It removes only Generation 132's untagged registry manifest and superseded local
+image; the exact retained root session and digest remain unchanged. Exact-image Target Agent
+generation 78 and Lifecycle Authority generation 20 start at 21:02:10 and 21:02:37 EDT. A first
+credential worker starts at 21:02:56 and creates a Target worker that starts at 21:03:08. A later
+credential worker starts at 21:03:21 and is killed at 21:03:23. The reconcile exits 1 with exact
+terminal `AwsAdminCoordinatorAttestFailed (AwsAdminProvisionerClientRefused
+"pod-heartbeat-stale")`; its receipt-transport diagnostic has no terminal worker ending, so the
+run does not reach the Sprint-2.122 Target response-status token. Source closure proves that one
+heartbeat sampled before the retained continuation is captured by the Kubernetes boundary and
+reused by every later member. Register
+`AWS-ADMIN-SUCCESSOR-JOB-HEARTBEAT-STALE-2026-08-30` under Sprint `2.123` and sample a fresh
+heartbeat for each Job attempt while retaining one exact value across that attempt's create,
+observation, attestation, and cleanup. Postflight at 21:03:41 proves no credential or Target
+one-shot residue, the exact Lifecycle Authority ingress/egress projection, both retained workloads
+Ready on the exact image, a Ready pressure/taint-free node, and 41 GiB free. The conservative
+retained-attempt fence runs through 21:33:43 EDT; no Generation 134 command may start before
+21:33:44.
+The Sprint-2.123 correction makes heartbeat acquisition a fallible Kubernetes-boundary effect
+invoked once per coordinator attempt. One sampled value remains exact across that attempt's Job
+render, Job/Pod observation, attestation, and pre-delete observation; completed recovery instead
+uses its signed binding's heartbeat, and clock failure creates no Job. The frozen counterexample
+maps two attempts to `[h0, h0]`, so the later one can exceed the unchanged 30-second freshness
+bound; the replacement maps them to `[h0, h1]` without changing topology, resources, deadlines,
+permits, or cleanup. Focused Sprint-2.123 passes **3/3**, the complete AWS-admin Authority group
+**50/50**, primary **4747/4747**, and auxiliary suites **27/33/31**. Repository policy, Fourmolu,
+HLint (`No hints`), warning-clean all-target compilation, documentation, and diff gates pass;
+canonical `prodbox dev check` exits 0. Its gate-built and installed executable is byte-identical at
+`sha256:bfbc6201b331a93d14253628ab994a3680620b69a34379843d8ba4689e31b83f`.
+Generation 134 starts after a clean 21:35:09 EDT preflight and explicit 21:35:31 start. It builds
+local image `sha256:58d18632adb637f85883da5b27885dea42a3a95b43b9ba0ad66ad3f88d892eda`
+in 993.8 seconds, publishes registry manifest
+`sha256:d2e1ca8d682176a076983f66bd833b830ef436424d532829c14777868609941c`, and imports OCI
+manifest `sha256:01dddf358d3e5ad2bb13b35aae34223c13a31e77e5f30f84a6fc93cc1e16d522` in
+144.2 seconds. It removes only Generation 133's untagged registry manifest and superseded local
+image. Retained root session and digest remain exact. Exact-image Target Agent generation 79 and
+Lifecycle Authority generation 21 start at 21:59:38 and 22:00:04 EDT. Credential attempts start at
+22:00:23 and 22:00:45; the first is killed at 22:00:41 and the fresh-heartbeat successor crosses
+attestation before its 22:00:55 cleanup. A Target worker runs from 22:00:32 through 22:00:39. The
+exact later terminal is
+`execution-failed/target-observation-unobservable/client/response-codec/invalid/status/server`,
+live-proving Sprint `2.123` and the Sprint-2.122 status classifier. Register
+`TARGET-MATERIAL-CODEC-INVALID-SERVER-SHAPE-2026-08-30` under Sprint `2.124`; classify only the
+finite exact authenticated-role plaintext response shapes before changing authentication, replay,
+response decoding, Target observation, or retry behavior. Postflight at 22:01:28 proves no
+one-shot residue, both retained workloads Ready on the exact image, a Ready pressure/taint-free
+node, and 41 GiB free. The conservative retained-attempt fence runs through 22:31:15 EDT; no
+Generation 135 command may start before 22:31:16.
+The behavior-neutral Sprint-2.124 classifier is locally complete. One total interpreter-owned
+projection covers all 21 static authenticated-role status/body pairs, and the Target-material
+server decode boundary retains only the matching closed observation or `other`; arbitrary response
+bytes and numeric statuses remain unrepresentable. Focused cases pass **2/2**, the AWS-admin
+Authority group **51/51**, primary **4748/4748**, and auxiliaries **27/33/31**. Repository policy,
+Fourmolu, HLint (`No hints`), warning-clean all-target compilation, documentation, diff, and
+canonical gates pass. The built/installed executable is byte-identical at
+`sha256:28c6928d165c2fdfb66f1b9e165d60cf30b1be4ab8be194bc516d0f90b915006`; Generation 135 is
+admitted after the expired fence.
+Generation 135 starts at 22:31:26 EDT, builds/publishes/imports
+`sha256:2e6c9f0f…`, `sha256:a8eb3e55…`, and `sha256:cb8e07e4…` in 994.6 and 153.8 seconds,
+and removes exactly Generation 134's superseded registry manifest and local image. Exact-image
+Target Agent and Lifecycle Authority containers start at 22:55:59/22:56:25. Credential and Target
+workers start at 22:56:45/22:56:56 and are killed at 22:57:06/22:57:03. The outer command-output
+observer truncates the Docker-heavy stream before retaining the later protected terminal, so this
+run is explicitly **not** Sprint-2.124 completion evidence and no cause is inferred. Postflight at
+22:59:02 proves zero one-shot Jobs, exact-image Ready retained workloads, a Ready
+pressure/taint-free node, and 41 GiB free. The conservative fence runs through 23:27:26 EDT; no
+Generation 136 command is admitted before 23:27:27. Resume with the same supported reconcile under
+a bounded filtered observer.
+After the fence, Generation 136 starts at 23:28:19 EDT, reuses the unchanged exact image/manifest,
+and exits 1 before creating any one-shot Job; its first filter does not retain the pre-worker line,
+and no new fence exists. Generation 137 starts at 23:30:45 with the bounded observer widened and
+retains exact terminal `Authority backup admission reconciliation failed:
+AuthorityBackupHealthObservationFailed "AuthorityAggregateBackupResponseInvalid
+ControlPlaneRequestInvalid"`, exit 1, again with no one-shot Job. Sprint `2.124` is Done on its
+code-owned surface and retains pending deployment proof. Register
+`AUTHORITY-AGGREGATE-BACKUP-RESPONSE-CODEC-INVALID-2026-08-30` under active Sprint `2.125` for
+a behavior-neutral exact response-shape diagnostic before changing aggregate backup observation,
+health, retry, admission, or response behavior.
+
+The Sprint-2.125 diagnostic is locally complete. The aggregate-backup codec-invalid branch retains
+only the interpreter-owned exact-pair/`other` observation beside its existing codec cause; the
+checkpoint client and every decode, health, retry, admission, and response decision are unchanged.
+The exact production decode seam covers all 21 authored pairs and rejects wrong-status, prefix,
+suffix, and private near misses. Focused Sprint-2.125 passes **1/1**, the Authority Backup group
+**19/19**, primary **4749/4749**, and auxiliaries **27/33/31**. Repository policy, Fourmolu,
+HLint (`No hints`), warning-clean all-target compilation, documentation, diff, and canonical
+`prodbox dev check` gates pass. The gate-built and installed executable is byte-identical at
+`sha256:1724e92e4d2d9109bbb73d6450e9bb63a2572cad21733e068dc9967c3cb885bc`; proceed with
+Generation 138 live proof.
+
+Generation 138 starts at 23:57:22 EDT on August 30 and ends at 00:23:10 EDT on August 31. It builds
+local image `sha256:2486c0f518f9b9e91d4f9f9b34c80013467d525d2a2798af55092af02b2f9a3a`, publishes
+registry manifest `sha256:05f7561da5239155394d294d1435204a586078b6357652e8a46941d279f19483`, and imports OCI
+manifest `sha256:f6609c760c4a3c3d7780f7d25db245fdda9af6c26fc73aefe31c4b73d8646f36`. Retention removes
+only Generation 135's superseded registry manifest and local image. Its terminal is the earlier
+rollout-transition condition `Lifecycle Authority config is unobservable:
+ConfigBackupTransportFailed (AuthenticatedClientTransportFailed (ControlPlaneTransportFailed
+(HttpTimeout "connection timeout")))`, so it supplies no Sprint-2.125 completion evidence.
+Postflight at 00:23:29 proves zero one-shot Jobs and no fence; Target Agent generation 81,
+Lifecycle Authority generation 23, and Authority Backup generation 63 are all Ready on the exact
+new image. The node is Ready, pressure/taint-free, and has 36 GiB free. Run unchanged Generation
+139 against those settled retained workloads.
+
+Generation 139 starts at 00:25:39 EDT, reuses exact local image
+`sha256:2486c0f518f9b9e91d4f9f9b34c80013467d525d2a2798af55092af02b2f9a3a` and registry
+manifest `sha256:05f7561da5239155394d294d1435204a586078b6357652e8a46941d279f19483`, and exits 1 at
+00:27:02 with exact terminal `Lifecycle Authority in-force config is unobservable:
+ConfigBackupResponseInvalid ControlPlaneRequestInvalid`. It crosses the connection-timeout
+transition but encounters an earlier client response-codec boundary, so Sprint `2.125` remains Done
+on its code-owned surface with live proof pending. Register stable counterexample
+`LIFECYCLE-AUTHORITY-IN-FORCE-CONFIG-RESPONSE-CODEC-INVALID-2026-08-31` under Sprint `2.126` and
+classify only the exact authenticated-role plaintext response shape before changing config backup,
+in-force projection, retry, reconciliation, or response behavior. Postflight at 00:27:21 proves
+zero one-shot Jobs and no fence; all retained workloads remain zero-restart Ready on the exact
+image, and the node remains pressure/taint-free with 36 GiB free.
+
+The Sprint-2.126 diagnostic is locally complete. The config-backup codec-invalid branch retains
+only the interpreter-owned exact-pair/`other` observation beside its existing codec cause; config
+copy/observe decisions, in-force projection, reconciliation, and checkpoint backup are unchanged.
+The exact production decode seam covers all 21 authored pairs and rejects wrong-status, prefix,
+suffix, and private near misses. Focused Sprint-2.126 passes **1/1**, the in-force-config endpoint
+group **11/11**, primary **4750/4750**, and auxiliaries **27/33/31**. Repository policy,
+Fourmolu, HLint (`No hints`), warning-clean all-target compilation, documentation, diff, and
+canonical `prodbox dev check` gates pass. The gate-built and installed executable is byte-identical
+at `sha256:968b92038bba64be3bd9d784f30d253dac489a5ba4c05b68cafac1ba5cb5a8cb`; proceed with
+Generation 140 live proof.
+
+Generation 140 starts at 00:44:25 EDT and ends at 01:07:37. It builds local image
+`sha256:1ebf04acf174d93552aaa6bdac2016ee14c40dfe5fbe19360b482db500f457e5`, publishes registry
+manifest `sha256:f3df35ba67c80dc3cc459904590ae36f5a733bd8fcf2cf7bbfaa1a1e831c0785`, and imports OCI
+manifest `sha256:a8274de5821695988fa72b0c45e7d367cf16e6d7058064822a1d3f93fc31035d`. Retention removes
+only Generation 138/139's superseded registry manifest and local image. Its terminal is the earlier
+rollout-transition condition `Lifecycle Authority config is unobservable:
+ConfigBackupTransportFailed (AuthenticatedClientTransportFailed (ControlPlaneTransportFailed
+(HttpTimeout "connection timeout")))`, so it supplies no Sprint-2.126 completion evidence.
+Postflight at 01:07:56 proves zero one-shot Jobs and no fence; Target Agent generation 82,
+Lifecycle Authority generation 24, and Authority Backup generation 64 are zero-restart Ready on the
+exact new image. The node is Ready, pressure/taint-free, and has 36 GiB free. Run unchanged
+Generation 141 against those settled retained workloads.
+
+Generation 141 starts at 01:09:06 EDT, reuses exact local image
+`sha256:1ebf04acf174d93552aaa6bdac2016ee14c40dfe5fbe19360b482db500f457e5` and registry
+manifest `sha256:f3df35ba67c80dc3cc459904590ae36f5a733bd8fcf2cf7bbfaa1a1e831c0785`, and exits 1 at
+01:10:29 with exact terminal `Lifecycle Authority in-force config is unobservable:
+ConfigBackupResponseInvalid ControlPlaneRequestInvalid
+(AuthenticatedRolePlainResponseKnown AuthenticatedRoleReplayCapacityExhausted)`. This live-proves
+Sprint `2.126` and registers stable counterexample
+`LIFECYCLE-REPLAY-IMMEDIATE-RETRY-WINDOW-2026-08-31` under Sprint `2.127`. The first diagnosis
+attributes this to the Lifecycle Authority's capacity 64; Generation 145 later falsifies that as a
+complete causal account by reproducing the same refusal after every earlier entry has crossed the
+deadline-plus-skew horizon. The Lifecycle Authority still needs two complete 60-request envelopes,
+and the nested Authority Backup Adapter needs its own role-specific envelope. Postflight at 01:10:50 proves zero one-shot Jobs and no fence;
+all retained workloads remain zero-restart Ready on the exact image, and the node remains
+pressure/taint-free with 36 GiB free.
+
+The initial Sprint-2.127 correction passed locally but was falsified by its required live sequence.
+Production derived 59 retained requests per attempt and capacity 118, omitting the authenticated
+retained-root-marker observation between config proposal and final in-force load. The retained
+replay suite passed **32/32**, focused primary runtime assertion **1/1**, primary **4750/4750**,
+and auxiliaries **27/33/32**; canonical `prodbox dev check` passed and installed exact binary
+`sha256:9ef3f378928fe9c28dc684dc22b97fc866e6ed820b31582b5fa5eb113432ba23`. These remain evidence
+for the falsified 118-entry revision, not closure.
+
+Generation 142 starts at 01:31:17 EDT, builds/publishes/imports
+`sha256:331dbc9d3653051bb8ea8288f650b363e9bf49a6160e76d7274ea688a4ea7e06`,
+`sha256:c5a4b0fbc050227595d4d98c0d388e0443983b63a200e832a7f3eec15ed4d0d6`, and
+`sha256:3e153121d9aa13a2129891782b35625d9abbb9115c0eac5334f477e01569fea7`, removing only
+Generation 140/141's superseded registry manifest and local image. It exits at 01:54:25 with the
+known rollout-transition config timeout. Postflight proves zero one-shot Jobs/no fence and exact
+zero-restart Ready Target Agent generation 83, Lifecycle Authority generation 25, and Authority
+Backup generation 65. Generation 143 starts at 01:55:07, only 42 seconds later, reuses the exact
+image/manifest, and exits at 01:56:30 with the same exact replay-capacity terminal as Generation
+141. The source trace identifies the omitted fourth transition request:
+`reconcileAuthorityBoundRetainedRootMarker` performs a fresh authenticated config observation after
+the config observe/propose pair and before the final in-force load. This correctly proves that the
+Lifecycle Authority side of a complete attempt is `56 + 4 = 60` requests and two attempts require
+capacity 120, but it does not identify which authenticated server emitted the nested config-backup
+refusal. The already-live v4/118 projection advances to v5 by canonical widening from v2/v3/v4,
+preserving every entry and every non-capacity bound.
+
+The second, Lifecycle-Authority-only Sprint-2.127 revision is locally complete on the model it
+implements. Production derives 60 retained requests
+per complete attempt and capacity 120 for two attempts. The pure trace proves old capacity 64
+accepts the first 60 plus four retry requests and refuses retry request five; the current bound
+retains all 120 without compaction. Canonical non-empty v2/v3 and deployed v4/118 state widen into
+v5 with every entry preserved. The retained-replay suite passes **32/32**, focused primary runtime
+assertion **1/1**, primary **4750/4750**, and auxiliaries **27/33/32**. Repository policy,
+Fourmolu, HLint (`No hints`), warning-clean all-target compilation, documentation, diff, and
+canonical gates pass. The gate-built/installed executable is exact at
+`sha256:1076bab06d59979d4483dde1e6b3ab44d0c1f0f65673cedf1ef5ed27d79d6aec`; that identity is the
+input to Generation 144 below.
+
+Generation 144 starts at 02:15:36 EDT and ends at 02:38:42. It builds local image
+`sha256:a78b97c3b46cdeec823e02c8ba0110957de4c53e9338c38444ec5f42dd874e13`, publishes registry
+manifest `sha256:3542ca14aee5aedd887cde5cbf3ca1d35d47374870f1aa73761efb5787442b3e`, and imports OCI
+manifest `sha256:81f1438a573a91d316a53e3929fbc1da572c8f47d3889a9721b1852275ac1332`, removing only
+Generation 142/143's superseded registry manifest and local image. It exits with the known
+rollout-transition config transport timeout. The interrupted proof is not an immediate-retry
+result: the resumed shell does not inspect the cluster until 09:14:16, outside every retained
+request horizon. That read-only inspection proves no one-shot Job, and zero-restart Ready Target
+Agent generation 84, Lifecycle Authority generation 26, and Authority Backup generation 66 on the
+exact `prodbox-3349a232b3454fb3be77b2f68919904f` image.
+
+Generation 145 starts at 09:15:00 EDT against those settled workloads and exits 1 at 09:16:27 with
+the same exact `ConfigBackupResponseInvalid ControlPlaneRequestInvalid
+(AuthenticatedRolePlainResponseKnown AuthenticatedRoleReplayCapacityExhausted)`. Because the prior
+entries expired more than six hours earlier, this is not retry pressure. Source closure identifies
+the callee as the Authority Backup Adapter: the established path makes one backup-health request,
+then config observe, unchanged-proposal read-back, retained-root-marker observation, and final
+in-force load make four more. The Adapter's generic capacity four therefore refuses the fifth
+request in one settled reconcile. Stable counterexample
+`AUTHORITY-BACKUP-REPLAY-SINGLE-COMPLETE-RECONCILE-2026-08-31` corrects the Sprint's causal model
+without clearing any retained state.
+
+The current correction keeps Lifecycle Authority capacity 120 and derives the Adapter's distinct
+maximum as three backup-repair requests plus six config-backup requests per attempt, doubled for
+one immediate retry: `2 * (3 + 6) = 18`. Only Authority Backup receives that bound; sibling roles
+remain at four. The canonical replay codec advances from v5 to v6 and accepts canonical v2/v3/v4/v5
+widening only, so the live Authority capacity-120 and Adapter capacity-four v5 projections both
+migrate without dropping entries. The focused retained-replay suite passes **33/33**. Complete
+primary/auxiliary validation passes **4750** plus **27/33/33**; documentation/diff, Fourmolu, HLint
+(`No hints`), warning-clean all-target compilation, and canonical `prodbox dev check` pass. The
+installed executable is exact at
+`sha256:b3e8a965db2e37839f8b888feb26ca238ef453fb40b461904cb0921b369647b7`. Both integration
+entrypoints expose the same eight already-queued Sprint-5.38 fake-tool failures (**55/63** pass) and
+do not touch the replay surface. A fresh supported rollout and immediate retry remain for Sprint
+2.127.
+
+Generation 146 starts at 10:01:22 EDT, builds local runtime image
+`sha256:37941ace2d1574a8136bb8a1df1e1833bae8820c5995b34a8e6bac12f4577fd1`, publishes registry
+manifest `sha256:6a05e85978fbd766249d69860c7853c7ee4506894457e4eac59a7fbdcc9a12b4`, rolls Target Agent,
+Lifecycle Authority, and Authority Backup to generations 85, 27, and 67, and exits at 10:24:41 on
+the expected rollout-transition config connection timeout. Generation 147 starts unchanged at
+10:25:15, 34 seconds later, reuses the exact identities, observes the current Authority generation
+and retained-root marker, and crosses both registered replay refusals without clearing retained
+entries. It then exits at 10:29:40 on the distinct absent Provider Worker DNS boundary. Postflight
+proves no one-shot Jobs, zero-restart Ready retained workloads on exact local image `37941ace...`,
+no `provider-worker` namespace, a Ready untainted node, and 33 GiB free. Sprint `2.127` is Done and
+live-proven; stable counterexample
+`PROVIDER-WORKER-DNS-ABSENT-BEFORE-FIRST-PROVIDER-DISPATCH-2026-08-31` opens Sprint `2.128`.
+
+Sprint `2.128` source closure proves the Provider Worker was present in Tier-0 but tied with full
+Gateway orchestration as an Authority-Backup sibling. The Gateway group's namespace guardrail made
+the first Provider readiness dispatch before enum-stable order reached the worker. The corrected
+graph makes Provider Worker readiness a dependency of full Gateway orchestration; the generated
+Tier-0 record is canonically re-rendered with its recomputed witness, and the dry-run now orders
+worker readiness before Gateway and its guardrail. Focused closure passes the exact dependency and
+order assertions, both local plan goldens, and the shared AWS graph projection. The primary suite
+passes **4750/4750**, auxiliaries **27/33/33**, and policy, generated-config, Fourmolu, HLint (`No
+hints`), warning-clean all-target compilation, documentation, diff, and canonical `prodbox dev
+check` gates pass. The installed executable is exact at `sha256:094803cd0f773a69b77c40acc5bf9ef3c70bc58df5dff3d0e03f96fbd8488bd7`;
+supported live proof remains.
+
+Generation 148 starts at 11:19:43 EDT after an observed host/RKE2 disruption left the prior
+zero-restart retained Pods not-ready on the closed stale-authority-epoch cause; current preflight
+still proves a Ready untainted pressure-free node with 6 GiB memory available and 33 GiB disk free.
+The supported reconcile recovers the retained roles, builds local runtime image
+`sha256:aad6464d79c76288a97f11cf2d87e372c2386df32b96eb8d4668b7227d495e4a`, publishes registry
+manifest `sha256:f397770176ab975230e0dbee94f021575be8b45c4e620c0dab13c86afd3845f3`, rolls Target Agent,
+Lifecycle Authority, and Authority Backup to generations 86, 28, and 68, and exits at 11:43:05 on
+the expected rollout-transition config timeout. Generation 149 starts unchanged 35 seconds later,
+advances and reads back the new in-force config, retains the root marker, and creates Provider
+Worker generation 1 before the Gateway guardrail. It exits at 11:47:13 on exact ready-dispatch
+connection timeout. Postflight proves the Provider Worker Service and ready endpoint
+`10.42.0.178:8600`, its zero-restart Ready exact-image Pod, all retained roles zero-restart Ready on
+the same image, no one-shot Jobs, a Ready untainted pressure-free node, and 32 GiB free. Sprint
+`2.128` is Done and live-proven; stable counterexample
+`PROVIDER-WORKER-FIRST-READY-DISPATCH-TIMEOUT-2026-08-31` opens Sprint `2.129`. Its closed
+payload-free request-progress diagnostic is implemented across socket ingress/completion,
+authenticated admission, narrow-session acquisition, Provider execution, and response encoding.
+Generations 150/151 deploy it; the exact Ready Service endpoint emits no `socket-ingress` while the
+client reports connection timeout, and policy read-back proves Lifecycle Authority ingress is
+absent. Sprint `2.129` is Done and live-proven; stable counterexample
+`PROVIDER-WORKER-LIFECYCLE-AUTHORITY-INGRESS-DENIED-2026-08-31` opens Sprint `2.130`.
+
+Generation 125 names exact
+`TARGET-WORKER-REPOSITORY-QUALIFIED-RUNTIME-IDENTITY-2026-08-30`. It
+builds/publishes/imports identities `sha256:105f2e58…`, `sha256:7a3d0182…`, and
+`sha256:2987e948…` in 987.1 and 142.2 seconds, deleting only Generation 124's superseded local
+image. Retained root session `root-session-9c54db6a…` and digest `a5756119…` remain exact. The
+Target worker is created at 13:50:00 EDT, starts at 13:50:01, and is cleaned at 13:52:31; the
+credential worker is cleaned at 13:52:36. The protected terminal is exact
+`execution-failed/recovery-remint-ambiguous/target-delivery-failed/worker/observation-failed/runtime-image-identity-invalid`.
+Source closure proves the Target observer accepts only bare or scheme-prefixed digests while
+Kubernetes may return the repository-qualified runtime-manifest form already accepted by the
+credential worker's canonical parser. Reuse that parser in the Target observation and delete the
+narrow duplicate; change no image comparison, attestation, permit, delivery, cleanup, or receipt
+rule. Postflight proves no one-shot residue, NetworkPolicy generation 47 with exact
+`192.168.2.46/32:6443`, exact-image Ready Agent generation 70 and Authority generation 12, a
+pressure/taint-free Ready node, and 43 GiB free. The conservative fence runs through 14:22:57 EDT;
+no Generation 126 command may start before 14:22:58.
+The local correction deletes the Target-only runtime-image parser and reuses the canonical parser
+already proven at credential-worker attestation. Regression cases admit bare, scheme-prefixed, and
+repository-qualified exact identities and refuse foreign or malformed identities. The
+warning-clean all-target build passes; Target-materializer passes **34/34** and focused
+Sprint-2.116 passes **22/22**. Exact AWS-admin Authority passes **42/42**, full primary
+**4737/4737**, and auxiliary suites **27/33/31**; Fourmolu, HLint, and diff gates pass. Remaining
+documentation, repository-policy, and canonical gates pass. `prodbox dev check` exits 0; its
+gate-built and installed executable is byte-identical at
+`sha256:fd1760ea462b07ab6d9d64112d513cf6e8f81e8b99047bad9c1610d55c1618af`.
+
+Generation 124 had live-proved the Target-worker explicit runtime identity
+and exposes the next closed observation boundary. It builds/publishes/imports exact identities
+`sha256:17e9bde4…`, `sha256:def7f3fa…`, and `sha256:d2a4d6d8…` in 995.5 and 153.6 seconds, deleting
+only Generation 123's superseded local image. Current root session `root-session-9c54db6a…` and
+digest `a5756119…` remain exact. The Target Job is created at 12:52:00 EDT and its container starts
+at 12:52:01, so the former root-metadata refusal is crossed; cleanup starts at 12:54:28. The public
+terminal nevertheless remains
+`execution-failed/recovery-remint-ambiguous/target-delivery-failed/worker/observation-failed`.
+Register `TARGET-WORKER-POD-OBSERVATION-FAILED-AFTER-START-2026-08-30` and add a closed value-free
+observation-cause diagnostic before behavior changes. Postflight proves no one-shot residue,
+NetworkPolicy generation 46 with exact `192.168.2.46/32:6443`, exact-image Ready Agent/Authority,
+a pressure/taint-free Ready node, and 43 GiB free. The conservative fence runs through 13:24:54
+EDT; no Generation 125 command may start before 13:24:55.
+The local diagnostic now nests a closed Pod/ServiceAccount observation cause below
+`observation-failed`, erasing responses, identities, annotation names, subprocess text, and private
+detail before the terminal. Its exhaustive table proves unique tokens and private-input collapse;
+no observation, retry, attestation, permit, attach, cleanup, or receipt behavior changes. Focused
+Sprint-2.116 passes **22/22**, exact AWS-admin Authority **42/42**, and auxiliary **27/33/31**; full
+primary passes **4737/4737**. Warning-clean compilation, Fourmolu, HLint, documentation,
+repository-policy, diff, and canonical gates pass. `prodbox dev check` exits 0; its gate-built and
+installed executable is byte-identical at
+`sha256:d1329b57f293a64984d43fe3fc4c59ac4925cbada497d7ddb059a44e549ec162`.
+
+Generation 123 had live-proved the appended auditor-lease baseline target.
+It builds/publishes/imports exact identities `sha256:1788eda1…`, `sha256:9336a8f9…`, and
+`sha256:ae2689ff…` in 990.3 and 149.3 seconds, deleting only Generation 122's superseded local
+image. Baseline reconciliation advances from `root-session-3b9d5743…` to fresh
+`root-session-9c54db6a…` with exact digest `a5756119…`. Exact issued-lease admission and session
+finalization now cross; the terminal is
+`execution-failed/recovery-remint-ambiguous/target-delivery-failed/worker/observation-failed`.
+Read-only events confirm Target Job creation at 11:53:39 EDT and repeated kubelet refusal through
+11:55:59 because `runAsNonRoot` has no explicit numeric identity and the union image declares root.
+Register the live proof of `TARGET-WORKER-RUN-AS-NON-ROOT-IMAGE-METADATA-2026-08-30` and add an
+explicit non-root UID/GID/filesystem group to that Job only, preserving every other security,
+identity, cleanup, and receipt invariant. Cleanup removes both one-shot Jobs/Pods; NetworkPolicy
+generation 45 retains exact `192.168.2.46/32:6443`; exact-image Agent/Authority are Ready; the node
+is Ready without pressure/taint; and 43 GiB is free. A conservative fence runs through 12:26:26
+EDT; no Generation 124 command may start before 12:26:27.
+The local correction gives that Target worker Pod exact UID/GID/filesystem group `65532` and
+`OnRootMismatch` while leaving all prior security, identity, attestation, delivery, session, and
+cleanup behavior unchanged. Its complete Target-materializer group passes **34/34**, focused
+Sprint-2.116 **22/22**, full primary **4737/4737**, auxiliary **27/33/31**, warning-clean
+compilation, Fourmolu, HLint, documentation, repository-policy, diff, and canonical gates.
+`prodbox dev check` exits 0; its gate-built and installed executable is byte-identical at
+`sha256:7bd270969e0db19afc180c4dae839c56d38c4a442b79b9a721f09ff5891bcd57`.
+
+Generation 122 had proved Vault still issued an auditor lease below the
+compiled 300-second bound. It builds/publishes/imports exact identities `sha256:32508d57…`,
+`sha256:6aa2ce14…`, and `sha256:9c4328df…` in 1003.2 and 121.5 seconds, deleting only Generation
+121's superseded local image. Baseline reconciliation again returns root session
+`root-session-3b9d5743…` and digest `a5756119…`; recovery observes
+`present/cleanup-proven/remint-used` at 10:58:13.372 EDT and refuses before action entry as
+`worker-terminal-line=session-revocation-failed/auditor-lease-insufficient`. Register
+`VAULT-BASELINE-TARGET-REVISION-OMITTED-2026-08-30`: the role change omitted its appended compiled
+baseline target, so the retained completed root/provisioner session treats the older target set as
+current and replays it. Append one exact credential-provisioner auditor lease-containment baseline
+target so the native current-target comparison restarts through a fresh root session and exact
+read-back; never delete or special-case the retained journal. Keep the separate Target-worker
+runtime-identity correction ordered after this live baseline proof.
+The local correction now appends
+`BaselineCredentialProvisionerAuditorLeaseContainment` after the prior 19 targets and admits that
+exact historical set only as closed restart input, never as current or in-progress state. A
+test-local Generation-122 wire schema proves fresh-session planning, restart, complete-target
+read-back requirements, and partial-set refusal while preserving the independently pinned
+18-target schema. Focused Sprint-2.116 passes **21/21**, full primary **4737/4737**, auxiliary
+**27/33/31**, warning-clean compilation, Fourmolu, HLint, documentation, repository-policy, diff,
+and canonical gates. `prodbox dev check` exits 0; its gate-built and installed executable is
+byte-identical at
+`sha256:9ddf4c88603ce24d942cdcc5e6856f8d40c5ce11aaa28083c2a9b8485f957355`.
+The local diagnostic now requires the issued auditor lease to equal the compiled 300-second bound,
+refusing a shorter otherwise-valid batch token before action entry as
+`auditor-lease-insufficient`. It also refines acquisition/finalization journal unavailability into
+closed authentication-rejected, authorization-rejected, not-found, timeout, transport, decode,
+invalid, or other tokens while discarding response/private detail. Focused Sprint-2.116 passes
+**20/20**, exact AWS-admin Authority **42/42**, full primary **4736/4736**, and auxiliary
+**27/33/31**; production and affected tests compile warning-clean, and Fourmolu, HLint,
+documentation, diff, and canonical gates pass. `prodbox dev check` exits 0; its gate-built and
+installed executable is byte-identical at
+`sha256:1ab85cd4466469be734ca023189e319c2f6a3b51789c0bdabd2977e2aee313fa`. The
+Generation-121 fence elapsed at 10:30:59 EDT and Generation 122 is admitted.
+Never render accessor, token, Vault response, journal
+coordinate, receipt, or target values; never accept a receipt before successful stable absence.
+Preserve every delivery, cleanup, remint, permit, journal, completion, and receipt invariant. The
+Generation-122 recovery timestamp is 10:58:13.372 EDT, so its active fence runs through 11:28:13
+EDT and no successor may start before 11:28:14. Read-only postflight proves NetworkPolicy generation
+44 retains exact `192.168.2.46/32:6443` API egress, no credential one-shot remains and no Target
+worker was created, the current Target Agent and Lifecycle Authority are exact-image Ready, managed
+dangling image inventory is empty, the node is Ready without pressure or taint, and 43 GiB is free. The
+lease correction remains locally qualified at focused **19/19**, full primary **4735/4735**,
+auxiliary **27/33/31**, Fourmolu, HLint, documentation, diff, and canonical gates; its gate-built
+and installed input is byte-identical at
+`sha256:407a14ea70b3d17d9bb86db6357cb3ac2f91e99c894ed2827b4cbafc498fdc06`. The
+earlier results and binary
+`sha256:084f01e867631b96152a3343fc36a2e9f2a81fb3d6ee4536695c1f4c2e4e97eb` qualify the
+diagnostic-only input, now superseded by the local lease correction. Generation 118
+had built
+local image
+`sha256:107716dd…` in 987.9 seconds, publishes registry manifest `sha256:30ddcb04…`, imports OCI
+manifest `sha256:751c0eab…` in 144.3 seconds, and removes only the superseded Generation-117 local
+image. Root session `root-session-3b9d5743…` and baseline digest `a5756119…` remain current.
+Recovery observes `present/cleanup-proven/remint-used` at 06:56:44.677 EDT. Exact-image Target
+Agent and Authority Pods are Ready with zero restarts; no credential or Target worker remains,
+managed dangling image inventory is empty, node pressure/taints are absent, and 41 GiB is free.
+The diagnostic input was fully locally qualified at focused **15/15**, exact regression **1/1**,
+broader Sprint-4.50 **595/595**, primary **4732/4732**, auxiliary **27/33/31**, and all
+formatter/lint/docs/diff/canonical gates; gate-built and installed binary was byte-identical at
+`sha256:2538b528a5c90b1b507aa9eea8a60ad164890e27520dd0a53805a8191c0d829e`.
+The local correction keeps automount disabled and gives AWS-admin alone a separate
+Kubernetes-API-audience token, projected root CA, and downward namespace at the conventional
+in-cluster client path; the Vault token is unchanged. The retained substrate consumes the existing
+typed `endpoints/kubernetes` observation for exact post-DNAT API egress, while external EAB gains
+no Kubernetes client capability. Focused Sprint-2.116 passes **17/17**, the external one-shot
+lifecycle passes **14/14**, and both schema chart shapes render. Full primary and auxiliary suites
+pass **4733/4733** and **27/33/31**; formatter, HLint, documentation, diff, and canonical gates
+pass. The gate-built and installed Generation-119 input is byte-identical at
+`sha256:028ef5e112107e3631c30b2f210c9d3c974285e47e1c7e334548753aa000f3b1`. The fence
+elapsed before qualification completed. Generation 119 then builds local image
+`sha256:c550d7c6…` in 987.1 seconds, publishes registry manifest `sha256:9e51495f…`, imports OCI
+manifest `sha256:923436f6…` in 138.1 seconds, and removes only the superseded Generation-118 local
+image. Root session `root-session-3b9d5743…` and baseline digest `a5756119…` remain current.
+Recovery observes `present/cleanup-proven/remint-used` at 07:59:03.579 EDT and crosses the corrected
+Kubernetes API path to exact `worker-terminal-line=session-revocation-failed`; public receipt
+decode behavior remains unchanged. Register
+`AWS-ADMIN-CLEANUP-RECOVERY-WORKER-SESSION-REVOCATION-FAILED-2026-08-30` and diagnose only that
+closed revocation boundary before behavior changes. Live NetworkPolicy generation 41 binds the
+observed `192.168.2.46/32:6443` endpoint; exact-image Agent and Authority Pods are Ready with zero
+restarts, no one-shot worker remains, managed dangling inventory is empty, and node/host checks are
+clean with 41 GiB free. The active fence runs through 08:29:03 EDT; no successor before 08:29:04.
+The session-closure diagnostic compiles warning-clean; focused Sprint-2.116 remains **17/17**,
+the full primary suite passes **4733/4733**, auxiliary suites pass **27/33/31**, Fourmolu is
+applied, HLint reports `No hints`, and documentation and diff gates pass. Canonical and
+gate-built/install identity checks pass; `prodbox dev check` exits 0 and the byte-identical
+Generation-120 input is
+`sha256:0f2b97eddf225f27db9ac01ddfdc601b509cc71e08f0412c181d4f01df4cbd9b`.
+Generation 117 builds local image `sha256:22bae56e…` in 988.0 seconds, publishes registry manifest
+`sha256:fe6d9ef6…`, imports OCI manifest `sha256:5309514e…` in 138.3 seconds, and removes only the
+superseded Generation-116 local image. Root session `root-session-3b9d5743…` and baseline digest
+`a5756119…` remain current. Recovery observes `present/cleanup-proven/remint-used` at
+05:55:11.802 EDT. Exact-image Target Agent and Authority Pods are Ready with zero restarts; no
+credential or Target worker remains, managed dangling inventory is empty, node pressure/taints
+are absent, and 41 GiB is free. The crossed same-cluster correction remains fully locally
+qualified at focused **15/15**, broader Sprint-4.50 **595/595**, primary **4732/4732**, auxiliary
+**27/33/31**, and all formatter/lint/docs/diff/canonical gates; gate and installed input are
+byte-identical at `sha256:43322c9fd55677f0f87637f045356fa030cbe5c99f847ec7560987481882d1ca`.
+Generation 114
+had reached the locally qualified Target-delivery diagnostic and refined the prior refusal to
+`intent/unavailable/trust-install`. Source tracing
+proves signing succeeded and the authenticated Target Agent trust-install client received an
+unavailable response, but the former Authority boundary erased whether Target trust observation or
+CAS refused. The locally qualified payload-free classifier now preserves generic authenticated
+client causes, each exact Target trust refusal, `unavailable/observation`, `unavailable/cas`, and
+client read-back causes below that token; unknown private detail collapses to `other`, and no trust,
+delivery, retry, cleanup, remint, permit, journal, or response behavior changes. Focused
+Sprint-2.116 passes **14/14**, primary **4731/4731**, auxiliary authority **27/33/31**, Fourmolu,
+HLint, both documentation gates, and diff hygiene pass; canonical `dev check` exits 0 after 542.05
+seconds. Binary `sha256:d1aa5c8717a259421a580059df6fe6783c9efb36791cd1944cbabc6157b06412`
+is byte-identical to the gate build and is the Generation-115 input. Deploy it only after the
+active one-remint fence through 03:41:25 EDT (no successor before 03:41:26), then register the exact
+closed Target-side cause before behavior changes. Earlier Generation 113
+live-proved both exact-repository dangling-image retention and the corrected 166-MB Cabal layer,
+then the supported failure branch removed a pre-existing stale failed Lifecycle Authority release
+and verified absence before AWS-admin recovery. Earlier Generation 96 work began with the
+record-separated fixed-version receipt-envelope correction. Three Generation-95 attempts stopped before the
+AWS-admin worker surface: bounded Bootstrap Broker rollout; registry/MinIO readiness under a
+temporary image-import disk-pressure taint; then a stale Generation-94-annotated Lifecycle
+Authority Pod whose moving image tag resolved to Generation 95 and crash-looped. The third command
+verified failed-release cleanup. A clean-release retry then reproduced the registry failure:
+redundantly exporting/importing the already-current 7.56 GB image crosses the host's ephemeral
+storage floor, evicts registry, and makes the immediate post-import probe fail. Close stable
+counterexample `LOCAL-RUNTIME-REIMPORT-DISK-PRESSURE-2026-08-29` with the locally complete
+exact-current-only import bypass, then deploy Generation 96. Archive/import is skipped only when
+the exact tag's canonical Docker config digest is independently present under the same tag in RKE2
+containerd; absent, mismatched, failed, malformed, or ambiguous observation retains mandatory
+import. Generation 96's first attempt performs the required mismatched-image import and reaches a
+created-and-cleaned genesis worker, but its terminal client output is unobservable after tool-output
+truncation and cannot qualify the receipt. Its unchanged-source retry incorrectly imports again:
+`ctr images inspect` reports the exact matching config under
+`application/vnd.docker.container.image.v1+json`, while the observer recognizes only the OCI config
+media type. Close stable counterexample
+`LOCAL-RUNTIME-REIMPORT-CONFIG-MEDIA-TYPE-2026-08-29` with the locally complete closed
+Docker-or-OCI config-media-type observer. After the retained active permit expires, deploy
+Generation 97, recover the abandoned attempt, and prove the exact-current branch on an immediately
+following unchanged-source retry. The first Generation-97 crossing reaches the worker but its exact
+Pod-log token is again `line-topology=single/receipt-envelope-lines=none`, followed by
+`AwsAdminWorkerReceiptDecodeFailed`. Register stable counterexample
+`AWS-ADMIN-WORKER-POD-LOG-RECORD-ENVELOPE-ABSENT-2026-08-29`, then add only a closed value-free
+discriminator that distinguishes a malformed fixed-prefix receipt line from a non-receipt worker
+terminal line before changing transport behavior. Generation 98 publishes the qualified diagnostic
+and recovers the expired attempt. Its exact Pod-log token reports
+`receipt-prefix-lines=none/worker-terminal-line=completion-unavailable`; the public result remains
+`AwsAdminWorkerReceiptDecodeFailed`. Register stable counterexample
+`AWS-ADMIN-WORKER-COMPLETION-UNAVAILABLE-2026-08-29`. Inspection proves the worker's active
+delivery resolver incorrectly constructed its Authority client through the post-revocation
+completion transport, whose signing key is intentionally absent from the accessor-bearing worker
+policy. The locally complete correction keeps stable caller code 103 for delivery, appends code
+104 for completion, gives the active session only the delivery key/routes and the accessor-free
+batch session only the completion key/route, and keeps preparation operator/harness-only.
+Generation 99 publishes and imports that correction, then stops before AWS-admin recovery: its
+exact-image Lifecycle Authority Pod crash-loops with protected startup cause
+`authentication/trust-read/status-403`. Stable counterexample
+`LIFECYCLE-AUTHORITY-TRUST-READ-403-2026-08-29` proves the retained pre-completion baseline receipt
+incorrectly remained current. The validated local correction appends exactly
+`BaselineCredentialProvisionerCompletionPrincipal`; the immediately preceding 18-target receipt
+is historical terminal evidence that restarts under a fresh root session, while partial or
+in-progress receipts remain refusals. All 4722 primary cases, the 27/33/31 auxiliary authority
+suites, pinned HLint, documentation/diff checks, and canonical `prodbox dev check` pass. Binary
+`sha256:a21c7b64fa42e1e464f02ae2caf741012132f2531e2ac848a1ff6044e77723e9` is the Generation-100
+input. Generation 100 advances the root session from `root-session-50cf8517…` to
+`root-session-3b9d5743…`, brings the Authority through protected startup, and reaches the recovered
+worker. Attach is empty and the exact Pod-log token is
+`receipt-prefix-lines=none/worker-terminal-line=execution-failed`; the public result remains
+`AwsAdminWorkerReceiptDecodeFailed`. Register stable counterexample
+`AWS-ADMIN-WORKER-EXECUTION-FAILED-2026-08-29` and diagnose its protected worker execution cause
+before changing behavior or capability. Read-only inspection proves the exact-image Authority is
+Running/Ready with zero restarts and the failed worker was cleaned. Source diagnosis proves every
+closed `AwsAdminExecutionError` is currently collapsed to the one `execution-failed` marker, so no
+retained evidence can distinguish journal, IAM, or delivery refusal. Add only an exhaustive,
+payload-free execution-cause discriminator to that terminal marker; do not change execution,
+transport, or capability behavior. The closed diagnostic is locally complete: all 35 AWS-admin
+cases, all 4723 primary cases, the 27/33/31 auxiliary suites, pinned HLint, documentation/diff
+checks, and canonical `prodbox dev check` pass. Binary
+`sha256:3bf3381e3dd28bb863f5e45a5bea62655c00f2984a3804d4b09ef57a69649071` is the Generation-101
+input. Generation 101 retains the corrected root session but stops before worker creation because
+the expired Generation-100 Authorized attempt's execution journal is present; no-effect recovery
+correctly refuses at `attempt-recovery/journal-present`. Register stable counterexample
+`AWS-ADMIN-AUTHORIZED-RECOVERY-JOURNAL-PRESENT-2026-08-29` and determine the exact durable resume
+contract for a journaled Authorized attempt before changing recovery behavior. The existing
+observer deliberately records only presence, so first add a read-only exhaustive payload-free
+classifier for the exact retained journal phase while preserving absence as the sole no-effect
+proof and every corrupt/mismatched/unobservable result as a refusal. That classifier is locally
+complete: AWS-admin **35/35**, primary **4723/4723**, auxiliary **27/33/31**, pinned HLint,
+documentation/diff checks, and canonical `prodbox dev check` pass. Binary
+`sha256:e90cb98f4460dad96f13806163f382ef878958f1361a940cb9200e49abca7652` is the Generation-102
+input. Generation 102 publishes local/registry/containerd digests `sha256:c9b64a3f…`,
+`sha256:8dc29aa4…`, and `sha256:04d74efe…`; retains root session
+`root-session-3b9d5743…` with read-back digest `a5756119…`; and brings the exact-image Authority
+Ready with zero restarts. The supported reconcile creates no credential worker and again refuses
+at `attempt-recovery/journal-present`. Its protected read-only observation is exactly
+`present/intent-committed/initial-attempt`. Register stable refinement
+`AWS-ADMIN-AUTHORIZED-RECOVERY-INTENT-COMMITTED-2026-08-29`. Determine and validate the exact
+durable continuation for an expired Authorized permit whose first-attempt journal has committed
+intent but no later durable phase; do not clear the journal, mint an unrelated fresh attempt, or
+infer that provider effects are absent. The exact intent-only recovery is locally complete: Job
+and Pod must be absent; authenticated journal absence or only the embedded-permit-equal
+`intent-committed/initial-attempt` token admits the existing binding-equivalent renewal; every
+later/remint/corrupt/mismatched/unobservable state refuses. Focused Sprint-2.116 passes **7/7**,
+AWS-admin **35/35**, primary **4723/4723**, auxiliary **27/33/31**, pinned HLint,
+documentation/diff checks, and canonical `prodbox dev check` pass. Binary
+`sha256:81ebde0f6662257bfeacf53b224538cf7cd1310df52e74c37aaa1a61cf2e6002` is the Generation-103
+input; deploy it and qualify the fresh worker receipt without reinterpreting the retained
+predecessor journal. Generation 103 publishes local/registry/containerd digests
+`sha256:9db85e6d…`, `sha256:462dd3c2…`, and `sha256:9f1e75cc…`; retains root session
+`root-session-3b9d5743…`; brings the exact-image Authority Ready with zero restarts; admits the old
+`present/intent-committed/initial-attempt` journal; and creates and cleans the binding-equivalent
+fresh worker. Attach is empty and the exact Pod-log token is
+`execution-failed/iam-prerequisite-failed`; the public result remains
+`AwsAdminWorkerReceiptDecodeFailed`. Register stable counterexample
+`AWS-ADMIN-WORKER-IAM-PREREQUISITE-FAILED-2026-08-29`. Refine that protected prerequisite failure
+to an exhaustive payload-free cause before any IAM behavior or capability change. The diagnostic
+is locally complete: every `ProductionIamError` constructor has one value-free class, and native
+AWS failures additionally name only a closed authored operation stage plus a
+signing/transport/service/parse/ambiguity class with explicit unknown fallbacks. Credential
+values, IAM names, provider messages, request IDs, bodies, counts, and boundary detail are erased
+before the terminal line; IAM programs, requests, retries, permissions, journal transitions, and
+receipt behavior are unchanged. Focused Sprint-2.116 passes **8/8**, AWS-admin **36/36**, primary
+**4724/4724**, auxiliary **27/33/31**, repository-pinned HLint reports `No hints`,
+documentation/diff checks pass, and canonical `prodbox dev check` exits 0. Binary
+`sha256:5538a7f75a37685882f283c2eccebcd2cb095dc36cfb784cff6cd83142d05a9e` is the
+Generation-104 input. Generation 104 builds local image `sha256:62beb581…` in 987.3 seconds,
+publishes registry manifest `sha256:865155c3…`, and imports OCI manifest `sha256:a6427e11…` in
+200.2 seconds. It retains root session `root-session-3b9d5743…` and read-back digest
+`a5756119…`; the exact-image Authority is Ready with zero restarts and the fresh worker is cleaned.
+Attach is empty and the protected Pod-log token is
+`execution-failed/iam-prerequisite-failed/aws/observe-bucket/service/other-client`; the public
+result remains `AwsAdminWorkerReceiptDecodeFailed`, and the supported command exits 1 after
+1784.45 seconds. Register stable counterexample
+`AWS-ADMIN-OBSERVE-BUCKET-SERVICE-OTHER-CLIENT-2026-08-29`. Determine the exact closed S3 service
+refusal still collapsed inside `other-client` before any IAM behavior, retry, permission, or
+capability change. Read-only native STS, bucket-list, and bucket-location probes prove the
+repository credential is valid, the configured bucket is owned, and its `us-west-2` region agrees
+with config. The bodyless `HeadBucket` refusal cannot expose an AWS error code; source diagnosis
+finds that the native S3 signer omitted S3's mandatory `x-amz-content-sha256` header. The narrow
+local correction sends and signs the exact body hash for every native S3 HEAD, GET, and PUT. Its
+request-capture regression binds the empty observation body plus all five hardening PUT bodies;
+the S3 group passes **6/6**, Sprint-2.116 **8/8**, exact AWS-admin Authority **36/36**, primary
+**4725/4725**, and auxiliary **27/33/31**. Fourmolu is applied. Binary
+`sha256:8755f175a66db556982e7cdb1bc4b9a941c064ac80a6db58ffda6ca4585294b6` is the
+Generation-105 input. HLint reports `No hints`, documentation/diff checks pass, and canonical
+`dev check` exits 0 after 8:56; the gate-built executable is byte-identical. Deploy it through the
+supported reconcile and register any later distinct refusal before changing behavior.**
+Generation 105 builds local image `sha256:d7d89410…` in 991.6 seconds, publishes registry manifest
+`sha256:5e8cfd53…`, imports OCI manifest `sha256:48facd99…` in 249.0 seconds, and retains the same
+root session/read-back digest. The exact-image Authority is Running/Ready with zero restarts and
+the credential worker is cleaned. Its protected terminal advances beyond the S3/IAM prerequisite
+to `execution-failed/target-observation-unobservable`; the public result remains
+`AwsAdminWorkerReceiptDecodeFailed`, and the supported command exits 1 after 31:01. Register stable
+counterexample `AWS-ADMIN-TARGET-OBSERVATION-UNOBSERVABLE-2026-08-29`. Diagnose the exact closed
+target-observation boundary before changing behavior; do not add a retry or capability, write the
+target, reinterpret the journal, or infer state from unobservability.
+Source tracing locates the refusal in the pre-delivery Target read-back. A local diagnostic now
+replaces the former bounded-`show`/single-token collapse with a finite payload-free cause algebra
+covering authenticated providers, endpoint/HTTP transport and status, bounded response,
+response codec/status, authored remote refusals, generation/receipt validation, and retained SES
+custody observation. Distinct 403 response bodies collapse to the same
+`client/authenticated/transport/http/status/forbidden` token; all client tokens are unique. The new
+case passes **1/1**, focused Sprint-2.116 **9/9**, exact AWS-admin Authority **37/37**, primary
+**4726/4726**, and auxiliary **27/33/31**. Fourmolu is applied, HLint reports `No hints`,
+documentation/diff checks pass, and canonical `dev check` exits 0 after 10:24. Binary
+`sha256:ca6cd3af1d46a75ee6ec71ee31f57111d2247a3f5b07559ff4b8bc1b5db5a4dc` is the
+qualified Generation-106 input and is byte-identical to the gate-built executable. Deploy it and
+register its exact terminal token before changing behavior.
+Generation 106 builds local image `sha256:b6c7f67e…` in 999.2 seconds, publishes registry manifest
+`sha256:e91ae3ed…`, imports OCI manifest `sha256:f2f94996…` in 245.4 seconds, and retains the same
+root session/read-back digest. The exact-image Authority and Target Agent are Ready with zero
+restarts, the Target Agent endpoint is current, and no credential worker remains. Recovery refuses
+before successor worker creation with `attempt-recovery/journal-present`; the command exits 1 after
+30:29.89. Register stable counterexample
+`AWS-ADMIN-ATTEMPT-RECOVERY-JOURNAL-PRESENT-2026-08-29`. Refine only the exact closed later journal
+phase before changing recovery behavior; do not treat arbitrary presence as recoverable, remint or
+clear a key, clear the journal, infer target state, or replay a provider effect.
+The exact-image Authority's protected log refines the retained state to
+`present/key-created/remint-used`. Register stable refinement
+`AWS-ADMIN-ATTEMPT-RECOVERY-KEY-CREATED-REMINT-USED-2026-08-29`. The safe continuation must retain
+that predecessor journal, run only its permit-bound cleanup, prove stable IAM-key absence, and only
+then admit a fresh bounded permit; it cannot treat the phase as no-effect, copy it into an ordinary
+new journal, or mint before cleanup read-back.
+The closed cleanup continuation is now locally implemented. Exact pre-target phases select an
+opaque cleanup proof; a successor normal-worker permit carries only the digest of the predecessor
+signed permit and starts a distinct journal at cleanup-required. Stable IAM-key absence must be
+committed before the journal can consume its one remint. Target-committed, complete,
+invalid/mismatched, unobservable, no-effect-kind substitution, predecessor substitution, and
+mint-before-cleanup arms refuse. Focused Sprint-2.116 passes **10/10**, the exact AWS-admin group
+passes **38/38**, all **4727/4727** primary cases and the **27/33/31** auxiliary unit gates pass.
+Fourmolu is applied, HLint
+reports `No hints`, documentation/diff checks pass, and canonical `prodbox dev check` exits 0 after
+10:24.16. Gate-built binary
+`sha256:d77698098ca8f33dc984bf4a0555fee3e230cceaed2c5694be1fd330259c5ea2` is the
+Generation-107 input. Deploy this exact continuation and register its next terminal observation
+before changing behavior.
+Generation 107 builds/publishes/imports local, registry, and OCI identities
+`sha256:c7862bba…`/`sha256:26f7e3c1…`/`sha256:7867708c…`, retains root session
+`root-session-3b9d5743…` and read-back digest `a5756119…`, and brings the exact-image Authority and
+Target Agent Ready with zero restarts. No credential worker is created. The protected journal token
+remains `present/key-created/remint-used`, but recovery stops at `recovery-intent-rejected`; the
+supported command exits 1 after 32:44.77. Stable counterexample
+`AWS-ADMIN-CLEANUP-RECOVERY-PERMIT-KIND-REJECTED-2026-08-29` proves that the retained operation is
+mode-indexed Authority-backup genesis while the new cleanup kind admits only normal drafts. Extend
+the same predecessor-bound cleanup-before-remint encoding to the closed Genesis family while
+retaining the normal family. Backup repair stays outside expired-Authorized renewal; do not change
+programs, bindings, or accepted journal phases.
+That mode-indexed correction is now locally complete. `CleanupRecoveryKind` carries a closed
+Genesis-or-normal cleanup program plus the exact predecessor signed-permit digest; Genesis retains
+its canonical target binding, normal retains its operator-material family, and cross-family,
+backup-repair, predecessor-substitution, and mint-before-cleanup attempts remain unrepresentable or
+refused. The cleanup permit round-trips through the durable signed wire and its new journal begins
+at `cleanup-required/initial-attempt`. Focused Sprint-2.116 passes **11/11**, the exact AWS-admin
+Authority group passes **39/39**, all **4728/4728** primary cases and the **27/33/31** auxiliary
+unit gates pass. Fourmolu is applied, HLint reports `No hints`, documentation/diff checks pass, and
+canonical `prodbox dev check` exits 0 after 9:06.50. Gate-built binary
+`sha256:f85a5338c33c5c8be1276163d5f867a9451e6c28a6ea200388ed665b21501082` is the
+Generation-108 input and is byte-identical to `.build/prodbox`. Run the supported reconcile and
+register its exact terminal cleanup/remint observation before changing behavior or advancing to a
+later sprint.
+Generation 108 builds/publishes/imports local, registry, and OCI identities
+`sha256:83c3fbf9…`/`sha256:8a21c7f6…`/`sha256:28e9fff5…`, retains root session
+`root-session-3b9d5743…` and read-back digest `a5756119…`, and brings the exact-image Authority and
+Target Agent Ready with zero restarts. The corrected Genesis cleanup successor crosses the former
+`recovery-intent-rejected` boundary and executes; its protected terminal token is
+`execution-failed/recovery-remint-ambiguous`. The coordinator refuses that token as a receipt, the
+supported command exits 1 after 33:03.99, and no credential worker Job or Pod remains. Register
+stable counterexample `AWS-ADMIN-CLEANUP-RECOVERY-REMINT-AMBIGUOUS-2026-08-29`. Trace the exact
+closed remint observation before changing behavior; do not infer cleanup, absence, or a safe fresh
+mint from the terminal label alone.
+Source tracing narrows the live result without a behavior change. The terminal cause has one
+construction site and requires the new journal to have durably reached `cleanup-proven` with its
+remint flag set. Because a cleanup-continuation journal starts at `cleanup-required/initial-attempt`,
+the Generation-108 path necessarily committed stable absence, restarted to
+`intent-committed/remint-used`, consumed its one fresh create attempt, and committed stable absence
+again before refusing a second remint. The exact trigger that made the fresh attempt require its
+second cleanup is deliberately erased, but it is not needed to authorize the next step: the
+retained `cleanup-proven/remint-used` phase itself is the safe continuation proof. Protected
+Authority time records the recovery at 22:56:23 EDT; keep the active-attempt fence intact until
+after 23:26:24 EDT, then run the same-source supported reconcile and register the exact successor
+observation.
+Generation 109 is that unchanged-source proof. Its build is fully cached, it republishes the same
+local/registry identities, and the exact-current containerd branch skips archive/import. The
+Authority protected log proves `journal-observation=present/cleanup-proven/remint-used` at
+23:28:29 EDT before the successor runs. That successor nevertheless emits the same
+`execution-failed/recovery-remint-ambiguous`; the command exits 1 after 1:37.98, no worker remains,
+and the node retains 41 GiB free. Register stable counterexample
+`AWS-ADMIN-CLEANUP-RECOVERY-REMINT-AMBIGUOUS-REPEATED-2026-08-29`. Two independent successors now
+show a deterministic collapsed cause rather than an isolated lost response. Add only a closed
+value-free refinement that preserves whether the one fresh attempt reached cleanup through native
+IAM dispatch ambiguity, a 2xx lost-result parse failure, or another authored cleanup trigger; do
+not change cleanup, mint, retry, permit, or journal behavior before that live discriminator runs.
+That diagnostic is locally complete without changing a durable journal or permit wire. Native IAM
+create ambiguity now retains only dispatch-ambiguous versus lost-result, and the worker's one-remint
+terminal retains one of ten exhaustive value-free triggers: resumed cleanup-proven journal,
+nonempty intent inventory, prepared-inventory divergence, the two create ambiguity classes,
+predecessor collision, unavailable or invalid created material, Target delivery failure, or Target
+receipt mismatch. Focused Sprint-2.116 remains **11/11**, exact AWS-admin remains **39/39**, the
+generic Credential Provisioner group passes **29/29**, all **4728/4728** primary cases and the
+**27/33/31** auxiliary suites pass. Fourmolu is applied, HLint reports `No hints`,
+documentation/diff checks pass, and canonical `prodbox dev check` exits 0 after 8:56.404. Gate-built
+binary `sha256:b0cf31db99d2cdda3b79b2b33fca7eb4d2be2eadd39a72021d7d2c7a929764d6` is the
+Generation-110 input and is byte-identical to `.build/prodbox`. The protected Generation-109
+successor timestamp is 23:28:29 EDT; retain its 30-minute active fence through 23:58:29 and start
+the supported reconcile only after 23:58:30.
+Generation 110 starts at 23:58:35 EDT and builds local image
+`sha256:6645b9e560786716638a6d3a63915441f1443ebe5004a866ccd9ad0479d5765a` in 1002.0 seconds,
+publishes registry manifest
+`sha256:985c3a58744ae49bf2d13f9c2dec8b537c271729e2bbabf63303959f3ef7626d`, and imports
+containerd OCI manifest
+`sha256:4a6937afd31aeddcd7cd4f77247a6ff32d8f8621c19672537408309eeea9550e` in 299.8 seconds.
+The root session and baseline read-back remain unchanged; Authority and Target Agent are Ready on
+the exact local image with zero restarts. Protected recovery again positively observes
+`present/cleanup-proven/remint-used`. The successor terminal now refines exactly to
+`execution-failed/recovery-remint-ambiguous/target-delivery-failed`; the coordinator refuses it,
+the supported command exits 1 after 33:22.148, and postflight finds no worker Job or Pod, the node
+Ready, and 35 GiB free. Register stable counterexample
+`AWS-ADMIN-CLEANUP-RECOVERY-TARGET-DELIVERY-FAILED-2026-08-30`. Trace the exact closed delivery
+refusal before changing delivery, authentication, retry, cleanup, remint, permit, or journal
+behavior; the token proves only that delivery refused and the authoritative read-back found no
+target receipt before cleanup.
+Source tracing proves Generation 110 reached neither Target-worker Job creation nor a Target
+receipt and narrows the collapsed boundary to direct delivery preflight, authenticated
+Target-intent issue, Target-worker coordination, or retained custody. A local diagnostic now
+preserves only a closed value-free hierarchy across those stages: known authored intent
+refusal/unavailability and closed HTTP classes have explicit other arms, and payload-bearing worker
+errors collapse to their exact coordinator constructor. HTTP status integers, response bodies,
+Kubernetes errors, identities, material/receipt values, and retained detail are unrepresentable;
+no delivery, authentication, retry, worker, cleanup, remint, permit, journal, observation, or
+receipt behavior changes. Focused Sprint-2.116 is **11/11**, exact AWS-admin is **39/39**, generic
+Credential Provisioner is **29/29**, primary is **4728/4728**, auxiliary authority is
+**27/33/31**, Fourmolu is applied, and HLint reports `No hints`. Documentation/diff and canonical
+checks pass; `dev check` exits 0 after 8:55.66 with its warning-clean all-target build. Gate-built
+binary `sha256:dae7176c20b73a4068ab4570ec6f744a8d6114b8f0bdfc7659d2053e3c42a438` is byte-identical
+to `.build/prodbox` and is the Generation-111 input. The protected Generation-110 recovery
+timestamp is 00:31:55 EDT; retain its active fence through 01:01:55 and start no supported
+successor before 01:01:56.
+Generation 111 starts at 01:02:19 EDT and builds/publishes/imports local, registry, and OCI
+identities
+`sha256:92001fa12f3cad9b1c6cca3c6c03a2fb186429984d3baff2ff56fadafee71548` /
+`sha256:0f8017cc25b5b09e754aca08114239270747b0251c4ca0764c0327249342ae7c` /
+`sha256:f645107217a1d89af12354802e3631e45fd546cb9e69db225f1269328622e790`; build takes
+993.3 seconds and required import takes 315.6 seconds. The immediate registry/MinIO round-trip then
+cannot connect and the supported command exits 1 after 32:25.81 before Authority recovery or a
+credential worker runs. Read-only postflight proves the already registered
+`LOCAL-RUNTIME-REIMPORT-DISK-PRESSURE-2026-08-29`: the Ready node has `DiskPressure=True` and its
+NoSchedule taint, eviction events name the ephemeral-storage floor, registry/control-plane Pods are
+evicted or Pending, and 28 GiB is free. No new active AWS-admin fence exists. Once pressure clears
+automatically, the persisted exact Generation-111 image licenses only an unchanged-source retry
+through the proven exact-current import bypass; no delivery change follows from this attempt.
+That automatic recovery does not close: the host stabilizes at 38 GiB free while kubelet retains
+pressure because its 10% minimum-reclaim target is additional to the threshold. Read-only Docker
+inventory finds **15** dangling exact managed-runtime images at about 2.88 GB unique each, and
+`docker system df` reports 55.97 GB total image data with 51.19 GB reclaimable. Source has no
+retention step, and kubelet cannot reclaim Docker's separate store. Register stable counterexample
+`LOCAL-RUNTIME-DANGLING-IMAGE-RETENTION-2026-08-30`. The narrow correction may select only canonical
+image IDs from machine-formatted dangling inventory for the exact managed runtime repository, must
+delete no tagged or foreign image, and must fail closed on malformed observation or deletion. It
+runs before build and after the publication/import attempt; broad prune, build-cache deletion,
+Kubernetes mutation, or weakening the kubelet floor remains forbidden.
+That correction is locally implemented at an early native-plan host-preflight plus pre/post
+publication reconciles. Machine-formatted `dangling=true` inventory can select only canonical full
+IDs under the exact compiled runtime repository; foreign repositories are ignored, tagged images
+are absent, each deletion is individual and non-force, and empty read-back is mandatory.
+Malformed/duplicate/noncanonical observation or any command failure refuses. Focused Sprint-2.116
+passes **12/12**, exact AWS-admin remains **39/39**, generic Credential Provisioner remains
+**29/29**, plan renderers pass **30/30**, primary passes **4729/4729**, and auxiliary authority
+passes **27/33/31**. Fourmolu, HLint (`No hints`), both documentation gates, and `git diff --check`
+pass; canonical `dev check` exits 0 after 8:59.22 with its warning-clean all-target build.
+Gate-built binary `sha256:5718b68d87a11218ec6de1e64da5b1bfd4d64d5f1e90168d67a5145f0cd3fcc7`
+is byte-identical to `.build/prodbox`. Generation 112 starts at 02:16:24 EDT. Its early supported
+host preflight selects and deletes exactly the **15** measured dangling images under the compiled
+managed-runtime repository, requires empty read-back, and selects no tagged or foreign image. The
+node recovers to `DiskPressure=False` with no taint, the registry returns Running/Ready, and the
+managed dangling inventory remains empty. The command then stops before image build at the exact
+stale admission `minio` → `registry` (32,413,007 microseconds old against the 30,000,000-microsecond
+bound), exits 1 after 1:17.18, and reaches neither Authority recovery nor an AWS-admin worker; no
+active AWS-admin fence exists. This proves the retention correction but creates no Target-delivery
+evidence and licenses no admission weakening.
+
+The deletion does not physically return the expected bytes: Docker reports only 12.75 GB of image
+data but reclassifies 43.54 GB as reclaimable build cache. Read-only image history attributes
+**2.87 GB** of each runtime generation to the single `cabal update`/`cabal build` layer, matching
+the prior 2.88-GB unique-image measurement. Inside the unchanged image, `.build` is 921 MB,
+`/root/.cache/cabal` is 1.2 GB, and `/root/.local/state/cabal` is 539 MB; the installed executable
+is separate and the checked-in Provider programs are YAML. Register stable counterexample
+`LOCAL-RUNTIME-COMPILE-LAYER-RETENTION-2026-08-30`. The narrow correction removes only those
+ephemeral build outputs in the same Dockerfile `RUN` after installing the binary, so they never
+enter a generation layer. It does not prune Docker's global build cache, remove the pinned in-image
+toolchain, change the single-stage/basic-builder doctrine, or touch tagged/foreign images. Local
+implementation is complete and pinned by a dedicated Sprint-2.116 Dockerfile regression. Focused
+Sprint-2.116 passes **13/13**, primary passes **4730/4730**, and auxiliary authority passes
+**27/33/31**. Fourmolu, HLint (`No hints`), both documentation gates, and `git diff --check` pass;
+canonical `dev check` exits 0 after 8:46.200 with its warning-clean all-target build. Because no
+production Haskell changed, gate-built binary
+`sha256:5718b68d87a11218ec6de1e64da5b1bfd4d64d5f1e90168d67a5145f0cd3fcc7` remains
+byte-identical to `.build/prodbox`. It is the next supported deployment input; live layer-size and
+Target-delivery proof remain. Generation 113 starts at 02:42:09 EDT, builds local image
+`sha256:34531fd44562fd9d541f11b826742cac78e0e27b6adce17cb65525f8347740fb` in 991.3 seconds,
+publishes registry manifest
+`sha256:d5a181199e9d7c424714a045e5dd895ba4f97f7fe14347731bd28af891b6b18d`, and imports OCI
+manifest `sha256:58d4d753d31fc5dc9962f9818b082f03ce0a4ff5dda55cf6209d50a9ea0d30f5` in
+170.3 seconds. Independent history proves the Cabal layer is now **166 MB**, down from 2.87 GB,
+and total image size is **4,831,214,949 bytes**, down by about 2.71 GB. Managed dangling read-back
+is empty after exact deletion of the superseded Generation-111 local image. Docker build-cache
+total changes only 50.99 → 51.19 GB while reclaimable classification changes 43.54 → 46.44 GB;
+the removed compilation bytes do not become a new 2.7-GB final image layer. The node is Ready with
+`DiskPressure=False`, no taint, and 29 GiB free.
+
+Generation 113 then encounters the pre-existing failed Lifecycle Authority release: its retained
+Pod still carries Generation-110 rollout annotation `sha256:6645b9e5…`, resolves the old
+Generation-111 registry manifest `sha256:0f8017cc…`, and is CrashLoopBackOff with 18 restarts.
+The supported Helm admission refuses, prints the exact stale Pod evidence, uninstalls the failed
+release, and verifies absence. The command exits 1 after 25:32.173 before an exact-generation
+Authority, Authority recovery, or an AWS-admin worker exists, so no active AWS-admin fence is
+created. This is the already-required clean-failed-release branch, not Target-delivery evidence;
+the unchanged-source exact-current clean-release retry is next.
+Generation 114 starts at 03:09:53 EDT, reproduces local/registry identities
+`sha256:34531fd4…`/`sha256:d5a18119…` entirely from cache, and takes the exact-current containerd
+branch without archive/import. A clean exact-image Lifecycle Authority and current Target Agent
+are Ready with zero restarts; both rollout annotation and runtime image ID equal the corrected
+local image. The retained root session and baseline digest stay unchanged. Authority recovery
+positively observes `present/cleanup-proven/remint-used` at 03:11:25.960 EDT, and the protected
+worker terminal refines exactly to
+`execution-failed/recovery-remint-ambiguous/target-delivery-failed/intent/unavailable/trust-install`.
+The coordinator refuses it as a receipt, the command exits 1 after 1:50.997, and no AWS-admin Job
+or Pod remains. Node pressure is false, the managed dangling inventory is empty, and host free
+space recovers to 39 GiB. Register stable counterexample
+`AWS-ADMIN-CLEANUP-RECOVERY-TARGET-INTENT-TRUST-INSTALL-UNAVAILABLE-2026-08-30`. Trace the exact
+closed trust-install boundary before changing delivery, authentication, capability, retry,
+cleanup, remint, permit, or journal behavior. Retain the active fence through 03:41:25 and start no
+supported successor before 03:41:26.
+Source tracing proves Target-intent signing succeeded and the authenticated Target trust-install
+client received an unavailable response, while the production client and Authority endpoint erased
+the endpoint's existing observation-versus-CAS distinction. The local diagnostic now preserves a
+finite payload-free cause covering generic authenticated client transport/codec/status, every
+authored Target trust refusal, exact observation/CAS unavailability, and client read-back failure;
+unknown private detail becomes `other`. Focused Sprint-2.116 passes **14/14**, all **4731/4731**
+primary cases and auxiliary **27/33/31** pass; Fourmolu, HLint (`No hints`), documentation/diff
+checks, and canonical `dev check` pass, the latter in 542.05 seconds. Gate-built and installed
+binary `sha256:d1aa5c8717a259421a580059df6fe6783c9efb36791cd1944cbabc6157b06412`
+is the Generation-115 input. The diagnostic changes no trust or delivery behavior.
+Generation 115 builds/publishes/imports exact identities `sha256:3e290944…`, `sha256:e1afb61b…`,
+and `sha256:9d09895b…`, retains the current root session/read-back digest, and brings exact-image
+Target Agent and Authority Pods Ready with zero restarts. Recovery at 04:06:19.102 EDT again
+observes `present/cleanup-proven/remint-used`; the protected worker terminal now ends at
+`intent/unavailable/trust-install/unavailable/observation`. Register stable counterexample
+`AWS-ADMIN-CLEANUP-RECOVERY-TARGET-TRUST-OBSERVATION-UNAVAILABLE-2026-08-30`: it proves no CAS
+decision was reached and licenses only exact closed diagnosis of the Target's Vault trust-record
+read. The command exits 1 after 1494.62 seconds, no worker remains, node pressure is false, managed
+dangling inventory is empty, and 42 GiB is free. Preserve the fence through 04:36:19; no supported
+successor starts before 04:36:20.
+The next closed diagnostic is locally qualified without changing the Vault read: it separates
+session acquisition/relogin, request 401/403 and other HTTP/transport, plus invalid or
+identity-mismatched stored records; exact request 404 alone remains missing. Focused **14/14**,
+primary **4731/4731**, auxiliary **27/33/31**, lint/docs/diff, and canonical `dev check` pass.
+Binary `sha256:ffad42dae87c31e5e1ba5109bc54c17cc831ac81782fce40b7ab1864321c51c1`
+is the Generation-116 input; deployment remains after 04:36:19 EDT.
+Sprint `2.115` is done and live-proven:
+Generation 90 recovered the expired
+Authorized attempt only after exact Job, Pod, and journal absence. Sprint `2.99` is
+done on its owned startup-cycle
+surface. Generation 64 publishes local
+image `sha256:39cb70a5457cc563a65d9d05d3bbc0db8582b193b8ff26a239f99c8927146762`, registry digest
+`sha256:94d17cf93acc88206712afe1bba6eeaac7f5619d6bee654c0a7f42658ef2224a`, and containerd OCI
+manifest `sha256:d2248a2d2214ed9d9fc26ec5fc0ef9473648e9a082d6411d9998d4be5bfa1a29`. Fresh Authority
+Backup Pod `d165594e-a178-4a1a-b5cd-30a8edb973f4` carries that exact local image in both its rollout
+annotation and runtime image ID, remains Running with zero restarts while its credential is absent,
+and leaves its Helm release `deployed`. The supported reconcile therefore crosses desired-state
+apply into `StepEstablishAuthorityBackup`; the former Helm/process/liveness cycle is closed.
+
+The next exact refusal is stable counterexample `TOKENREQUEST-MINIMUM-TTL-2026-08-28`. The
+bootstrap-core operator ServiceAccount exists, its exact self-token Role and RoleBinding exist, and
+an impersonated read-only authorization check answers `yes`; the subsequent caller-bound
+TokenRequest nevertheless refuses. Source projection shows the operator asks Kubernetes for `5m`
+(300 seconds), while Kubernetes' TokenRequest validator rejects every lifetime below ten minutes
+(600 seconds). The same error arm currently labels every answered TokenRequest rejection as an
+authorization denial, so it also destroys the validation-versus-RBAC distinction. Sprint `2.100`
+introduces a hidden-constructor minimum-valid lifetime, uses ten minutes for the operator and retains
+the already-valid fifteen-minute harness lifetime, and classifies the closed invalid-request cause
+without exposing Kubernetes response bodies. The five-minute Vault-issued operator session remains
+unchanged: Kubernetes bearer-token lifetime and Vault lease lifetime are separate boundaries. The
+Sprint `2.100` correction is complete. Focused lifetime/caller/rejection cases pass 3/3, including the
+300-second counterexample and payload-free validation/RBAC/API/context/unclassified distinctions;
+the prior authority-reached regression passes independently. All **4690** primary cases and the
+**27/33/29** authority suites pass, targeted HLint reports `No hints`, the warning-clean all-target
+build and exact canonical `prodbox dev check` exit 0, and refreshed binary
+`sha256:0042eea999dd2e8e1b2c2608487bea8ec63519350e72248294813b841a97a2dd` leaves RKE2 active
+with zero service restarts and the node's False MemoryPressure transition unchanged. Generation 65
+publishes local image `sha256:40d8980aa4e601347bac31ed7e9c8daa909a84092b233e6476941679d6c1506d`,
+registry digest `sha256:ddfa34edad155a10f6c653e88bee79c830cd2a5866e6c49c44ccc6d29b5f36fe`,
+and containerd OCI manifest
+`sha256:0d1d338b64f7e75221738d7120e2380a3f38c1aab5f52e172354249f3d6895d1`.
+Its exact self-token request authenticates the operator to Lifecycle Authority and returns the
+typed missing-generation observation, proving that the formerly invalid 300-second request has
+crossed live. The fresh exact-image Authority Backup Pod
+`8c8cc93c-5f99-4d6e-96bc-71f9c0171b03` remains Running with zero restarts and the release remains
+`deployed`.
+
+That successful missing-generation observation exposes stable counterexample
+`PRESEED-SETTINGS-INVERSION-2026-08-28`: `StepEstablishAuthorityBackup` invokes the steady-state
+in-force settings loader even though `StepReconcileInForceConfig` is deliberately later in the
+same first-reconcile graph. A legitimate absent generation is therefore rendered as an operator
+error before the credential-owning establishment fold begins. Sprint `2.101` makes the
+pre-seed establishment step consume the already validated Tier-0 proposal passed through the
+transition executor; the steady-state loader remains the post-CAS readiness barrier and no
+credential, S3, or config authority moves.
+
+The Sprint `2.101` local correction is complete. The focused pre-seed settings ownership and
+independent anchored-order cases pass 1/1 each; all **4691** primary cases and the **27/33/29**
+authority suites pass; pinned Fourmolu/HLint (`No hints`), documentation lint, `git diff --check`,
+the warning-clean all-target build, and exact canonical `prodbox dev check` exit 0. Refreshed binary
+`sha256:c537dbb83575f625729ba656236c6a970347f50e5cb83cd4be5e0cfefec38972` leaves RKE2 active at
+PID `4089966` with zero restarts and the node's False MemoryPressure transition unchanged.
+Generation 66 publishes local image
+`sha256:ee24805f81a1fbd20f88999996cd6b668b577586e1413dba07748247775da568`, registry digest
+`sha256:8dcdbc64a8b943d55342ce323d99c3c7a47db9074a63d04e4e906c9e6b8a958e`, and containerd OCI
+manifest `sha256:fd7143da52d8d3ea32bd7d02d14264e331bb49e87d4bfb6fe4183b7bd7c2ef55`. It passes the
+formerly terminal missing-generation settings load and enters the authenticated Authority Backup
+transport, so Sprint `2.101` is Done and live-proven on its owned inversion surface.
+
+The next stable counterexample is `DEAD-PORT-FORWARD-2026-08-28`. No-wait Helm returns before the
+replacement Adapter Pod exists, so `kubectl port-forward service/authority-backup` exits. The
+current bounded loop retries HTTP against that dead local socket for its entire budget; it never
+restarts the disposable forward after exact-image Pod `60c66ae4-ea89-4081-b5b3-a6cf7699dda0`
+becomes Running with zero restarts. Sprint `2.102` keeps `/healthz` as the pre-credential predicate
+but makes every pending attempt own and clean one port-forward process, so convergence can observe
+a Pod that appears after no-wait apply.
+
+The Sprint `2.102` local correction is complete. Its injected lifecycle table and prior role-path
+regression pass 1/1 each; all **4692** primary cases, the **27/33/29** authority suites, and all
+**18** repository-specific style cases pass. Pinned Fourmolu/HLint (`No hints`), documentation
+lint, `git diff --check`, the warning-clean all-target build, and exact canonical `prodbox dev
+check` exit 0. Refreshed binary
+`sha256:96719d71c815b16bb474f5d7e1d84b2abadbed4b868eb2e5a7b7f23667d66cb0` leaves RKE2 active at
+PID `4193989` with zero restarts and unchanged MemoryPressure history. Exact Generation 67
+publishes local image
+`sha256:066fda4906fb1639d2738e429a0d2b933a26cfd9e0b0d74e5f70dc15a7059a06`, registry digest
+`sha256:751db6d75d6bac984b78ae38d6118824ebe05bacacb0dec4ec0dd1ee809f9d3f`, and containerd OCI
+manifest `sha256:08f3602ad98bdd1b3ebedbdba0aa664d15e9efb27c9e4d83a4d2a76b8feb7ba5`.
+Its fresh exact-image Pod `1a125149-a0fb-4e77-a245-f55052ea14fa` appears after no-wait apply and
+remains Running with zero restarts. The new outer loop retires each dead child and starts a fresh
+forward after that Pod exists, so `DEAD-PORT-FORWARD-2026-08-28` is crossed and Sprint `2.102` is
+Done and live-proven on its owned retry boundary.
+
+Generation 67 exposes the separately registered
+`NOT-READY-SERVICE-ENDPOINT-2026-08-28`. The Adapter deliberately reports `/readyz` 503 until its
+credential-backed S3 probe succeeds, so its Service publishes the running Pod only as a not-ready
+endpoint. `kubectl port-forward service/authority-backup` therefore cannot select the process whose
+listener the genesis client must contact: the supported command exhausts with connection refused,
+while a read-only Deployment port-forward to the same Pod proves `/healthz` 200 and `/readyz` 503.
+Sprint `2.103` changes only this pre-readiness forwarding coordinate to the exact Recreate
+Deployment; the Service remains the steady ready-endpoint route and credential/store authority does
+not move. The local correction is implemented: its command-shape table proves Authority Backup
+alone uses `deployment/authority-backup`, all four sibling host clients retain their exact Service
+targets, and the chart remains `Recreate`. That focused case and the retained Sprint `2.102`
+lifecycle case pass 1/1 each; targeted HLint reports `No hints` and the warning-clean all-target
+build succeeds. All **4693** primary cases and the **27/33/29** authority suites pass;
+documentation lint, `git diff --check`, and exact canonical `prodbox dev check` exit 0. Refreshed
+binary `sha256:175cda963a80da5f685cecc61df296b9dedf65f567c2524cd2cc0420ab0fe119` leaves RKE2
+active at PID `112223` with zero restarts and unchanged MemoryPressure history. The exact-image
+Generation 68 publishes local image
+`sha256:442a27f857bfaabf00e7696e19d4a473ac94474039f8c2f9d8116683721639f1`, registry digest
+`sha256:214150bf68aa3ff4a63e87e051b6bd382f15f627fbb224dbefb3eb83c59dc013`, and containerd OCI
+manifest `sha256:6e7fca1646ee6a12a6335b4e35ebe11e35a0108d674de34c4294717464fbfccf`.
+Fresh exact-image Pod `40e18d8a-9469-47e0-8049-f1676da61e2e` is Running with zero restarts and
+remains correctly absent from ready Service endpoints. A read-only Deployment port-forward proves
+that exact process answers `/healthz` 200 and `/readyz` 503, so Sprint `2.103` is Done and
+live-proven on its owned routing-coordinate boundary.
+
+The supported client still exhausts before its first HTTP success, exposing stable counterexample
+`FORWARD-STARTUP-HANDSHAKE-2026-08-28`: `startBackgroundProcess` returns immediately after process
+creation, the attempt probes the local socket before kubectl emits its `Forwarding from …`
+acknowledgement, then bracket cleanup kills the child. The 250 ms inter-attempt delay occurs only
+after cleanup, so every fresh child repeats the same race. Sprint `2.104` waits for a bounded,
+exact loopback-forward acknowledgement inside each bracket before `/healthz`; EOF, timeout, or an
+unexpected line remains a liveness failure and the outer fresh-child budget stays authoritative.
+The local correction is implemented. Its exact IPv4/IPv6 acceptance and timeout/read-failure/
+foreign-mapping table plus acknowledgement-before-probe/short-circuit trace pass 1/1; the combined
+Sprints `2.100`–`2.104` slice passes 7/7. Targeted HLint reports `No hints` and the warning-clean
+all-target build succeeds. All **4694** primary cases and the **27/33/29** authority suites pass;
+documentation lint, `git diff --check`, and exact canonical `prodbox dev check` exit 0. Refreshed
+binary `sha256:0f68afa53a263b643cfe74072ca1a94b381bfcb5f378ad8bded0c6d0580030c9` leaves RKE2
+active at PID `239871` with zero restarts and the node's False MemoryPressure transition unchanged
+at `2026-08-27T23:59:22Z`. Generation 69 publishes local image
+`sha256:b1f322bc1fa17defffbef2c383bdd8502f5dc3cd6d955a9de0678fdf6e749700`, registry digest
+`sha256:1775c828b2ddab55fa200a19d2bad16679e74f3847f5c111db8517dd860131d2`, and containerd OCI
+manifest `sha256:695c1a38ae6ee7b2798013c83bfa0b5a61706cf7a8105216c389846771bbf1a3`.
+Fresh exact-image Pod `0ad1841d-a126-451c-b22e-ca2db2ef55a5` is Running with zero restarts. The
+supported path crosses the socket acknowledgement and `/healthz`, prepares the genesis AWS-admin
+operation, and reaches its immediate retained recovery observation. Sprint `2.104` is therefore
+Done and live-proven on its owned child-startup boundary.
+
+That next observation exposes stable counterexample `LIFECYCLE-REPLAY-WINDOW-2026-08-28`.
+Lifecycle Authority retains authenticated replay entries through each five-minute request deadline
+plus clock skew but admits only four entries. The genesis path has already used three entries for
+admission observe → begin → confirm; AWS-admin prepare consumes the fourth, and its immediately
+following recovery observation is the fifth. The replay layer returns its non-CBOR `503` refusal,
+which the endpoint client currently collapses to
+`AwsAdminProvisionerClientResponseInvalid ControlPlaneRequestInvalid`. Sprint `2.105` widens the
+finite window for the complete bounded first-reconcile graph, migrates a canonical retained
+capacity-four projection only in the widening direction, and makes an outer non-endpoint refusal
+status win over endpoint-response decoding. It preserves every nonce/digest/deadline entry and
+never clears retained replay state to obtain capacity. The local correction is implemented: the
+capacity-four/fifth-request and 64-admits-56 case, canonical non-empty v2 → v3 widening plus
+shrink/limit/version refusals, and current round trip pass in the complete **31/31** authenticated
+transport suite; the focused outer-status/typed-endpoint/malformed-200 table passes 1/1. Targeted
+HLint reports `No hints`, and the warning-clean all-target build succeeds. The complete local gate
+also passes: all **4695** primary cases and the **27/33/31** authority suites, documentation lint,
+`git diff --check`, and exact canonical `prodbox dev check` are green. Refreshed binary
+`sha256:75fa463b397918b7268091f16b87296b8785e37b9871577c6f4b473b5b37c7c3` leaves RKE2
+active at PID `354288` with zero service restarts and the node's `False` MemoryPressure transition
+unchanged at `2026-08-27T23:59:22Z`. Exact-image deployment qualification is next.
+
+Generation 70 publishes local image
+`sha256:1c604322c06f2d8e28f1a7987724bc1f82b1964b5350cca03cc90159779d9042`, registry digest
+`sha256:c00b86a5eec5a6f4b7b0ca7e815339be546324780ee91790e93c9eef6eee9969`, and containerd OCI
+manifest `sha256:20064008b7392e4bbbb61c16a622792a6a8b3647596b710e13f536c12ab6d340`.
+Fresh exact-image Pod `21821a8a-7487-445c-bdc9-b25a053d5c92` is Running with zero restarts and
+binds the local image in both its rollout annotation and runtime image ID. The supported path
+migrates the retained replay projection, crosses the former request-five exhaustion, and returns a
+typed endpoint response. Sprint `2.105` is therefore Done and live-proven on its owned capacity,
+migration, and response-precedence boundaries.
+
+That next response exposes stable counterexample
+`PREPARED-TARGET-FAILURE-COLLAPSE-2026-08-28`. Lifecycle Authority reaches
+`prepareAndReadBackAwsAdminPreparedTarget`, whose failures span Authority time, initial and
+confirmation admission reads, first-reconcile journal initialization/observation/cursor,
+deadline, intent canonicalization, coordinate construction, and prepared-outbox
+observation/CAS/read-back. The endpoint discards every cause and returns
+`target-outbox-unavailable`, even when no outbox stage was reached. Sprint `2.106` replaces that
+ordinary stringly preparation error with a closed stage/cause taxonomy and exposes only a stable
+payload-free label. It changes no response class, retry, state transition, journal/outbox
+semantics, permit, or credential behavior; the exact live cause will be deployed and registered
+before its correction. The local diagnostic is implemented: its 20-constructor cause algebra and
+stable renderer cover every registered stage, and the two-sided exhaustive label plus private-detail
+noninterference regressions pass **2/2**. Targeted HLint reports `No hints`, and the warning-clean
+all-target build succeeds. The complete local gate also passes: all **4697** primary cases and the
+**27/33/31** authority suites, documentation lint, `git diff --check`, and exact canonical
+`prodbox dev check` are green. Refreshed binary
+`sha256:70db712a9005f8522eb24d2d64fdd4d3cbb69564b8b9c9000d8da5cf3bdcc5cf` leaves RKE2
+active at PID `474562` with zero service restarts and the node's `False` MemoryPressure transition
+unchanged at `2026-08-27T23:59:22Z`.
+
+Generation 71 publishes local image
+`sha256:24202f861d42a84f080c915db801aa2c49edb8b27f5ad2b43d6d75bdc0432052`, registry digest
+`sha256:37ab581456e29a82b899fbc9f9c0b2e3d84238e3536315cf9e7277fe80a939e3`, and containerd OCI
+manifest `sha256:d0b0c4a2454b7100a8df1ea61201a5cf03e84ef6fae9635d63907d0fb6b39926`.
+Fresh exact-image Pod `4a522e56-d48a-44ae-8781-e93db0a670dd` is Running with zero restarts and
+binds the local image in both its rollout annotation and runtime image ID. The supported path
+reports the precise closed refusal
+`prepared-target/first-reconcile-journal/plan-mismatch`; Sprint `2.106` is Done and live-proven on
+its diagnostic surface.
+
+That diagnosis registers stable counterexample
+`FIRST-RECONCILE-DEADLINE-RETRY-MISMATCH-2026-08-28`. Genesis derives the journal plan from the
+first admitted request's absolute deadline and retains that deadline in the plan digest. A later
+supported retry derives a new caller deadline, unconditionally asks the store initializer to match
+the new plan, and refuses the valid retained journal because the two deadline-bound digests differ.
+Sprint `2.107` makes initialization absence-only and validates an observed journal against the
+compiled plan regenerated from its own retained deadline. It does not overwrite, refresh, or extend
+the retained deadline; malformed topology, corrupt state, and an expired retained deadline still
+refuse. The local correction is complete: its missing/retry and structural-drift cases pass
+**2/2**, all **4699** primary cases and the **27/33/31** authority suites pass, and documentation
+lint, `git diff --check`, pinned Fourmolu/HLint, the warning-clean all-target build, and exact
+canonical `prodbox dev check` are green. Exact-image deployment qualification is next.
+Refreshed binary
+`sha256:a2702e5c779e7849f4f46001ea537c874e76394d7d750fa751d7345ea6f013e8` leaves RKE2 active at
+PID `585596` with zero service restarts and the node's `False` MemoryPressure transition unchanged
+at `2026-08-27T23:59:22Z`.
+
+Generation 72 publishes local image
+`sha256:f15bccd21d8b874b583cc8cf618bd85028d59db4b4986c967514b3d575c9a699`, registry digest
+`sha256:a228d0c8dca38bb0fb515833db1924ed66d20c486ed507f68c9154444ab17228`, and containerd OCI
+manifest `sha256:af744c7e9ee63d41f16c9284fc5c9cbcfae8f2edff6d63edb715a6db67e4a78a`.
+Fresh exact-image Pod `3a8762ff-0242-4f1c-a58d-412770636f54` is Running with zero restarts and
+binds the local image in its rollout annotation and runtime image ID. The supported path adopts the
+retained plan instead of comparing it with the new caller deadline, then returns the precise closed
+`prepared-target/deadline-expired` refusal. Sprint `2.107` is Done and live-proven.
+
+That refusal registers stable counterexample
+`EXPIRED-PREPARED-FIRST-RECONCILE-2026-08-28`. Generation 69 durably prepared the deterministic
+genesis AWS-admin operation before its next replay observation was refused; no Job was created or
+attested. Its 30-minute active prompt deadline is now expired. The immutable journal plan/cursor is
+still valid, but preparation currently treats the plan-origin deadline as the next prompt's active
+deadline and therefore offers no safe recovery. Sprint `2.108` separates immutable plan identity
+from each active permit deadline and admits renewal only from the exact expired `Prepared` state:
+the old deadline makes concurrent attestation impossible, the prepared outbox is CAS-replaced and
+read back, then the Authority state is CAS-replaced and read back. Attested, authorized, completed,
+different-request, nonexpired, or unobservable state never renews.
+
+The Sprint `2.108` local correction is complete. The focused renewal eligibility,
+outbox-before-state/lost-response, and continuation active-deadline cases pass **3/3**; all
+**4701** primary cases and the **27/33/31** authority suites pass. Pinned Fourmolu,
+repository-wide HLint (`No hints`), documentation lint, `git diff --check`, the warning-clean
+all-target build, and exact canonical `prodbox dev check` are green. Exact-image supported
+deployment qualification is next. Refreshed binary
+`sha256:d5697b61480a7028f9216b522f86e74e3bb0e3081f5cdac71186297fefc13272` leaves RKE2
+active at PID `696112` with zero service restarts and the node's `False` MemoryPressure transition
+unchanged at `2026-08-27T23:59:22Z`.
+
+Generation 73 publishes local image
+`sha256:496ff64450246a2633826b0f61628f0f9c5a7021ebe43b1baafc4ddb2d140b5b`, registry digest
+`sha256:fbb8689696eca6fb92f421c9195b3c3d9a627aab8413ccf1472b290ceef23063`, and containerd OCI
+manifest `sha256:1baa83e0458098914015355e3ffeff5291a78f5a19396ca924b619b6500fbf8c`.
+Exact Authority Backup Pod `2162fee1-c40f-47bd-be57-33c27d8aaed2` and Lifecycle Authority Pod
+`3b956dce-3550-4fed-9ae7-85924564c619` are Running with zero restarts and bind the local image in
+both rollout annotation and runtime image ID. The supported path renews the expired exact
+`Prepared` operation and reaches Credential Provisioner Job creation, so Sprint `2.108` is Done
+and live-proven.
+
+That crossing registers stable counterexample
+`MISSING-CREDENTIAL-PROVISIONER-SUBSTRATE-2026-08-28`. The command returns
+`AwsAdminCoordinatorCreateFailed "Job create failed and exact Job is absent"`; authoritative
+read-only observation proves the fixed `credential-provisioner` namespace is absent, so its two
+schema-specific ServiceAccounts, isolation policy, and namespaced controller permissions are
+necessarily absent too. Sprint `2.109` makes that non-secret execution substrate an explicit,
+read-back-proven component on the mandatory retained local control plane after its
+Vault/Target-Agent prerequisites and before genesis. AWS target selection neither duplicates nor
+moves it onto EKS. The permit-bound Job remains an ephemeral Authority/coordinator effect and is
+not converted into a standing chart workload.
+
+The Sprint `2.109` correction is complete and live-proven on its execution-substrate surface. One
+typed seven-object manifest, an independent
+exact-keyed API projection, and a shared caller-impersonation projection pass the focused
+manifest/read-back/identity cases **3/3**; the graph/order/golden slice passes **5/5**. Generation
+74 publishes local image
+`sha256:9bc22c53022bf28bfc4f0f030c80d7045b0977265bd149b5164c5a5402d1936d`, registry digest
+`sha256:c8baf4ba31912e6362d251617af131c42005f1114dfd8b82fdff87158874415e`, and containerd OCI
+manifest `sha256:dd313078eafe6d20c6fb8322424380bf95be65b9e21563a7056f5cbbb7d77980`; it creates all seven
+objects, then exposes `kubectl diff` as an invalid observer because server dry-run predicts only
+NetworkPolicy `metadata.generation: 2` against live generation 1. Read-only API observation proves
+the desired fields are otherwise exact. The corrected observer now performs `kubectl get -f -`
+and compares the desired fields by exact kind/namespace/name while excluding server-owned fields.
+Generation 78 publishes local image
+`sha256:c04e001578a2f508ae9de00ea7c41717f337663fe4d35ae29c09419ca4e2e2cb`, registry digest
+`sha256:ac3f333284f9cd1c6a4bab2740dfa0faf9adf197fc59c2b58030b7bfa432b5f0`, and containerd OCI
+manifest `sha256:19abd37a9344ffdac3601f154753b843c42a789b21728ccdf5c2fdf47f548c50`.
+It observes all seven exact resources current and creates the permit-bound Job, proving the former
+absence and false-drift boundaries crossed. All **4704** primary cases and the **27/33/31**
+authority suites pass. Pinned Fourmolu, repository-wide HLint (`No hints`), documentation lint,
+`git diff --check`, the warning-clean all-target build, and exact canonical `prodbox dev check` are
+green. Refreshed binary
+`sha256:3e1b4c7012141afc1ae1f83eb5cf8a7402464793ee6e1d2de4d9a9f070d49d40` leaves RKE2 active.
+
+The created Job exposes stable counterexample
+`CREDENTIAL-PROVISIONER-NONROOT-IDENTITY-2026-08-28`. Kubernetes schedules and pulls the exact
+Generation-78 image, then refuses container start because the Pod declares `runAsNonRoot: true`
+while the union runtime image defaults to root and the manifest supplies no numeric `runAsUser`.
+The coordinator correctly removes the failed Job and Pod. Sprint `2.110` gives both native Job
+renderers one shared explicit nonzero UID/GID/fsGroup projection, retains the image's role-neutral
+default for every other workload, and proves the projection locally.
+
+The Sprint `2.110` code-owned correction is complete. Both native manifest cases pass exact
+equality against the shared projection, the chart reference is aligned, all **4705** primary cases
+and the **27/33/31** authority suites pass, and canonical `prodbox dev check` is green. Refreshed
+binary `sha256:cb8e354edb805a1ea2f8010b0da1d29c8020998976712b82b59f58b2afbe8ede`
+drives Generation 79: local image
+`sha256:c05ac94563e137837be7ac26dfee4ae849aaac40b23324145d4532be1e75190d`, registry digest
+`sha256:f226bbe01f6f8ac7b9161ef0aa4aac5cccfbf0a002c8f1886aa0a5b12c6782dd`, and containerd OCI
+manifest `sha256:422c3dc6dcbae03e2aef1d64327bbe1bdcd64d6c4cc1c2a0d84b0bac07db5147`.
+Kubernetes accepts and schedules the corrected Pod without the former non-root refusal. It is
+then deleted before kubelet pulls it because the coordinator's immediate one-shot observation sees
+the legitimate Pending phase and classifies it as drift. Stable counterexample
+`IMMEDIATE-POD-ATTESTATION-2026-08-28` belongs to Sprint `2.111`, which introduces a bounded
+exact-identity convergence loop without retrying drift, API failure, deletion, or terminal phase.
+
+Sprint `2.111` is complete on its code-owned bounded-convergence surface. All **4706** primary
+cases and the **27/33/31** authority suites pass, canonical `prodbox dev check` is green, and
+refreshed binary `sha256:5ddd5b034c0b67a6d3492c6100b900b19b3b641545e2ead9ac092c8cee112a2f`
+drives Generation 80. Its local image is
+`sha256:8dbaf4e15fed6a46f2cc0285f8519bb113821fe98ac4eb43246c385d79e68025`, its registry
+manifest is `sha256:0d779c8ec9bf1d6e1bb18ca425e6d03ce8a09c85ecaa75bfce95313834fbf54c`, and its
+containerd-import OCI manifest is
+`sha256:27f27e7b41c87e6e563e323883b1c435fee462e16e592170873773d8f93e5426`. The bounded
+observer waits through scheduling and pull, and Pod
+`credential-provisioner-genesis-cf14d8a4732a3a42e507de05-q9kwx` is created and started rather
+than deleted while Pending. It then refuses at the later exact runtime-identity comparison because
+the permit currently carries the image-config digest while the `Always` pull is identified by its
+pulled manifest. Stable counterexample
+`CREDENTIAL-PROVISIONER-PULLED-MANIFEST-IDENTITY-2026-08-28` belongs to Sprint `2.112`; it makes
+the manifest attestation identity explicit while preserving Sprint `2.51`'s rule that a runtime
+digest is never assembled into a pull reference.
+
+A read-only watcher around an unchanged-operator Generation-81 reproduction captures the missing
+Generation-80 field before cleanup. Local config identity
+`sha256:a5cd787921fa0d119f863f2a4cfd81d44927258a819ac98bc6a971fb4f37983b`, registry manifest
+`sha256:bf20d2979abf8489d4b8363a48d0672cf482713826cadaa2c4149fac531230ff`, and containerd OCI
+manifest `sha256:75b52fa4111336b085fa072b61b525d411968248a8d54c81ebc59ddd14559c48` are distinct. Pod
+`credential-provisioner-genesis-cf14d8a4732a3a42e507de05-jrhrn` reports the exact runtime
+`imageID` as
+`127.0.0.1:30080/prodbox/prodbox-runtime@sha256:bf20d2979abf8489d4b8363a48d0672cf482713826cadaa2c4149fac531230ff`,
+proving that this `Always`-pull context exposes the repository manifest rather than the config
+identity used by locally present `IfNotPresent` Pods. Its redacted CRI log also exposes a later
+independent defect: the native AWS-admin renderer omits required
+`--target-worker-image-repository`, so the container exits at option parsing before attach. Stable
+counterexample `AWS-ADMIN-NATIVE-JOB-ARGV-2026-08-28` is registered separately as Sprint `2.113`,
+which now owns the active argv correction.
+
+Sprint `2.112` is complete on its code-owned and live manifest-attestation surface. The focused
+AWS-admin and external-material suites pass **24/24** and **14/14**, the repository-manifest
+selector passes **1/1**, all **4708** primary cases and the **27/33/31** authority suites pass, and
+canonical `prodbox dev check` is green. Refreshed binary
+`sha256:e6edff98d4306c694ae551ef9986731dd42c17189787c2382ee16a536e732bf2`
+drives Generation 82: local image
+`sha256:042cc7bf2b84f3ebec4b0c81bddcc827e1cf5ee864865fdae5ed4f94d0a02a66`, registry manifest
+`sha256:0110733a42e268f6361b399401c3e7583d4404d3cf9dd2bff870aed14480cdb6`, and containerd OCI
+manifest `sha256:8e3a0199fd14353cada3151af0829bdc176f77a67236bc5fde9d6232d398cd1e`.
+The permit carries that exact registry manifest, and exited Pod UID
+`3d3b05d2-9742-4b1f-a458-85eefbace0be` reports runtime imageID
+`127.0.0.1:30080/prodbox/prodbox-runtime@sha256:0110733a42e268f6361b399401c3e7583d4404d3cf9dd2bff870aed14480cdb6`.
+The coordinator accepts the join and reaches attach without the former identity-drift refusal.
+The process then exits `1` on the already-registered missing
+`--target-worker-image-repository` option, and the cleanup path removes the exact Job and Pod.
+
+Sprint `2.113` is complete on its code-owned surface. Its exact native render/parser suite passes
+**25/25**, all **4709** primary cases and the **27/33/31** authority suites pass, and canonical
+`prodbox dev check` is green. Refreshed binary
+`sha256:43b36e4e77d9f3dbde641b3625aac7d29de37402ca2cf601874716c025e98988`
+drives Generation 83, whose local image is
+`sha256:4a78e27ae25d5e3741c739ffec5078c5d1a508a63953bb16111a97ba1556cac6`, registry manifest
+is `sha256:aaf3db9cc9f3c30917c2fa521379a6a8cfe4d748e20fb7fa1834f7433a75fbe7`, and containerd OCI
+manifest is `sha256:3a666eb579a2410434825fb8c1223e0659b53adbafcaeee4403526d041f4f410`.
+That run stops before Job creation at stable counterexample
+`PREPARED-TARGET-OUTBOX-AHEAD-2026-08-28`: prepared-target publication precedes the Authority-state
+CAS, so a prior interrupted renewal may leave one valid successor in the outbox while Authority
+retains its expired predecessor. A later fresh reconcile proposes a different successor and the
+current exact-equality recovery reports `prepared-target/outbox/divergent`. Sprint `2.114` owns a
+bounded recovery for only an expired, immutable-binding-equivalent outbox-ahead successor; active,
+arbitrary, or binding-drifted observations remain refusals.
+
+The first Sprint `2.114` classifier passes **26/26** focused AWS-admin cases, all **4710** primary
+cases and the **27/33/31** authority suites, plus canonical `prodbox dev check`, but Generation 84
+correctly remains a non-closure result. Binary
+`sha256:d6d013a860eb026f3319780a7d866a8227aaa006b4a92dd6845873501f35acc9` publishes local image
+`sha256:7aba38f7a60e2f07682faee3e343952294f9a02e4772ce84549548cf875b2acf`, registry manifest
+`sha256:ea806783a05f70b6b01398844ab18087bff244c549ebef66d194adb82a09d89e`, and containerd OCI
+manifest `sha256:fcc3ce83f0324c80e04d6d9eef207b10d59bd5f3b1da3ab6e17c927d0fa07477`, then reproduces
+`prepared-target/outbox/divergent`. The classifier had required receipt-digest equality even though
+the receipt deliberately binds the advancing deadline, selected Agent, and genesis permit kind.
+The focused correction additionally proves that the receipt binds the advancing execution image,
+which the retained observation-only outbox does not carry. The sprint remains `Next` on a bounded
+codec migration: accept only the authenticated legacy immutable/deadline-equivalent observation,
+replace it with a versioned complete-intent envelope, and require exact receipt rederivation for
+every new envelope.
+
+That bounded migration is now locally complete. Both prepared-target readers decode the legacy
+observation and the versioned complete-intent envelope; only the complete intent is written, and
+its deadline/Agent/image-bound receipt must recompute exactly. The injected interruption regression
+proves legacy outbox CAS/read-back precedes the existing Authority renewal CAS. The focused suite
+passes **27/27**, all **4711** primary cases and the **27/33/31** authority suites pass, and
+canonical `prodbox dev check` is green. Binary
+`sha256:9beb05dabff45ceefb25639ad1e0af98840ac9d1d77c9688907fcbc83db07fff` awaits Generation-85
+deployment qualification. Generation 85 publishes local image
+`sha256:f9d8a5f2a8e1f0456f04782facce8de3211c10f57638119afb2709bc09c6913e`, registry manifest
+`sha256:9b45646b30c45191191350e86f14a2d27b25fa06068c53d961aecbf74849259c`, and containerd OCI
+manifest `sha256:9fcd3a25510161c1854fb7d93b4572cc8956bc1ff0d4f2b872e29442d5d65eb2`, then still reports
+`prepared-target/outbox/divergent`. Read-only object timestamps prove no migration CAS occurred.
+Stable counterexample `LEGACY-OUTBOX-PREDICATE-2026-08-28` means the inferred legacy successor
+differs on at least one strict immutable/deadline predicate. Sprint `2.114` remains `Next` while a
+fixed-vocabulary, value-free private log discriminator identifies that exact retained mismatch.
+That discriminator is now locally complete without changing the recovery predicate: it reports
+only schema, individual binding match/mismatch, deadline-relation, and canonical-binding classes,
+never retained values. Its exact cases and the focused suite pass **27/27**, all **4711** primary
+cases and the **27/33/31** auxiliary suites pass, and canonical `prodbox dev check` is green. Binary
+`sha256:4f6269ef84d78f746d3149d4058fb5748d6eb4e767c23b8cd51e123e98fced3e` is the Generation-86
+qualification input. Generation 86 publishes local image
+`sha256:06b04569d57a6e890e4e09af77a1b9809937ffcbada11276729f9c8b623bfaef`, registry manifest
+`sha256:78775df4c8bb9d3a3a37b7ab970afb4dde2dff48a1b3037a89e870103360b13a`, and containerd OCI
+manifest `sha256:6e28bc08a9220ce4e81cfcd58a5f0be262363dbef8bd9ea4520313281021bfbc` before the deployed
+Authority reports `schema=legacy renewal=absent`. Sprint `2.114` is therefore Done on its locally
+proven prepared-state migration surface with live proof pending; the retained object is the distinct
+stable counterexample `EXPIRED-NONPREPARED-AWS-ADMIN-2026-08-28`. Sprint `2.115` is `Next` to
+identify that exact Authority phase and recover it only after independent old-workload and
+execution-journal absence.
+Its fixed-vocabulary phase classifier is locally green at focused **1/1**, complete AWS-admin
+**28/28**, primary **4712**, auxiliary **27/33/31**, and canonical `dev check`. Binary
+`sha256:79be50d53e64a184484bb2e6bb78e570964ba30c1aaa7d82f32d88eea000b0fa` is the Generation-87
+diagnostic input; behavior remains unchanged until that live constructor is observed.
+Generation 87 publishes local image
+`sha256:0bec934650b5a7aa4707de2b4b7c0e5f57cda6ac6a214121e0cdf70ed743c3d2`, registry manifest
+`sha256:4f8012e1b2fbee4675ce3b18cf62fd61b3f7f5decd718a55d10091bfc051953c`, and containerd OCI
+manifest `sha256:067d0e596d4bb466d18c339dbd11e6b86c7c29ae86381cfcba058cec4f7b492d`, then reports the exact
+retained phase as `authorized`. The bounded correction now targets only that expired constructor
+after independent exact Job/Pod and permit-derived execution-journal absence.
+That correction is locally complete: its opaque proof requires three exact 404 observations, its
+Kubernetes Role has only Job/Pod `get`, its Vault journal grant has only `read`, and its injected
+trace orders absence proof before outbox CAS/read-back and Authority CAS. Focused **5/5**,
+AWS-admin **31/31**, primary **4716**, auxiliary **27/33/31**, and canonical `dev check` pass against
+Generation-88 binary
+`sha256:497b9058f696fe155717da0858555ec68fd09a6da44c5b472e29dded0dbc6f30`.
+The installed suite still reproduces only Sprint `5.38`'s registered fake-Helm failure (**8/63**).
+The fresh supported Generation-88 crossing is next.
+Generation 88 publishes local image
+`sha256:bacede1443d0ab5be8480ea5bf93b6b3dd7f5ab0bac3715eb1658b9be2a92bfb`, registry manifest
+`sha256:0fa90432116a435dd2fe418dfffb39c725ab3c75654b858e54db00c144cba575`, and containerd OCI
+manifest `sha256:8261c3fcfe76945815d9e846dfa47119079e820e9634eeab724287f23b4bf70c`.
+It crosses the legacy outbox refusal and reaches the new proof boundary, where it fails closed at
+`attempt-recovery/journal-unobservable`. Live RBAC proves the exact Authority subject has only the
+required Job/Pod GETs and both workload kinds are absent. Stable counterexample
+`AUTHORIZED-JOURNAL-UNOBSERVABLE-2026-08-29` now owns one value-free Vault-boundary discriminator;
+no generic error is treated as journal absence.
+That discriminator is locally complete without changing recovery behavior. It distinguishes
+absence/presence, session acquisition and relogin failures, and closed request failure classes; any
+successful but corrupt value remains present, only KV-v2 404 is absent, and every other outcome
+still refuses as unobservable. Focused **5/5**, AWS-admin **31/31**, primary **4716**, auxiliary
+**27/33/31**, and canonical `dev check` pass. Binary
+`sha256:a1211a9a12b0875fc986e8ea19fe2dca9f3194b2b7c6930267c4ffa0c75b7230` is the next supported
+generation's diagnostic input; it identifies the live token before its exact cause is corrected.
+Generation 89 publishes local image
+`sha256:dbd78bc6e7d58f3accce1cf5c735d65764a9ac712734fefb6ab3495e4f60337f`, registry manifest
+`sha256:1b0466fc3c6cd7b085ff2bdfd70b4cbf42d4bba2251bad307cd0cce1a94bee1c`, and containerd OCI
+manifest `sha256:50731bb28cbf5daf7f1221b7012dc0467a2e7117cd53b88bcf40ced25670ff8b`.
+Fresh Broker and Authority Pods run that image; the exact protected token is
+`request/unauthorized`, and a self-capability comparison under the configured Authority identity
+shows the known MinIO read allowed but the journal child denied. The retained completed
+root-baseline receipt still claims currentness from an unchanged target inventory and suppresses
+the widened policy. Sprint `2.115` now appends that semantic policy target and accepts only the
+exact preceding closed receipt as input to the existing fresh-session restart.
+That append-only correction is locally green: only the exact preceding 17-target terminal wire
+shape is admitted as restart input; partial and in-progress old shapes remain corrupt, current
+construction requires all 18 targets, and a fresh root-session identity is mandatory. Focused
+Sprint-2.115 **6/6**, root-session **14/14**, AWS-admin **31/31**, primary **4717**, auxiliary
+**27/33/31**, and canonical `dev check` pass. Binary
+`sha256:a8a68e3b1c28b98326c46dbeccc600751eb04cac853578019bd4796a1bdf8adc` is the Generation-90
+qualification input.
+Generation 90 publishes local image
+`sha256:4ac2fcf50ed9018bec69fd84134f017ad31d47a9f879b2578c4dc6d22472baa3`, registry manifest
+`sha256:4e419402cb48f096c557219a8aa945eb7734519c0dfc4eb809f71526f9689eb9`, and containerd OCI
+manifest `sha256:231d33c6e8db7cf79a28067c86fb1214d7e508fbfd043dfa376c789c4e55c09e`.
+The retained root session advances from `root-session-69894281…` to `root-session-50cf8517…`, the
+Authority observes exact journal absence, and its self-capabilities now allow the journal child.
+The recovered attempt proceeds through worker execution and exact Job/Pod cleanup before the new
+stable counterexample `AWS-ADMIN-WORKER-RECEIPT-DECODE-2026-08-29`:
+`AwsAdminWorkerReceiptDecodeFailed`. Sprint `2.116` owns a value-free stdout transport
+discriminator; no receipt bytes or generic decode failure are interpreted as a valid result.
+Its local classifier preserves the original capture and public refusal while reporting only closed
+size, raw-decode, terminal-ending, and once-stripped-decode labels. The focused case passes **1/1**
+and the complete AWS-admin group passes **32/32**; all **4718** primary cases and the **27/33/31**
+auxiliary suites pass, and canonical `dev check` is green against binary
+`sha256:4cf6f072f730c4a6515efb60c2e2de30e9432ae3aa2550b5fc70a99a74dd409a`. LF, CRLF, and an
+extra trailing byte classify as `non-canonical`, so they cannot explain Generation 90's
+`decode-failed`; the supported Generation-91 diagnostic deployment is next.
+Generation 91 publishes local image
+`sha256:73eabdaad0b1afff4a84509e9d04ee5ef24e39a8cd6b686fdcfc191278a9ee7d`, registry manifest
+`sha256:1eed108443191b0b740c4f4ff481fd83f2126a5f23ba931aefbd764287f602c9`, and containerd OCI
+manifest `sha256:83cf84add30701361298e2f52ec469745f4f1f8fd0322dec42ced1fb6407ecb4`.
+Its protected token is exactly
+`size=empty/raw=decode-failed/terminal-ending=absent/without-terminal-ending=not-applicable`.
+Stable counterexample `AWS-ADMIN-WORKER-ATTACH-EMPTY-2026-08-29` now owns an exact empty-success
+fallback to the already-authorized same-Pod/container log read; failure preserves the empty bytes
+and existing public refusal, and successful bytes remain subject to the unchanged classifier and
+canonical decoder.
+That fallback is locally implemented: non-empty attach bypasses it, failed log read preserves the
+empty capture, and successful log output is returned unchanged with a distinct `source=pod-log`
+token. Focused Sprint-2.116 passes **2/2**, AWS-admin passes **33/33**, all **4719** primary cases
+and the **27/33/31** auxiliary authority suites pass, and canonical `dev check` is green against
+binary `sha256:9559725e20e7f42977c72a5518e8c1047f98ea90de90c6ee0ca9688dc388e931`.
+Generation 92 publishes local image
+`sha256:1b07da06aa15cf193b2956e2606408e68a1ee1539e6f11cb22efa38d9fb7f9c4`, registry manifest
+`sha256:5b110fee024c19ec4bc3a87782d2797b93f9777af55fe0b4a76147ece91935f9`, and containerd OCI
+manifest `sha256:901b981671f6a3313331b6ef19473edfdb16fcf3097677cda3bcb24a276f412a`.
+It reaches exact tokens
+`source=attach/size=empty/raw=decode-failed/terminal-ending=absent/without-terminal-ending=not-applicable`
+and
+`source=pod-log/size=within-bound/raw=decode-failed/terminal-ending=lf/without-terminal-ending=decode-failed`
+before the unchanged public refusal. Stable counterexample
+`AWS-ADMIN-WORKER-POD-LOG-DECODE-2026-08-29` therefore owns the next closed discriminator and
+narrow correction; the observed bytes are neither empty nor a canonical receipt plus one line
+ending, so line-ending normalization remains forbidden.
+The narrow correction is locally implemented: the worker ASCII-armors the unchanged canonical
+receipt as canonical base64; attach admits only that exact envelope with no ending, and the Pod-log
+fallback admits it only with the exact single LF observed by Generation 92. CRLF, missing/repeated
+ending, invalid/noncanonical base64, and invalid inner receipts refuse. Focused Sprint-2.116 passes
+**3/3**, the AWS-admin group passes **34/34**, all **4720** primary cases and the **27/33/31**
+auxiliary authority suites pass, and canonical `dev check` is green against binary
+`sha256:d3a908864b2d3469c3fd75a5cea946bd8ea99baf4c30f6c0cb8b62895f5860eb`. The supported
+Generation-93 deployment is next.
+Generation 93 publishes local image
+`sha256:81a174141d8208f003bb75361104dc3a1dc026f5687cee4b9450a6e0fe03c6b9`, registry manifest
+`sha256:b0cab68c8665299b6c05e599d84da003345679e5b41c351d3b299373ffc6dff9`, and containerd OCI
+manifest `sha256:a11f1fed99eaa19f2f0d7d90ed81fc178502f75ad852d217895a627799c4333c`.
+The worker is reached, but the exact Pod-log token ends
+`terminal-ending=lf/without-terminal-ending=decode-failed/without-terminal-ending-envelope=invalid`
+and the unchanged public decode refusal follows. Stable counterexample
+`AWS-ADMIN-WORKER-POD-LOG-ENVELOPE-INVALID-2026-08-29` now owns a closed line-topology
+discriminator. No line or substring may be selected until that discriminator proves whether the
+capture contains zero, one, or multiple canonical envelope lines.
+That non-selecting classifier is locally complete. It extends the protected token only with
+`line-topology=empty|single|multiple` and `receipt-envelope-lines=none|unique|ambiguous`; focused
+Sprint-2.116 remains **3/3**, the AWS-admin group remains **34/34**, all **4720** primary cases and
+the **27/33/31** auxiliary authority suites pass, and canonical `dev check` is green against binary
+`sha256:43906c70c9bffd9eed4a21c827ca0e323e6013e033fec0fde7caf766307e991e`. The Generation-94
+diagnostic deployment is next.
+Generation 94 publishes local image
+`sha256:3a1f6d76adad52c0d85356753b601d0d7333572291c3bcdd24c5910a0a0ac73a`, registry manifest
+`sha256:150f6b70a1a4272c4f307a9fdbcc9e2660d2cabb472d22bad65dd7b38c2afd45`, and containerd OCI
+manifest `sha256:885ef30b11ca0eda1086bc2a8f658f87feea200658d17039f586999b8923c27d`.
+Its exact Pod-log refinement is `line-topology=single/receipt-envelope-lines=none`; the unchanged
+public refusal follows. Stable counterexample
+`AWS-ADMIN-WORKER-POD-LOG-SINGLE-NON-ENVELOPE-2026-08-29` forbids substring selection. The narrow
+correction introduces one explicit record separator and a fixed-version envelope line, then admits
+only a unique exact line whose envelope and inner receipt are both canonical; zero or multiple
+matches refuse.
+That correction is locally complete. Attach requires exactly the leading separator plus one
+versioned envelope and no other line/ending. Pod log requires the observed final LF, rejects CRLF
+and repeated final endings, and admits exactly one whole canonical envelope/receipt line; joined
+same-line contamination, no match, and ambiguity refuse. Focused Sprint-2.116 passes **3/3** and the
+AWS-admin group passes **34/34**, all **4720** primary cases and the **27/33/31** auxiliary authority
+suites pass, and canonical `dev check` is green against binary
+`sha256:055567dc5e46bc6fb4099062b6bd8120dc333af4a86181fef0e4f232a5841392`. The supported
+Generation-95 deployment is next.
+
+Generation 96 publishes local image
+`sha256:14c72cbd35aa7ce83b2b9ce0bfb8ecb833555af98c36ae3608592e7c51ae9464`, registry manifest
+`sha256:79de31887d5520a1c9caa165f605cb66e66fef1ab7a5f9a399fe0e09981728c7`, and import manifest
+`sha256:d1b959ffe7762e8d6287bda489f1a7acb6e6f0f856a045b6f22195327ecd7275`. The required
+mismatched-image import remains pressure-free and the first attempt creates and cleans a genesis
+worker, but terminal client output lost to tool truncation is not receipt evidence. An unchanged
+retry incorrectly imports again, then returns the expected active-attempt fence
+`prepared-target/outbox/divergent`; the deployed value-free log is exactly
+`schema=current renewal=absent`, because the first attempt's new `Authorized` permit is still
+active and cannot yet enter absence recovery. This is a bounded retry precondition, not authority
+to weaken the active fence.
+
+The media-type correction is locally complete. Containerd's exact inspection reports the matching
+config as `application/vnd.docker.container.image.v1+json`; the observer now admits exactly that
+Docker-archive type or the OCI config type and still requires one unique canonical digest equal to
+Docker's exact-tag image ID. Its production-shaped focused case passes **1/1**, all **4721** primary
+cases and the **27/33/31** auxiliary authority suites pass, repository-pinned Fourmolu/HLint reports
+`No hints`, docs/diff checks pass, and canonical `dev check` exits 0. Binary
+`sha256:56527de2ae835c21c9bb5ae403f6ae412ccfa576525c69a830e356d35dbbf08f` is the Generation-97
+qualification input.
+
+Generation 97 publishes local image
+`sha256:b2a58272b8076d96da19b166de0f117bd0cc2e49c7dd6c8942b61aa5060cab38`, registry manifest
+`sha256:f30e8df0ac69c7651bcc5bc9c172725eda472c7ce5f5392c3911db0d5d3e2dce`, and import manifest
+`sha256:201762ec340fbac1afc91dad567481fafdc945958fd5e6b9a79376206169ce24`. Because this is a
+genuinely changed image, the corrected observer retains the mandatory import arm; the import
+completes in 239.1 seconds with `DiskPressure=False`. The expired Generation-96 attempt recovers
+through exact absence and reaches a new worker. Attach is empty. The exact Pod-log token is
+`source=pod-log/size=within-bound/raw=decode-failed/raw-envelope=invalid/terminal-ending=lf/without-terminal-ending=decode-failed/without-terminal-ending-envelope=invalid/line-topology=single/receipt-envelope-lines=none`,
+and the public result remains `AwsAdminWorkerReceiptDecodeFailed`. Stable counterexample
+`AWS-ADMIN-WORKER-POD-LOG-RECORD-ENVELOPE-ABSENT-2026-08-29` proves the record-separated writer did
+not yield a canonical envelope line at the controller. It does not license exposing the line or
+guessing whether it is malformed receipt output versus a worker terminal error; a closed value-free
+discriminator must establish that distinction first.
+
+The immediate unchanged-source Generation-97 retry publishes the same local image and registry
+manifest and prints exact live proof
+`RKE2 containerd runtime image already current: 127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-3349a232b3454fb3be77b2f68919904f`.
+No archive or import runs. It then stops at the expected active-`Authorized`
+`prepared-target/outbox/divergent` fence. Together with the preceding mandatory import, this
+live-qualifies both exact-current observer arms.
+
+The next diagnostic is locally complete. It adds only none/unique/ambiguous fixed receipt-prefix
+line disposition and a closed 20-constructor worker-terminal cause, plus explicit unrecognized and
+ambiguous refusal arms. Payload-bearing worker errors are reduced to their constructor at the
+source, before entering the Pod log. Focused Sprint-2.116 passes **3/3**, the complete AWS-admin
+group passes **34/34**, all **4721** primary cases and the **27/33/31** auxiliary authority suites
+pass; repository-pinned Fourmolu/HLint reports `No hints`, docs/diff checks pass, and canonical
+`dev check` exits 0. Binary
+`sha256:3bd6130bf81d26ac0fe6b9795dec751fadd4a6fcc250c8d892de0ebcf559fb0b` is the Generation-98
+diagnostic input. The retained permit was prepared at 10:57:58 EDT and remains actively fenced
+until its 11:27:58 deadline.
+
+Generation 98 publishes local image
+`sha256:71b970611f2b8cc664753b47c6ea379aee96474959c5bbae502bffb6ad94de45`, registry manifest
+`sha256:d01e5a9fbf4906c7196e8fd4a883318d388f884cc251d427e95ba2a3a1b87929`, and containerd import
+manifest `sha256:fd29a7fd54556340f9bd666a886e10ce6c5a98a2fe85a7a834b6fe6ec9c3acef`. Mandatory import
+completes in 239.4 seconds with 57 GB host free and `DiskPressure=False`. Exact recovery reaches the
+worker. Attach reports `receipt-prefix-lines=none/worker-terminal-line=none`; the Pod log reports
+`receipt-prefix-lines=none/worker-terminal-line=completion-unavailable`, followed by public
+`AwsAdminWorkerReceiptDecodeFailed`. Stable counterexample
+`AWS-ADMIN-WORKER-COMPLETION-UNAVAILABLE-2026-08-29` proves the worker refused while publishing its
+completion, rather than emitting a malformed receipt envelope. Inspect that closed completion path
+before changing behavior.
+
+Inspection locates the deterministic cause before any provider effect: `productionDeliveryResolver`
+constructed its active Authority client through `completionTransport`, but the active
+accessor-bearing worker policy intentionally omitted the post-revocation completion signing key.
+The correction preserves stable delivery caller code 103 and appends completion caller code 104.
+The worker service policy receives only the delivery key and its exact Target-observe,
+Target-intent, and retained-delivery routes; the accessor-free batch completion policy receives only
+the completion key and AWS-admin completion route. Delivery and completion cannot prepare, only
+operator/harness can; neither worker identity can call the other's routes or sign with its key.
+The complete AWS-admin group passes **34/34**, the Vault/session group **23/23**, all **4721**
+primary cases, and the **27/33/31** auxiliary authority suites pass. Repository-pinned
+Fourmolu/HLint reports `No hints`, documentation lint and `git diff --check` pass, and canonical
+`prodbox dev check` exits 0. Binary
+`sha256:6ee36ced07bc4e583902e1a7027ddc35946829e276d703d090b9a5d2479519d3` is the Generation-99
+input. Deployment waits only for the conservative 12:29 EDT Generation-98 permit-expiry margin.
+
+Generation 99 builds local image
+`sha256:4501b90e504ba890e1d00290daf431588679129b9353046d0f877807eabd02e1` in 982.4 seconds, publishes
+registry manifest `sha256:b95a04f5e456096c79c2729f70c3523d9e78dfb1d17dc4e1ab1726032c8f29db`,
+and completes its required 247.6-second containerd import at OCI manifest
+`sha256:1e76c8f2bf6183f6af8f930337df83b41ef46455e63d2bc422e9f70584b960ee`. Baseline reconcile
+incorrectly reuses the retained pre-completion-inventory receipt under the already existing root
+session `root-session-50cf8517…`; no appended semantic target forces the changed key/policy
+projection to be applied. The exact-image Lifecycle
+Authority Pod `8847825e-b00b-4403-bee8-517e2410a2bd` then crash-loops before worker recovery with
+protected startup cause `authentication/trust-read/status-403`. Stable counterexample
+`LIFECYCLE-AUTHORITY-TRUST-READ-403-2026-08-29` therefore licenses one append-only baseline semantic
+revision covering the completion principal/key and derived exact policies; it licenses no route or
+policy widening by inference. The
+supported reconcile exits 1 after the full 30-minute Helm bound with the exact-image StatefulSet
+0/1 Ready and 10 restarts. It correctly retains the failed, non-terminal release; the exit is not
+completion evidence.
+
+The append-only baseline correction adds
+`BaselineCredentialProvisionerCompletionPrincipal` as the sole new terminal target. The exact
+immediately preceding 18-target closed receipt is accepted only as historical terminal evidence
+and restarts under a fresh root session; its in-progress and partial forms remain refused. The
+complete primary suite passes **4722/4722**, the focused root-session matrix **15/15**, and the
+auxiliary admission/authentication suites **27/33/31**. Repository-pinned HLint reports `No hints`,
+documentation lint and `git diff --check` pass, and canonical `prodbox dev check` exits 0. Binary
+`sha256:a21c7b64fa42e1e464f02ae2caf741012132f2531e2ac848a1ff6044e77723e9` is the Generation-100
+input. Live qualification must prove the retained root session advances from
+`root-session-50cf8517683fe10487d57dc021de71f18fe458118c893c4be797876242f0dcff`, the new exact-image
+Authority reaches readiness without the trust-read 403, and worker recovery exercises the closed
+delivery/completion split.
+
+Generation 100 builds local image
+`sha256:5e1cef78bae4d76e407f9623ba7f77a0d70a88415cbb0f438254619303796f46` in 987.3 seconds,
+publishes registry manifest
+`sha256:5c9d1c5d1d58eeb22580821ca7ba2e0cdf52670ca3c4e99852818ed7ad3e0b4f`, and completes its
+mandatory 203.2-second containerd import at OCI manifest
+`sha256:d806de3492d158d927f4c04076ae045624fee352185d4c59c14663b9d9d894af`. Baseline reconcile
+advances the retained root session to
+`root-session-3b9d57437d1b63cb471833be53bd9331dfa14cef89c151e67cde742140a69559` with exact read-back
+digest `a57561193057a71d62986c9dcc39ca5d59274bd464a413ef445ed3a3b9f77df6`, proving the appended
+completion-principal target live. Lifecycle Authority crosses protected startup and the command
+reaches recovered AWS-admin worker execution. Attach is empty; the exact Pod-log classifier is
+`line-topology=single/receipt-envelope-lines=none/receipt-prefix-lines=none/worker-terminal-line=execution-failed`.
+Stable counterexample `AWS-ADMIN-WORKER-EXECUTION-FAILED-2026-08-29` moves the next investigation
+to the worker's protected execution refusal while preserving the public
+`AwsAdminWorkerReceiptDecodeFailed`. It licenses no capability or transport change until that
+exact cause is established.
+
+Read-only post-failure inspection confirms exact-image Lifecycle Authority Pod
+`b22aa8d6-2a08-4d9f-a3a5-e7ec18d20861` is Running/Ready with zero restarts and the failed
+credential Job/Pod has been cleaned. Source inspection then establishes the diagnostic gap:
+`executeAuthenticated` maps every payload-bearing or value-free `AwsAdminExecutionError` to the
+single `AwsAdminWorkerExecutionFailed` constructor before the terminal line is rendered. No
+retained evidence can separate journal, IAM, and delivery failures. The counterexample therefore
+licenses only an exhaustive closed mapping from every execution-error constructor to a
+payload-free terminal subcause. It does not license an execution retry, a new route, a policy
+change, receipt reinterpretation, or propagation of boundary detail.
+
+The closed execution-cause diagnostic is locally complete. Every `AwsAdminExecutionError`
+constructor maps exhaustively to one bounded subcause beneath `execution-failed/`; an explicit
+regression proves differing journal boundary payloads collapse to the same token, and representative
+IAM count and target-delivery payloads are likewise erased. The complete AWS-admin group passes
+**35/35**, all **4723/4723** primary cases pass, and the auxiliary suites pass **27/33/31**.
+Repository-pinned Fourmolu is applied, HLint reports `No hints`, documentation lint and
+`git diff --check` pass, and canonical `prodbox dev check` exits 0. Binary
+`sha256:3bf3381e3dd28bb863f5e45a5bea62655c00f2984a3804d4b09ef57a69649071` is the Generation-101
+input. The next supported reconcile must retain root session `root-session-3b9d5743…`, recover the
+expired Generation-100 attempt only after exact Job/Pod/journal absence, and report one exact
+payload-free execution subcause before any behavioral change.
+
+Generation 101 builds local image
+`sha256:c56baffafcb3e5bee51a7214e1e90ed5ad602e52c4ab78e9a973542383beb8c2` in 994.8 seconds,
+publishes registry manifest
+`sha256:04f7565c62a40a8620a6305b64403002c5522661f205ae23ffbb3bce88374175`, and completes its
+mandatory 223.5-second import at OCI manifest
+`sha256:81645f2d48de89f46bcbddf0b35174c30b611a4bea2924009c3322d2bf9ae8d7`. Baseline reconcile
+correctly retains root session `root-session-3b9d5743…` and read-back digest `a5756119…`. The
+expired Generation-100 Authorized attempt cannot take the no-effect renewal path: Job and Pod are
+absent, but the permit-derived execution journal is present, so preparation fails closed at
+`attempt-recovery/journal-present` before a Generation-101 worker exists. Stable counterexample
+`AWS-ADMIN-AUTHORIZED-RECOVERY-JOURNAL-PRESENT-2026-08-29` moves the next investigation to the
+durable resume contract for a journaled Authorized attempt. It does not license treating journal
+presence as absence, minting a replacement permit, or clearing possible effect evidence.
+
+Source diagnosis confirms Sprint 2.115 intentionally made the recovery observer presence-only:
+an initialized journal may represent any of the seven durable execution phases, including
+possibly-applied IAM work, and therefore cannot enter the absence proof. The current retained
+counterexample does not reveal which phase exists. The next diagnostic may decode the exact
+permit-derived journal only to an exhaustive payload-free phase token, must verify the embedded
+permit equality, and must continue mapping corrupt, mismatched, and unobservable reads to refusal.
+It may not write or delete the journal, renew the permit, or resume an effect.
+
+The read-only journal-phase diagnostic is locally complete. It distinguishes all seven phases and
+the initial-attempt/remint-used bit, verifies exact embedded-permit equality, and keeps invalid,
+mismatched, and session/request failures out of the no-effect proof. The complete AWS-admin group
+passes **35/35**, all **4723/4723** primary cases and auxiliary **27/33/31** cases pass;
+repository-pinned Fourmolu is applied, HLint reports `No hints`, documentation lint and
+`git diff --check` pass, and canonical `prodbox dev check` exits 0. Binary
+`sha256:e90cb98f4460dad96f13806163f382ef878958f1361a940cb9200e49abca7652` is the Generation-102
+input. Live qualification must retain root session `root-session-3b9d5743…`, make no credential
+worker or journal mutation, and report the exact retained phase.
+
+Generation 102 builds local image
+`sha256:c9b64a3f80d8a27ff75215ec83ce56404b2a4857393b40a3d93e29cb02805305`; its compile stage
+completes in 1002.2 seconds. It publishes registry manifest
+`sha256:8dc29aa451632fe83d4168badf10f16d2f0c31a5d0a95e4630604df3cb969a74` and completes the
+223.5-second containerd import at OCI manifest
+`sha256:04d74efe51031bb37301e773be7a24594f1bc511c4a5afed6460b06e368204ea`. Baseline
+reconciliation retains root session `root-session-3b9d57437d1b63cb471833be53bd9331dfa14cef89c151e67cde742140a69559`
+and read-back digest `a57561193057a71d62986c9dcc39ca5d59274bd464a413ef445ed3a3b9f77df6`.
+The exact-image Lifecycle Authority is Running/Ready with zero restarts. No credential worker is
+created; the supported command exits 1 at the unchanged public
+`attempt-recovery/journal-present` refusal. The protected read-only observation is exactly
+`aws-admin/recovery journal-observation=present/intent-committed/initial-attempt`.
+
+Stable refinement `AWS-ADMIN-AUTHORIZED-RECOVERY-INTENT-COMMITTED-2026-08-29` establishes that
+the retained first-attempt journal stopped after durable intent and before the next durable
+create-attempt phase. It licenses analysis and implementation of only the exact durable
+continuation for that state. Journal deletion, classifying presence as no-effect absence,
+starting an unrelated fresh permit, or assuming the lack of a later journal phase proves provider
+absence remain unlicensed.
+
+The intent-only durable continuation is locally complete. Exact Job and Pod absence remain
+mandatory. The production classifier admits authenticated journal absence or only the canonical,
+embedded-permit-equal `intent-committed/initial-attempt` phase; remint intent, every later phase,
+permit mismatch, invalid bytes, and session/request unobservability retain the existing refusal.
+The admitted phase may have applied idempotent bucket/IAM prerequisite reconciliation, but the
+execution machine cannot create an access key before durably committing `create-attempt-prepared`.
+The replacement therefore uses the existing binding-equivalent renewal, retains the predecessor
+journal as evidence, and starts its own permit-derived journal.
+
+Focused Sprint-2.116 passes **7/7**, the complete AWS-admin group passes **35/35**, all
+**4723/4723** primary cases and auxiliary **27/33/31** cases pass. Repository-pinned Fourmolu is
+applied, HLint reports `No hints`, documentation lint and `git diff --check` pass, and canonical
+warning-clean `prodbox dev check` exits 0. Binary
+`sha256:81ebde0f6662257bfeacf53b224538cf7cd1310df52e74c37aaa1a61cf2e6002` is the Generation-103
+input. Live qualification must retain the predecessor journal, advance only through a fresh
+binding-equivalent permit, and reach a canonical worker receipt or register the next exact
+counterexample.
+
+Generation 103 builds local image
+`sha256:9db85e6dd61eba87cb6c95b6d662587a1173c5e78b7d141df03b996c09f34822`; its compile stage
+completes in 991.7 seconds. It publishes registry manifest
+`sha256:462dd3c25e78767d1a430249d284eb64be52b6e55746d221ad099ab11e720394` and completes the
+225.8-second containerd import at OCI manifest
+`sha256:9f1e75ccc75a5e1f775f46bfbf96c788a2676ae82a7cb45894f9affca9e0225a`. Baseline
+reconciliation retains root session `root-session-3b9d57437d1b63cb471833be53bd9331dfa14cef89c151e67cde742140a69559`
+and read-back digest `a57561193057a71d62986c9dcc39ca5d59274bd464a413ef445ed3a3b9f77df6`.
+The exact-image Lifecycle Authority is Running/Ready with zero restarts. Its protected log proves
+the old `present/intent-committed/initial-attempt` journal enters the recovery proof, and the
+supported reconcile creates and cleans a fresh binding-equivalent worker.
+
+Attach is empty. The exact Pod-log classifier ends at
+`worker-terminal-line=execution-failed/iam-prerequisite-failed`; the public command exits 1 at
+`AwsAdminWorkerReceiptDecodeFailed`. Stable counterexample
+`AWS-ADMIN-WORKER-IAM-PREREQUISITE-FAILED-2026-08-29` moves the investigation inside the IAM
+prerequisite boundary. The current boundary converts every `ProductionIamError` into bounded text
+before `AwsAdminExecutionError`, so the retained payload-free token cannot distinguish bucket,
+user, tags, inline policy, role, credential, or AWS-client failure. The next change may add only an
+exhaustive value-free prerequisite cause derived before that text projection; it licenses no IAM
+mutation change, new permission, retry, or boundary widening.
+
+The first full installed-frontend CLI rerun also registers stable fixture counterexample
+`FAKE-HELM-STATUS-2026-08-28` for Sprint `5.38`, parked behind the active Phase-2 row. Sprint
+`3.46` made authoritative `helm status --output json` observation a precondition of every upgrade,
+but the two built-frontend fake Helm interpreters still either reject `status` or return successful
+empty output for every non-Harbor release. Eight of 63 CLI cases consequently fail before their
+owned bodies at `HelmReleaseInitialObservationFailed`; this is fixture projection drift, not a
+product observation. Sprint `5.38` makes the fakes total over absent versus explicitly listed
+deployed releases and adds a two-sided status regression before the installed suite is rerun.
+
+Sprint `2.91` is done and live-proven. Its six-cause
+initial-admission diagnostic passes all
+**11** focused cases, all **4673** primary cases, and the **27/33/29** authority suites; the stable
+canonical `prodbox dev check` rerun exits 0. Generation 55 publishes local image
+`sha256:15cab9d6aa5fca1fda36b88fbb413faacb7c1728822d2483c4ccff55f44c9bea`, registry digest
+`sha256:1637da9f691efb225faa364e487c14ab3602f9e723fa9c44b1186be6f9742ac8`, and containerd OCI
+manifest `sha256:58a38ae0e2d7da95b1c2e656ded989e1398fdabb79360243bb62372b6f2f8c21` while preserving root
+session `root-session-b46b8cb3…`. Its first rollout inherits the failed generation-54 StatefulSet
+and is non-proof; supported cleanup uninstalls the release and verifies absence. The clean retry
+creates a fresh Pod whose rollout annotation and runtime image ID both equal the generation-55
+local image; it reports exact protected cause
+`interpreter/initial-admission/registration-unobservable`.
+
+Source inspection proves missing objects are already preserved as `ModelBMissing`: native S3 404,
+the encrypted-object layer, the authority-object core, and the shared Model-B transport all retain
+absence. The remaining label instead collapses coordinate-authority rejection, native request and
+HTTP failures, missing object versions, envelope-open failures, invalid Model-B versions, and an
+unknown fail-closed remainder. Sprint `2.92` owns only a closed payload-free diagnostic refinement
+of that unobservable arm. The refinement is local and its focused protected-diagnostic suite passes
+all **12** cases, including family exhaustiveness, representative classification, and equal
+protected rendering for distinct underlying HTTP status/body detail. All **4674** primary cases and
+the **27/33/29** authority suites pass; the warning-clean all-target build, pinned
+Fourmolu/HLint (`No hints`), documentation lint, and `git diff --check` pass. The clean
+generation-55 reconcile reaches its supported 30-minute deadline at 0/1 Ready with ten restarts,
+exits 1, and retains the release because readiness timeout is non-terminal convergence. The binary
+is refreshed. A wrapper run overlapping this terminal-evidence plan update exits 0 but is treated as
+provisional; its immediately following unchanged-worktree canonical rerun also exits 0. Deploy the
+diagnostic, then correct the exact observed store/transport invariant. Generation 56 publishes
+local image `sha256:6e121bb04049dedad20791686bd6ed572ede82e19001b38583197b40df1316ab`,
+registry digest `sha256:501db8c6b6f1209c696acd7e7a5e7e9b94f27ad354f1ff811a098aeccc95f773`,
+and containerd OCI manifest
+`sha256:0c808831cb3d7526df6b3ce17a1fc12377c5f42ca09a5d09c149b6a755fff9e2`. Its first
+reconcile is non-proof: image import temporarily crosses kubelet DiskPressure, so the replacement
+Bootstrap Broker cannot schedule and the supported command exits 1 before reaching Lifecycle
+Authority. Only superseded untagged prodbox runtime images and recoverable Docker build cache are
+collected; retained application data and the tagged generation-56 image remain. Free space rises
+from 25 GiB to 92 GiB, kubelet clears its own taint, and the replacement Broker becomes Ready.
+The next supported reconcile reproduces all three generation-56 identities and preserves root
+session `root-session-b46b8cb3…`, then classifies the inherited Authority Helm revision as
+terminal failed state. Its retained Pod has the generation-56 runtime image ID but the
+generation-55 rollout annotation, so it is non-proof. Supported cleanup uninstalls the release,
+verifies absence, and exits 1. The clean retry creates Pod
+`84fea149-45b9-4c90-8a81-1ba1a83453aa`; its rollout annotation and runtime image ID both equal the
+generation-56 local image, and its protected event reports exact
+`interpreter/initial-admission/registration-unobservable/store-http`. Sprint `2.92` is therefore
+done and live-proven. The supported reconcile reaches its 30-minute deadline at 0/1 Ready with ten
+restarts, exits 1, and retains the release because readiness timeout is non-terminal convergence.
+That family still hides whether the native S3 response is authentication,
+authorization, client/protocol, server, or unknown status. Sprint `2.93` owns only the next closed
+payload-free status-class diagnostic before any credential, policy, signer, or store behavior
+changes. That refinement is local: authentication, authorization, other-client, server,
+unexpected-non-error, and unknown form one closed native status taxonomy; the internal raw error
+and all effects remain unchanged. All **15** focused protected/native cases, all **4677** primary
+cases, and the **27/33/29** authority suites pass. The warning-clean all-target build,
+repository-pinned Fourmolu/HLint (`No hints`), documentation lint, and `git diff --check` pass. The
+stable unchanged-worktree canonical gate also exits 0. Its full-tree HLint memory peak temporarily
+crosses kubelet MemoryPressure and replacement local workloads remain Pending until kubelet clears
+its own taint; this is pre-deployment non-proof. Diagnostic deployment follows automatic node and
+baseline recovery. Kubelet clears the pressure condition with roughly 13.5 GiB available. The
+supported recovery reconcile restores MinIO, Vault, and Registry, then publishes generation 57:
+local image `sha256:602d2e869ded871e88ac30f7955770ad112054982dd2aec7b0631153ee412787`,
+registry digest `sha256:8593d6c0d8a12503592020b1f6a53294964da90b4de8b4473c48ddb353ef130c`,
+and containerd OCI manifest
+`sha256:756561c1eb764cada059e822d8a5afed7d010c1af2cfff9654bba820f6287f7b`.
+That exact-image recovery run is now at Bootstrap Broker and owns the retained failed Authority
+release before a clean diagnostic retry. It unseals Vault, preserves root session
+`root-session-b46b8cb3…`, classifies the inherited revision as terminal failed state, uninstalls it,
+verifies absence, and exits 1. Its retained Pod is still generation 56 and is non-proof. A clean
+exact generation-57 retry is next.
+
+The clean retry creates Pod `fb9fa537-7c7c-4c2b-810d-376452362b1f`; its rollout annotation and
+runtime image ID both equal the generation-57 local image, and its protected event reports exact
+`interpreter/initial-admission/registration-unobservable/store-http/authorization`. Sprint `2.93`
+is therefore done and live-proven. The supported reconcile reaches its 30-minute deadline at 0/1
+Ready with ten restarts, exits 1, and retains the release because readiness timeout is non-terminal
+convergence. S3 HTTP 403 still combines access denial, unknown access key,
+signature mismatch, clock skew, malformed authorization, and unknown response-code causes. Sprint
+`2.94` owns only the next closed payload-free S3 error-code diagnostic before any credential,
+policy, signer, clock, or store behavior changes. That refinement is local: access-denied,
+invalid-access-key, signature-mismatch, request-time-skewed, authorization-header-malformed,
+expired-token, other, and malformed-or-unknown form one closed native S3 taxonomy; the raw internal
+error and all effects remain unchanged. All **18** focused protected/native cases pass. Complete
+local validation now passes: all **4680** primary cases, the **27/33/29** authority suites, the
+warning-clean all-target build, targeted Fourmolu, pinned HLint (`No hints`), documentation lint,
+and `git diff --check`. The refreshed canonical gate has twice reproduced an approximately
+11.7-GiB process peak after its conformance tier: the first run drove RKE2 past its etcd
+leader lease and returned 1 without a compiler diagnostic; the second reached 5 GiB in 36 seconds
+and was stopped before repeating the control-plane failure. RKE2 disables swap, so refreshing host
+swap does not create usable headroom. An explicit major collection still leaves 9.28 GiB resident
+after the formatter starts, proving the graph remains reachable. Sprint `2.95` therefore owns an
+exact child-process lifetime boundary around each existing lint leaf and is Next. The first
+isolated retry proves the file/conformance child leaves the aggregate parent at 93 MiB, then the
+in-process generated-document family grows that parent to 7.67 GiB; this widens the same correction
+to all four sequential lint leaves. The remaining single-leaf peak is traced to 32 lazy Haskell
+style finding batches retained until their final concatenation. Forcing each complete batch before
+the next scan reduces that leaf from 9.66 GiB to 1.15 GiB; direct full-tree Haskell lint exits 0,
+with HLint at approximately 308 MiB and about 9.7 GiB host memory available. Sprint `2.95` is now
+Done. Its two focused lifetime/fail-fast cases and all **4682** primary cases pass with the
+**27/33/29** authority suites, direct Haskell lint, warning-clean all-target build, documentation
+lint, and `git diff --check`. The exact canonical gate exits 0 with its aggregate parent near
+94 MiB and Haskell-lint child near 1.08 GiB; RKE2 remains PID `3161824`, restart count 3, and
+MemoryPressure False with its pre-run transition timestamp. Sprint `2.94` is unblocked and Next for
+exact-image diagnostic deployment. The first supported deployment publishes generation 58: local
+image `sha256:86493048c6c2eb96b19ce25fb0307c8ae17136c315f488998949c5a184bbbe36`, registry digest
+`sha256:662fd6486b27c5bb33e7f8d0013d53db8a5f5dc3d3456574a3dae3d1c11b4582`, and containerd OCI
+manifest `sha256:6ed78dc37f5d252b6ecfebf426f180b46659cb45db72ccc60ff3957f7f39625e`.
+It is non-proof: RKE2 restarts during the clean image build, then Helm encounters the retained
+failed generation-57 StatefulSet before replacing Pod `fb9fa537…`; that Pod's rollout annotation
+and runtime image ID remain generation 57. The supported path preserves root session
+`root-session-b46b8cb3…`, uninstalls the failed release, verifies absence, and exits 1. Retry the
+exact generation-58 image from clean Authority state. That clean retry creates Pod
+`f1d4cdfc-cf35-4083-8241-462475b0742f`; its runtime image ID is the exact generation-58 local image
+and its protected event resolves the live S3 response to
+`interpreter/initial-admission/registration-unobservable/store-http/authorization/invalid-access-key`.
+Source topology then identifies the exact invariant: `StepGatewayMinioBootstrap` creates the
+dedicated MinIO principal only in the steady phase, while Lifecycle Authority readiness must
+already succeed in the preceding transition phase. The supported clean reconcile reaches its
+30-minute deadline at 0/1 Ready with ten restarts, exits 1, and retains the release because the
+readiness timeout is non-terminal convergence. Sprint `2.94` is Done and live-proven; Sprint `2.96`
+is Next for that ordering correction. The correction is now local: both anchored substrate plans
+place the existing unified IAM bootstrap after unsealed Vault/Target Agent and before Lifecycle
+Authority, and the home executor runs it in the transition phase rather than steady state. The
+exact dry-run order is green, the all-target build is warning-clean, and all **4682** primary cases
+plus the **27/33/29** authority suites pass. The exact canonical gate exits 0; RKE2 remains PID
+`3284819` with zero service restarts and the node remains `MemoryPressure=False` with its unchanged
+transition timestamp. The refreshed binary is `sha256:2b8068bb…`. Exact-image deployment remains.
+The first supported corrected reconcile publishes generation 59 as local image
+`sha256:ab3462a9…`, registry digest `sha256:4b64aa38…`, and containerd OCI manifest
+`sha256:34a45bba…`. Before any Authority Pod replacement, it completes and removes the unified
+MinIO bootstrap Job; Helm then encounters the retained failed generation-58 revision, so the run
+correctly treats that state as non-proof, uninstalls the release, verifies absence, and exits 1.
+Retry the exact generation-59 image from that clean Authority state.
+The clean retry creates fresh Pod `d0b1f1af-45ef-4714-ab5c-4894126d0e99`; its rollout annotation
+and runtime image ID both equal generation-59 local image `sha256:ab3462a9…`, and it remains live
+with zero restarts instead of repeating `invalid-access-key`. The exact Vault credential succeeds
+at a signed MinIO bucket LIST, while the separate bootstrap-handoff KV observation returns the
+expected normalized 404. Readiness remains closed because Authority's role correctly receives
+HTTP 403 when the observer asks it to HMAC a Target-worker child-custody path—a capability the
+Authority runtime neither owns nor uses. Sprint `2.96` is Done and live-proven on its ordering
+surface; Sprint `2.97` is Next to remove that foreign probe without widening Authority policy.
+The local Sprint-2.97 correction compiles Authority readiness from the exhaustive two-member
+object-store/handoff inventory. Its focused inventory and Vault-policy boundary tests pass, as do
+the warning-clean all-target build, all **4683** primary cases, and the **27/33/29** authority
+suites. The refreshed binary is `sha256:85609f6d…`; the exact canonical gate exits 0 while RKE2
+remains PID `3444040` with zero restarts and the node's False MemoryPressure transition unchanged.
+Exact-image deployment remains.
+The pre-correction generation-59 control reaches its 30-minute Helm deadline with fresh Pod
+`d0b1f1af…` still live, exact-image, zero-restart, and 0/1 Ready. The supported command exits 1 and
+retains that release as non-terminal convergence. The refreshed generation-60 deployment publishes
+local image `sha256:ac4c2d48…`, registry digest `sha256:8e0b140b…`, and containerd OCI manifest
+`sha256:ff756571…`; it again completes the unified MinIO bootstrap before Authority admission and
+applies the corrected two-member readiness template. Kubernetes nevertheless retains the unready
+generation-59 ordinal: the StatefulSet reports generation-59 `currentRevision`, generation-60
+`updateRevision`, and zero updated replicas while Helm is `pending-upgrade`. Sprint `2.97` is Done
+on its fully validated code-owned surface, with deployment qualification still pending. Stable
+counterexample `HELM-RETRY-2026-08-28` opens Sprint `3.46`: preserve a timeout in its originating
+attempt, but reconcile the terminal `failed` revision to exact absence before a later invocation
+begins another upgrade.
+Sprint `3.46` is now Done and live-proven. Generation 61 publishes local image
+`sha256:56c7c3c8…`, registry digest `sha256:3f44873d…`, and containerd OCI manifest
+`sha256:46631647…`. The same supported reconcile removes the frozen failed release, observes it
+absent, installs fresh Pod `c300d852-c83c-464f-bffe-2865e0fadb80`, and reaches Ready with both its
+rollout annotation and runtime image ID equal to the local image. It crosses the post-unseal handoff
+and proceeds to Authority Backup. That first exact-image adapter Pod then exits 1 before logging;
+a secret-safe read-only diagnostic proves its ServiceAccount receives HTTP 403 from Vault login.
+Source inspection finds `VaultRoleAuthorityBackup`, `VaultRoleProviderWorker`, and
+`VaultRoleTlsRetention` all inherit namespace `gateway` from `standingRole`, while their workloads
+run in `authority-backup`, `provider-worker`, and `tls-retention`. Sprint `2.98` owns the exhaustive
+standing-role namespace correction before the adapter retry. Its local correction is complete: the
+focused exhaustive inventory and standing-policy regressions pass, all **4685** primary cases and
+the **27/33/29** authority suites pass, and the exact canonical gate exits 0. The refreshed binary
+is `sha256:bbc8d886…`; RKE2 remains PID `3614880` with zero restarts and the node's False
+MemoryPressure transition is unchanged. Generation 62 publishes local/registry/OCI identities
+`sha256:025367fd…`, `sha256:89c3c57e…`, and `sha256:48f4c027…`; its fresh exact-image Authority
+Backup Pod `932002b9-f495-43ca-84e1-0d4e4dd9fd80` still receives Vault-login HTTP 403. The retained
+baseline reuses closed root session `root-session-b46b8cb3…` because the receipt inventory did not
+change when an existing target's namespace semantics changed. Sprint `2.98` therefore also owns an
+append-only semantic-revision target and exact older-closed-receipt migration before the next
+deployment retry. That migration now passes its focused case and the complete **13**-case
+root-session suite; all **4686** primary cases, the **27/33/29** authority suites, and the exact
+canonical gate are green. Refreshed binary `sha256:2c8c3cd8…` leaves RKE2 PID `3734288`, zero
+restarts, and node pressure unchanged; exact-image deployment is next.
+
+**Sprint `2.89` closed and was live-proven on 2026-08-27.** The clean correction retry creates an
+Authority Pod whose rollout annotation and
+runtime image ID both equal local image `sha256:b3ac1a5f…`; registry digest
+`sha256:339625c3…` and OCI manifest `sha256:11e846e8…` are exact. It still reports protected cause
+`authentication/session-acquire/forbidden`. The source role binding is corrected, but the retained
+closed baseline receipt reuses root session `root-session-ff34f6c3…` because `BaselineTarget` does
+not name the Lifecycle Authority standing role and therefore never reapplies the changed Vault
+document. Append that exact target, admit the immediately preceding list only as closed restart
+input under a fresh root-session ID, preserve both older terminal migrations and every in-progress
+refusal, rerun the complete gate, deploy, and resume exact handoff. The clean retry reaches its
+30-minute supported Helm deadline at 0/1 Ready with 14
+restarts, exits 1, and retains the release because readiness timeout is non-terminal convergence.
+The next supported reconcile owns that release. The append-only migration is now local: the focused
+root-session suite passes all **12** cases and proves exact old-terminal
+admission, fresh identity/restart, both older migrations, and partial/in-progress refusal. All
+**4671** primary cases and the **27/33/29** authority suites pass; the warning-clean all-target
+build, pinned formatting/HLint, repository/chart/documentation lint, generated-document drift
+check, and `git diff --check` also pass; canonical `prodbox dev check` exits 0. Deployment
+publishes local image `sha256:b5917d5a…`, registry digest `sha256:e735958f…`, and OCI manifest
+`sha256:17cc0a57…`; the root session advances from `ff34…` to `b46b…` and baseline read-back
+completes. The inherited failed StatefulSet prevents the new Pod from executing, so rollout is
+non-proof; supported cleanup uninstalls the release and verifies absence. Retry that exact image
+from clean state. The clean retry executes the exact generation-53 image, crosses session
+acquisition, and exposes Sprint `2.90`'s broad interpreter transition before any interpreter
+behavior changes.
+
+**Sprint `2.88` closed and was live-proven on 2026-08-27.**
+Generation 51 carries local image `sha256:051599eb…`, registry digest `sha256:d20fbc2d…`, and
+containerd OCI manifest `sha256:7ea9db67…`. After one external Hackage-mirror 403 before image
+publication and one inherited failed-StatefulSet non-proof, supported cleanup verifies Authority
+absence and the clean-state retry executes the exact diagnostic image. Target Agent remains 1/1
+Ready with zero restarts; the replacement Authority Pod carries local image `sha256:051599eb…` and
+reports exact protected cause `authentication/session-acquire/forbidden`. Source inspection finds
+that `standingRole` still binds Lifecycle Authority to namespace `gateway`, while its Pod uses
+ServiceAccount `prodbox-lifecycle-authority` in namespace `lifecycle-authority`. Correct only that
+closed role binding through `standingRoleInNamespace`, prove every sibling standing binding remains
+unchanged, rerun the complete gate, deploy, and resume exact handoff. The correction is now local:
+the focused standing-role inventory passes all **20** cases and proves only Lifecycle Authority's
+namespace changed while every sibling and token field remains exact. All **4670** primary cases and
+the **27/33/29** authority suites pass; the warning-clean all-target build, pinned formatter and
+HLint, repository/chart/documentation lint, generated-document drift check, and `git diff --check`
+also pass. The clean diagnostic retry reached its 30-minute deadline with Authority 0/1 Ready and
+ten restarts, exited 1, and explicitly retained the failed release because readiness timeout is
+non-terminal convergence; the next supported reconcile owns failed-release handling. The terminal
+canonical wrapper's first attempt was externally terminated with exit 143 during its Cabal rebuild
+and is non-proof; after the diagnostic reconcile released the executable, the stable rerun exits 0.
+The first correction deployment publishes local image `sha256:b3ac1a5f…`, registry digest
+`sha256:339625c3…`, and containerd OCI manifest `sha256:11e846e8…`, but the inherited failed
+StatefulSet makes Helm fail before replacing the old Pod, so that attempt is non-proof. Supported
+cleanup uninstalls the release and verifies absence. Retry that exact image from clean state, then
+resume the exact Authority/handoff path. The clean retry executes that exact correction and exposes
+Sprint `2.89`'s retained-receipt transition before any receipt behavior changes.
+
+**Sprint `2.87` closed and was live-proven on 2026-08-27.** Its 35-cause Authority-only diagnostic
+closes configuration, typed authentication, exact known primary-store read/field, coordinate,
+interpreter, and fallback stages without retaining boundary payload or changing exit 1. Focused
+cases pass 9/9, all **4669** primary cases and the **27/33/29** authority suites pass, the
+warning-clean all-target build passes, and canonical `prodbox dev check` exits 0. The clean
+generation-51 retry names the exact session-acquisition refusal above and registers Sprint `2.88`
+before any Vault-role behavior change.
+
+**Sprint `2.86` closed and was live-proven on 2026-08-27.** Its target-and-stage cause is derived
+only from a closed `TargetSecretId` and metadata-read/metadata-validation stage, rejects arbitrary
+tokens, and returns the prior readiness observation unchanged. Generation 49 identified exact
+`keycloak-patroni-app/metadata-validation`; the readiness-only correction admits exactly a
+positive-version empty custom-metadata pre-receipt while zero-version empty and partial metadata
+remain unavailable and strict proof/Provider validation remains unchanged. Focused cases pass 7/7,
+all **4667** primary cases and the **27/33/29** authority suites pass, documentation lint and the
+warning-clean all-target build pass, and canonical `prodbox dev check` exits 0. Generation 50
+carries the exact identities above and runs the corrected Agent 1/1 Ready with zero restarts before
+exposing Sprint `2.87`'s distinct silent Authority startup exit.
+
+**Sprint `2.85` closed and was live-proven on 2026-08-27.** Its 14-cause protected classifier
+returns the original readiness state unchanged and retains no dependency detail. Focused cases pass
+6/6, all **4666** primary cases and the **27/33/29** authority suites pass, the warning-clean
+all-target build passes, and canonical `prodbox dev check` exits 0. Generation 48 carries the exact
+identities above, runs the Agent healthy with zero restarts, names the target-material family, and
+registers Sprint `2.86` before any readiness behavior change; supported cleanup verifies absence.
+
+**Sprint `2.84` closed and was live-proven on 2026-08-27.** Generation 46 runs local image
+`sha256:1aed0098…`, registry digest `sha256:2c60063c…`, and containerd OCI manifest
+`sha256:5445d006…`; its diagnostic named exact `handler/boundaries/tombstone-binding`. The
+correction derives the manifest reference from the compiled `ses-smtp` sink rather than the
+independent deployment cluster ID. Focused startup cases pass 4/4, all **4664** primary cases, the
+**27/33/29** authority suites, documentation lint, the warning-clean all-target build, and canonical
+`prodbox dev check` pass. Generation 47 carries the replacement identities above. Its first attempt
+inherited an interrupted release's expired progress condition and did not execute the corrected
+Pod; supported cleanup verified absence. The clean retry then ran the corrected Agent, crossed the
+owned handler boundary, and registered Sprint `2.85`'s distinct broad readiness transition before
+any readiness behavior change.
+
+**Sprint `2.83` closed and was live-proven on 2026-08-27.**
+Generation 41 runs local image `sha256:52e3d111…`, registry digest `sha256:6be97be0…`, and
+containerd OCI manifest `sha256:0019b7de…`; its Bootstrap Broker Deployment is observed and ready
+1/1 with zero restarts. The supported reconcile crossed Sprint `2.82`'s corrected final accessor
+LIST, completed the federated Vault-lifecycle step, and entered the next ordered Target Secret
+Agent chart step, where the runtime exited immediately with code 1 and no cause. The ten-cause
+diagnostic then passed its complete pre-deployment gate. Generation 42 runs local image
+`sha256:b8fd8c1a…`, registry digest `sha256:d4b8ce6a…`, and containerd OCI manifest
+`sha256:5df3c472…`; its Broker Deployment is observed and ready 1/1 with zero restarts. The
+protected Target Agent log names exact `authentication/trust-resolution`, and supported failed-
+release cleanup uninstalled the release and verified absence. The source counterexample is the
+Target Agent's standing Vault role bound to namespace `gateway` instead of its deployed
+`target-secret-agent` namespace. The local correction changes only that role binding and passes
+3/3 focused cases. Its corrected complete gate passes all **4658** primary cases, the
+**27/33/29** authority suites, documentation lint, warning-clean all-target build, and canonical
+`prodbox dev check`. Generation 43 runs local image `sha256:df91ffeb…`, registry digest
+`sha256:7575c54b…`, and containerd OCI manifest `sha256:75858447…`; its Broker Deployment is
+observed at 43/43 and ready 1/1 with zero restarts, but the Target Agent still reports exact broad
+`authentication/trust-resolution`. The namespace hypothesis is therefore not the complete live
+cause. The local refinement retains typed initial-acquisition, relogin, and Transit-read provenance
+and maps every session/read variant to a closed payload-free cause; focused Sprint `2.83` and
+session-boundary cases pass 4/4 and 6/6. Its complete local gate passes all **4662** primary cases,
+the **27/33/29** authority suites, documentation lint, warning-clean all-target build, and canonical
+`prodbox dev check`. Generation 44 runs local image `sha256:8cfebb18…`, registry digest
+`sha256:57d8c3c6…`, and containerd OCI manifest `sha256:f0d3e908…`; its Broker Deployment is
+observed at 44/44 and ready 1/1 with zero restarts. The refined protected cause is exact
+`authentication/session-acquire/forbidden`. The source role correction therefore is necessary,
+but the retained closed root-baseline receipt declares itself current from the unchanged target
+enumeration and reuses the older `gateway`-bound role without re-entering the generated-root
+reconciler. Add the exact Target Agent standing role to the receipt's required target identity,
+admit the immediately preceding closed target set only as restart input, and prove that it mints a
+fresh session rather than replaying stale completion. That append-only correction is implemented:
+the prior CBOR shape decodes, validates only in `RootSessionClosed`, selects a fresh identity, and
+restarts at orphan cleanup; partial and in-progress obsolete receipts remain corrupt. Its focused
+custody matrix passes 11/11 and the primary suite passes all **4663** cases. The complete gate passes:
+the **27/33/29** authority suites, documentation lint, warning-clean all-target build, and canonical
+`prodbox dev check` are green. Generation 45 runs local image `sha256:675fe4d4…`, registry digest
+`sha256:97de22f4…`, and containerd OCI manifest `sha256:e9114982…`; its Broker Deployment is
+observed at 45/45 and ready 1/1 with zero restarts. The Target Agent crosses exact session
+acquisition and trust resolution, then names the next independently observed broad cause
+`handler/boundaries`. The refreshed baseline receipt carries root session
+`root-session-ff34f6c3…` on storage generation `vault-a290544e…`, proving the retained terminal ID
+advanced. Supported failed-release cleanup uninstalled the release and verified absence; Sprint
+`2.84` owns the next registered transition.
+
+**Sprint `2.82` closed and was live-proven on 2026-08-26.** Its 21-cause protected diagnostic
+identified exact `http/list-accessors/status-404`; only that role-wide LIST representation now
+becomes an empty inventory, while lookup 404 and every other failure remain closed. Focused cases
+pass 2/2; all **4655** primary cases, the **27/33/29** authority suites, documentation lint,
+warning-clean all-target build, and canonical `prodbox dev check` pass. Generation 41 carries the
+identities and rollout proof above and crossed the owned transition before Sprint `2.83` was
+registered.
+
+**Sprint `2.81` closed and was live-proven on 2026-08-26.** Exact HTTP 404 becomes an empty
+inventory only at the initial and post-revocation accessor LIST operations; a non-list 404 and all
+other failures remain closed. Its focused case passes 1/1; all **4653** primary cases, the
+**27/33/29** authority suites, documentation lint, warning-clean all-target build, and canonical
+`prodbox dev check` pass. Generation 39 carries the identities and rollout proof above and crossed
+the owned transition before Sprint `2.82` was registered.
+
+**Sprint `2.75` closed and was live-proven on 2026-08-26.** The classifier admits only the exact
+initial accessor-LIST HTTP 404 as an empty inventory and retains every other typed failure. Its
+focused two-sided case, all **4653** primary cases, the **27/33/29** authority suites,
+documentation lint, warning-clean all-target build, and canonical `prodbox dev check` pass.
+Generation 38 carries the identities and rollout proof above; it crossed the owned transition and
+registered Sprint `2.81` before any correction of the newly observed post-LIST 404.
+
+**Sprint `2.80` closed and was live-proven on 2026-08-26.** Generation 37 runs local image
+`sha256:ba38284e…`, registry digest `sha256:d74c7640…`, and containerd OCI manifest
+`sha256:2ee1cbfc…`, observed and ready 1/1 with zero restarts. It crossed the exact canonical
+Kubernetes-role writes/read-backs and exposed Sprint `2.75`'s initial accessor-LIST HTTP 404. All
+**4653** primary cases plus **27/33/29** authority suites, documentation lint, warning-clean
+all-target build, and canonical `prodbox dev check` pass.
+
+**Sprints `2.79` and `2.77` closed and were live-proven on 2026-08-26.** Generation 36 runs local
+image `sha256:5e339bef…`, registry digest `sha256:338b1738…`, and containerd OCI manifest
+`sha256:32776229…`, ready 1/1 with zero restarts. Its advanced identity crossed orphan cleanup and
+generated-root baseline; the dedicated repair role crossed exact provisioner ACL-policy
+write/read-back. The next ordinary Kubernetes-role HTTP 403 belongs to Sprint `2.80`. All **4653**
+primary cases plus **27/33/29** authority suites, documentation lint, warning-clean all-target
+build, and canonical `prodbox dev check` pass.
+
+**Sprint `2.78` closed and was live-proven on 2026-08-26.** Generation 35 runs local image
+`sha256:387c193f…`, registry digest `sha256:9df1ab70…`, and containerd OCI manifest
+`sha256:72d6f78a…`, ready 1/1 with zero restarts. It admits the exact pre-policy-repair target list
+only in `RootSessionClosed`; the supported reconcile crossed the former status-read refusal and
+entered baseline, where Sprint `2.79` owns the distinct replacement-ID conflict. Focused cases,
+all **4652** primary cases plus **27/33/29** authority suites, documentation lint, warning-clean
+all-target build, and canonical `prodbox dev check` pass.
+
+**Sprint `2.76` closed and was live-proven on 2026-08-26.** Only immediate post-revocation LIST
+HTTP 404 becomes an empty accessor set. Generation 33 runs local image `sha256:73bb4e26…`, registry
+digest `sha256:035cbac6…`, and containerd OCI manifest `sha256:38971371…`, ready 1/1 with zero
+restarts. It crossed post-baseline root revocation and exposed only Sprint `2.77`'s distinct
+provisioner policy-write authorization refusal. Focused case, all **4650** primary unit cases plus
+**27/33/29** authority suites, documentation lint, warning-clean all-target build, and canonical
+`prodbox dev check` pass.
+
+**Sprint `3.45` closed and was live-proven on 2026-08-26.** The Broker alone selects a finite
+60-attempt one-second Deployment-revision observation window; every other component keeps the
+three-attempt policy and the exact revision predicate is unchanged. Generation 32 runs local image
+`sha256:c47c7ed6…`, registry digest `sha256:c03fa77c…`, and containerd OCI manifest
+`sha256:e0759ddd…`, ready 1/1 with zero restarts. The same supported reconcile consumed that revision
+and reached Vault initialize/unseal/baseline without a separate retry. Focused case, all **4649**
+primary unit cases plus **27/33/29** authority suites, documentation lint, warning-clean all-target
+build, and canonical `prodbox dev check` pass.
+
+Sprint `3.44` closed on 2026-08-26: the supported live reconcile observed
+`harbor-registry-bucket-init` reach `Complete`, explicitly deleted it, brought the retained registry
+to Ready, and advanced through image publication. The same run then exposed Sprint `3.45`'s
+separate Broker Deployment-revision observation bound, which must close before the protected
+provisioner-accessor revocation diagnostic can run.
+
+**Sprint `3.44` closed and was live-proven on 2026-08-26.** Its single-owner Job lifetime removes
+the competing TTL collector while retaining the exact 300-second waiter and explicit post-success
+delete. The supported retry observed the named Job's `Complete` condition before deleting it,
+reached a ready registry Deployment, and published the reconciler's image set. Focused cases pass
+1/1, all **4649** primary unit cases plus the **27/33/29** authority suites pass, documentation lint
+and the warning-clean build pass, and canonical `prodbox dev check` exits 0.
+
+**Sprint `2.75` is Next after generation 37 crossed every earlier-stage correction.** Diagnostic-only
 Broker generation 30 runs local image ID
 `sha256:8ca4523193be3e2cd3a60148dfd2c919231dd45c4b1108e3c475f475be539a4c`, registry digest
 `sha256:8d7480383b5a2d9445beb30b2b74d1e44dc7a946c949d235135fa2b70ae1a0c0`, and containerd OCI
@@ -37,11 +3860,17 @@ manifest `sha256:e1df135dfb3f59991677f8d94ebc6967f7747c46acc8a2a92ffc213fc397ab0
 generation 30, ready 1/1 with zero restarts. It crossed Sprint `2.74`'s policy application and
 read-back without changing behavior, then the protected diagnostic named the next independently
 observed transition: `baseline-stage=revoke-provisioner-accessor; boundary-unavailable`. The
-public response remained the generic HTTP 503 `{"status":"boundary-unavailable"}`. Sprint `2.75`
-must expose that revocation boundary's exact payload-free cause before changing behavior, then
-resume the retained baseline/Authority/handoff path. Development is paused at this exact handoff;
-Sprint `2.75` is ready to start, but no implementation, deployment, or behavior correction has
-begun.
+public response remained the generic HTTP 503 `{"status":"boundary-unavailable"}`. On 2026-08-26,
+Sprint `2.75` implemented the closed provisioner-accessor revocation cause and its exhaustive
+focused validation while preserving each existing public reply class. Focused cases pass 2/2, all
+**4648** primary unit cases plus the **27/33/29** authority suites pass, documentation lint and the
+warning-clean all-target build pass, and the canonical `prodbox dev check` exits 0. The supported
+deployment crossed registry bootstrap and the corrected revision observer as generation 32, but a
+fresh retained Vault generation crossed Sprint `2.76` and exposed Sprint `2.77`'s provisioner
+policy-write 403 before the provisioner-accessor revocation stage. Generation 37 subsequently
+crossed Sprints `2.77` through `2.80` and supplied the exact Sprint `2.75` cause:
+`http/initial-list-accessors/status-404`. No Sprint `2.75` behavior correction has occurred; resume
+that exact empty-collection invariant, then continue the retained baseline/Authority/handoff path.
 
 **Sprint `2.73` closed on 2026-08-24.** Its diagnostic generation 28 named exact
 `http/initial-list-accessors/status-404`; the correction admits only that Vault empty-collection

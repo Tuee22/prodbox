@@ -81,6 +81,8 @@ ports:
   dns: 53
   # In-cluster Vault API (Kubernetes auth plus allowlisted KV / Transit).
   vault: 8200
+  # Retained Lifecycle Authority authenticated role listener.
+  controlPlane: 8600
 
 # The Guaranteed-QoS resource envelope (request == limit) is injected at render
 # time from the typed `capacity.resource_plan` (the `target-secret-agent`

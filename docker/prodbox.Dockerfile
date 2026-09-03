@@ -104,7 +104,11 @@ COPY pulumi ./pulumi
 # documents/engineering/dependency_management.md §1.
 RUN cabal update \
     && cabal build --builddir=.build exe:prodbox \
-    && cp "$(cabal list-bin --builddir=.build exe:prodbox)" /usr/local/bin/prodbox
+    && cp "$(cabal list-bin --builddir=.build exe:prodbox)" /usr/local/bin/prodbox \
+    && rm -rf \
+        .build \
+        /root/.cache/cabal \
+        /root/.local/state/cabal
 
 # Sprint 1.49: the binary owns its config — there is NO committed/COPY-ed
 # `docker/default-prodbox.dhall`. After the binary is installed, RUN it to

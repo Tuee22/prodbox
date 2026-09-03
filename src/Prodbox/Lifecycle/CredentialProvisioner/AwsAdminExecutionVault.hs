@@ -1,3 +1,4 @@
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Permit-scoped Vault KV-v2 repository for the secret-free AWS-admin
@@ -6,6 +7,14 @@
 module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecutionVault
   ( vaultAwsAdminExecutionJournalBoundary
   , awsAdminExecutionJournalVaultPath
+  , AwsAdminExecutionJournalObservationCause (..)
+  , observeAwsAdminExecutionJournalCause
+  , renderAwsAdminExecutionJournalObservationCause
+  , AwsAdminExecutionJournalRecoveryFlag (..)
+  , AwsAdminExecutionJournalPhaseCause (..)
+  , AwsAdminExecutionJournalRecoveryObservation (..)
+  , observeAwsAdminExecutionJournalRecovery
+  , renderAwsAdminExecutionJournalRecoveryObservation
   )
 where
 
@@ -19,14 +28,16 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Numeric (showHex)
 import Numeric.Natural (Natural)
-import Prodbox.Http.Client (HttpError (HttpStatus), renderHttpError)
+import Prodbox.Http.Client (HttpError (..), renderHttpError)
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   ( AwsAdminExecutionJournalBoundary
   , mkAwsAdminExecutionJournalBoundary
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecutionJournal
   ( AwsAdminExecutionJournal
+  , AwsAdminExecutionPhase (..)
   , awsAdminExecutionJournalPermit
+  , awsAdminExecutionJournalPhase
   , decodeAwsAdminExecutionJournal
   , encodeAwsAdminExecutionJournal
   , initialAwsAdminExecutionJournal
@@ -46,6 +57,197 @@ import Prodbox.Vault.Client
   , vaultKvCasWriteV2
   , vaultKvReadVersionedV2
   )
+import Prodbox.Vault.Session
+  ( VaultSession
+  , VaultSessionError (..)
+  , VaultSessionOperationError (..)
+  , sessionAddress
+  , withSessionTokenDetailed
+  )
+
+-- | Closed, value-free classification of the exact permit-derived journal
+-- read. A successfully read but corrupt value is deliberately @Present@:
+-- recovery cares about proof that no worker initialized the coordinate, not
+-- about interpreting retained worker state.
+data AwsAdminExecutionJournalObservationCause
+  = AwsAdminExecutionJournalAbsent
+  | AwsAdminExecutionJournalPresent
+  | AwsAdminExecutionJournalSessionAcquisitionSealed
+  | AwsAdminExecutionJournalSessionAcquisitionForbidden
+  | AwsAdminExecutionJournalSessionAcquisitionUnavailable
+  | AwsAdminExecutionJournalSessionReloginSealed
+  | AwsAdminExecutionJournalSessionReloginForbidden
+  | AwsAdminExecutionJournalSessionReloginUnavailable
+  | AwsAdminExecutionJournalRequestUnauthorized
+  | AwsAdminExecutionJournalRequestClientFailure
+  | AwsAdminExecutionJournalRequestServerFailure
+  | AwsAdminExecutionJournalRequestUnexpectedStatus
+  | AwsAdminExecutionJournalRequestConnectionFailure
+  | AwsAdminExecutionJournalRequestTimeout
+  | AwsAdminExecutionJournalRequestDecodeFailure
+  deriving (Bounded, Enum, Eq, Show)
+
+data AwsAdminExecutionJournalRecoveryFlag
+  = AwsAdminExecutionInitialAttempt
+  | AwsAdminExecutionRemintUsed
+  deriving stock (Bounded, Enum, Eq, Show)
+
+data AwsAdminExecutionJournalPhaseCause
+  = AwsAdminExecutionJournalIntentCommitted !AwsAdminExecutionJournalRecoveryFlag
+  | AwsAdminExecutionJournalCreateAttemptPrepared !AwsAdminExecutionJournalRecoveryFlag
+  | AwsAdminExecutionJournalKeyCreated !AwsAdminExecutionJournalRecoveryFlag
+  | AwsAdminExecutionJournalTargetCommitted !AwsAdminExecutionJournalRecoveryFlag
+  | AwsAdminExecutionJournalCleanupRequired !AwsAdminExecutionJournalRecoveryFlag
+  | AwsAdminExecutionJournalCleanupProven !AwsAdminExecutionJournalRecoveryFlag
+  | AwsAdminExecutionJournalComplete
+  deriving stock (Eq, Show)
+
+data AwsAdminExecutionJournalRecoveryObservation
+  = AwsAdminExecutionJournalRecoveryAbsent
+  | AwsAdminExecutionJournalRecoveryPresent !AwsAdminExecutionJournalPhaseCause
+  | AwsAdminExecutionJournalRecoveryPermitMismatch
+  | AwsAdminExecutionJournalRecoveryInvalid
+  | AwsAdminExecutionJournalRecoveryUnobservable !AwsAdminExecutionJournalObservationCause
+  deriving stock (Eq, Show)
+
+observeAwsAdminExecutionJournalCause
+  :: VaultSession
+  -> SignedAwsAdminPermit
+  -> IO AwsAdminExecutionJournalObservationCause
+observeAwsAdminExecutionJournalCause session permit = do
+  observed <-
+    withSessionTokenDetailed session $ \token ->
+      vaultKvReadVersionedV2
+        (sessionAddress session)
+        token
+        executionJournalVaultMount
+        (awsAdminExecutionJournalVaultPath permit)
+  pure $ case observed of
+    Left (VaultSessionRequestFailed (HttpStatus 404 _)) -> AwsAdminExecutionJournalAbsent
+    Left err -> classifyJournalObservationFailure err
+    Right _ -> AwsAdminExecutionJournalPresent
+
+observeAwsAdminExecutionJournalRecovery
+  :: VaultSession
+  -> SignedAwsAdminPermit
+  -> IO AwsAdminExecutionJournalRecoveryObservation
+observeAwsAdminExecutionJournalRecovery session permit = do
+  observed <-
+    withSessionTokenDetailed session $ \token ->
+      vaultKvReadVersionedV2
+        (sessionAddress session)
+        token
+        executionJournalVaultMount
+        (awsAdminExecutionJournalVaultPath permit)
+  pure $ case observed of
+    Left (VaultSessionRequestFailed (HttpStatus 404 _)) ->
+      AwsAdminExecutionJournalRecoveryAbsent
+    Left err ->
+      AwsAdminExecutionJournalRecoveryUnobservable
+        (classifyJournalObservationFailure err)
+    Right versioned -> case decodeVersioned versioned of
+      Left _ -> AwsAdminExecutionJournalRecoveryInvalid
+      Right (_, journal)
+        | not (journalPermitMatches permit journal) ->
+            AwsAdminExecutionJournalRecoveryPermitMismatch
+        | otherwise ->
+            AwsAdminExecutionJournalRecoveryPresent
+              (classifyJournalPhase (awsAdminExecutionJournalPhase journal))
+
+classifyJournalPhase
+  :: AwsAdminExecutionPhase -> AwsAdminExecutionJournalPhaseCause
+classifyJournalPhase phase = case phase of
+  AwsAdminExecutionIntentCommitted used ->
+    AwsAdminExecutionJournalIntentCommitted (recoveryFlag used)
+  AwsAdminExecutionCreateAttemptPrepared _ used ->
+    AwsAdminExecutionJournalCreateAttemptPrepared (recoveryFlag used)
+  AwsAdminExecutionKeyCreated _ _ used ->
+    AwsAdminExecutionJournalKeyCreated (recoveryFlag used)
+  AwsAdminExecutionTargetCommitted _ _ _ used ->
+    AwsAdminExecutionJournalTargetCommitted (recoveryFlag used)
+  AwsAdminExecutionCleanupRequired used ->
+    AwsAdminExecutionJournalCleanupRequired (recoveryFlag used)
+  AwsAdminExecutionCleanupProven used ->
+    AwsAdminExecutionJournalCleanupProven (recoveryFlag used)
+  AwsAdminExecutionComplete _ -> AwsAdminExecutionJournalComplete
+
+recoveryFlag :: Bool -> AwsAdminExecutionJournalRecoveryFlag
+recoveryFlag used
+  | used = AwsAdminExecutionRemintUsed
+  | otherwise = AwsAdminExecutionInitialAttempt
+
+classifyJournalObservationFailure
+  :: VaultSessionOperationError
+  -> AwsAdminExecutionJournalObservationCause
+classifyJournalObservationFailure operationError = case operationError of
+  VaultSessionAcquisitionFailed sessionError -> case sessionError of
+    VaultSessionSealed _ -> AwsAdminExecutionJournalSessionAcquisitionSealed
+    VaultSessionForbidden _ -> AwsAdminExecutionJournalSessionAcquisitionForbidden
+    VaultSessionUnavailable _ -> AwsAdminExecutionJournalSessionAcquisitionUnavailable
+  VaultSessionReloginFailed sessionError -> case sessionError of
+    VaultSessionSealed _ -> AwsAdminExecutionJournalSessionReloginSealed
+    VaultSessionForbidden _ -> AwsAdminExecutionJournalSessionReloginForbidden
+    VaultSessionUnavailable _ -> AwsAdminExecutionJournalSessionReloginUnavailable
+  VaultSessionRequestFailed httpError -> case httpError of
+    HttpStatus code _
+      | code == 401 || code == 403 -> AwsAdminExecutionJournalRequestUnauthorized
+      | code >= 400 && code < 500 -> AwsAdminExecutionJournalRequestClientFailure
+      | code >= 500 && code < 600 -> AwsAdminExecutionJournalRequestServerFailure
+      | otherwise -> AwsAdminExecutionJournalRequestUnexpectedStatus
+    HttpConnectionFailure _ -> AwsAdminExecutionJournalRequestConnectionFailure
+    HttpTimeout _ -> AwsAdminExecutionJournalRequestTimeout
+    HttpDecode _ -> AwsAdminExecutionJournalRequestDecodeFailure
+
+renderAwsAdminExecutionJournalObservationCause
+  :: AwsAdminExecutionJournalObservationCause -> Text
+renderAwsAdminExecutionJournalObservationCause cause = case cause of
+  AwsAdminExecutionJournalAbsent -> "absent"
+  AwsAdminExecutionJournalPresent -> "present"
+  AwsAdminExecutionJournalSessionAcquisitionSealed -> "session-acquisition/sealed"
+  AwsAdminExecutionJournalSessionAcquisitionForbidden -> "session-acquisition/forbidden"
+  AwsAdminExecutionJournalSessionAcquisitionUnavailable -> "session-acquisition/unavailable"
+  AwsAdminExecutionJournalSessionReloginSealed -> "session-relogin/sealed"
+  AwsAdminExecutionJournalSessionReloginForbidden -> "session-relogin/forbidden"
+  AwsAdminExecutionJournalSessionReloginUnavailable -> "session-relogin/unavailable"
+  AwsAdminExecutionJournalRequestUnauthorized -> "request/unauthorized"
+  AwsAdminExecutionJournalRequestClientFailure -> "request/client-failure"
+  AwsAdminExecutionJournalRequestServerFailure -> "request/server-failure"
+  AwsAdminExecutionJournalRequestUnexpectedStatus -> "request/unexpected-status"
+  AwsAdminExecutionJournalRequestConnectionFailure -> "request/connection-failure"
+  AwsAdminExecutionJournalRequestTimeout -> "request/timeout"
+  AwsAdminExecutionJournalRequestDecodeFailure -> "request/decode-failure"
+
+renderAwsAdminExecutionJournalRecoveryObservation
+  :: AwsAdminExecutionJournalRecoveryObservation -> Text
+renderAwsAdminExecutionJournalRecoveryObservation observation = case observation of
+  AwsAdminExecutionJournalRecoveryAbsent -> "absent"
+  AwsAdminExecutionJournalRecoveryPresent phase ->
+    "present/" <> renderJournalPhaseCause phase
+  AwsAdminExecutionJournalRecoveryPermitMismatch -> "present/permit-mismatch"
+  AwsAdminExecutionJournalRecoveryInvalid -> "present/invalid"
+  AwsAdminExecutionJournalRecoveryUnobservable cause ->
+    "unobservable/" <> renderAwsAdminExecutionJournalObservationCause cause
+
+renderJournalPhaseCause :: AwsAdminExecutionJournalPhaseCause -> Text
+renderJournalPhaseCause cause = case cause of
+  AwsAdminExecutionJournalIntentCommitted flag ->
+    "intent-committed/" <> renderRecoveryFlag flag
+  AwsAdminExecutionJournalCreateAttemptPrepared flag ->
+    "create-attempt-prepared/" <> renderRecoveryFlag flag
+  AwsAdminExecutionJournalKeyCreated flag ->
+    "key-created/" <> renderRecoveryFlag flag
+  AwsAdminExecutionJournalTargetCommitted flag ->
+    "target-committed/" <> renderRecoveryFlag flag
+  AwsAdminExecutionJournalCleanupRequired flag ->
+    "cleanup-required/" <> renderRecoveryFlag flag
+  AwsAdminExecutionJournalCleanupProven flag ->
+    "cleanup-proven/" <> renderRecoveryFlag flag
+  AwsAdminExecutionJournalComplete -> "complete"
+
+renderRecoveryFlag :: AwsAdminExecutionJournalRecoveryFlag -> Text
+renderRecoveryFlag flag = case flag of
+  AwsAdminExecutionInitialAttempt -> "initial-attempt"
+  AwsAdminExecutionRemintUsed -> "remint-used"
 
 vaultAwsAdminExecutionJournalBoundary
   :: VaultAddress

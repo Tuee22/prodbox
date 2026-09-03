@@ -310,6 +310,46 @@ credentialProvisionerSuite =
       userPolicy `shouldSatisfy` maybe False (Text.isInfixOf "sts:AssumeRole")
       rolePolicy `shouldSatisfy` maybe False (Text.isInfixOf "RegisteredIamRoleEffects")
 
+    it "Sprint 2.121 accepts only singleton-equivalent trust-policy read-back" $ do
+      let runWithTrustReadBack transform = do
+            trustRef <- newIORef Nothing
+            userPolicyRef <- newIORef Nothing
+            rolePolicyRef <- newIORef Nothing
+            let iamProgram =
+                  must
+                    ( mkLifecycleProviderIamProgram
+                        (fixtureAwsRegion FixtureUsWest2)
+                        "123456789012"
+                        "prodbox-lifecycle-provider"
+                    )
+                sender request =
+                  Right
+                    <$> roleFixtureOutcomeWithTrustReadBack
+                      transform
+                      trustRef
+                      userPolicyRef
+                      rolePolicyRef
+                      request
+                session =
+                  must
+                    ( openProductionIamSessionWithSender
+                        iamProgram
+                        (adminCredentials (fixtureAwsRegion FixtureUsWest2))
+                        sender
+                    )
+            ensureProductionIamPrerequisites session
+          singletonAction =
+            Text.replace
+              "\"Action\":[\"sts:AssumeRole\"]"
+              "\"Action\":\"sts:AssumeRole\""
+          changedAction = Text.replace "sts:AssumeRole" "sts:TagSession"
+      runWithTrustReadBack singletonAction `shouldReturn` Right ()
+      runWithTrustReadBack changedAction
+        `shouldReturn` Left
+          ( ProductionIamRoleReadBackMismatch
+              (ProductionIamRoleReadBackTrustPolicyMismatch ProductionIamTrustPolicyOther)
+          )
+
     it "classifies a possibly-sent one-time IAM key response as ambiguous" $ do
       let iamProgram =
             must
@@ -328,7 +368,7 @@ credentialProvisionerSuite =
               )
       result <- createProductionAccessKey session
       case result of
-        AwsAccessKeyCreateResponseLost -> pure ()
+        AwsAccessKeyCreateResponseLost _ -> pure ()
         _ -> expectationFailure "possibly-sent CreateAccessKey was not classified as response-lost"
 
     it "pins the Phase-4.50 first-reconcile plan and excludes later AWS-run/SES live projections" $ do
@@ -572,7 +612,7 @@ credentialProvisionerSuite =
             ]
         createResults <-
           newIORef
-            [ AwsAccessKeyCreateResponseLost
+            [ AwsAccessKeyCreateResponseLost AwsAccessKeyCreateDispatchAmbiguous
             , AwsAccessKeyCreated replacementKey replacementMaterial
             ]
         let boundary = fakeBoundary events inventories createResults
@@ -845,6 +885,11 @@ credentialProvisionerSuite =
         job `shouldContain` "--target-worker-image-repository"
         job `shouldContain` "path: pod-name"
         job `shouldContain` "fieldPath: metadata.uid"
+        job `shouldContain` "mountPath: /var/run/secrets/kubernetes.io/serviceaccount"
+        job `shouldContain` "name: kube-root-ca.crt"
+        job `shouldContain` "fieldPath: metadata.namespace"
+        policy `shouldContain` "range .Values.kubernetesApiEgress.addresses"
+        policy `shouldContain` ".Values.kubernetesApiEgress.port"
         job `shouldNotContain` "env:"
         job `shouldNotContain` "kind: Secret"
         serviceAccount `shouldContain` "automountServiceAccountToken: false"
@@ -1090,6 +1135,21 @@ roleFixtureOutcome
   -> SignedHttpRequest
   -> IO HttpOutcome
 roleFixtureOutcome trustRef userPolicyRef rolePolicyRef request =
+  roleFixtureOutcomeWithTrustReadBack
+    id
+    trustRef
+    userPolicyRef
+    rolePolicyRef
+    request
+
+roleFixtureOutcomeWithTrustReadBack
+  :: (Text -> Text)
+  -> IORef (Maybe Text)
+  -> IORef (Maybe Text)
+  -> IORef (Maybe Text)
+  -> SignedHttpRequest
+  -> IO HttpOutcome
+roleFixtureOutcomeWithTrustReadBack transformTrust trustRef userPolicyRef rolePolicyRef request =
   case formValue "Action" request of
     Just "GetUser" -> ok getUser
     Just "TagUser" -> ok "<TagUserResponse/>"
@@ -1100,7 +1160,7 @@ roleFixtureOutcome trustRef userPolicyRef rolePolicyRef request =
       trust <- readIORef trustRef
       case trust of
         Nothing -> pure noSuchEntity
-        Just document -> ok (getRole document)
+        Just document -> ok (getRole (transformTrust document))
     Just "CreateRole" ->
       storeNamedPolicy trustRef "AssumeRolePolicyDocument" "<CreateRoleResponse/>"
     Just "UpdateAssumeRolePolicy" ->

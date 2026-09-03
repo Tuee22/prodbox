@@ -35,6 +35,7 @@ import Data.Text qualified as Text
 import Dhall (FromDhall, ToDhall, auto, inputFile)
 import Dhall qualified
 import GHC.Generics (Generic)
+import Numeric.Natural (Natural)
 import Prodbox.CLI.Output (writeDiagnostic, writeDiagnosticLine, writeOutputLine)
 import Prodbox.Http.Client (HttpError, renderHttpError)
 import Prodbox.Infra.MinioBackend
@@ -45,6 +46,7 @@ import Prodbox.Settings
   ( ValidatedDeploymentContext
   , deploymentVaultAddress
   )
+import Prodbox.Settings.AwsSubstrateProfile (AwsSubstrateProfile)
 import Prodbox.Vault.BootstrapBundle
   ( bootstrapObjectStoreConfig
   , bootstrapUnlockBundleKey
@@ -313,6 +315,12 @@ data TestSecrets = TestSecrets
     -- key prefix is the fixed @pulumi/@ skeleton default.
     pulumi_state_backend_bucket_name :: Text
   , pulumi_state_backend_region :: Text
+  , -- AWS-substrate qualification owns no compiled deployment envelope. The
+    -- operator-authored harness fixture therefore carries the delegated host,
+    -- narrowed profile, and desired EKS size used to generate Tier-0.
+    aws_substrate_subzone_name :: Text
+  , aws_substrate_profile :: Maybe AwsSubstrateProfile
+  , aws_eks_node_group_size :: Natural
   , aws_admin_for_test_simulation :: TestSecretsAdminCredentials
   , -- Optional so existing @test-secrets.dhall@ fixtures (and the
     -- @TestSecrets.default@ used by the round-trip drift guard) without the EAB
@@ -471,6 +479,9 @@ defaultTestSecrets =
     , ses_capture_bucket = ""
     , pulumi_state_backend_bucket_name = ""
     , pulumi_state_backend_region = ""
+    , aws_substrate_subzone_name = ""
+    , aws_substrate_profile = Nothing
+    , aws_eks_node_group_size = 0
     , aws_admin_for_test_simulation =
         TestSecretsAdminCredentials
           { access_key_id = ""

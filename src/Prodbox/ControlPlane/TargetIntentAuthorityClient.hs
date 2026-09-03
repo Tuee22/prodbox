@@ -6,6 +6,7 @@
 module Prodbox.ControlPlane.TargetIntentAuthorityClient
   ( TargetIntentAuthorityClient
   , TargetIntentAuthorityClientError (..)
+  , classifyTargetIntentAuthorityResponseDecodeFailure
   , targetIntentAuthorityClient
   , requestTargetCommittedIntent
   , requestTargetWorkerExecutionPermit
@@ -13,9 +14,14 @@ module Prodbox.ControlPlane.TargetIntentAuthorityClient
 where
 
 import Data.Bifunctor (first)
+import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Text (Text)
 import Numeric.Natural (Natural)
+import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
+  ( AuthenticatedRolePlainResponseObservation (..)
+  , classifyAuthenticatedRolePlainResponse
+  )
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError
   , AuthenticatedClientTransport
@@ -118,6 +124,9 @@ data TargetIntentAuthorityClient m = TargetIntentAuthorityClient
 data TargetIntentAuthorityClientError
   = TargetIntentAuthorityTransportFailed !AuthenticatedClientError
   | TargetIntentAuthorityResponseInvalid !ControlPlaneResponseCodecError
+  | TargetIntentAuthorityAuthenticatedResponseInvalid
+      !AuthenticatedRolePlainResponseObservation
+      !ControlPlaneResponseCodecError
   | TargetIntentAuthorityHttpStatus !Int
   | TargetIntentAuthorityRefused !Text
   | TargetIntentAuthorityUnavailable !Text
@@ -145,7 +154,7 @@ targetIntentAuthorityClient transport =
         first TargetIntentAuthorityTransportFailed attempted
       response <-
         first
-          TargetIntentAuthorityResponseInvalid
+          (classifyTargetIntentAuthorityResponseDecodeFailure status body)
           ( decodeControlPlaneResponse
               targetIntentIssueResponseMaximumBytes
               (LazyByteString.fromStrict body)
@@ -187,7 +196,7 @@ targetIntentAuthorityClient transport =
         first TargetIntentAuthorityTransportFailed attempted
       response <-
         first
-          TargetIntentAuthorityResponseInvalid
+          (classifyTargetIntentAuthorityResponseDecodeFailure status body)
           ( decodeControlPlaneResponse
               targetIntentIssueResponseMaximumBytes
               (LazyByteString.fromStrict body)
@@ -205,6 +214,18 @@ targetIntentAuthorityClient transport =
           Left (TargetIntentAuthorityRefused detail)
         TargetIntentIssueUnavailable detail ->
           Left (TargetIntentAuthorityUnavailable detail)
+
+classifyTargetIntentAuthorityResponseDecodeFailure
+  :: Int
+  -> ByteString
+  -> ControlPlaneResponseCodecError
+  -> TargetIntentAuthorityClientError
+classifyTargetIntentAuthorityResponseDecodeFailure status body codec =
+  case classifyAuthenticatedRolePlainResponse status body of
+    known@(AuthenticatedRolePlainResponseKnown _) ->
+      TargetIntentAuthorityAuthenticatedResponseInvalid known codec
+    AuthenticatedRolePlainResponseOther ->
+      TargetIntentAuthorityResponseInvalid codec
 
 requestTargetCommittedIntent
   :: (Monad m)

@@ -99,6 +99,7 @@ import Prodbox.Capacity.Config
   , ResourceVector (..)
   , WorkloadQoS (..)
   , WorkloadResourceProfile (..)
+  , guaranteedControlPlaneProfileIds
   , plusResourceVector
   , resourceVectorScale
   , resourceVectorSubtractChecked
@@ -545,22 +546,13 @@ compileResourcePlanAgainstObserved observed compiled = do
 
 validateGuaranteedQoS :: WorkloadResourceProfile -> Either CompileError ()
 validateGuaranteedQoS workload
-  | profile_id workload `elem` guaranteedControlPlaneProfiles =
+  | profile_id workload `elem` guaranteedControlPlaneProfileIds =
       case workload_qos workload of
         Burstable -> Left (ControlPlaneQoSNotGuaranteed (profile_id workload))
         Guaranteed -> do
           _ <- mkGuaranteedEnvelope (resources workload)
           Right ()
   | otherwise = Right ()
- where
-  guaranteedControlPlaneProfiles =
-    [ "bootstrap-broker"
-    , "lifecycle-authority"
-    , "provider-worker"
-    , "authority-backup"
-    , "tls-retention"
-    , "target-secret-agent"
-    ]
 
 -- | Pack the compiled plan with the singleton for its overall certification tag.
 packCertification :: [CertifiedWorkload] -> AllocatedResourcePlan c -> SomeAllocatedPlan

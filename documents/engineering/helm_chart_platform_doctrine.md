@@ -116,6 +116,13 @@ retain the bounded `--wait --timeout 30m0s` barrier. If any Helm invocation neve
 readiness timeout, failure handling preserves the installed release and reports the timeout. Only a
 terminal upgrade failure may enter the typed absence reconciler.
 
+That rule is scoped to the invocation that observed the timeout. On a later reconcile, Helm's
+authoritative status has settled to a new observation: `failed` is terminal retained diagnostic
+state, not permission to layer another upgrade over an unready StatefulSet ordinal. The chart
+platform therefore observes before writing, admits absent/deployed releases, reconciles a failed
+release to exact absence with read-back before retry, and refuses pending/uninstalling or
+unobservable releases. Sprint `3.46` owns the production adoption and current-revision proof.
+
 ## 1A. Chart Lint and Route Inventory Generation
 
 The supported chart-maintenance surface is split between `prodbox dev lint chart` and
@@ -246,6 +253,12 @@ Authority-time-uncertain state blocks issuance; only positive absence or expiry 
 trusted-Authority-time fold may lead to a separately committed issuance plan. AWS qualification
 deletes/recreates AWS Vault and EBS and proves this restore path before issuance.
 
+ChartPlatform is only the trigger for this workflow. It submits the closed retain/restore request
+and compiled substrate/scope slot to Lifecycle Authority; it does not construct or authenticate a
+Target TLS client, select an ephemeral rewrap key, or call the ciphertext Adapter. The Authority
+self-route plus exact Authority-to-Adapter and Authority-to-Target NetworkPolicy lanes are part of
+the rendered topology and are pinned together with the authentication caller registry.
+
 The former same-binary gateway pre-Vault mode, gateway object-store/federation/target-secret routes,
 and gateway-held lifecycle permissions are historical implementation surfaces retained only for
 the plan-owned epoch cutover. Implementation and deployment-qualification status remain exclusively in
@@ -279,6 +292,21 @@ One Helm release per chart name exists cluster-wide at any time.
 - Since Sprint `3.38`, every release in the selected deployment plan that admits a `HelmWritePermit`
   runs `helm upgrade --install`, including an already-deployed release. That command is the
   idempotent convergence operation; an existing healthy release is not a skip signal.
+- The bounded Helm readiness wait is omitted only for a release whose desired-state apply must
+  precede a dependency that the workload itself helps establish. The closed exception set is
+  `bootstrap-broker` (applied before post-Vault readiness) and `authority-backup` (applied before
+  genesis materializes its exact S3 credential). Both releases still have a later graph-owned
+  readiness observation. Every other release, including TLS Retention, retains Helm's bounded
+  readiness barrier.
+  The Authority Backup establishment client separately waits on bounded listener liveness
+  (`/healthz`), never its post-establishment store projection (`/readyz`). Because no-wait apply
+  may return before any Pod exists, each pending liveness attempt owns and cleans one disposable
+  port-forward to the exact `Recreate` Deployment; HTTP is never retried against a forward child
+  that already exited. This pre-readiness client cannot use the Service, because the Adapter is
+  intentionally absent from ready endpoints until its credential-backed `/readyz` store probe
+  succeeds. The Service remains the steady route and does not publish not-ready endpoints. Each
+  disposable child must emit the exact bounded loopback-forward startup acknowledgement before its
+  first HTTP probe; process creation alone is not socket readiness.
 - An explicit `prodbox charts delete <chart>` is required only to request absence/reset. Reconcile
   updates an existing release in place and must not require a delete-first cycle.
 
@@ -346,6 +374,21 @@ This is the chart-platform-side statement of the substrate-equivalence doctrine 
 [substrate inventory](../../DEVELOPMENT_PLAN/substrates.md). When AWS appears to
 be "missing" a platform piece the home cluster has, the fix is to extend the shared inventory and
 the AWS installer, never to render different image refs or re-pin versions per substrate.
+
+The registry storage bootstrap has one terminal-evidence owner. The host reconcile deletes a stale
+named Job, creates that exact Job, waits at most 300 seconds for its `Complete` condition, and only
+then explicitly deletes it. The Job has no `ttlSecondsAfterFinished`: an independent TTL controller
+could erase a failed or completed observation before the bounded host waiter consumes it, turning a
+terminal result into a timeout and leaving the registry's MinIO-backed health undecidable. A wait
+failure deliberately retains the Job for diagnosis and retry rather than collecting the evidence it
+needed to explain the refusal (Sprint `3.44`).
+
+The Bootstrap Broker release intentionally omits Helm's readiness wait because its post-Vault
+readiness cannot precede the bootstrap transition it performs. Its separate pre-transition barrier
+therefore waits for the exact requested Deployment generation to be observed with all desired
+replicas updated. That observer owns a finite 60-attempt, one-second bounded window: enough to cover
+measured RKE2 controller/scheduling jitter without weakening revision identity or admitting
+post-Vault readiness at the wrong stage (Sprint `3.45`).
 
 ## 4. Patroni PostgreSQL Dependency Contract
 
@@ -504,7 +547,10 @@ Helm `lookup`-guarded `randAlphaNum` chart-generated secret idiom are both retir
 secrets are generated once and persisted on Vault's durable storage, not reconstructed
 from a seed or regenerated by chart templates. When Vault is sealed, no chart secret
 resolves and secret-dependent Pod startup fails closed; new Pods never reconstruct
-secret material from any non-Vault source. (Vault-only chart-secret consumption is
+secret material from any non-Vault source. After unseal, the unified MinIO IAM bootstrap reads the
+two disjoint Gateway and Lifecycle Authority credentials through its dedicated Vault role and
+reconciles their MinIO principals before Lifecycle Authority admission; it is a control-plane
+transition prerequisite, not later Gateway host preparation. (Vault-only chart-secret consumption is
 active under Sprint 3.18 for the policy/role/service-account, Kubernetes-auth config, and
 seed-bootstrap foundation. The websocket OIDC client-secret resolves directly via app-side
 `SecretRef.Vault`, the Keycloak and MinIO charts materialize their covered runtime secrets through
@@ -545,8 +591,16 @@ values always supply it. See
 
 Bootstrap Broker, Lifecycle Authority, Provider Worker, Authority Backup Adapter, TLS Retention
 Adapter, and Target Secret Agent use separate directory-mounted ConfigMaps under
-`/etc/<component>/config`, with distinct ServiceAccounts and policies matching §1C. Substrate
-identity and target KV allowlist live only in the Target Secret Agent document; that document also
+`/etc/<component>/config`, with distinct ServiceAccounts and policies matching §1C.
+Each standing Vault Kubernetes-auth role binds that ServiceAccount in the same component namespace;
+none of the separately deployed worker/adapter roles authenticates through `gateway`.
+Authority Backup is the one credential-genesis startup exception: its validated static config,
+Kubernetes-auth session, authenticated listener, and not-ready projection may exist before
+`secret/aws/authority-backup-store` exists. Each readiness probe and each admitted Adapter operation
+then reads and validates the current exact-role credential; absence or invalidity keeps readiness
+false and permits no S3 request. Plaintext credential fields are not cached across operations.
+TLS Retention and Provider Worker retain their ordinary eager credential-backed startup boundary.
+Substrate identity and target KV allowlist live only in the Target Secret Agent document; that document also
 fixes the exact seal-receipt KV prefix, bounded secret-worker limits, receipt-retention/GC window,
 enumerated TLS Kubernetes Secret identities, and (home only) the `prodbox-tls-envelope` Transit
 lane plus the closed SMTP/EAB retained-material custody/rewrap lane and exact receipt catalog. Each

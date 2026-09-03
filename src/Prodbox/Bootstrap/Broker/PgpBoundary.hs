@@ -64,6 +64,7 @@ module Prodbox.Bootstrap.Broker.PgpBoundary
   , GeneratedRootPkiObserveOperation (..)
   , GeneratedRootPkiBaselineStatus (..)
   , generatedRootCoreReconcileCauseName
+  , generatedRootCoreHttpFailureName
   , generatedRootPkiReconcileCauseName
   , GeneratedRootActionFailureStage (..)
   , allGeneratedRootActionKinds

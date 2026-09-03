@@ -38,6 +38,9 @@ module Prodbox.ControlPlane.TargetSecretAgentExecution
   , targetAgentIdentityText
   , targetAgentClusterIdentity
   , targetAgentRolloutDigest
+  , TargetAgentRolloutObservationCause (..)
+  , allTargetAgentRolloutObservationCauses
+  , renderTargetAgentRolloutObservationCause
   , TargetAgentRolloutEvidence
   , mkTargetAgentRolloutEvidence
   , targetAgentRolloutEvidenceIdentity
@@ -199,6 +202,54 @@ targetAgentClusterIdentity (TargetAgentIdentity value) =
 
 targetAgentRolloutDigest :: TargetAgentIdentity -> Text
 targetAgentRolloutDigest (TargetAgentIdentity value) = snd (Text.breakOnEnd "@" value)
+
+-- | Closed, value-free reasons why the selected Target Agent rollout could
+-- not be observed. Kubernetes response bodies, annotation values, and
+-- subprocess detail never cross the recovery diagnostic boundary.
+data TargetAgentRolloutObservationCause
+  = TargetAgentRolloutSubprocessUnavailable
+  | TargetAgentRolloutKubeconfigUnavailable
+  | TargetAgentRolloutAuthorizationRefused
+  | TargetAgentRolloutDeploymentAbsent
+  | TargetAgentRolloutKubernetesExitOther
+  | TargetAgentRolloutResponseInvalid
+  | TargetAgentRolloutDeploymentNameInvalid
+  | TargetAgentRolloutDeploymentIdentityAbsent
+  | TargetAgentRolloutPodTemplateIdentityAbsent
+  | TargetAgentRolloutIdentityInconsistent
+  | TargetAgentRolloutDeploymentDigestAbsent
+  | TargetAgentRolloutPodTemplateDigestAbsent
+  | TargetAgentRolloutDigestInconsistent
+  | TargetAgentRolloutIdentityInvalid
+  | TargetAgentRolloutDeploymentUidInvalid
+  | TargetAgentRolloutGenerationNotFullyObserved
+  | TargetAgentRolloutRegisteredDigestMismatch
+  | TargetAgentRolloutObservationOther
+  deriving stock (Bounded, Enum, Eq, Show)
+
+allTargetAgentRolloutObservationCauses :: [TargetAgentRolloutObservationCause]
+allTargetAgentRolloutObservationCauses = [minBound .. maxBound]
+
+renderTargetAgentRolloutObservationCause :: TargetAgentRolloutObservationCause -> Text
+renderTargetAgentRolloutObservationCause cause = case cause of
+  TargetAgentRolloutSubprocessUnavailable -> "subprocess-unavailable"
+  TargetAgentRolloutKubeconfigUnavailable -> "kubeconfig-unavailable"
+  TargetAgentRolloutAuthorizationRefused -> "authorization-refused"
+  TargetAgentRolloutDeploymentAbsent -> "deployment-absent"
+  TargetAgentRolloutKubernetesExitOther -> "kubernetes-exit-other"
+  TargetAgentRolloutResponseInvalid -> "response-invalid"
+  TargetAgentRolloutDeploymentNameInvalid -> "deployment-name-invalid"
+  TargetAgentRolloutDeploymentIdentityAbsent -> "deployment-identity-absent"
+  TargetAgentRolloutPodTemplateIdentityAbsent -> "pod-template-identity-absent"
+  TargetAgentRolloutIdentityInconsistent -> "identity-inconsistent"
+  TargetAgentRolloutDeploymentDigestAbsent -> "deployment-digest-absent"
+  TargetAgentRolloutPodTemplateDigestAbsent -> "pod-template-digest-absent"
+  TargetAgentRolloutDigestInconsistent -> "digest-inconsistent"
+  TargetAgentRolloutIdentityInvalid -> "identity-invalid"
+  TargetAgentRolloutDeploymentUidInvalid -> "deployment-uid-invalid"
+  TargetAgentRolloutGenerationNotFullyObserved -> "generation-not-fully-observed"
+  TargetAgentRolloutRegisteredDigestMismatch -> "registered-digest-mismatch"
+  TargetAgentRolloutObservationOther -> "other"
 
 -- | Exact observed Deployment incarnation. The rollout digest is already part
 -- of the registered identity; API-assigned UID and observed generation prevent

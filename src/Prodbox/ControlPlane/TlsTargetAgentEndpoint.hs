@@ -739,11 +739,19 @@ validateAnnotations annotations = do
         Left "public-edge TLS Secret contains a non-cert-manager adoption annotation"
     | otherwise = do
         validateBoundedText "certificate adoption annotation name" 256 name
-        validateBoundedText "certificate adoption annotation value" 4096 value
+        validateBoundedTextAllowEmpty "certificate adoption annotation value" 4096 value
 
 validateBoundedText :: Text -> Int -> Text -> Either Text ()
 validateBoundedText label maximumLength value
   | Text.null value = Left (label <> " must not be empty")
+  | Text.any isControl value = Left (label <> " contains a control character")
+  | Text.length value > maximumLength = Left (label <> " exceeds the compiled bound")
+  | otherwise = Right ()
+
+-- cert-manager renders absent optional SAN and issuer-group lists as exact
+-- empty annotation values. They remain bounded and control-character-free.
+validateBoundedTextAllowEmpty :: Text -> Int -> Text -> Either Text ()
+validateBoundedTextAllowEmpty label maximumLength value
   | Text.any isControl value = Left (label <> " contains a control character")
   | Text.length value > maximumLength = Left (label <> " exceeds the compiled bound")
   | otherwise = Right ()

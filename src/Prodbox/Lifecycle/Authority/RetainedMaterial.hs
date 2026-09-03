@@ -57,6 +57,7 @@ module Prodbox.Lifecycle.Authority.RetainedMaterial
   , retainedDeliveryAttestationRef
   , retainedDeliveryEphemeralKeyDigest
   , retainedDeliveryDeadline
+  , retainedDeliverySuccessorOperationId
   , RetainedDeliveryReceipt
   , mkRetainedDeliveryReceipt
   , retainedDeliveryReceiptOperationId
@@ -95,6 +96,7 @@ import Data.ByteString.Lazy qualified as LazyByteString
 import Data.List (find, nub)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word16, Word8)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -117,6 +119,7 @@ import Prodbox.Lifecycle.TargetCommitIntent
   , credentialGenerationValue
   , mkCredentialGeneration
   , mkTargetValueDigest
+  , sha256TargetValueDigest
   , targetValueDigestText
   )
 
@@ -198,6 +201,24 @@ mkRetainedMaterialRef raw = RetainedMaterialRef <$> validateIdentifier "retained
 
 retainedMaterialRefText :: RetainedMaterialRef -> Text
 retainedMaterialRefText (RetainedMaterialRef value) = value
+
+-- | The Authority alone derives the next delivery operation. The fixed
+-- domain separator and canonical predecessor text make retries converge on
+-- one opaque successor without exposing an ordinal for callers to choose.
+retainedDeliverySuccessorOperationId
+  :: RetainedMaterialRef -> RetainedMaterialRef
+retainedDeliverySuccessorOperationId predecessor =
+  case mkRetainedMaterialRef ("delivery-successor-v1:" <> digest) of
+    Left _ -> error "retained delivery successor reference invariant violated"
+    Right successor -> successor
+ where
+  digest =
+    targetValueDigestText
+      ( sha256TargetValueDigest
+          ( TextEncoding.encodeUtf8
+              ("retained-delivery-successor-v1:" <> retainedMaterialRefText predecessor)
+          )
+      )
 
 type role RetainedMaterialTarget nominal
 
@@ -985,12 +1006,17 @@ data RetainedMaterialCommand (schema :: RetainedMaterialSchema)
       !AuthorityTime
       !(RetainedSealIntent schema)
   | ObserveRetainedMaterialSeal !(RetainedMaterialSource schema)
+  | ObserveLegacyRetainedMaterialSourceReceiptCorrection !(RetainedMaterialSource schema)
   | BeginRetainedMaterialDelivery
       !(RetainedCustodyObservation schema)
       !AuthorityTime
       !(RetainedDeliveryIntent schema)
   | ObserveRetainedMaterialDelivery !(RetainedDeliveryReceipt schema)
   | ExpireRetainedMaterialDelivery !RetainedMaterialRef !AuthorityTime
+  | ReplaceExpiredRetainedMaterialDelivery
+      !RetainedMaterialRef
+      !AuthorityTime
+      !(RetainedDeliveryIntent schema)
   | BeginSupersededMaterialRetirement
       !RetainedMaterialRef
       !AuthorityTime
@@ -1005,6 +1031,8 @@ data RetainedMaterialRefusal
   | RetainedSealGenerationNotNext
   | RetainedSealReceiptWithoutIntent
   | RetainedSealReceiptMismatch
+  | RetainedLegacySourceReceiptCorrectionMismatch
+  | RetainedLegacySourceReceiptCorrectionHasCompletedDelivery
   | RetainedDeliveryNoCurrentSource
   | RetainedDeliveryCustodyAbsent
   | RetainedDeliveryCustodyCorrupt
@@ -1017,6 +1045,7 @@ data RetainedMaterialRefusal
   | RetainedDeliveryReceiptMismatch
   | RetainedDeliveryExpiryActive
   | RetainedDeliveryExpiryNotPending
+  | RetainedDeliverySuccessorMismatch
   | RetainedSupersededSourceMissing
   | RetainedSupersededGraceActive
   | RetainedSupersededHasDependants
@@ -1035,10 +1064,18 @@ data RetainedMaterialDecision (schema :: RetainedMaterialSchema)
       !(Maybe (RetainedMaterialSource schema))
       !AuthorityTime
   | RetainedSealAlreadyCommitted !(RetainedMaterialSource schema)
+  | RetainedLegacySourceReceiptCorrected
+      !(RetainedMaterialSource schema)
+      !(RetainedMaterialSource schema)
+  | RetainedLegacySourceReceiptAlreadyCorrected !(RetainedMaterialSource schema)
   | RetainedDeliveryBegun !(RetainedDeliveryIntent schema)
   | RetainedDeliveryAlreadyCompleted !(RetainedDeliveryReceipt schema)
   | RetainedDeliveryCommitted !(RetainedDeliveryReceipt schema)
   | RetainedDeliveryExpired !RetainedMaterialRef
+  | RetainedDeliveryReplaced
+      !RetainedMaterialRef
+      !(RetainedDeliveryIntent schema)
+  | RetainedDeliveryAlreadyReplaced !(RetainedDeliveryIntent schema)
   | RetainedSupersededRetirementBegun !RetainedMaterialRef
   | RetainedSupersededRetired !RetainedMaterialRef !RetainedMaterialRef
   | RetainedMaterialRefused !RetainedMaterialRefusal
@@ -1091,6 +1128,8 @@ decideValid aggregate command = case command of
               (internalRetainedMaterialCurrent aggregate)
               (internalRetainedSealPredecessorGraceUntil intent)
         | otherwise -> RetainedMaterialRefused RetainedSealReceiptMismatch
+  ObserveLegacyRetainedMaterialSourceReceiptCorrection source ->
+    decideLegacySourceReceiptCorrection aggregate source
   BeginRetainedMaterialDelivery observation observedAt intent
     | authorityTimeMicros observedAt
         > authorityTimeMicros (internalRetainedDeliveryDeadline intent) ->
@@ -1120,6 +1159,8 @@ decideValid aggregate command = case command of
             <= authorityTimeMicros (internalRetainedDeliveryDeadline intent) ->
             RetainedMaterialRefused RetainedDeliveryExpiryActive
         | otherwise -> RetainedDeliveryExpired operationId
+  ReplaceExpiredRetainedMaterialDelivery predecessorId observedAt successor ->
+    decideDeliveryReplacement aggregate predecessorId observedAt successor
   BeginSupersededMaterialRetirement receiptRef observedAt ->
     decideRetirement aggregate receiptRef observedAt
   ObserveSupersededMaterialAbsence receiptRef absenceRef
@@ -1159,6 +1200,84 @@ decideDelivery aggregate observation intent =
                   | targetHasPendingDelivery aggregate intent ->
                       RetainedMaterialRefused RetainedDeliveryAlreadyPending
                   | otherwise -> RetainedDeliveryBegun intent
+
+decideLegacySourceReceiptCorrection
+  :: RetainedMaterialAggregate schema
+  -> RetainedMaterialSource schema
+  -> RetainedMaterialDecision schema
+decideLegacySourceReceiptCorrection aggregate source =
+  case internalRetainedMaterialCurrent aggregate of
+    Just current
+      | current == source -> RetainedLegacySourceReceiptAlreadyCorrected source
+      | not (legacySourceReceiptCorrection current source) ->
+          RetainedMaterialRefused RetainedLegacySourceReceiptCorrectionMismatch
+      | any
+          ((== retainedSourceReceiptRef current) . internalRetainedDeliveryReceiptSource)
+          (internalRetainedMaterialCompletedDeliveries aggregate) ->
+          RetainedMaterialRefused RetainedLegacySourceReceiptCorrectionHasCompletedDelivery
+      | otherwise -> RetainedLegacySourceReceiptCorrected current source
+    Nothing -> RetainedMaterialRefused RetainedLegacySourceReceiptCorrectionMismatch
+
+decideDeliveryReplacement
+  :: RetainedMaterialAggregate schema
+  -> RetainedMaterialRef
+  -> AuthorityTime
+  -> RetainedDeliveryIntent schema
+  -> RetainedMaterialDecision schema
+decideDeliveryReplacement aggregate predecessorId observedAt successor =
+  case find
+    ((== predecessorId) . internalRetainedDeliveryOperationId)
+    (internalRetainedMaterialPendingDeliveries aggregate) of
+    Nothing
+      | successor `elem` internalRetainedMaterialPendingDeliveries aggregate ->
+          RetainedDeliveryAlreadyReplaced successor
+      | otherwise -> RetainedMaterialRefused RetainedDeliveryExpiryNotPending
+    Just predecessor
+      | authorityTimeMicros observedAt
+          <= authorityTimeMicros (internalRetainedDeliveryDeadline predecessor) ->
+          RetainedMaterialRefused RetainedDeliveryExpiryActive
+      | not (validSuccessor predecessor) ->
+          RetainedMaterialRefused RetainedDeliverySuccessorMismatch
+      | operationExists (internalRetainedDeliveryOperationId successor) ->
+          RetainedMaterialRefused RetainedDeliverySuccessorMismatch
+      | otherwise -> RetainedDeliveryReplaced predecessorId successor
+ where
+  validSuccessor predecessor =
+    internalRetainedDeliveryOperationId successor
+      == retainedDeliverySuccessorOperationId predecessorId
+      && validSuccessorSource predecessor
+      && internalRetainedDeliveryTarget successor
+        == internalRetainedDeliveryTarget predecessor
+      && internalRetainedDeliveryTargetGeneration successor
+        == internalRetainedDeliveryTargetGeneration predecessor
+      && internalRetainedDeliveryAttestationRef successor
+        == internalRetainedDeliveryAttestationRef predecessor
+      && internalRetainedDeliveryEphemeralKeyDigest successor
+        /= internalRetainedDeliveryEphemeralKeyDigest predecessor
+      && authorityTimeMicros (internalRetainedDeliveryDeadline successor)
+        > authorityTimeMicros observedAt
+      && authorityTimeMicros (internalRetainedDeliveryDeadline successor)
+        > authorityTimeMicros (internalRetainedDeliveryDeadline predecessor)
+
+  validSuccessorSource predecessor =
+    internalRetainedDeliverySourceReceipt successor
+      == internalRetainedDeliverySourceReceipt predecessor
+      || case internalRetainedMaterialCurrent aggregate of
+        Just current ->
+          internalRetainedDeliverySourceReceipt predecessor
+            == retainedSourceOperationId current
+            && retainedSourceReceiptRef current /= retainedSourceOperationId current
+            && internalRetainedDeliverySourceReceipt successor
+              == retainedSourceReceiptRef current
+        Nothing -> False
+
+  operationExists operationId =
+    any
+      ((== operationId) . internalRetainedDeliveryOperationId)
+      (internalRetainedMaterialPendingDeliveries aggregate)
+      || any
+        ((== operationId) . internalRetainedDeliveryReceiptOperationId)
+        (internalRetainedMaterialCompletedDeliveries aggregate)
 
 decideRetirement
   :: RetainedMaterialAggregate schema
@@ -1202,6 +1321,9 @@ applyRetainedMaterialDecision decision aggregate = case decision of
             (internalRetainedMaterialSuperseded aggregate)
       }
   RetainedSealAlreadyCommitted _ -> aggregate
+  RetainedLegacySourceReceiptCorrected _ source ->
+    aggregate {internalRetainedMaterialCurrent = Just source}
+  RetainedLegacySourceReceiptAlreadyCorrected _ -> aggregate
   RetainedDeliveryBegun intent ->
     aggregate
       { internalRetainedMaterialPendingDeliveries =
@@ -1224,6 +1346,15 @@ applyRetainedMaterialDecision decision aggregate = case decision of
             ((/= operationId) . internalRetainedDeliveryOperationId)
             (internalRetainedMaterialPendingDeliveries aggregate)
       }
+  RetainedDeliveryReplaced predecessorId successor ->
+    aggregate
+      { internalRetainedMaterialPendingDeliveries =
+          successor
+            : filter
+              ((/= predecessorId) . internalRetainedDeliveryOperationId)
+              (internalRetainedMaterialPendingDeliveries aggregate)
+      }
+  RetainedDeliveryAlreadyReplaced _ -> aggregate
   RetainedSupersededRetirementBegun receiptRef ->
     aggregate
       { internalRetainedMaterialPendingRetirements =
@@ -1297,6 +1428,19 @@ sourceMatchesSeal
 sourceMatchesSeal intent source =
   internalRetainedSealGeneration intent == retainedSourceGeneration source
     && internalRetainedSealOperationId intent == retainedSourceOperationId source
+
+legacySourceReceiptCorrection
+  :: RetainedMaterialSource schema -> RetainedMaterialSource schema -> Bool
+legacySourceReceiptCorrection legacy corrected =
+  retainedSourceReceiptRef legacy == retainedSourceOperationId legacy
+    && retainedSourceReceiptRef corrected /= retainedSourceOperationId corrected
+    && retainedSourceGeneration legacy == retainedSourceGeneration corrected
+    && retainedSourceOperationId legacy == retainedSourceOperationId corrected
+    && retainedSourceCiphertextDigest legacy == retainedSourceCiphertextDigest corrected
+    && retainedSourceCommitmentRef legacy == retainedSourceCommitmentRef corrected
+    && retainedSourceVaultVersion legacy == retainedSourceVaultVersion corrected
+    && authorityTimeMicros (internalRetainedSourceReadBackAt corrected)
+      >= authorityTimeMicros (internalRetainedSourceReadBackAt legacy)
 
 sameRetainedSourceIdentity
   :: RetainedMaterialSource schema -> RetainedMaterialSource schema -> Bool

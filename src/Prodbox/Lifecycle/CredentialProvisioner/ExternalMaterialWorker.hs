@@ -13,7 +13,12 @@
 module Prodbox.Lifecycle.CredentialProvisioner.ExternalMaterialWorker
   ( ExternalMaterialWorkerOptions (..)
   , ExternalMaterialWorkerError (..)
+  , ExternalMaterialWorkerTerminalCause (..)
+  , ExternalMaterialWorkerTerminalLineDisposition (..)
+  , classifyExternalMaterialWorkerTerminalCapture
   , finishExternalMaterialWorkerSession
+  , renderExternalMaterialWorkerTerminalCause
+  , renderExternalMaterialWorkerTerminalLineDisposition
   , runExternalMaterialWorker
   )
 where
@@ -26,8 +31,10 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Numeric (showHex)
@@ -78,6 +85,7 @@ import Prodbox.Lifecycle.Authority.RetainedMaterial
   , retainedMaterialRefText
   , retainedSourceCiphertextDigest
   , retainedSourceCommitmentRef
+  , retainedSourceReceiptRef
   , retainedSourceVaultVersion
   )
 import Prodbox.Lifecycle.CredentialProvisioner.Execution
@@ -87,7 +95,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.Execution
 import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
   ( ExternalMaterialTargetReceipt
   , SignedExternalAcmeEabPermit
-  , encodeExternalMaterialTargetReceipt
+  , encodeExternalMaterialTargetReceiptTextEnvelope
   , encodeSignedExternalAcmeEabPermit
   , externalMaterialJobPodUid
   , mkExternalMaterialTargetReceipt
@@ -174,17 +182,131 @@ data ExternalMaterialWorkerError
   | ExternalMaterialWorkerUnhandledException
   deriving stock (Eq, Show)
 
+-- | Closed, value-free terminal causes safe to cross the worker/log boundary.
+-- The detailed internal error algebra is deliberately collapsed here: no
+-- input sizes, nested wire values, provider bodies, or Vault data are emitted.
+data ExternalMaterialWorkerTerminalCause
+  = ExternalMaterialWorkerTerminalStdinReadFailed
+  | ExternalMaterialWorkerTerminalStdinTooLarge
+  | ExternalMaterialWorkerTerminalFrameRejected
+  | ExternalMaterialWorkerTerminalPodUidReadFailed
+  | ExternalMaterialWorkerTerminalPodUidInvalid
+  | ExternalMaterialWorkerTerminalPodUidMismatch
+  | ExternalMaterialWorkerTerminalPermitMetadataMismatch
+  | ExternalMaterialWorkerTerminalClockUnavailable
+  | ExternalMaterialWorkerTerminalVaultLoginUnavailable
+  | ExternalMaterialWorkerTerminalAuthorityKeyUnavailable
+  | ExternalMaterialWorkerTerminalPermitRejected
+  | ExternalMaterialWorkerTerminalCustodyHandoffUnavailable
+  | ExternalMaterialWorkerTerminalSessionRevocationFailed
+  | ExternalMaterialWorkerTerminalUnhandledException
+  deriving stock (Eq, Show, Enum, Bounded)
+
+data ExternalMaterialWorkerTerminalLineDisposition
+  = ExternalMaterialWorkerTerminalLineNone
+  | ExternalMaterialWorkerTerminalLineUnique !ExternalMaterialWorkerTerminalCause
+  | ExternalMaterialWorkerTerminalLineUnrecognized
+  | ExternalMaterialWorkerTerminalLinesAmbiguous
+  deriving stock (Eq, Show)
+
 runExternalMaterialWorker :: ExternalMaterialWorkerOptions -> IO ExitCode
 runExternalMaterialWorker options = do
   result <- runWorker options
   case result of
     Left err -> do
-      -- The error algebra contains no material, token, stdin, or Vault body.
-      writeDiagnosticLine ("external-material worker refused: " <> show err)
+      writeDiagnosticLine
+        ( Text.unpack externalMaterialWorkerTerminalLinePrefixText
+            <> Text.unpack
+              (renderExternalMaterialWorkerTerminalCause (workerTerminalCause err))
+        )
       pure (ExitFailure 1)
     Right receipt -> do
-      ByteString.hPut stdout (encodeExternalMaterialTargetReceipt receipt)
+      ByteString.hPut stdout ("\n" <> encodeExternalMaterialTargetReceiptTextEnvelope receipt)
       pure ExitSuccess
+
+renderExternalMaterialWorkerTerminalCause
+  :: ExternalMaterialWorkerTerminalCause -> Text
+renderExternalMaterialWorkerTerminalCause cause = case cause of
+  ExternalMaterialWorkerTerminalStdinReadFailed -> "stdin-read-failed"
+  ExternalMaterialWorkerTerminalStdinTooLarge -> "stdin-too-large"
+  ExternalMaterialWorkerTerminalFrameRejected -> "frame-rejected"
+  ExternalMaterialWorkerTerminalPodUidReadFailed -> "pod-uid-read-failed"
+  ExternalMaterialWorkerTerminalPodUidInvalid -> "pod-uid-invalid"
+  ExternalMaterialWorkerTerminalPodUidMismatch -> "pod-uid-mismatch"
+  ExternalMaterialWorkerTerminalPermitMetadataMismatch -> "permit-metadata-mismatch"
+  ExternalMaterialWorkerTerminalClockUnavailable -> "clock-unavailable"
+  ExternalMaterialWorkerTerminalVaultLoginUnavailable -> "vault-login-unavailable"
+  ExternalMaterialWorkerTerminalAuthorityKeyUnavailable -> "authority-key-unavailable"
+  ExternalMaterialWorkerTerminalPermitRejected -> "permit-rejected"
+  ExternalMaterialWorkerTerminalCustodyHandoffUnavailable -> "custody-handoff-unavailable"
+  ExternalMaterialWorkerTerminalSessionRevocationFailed -> "session-revocation-failed"
+  ExternalMaterialWorkerTerminalUnhandledException -> "unhandled-exception"
+
+renderExternalMaterialWorkerTerminalLineDisposition
+  :: ExternalMaterialWorkerTerminalLineDisposition -> Text
+renderExternalMaterialWorkerTerminalLineDisposition disposition = case disposition of
+  ExternalMaterialWorkerTerminalLineNone -> "none"
+  ExternalMaterialWorkerTerminalLineUnique cause ->
+    renderExternalMaterialWorkerTerminalCause cause
+  ExternalMaterialWorkerTerminalLineUnrecognized -> "unrecognized"
+  ExternalMaterialWorkerTerminalLinesAmbiguous -> "ambiguous"
+
+-- | Classify only exact whole terminal lines. A prefixed future value or more
+-- than one prefixed line is retained as a closed refusal, never echoed.
+classifyExternalMaterialWorkerTerminalCapture
+  :: ByteString -> ExternalMaterialWorkerTerminalLineDisposition
+classifyExternalMaterialWorkerTerminalCapture captured =
+  case prefixedLines of
+    [] -> ExternalMaterialWorkerTerminalLineNone
+    [renderedCause] ->
+      maybe
+        ExternalMaterialWorkerTerminalLineUnrecognized
+        ExternalMaterialWorkerTerminalLineUnique
+        (decodeTerminalLine renderedCause)
+    _ -> ExternalMaterialWorkerTerminalLinesAmbiguous
+ where
+  prefixedLines =
+    mapMaybe
+      (ByteString.stripPrefix externalMaterialWorkerTerminalLinePrefix)
+      (ByteString.split 10 captured)
+  decodeTerminalLine renderedCause =
+    case [ cause
+         | cause <- [minBound .. maxBound]
+         , TextEncoding.encodeUtf8 (renderExternalMaterialWorkerTerminalCause cause)
+             == renderedCause
+         ] of
+      [cause] -> Just cause
+      _ -> Nothing
+
+workerTerminalCause
+  :: ExternalMaterialWorkerError -> ExternalMaterialWorkerTerminalCause
+workerTerminalCause err = case err of
+  ExternalMaterialWorkerStdinReadFailed -> ExternalMaterialWorkerTerminalStdinReadFailed
+  ExternalMaterialWorkerStdinTooLarge _ _ -> ExternalMaterialWorkerTerminalStdinTooLarge
+  ExternalMaterialWorkerFrameRejected _ -> ExternalMaterialWorkerTerminalFrameRejected
+  ExternalMaterialWorkerPodUidReadFailed -> ExternalMaterialWorkerTerminalPodUidReadFailed
+  ExternalMaterialWorkerPodUidInvalid -> ExternalMaterialWorkerTerminalPodUidInvalid
+  ExternalMaterialWorkerPodUidMismatch -> ExternalMaterialWorkerTerminalPodUidMismatch
+  ExternalMaterialWorkerPermitMetadataMismatch ->
+    ExternalMaterialWorkerTerminalPermitMetadataMismatch
+  ExternalMaterialWorkerClockUnavailable -> ExternalMaterialWorkerTerminalClockUnavailable
+  ExternalMaterialWorkerVaultLoginUnavailable ->
+    ExternalMaterialWorkerTerminalVaultLoginUnavailable
+  ExternalMaterialWorkerAuthorityKeyUnavailable ->
+    ExternalMaterialWorkerTerminalAuthorityKeyUnavailable
+  ExternalMaterialWorkerPermitRejected -> ExternalMaterialWorkerTerminalPermitRejected
+  ExternalMaterialWorkerCustodyHandoffUnavailable ->
+    ExternalMaterialWorkerTerminalCustodyHandoffUnavailable
+  ExternalMaterialWorkerSessionRevocationFailed ->
+    ExternalMaterialWorkerTerminalSessionRevocationFailed
+  ExternalMaterialWorkerUnhandledException -> ExternalMaterialWorkerTerminalUnhandledException
+
+externalMaterialWorkerTerminalLinePrefixText :: Text
+externalMaterialWorkerTerminalLinePrefixText = "external-material worker refused: "
+
+externalMaterialWorkerTerminalLinePrefix :: ByteString
+externalMaterialWorkerTerminalLinePrefix =
+  TextEncoding.encodeUtf8 externalMaterialWorkerTerminalLinePrefixText
 
 runWorker
   :: ExternalMaterialWorkerOptions
@@ -299,6 +421,7 @@ sealExternalEabCustody session now permit keyId hmacKey =
           Right
           ( mkExternalMaterialTargetReceipt
               permit
+              (retainedMaterialRefText (retainedSourceReceiptRef source))
               (retainedMaterialRefText (retainedSourceCommitmentRef source))
               (targetValueDigestText (retainedSourceCiphertextDigest source))
               (retainedSourceVaultVersion source)

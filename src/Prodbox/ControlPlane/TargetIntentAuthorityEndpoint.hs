@@ -42,6 +42,11 @@ import Prodbox.ControlPlane.ServiceSessionJournal
   ( ServiceSessionBinding
   , mkServiceSessionBinding
   )
+import Prodbox.ControlPlane.TargetAuthorityTrust
+  ( TargetAuthorityTrustBoundaryCause (TargetAuthorityTrustBoundaryOther)
+  , parseTargetAuthorityTrustBoundaryCause
+  , renderTargetAuthorityTrustBoundaryCause
+  )
 import Prodbox.ControlPlane.TargetIntentAuthority
   ( IssuedTargetIntent
   , TargetIntentIssueError (..)
@@ -408,8 +413,16 @@ responseFromResult result = case result of
       TargetIntentIssueUnavailable "authority-epoch-unavailable"
     TargetIntentIssueSignerUnavailable _ ->
       TargetIntentIssueUnavailable "authority-signer-unavailable"
-    TargetIntentIssueTrustInstallUnavailable _ ->
-      TargetIntentIssueUnavailable "target-trust-install-unavailable"
+    TargetIntentIssueTrustInstallUnavailable detail ->
+      TargetIntentIssueUnavailable
+        ( "target-trust-install-unavailable/"
+            <> renderTargetAuthorityTrustBoundaryCause
+              ( maybe
+                  TargetAuthorityTrustBoundaryOther
+                  id
+                  (parseTargetAuthorityTrustBoundaryCause detail)
+              )
+        )
     TargetIntentIssueSignerGenerationChanged _ _ ->
       TargetIntentIssueRefused "authority-signer-rotated"
     TargetIntentIssueTargetUnregistered _ ->

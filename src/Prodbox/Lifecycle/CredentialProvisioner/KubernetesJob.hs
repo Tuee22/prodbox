@@ -8,6 +8,7 @@
 -- attach -i@, never through argv, environment, a Secret, ConfigMap, or file.
 module Prodbox.Lifecycle.CredentialProvisioner.KubernetesJob
   ( CredentialProvisionerJobConnection (..)
+  , credentialProvisionerKubectlArguments
   , ExternalMaterialJobAttestation
   , CredentialProvisionerJobCreateRecovery (..)
   , externalMaterialJobPodObservation
@@ -24,6 +25,10 @@ module Prodbox.Lifecycle.CredentialProvisioner.KubernetesJob
   , credentialProvisionerLogsSubprocess
   , credentialProvisionerDeleteSubprocess
   , credentialProvisionerJobDeleteOptions
+  , credentialProvisionerJobDeleteMaximumInputBytes
+  , ExternalMaterialTargetReceiptCaptureSource (..)
+  , decodeExternalMaterialTargetReceiptCapture
+  , renderExternalMaterialReceiptTransportObservation
   , createCredentialProvisionerExternalJob
   , recoverCredentialProvisionerExternalJob
   , recoverCredentialProvisionerExternalJobCreateWith
@@ -37,7 +42,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.KubernetesJob
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (unless)
+import Control.Monad (unless, when)
 import Data.Aeson
   ( FromJSON (..)
   , Value
@@ -52,20 +57,26 @@ import Data.Aeson
   )
 import Data.Aeson.Key qualified as AesonKey
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Foldable (traverse_)
 import Data.List (find)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.CLI.Output (writeDiagnosticLine)
+import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.Render qualified as CapacityRender
 import Prodbox.Error (errorMsg)
 import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
   ( ExternalMaterialIngressIntent
   , ExternalMaterialTargetReceipt
-  , decodeExternalMaterialTargetReceipt
+  , ExternalMaterialTargetReceiptEnvelopeError (..)
+  , decodeExternalMaterialTargetReceiptTextEnvelope
   , externalMaterialIngressIntentDeadline
   , externalMaterialIngressIntentImageDigest
   , externalMaterialIngressIntentPermitId
@@ -75,8 +86,19 @@ import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
   , externalMaterialTargetReceiptPermitId
   , externalMaterialTargetReceiptRequestDigest
   )
+import Prodbox.Lifecycle.CredentialProvisioner.ExternalMaterialWorker
+  ( ExternalMaterialWorkerTerminalLineDisposition (..)
+  , classifyExternalMaterialWorkerTerminalCapture
+  , renderExternalMaterialWorkerTerminalCause
+  , renderExternalMaterialWorkerTerminalLineDisposition
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.ExternalMaterialWorkerProtocol
   ( encodeExternalMaterialWorkerIngress
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.ImageIdentity
+  ( credentialProvisionerRuntimeManifestDigest
+  , mkCredentialProvisionerImagePullReference
+  , renderCredentialProvisionerImagePullReference
   )
 import Prodbox.Lifecycle.CredentialProvisioner.Kubernetes
   ( CredentialProvisionerJobAttestation
@@ -104,6 +126,9 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   , operatorMaterialRequestDigest
   , operatorMaterialRequestGeneration
   )
+import Prodbox.Lifecycle.CredentialProvisioner.RuntimeSecurity
+  ( credentialProvisionerPodSecurityContext
+  )
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
   , authorityTimeFromMicros
@@ -130,6 +155,7 @@ import Text.Read (readMaybe)
 data CredentialProvisionerJobConnection = CredentialProvisionerJobConnection
   { credentialProvisionerJobEnvironment :: !(Maybe [(String, String)])
   , credentialProvisionerJobWorkingDirectory :: !FilePath
+  , credentialProvisionerJobControllerSubject :: !(Maybe String)
   }
   deriving stock (Eq, Show)
 
@@ -186,6 +212,77 @@ data CredentialProvisionerJobError
   | CredentialProvisionerJobStillPresent
   deriving stock (Eq, Show)
 
+data ExternalMaterialTargetReceiptCaptureSource
+  = ExternalMaterialTargetReceiptFromAttach
+  | ExternalMaterialTargetReceiptFromPodLog
+  deriving stock (Eq, Show, Enum, Bounded)
+
+-- | Decode only the exact source-specific record grammar. The worker writes
+-- one leading LF before its canonical envelope. Kubernetes attach preserves
+-- that complete record, while the Pod-log surface adds one terminal LF.
+decodeExternalMaterialTargetReceiptCapture
+  :: ExternalMaterialTargetReceiptCaptureSource
+  -> ByteString
+  -> Either ExternalMaterialTargetReceiptEnvelopeError ExternalMaterialTargetReceipt
+decodeExternalMaterialTargetReceiptCapture source captured = case source of
+  ExternalMaterialTargetReceiptFromAttach -> do
+    envelope <-
+      maybe
+        (Left ExternalMaterialTargetReceiptEnvelopeInvalid)
+        Right
+        (ByteString.stripPrefix "\n" captured)
+    when
+      (ByteString.elem 10 envelope)
+      (Left ExternalMaterialTargetReceiptEnvelopeInvalid)
+    decodeExternalMaterialTargetReceiptTextEnvelope envelope
+  ExternalMaterialTargetReceiptFromPodLog -> do
+    unless
+      ( ByteString.isSuffixOf "\n" captured
+          && not (ByteString.isSuffixOf "\r\n" captured)
+      )
+      (Left ExternalMaterialTargetReceiptEnvelopeInvalid)
+    let records = ByteString.split 10 (ByteString.dropEnd 1 captured)
+        receipts = mapMaybe decodeRecord records
+    case receipts of
+      [receipt] -> Right receipt
+      _ -> Left ExternalMaterialTargetReceiptEnvelopeInvalid
+ where
+  decodeRecord =
+    either (const Nothing) Just . decodeExternalMaterialTargetReceiptTextEnvelope
+
+-- | Value-free transport observation for the live attach/log boundary. It
+-- retains no captured byte, size, exit integer, or subprocess detail.
+renderExternalMaterialReceiptTransportObservation
+  :: ExternalMaterialTargetReceiptCaptureSource
+  -> ExitCode
+  -> ByteString
+  -> ByteString
+  -> Text
+renderExternalMaterialReceiptTransportObservation source exitCode capturedOut capturedErr =
+  Text.intercalate
+    "/"
+    [ "source=" <> renderCaptureSource source
+    , "process=" <> renderProcessExit exitCode
+    , "stdout=" <> renderCapturePresence capturedOut
+    , "stdout-terminal="
+        <> renderExternalMaterialWorkerTerminalLineDisposition
+          (classifyExternalMaterialWorkerTerminalCapture capturedOut)
+    , "stderr=" <> renderCapturePresence capturedErr
+    , "stderr-terminal="
+        <> renderExternalMaterialWorkerTerminalLineDisposition
+          (classifyExternalMaterialWorkerTerminalCapture capturedErr)
+    ]
+ where
+  renderCaptureSource captureSource = case captureSource of
+    ExternalMaterialTargetReceiptFromAttach -> "attach"
+    ExternalMaterialTargetReceiptFromPodLog -> "pod-log"
+  renderProcessExit processExit = case processExit of
+    ExitSuccess -> "success"
+    ExitFailure _ -> "failure"
+  renderCapturePresence bytes
+    | ByteString.null bytes = "empty"
+    | otherwise = "nonempty"
+
 credentialProvisionerNamespace :: String
 credentialProvisionerNamespace = "credential-provisioner"
 
@@ -198,9 +295,16 @@ renderCredentialProvisionerExternalJob
   -> ExternalMaterialIngressIntent
   -> Either CredentialProvisionerJobError Value
 renderCredentialProvisionerExternalJob imageRepository heartbeat intent = do
-  unless
-    (not (Text.null (Text.strip imageRepository)))
-    (Left (CredentialProvisionerJobRenderInvalid "image repository is empty"))
+  pullReference <-
+    either
+      (Left . CredentialProvisionerJobRenderInvalid)
+      Right
+      ( mkCredentialProvisionerImagePullReference
+          imageRepository
+          ( credentialProvisionerImageDigestText
+              (externalMaterialIngressIntentImageDigest intent)
+          )
+      )
   unless
     ( heartbeat > 0
         && heartbeat < authorityTimeMicros (externalMaterialIngressIntentDeadline intent)
@@ -235,18 +339,14 @@ renderCredentialProvisionerExternalJob imageRepository heartbeat intent = do
                           [ "serviceAccountName" .= serviceAccount
                           , "automountServiceAccountToken" .= False
                           , "restartPolicy" .= ("Never" :: Text)
-                          , "securityContext"
-                              .= object
-                                [ "runAsNonRoot" .= True
-                                , "seccompProfile"
-                                    .= object ["type" .= ("RuntimeDefault" :: Text)]
-                                ]
+                          , "securityContext" .= credentialProvisionerPodSecurityContext
                           , "containers"
                               .= [ object
                                      [ "name" .= externalWorkerContainerName
-                                     , "image" .= imageRepository
+                                     , "image" .= renderCredentialProvisionerImagePullReference pullReference
                                      , "imagePullPolicy" .= ("Always" :: Text)
                                      , "stdin" .= True
+                                     , "stdinOnce" .= True
                                      , "tty" .= False
                                      , "args"
                                          .= [ "credential-provisioner" :: Text
@@ -274,15 +374,11 @@ renderCredentialProvisionerExternalJob imageRepository heartbeat intent = do
                                      , "resources"
                                          .= object
                                            [ "requests"
-                                               .= object
-                                                 [ "cpu" .= ("250m" :: Text)
-                                                 , "memory" .= ("256Mi" :: Text)
-                                                 ]
+                                               .= CapacityRender.resourceVectorRuntimeValue
+                                                 (Capacity.request Capacity.oneShotSecretWorkerEnvelope)
                                            , "limits"
-                                               .= object
-                                                 [ "cpu" .= ("250m" :: Text)
-                                                 , "memory" .= ("256Mi" :: Text)
-                                                 ]
+                                               .= CapacityRender.resourceVectorRuntimeValue
+                                                 (Capacity.limit Capacity.oneShotSecretWorkerEnvelope)
                                            ]
                                      , "volumeMounts"
                                          .= [ object
@@ -368,15 +464,11 @@ renderCredentialProvisionerExternalJob imageRepository heartbeat intent = do
       ]
 
 externalJobLabels :: ExternalMaterialIngressIntent -> Map Text Text
-externalJobLabels intent =
+externalJobLabels _intent =
   Map.fromList
     [ ("app.kubernetes.io/name", "prodbox-external-material-ingress")
     , ("app.kubernetes.io/managed-by", "prodbox")
     , ("prodbox.io/ingress-schema", "external-acme-eab")
-    ,
-      ( "prodbox.io/permit-id"
-      , operatorMaterialPermitIdText (externalMaterialIngressIntentPermitId intent)
-      )
     ]
 
 externalJobAnnotations
@@ -384,6 +476,10 @@ externalJobAnnotations
 externalJobAnnotations heartbeat intent =
   Map.fromList
     [
+      ( "prodbox.io/permit-id"
+      , operatorMaterialPermitIdText (externalMaterialIngressIntentPermitId intent)
+      )
+    ,
       ( "prodbox.io/request-digest"
       , targetValueDigestText
           (operatorMaterialRequestDigest (externalMaterialIngressIntentRequest intent))
@@ -428,6 +524,7 @@ credentialProvisionerAttachSubprocess connection attestation =
   kubectl
     connection
     [ "attach"
+    , "--quiet"
     , "--pod-running-timeout=10s"
     , "-i"
     , "pod/" ++ Text.unpack (externalMaterialJobPodName attestation)
@@ -638,15 +735,43 @@ attachCredentialProvisionerExternalIngress connection attestation encodedPermit 
           attachLimits
           frame
           (credentialProvisionerAttachSubprocess connection attestation)
-      pure $ case attached of
-        Left err -> Left (CredentialProvisionerJobAttachFailed (errorMsg err))
-        Right output -> case processExitCode output of
-          ExitFailure _ ->
-            Left (CredentialProvisionerJobWorkerRefused (Text.pack (processStderr output)))
-          ExitSuccess ->
-            decodeReceiptForAttestation
-              attestation
-              (ByteString8.pack (processStdout output))
+      case attached of
+        Left err -> pure (Left (CredentialProvisionerJobAttachFailed (errorMsg err)))
+        Right output -> do
+          let capturedOut = ByteString8.pack (processStdout output)
+              capturedErr = ByteString8.pack (processStderr output)
+              result = case processExitCode output of
+                ExitFailure _ ->
+                  case classifyExternalMaterialWorkerTerminalCapture capturedErr of
+                    ExternalMaterialWorkerTerminalLineUnique cause ->
+                      Left
+                        ( CredentialProvisionerJobWorkerRefused
+                            (renderExternalMaterialWorkerTerminalCause cause)
+                        )
+                    _ ->
+                      Left
+                        ( CredentialProvisionerJobAttachFailed
+                            "exact Job Pod receipt attach process failed"
+                        )
+                ExitSuccess ->
+                  if ByteString.null capturedOut
+                    then
+                      Left
+                        ( CredentialProvisionerJobAttachFailed
+                            "exact Job Pod receipt attach was empty"
+                        )
+                    else
+                      decodeReceiptCaptureForAttestation
+                        ExternalMaterialTargetReceiptFromAttach
+                        attestation
+                        capturedOut
+          case result of
+            Left _ ->
+              writeReceiptTransportObservation
+                ExternalMaterialTargetReceiptFromAttach
+                output
+            Right _ -> pure ()
+          pure result
 
 -- | Recover a secret-free receipt from the exact attested Pod's stdout after
 -- an attach transport/response loss.  The worker emits the receipt only after
@@ -673,24 +798,64 @@ recoverCredentialProvisionerExternalIngress connection attestation =
                     "exact Job Pod receipt log is not yet observable"
                 )
             ExitSuccess ->
-              decodeReceiptForAttestation
-                attestation
-                (ByteString8.pack (processStdout output))
+              let captured = ByteString8.pack (processStdout output)
+                  decoded =
+                    decodeReceiptCaptureForAttestation
+                      ExternalMaterialTargetReceiptFromPodLog
+                      attestation
+                      captured
+               in case ( decoded
+                       , classifyExternalMaterialWorkerTerminalCapture captured
+                       ) of
+                    (Left _, ExternalMaterialWorkerTerminalLineUnique cause) ->
+                      Left
+                        ( CredentialProvisionerJobWorkerRefused
+                            (renderExternalMaterialWorkerTerminalCause cause)
+                        )
+                    (Right _, ExternalMaterialWorkerTerminalLineNone) -> decoded
+                    (Right _, _) ->
+                      Left
+                        ( CredentialProvisionerJobReceiptInvalid
+                            "receipt capture contains worker terminal line"
+                        )
+                    (Left _, _) -> decoded
     case result of
       Right receipt -> pure (Right receipt)
       Left err
-        | remaining <= 1 -> pure (Left err)
+        | remaining <= 1 -> do
+            case attempted of
+              Left _ -> pure ()
+              Right output ->
+                writeReceiptTransportObservation
+                  ExternalMaterialTargetReceiptFromPodLog
+                  output
+            pure (Left err)
         | otherwise -> threadDelay observationDelayMicros >> waitForReceipt (remaining - 1)
 
-decodeReceiptForAttestation
-  :: ExternalMaterialJobAttestation
+writeReceiptTransportObservation
+  :: ExternalMaterialTargetReceiptCaptureSource -> ProcessOutput -> IO ()
+writeReceiptTransportObservation source output =
+  writeDiagnosticLine
+    ( "external-material/worker-receipt-transport "
+        <> Text.unpack
+          ( renderExternalMaterialReceiptTransportObservation
+              source
+              (processExitCode output)
+              (ByteString8.pack (processStdout output))
+              (ByteString8.pack (processStderr output))
+          )
+    )
+
+decodeReceiptCaptureForAttestation
+  :: ExternalMaterialTargetReceiptCaptureSource
+  -> ExternalMaterialJobAttestation
   -> ByteString
   -> Either CredentialProvisionerJobError ExternalMaterialTargetReceipt
-decodeReceiptForAttestation attestation bytes = do
+decodeReceiptCaptureForAttestation source attestation bytes = do
   receipt <-
     firstShow
       CredentialProvisionerJobReceiptInvalid
-      (decodeExternalMaterialTargetReceipt bytes)
+      (decodeExternalMaterialTargetReceiptCapture source bytes)
   let intent = internalExternalMaterialIngressIntent attestation
       request = externalMaterialIngressIntentRequest intent
   unless
@@ -1068,7 +1233,10 @@ podObservation externalIntent expectedJobUid serviceAccountUid pod = do
     Nothing -> Left "external-material container status is missing"
     Just (ContainerStatusDto _ _ _ observedImageId) -> Right observedImageId
   digest <-
-    maybe (Left "container runtime image identity is invalid") Right (runtimeImageDigest runtimeImageId)
+    maybe
+      (Left "container runtime image identity is invalid")
+      Right
+      (credentialProvisionerRuntimeManifestDigest runtimeImageId)
   unless
     ( digest
         == credentialProvisionerImageDigestText
@@ -1241,25 +1409,22 @@ findContainer name = find (\(ContainerDto actual _) -> actual == name)
 findStatus :: Text -> [ContainerStatusDto] -> Maybe ContainerStatusDto
 findStatus name = find (\(ContainerStatusDto actual _ _ _) -> actual == name)
 
-runtimeImageDigest :: Text -> Maybe Text
-runtimeImageDigest value =
-  let candidate = case Text.breakOnEnd "://" value of
-        (prefix, suffix) | not (Text.null prefix) -> suffix
-        _ -> value
-   in if "sha256:" `Text.isPrefixOf` candidate && Text.length candidate == 71
-        then Just candidate
-        else Nothing
-
 kubectl :: CredentialProvisionerJobConnection -> [String] -> Subprocess
 kubectl connection arguments =
   Subprocess
     { subprocessPath = "kubectl"
-    , subprocessArguments =
-        ["--namespace", credentialProvisionerNamespace] <> arguments
+    , subprocessArguments = credentialProvisionerKubectlArguments connection arguments
     , subprocessEnvironment = credentialProvisionerJobEnvironment connection
     , subprocessWorkingDirectory =
         Just (credentialProvisionerJobWorkingDirectory connection)
     }
+
+credentialProvisionerKubectlArguments
+  :: CredentialProvisionerJobConnection -> [String] -> [String]
+credentialProvisionerKubectlArguments connection arguments =
+  maybe [] (\subject -> ["--as=" <> subject]) (credentialProvisionerJobControllerSubject connection)
+    <> ["--namespace", credentialProvisionerNamespace]
+    <> arguments
 
 firstShow
   :: (Show errorValue)
@@ -1328,8 +1493,11 @@ receiptRecoveryLimits =
 deleteLimits :: BoundedSubprocessLimits
 deleteLimits =
   BoundedSubprocessLimits
-    { boundedSubprocessMaximumInputBytes = 1
+    { boundedSubprocessMaximumInputBytes = credentialProvisionerJobDeleteMaximumInputBytes
     , boundedSubprocessMaximumStdoutBytes = 64 * 1024
     , boundedSubprocessMaximumStderrBytes = 16 * 1024
     , boundedSubprocessTimeoutMicros = 30 * 1000 * 1000
     }
+
+credentialProvisionerJobDeleteMaximumInputBytes :: Int
+credentialProvisionerJobDeleteMaximumInputBytes = 4 * 1024

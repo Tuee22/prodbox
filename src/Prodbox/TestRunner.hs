@@ -8,6 +8,7 @@ module Prodbox.TestRunner
   , TestRefusal (..)
   , guardTestDelete
   , integrationRunbookCommandArgs
+  , harnessPostCredentialRuntimeCommand
   , PublicEdgeCertificateFailure (..)
   , awsSubstrateBootstrapCommandArgs
   , awsSubstrateBootstrapRestorePlan
@@ -66,7 +67,9 @@ import Prodbox.BuildSupport
 import Prodbox.CLI.Command
   ( CoverageFlags (..)
   , IntegrationSuite (..)
+  , PlanOptions (..)
   , PolicyTier (..)
+  , Rke2Command (..)
   , TestCommand (..)
   , TestScope (..)
   , validateCoverage
@@ -81,7 +84,10 @@ import Prodbox.CLI.Output
 import Prodbox.CLI.Rke2
   ( ensureGatewayMinioBootstrap
   , reconcileAcmeEabFixture
+  , reconcileHarnessLifecycleProviderCredential
   , rke2InstallPresent
+  , runNativeHarnessBootstrapFloor
+  , runRke2Command
   )
 import Prodbox.CheckCode (runCheckCode)
 import Prodbox.Config.Tier0 qualified as Tier0
@@ -200,6 +206,7 @@ import Prodbox.TestTopology
 import Prodbox.TestValidation
   ( GatewayRuntimeStabilityMonitor
   , GatewayRuntimeStabilityRecorder
+  , cascadeQualificationCycleVariable
   , newGatewayRuntimeStabilityRecorder
   , pauseGatewayRuntimeStabilityMonitor
   , recordGatewayMeasuredProfile
@@ -766,21 +773,23 @@ runNativeSuite repoRoot environment haskellSuites suitePlan = do
           -- the bootstrap config, so a freshly-generated skeleton runs `test all`
           -- without an interactive `config setup`. Idempotent / refuses to
           -- clobber a populated real config.
-          regenExit <- runConfigRegenFromTestSecrets repoRoot policyTier
+          regenExit <-
+            runConfigRegenFromTestSecrets
+              repoRoot
+              policyTier
+              (nativeSubstrate suitePlan)
           case regenExit of
             failure@(ExitFailure _) -> pure failure
             ExitSuccess -> do
-              -- Sprint 7.24 (ordering): the harness setup materializes operational
-              -- `aws.*` + the ACME EAB INTO Vault, which only exists once a cluster
-              -- reconcile has brought it up. For cluster-bootstrapping suites, run a
-              -- bare `cluster reconcile` FIRST (Vault up; the gateway/edge chart is
-              -- skipped cleanly while `aws.*` is unmaterialized) so the harness Vault
-              -- write succeeds; the body's later `--with-edge` reconcile then has a
-              -- materialized `aws.*`. Pure harness-only suites (e.g. `aws-iam`) do
-              -- not bootstrap a cluster and are excluded — no extra pre-reconcile.
+              -- Sprint 6.5: establish only the retained Authority/config floor before
+              -- refreshing operational material. A full pre-reconcile would wait for
+              -- Provider Worker deep readiness using the very credential this step
+              -- must repair. After repair, a local-only full reconcile restores that
+              -- strict gate before any Provider-backed prerequisite can run.
+              -- Pure harness-only suites (e.g. `aws-iam`) do not bootstrap a cluster.
               preReconcileExit <-
                 if harnessNeedsVaultBeforeSetup suitePlan
-                  then runNativeCliCommandForExitCode repoRoot environment ["cluster", "reconcile"]
+                  then runNativeHarnessBootstrapFloor repoRoot
                   else pure ExitSuccess
               case preReconcileExit of
                 failure@(ExitFailure _) -> pure failure
@@ -800,18 +809,31 @@ runNativeSuite repoRoot environment haskellSuites suitePlan = do
                         environment
                         suitePlan
                         ( do
-                            setupExit <- runManagedAwsHarnessSetup repoRoot policyTier
+                            setupExit <-
+                              if harnessNeedsVaultBeforeSetup suitePlan
+                                then
+                                  reconcileHarnessLifecycleProviderCredential
+                                    repoRoot
+                                    (harnessCredentialOperationScope suitePlan environment)
+                                else runManagedAwsHarnessSetup repoRoot policyTier
                             case setupExit of
                               failure@(ExitFailure _) -> pure failure
                               ExitSuccess -> do
-                                ingressExit <-
-                                  if harnessNeedsVaultBeforeSetup suitePlan
-                                    then runHarnessAcmeEabIngress repoRoot
-                                    else pure ExitSuccess
-                                case ingressExit of
+                                postCredentialRuntimeExit <-
+                                  case harnessPostCredentialRuntimeCommand suitePlan of
+                                    Nothing -> pure ExitSuccess
+                                    Just command -> runRke2Command repoRoot command
+                                case postCredentialRuntimeExit of
                                   failure@(ExitFailure _) -> pure failure
-                                  ExitSuccess ->
-                                    runNativeSuiteBody repoRoot environment haskellSuites suitePlan
+                                  ExitSuccess -> do
+                                    ingressExit <-
+                                      if harnessNeedsVaultBeforeSetup suitePlan
+                                        then runHarnessAcmeEabIngress repoRoot
+                                        else pure ExitSuccess
+                                    case ingressExit of
+                                      failure@(ExitFailure _) -> pure failure
+                                      ExitSuccess ->
+                                        runNativeSuiteBody repoRoot environment haskellSuites suitePlan
                         )
 
 -- | Run validation as a client of the lifecycle-owned, descriptor-bound
@@ -820,11 +842,10 @@ runNativeSuite repoRoot environment haskellSuites suitePlan = do
 -- operation identities, closed dispatch, durable resumption, and the exact
 -- node-state decision.
 --
--- Credential teardown remains the legacy IAM implementation until Sprint 6.5
--- releases the closed operational-credential dispatcher.  Its gate is no
--- longer a validation-owned success fold: only the lifecycle result decision
--- can release it, so any unresolved per-run node preserves the credential for
--- recovery.
+-- The Sprint 6.5 qualification candidate owns its Credential Provisioner
+-- rotation and typed revocation as one single-writer lifecycle. Other suites
+-- retain the older teardown only until their own lifecycle result explicitly
+-- releases it; unresolved nodes preserve the credential for recovery.
 runWithAwsHarnessCleanup
   :: FilePath
   -> [(String, String)]
@@ -839,7 +860,10 @@ runWithAwsHarnessCleanup repoRoot environment suitePlan body = do
       -- would create a second claimed run over the same resources.
       candidateExit <- body
       case candidateExit of
-        ExitSuccess -> runManagedAwsHarnessTeardown repoRoot
+        ExitSuccess -> do
+          writeDiagnosticLine
+            "Cascade qualification proved the typed credential-revocation node; no legacy IAM teardown was invoked."
+          pure ExitSuccess
         failure@(ExitFailure _) -> do
           writeDiagnosticLine
             "Cascade qualification did not prove exact terminal cleanup; preserving operational credentials for recovery."
@@ -874,6 +898,19 @@ runWithAwsHarnessCleanup repoRoot environment suitePlan body = do
                     ++ show (lifecycleTestHarnessCleanupLifecycleResult outcome)
                 )
               pure (ExitFailure 1)
+
+harnessCredentialOperationScope
+  :: NativeSuitePlan
+  -> [(String, String)]
+  -> Text.Text
+harnessCredentialOperationScope suitePlan environment =
+  Text.intercalate
+    ":"
+    ( ["test-harness", Text.pack (nativeSuiteId suitePlan)]
+        ++ case lookup cascadeQualificationCycleVariable environment of
+          Nothing -> []
+          Just cycleLabel -> [Text.pack cycleLabel]
+    )
 
 -- | Exact registry keys one suite may create. A DNS-only suite selects only
 -- its hosted-zone family, so exact stack-generation selection is never asked
@@ -1208,15 +1245,25 @@ supportedRuntimeBootstrapNeedsReconcile suitePlan =
   nativeRequiresSupportedRuntimeBootstrap suitePlan
     && not (nativeRequiresIntegrationRunbook suitePlan)
 
--- | Sprint 7.24 (ordering): a cluster-bootstrapping harness suite needs Vault
--- up BEFORE the harness setup runs, because the setup materializes operational
--- `aws.*` + the ACME EAB into Vault. A bare `cluster reconcile` brings Vault up
--- (and skips the gateway/edge chart cleanly while `aws.*` is unmaterialized), so
--- the harness write succeeds. Pure harness-only suites (e.g. `aws-iam`) do not
--- bootstrap a cluster and are excluded, so no extra pre-reconcile is added to
--- them.
+-- | A cluster-bootstrapping harness suite needs the retained Authority/config
+-- floor before it can repair operational material. The bootstrap-floor
+-- projection deliberately excludes steady components whose deep readiness
+-- consumes that material. Pure harness-only suites (e.g. @aws-iam@) have no
+-- local runtime to establish.
 harnessNeedsVaultBeforeSetup :: NativeSuitePlan -> Bool
 harnessNeedsVaultBeforeSetup = nativeRequiresSupportedRuntimeBootstrap
+
+-- | The pre-credential bootstrap floor deliberately stops before Provider
+-- Worker readiness because that role consumes the credential being repaired.
+-- Once repair succeeds, cluster-backed harness suites re-enter the ordinary
+-- local-only reconcile graph so the Provider Service and its deep readiness
+-- are proved before any @aws_credentials_valid@ prerequisite can call it.
+-- Pure harness-only suites have no local runtime to resume.
+harnessPostCredentialRuntimeCommand :: NativeSuitePlan -> Maybe Rke2Command
+harnessPostCredentialRuntimeCommand suitePlan
+  | harnessNeedsVaultBeforeSetup suitePlan =
+      Just (Rke2Reconcile (PlanOptions False Nothing) False)
+  | otherwise = Nothing
 
 supportedRuntimeBootstrapRestorePlan :: NativeSuitePlan -> RestoreCyclePlan
 supportedRuntimeBootstrapRestorePlan suitePlan =
@@ -2001,10 +2048,10 @@ phaseOneMessage suitePlan =
 -- freshly-generated skeleton without an interactive @config setup@. Idempotent
 -- and refuses to clobber a populated real config. Failures are surfaced as a
 -- loud 'ExitFailure', mirroring 'runManagedAwsHarnessSetup'.
-runConfigRegenFromTestSecrets :: FilePath -> PolicyTier -> IO ExitCode
-runConfigRegenFromTestSecrets repoRoot policyTier = do
+runConfigRegenFromTestSecrets :: FilePath -> PolicyTier -> Substrate -> IO ExitCode
+runConfigRegenFromTestSecrets repoRoot policyTier substrate = do
   result <-
-    try (regenerateConfigFromTestSecrets repoRoot policyTier)
+    try (regenerateConfigFromTestSecrets repoRoot policyTier substrate)
       :: IO (Either SomeException (Either String ()))
   case result of
     Left err ->

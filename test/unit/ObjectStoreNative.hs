@@ -36,6 +36,91 @@ emptySha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 objectStoreNativeSuite :: SuiteBuilder ()
 objectStoreNativeSuite =
   describe "Sprint 1.66 native S3 request signing" $ do
+    describe "Sprint 2.93 protected GET status classification" $ do
+      it "classifies every status family exhaustively with unique stable renderings" $ do
+        map renderObjectStoreHttpStatusClass allObjectStoreHttpStatusClasses
+          `shouldBe` [ "authentication"
+                     , "authorization"
+                     , "client-other"
+                     , "server"
+                     , "unexpected-non-error"
+                     , "unknown"
+                     ]
+      it "classifies representative and boundary status codes" $ do
+        map objectStoreHttpStatusClass [401, 403, 400, 404, 499, 500, 599, 100, 399, 99, 600]
+          `shouldBe` [ ObjectStoreHttpAuthentication
+                     , ObjectStoreHttpAuthorization
+                     , ObjectStoreHttpOtherClient
+                     , ObjectStoreHttpOtherClient
+                     , ObjectStoreHttpOtherClient
+                     , ObjectStoreHttpServer
+                     , ObjectStoreHttpServer
+                     , ObjectStoreHttpUnexpectedNonError
+                     , ObjectStoreHttpUnexpectedNonError
+                     , ObjectStoreHttpUnknown
+                     , ObjectStoreHttpUnknown
+                     ]
+      it "extracts only the status class from native GET failure detail" $ do
+        objectStoreGetFailureStatusClass
+          "object-store GET failed (403): first sensitive response"
+          `shouldBe` Just ObjectStoreHttpAuthorization
+        objectStoreGetFailureStatusClass
+          "object-store GET failed (403): second distinct response"
+          `shouldBe` Just ObjectStoreHttpAuthorization
+        objectStoreGetFailureStatusClass
+          "object-store GET failed (500): response detail"
+          `shouldBe` Just ObjectStoreHttpServer
+        objectStoreGetFailureStatusClass
+          "object-store GET failed (not-a-status): response detail"
+          `shouldBe` Just ObjectStoreHttpUnknown
+        objectStoreGetFailureStatusClass "object-store request failed: exception detail"
+          `shouldBe` Nothing
+      it "exhausts the closed S3 error-code classes with unique stable renderings" $ do
+        map renderObjectStoreS3ErrorCodeClass allObjectStoreS3ErrorCodeClasses
+          `shouldBe` [ "access-denied"
+                     , "invalid-access-key"
+                     , "signature-mismatch"
+                     , "request-time-skewed"
+                     , "authorization-header-malformed"
+                     , "expired-token"
+                     , "other"
+                     , "malformed-or-unknown"
+                     ]
+      it "classifies known and other well-formed S3 XML codes" $ do
+        let failure code detail =
+              "object-store GET failed (403): <Error><Code>"
+                <> code
+                <> "</Code><Message>"
+                <> detail
+                <> "</Message><RequestId>request-detail</RequestId></Error>"
+        objectStoreGetFailureS3ErrorCodeClass (failure "AccessDenied" "first detail")
+          `shouldBe` Just ObjectStoreS3AccessDenied
+        objectStoreGetFailureS3ErrorCodeClass (failure "InvalidAccessKeyId" "second detail")
+          `shouldBe` Just ObjectStoreS3InvalidAccessKey
+        objectStoreGetFailureS3ErrorCodeClass (failure "SignatureDoesNotMatch" "third detail")
+          `shouldBe` Just ObjectStoreS3SignatureMismatch
+        objectStoreGetFailureS3ErrorCodeClass (failure "RequestTimeTooSkewed" "fourth detail")
+          `shouldBe` Just ObjectStoreS3RequestTimeSkewed
+        objectStoreGetFailureS3ErrorCodeClass
+          (failure "AuthorizationHeaderMalformed" "fifth detail")
+          `shouldBe` Just ObjectStoreS3AuthorizationHeaderMalformed
+        objectStoreGetFailureS3ErrorCodeClass (failure "ExpiredToken" "sixth detail")
+          `shouldBe` Just ObjectStoreS3ExpiredToken
+        objectStoreGetFailureS3ErrorCodeClass (failure "FutureClosedCode" "seventh detail")
+          `shouldBe` Just ObjectStoreS3Other
+      it "fails closed on absent, malformed, or ambiguous S3 XML codes" $ do
+        objectStoreGetFailureS3ErrorCodeClass
+          "object-store GET failed (403): <Error><Message>detail</Message></Error>"
+          `shouldBe` Just ObjectStoreS3MalformedOrUnknown
+        objectStoreGetFailureS3ErrorCodeClass
+          "object-store GET failed (403): <Error><Code>Access Denied</Code></Error>"
+          `shouldBe` Just ObjectStoreS3MalformedOrUnknown
+        objectStoreGetFailureS3ErrorCodeClass
+          "object-store GET failed (403): <Code>AccessDenied</Code><Code>ExpiredToken</Code>"
+          `shouldBe` Just ObjectStoreS3MalformedOrUnknown
+        objectStoreGetFailureS3ErrorCodeClass "object-store request failed: exception detail"
+          `shouldBe` Nothing
+
     describe "a bodyless GET" $ do
       let signed =
             signS3Request

@@ -17,12 +17,15 @@ module Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , withHostLifecycleAuthorityAuthentication
   , lifecycleAuthorityManifestSignerDigest
   , withLifecycleAuthorityAuthenticatedTransport
+  , withLifecycleAuthorityRetainedDeliveryAuthenticatedTransport
+  , withLifecycleAuthorityTlsWorkflowAuthenticatedTransport
   , withProviderWorkerAuthenticatedTransport
   , withTargetSecretAgentAuthenticatedTransport
   , withSelectedTargetSecretAgentAuthenticatedTransport
   , withAuthorityBackupAuthenticatedTransport
   , withTlsRetentionAuthenticatedTransport
   , externalCallerServiceAccount
+  , externalCallerKubernetesSubject
   , externalCallerServiceAccountReadArguments
   , externalCallerTokenEligibilityArguments
   , externalCallerTokenRequestArguments
@@ -32,6 +35,12 @@ module Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , serviceAccountObservationAuthorityReached
   , renderServiceAccountObservationFailure
   , ExternalCallerTokenError (..)
+  , KubernetesTokenRequestLifetime
+  , KubernetesTokenRequestLifetimeError (..)
+  , mkKubernetesTokenRequestLifetime
+  , kubernetesTokenRequestLifetimeSeconds
+  , externalCallerTokenLifetime
+  , classifyTokenRequest
   , externalCallerTokenAuthorityReached
   , externalCallerTokenAuthorityRefusedAuthorization
   , externalCallerTokenSessionError
@@ -77,6 +86,8 @@ import Prodbox.ControlPlane.LocalClient
   , LocalTlsRetentionError
   , withLocalAuthorityBackupAuthenticatedTransport
   , withLocalLifecycleAuthorityAuthenticatedTransport
+  , withLocalLifecycleAuthorityRetainedDeliveryAuthenticatedTransport
+  , withLocalLifecycleAuthorityTlsWorkflowAuthenticatedTransport
   , withLocalProviderWorkerAuthenticatedTransport
   , withLocalTargetSecretAgentAuthenticatedTransport
   , withLocalTlsRetentionAuthenticatedTransport
@@ -135,6 +146,28 @@ data ExternalLifecycleAuthorityCaller
   = LifecycleAuthorityOperator
   | LifecycleAuthorityTestHarness
   deriving stock (Eq, Show)
+
+-- | A Kubernetes TokenRequest lifetime admitted by the API's lower bound.
+-- The constructor stays private so a caller cannot pass an unchecked duration
+-- to @kubectl create token@.
+newtype KubernetesTokenRequestLifetime = KubernetesTokenRequestLifetime Natural
+  deriving stock (Eq, Show)
+
+data KubernetesTokenRequestLifetimeError
+  = KubernetesTokenRequestLifetimeBelowMinimum
+  deriving stock (Eq, Show)
+
+mkKubernetesTokenRequestLifetime
+  :: Natural
+  -> Either KubernetesTokenRequestLifetimeError KubernetesTokenRequestLifetime
+mkKubernetesTokenRequestLifetime seconds
+  | seconds < minimumKubernetesTokenRequestLifetimeSeconds =
+      Left KubernetesTokenRequestLifetimeBelowMinimum
+  | otherwise = Right (KubernetesTokenRequestLifetime seconds)
+
+kubernetesTokenRequestLifetimeSeconds
+  :: KubernetesTokenRequestLifetime -> Natural
+kubernetesTokenRequestLifetimeSeconds (KubernetesTokenRequestLifetime seconds) = seconds
 
 -- | Opaque, caller-bound client authentication.  The only production
 -- constructor is 'withHostLifecycleAuthorityAuthentication'.
@@ -283,6 +316,42 @@ withLifecycleAuthorityAuthenticatedTransport
 withLifecycleAuthorityAuthenticatedTransport authentication action = do
   result <-
     withLocalLifecycleAuthorityAuthenticatedTransport
+      (lifecycleAuthenticationBounds authentication)
+      (lifecycleAuthenticationProviders authentication)
+      action
+  pure
+    ( mapLeft
+        LifecycleAuthorityLocalTransportUnavailable
+        result
+    )
+
+withLifecycleAuthorityRetainedDeliveryAuthenticatedTransport
+  :: LifecycleAuthorityAuthentication
+  -> ( AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+       -> IO value
+     )
+  -> IO (Either LifecycleAuthorityAuthenticationError value)
+withLifecycleAuthorityRetainedDeliveryAuthenticatedTransport authentication action = do
+  result <-
+    withLocalLifecycleAuthorityRetainedDeliveryAuthenticatedTransport
+      (lifecycleAuthenticationBounds authentication)
+      (lifecycleAuthenticationProviders authentication)
+      action
+  pure
+    ( mapLeft
+        LifecycleAuthorityLocalTransportUnavailable
+        result
+    )
+
+withLifecycleAuthorityTlsWorkflowAuthenticatedTransport
+  :: LifecycleAuthorityAuthentication
+  -> ( AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+       -> IO value
+     )
+  -> IO (Either LifecycleAuthorityAuthenticationError value)
+withLifecycleAuthorityTlsWorkflowAuthenticatedTransport authentication action = do
+  result <-
+    withLocalLifecycleAuthorityTlsWorkflowAuthenticatedTransport
       (lifecycleAuthenticationBounds authentication)
       (lifecycleAuthenticationProviders authentication)
       action
@@ -633,8 +702,18 @@ data ExternalCallerTokenError
     ExternalCallerTokenEligibilityRefused
   | -- | The @TokenRequest@ subprocess could not be started or bounded.
     ExternalCallerTokenRequestSubprocessUnavailable
-  | -- | The API answered and refused the @TokenRequest@.
-    ExternalCallerTokenRequestRefused
+  | -- | The @TokenRequest@ subprocess started, but no Kubernetes API answer
+    -- was observed.
+    ExternalCallerTokenRequestApiUnreachable
+  | -- | The @TokenRequest@ subprocess had no usable Kubernetes context.
+    ExternalCallerTokenRequestContextUnavailable
+  | -- | The API answered and rejected invalid @TokenRequest@ parameters.
+    ExternalCallerTokenRequestInvalid
+  | -- | The API answered and denied authorization for the @TokenRequest@.
+    ExternalCallerTokenRequestAuthorizationRefused
+  | -- | The @TokenRequest@ command returned a non-zero result whose closed
+    -- cause is not recognized. It must not masquerade as authorization.
+    ExternalCallerTokenRequestUnclassified
   | -- | The API answered with a token that is empty or carries control or
     -- whitespace characters, so it is not a usable bearer credential.
     ExternalCallerTokenMalformed
@@ -648,7 +727,11 @@ externalCallerTokenAuthorityReached failure = case failure of
   ExternalCallerTokenEligibilitySubprocessUnavailable -> False
   ExternalCallerTokenEligibilityRefused -> True
   ExternalCallerTokenRequestSubprocessUnavailable -> False
-  ExternalCallerTokenRequestRefused -> True
+  ExternalCallerTokenRequestApiUnreachable -> False
+  ExternalCallerTokenRequestContextUnavailable -> False
+  ExternalCallerTokenRequestInvalid -> True
+  ExternalCallerTokenRequestAuthorizationRefused -> True
+  ExternalCallerTokenRequestUnclassified -> False
   ExternalCallerTokenMalformed -> True
 
 -- | Whether the Kubernetes API answered and refused this caller\'s
@@ -674,7 +757,11 @@ externalCallerTokenAuthorityRefusedAuthorization failure = case failure of
   ExternalCallerTokenEligibilitySubprocessUnavailable -> False
   ExternalCallerTokenEligibilityRefused -> True
   ExternalCallerTokenRequestSubprocessUnavailable -> False
-  ExternalCallerTokenRequestRefused -> True
+  ExternalCallerTokenRequestApiUnreachable -> False
+  ExternalCallerTokenRequestContextUnavailable -> False
+  ExternalCallerTokenRequestInvalid -> False
+  ExternalCallerTokenRequestAuthorizationRefused -> True
+  ExternalCallerTokenRequestUnclassified -> False
   ExternalCallerTokenMalformed -> False
 
 -- | Lower the typed failure to the session error the login path reports.
@@ -708,8 +795,20 @@ renderExternalCallerTokenError caller failure = case failure of
       ++ Text.unpack (externalCallerServiceAccount caller)
   ExternalCallerTokenRequestSubprocessUnavailable ->
     "create external caller TokenRequest: subprocess unavailable"
-  ExternalCallerTokenRequestRefused ->
-    "Kubernetes TokenRequest refused for the explicit "
+  ExternalCallerTokenRequestApiUnreachable ->
+    "create external caller TokenRequest: Kubernetes API unavailable"
+  ExternalCallerTokenRequestContextUnavailable ->
+    "create external caller TokenRequest: Kubernetes context unavailable"
+  ExternalCallerTokenRequestInvalid ->
+    "Kubernetes TokenRequest parameters are invalid for the explicit "
+      ++ show caller
+      ++ " identity"
+  ExternalCallerTokenRequestAuthorizationRefused ->
+    "Kubernetes TokenRequest authorization refused for the explicit "
+      ++ show caller
+      ++ " identity"
+  ExternalCallerTokenRequestUnclassified ->
+    "Kubernetes TokenRequest returned an unclassified refusal for the explicit "
       ++ show caller
       ++ " identity"
   ExternalCallerTokenMalformed ->
@@ -734,7 +833,7 @@ classifyTokenRequest captured = do
   output <-
     mapLeft (const ExternalCallerTokenRequestSubprocessUnavailable) captured
   case processExitCode output of
-    ExitFailure _ -> Left ExternalCallerTokenRequestRefused
+    ExitFailure _ -> Left (classifyTokenRequestDiagnostic (processStderr output))
     ExitSuccess -> Right ()
   let token = Text.strip (Text.pack (processStdout output))
   if Text.null token
@@ -780,7 +879,7 @@ externalCallerTokenRequestArguments caller =
   , Text.unpack (externalCallerServiceAccount caller)
   , "--namespace"
   , externalCallerNamespace caller
-  , "--duration=" ++ externalCallerTokenDuration caller
+  , "--duration=" ++ renderKubernetesTokenRequestLifetime (externalCallerTokenLifetime caller)
   , "--as=" ++ externalCallerKubernetesSubject caller
   ]
 
@@ -809,10 +908,11 @@ externalCallerKubernetesSubject caller =
     ++ ":"
     ++ Text.unpack (externalCallerServiceAccount caller)
 
-externalCallerTokenDuration :: ExternalLifecycleAuthorityCaller -> String
-externalCallerTokenDuration caller = case caller of
-  LifecycleAuthorityOperator -> "5m"
-  LifecycleAuthorityTestHarness -> "15m"
+externalCallerTokenLifetime
+  :: ExternalLifecycleAuthorityCaller -> KubernetesTokenRequestLifetime
+externalCallerTokenLifetime caller = case caller of
+  LifecycleAuthorityOperator -> KubernetesTokenRequestLifetime 600
+  LifecycleAuthorityTestHarness -> KubernetesTokenRequestLifetime 900
 
 externalCallerPrincipal :: ExternalLifecycleAuthorityCaller -> CallerPrincipal
 externalCallerPrincipal caller = case caller of
@@ -837,6 +937,41 @@ tokenRequestLimits =
     , boundedSubprocessMaximumStderrBytes = 16 * 1024
     , boundedSubprocessTimeoutMicros = 30 * 1000000
     }
+
+minimumKubernetesTokenRequestLifetimeSeconds :: Natural
+minimumKubernetesTokenRequestLifetimeSeconds = 600
+
+renderKubernetesTokenRequestLifetime :: KubernetesTokenRequestLifetime -> String
+renderKubernetesTokenRequestLifetime lifetime =
+  show (kubernetesTokenRequestLifetimeSeconds lifetime) ++ "s"
+
+classifyTokenRequestDiagnostic :: String -> ExternalCallerTokenError
+classifyTokenRequestDiagnostic diagnostic
+  | anyOf invalidRequestMarkers = ExternalCallerTokenRequestInvalid
+  | otherwise = case classifyKubectlDiagnostic 1 diagnostic of
+      ServiceAccountObservationForbidden {} ->
+        ExternalCallerTokenRequestAuthorizationRefused
+      ServiceAccountObservationUnauthenticated {} ->
+        ExternalCallerTokenRequestAuthorizationRefused
+      ServiceAccountObservationApiUnreachable {} ->
+        ExternalCallerTokenRequestApiUnreachable
+      ServiceAccountObservationContextUnavailable {} ->
+        ExternalCallerTokenRequestContextUnavailable
+      ServiceAccountObservationSubprocessUnavailable ->
+        ExternalCallerTokenRequestUnclassified
+      ServiceAccountObservationAbsent ->
+        ExternalCallerTokenRequestUnclassified
+      ServiceAccountObservationIdentityMismatch {} ->
+        ExternalCallerTokenRequestUnclassified
+      ServiceAccountObservationUnclassified {} ->
+        ExternalCallerTokenRequestUnclassified
+ where
+  lowered = Text.toLower (Text.pack diagnostic)
+  anyOf = any (`Text.isInfixOf` lowered)
+  invalidRequestMarkers =
+    [ "may not specify a duration less than 10 minutes"
+    , "spec.expirationseconds: invalid value"
+    ]
 
 lifecycleAuthorityFrameMaximumBytes :: Int
 lifecycleAuthorityFrameMaximumBytes = 100 * 1024 * 1024

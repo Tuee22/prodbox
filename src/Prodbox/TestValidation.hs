@@ -2,6 +2,7 @@
 
 module Prodbox.TestValidation
   ( runNativeValidation
+  , cascadeQualificationCycleVariable
   , namespaceResourceQuotaHardFields
   , namespaceLimitRangeContainerFields
   , gatewayRuntimeExpectedReplicas

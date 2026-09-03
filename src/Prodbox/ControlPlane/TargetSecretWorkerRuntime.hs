@@ -13,6 +13,7 @@ module Prodbox.ControlPlane.TargetSecretWorkerRuntime
   , TargetWorkerRewrapBoundary (..)
   , retainedTargetWorkerRewrapBoundary
   , TargetSecretWorkerRuntimeError (..)
+  , renderTargetSecretWorkerRuntimeRefusal
   , targetSecretWorkerCommitmentKey
   , targetSecretWorkerTrustPath
   , targetWorkerServiceLoginAccepted
@@ -166,6 +167,7 @@ import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   , TlsHomeRewrapResult (..)
   , TlsHomeWrapRequest (..)
   , TlsHomeWrapResult (..)
+  , TlsTargetAgentError (..)
   , TlsTargetPrepareResult (..)
   , TlsTargetRestoreRequest (..)
   , TlsTargetRestoreResult (..)
@@ -319,8 +321,35 @@ data TargetSecretWorkerRuntimeError
   | TargetSecretWorkerRewrapUnavailable
   | TargetSecretWorkerExecutionRefused !TargetWorkerExecutionError
   | TargetSecretWorkerOperationRefused
+  | TargetSecretWorkerTlsRetainProductionBoundaryUnavailable
+  | TargetSecretWorkerTlsRetainFailed !TlsTargetAgentError
+  | TargetSecretWorkerTlsRetainBadRequest
   | TargetSecretWorkerUnhandledException
   deriving stock (Eq, Show)
+
+-- | Closed, value-free refusal carried by the authenticated provisional
+-- frame. Existing non-TLS failures retain their rollout token; TLS retain is
+-- refined only far enough to select its exact typed failure family.
+renderTargetSecretWorkerRuntimeRefusal :: TargetSecretWorkerRuntimeError -> Text
+renderTargetSecretWorkerRuntimeRefusal runtimeError = case runtimeError of
+  TargetSecretWorkerTlsRetainProductionBoundaryUnavailable ->
+    "tls-retain/production-boundary-unavailable"
+  TargetSecretWorkerTlsRetainFailed targetError ->
+    "tls-retain/" <> renderTlsTargetAgentError targetError
+  TargetSecretWorkerTlsRetainBadRequest -> "tls-retain/bad-request"
+  _ -> "target-worker-materialization-refused"
+
+renderTlsTargetAgentError :: TlsTargetAgentError -> Text
+renderTlsTargetAgentError targetError = case targetError of
+  TlsTargetSecretUnavailable -> "secret-unavailable"
+  TlsTargetSecretInvalid -> "secret-invalid"
+  TlsTargetSecretReadBackMismatch -> "secret-readback-mismatch"
+  TlsTargetSecretApplyFailed -> "secret-apply-failed"
+  TlsTargetDekExchangeFailed _ -> "dek-exchange-failed"
+  TlsTargetCipherFailed _ -> "cipher-failed"
+  TlsTargetCertificateCiphertextInvalid -> "certificate-ciphertext-invalid"
+  TlsTargetCertificateCiphertextTooLarge _ _ -> "certificate-ciphertext-too-large"
+  TlsTargetReferenceMismatch -> "reference-mismatch"
 
 targetSecretWorkerCommitmentKey :: Text
 targetSecretWorkerCommitmentKey = "prodbox-target-secret-commitment"
@@ -523,7 +552,7 @@ executeOperation session rewrap attestation operation = case operation of
   TargetWorkerTlsRetainInput request -> do
     boundaries <- tlsTargetAgentProductionBoundaries session
     case boundaries of
-      Left _ -> operationRefused
+      Left _ -> pure (Left TargetSecretWorkerTlsRetainProductionBoundaryUnavailable)
       Right (secretBoundary, _) -> do
         result <-
           retainTlsAtSelectedAgent
@@ -533,7 +562,8 @@ executeOperation session rewrap attestation operation = case operation of
         pure $ case result of
           TlsTargetRetained receipt -> Right (TargetWorkerTlsRetainedResult receipt)
           TlsTargetRetainMissing -> Right TargetWorkerTlsRetainMissingResult
-          _ -> Left TargetSecretWorkerOperationRefused
+          TlsTargetRetainFailed err -> Left (TargetSecretWorkerTlsRetainFailed err)
+          TlsTargetRetainBadRequest _ -> Left TargetSecretWorkerTlsRetainBadRequest
   TargetWorkerTlsHomeWrapInput request -> do
     result <-
       wrapTlsDekAtHomeAgent
@@ -942,12 +972,12 @@ withClosedWorkerVaultSession options serviceAccount serviceAccountUid _sessionFe
                               finishLogin auditor login attempted exchanged True
  where
   provisionalCompletion accessor outcome = case outcome of
-    Left _ ->
+    Left err ->
       first
         (const TargetSecretWorkerVaultLoginUnavailable)
         ( refusedTargetWorkerProvisionalCompletion
             accessor
-            "target-worker-materialization-refused"
+            (renderTargetSecretWorkerRuntimeRefusal err)
         )
     Right materialized ->
       first

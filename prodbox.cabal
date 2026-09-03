@@ -71,6 +71,10 @@ library
         Prodbox.Capacity.MeasuredProfile
         Prodbox.Capacity.ObservedHost
         Prodbox.Capacity.Placement
+        Prodbox.Capacity.ProviderWorkerBudget
+        Prodbox.Capacity.RetainedMaterialDeliveryBudget
+        Prodbox.Capacity.TargetWorkerBudget
+        Prodbox.Capacity.TlsRetentionWorkflowBudget
         Prodbox.Capacity.RuntimeMemory
         Prodbox.Capacity.Storage
         Prodbox.Capacity.Types
@@ -136,6 +140,7 @@ library
         Prodbox.ControlPlane.AdminActionEndpoint
         Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
         Prodbox.ControlPlane.AwsAdminProvisionerClient
+        Prodbox.ControlPlane.AwsAdminAuthorizedRecoveryProduction
         Prodbox.ControlPlane.AwsAdminPreparedTargetProduction
         Prodbox.ControlPlane.AwsStackCreationBindingEndpoint
         Prodbox.ControlPlane.AwsStackCreationBindingRepository
@@ -248,6 +253,7 @@ library
         Prodbox.ControlPlane.ProviderProduction
         Prodbox.ControlPlane.ProviderCaller
         Prodbox.ControlPlane.ProviderWorkerAdapter
+        Prodbox.ControlPlane.ProviderWorkerDiagnostic
         Prodbox.ControlPlane.ProviderWorkerExecution
         Prodbox.ControlPlane.ProviderWorkerClient
         Prodbox.ControlPlane.ProjectionImportEndpoint
@@ -284,6 +290,7 @@ library
         Prodbox.ControlPlane.TargetMaterializationWorkflow
         Prodbox.ControlPlane.TargetRetainedMaterialRewrapEndpoint
         Prodbox.ControlPlane.TargetRetainedMaterialRewrapClient
+        Prodbox.ControlPlane.TargetRetainedMaterialSourceClient
         Prodbox.ControlPlane.TargetRetainedMaterialRewrapProduction
         Prodbox.ControlPlane.TrustedTargetSink
         Prodbox.ControlPlane.TlsDekExchange
@@ -292,6 +299,7 @@ library
         Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
         Prodbox.ControlPlane.TlsRetentionAuthorityClient
         Prodbox.ControlPlane.TlsRetentionWorkflow
+        Prodbox.ControlPlane.TlsRetentionWorkflowAuthorityEndpoint
         Prodbox.ControlPlane.TlsRetentionClient
         Prodbox.ControlPlane.TlsRetentionEndpoint
         Prodbox.ControlPlane.TlsTargetAgentEndpoint
@@ -423,13 +431,17 @@ library
         Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorker
         Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorkerProtocol
         Prodbox.Lifecycle.CredentialProvisioner.PreparedTarget
+        Prodbox.Lifecycle.CredentialProvisioner.PreparedTargetOutbox
         Prodbox.Lifecycle.CredentialProvisioner.ExternalMaterialWorker
         Prodbox.Lifecycle.CredentialProvisioner.ExternalMaterialWorkerProtocol
         Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
         Prodbox.Lifecycle.CredentialProvisioner.FirstReconcileJournal
         Prodbox.Lifecycle.CredentialProvisioner.KubernetesJob
+        Prodbox.Lifecycle.CredentialProvisioner.ImageIdentity
         Prodbox.Lifecycle.CredentialProvisioner.JointIamDisposition
         Prodbox.Lifecycle.CredentialProvisioner.Kubernetes
+        Prodbox.Lifecycle.CredentialProvisioner.Substrate
+        Prodbox.Lifecycle.CredentialProvisioner.RuntimeSecurity
         Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
         Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
         Prodbox.Lifecycle.CredentialProvisioner.TargetMaterial

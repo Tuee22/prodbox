@@ -12,6 +12,7 @@
 -- operation is representable.
 module Prodbox.ControlPlane.TargetRetainedMaterialRewrapEndpoint
   ( TargetRetainedMaterialRewrapRequest (..)
+  , TargetRetainedMaterialSourceObservation (..)
   , TargetRetainedMaterialRewrapResponse (..)
   , TargetRetainedMaterialRewrapBoundary (..)
   , targetRetainedMaterialRewrapMaximumBytes
@@ -44,17 +45,39 @@ import Prodbox.Lifecycle.Lease
   ( AuthorityTime
   )
 
-data TargetRetainedMaterialRewrapRequest = TargetRetainedMaterialRewrapRequest
-  { targetRetainedRewrapTarget :: !TargetSecretId
-  , targetRetainedRewrapOperationId :: !Text
-  , targetRetainedRewrapExpectedSourceReceipt :: !Text
-  , targetRetainedRewrapExpectedSourceGeneration :: !Natural
-  , targetRetainedRewrapExpectedSourceVaultVersion :: !Natural
-  , targetRetainedRewrapExpectedSourceDigest :: !Text
-  , targetRetainedRewrapTargetGeneration :: !Natural
-  , targetRetainedRewrapAttestationRef :: !Text
-  , targetRetainedRewrapDestinationPublicKey :: !ByteString
-  , targetRetainedRewrapDeadlineMicros :: !Natural
+data TargetRetainedMaterialRewrapRequest
+  = TargetRetainedMaterialRewrapRequest
+      { targetRetainedRewrapTarget :: !TargetSecretId
+      , targetRetainedRewrapOperationId :: !Text
+      , targetRetainedRewrapExpectedSourceReceipt :: !Text
+      , targetRetainedRewrapExpectedSourceGeneration :: !Natural
+      , targetRetainedRewrapExpectedSourceVaultVersion :: !Natural
+      , targetRetainedRewrapExpectedSourceDigest :: !Text
+      , targetRetainedRewrapTargetGeneration :: !Natural
+      , targetRetainedRewrapAttestationRef :: !Text
+      , targetRetainedRewrapDestinationPublicKey :: !ByteString
+      , targetRetainedRewrapDeadlineMicros :: !Natural
+      }
+  | ObserveTargetRetainedMaterialSource
+      { targetRetainedRewrapTarget :: !TargetSecretId
+      , targetRetainedSourceExpectedOperationId :: !Text
+      , targetRetainedSourceExpectedGeneration :: !Natural
+      , targetRetainedSourceObservationDeadlineMicros :: !Natural
+      }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- | Secret-free retained-custody read-back. The Target Agent returns this only
+-- after its Vault data and metadata observations agree and the expected
+-- schema, operation, and generation match exactly.
+data TargetRetainedMaterialSourceObservation = TargetRetainedMaterialSourceObservation
+  { targetRetainedSourceObservedTarget :: !TargetSecretId
+  , targetRetainedSourceObservedOperationId :: !Text
+  , targetRetainedSourceObservedReceiptRef :: !Text
+  , targetRetainedSourceObservedGeneration :: !Natural
+  , targetRetainedSourceObservedCommitment :: !Text
+  , targetRetainedSourceObservedCiphertextDigest :: !Text
+  , targetRetainedSourceObservedVaultVersion :: !Natural
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -65,6 +88,9 @@ data TargetRetainedMaterialRewrapResponse
       , targetRetainedRewrapReceiptRef :: !Text
       , targetRetainedRewrapEnvelopeDigest :: !Text
       }
+  | TargetRetainedMaterialSourceObserved
+      !TargetRetainedMaterialSourceObservation
+  | TargetRetainedMaterialSourceAbsent !TargetSecretId
   | TargetRetainedMaterialRewrapRefused !Text
   | TargetRetainedMaterialRewrapUnavailable !Text
   deriving stock (Eq, Show, Generic)
@@ -112,6 +138,8 @@ targetRetainedMaterialRewrapAuthenticatedHandler maximumBytes observeNow boundar
 responseStatus :: TargetRetainedMaterialRewrapResponse -> ReplyStatus
 responseStatus response = case response of
   TargetRetainedMaterialRewrapped {} -> ReplyOk
+  TargetRetainedMaterialSourceObserved {} -> ReplyOk
+  TargetRetainedMaterialSourceAbsent {} -> ReplyOk
   TargetRetainedMaterialRewrapRefused _ -> ReplyConflict
   TargetRetainedMaterialRewrapUnavailable _ -> ReplyServiceUnavailable
 

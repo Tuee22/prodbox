@@ -18,6 +18,8 @@ module Prodbox.ControlPlane.ExternalMaterialIngressEndpoint
   , ExternalMaterialIngressResponse (..)
   , ExternalMaterialIngressSnapshot (..)
   , ExternalMaterialIngressRepository (..)
+  , ExternalMaterialIngressReceiptRecovery (..)
+  , ExternalMaterialIngressReceiptRecoveryResult (..)
   , modelBExternalMaterialIngressRepository
   , externalMaterialIngressAuthenticatedHandler
   , externalMaterialIngressMaximumEncodedBytes
@@ -65,10 +67,15 @@ import Prodbox.Lifecycle.CheckpointAuthority
 import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
   ( ExternalMaterialIngressIntent
   , ExternalMaterialIngressPhase
+    ( ExternalMaterialIngressIntentCommitted
+    , ExternalMaterialIngressPermitCommitted
+    )
   , ExternalMaterialIngressState
   , ExternalMaterialJobBinding
   , ExternalMaterialTargetReceipt
+  , SignedExternalAcmeEabPermit
   , commitExternalMaterialIngressIntent
+  , commitExternalMaterialIngressIntentRenewal
   , commitExternalMaterialJobBinding
   , commitExternalMaterialSignedPermit
   , commitExternalMaterialTargetReceipt
@@ -87,6 +94,8 @@ import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
   , mkExternalMaterialIngressIntent
   , mkExternalMaterialJobBinding
   , mkSignedExternalAcmeEabPermit
+  , recoverExternalMaterialIngressAbsentEffect
+  , signedExternalMaterialDeadline
   , verifySignedExternalAcmeEabPermit
   )
 import Prodbox.Lifecycle.CredentialProvisioner.Kubernetes
@@ -203,6 +212,9 @@ data ExternalMaterialIngressResponse
   | ExternalMaterialIngressCompleted !ExternalMaterialTargetReceipt
   | ExternalMaterialIngressObserved !ExternalMaterialIngressObservation
   | ExternalMaterialIngressCurrentObserved !(Maybe ExternalMaterialIngressObservation)
+  | ExternalMaterialIngressRecovered
+      !ExternalMaterialIngressChallenge
+      !ExternalMaterialTargetReceipt
   | ExternalMaterialIngressRefused !Text
   | ExternalMaterialIngressUnavailable !Text
   deriving stock (Eq, Show, Generic)
@@ -222,6 +234,28 @@ data ExternalMaterialIngressRepository m revision = ExternalMaterialIngressRepos
       -> ExternalMaterialIngressState
       -> m (Either Text ())
   }
+
+-- | Authority-owned, secret-free recovery of a retained-home custody receipt.
+-- The implementation may observe only the permit-bound Target Agent source;
+-- it cannot read custody plaintext or create another worker effect.
+newtype ExternalMaterialIngressReceiptRecovery m
+  = ExternalMaterialIngressReceiptRecovery
+  { recoverExternalMaterialIngressReceipt
+      :: AuthorityTime
+      -> SignedExternalAcmeEabPermit
+      -> m (Either Text ExternalMaterialIngressReceiptRecoveryResult)
+  }
+
+data ExternalMaterialIngressReceiptRecoveryResult
+  = ExternalMaterialIngressReceiptRecovered !ExternalMaterialTargetReceipt
+  | ExternalMaterialIngressSourcePositivelyAbsent
+  deriving stock (Eq, Show)
+
+data ExpiredPermitRecovery revision
+  = ExpiredPermitRecoveryContinue !(ExternalMaterialIngressSnapshot revision)
+  | ExpiredPermitRecoveryCompleted
+      !ExternalMaterialIngressChallenge
+      !ExternalMaterialTargetReceipt
 
 modelBExternalMaterialIngressRepository
   :: (Monad m)
@@ -281,6 +315,7 @@ externalMaterialIngressAuthenticatedHandler
   -> m (Either Text AuthorityTime)
   -> RoleReadinessSource
   -> ExternalMaterialIngressRepository m revision
+  -> ExternalMaterialIngressReceiptRecovery m
   -> AuthorityManifestSigner m
   -> AuthenticatedRoleHandler m
   -> AuthenticatedRoleHandler m
@@ -290,6 +325,7 @@ externalMaterialIngressAuthenticatedHandler
   observeNow
   readiness
   repository
+  receiptRecovery
   signer
   fallback =
     AuthenticatedRoleHandler
@@ -334,31 +370,214 @@ externalMaterialIngressAuthenticatedHandler
           observed <- readExternalMaterialIngress repository
           case observed of
             Left detail -> pure (ExternalMaterialIngressUnavailable detail)
-            Right snapshot -> case commitExternalMaterialIngressIntent
-              intent
-              (externalMaterialIngressSnapshotState snapshot) of
-              Left err -> pure (ExternalMaterialIngressRefused (Text.pack (show err)))
-              Right next
-                | next == externalMaterialIngressSnapshotState snapshot ->
-                    pure (ExternalMaterialIngressPrepared (challengeFor intent))
+            Right snapshot -> do
+              recovery <- recoverExpiredPermittedReceipt remaining snapshot intent
+              case recovery of
+                Left response -> pure response
+                Right (ExpiredPermitRecoveryCompleted challenge receipt) ->
+                  pure (ExternalMaterialIngressRecovered challenge receipt)
+                Right (ExpiredPermitRecoveryContinue recoveredSnapshot) -> do
+                  transition <- intentTransition recoveredSnapshot intent
+                  case transition of
+                    Left response -> pure response
+                    Right next
+                      | next == externalMaterialIngressSnapshotState recoveredSnapshot ->
+                          pure (ExternalMaterialIngressPrepared (challengeFor intent))
+                      | otherwise -> do
+                          attempted <-
+                            compareAndSwapExternalMaterialIngress
+                              repository
+                              (externalMaterialIngressRevision recoveredSnapshot)
+                              next
+                          confirmed <- readExternalMaterialIngress repository
+                          case confirmed of
+                            Right readBack
+                              | externalMaterialIngressSnapshotState readBack == next ->
+                                  pure (ExternalMaterialIngressPrepared (challengeFor intent))
+                            _ -> case attempted of
+                              Left _ -> commitIntentWithReadBack (remaining - 1) intent
+                              Right () ->
+                                pure
+                                  ( ExternalMaterialIngressUnavailable
+                                      "intent write was not confirmed by read-back"
+                                  )
+
+    recoverExpiredPermittedReceipt remaining snapshot intent
+      | externalMaterialIngressPhase state /= ExternalMaterialIngressPermitCommitted =
+          pure (Right (ExpiredPermitRecoveryContinue snapshot))
+      | otherwise = case externalMaterialIngressCurrentPermit state of
+          Nothing ->
+            pure
+              ( Left
+                  (ExternalMaterialIngressRefused "permit-committed-state-has-no-permit")
+              )
+          Just permit -> do
+            nowResult <- observeNow
+            case nowResult of
+              Left detail -> pure (Left (ExternalMaterialIngressUnavailable detail))
+              Right now
+                | authorityTimeMicros now
+                    < authorityTimeMicros (signedExternalMaterialDeadline permit) ->
+                    pure (Right (ExpiredPermitRecoveryContinue snapshot))
+                | Just retained <- externalMaterialIngressCurrentIntent state
+                , not (expiredRecoveryRequestMatches now retained intent) ->
+                    pure (Right (ExpiredPermitRecoveryContinue snapshot))
                 | otherwise -> do
-                    attempted <-
-                      compareAndSwapExternalMaterialIngress
-                        repository
-                        (externalMaterialIngressRevision snapshot)
-                        next
-                    confirmed <- readExternalMaterialIngress repository
-                    case confirmed of
-                      Right readBack
-                        | externalMaterialIngressSnapshotState readBack == next ->
-                            pure (ExternalMaterialIngressPrepared (challengeFor intent))
-                      _ -> case attempted of
-                        Left _ -> commitIntentWithReadBack (remaining - 1) intent
-                        Right () ->
-                          pure
-                            ( ExternalMaterialIngressUnavailable
-                                "intent write was not confirmed by read-back"
-                            )
+                    recovered <-
+                      recoverExternalMaterialIngressReceipt receiptRecovery now permit
+                    case recovered of
+                      Left detail ->
+                        pure
+                          ( Left
+                              ( ExternalMaterialIngressUnavailable
+                                  ("retained-receipt-recovery/" <> Text.take 192 detail)
+                              )
+                          )
+                      Right recoveryResult -> case recoveryResult of
+                        ExternalMaterialIngressReceiptRecovered receipt ->
+                          commitRecoveredEffect
+                            remaining
+                            snapshot
+                            intent
+                            permit
+                            receipt
+                        ExternalMaterialIngressSourcePositivelyAbsent ->
+                          commitAbsentEffectRetry remaining snapshot intent now
+     where
+      state = externalMaterialIngressSnapshotState snapshot
+
+    commitRecoveredEffect remaining snapshot intent permit receipt =
+      case commitExternalMaterialTargetReceipt
+        permit
+        receipt
+        (externalMaterialIngressSnapshotState snapshot) of
+        Left err ->
+          pure (Left (ExternalMaterialIngressRefused (Text.pack (show err))))
+        Right next ->
+          commitRecoveryState
+            remaining
+            snapshot
+            intent
+            next
+            ( ExpiredPermitRecoveryCompleted
+                ( maybe
+                    (challengeFor intent)
+                    challengeFor
+                    ( externalMaterialIngressCurrentIntent
+                        (externalMaterialIngressSnapshotState snapshot)
+                    )
+                )
+                receipt
+            )
+
+    commitAbsentEffectRetry remaining snapshot intent now =
+      case recoverExternalMaterialIngressAbsentEffect
+        now
+        intent
+        (externalMaterialIngressSnapshotState snapshot) of
+        Left err ->
+          pure (Left (ExternalMaterialIngressRefused (Text.pack (show err))))
+        Right next ->
+          commitRecoveryState
+            remaining
+            snapshot
+            intent
+            next
+            (ExpiredPermitRecoveryContinue snapshot)
+
+    commitRecoveryState remaining snapshot intent next success = do
+      attempted <-
+        compareAndSwapExternalMaterialIngress
+          repository
+          (externalMaterialIngressRevision snapshot)
+          next
+      confirmed <- readExternalMaterialIngress repository
+      case confirmed of
+        Right readBack
+          | externalMaterialIngressSnapshotState readBack == next ->
+              pure
+                ( Right
+                    ( case success of
+                        ExpiredPermitRecoveryContinue _ ->
+                          ExpiredPermitRecoveryContinue readBack
+                        ExpiredPermitRecoveryCompleted challenge receipt ->
+                          ExpiredPermitRecoveryCompleted challenge receipt
+                    )
+                )
+        _ -> case attempted of
+          Left _
+            | remaining > 1 -> do
+                retry <- readExternalMaterialIngress repository
+                case retry of
+                  Left detail ->
+                    pure (Left (ExternalMaterialIngressUnavailable detail))
+                  Right retrySnapshot -> case completedRecoveryForRequest retrySnapshot intent of
+                    Just completed -> pure (Right completed)
+                    Nothing ->
+                      recoverExpiredPermittedReceipt
+                        (remaining - 1)
+                        retrySnapshot
+                        intent
+          Left _ -> pure (Left attemptsExhausted)
+          Right () ->
+            pure
+              ( Left
+                  ( ExternalMaterialIngressUnavailable
+                      "recovered effect write was not confirmed by read-back"
+                  )
+              )
+
+    expiredRecoveryRequestMatches now retained replacement =
+      externalMaterialIngressIntentRequest retained
+        == externalMaterialIngressIntentRequest replacement
+        && externalMaterialIngressIntentPermitId retained
+          == externalMaterialIngressIntentPermitId replacement
+        && authorityTimeMicros (externalMaterialIngressIntentDeadline retained)
+          <= authorityTimeMicros now
+        && authorityTimeMicros now
+          < authorityTimeMicros (externalMaterialIngressIntentDeadline replacement)
+        && authorityTimeMicros (externalMaterialIngressIntentDeadline retained)
+          < authorityTimeMicros (externalMaterialIngressIntentDeadline replacement)
+
+    completedRecoveryForRequest snapshot replacement = do
+      retained <-
+        externalMaterialIngressCurrentIntent
+          (externalMaterialIngressSnapshotState snapshot)
+      receipt <-
+        externalMaterialIngressCurrentReceipt
+          (externalMaterialIngressSnapshotState snapshot)
+      if externalMaterialIngressIntentRequest retained
+        == externalMaterialIngressIntentRequest replacement
+        && externalMaterialIngressIntentPermitId retained
+          == externalMaterialIngressIntentPermitId replacement
+        then Just (ExpiredPermitRecoveryCompleted (challengeFor retained) receipt)
+        else Nothing
+
+    intentTransition snapshot intent =
+      case commitExternalMaterialIngressIntent
+        intent
+        (externalMaterialIngressSnapshotState snapshot) of
+        Right next -> pure (Right next)
+        Left _
+          | externalMaterialIngressPhase (externalMaterialIngressSnapshotState snapshot)
+              == ExternalMaterialIngressIntentCommitted
+          , Just retained <-
+              externalMaterialIngressCurrentIntent
+                (externalMaterialIngressSnapshotState snapshot) -> do
+              nowResult <- observeNow
+              pure $ case nowResult of
+                Left detail -> Left (ExternalMaterialIngressUnavailable detail)
+                Right now ->
+                  first
+                    (ExternalMaterialIngressRefused . Text.pack . show)
+                    ( commitExternalMaterialIngressIntentRenewal
+                        now
+                        retained
+                        intent
+                        (externalMaterialIngressSnapshotState snapshot)
+                    )
+        Left original ->
+          pure (Left (ExternalMaterialIngressRefused (Text.pack (show original))))
 
     authorizeWithReadBack remaining now operationId observed
       | remaining == 0 = pure attemptsExhausted
@@ -709,6 +928,7 @@ responseStatus response = case response of
   ExternalMaterialIngressCompleted _ -> ReplyOk
   ExternalMaterialIngressObserved _ -> ReplyOk
   ExternalMaterialIngressCurrentObserved _ -> ReplyOk
+  ExternalMaterialIngressRecovered _ _ -> ReplyOk
   ExternalMaterialIngressRefused _ -> ReplyConflict
   ExternalMaterialIngressUnavailable _ -> ReplyServiceUnavailable
 

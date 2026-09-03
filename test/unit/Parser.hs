@@ -7,6 +7,7 @@ where
 
 import Data.Maybe (isNothing)
 import Data.Set qualified as Set
+import Data.Text qualified as Text
 import Options.Applicative
   ( ParserResult (..)
   , defaultPrefs
@@ -58,6 +59,14 @@ import Prodbox.CLI.Spec
   , commandRegistry
   , leafCommandPaths
   )
+import Prodbox.ControlPlane.TargetSecretWorker
+  ( TargetWorkerIngressSchema
+  , allTargetWorkerIngressSchemas
+  , targetWorkerSchemaToken
+  )
+import Prodbox.ControlPlane.TargetSecretWorkerRuntime
+  ( TargetSecretWorkerOptions (..)
+  )
 import Prodbox.Lifecycle.AdminAction.Runner
   ( AdminActionRunnerOptions (..)
   )
@@ -102,6 +111,13 @@ parserSuite =
           )
       parseArgs ["test", "integration", "env", "--record-profile"]
         `shouldSatisfy` isLeft
+    it "parses every closed Target worker schema emitted by the Job renderer" $
+      mapM_
+        ( \schema ->
+            parsedTargetWorkerSchema (targetWorkerSchemaToken schema)
+              `shouldBe` Right schema
+        )
+        allTargetWorkerIngressSchemas
     it "parses the typed Bootstrap Broker launch and Plan/Apply options" $
       parseArgs
         [ "bootstrap-broker"
@@ -246,6 +262,39 @@ parseArgs argv =
         Success options -> Right options
         Failure failure -> Left (fst (renderFailure failure "prodbox"))
         CompletionInvoked _ -> Left "shell completion requested"
+
+parsedTargetWorkerSchema :: Text.Text -> Either String TargetWorkerIngressSchema
+parsedTargetWorkerSchema schemaToken = do
+  parsed <-
+    parseArgs
+      [ "credential-provisioner"
+      , "target-worker"
+      , "--target"
+      , "public-edge-tls-operation"
+      , "--target-agent-identity"
+      , "home@sha256:" <> replicate 64 'c'
+      , "--material-schema"
+      , Text.unpack schemaToken
+      , "--image-digest"
+      , "sha256:" <> replicate 64 'a'
+      , "--request-digest"
+      , replicate 64 'b'
+      , "--deadline-micros"
+      , "1"
+      , "--pod-uid-file"
+      , "/var/run/secrets/prodbox/pod-uid"
+      , "--pod-name-file"
+      , "/var/run/secrets/prodbox/pod-name"
+      , "--service-account-token-file"
+      , "/var/run/secrets/prodbox/token"
+      , "--dry-run"
+      ]
+  case optRequest parsed of
+    RunNative
+      ( NativeCredentialProvisioner
+          (CredentialProvisionerTargetWorker options _)
+        ) -> Right (targetSecretWorkerExpectedSchema options)
+    _ -> Left "expected parsed Target worker command"
 
 parsedAdminAction :: String -> Either String AdminAction
 parsedAdminAction token = do

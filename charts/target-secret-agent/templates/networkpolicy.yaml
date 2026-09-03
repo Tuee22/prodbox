@@ -1,7 +1,8 @@
 {{- /*
 Isolation policy for the substrate-local Target Secret Agent. Egress is limited
-to what the agent actually needs — DNS and the Vault API (Kubernetes auth plus
-the allowlisted target-secret KV / Transit operations). The agent has NO
+to what the agent actually needs — DNS, the Vault API (Kubernetes auth plus the
+allowlisted target-secret KV / Transit operations), the Kubernetes API, and the
+Lifecycle Authority's authenticated Target-intent route. The agent has NO
 object-store, mesh, Pulumi, SES, or external egress. Ingress is restricted to
 its own namespace plus the Lifecycle Authority's authenticated, secret-free
 decommission inventory request; kubelet liveness/readiness probes are node-local
@@ -79,6 +80,20 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.ports.vault }}
+    # TLS custody runs as an Authority-owned workflow, but the Target Agent
+    # obtains each one-shot worker intent and execution permit from the
+    # retained Authority over its authenticated role route. Admit only that
+    # exact namespace, Pod identity, and control-plane port.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: lifecycle-authority
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-lifecycle-authority
+      ports:
+        - protocol: TCP
+          port: {{ .Values.ports.controlPlane }}
     # Sprint 3.34: the Kubernetes API egress coordinate, bound from the single
     # compiled owner that observes `endpoints/kubernetes` — the POST-DNAT
     # address and port, which is what the CNI evaluates this rule against. The

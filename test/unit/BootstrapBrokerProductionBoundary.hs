@@ -810,6 +810,9 @@ bootstrapBrokerProductionBoundarySuite = do
                   )
               )
       rendered `shouldSatisfy` Text.isInfixOf ("\"image\":\"" <> controllerRuntimeImage <> "\"")
+      rendered `shouldSatisfy` Text.isInfixOf "\"cpu\":\"250m\""
+      rendered `shouldSatisfy` Text.isInfixOf "\"memory\":\"256Mi\""
+      rendered `shouldSatisfy` Text.isInfixOf "\"ephemeral-storage\":\"256Mi\""
       rendered `shouldSatisfy` (not . Text.isInfixOf (workerDigestReference (sha256 'a')))
 
     -- Validation 4: THE surrendered check, and the argument that it costs

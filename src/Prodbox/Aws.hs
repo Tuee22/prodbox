@@ -13,6 +13,7 @@ module Prodbox.Aws
   , configFromSetupInput
   , harnessConfigSetupInput
   , harnessConfigSetupInputFrom
+  , harnessDeploymentInputForSubstrate
   , harnessGeneratedConfig
   , harnessReceiveSubdomainLabel
   , existingHarnessConfigDisposition
@@ -39,6 +40,8 @@ module Prodbox.Aws
   , buildIamPolicyJson
   , checkPulumiResidueBeforeTeardown
   , harnessPostflightResiduePolicy
+  , inlineUserPolicyDeleteArguments
+  , attachedUserPolicyDetachArguments
   , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
   , operationalCredentialsClearedDecision
@@ -89,7 +92,7 @@ import Control.Exception
   , throwIO
   , try
   )
-import Control.Monad (forM, unless, when)
+import Control.Monad (forM, forM_, unless, when, (>=>))
 import Data.Aeson
   ( Array
   , Object
@@ -164,11 +167,16 @@ import Prodbox.Capacity.Storage
   , StorageCapacityRefusal
   , regionQuotaPreflight
   )
+import Prodbox.Cluster.Substrate (WorkerSubstrate (LinuxCpu))
 import Prodbox.Cluster.Topology
   ( ClusterTopology
+  , ClusterType (..)
   , clusterTopologyMachines
+  , clusterType
+  , eksNodeGroupSize
   , machineIdText
   , machine_id
+  , mkEksTopology
   , mkSingleMachineRke2Topology
   , renderTopologyError
   )
@@ -234,6 +242,7 @@ import Prodbox.Scaling.Spot
 import Prodbox.Settings
   ( AcmeSection (..)
   , AwsCredentialsRef (..)
+  , AwsSubstrateSection (..)
   , CapacitySection (..)
   , ConfigFile (..)
   , Credentials (..)
@@ -271,11 +280,15 @@ import Prodbox.Subprocess
   )
 import Prodbox.Substrate
   ( ScalingPolicyBySubstrate
+  , Substrate (..)
   , fixedScalingPolicyBySubstrate
   )
 import Prodbox.Vault.Host
   ( TestSecrets
-      ( legacy_cluster_id
+      ( aws_eks_node_group_size
+      , aws_substrate_profile
+      , aws_substrate_subzone_name
+      , legacy_cluster_id
       , legacy_machine_id
       , legacy_minio_endpoint
       , legacy_vault_address
@@ -565,9 +578,6 @@ data HarnessDeploymentInput = HarnessDeploymentInput
 
 prodboxIamUserName :: Text
 prodboxIamUserName = "prodbox"
-
-prodboxIamInlinePolicyName :: Text
-prodboxIamInlinePolicyName = "prodbox-inline"
 
 baselineQuotaSpecs :: [QuotaSpec]
 baselineQuotaSpecs =
@@ -1994,7 +2004,7 @@ operationalManagedResources adminCreds =
     ResourceRegistry.OperationalIamUser ->
       \repoRoot -> do
         _ <- deleteExistingOperationalKeys repoRoot adminCreds
-        deleteUserPolicyIfPresent repoRoot adminCreds
+        deleteAllUserPolicies repoRoot adminCreds prodboxIamUserName
         _ <- deleteOperationalUserIfPresent repoRoot adminCreds
         pure ExitSuccess
     ResourceRegistry.OperationalAwsConfig ->
@@ -2638,16 +2648,23 @@ harnessConfigSetupInput repoRoot currentConfig policyTier = do
       pure (Left "harness config regeneration requires test-secrets.dhall (absent).")
     Just (Left err) ->
       pure (Left ("harness config regeneration failed to decode test-secrets.dhall: " ++ err))
-    Just (Right secrets) -> harnessConfigSetupInputWithSecrets repoRoot currentConfig policyTier secrets
+    Just (Right secrets) ->
+      harnessConfigSetupInputWithSecretsForSubstrate
+        SubstrateHomeLocal
+        repoRoot
+        currentConfig
+        policyTier
+        secrets
 
-harnessConfigSetupInputWithSecrets
-  :: FilePath
+harnessConfigSetupInputWithSecretsForSubstrate
+  :: Substrate
+  -> FilePath
   -> ConfigFile
   -> PolicyTier
   -> TestSecrets
   -> IO (Either String ConfigSetupInput)
-harnessConfigSetupInputWithSecrets repoRoot currentConfig policyTier secrets =
-  case legacyHarnessDeploymentInput secrets of
+harnessConfigSetupInputWithSecretsForSubstrate substrate repoRoot currentConfig policyTier secrets =
+  case harnessDeploymentInputForSubstrate substrate secrets of
     Left err -> pure (Left err)
     Right deploymentInput ->
       case harnessConfigSetupInputFrom
@@ -2677,14 +2694,19 @@ emptyHarnessValidationCredentials =
     , region = ""
     }
 
-legacyHarnessDeploymentInput
-  :: TestSecrets -> Either String HarnessDeploymentInput
-legacyHarnessDeploymentInput secrets = do
-  machineId <- requiredHarnessField "legacy_machine_id" (legacy_machine_id secrets)
-  topology <-
-    case mkSingleMachineRke2Topology machineId of
-      Left err -> Left (renderTopologyError err)
-      Right value -> Right value
+harnessDeploymentInputForSubstrate
+  :: Substrate -> TestSecrets -> Either String HarnessDeploymentInput
+harnessDeploymentInputForSubstrate substrate secrets = do
+  topology <- case substrate of
+    SubstrateHomeLocal -> do
+      machineId <- requiredHarnessField "legacy_machine_id" (legacy_machine_id secrets)
+      case mkSingleMachineRke2Topology machineId of
+        Left err -> Left (renderTopologyError err)
+        Right value -> Right value
+    SubstrateAws ->
+      case mkEksTopology (aws_eks_node_group_size secrets) LinuxCpu of
+        Left err -> Left (renderTopologyError err)
+        Right value -> Right value
   clusterId <- requiredHarnessField "legacy_cluster_id" (legacy_cluster_id secrets)
   vaultAddress <- requiredHarnessField "legacy_vault_address" (legacy_vault_address secrets)
   minioEndpoint <- requiredHarnessField "legacy_minio_endpoint" (legacy_minio_endpoint secrets)
@@ -2718,6 +2740,13 @@ harnessConfigSetupInputFrom currentConfig policyTier secrets credentials deploym
   _ <- requiredHarnessField "ses_sender_domain" (ses_sender_domain secrets)
   _ <- harnessReceiveSubdomainLabel secrets
   _ <- requiredHarnessField "ses_capture_bucket" (ses_capture_bucket secrets)
+  _ <- requiredHarnessField "aws_substrate_subzone_name" (aws_substrate_subzone_name secrets)
+  _ <-
+    case aws_substrate_profile secrets of
+      Nothing ->
+        Left
+          "test-secrets.dhall required field `aws_substrate_profile` is absent; author the deployment the harness will test before running it"
+      Just value -> Right value
   _ <-
     requiredHarnessField
       "pulumi_state_backend_bucket_name"
@@ -2803,7 +2832,8 @@ harnessGeneratedConfig currentConfig secrets input =
           id
           (harnessReceiveSubdomainLabel secrets)
    in built
-        { ses =
+        { capacity = capacity defaultConfigFile
+        , ses =
             SesSection
               { sender_domain = Text.strip (ses_sender_domain secrets)
               , receive_subdomain = receiveLabel
@@ -2814,6 +2844,12 @@ harnessGeneratedConfig currentConfig secrets input =
               { psbBucketName = Text.strip (pulumi_state_backend_bucket_name secrets)
               , psbRegion = Text.strip (pulumi_state_backend_region secrets)
               }
+        , aws_substrate =
+            AwsSubstrateSection
+              { hosted_zone_id = ""
+              , subzone_name = Text.strip (aws_substrate_subzone_name secrets)
+              , profile = aws_substrate_profile secrets
+              }
         }
 
 -- | Test-harness preflight (Sprint 5.10, completed by Sprint 5.37): regenerate
@@ -2823,8 +2859,8 @@ harnessGeneratedConfig currentConfig secrets input =
 -- when the operator fields are empty — it refuses to clobber a populated real
 -- config (the @demoTestConfig@ "generate only your own run config" rule). Runs
 -- before the managed AWS IAM harness validates the bootstrap config.
-regenerateConfigFromTestSecrets :: FilePath -> PolicyTier -> IO (Either String ())
-regenerateConfigFromTestSecrets repoRoot policyTier = do
+regenerateConfigFromTestSecrets :: FilePath -> PolicyTier -> Substrate -> IO (Either String ())
+regenerateConfigFromTestSecrets repoRoot policyTier substrate = do
   tier0Path <- resolveTier0ConfigPath repoRoot
   tier0Exists <- doesFileExist tier0Path
   currentConfigResult <-
@@ -2844,7 +2880,7 @@ regenerateConfigFromTestSecrets repoRoot policyTier = do
   case (currentConfigResult, existingProjectResult) of
     (Right currentConfig, Right existingProject) -> do
       existingDisposition <-
-        existingHarnessConfigDisposition repoRoot currentConfig existingProject tier0Exists
+        existingHarnessConfigDisposition repoRoot currentConfig existingProject tier0Exists substrate
       case existingDisposition of
         Left err -> pure (Left err)
         Right True -> prepareExistingHarnessConfig currentConfig
@@ -2866,7 +2902,13 @@ regenerateConfigFromTestSecrets repoRoot policyTier = do
       Just (Left err) ->
         pure (Left ("harness config regeneration failed to decode test-secrets.dhall: " ++ err))
       Just (Right secrets) -> do
-        inputResult <- harnessConfigSetupInputWithSecrets repoRoot currentConfig policyTier secrets
+        inputResult <-
+          harnessConfigSetupInputWithSecretsForSubstrate
+            substrate
+            repoRoot
+            currentConfig
+            policyTier
+            secrets
         case inputResult of
           Left err -> pure (Left err)
           Right input -> do
@@ -2953,9 +2995,16 @@ existingHarnessConfigDisposition
   -> ConfigFile
   -> Tier0.ProdboxProjectConfig
   -> Bool
+  -> Substrate
   -> IO (Either String Bool)
-existingHarnessConfigDisposition repoRoot config projectConfig tier0Exists
+existingHarnessConfigDisposition repoRoot config projectConfig tier0Exists substrate
   | not tier0Exists = pure (Right False)
+  | config == defaultConfigFile
+      && projectConfig == Tier0.defaultProjectConfig =
+      pure (Right False)
+  | isHarnessOwnedConfig config
+      && harnessOwnedConfigNeedsRefresh config substrate =
+      pure (Right False)
   | all (Text.null . Text.strip) authoredValues = pure (Right False)
   | otherwise = do
       validationResult <- validateConfigWithContext repoRoot contextInput config
@@ -2969,6 +3018,19 @@ existingHarnessConfigDisposition repoRoot config projectConfig tier0Exists
                 )
             Right validated -> Right validated
         mapM_ requireExistingField requiredExistingFields
+        case substrate of
+          SubstrateHomeLocal -> Right ()
+          SubstrateAws -> do
+            case profile (aws_substrate config) of
+              Nothing ->
+                Left
+                  "refusing AWS harness use of a binary-sibling prodbox.dhall with unauthored `aws_substrate.profile`"
+              Just _ -> Right ()
+            case eksNodeGroupSize (cluster_topology config) of
+              Nothing ->
+                Left
+                  "refusing AWS harness use of a binary-sibling prodbox.dhall whose `cluster_topology` is not Eks"
+              Just _ -> Right ()
         Right True
  where
   tier0Context = Tier0.context projectConfig
@@ -2995,7 +3057,33 @@ existingHarnessConfigDisposition repoRoot config projectConfig tier0Exists
     , ("pulumi_state_backend.bucket_name", psbBucketName (pulumi_state_backend config))
     , ("pulumi_state_backend.region", psbRegion (pulumi_state_backend config))
     , ("aws.region", awsCredentialRegion (aws config))
+    , ("aws_substrate.subzone_name", subzone_name (aws_substrate config))
     ]
+  isHarnessOwnedConfig candidate =
+    let relativeRoot = Text.unpack (manual_pv_host_root (storage candidate))
+     in relativeRoot == ".test-data"
+          || ".test-data/" `isPrefixOf` relativeRoot
+  harnessOwnedConfigNeedsRefresh candidate requestedSubstrate =
+    any (Text.null . Text.strip . snd) requiredExistingFields
+      || profile (aws_substrate candidate) == Nothing
+      || clusterType (cluster_topology candidate) /= expectedClusterType requestedSubstrate
+      || harnessCapacityNeedsRefresh candidate
+  harnessCapacityNeedsRefresh candidate =
+    let canonicalCapacity = capacity defaultConfigFile
+        canonicalPlan = resource_plan canonicalCapacity
+        candidateCapacity = capacity candidate
+        normalizedCandidateCapacity =
+          candidateCapacity
+            { resource_plan =
+                (resource_plan candidateCapacity)
+                  { host_capacity = host_capacity canonicalPlan
+                  }
+            }
+     in normalizedCandidateCapacity /= canonicalCapacity
+  expectedClusterType requestedSubstrate =
+    case requestedSubstrate of
+      SubstrateHomeLocal -> ClusterTypeRke2
+      SubstrateAws -> ClusterTypeEks
   requireExistingField (field, raw)
     | Text.null (Text.strip raw) =
         Left
@@ -3257,28 +3345,92 @@ deleteUserAccessKey repoRoot adminCredentials userName accessKeyIdValue = do
       (requireCommandSuccess ("aws iam delete-access-key " ++ Text.unpack accessKeyIdValue) deleteKeyOutput)
   pure ()
 
-deleteUserPolicyIfPresent :: FilePath -> Credentials -> IO ()
-deleteUserPolicyIfPresent repoRoot adminCredentials =
-  deleteNamedUserPolicyIfPresent repoRoot adminCredentials prodboxIamUserName
-
-deleteNamedUserPolicyIfPresent :: FilePath -> Credentials -> Text -> IO ()
-deleteNamedUserPolicyIfPresent repoRoot adminCredentials userName = do
-  deletePolicyOutput <-
-    runAwsCliCompleted
+deleteAllUserPolicies :: FilePath -> Credentials -> Text -> IO ()
+deleteAllUserPolicies repoRoot adminCredentials userName = do
+  inlineArguments <-
+    observeUserPolicyCleanupArguments
       repoRoot
       adminCredentials
-      [ "iam"
+      ["iam", "list-user-policies", "--user-name", Text.unpack userName, "--output", "json"]
+      "aws iam list-user-policies"
+      (inlineUserPolicyDeleteArguments userName)
+  forM_ inlineArguments (runUserPolicyCleanupCommand repoRoot adminCredentials)
+  attachedArguments <-
+    observeUserPolicyCleanupArguments
+      repoRoot
+      adminCredentials
+      ["iam", "list-attached-user-policies", "--user-name", Text.unpack userName, "--output", "json"]
+      "aws iam list-attached-user-policies"
+      (attachedUserPolicyDetachArguments userName)
+  forM_ attachedArguments (runUserPolicyCleanupCommand repoRoot adminCredentials)
+
+observeUserPolicyCleanupArguments
+  :: FilePath
+  -> Credentials
+  -> [String]
+  -> String
+  -> (Value -> Either String [[String]])
+  -> IO [[String]]
+observeUserPolicyCleanupArguments repoRoot adminCredentials arguments commandLabel planFrom = do
+  output <- runAwsCliCompleted repoRoot adminCredentials arguments
+  case processExitCode output of
+    ExitSuccess -> do
+      payload <- liftAwsEither (decodeJsonPayload commandLabel (processStdout output))
+      liftAwsEither (planFrom payload)
+    ExitFailure _ ->
+      case awsErrorCode (errorDetail output) of
+        Just "NoSuchEntity" -> pure []
+        _ -> throwAws (commandLabel ++ " failed: " ++ errorDetail output)
+
+runUserPolicyCleanupCommand :: FilePath -> Credentials -> [String] -> IO ()
+runUserPolicyCleanupCommand repoRoot adminCredentials arguments = do
+  output <- runAwsCliCompleted repoRoot adminCredentials arguments
+  when
+    ( processExitCode output /= ExitSuccess
+        && awsErrorCode (errorDetail output) /= Just "NoSuchEntity"
+    )
+    $ throwAws ("aws " ++ unwords arguments ++ " failed: " ++ errorDetail output)
+
+inlineUserPolicyDeleteArguments :: Text -> Value -> Either String [[String]]
+inlineUserPolicyDeleteArguments userName payload = do
+  payloadObject <- requireObject "list-user-policies" payload
+  policyValues <- requireArrayField "list-user-policies" "PolicyNames" payloadObject
+  policyNames <- traverse requirePolicyName (Vector.toList policyValues)
+  Right
+    [ [ "iam"
       , "delete-user-policy"
       , "--user-name"
       , Text.unpack userName
       , "--policy-name"
-      , Text.unpack prodboxIamInlinePolicyName
+      , Text.unpack policyName
       ]
-  when
-    ( processExitCode deletePolicyOutput /= ExitSuccess
-        && awsErrorCode (errorDetail deletePolicyOutput) /= Just "NoSuchEntity"
-    )
-    $ throwAws ("aws iam delete-user-policy failed: " ++ errorDetail deletePolicyOutput)
+    | policyName <- policyNames
+    ]
+ where
+  requirePolicyName value =
+    case value of
+      String policyName | not (Text.null (Text.strip policyName)) -> Right policyName
+      _ -> Left "list-user-policies PolicyNames entries must be non-empty strings"
+
+attachedUserPolicyDetachArguments :: Text -> Value -> Either String [[String]]
+attachedUserPolicyDetachArguments userName payload = do
+  payloadObject <- requireObject "list-attached-user-policies" payload
+  policyValues <-
+    requireArrayField "list-attached-user-policies" "AttachedPolicies" payloadObject
+  policyArns <-
+    traverse
+      (requireObject "AttachedPolicies entry" >=> requireTextField "AttachedPolicies entry" "PolicyArn")
+      (Vector.toList policyValues)
+  Right
+    [ [ "iam"
+      , "detach-user-policy"
+      , "--user-name"
+      , Text.unpack userName
+      , "--policy-arn"
+      , Text.unpack policyArn
+      ]
+    | policyArn <- policyArns
+    ]
 
 deleteOperationalUserIfPresent :: FilePath -> Credentials -> IO Bool
 deleteOperationalUserIfPresent repoRoot adminCredentials =
@@ -3329,7 +3481,7 @@ deleteUserIfPresent repoRoot adminCredentials userName = do
 cleanupIamUserResidue :: FilePath -> Credentials -> Text -> IO IamUserCleanupResult
 cleanupIamUserResidue repoRoot adminCredentials userName = do
   deletedAccessKeys <- deleteExistingUserKeys repoRoot adminCredentials userName
-  deleteNamedUserPolicyIfPresent repoRoot adminCredentials userName
+  deleteAllUserPolicies repoRoot adminCredentials userName
   userDeleted <- deleteUserIfPresent repoRoot adminCredentials userName
   pure
     IamUserCleanupResult

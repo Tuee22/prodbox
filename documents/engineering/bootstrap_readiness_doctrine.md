@@ -111,10 +111,63 @@ a healthy system project `Starting` and evict itself. The bound is therefore **d
 observer period and its per-pass budget, never authored beside them** — see
 `Prodbox.Bootstrap.Broker.Readiness`.
 
+The Target Secret Agent preserves that same request-path contract while making its protected
+diagnostic distinguishable. Its resolver reads the composed cached facts once, computes the
+ordinary readiness state, projects only a closed starting/stale or dependency-family cause, and
+returns the state unchanged. `/readyz` therefore retains the exact `ready`/`not-ready` status and
+body contract and performs no new boundary I/O; arbitrary dependency detail is absent from the
+protected event. Target-material failures additionally carry only the compiled `TargetSecretId`
+and a closed `metadata-read` or `metadata-validation` stage. This projection is computed by the
+background observer while preserving its prior ready/unavailable observation; the request-path
+fold remains unchanged.
+
+An existing positive-version target document with no custom-metadata fields is the exact
+pre-receipt legacy state. Readiness admits that state so the Lifecycle Authority ordered behind the
+Agent can start and drive repair; it does not admit zero-version empty metadata or a partial receipt.
+Proof and Provider observations remain strict and cannot treat this migration-only readiness as a
+receipt.
+
+The Lifecycle Authority step ordered after Agent readiness retains a protected, payload-free
+startup refusal cause. It distinguishes configuration, Vault/authentication, primary-store,
+coordinate, and interpreter-construction boundaries without changing exit 1, readiness, or the
+post-unseal step table. Interpreter construction further closes registered-client and admission
+resolution, bounded scope/transport/replay values, every peer endpoint/client, recovery observation,
+retained admission and signer reads, Target Worker image validation, and authenticated-runtime
+installation. Admission resolution separately closes projection-registration coordinate
+construction, corrupt/unready registration observations, clean-install versus migration
+construction, and the unobservable observation's coordinate-authority, native store
+endpoint/request/HTTP/version, envelope-open, invalid-Model-B-version, and fail-closed `other`
+families. Native S3 404 remains positive absence through every layer and selects clean install.
+The clean generation-56 diagnostic proves native store HTTP is the current live family; the next
+plan-owned diagnostic refines only its closed response-status class before behavior changes. The
+closed classes are authentication, authorization, other-client, server, unexpected-non-error, and
+unknown; raw status and response detail remain internal. The clean generation-57 diagnostic proves
+authorization is the current live class; the next plan-owned diagnostic refines only its closed S3
+error-code class before behavior changes. The closed classes are access-denied,
+invalid-access-key, signature-mismatch, request-time-skewed, authorization-header-malformed,
+expired-token, other, and malformed-or-unknown; raw XML and response fields remain internal.
+Vault paths, field values, HTTP bodies, exception/decoder detail, token material, and interpreter
+text never cross that diagnostic boundary.
+Its renewable session is admitted only for ServiceAccount `prodbox-lifecycle-authority` in the
+ordered Authority workload's `lifecycle-authority` namespace; the independent `gateway` namespace
+cannot satisfy the binding.
+The standing Authority readiness inventory contains exactly its signed primary-object-store LIST
+and the bootstrap-handoff Vault observation. Target-child custody path HMAC and KV access belong to
+the narrow Target worker repository; they are neither Authority readiness prerequisites nor
+Authority-role permissions. A foreign worker capability must not be made ready by widening the
+standing Authority role.
+
 ### 0.8 Readiness includes service capacity
 
 Memory containment alone is insufficient. A capability is not admissible when its bounded queue,
 measured service rate, CPU budget, or remaining absolute deadline cannot support the request.
+
+That rule includes ephemeral one-shot workers. Their exact Guaranteed-QoS scheduler draw is part of
+the validated resource plan before the Broker or Credential Provisioner may launch them. A Pod left
+without container status by `Insufficient cpu` remains not-started for the existing bounded
+attestation window and then fails closed; extending that window cannot manufacture capacity. The
+Bootstrap phase and the co-resident credential-plus-Target phase share one exclusive capacity
+window, so the plan reserves their maximum without pretending they execute concurrently.
 
 ### 0.9 Readiness is a typed three-valued gate
 
@@ -331,10 +384,14 @@ prerequisite/readiness observer is a graph violation.
 The post-unseal sequence has separate terminal edges. The unseal worker closes on its exact
 validated receipt and the baseline root/provisioner session closes on its exact read-back without
 contacting a not-yet-installed consumer. The native plan then reaches Target Secret Agent rollout,
-Lifecycle Authority rollout, and the explicit `reconcile_post_unseal_handoff` transition in that
-order. Only that last fixed-coordinate Broker mutation may drive Authority acceptance and exact
-read-back into the durable handoff journal. Narration and APPLY project all three post-Vault steps
-from the same step table; neither unseal nor baseline hides the later handoff effect.
+the unified MinIO IAM bootstrap, Lifecycle Authority rollout, and the explicit
+`reconcile_post_unseal_handoff` transition in that order. The IAM bootstrap reads the
+already-persisted Gateway and Authority credentials through its bounded Vault role and reconciles
+both disjoint MinIO principals before the Authority can perform its first Model-B observation; it
+is not deferred to the steady application phase. Only the final fixed-coordinate Broker mutation
+may drive Authority acceptance and exact read-back into the durable handoff journal. Narration and
+APPLY project all four post-Vault steps from the same step table; neither unseal nor baseline hides
+a later effect.
 
 The generated-root ciphertext needed by first-baseline is itself secret-worker work. The controller
 mints the `BootstrapVaultSubmitGenerateRootShare` permit in the root-session scope, then drives
@@ -372,9 +429,11 @@ Root-accessor revocation is a separate physical boundary from its later absence 
 protected baseline diagnostic carries a closed payload-free cause for projected-token availability,
 bounded auditor login and invalid-login cleanup, the revoke HTTP operation, the immediate list
 read-back HTTP operation, or the exact target still being present. Connection failure, timeout,
-numeric status, and decode failure remain distinct without retaining their bodies. The public reply
-still exposes only the generic unavailable, ambiguous, or refused class, and an unrelated route
-never renders the revocation cause.
+non-404 numeric status, and decode failure remain distinct without retaining their bodies. After a
+successful revoke, Vault represents the empty accessor collection as LIST HTTP 404; only that exact
+read-back result supplies an empty set, while target presence still refuses. The public reply still
+exposes only the generic unavailable, ambiguous, or refused class, and an unrelated route never
+renders the revocation cause.
 
 Root-accessor inventory likewise has its own closed physical-boundary cause. Its protected baseline
 diagnostic distinguishes projected-token availability, bounded auditor login and invalid-login
@@ -402,8 +461,14 @@ and decode failure retain their closed cause.
 
 Provisioner-policy application is a distinct physical boundary after cleanup and login. Its
 protected baseline diagnostic carries one closed payload-free cause for a missing process-local
-provisioner token, the complete core Vault reconcile error sum, or the complete PKI reconcile and
-read-back error sum. The core and PKI projections are the same exhaustive types and classifiers
+provisioner token, unavailable exact-policy repair authority, repair write/read HTTP class, exact
+document mismatch, the complete core Vault reconcile error sum, or the complete PKI reconcile and
+read-back error sum. Vault ACL-policy replacement is root-protected: an accessor-free batch role
+has `sudo` only on `sys/policies/acl/prodbox-bootstrap-provisioner`, writes and immediately reads
+back that one compiled document, and cannot edit its own policy or a wildcard. The ordinary
+provisioner plan contains no ACL-policy writes. That compiled provisioner document names one exact
+`auth/kubernetes/role/<canonical-name>` path for every role in the ordinary reconcile plan; it has
+no role-path glob or `sudo`, and the plan writes and reads back exactly that same role set. The core and PKI projections are the same exhaustive types and classifiers
 used by the generated-root lane: every HTTP operation and
 connection/timeout/numeric-status/decode class, typed drift, nested secret-bootstrap CAS outcome,
 PKI observation failure, and non-exact PKI status remains distinguishable without duplicating a
@@ -412,16 +477,48 @@ free-form text cannot inhabit the cause. Only the protected baseline route rende
 routes do not, and every arm retains the pre-diagnostic generic HTTP 503
 `boundary-unavailable` response until live evidence licenses a behavior change.
 
+The exact repair policy/role pair, Target Secret Agent standing role, Lifecycle Authority standing
+role, and Lifecycle Authority AWS-admin journal-observer policy revision are append-only members of
+the baseline-target algebra. A completed retained root
+journal whose receipt predates any addition is not accepted as the current baseline: it advances
+the session identity, enters the normal incomplete-generate-root cancellation and root-accessor
+stable-zero path, runs a new short-lived generated-root baseline, and only then resumes provisioner
+work. This prevents an old receipt from suppressing either standing role's exact deployed-namespace
+repair or the Authority's read-only execution-journal grant. The retained store admits only those
+exact historical target lists when they appear in the terminal
+`RootSessionClosed` phase, solely so restart can consume them; receipt construction and every
+in-progress baseline phase remain current-target-only, and partial or arbitrary obsolete lists are
+corrupt. Production evidence reuses the retained session identity only for a current completed
+receipt or a cancelled-clean journal; an admitted older completion,
+an unfinished journal, or absence selects a fresh identity, satisfying restart's mandatory
+identity advance before any mutation. Existing target constructor tags remain unchanged, and no
+host or ambient root credential is introduced for the upgrade.
+
 Provisioner-accessor revocation is distinct from cleanup, policy application, and root-accessor
 revocation. Its target protected diagnostic carries a closed payload-free cause for bounded-auditor
 login and invalid-login cleanup, the initial accessor inventory, target lookup and subject
 verification, the revoke HTTP operation, the authoritative post-revocation inventory, and exact
 target/role absence status. Connection failure, timeout, numeric status, and decode failure remain
 separate without retaining accessors, subjects, roles, tokens, paths, response bodies, or arbitrary
-text. The public response remains generic. The current production interpreter still collapses
-these outcomes; adoption is scheduled in
-[Sprint `2.75`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md#sprint-275-provisioner-accessor-revocation-needs-an-exact-cause),
+text. The public response remains generic. The production diagnostic projects these outcomes into
+the closed cause while retaining the previous public unavailable/ambiguous/refused classes. Only
+exact HTTP 404 at either the initial or post-revocation accessor LIST supplies an empty inventory;
+non-list operations and every other transport/status/decode failure remain closed refusals. These
+independently live-observed corrections are owned by
+[Sprints `2.75`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md#sprint-275-provisioner-accessor-revocation-needs-an-exact-cause)
+and [`2.81`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md#sprint-281-empty-post-revocation-provisioner-inventory-is-list-404),
 with current status owned only by the development-plan resumption ledger.
+
+The later durable final provisioner-accessor absence proof is a separate boundary from revocation.
+Its protected diagnostic carries a closed payload-free cause for bounded-auditor acquisition and
+invalid-login cleanup, role-wide accessor LIST and per-accessor lookup HTTP classes, exact role
+absence, and inventory construction. The mapping preserves the existing public
+unavailable/ambiguous/refused replies and cannot carry accessors, subjects, roles, tokens, paths,
+response bodies, or arbitrary text. This diagnostic-only crossing is owned by
+[Sprint `2.82`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md#sprint-282-final-provisioner-accessor-absence-needs-an-exact-cause);
+its live diagnostic identified exact role-wide LIST HTTP 404, and only that Vault
+empty-collection representation is admitted as an empty inventory. Lookup 404 and every other
+failure remain closed.
 
 Graph construction rejects cycles, dangling requirements, duplicate exclusive providers, scope
 mismatches, and missing interpreters before mutation. Substrate-specific capabilities name their
@@ -447,6 +544,18 @@ gateway readiness. Normal Authority mutation additionally requires the exact fre
 `AuthorityBackupCommitReadBack` provider/session; `GenesisFrozen` or `BackupRepairFrozen` cannot be
 reported ready for normal work. Credential Provisioner/Admin Action Runner readiness is permit-
 specific Pod UID/image/ServiceAccount attestation, never a standing component label.
+
+Authority Backup has two ordered observations during genesis. Its release desired state and
+authenticated listener liveness are established before the long-lived backup credential exists;
+neither is store readiness and neither admits an S3 effect. `EstablishAuthorityBackup` then owns
+credential materialization and the initial copy/read-back. Only the later component-readiness node
+may observe the Adapter's exact credential-backed signed store probe as Ready. Credential absence,
+Vault failure, invalid fields, region mismatch, and S3 refusal all keep that cached projection
+not-ready without terminating the listener.
+The local establishment transport therefore waits only for the Adapter's bounded `/healthz`
+listener response before issuing the authenticated genesis program. Waiting on `/readyz` there is
+a graph cycle, because that endpoint represents the credential-backed store that the genesis
+program is about to create. Every non-genesis readiness consumer retains `/readyz`.
 
 The AWS projection validates the complete role/transport registry before its first platform
 effect. Its readiness order is capability-first: EKS Broker and target transports, retained-home

@@ -21,9 +21,14 @@ module Prodbox.Lifecycle.HelmRelease
   , HelmReleaseHooks (..)
   , HelmReleaseAbsenceRun (..)
   , HelmReleaseAbsenceFailure (..)
+  , HelmUpgradePreparationDecision (..)
+  , HelmUpgradePreparation (..)
   , mkHelmReleaseCoordinate
   , observeHelmRelease
   , classifyHelmReleaseStatus
+  , helmUpgradePreparation
+  , prepareHelmReleaseForUpgradeWith
+  , prepareHelmReleaseForUpgrade
   , reconcileHelmReleaseAbsentWith
   , reconcileHelmReleaseAbsent
   )
@@ -195,6 +200,39 @@ data HelmReleaseAbsenceFailure
   | HelmReleaseAbsencePostconditionFailed !HelmReleaseObservation
   deriving stock (Eq, Show)
 
+-- | Sprint 3.46: the only two states in which a later invocation may arrive at
+-- its upgrade boundary. A terminal historical revision is removed and
+-- observed absent first; it is never used as the base for another rollout.
+data HelmUpgradePreparationDecision
+  = HelmUpgradeAdmit
+  | HelmUpgradeRequireExactAbsence !HelmReleaseStatus
+  deriving stock (Eq, Show)
+
+data HelmUpgradePreparation
+  = HelmUpgradeProceed
+  | HelmUpgradeRecoveredTerminal !HelmReleaseStatus
+  deriving stock (Eq, Show)
+
+-- | Decide how a fresh invocation treats the release observation it obtained
+-- before writing. This is deliberately separate from failure handling in the
+-- invocation that ran @helm upgrade --wait@: that path still preserves a
+-- readiness timeout for diagnosis.
+helmUpgradePreparation
+  :: HelmReleaseObservation
+  -> Either HelmWriteRefusal HelmUpgradePreparationDecision
+helmUpgradePreparation observation = case observation of
+  HelmReleaseAbsent -> Right HelmUpgradeAdmit
+  HelmReleaseUnobservable detail -> Left (HelmWriteUnobservable detail)
+  HelmReleasePresent status -> case status of
+    HelmStatusDeployed -> Right HelmUpgradeAdmit
+    HelmStatusFailed -> Right (HelmUpgradeRequireExactAbsence status)
+    HelmStatusSuperseded -> Right (HelmUpgradeRequireExactAbsence status)
+    HelmStatusUninstalled -> Right (HelmUpgradeRequireExactAbsence status)
+    HelmStatusPendingInstall -> Left (HelmWriteConcurrentOperation status)
+    HelmStatusPendingUpgrade -> Left (HelmWriteConcurrentOperation status)
+    HelmStatusPendingRollback -> Left (HelmWriteConcurrentOperation status)
+    HelmStatusUninstalling -> Left (HelmWriteConcurrentOperation status)
+
 mkHelmReleaseCoordinate
   :: String
   -> String
@@ -286,6 +324,14 @@ reconcileHelmReleaseAbsentWith
   -> m (Either HelmReleaseAbsenceFailure HelmReleaseAbsenceRun)
 reconcileHelmReleaseAbsentWith hooks = do
   initial <- helmObserve hooks
+  reconcileHelmReleaseAbsentFromObservationWith hooks initial
+
+reconcileHelmReleaseAbsentFromObservationWith
+  :: (Monad m)
+  => HelmReleaseHooks m
+  -> HelmReleaseObservation
+  -> m (Either HelmReleaseAbsenceFailure HelmReleaseAbsenceRun)
+reconcileHelmReleaseAbsentFromObservationWith hooks initial =
   case initial of
     HelmReleaseAbsent -> pure (Right HelmReleaseAlreadyAbsent)
     HelmReleaseUnobservable detail ->
@@ -305,16 +351,50 @@ reconcileHelmReleaseAbsentWith hooks = do
               HelmReleaseAbsent -> Right HelmReleaseRemovedAndVerified
               _ -> Left (HelmReleaseAbsencePostconditionFailed final)
 
+-- | Observe once, then either admit the release directly or reconcile a
+-- terminal historical revision to exact absence. The initial observation is
+-- the one that mints the uninstall permit; the final observation, not Helm's
+-- uninstall exit code, proves the recovery completed.
+prepareHelmReleaseForUpgradeWith
+  :: (Monad m)
+  => HelmReleaseHooks m
+  -> m (Either HelmReleaseAbsenceFailure HelmUpgradePreparation)
+prepareHelmReleaseForUpgradeWith hooks = do
+  initial <- helmObserve hooks
+  case helmUpgradePreparation initial of
+    Left (HelmWriteUnobservable detail) ->
+      pure (Left (HelmReleaseInitialObservationFailed detail))
+    Left refusal -> pure (Left (HelmReleaseWriteRefused refusal))
+    Right HelmUpgradeAdmit -> pure (Right HelmUpgradeProceed)
+    Right (HelmUpgradeRequireExactAbsence terminalStatus) -> do
+      recovery <- reconcileHelmReleaseAbsentFromObservationWith hooks initial
+      pure $ case recovery of
+        Right HelmReleaseRemovedAndVerified ->
+          Right (HelmUpgradeRecoveredTerminal terminalStatus)
+        Right HelmReleaseAlreadyAbsent ->
+          Right (HelmUpgradeRecoveredTerminal terminalStatus)
+        Left failure -> Left failure
+
+prepareHelmReleaseForUpgrade
+  :: FilePath
+  -> HelmReleaseCoordinate
+  -> IO (Either HelmReleaseAbsenceFailure HelmUpgradePreparation)
+prepareHelmReleaseForUpgrade repoRoot coordinate =
+  prepareHelmReleaseForUpgradeWith (helmReleaseHooks repoRoot coordinate)
+
 reconcileHelmReleaseAbsent
   :: FilePath
   -> HelmReleaseCoordinate
   -> IO (Either HelmReleaseAbsenceFailure HelmReleaseAbsenceRun)
 reconcileHelmReleaseAbsent repoRoot coordinate =
-  reconcileHelmReleaseAbsentWith
-    HelmReleaseHooks
-      { helmObserve = observeHelmRelease repoRoot coordinate
-      , helmUninstall = uninstall
-      }
+  reconcileHelmReleaseAbsentWith (helmReleaseHooks repoRoot coordinate)
+
+helmReleaseHooks :: FilePath -> HelmReleaseCoordinate -> HelmReleaseHooks IO
+helmReleaseHooks repoRoot coordinate =
+  HelmReleaseHooks
+    { helmObserve = observeHelmRelease repoRoot coordinate
+    , helmUninstall = uninstall
+    }
  where
   uninstall = do
     result <-

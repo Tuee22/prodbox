@@ -13,6 +13,7 @@ import Control.Monad (forM_)
 import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
 import Crypto.PubKey.Ed25519 qualified as Ed25519
 import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Bits (xor)
 import Data.ByteArray qualified as ByteArray
 import Data.ByteString qualified as ByteString
@@ -42,6 +43,16 @@ import Prodbox.ControlPlane.ServiceSessionJournal
   , serviceSessionBindingFence
   , serviceSessionJournalPhase
   )
+import Prodbox.ControlPlane.TargetAuthorityTrust
+  ( TargetAuthorityTrustInstallError (..)
+  , TargetAuthorityTrustInstallResult (..)
+  , TargetAuthorityTrustObservation (..)
+  , TargetAuthorityTrustObservationCause (..)
+  , TargetAuthorityTrustRepository (..)
+  , classifyTargetAuthorityTrustRecord
+  , installTargetAuthorityTrust
+  , targetAuthorityTrustDesiredMatchesLocal
+  )
 import Prodbox.ControlPlane.TargetIntentAuthorityClient
   ( TargetIntentAuthorityClient
   )
@@ -57,24 +68,32 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
   , targetSecretPayloadId
   , targetSecretPayloadToVaultFields
   )
+import Prodbox.ControlPlane.TargetMaterializationProduction
+  ( renderTargetWorkerCoordinatorDiagnostic
+  )
 import Prodbox.ControlPlane.TargetSecretAgentExecution
 import Prodbox.ControlPlane.TargetSecretWorker
 import Prodbox.ControlPlane.TargetSecretWorkerCoordinator
 import Prodbox.ControlPlane.TargetSecretWorkerKubernetes
 import Prodbox.ControlPlane.TargetSecretWorkerProduction
-  ( classifyTargetWorkerServiceAccountObservation
+  ( classifyTargetAgentRolloutExit
+  , classifyTargetWorkerServiceAccountObservation
   , parseTargetAgentRolloutObservation
   , parseTargetWorkerServiceAccountObservation
   , recoverTargetWorkerCreateWith
   , runtimeImageIdentityMatches
   , targetWorkerActiveAccessorSubject
+  , targetWorkerOutcomeExitMatches
   , targetWorkerRetainedExecutionBoundary
   , targetWorkerRoleWideAccessorSubject
+  , terminalTargetWorkerObservation
   )
 import Prodbox.ControlPlane.TargetSecretWorkerProtocol
 import Prodbox.ControlPlane.TargetSecretWorkerRuntime
-  ( TargetWorkerAuditorRecoveryBoundary (..)
+  ( TargetSecretWorkerRuntimeError (..)
+  , TargetWorkerAuditorRecoveryBoundary (..)
   , acquireTargetWorkerAuditorWith
+  , renderTargetSecretWorkerRuntimeRefusal
   , targetWorkerServiceLoginAccepted
   )
 import Prodbox.ControlPlane.TargetWorkerExecutionPermit
@@ -91,6 +110,9 @@ import Prodbox.ControlPlane.TargetWorkerExecutionPermit
 import Prodbox.ControlPlane.TlsDekExchange
   ( TlsDekTransitBoundary (..)
   , prepareTlsDekExchange
+  )
+import Prodbox.ControlPlane.TlsTargetAgentEndpoint
+  ( TlsTargetAgentError (..)
   )
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditOps (..)
@@ -120,7 +142,7 @@ import Prodbox.Vault.Client
   , VaultKubernetesLoginResult (..)
   , VaultToken (..)
   )
-import System.Exit (ExitCode (ExitFailure))
+import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import TestSupport
 
 data AuditorFixtureLogin
@@ -145,12 +167,113 @@ controlPlaneTargetSecretWorkerSuite =
         Left TargetWorkerAttestationImageMismatch -> pure ()
         _ -> expectationFailure "expected immutable-image attestation refusal"
 
-    it "refuses a Pod whose observed runtime identity differs from the intent" $ do
+    it "renders every attestation refusal as one closed payload-free diagnostic" $ do
+      map renderTargetWorkerAttestationError allTargetWorkerAttestationErrors
+        `shouldBe` [ "deadline-reached"
+                   , "job-mismatch"
+                   , "job-uid-invalid"
+                   , "pod-name-invalid"
+                   , "pod-uid-invalid"
+                   , "image-mismatch"
+                   , "service-account-mismatch"
+                   , "service-account-uid-invalid"
+                   , "target-mismatch"
+                   , "agent-identity-mismatch"
+                   , "schema-mismatch"
+                   , "request-mismatch"
+                   , "deadline-mismatch"
+                   , "not-running"
+                   , "not-ready"
+                   , "restarted"
+                   , "deleting"
+                   ]
+      map
+        ( renderTargetWorkerCoordinatorDiagnostic
+            . TargetWorkerCoordinatorAttestationFailed
+        )
+        allTargetWorkerAttestationErrors
+        `shouldBe` map
+          (("attestation-failed/" <>) . renderTargetWorkerAttestationError)
+          allTargetWorkerAttestationErrors
+
+    it "refines only closed Target worker attach failures without retaining detail" $ do
+      let diagnostic detail =
+            renderTargetWorkerCoordinatorDiagnostic
+              (TargetWorkerCoordinatorAttachFailed detail)
+      diagnostic "Target worker attach transport failed"
+        `shouldBe` "attach-failed/transport-unavailable"
+      diagnostic "Target worker cleanup acknowledgement is invalid"
+        `shouldBe` "attach-failed/cleanup-ack-invalid"
+      diagnostic "Target worker terminal status is inconsistent"
+        `shouldBe` "attach-failed/terminal-status-inconsistent"
+      diagnostic "private-detail-a" `shouldBe` "attach-failed/other"
+      diagnostic "private-detail-b" `shouldBe` "attach-failed/other"
+
+    it "refines only closed value-free TLS-retain worker refusals" $ do
+      let runtimeToken = renderTargetSecretWorkerRuntimeRefusal
+          diagnostic detail =
+            renderTargetWorkerCoordinatorDiagnostic
+              (TargetWorkerCoordinatorMaterializationRefused detail)
+      runtimeToken TargetSecretWorkerTlsRetainProductionBoundaryUnavailable
+        `shouldBe` "tls-retain/production-boundary-unavailable"
+      runtimeToken (TargetSecretWorkerTlsRetainFailed TlsTargetSecretUnavailable)
+        `shouldBe` "tls-retain/secret-unavailable"
+      runtimeToken (TargetSecretWorkerTlsRetainFailed TlsTargetSecretInvalid)
+        `shouldBe` "tls-retain/secret-invalid"
+      runtimeToken
+        (TargetSecretWorkerTlsRetainFailed (TlsTargetCertificateCiphertextTooLarge 1 2))
+        `shouldBe` "tls-retain/certificate-ciphertext-too-large"
+      runtimeToken TargetSecretWorkerTlsRetainBadRequest
+        `shouldBe` "tls-retain/bad-request"
+      diagnostic "tls-retain/secret-unavailable"
+        `shouldBe` "materialization-refused/tls-retain/secret-unavailable"
+      diagnostic "target-worker-materialization-refused"
+        `shouldBe` "materialization-refused"
+      diagnostic "private-detail-a" `shouldBe` "materialization-refused/other"
+      diagnostic "private-detail-b" `shouldBe` "materialization-refused/other"
+
+    it "treats kubectl attach exit as transport status for either provisional domain result" $ do
+      let succeeded =
+            TargetWorkerProvisionalSucceeded TargetWorkerTlsRetainMissingResult
+          refused = TargetWorkerProvisionalRefused "closed-refusal"
+      targetWorkerOutcomeExitMatches succeeded ExitSuccess `shouldBe` True
+      targetWorkerOutcomeExitMatches refused ExitSuccess `shouldBe` True
+      targetWorkerOutcomeExitMatches succeeded (ExitFailure 1) `shouldBe` False
+      targetWorkerOutcomeExitMatches refused (ExitFailure 1) `shouldBe` False
+
+    it "accepts canonical runtime identity forms and refuses a differing digest" $ do
       let expected = targetWorkerImageDigestText workerImageDigest
+          repository = "127.0.0.1:30080/prodbox/prodbox-runtime"
       runtimeImageIdentityMatches expected ("containerd://" <> expected)
+        `shouldBe` True
+      runtimeImageIdentityMatches expected (repository <> "@" <> expected)
+        `shouldBe` True
+      runtimeImageIdentityMatches expected ("docker-pullable://" <> repository <> "@" <> expected)
         `shouldBe` True
       runtimeImageIdentityMatches expected ("containerd://" <> otherImageDigestText)
         `shouldBe` False
+      runtimeImageIdentityMatches expected (repository <> "@" <> otherImageDigestText)
+        `shouldBe` False
+      runtimeImageIdentityMatches expected (repository <> "@@" <> expected)
+        `shouldBe` False
+
+    it "does not let final post-deadline absence erase a prior observation failure" $ do
+      terminalTargetWorkerObservation
+        (Just "Target worker image digest mismatch")
+        (Right (Nothing :: Maybe Text))
+        `shouldBe` Left "Target worker image digest mismatch"
+      terminalTargetWorkerObservation
+        Nothing
+        (Right (Nothing :: Maybe Text))
+        `shouldBe` Right Nothing
+      terminalTargetWorkerObservation
+        (Just "stale failure")
+        (Right (Just ("observed" :: Text)))
+        `shouldBe` Right (Just ("observed" :: Text))
+      terminalTargetWorkerObservation
+        (Just "stale failure")
+        (Left "current failure" :: Either Text (Maybe Text))
+        `shouldBe` Left "current failure"
 
     it "requires a fully observed exact Agent rollout on both Deployment surfaces" $ do
       parseTargetAgentRolloutObservation
@@ -161,7 +284,19 @@ controlPlaneTargetSecretWorkerSuite =
         `shouldSatisfy` isLeftValue
       parseTargetAgentRolloutObservation
         (agentDeploymentObservationWithTemplateDigest workerAgentIdentity 1 1 otherImageDigestText)
-        `shouldSatisfy` isLeftValue
+        `shouldBe` Left TargetAgentRolloutDigestInconsistent
+      parseTargetAgentRolloutObservation (agentDeploymentObservationWithoutAnnotations 1 1)
+        `shouldBe` Left TargetAgentRolloutDeploymentIdentityAbsent
+      classifyTargetAgentRolloutExit
+        ( ProcessOutput
+            (ExitFailure 1)
+            ""
+            "The connection to the server localhost:8080 was refused"
+        )
+        `shouldBe` TargetAgentRolloutKubeconfigUnavailable
+      classifyTargetAgentRolloutExit
+        (ProcessOutput (ExitFailure 1) "" "Error from server (Forbidden)")
+        `shouldBe` TargetAgentRolloutAuthorizationRefused
       let substitutedIdentity =
             mustRight
               (mkTargetAgentIdentity ("home@sha256:" <> Text.replicate 64 "b"))
@@ -175,6 +310,58 @@ controlPlaneTargetSecretWorkerSuite =
         `shouldSatisfy` either
           (const False)
           ((/= workerAgentIdentity) . targetAgentRolloutEvidenceIdentity)
+
+    it "Sprint 2.116 CAS-adopts only a same-cluster prior Agent rollout" $ do
+      let target = acceptedTargetId acceptedAuthority
+          prior = authorityForAgentAt priorWorkerAgentIdentity (AuthorityEpoch 3)
+          foreignRecord = authorityForAgentAt foreignWorkerAgentIdentity (AuthorityEpoch 3)
+      classifyTargetAuthorityTrustRecord workerAgentIdentity target 7 prior
+        `shouldBe` TargetAuthorityTrustObserved 7 prior
+      classifyTargetAuthorityTrustRecord workerAgentIdentity target 7 foreignRecord
+        `shouldBe` TargetAuthorityTrustUnobservable
+          TargetAuthorityTrustObservationAgentIdentityMismatch
+      targetAuthorityTrustDesiredMatchesLocal workerAgentIdentity target acceptedAuthority
+        `shouldBe` True
+      targetAuthorityTrustDesiredMatchesLocal workerAgentIdentity target prior
+        `shouldBe` False
+      targetAuthorityTrustDesiredMatchesLocal workerAgentIdentity target tlsAcceptedAuthority
+        `shouldBe` False
+
+      state <- newIORef (7, prior)
+      casAttempts <- newIORef (0 :: Natural)
+      let repository =
+            TargetAuthorityTrustRepository
+              { observeTargetAuthorityTrust = \_ -> do
+                  (version, observed) <- readIORef state
+                  pure (TargetAuthorityTrustObserved version observed)
+              , compareAndSwapTargetAuthorityTrust = \_ expected desired -> do
+                  modifyIORef' casAttempts (+ 1)
+                  (version, _) <- readIORef state
+                  if expected == version
+                    then writeIORef state (version + 1, desired) >> pure (Right ())
+                    else pure (Left "CAS version mismatch")
+              }
+      installTargetAuthorityTrust repository acceptedAuthority
+        `shouldReturn` Right (TargetAuthorityTrustInstalled acceptedAuthority)
+      readIORef casAttempts `shouldReturn` 1
+      readIORef state `shouldReturn` (8, acceptedAuthority)
+
+      regressionCasAttempts <- newIORef (0 :: Natural)
+      let refusingRepository observed =
+            TargetAuthorityTrustRepository
+              { observeTargetAuthorityTrust = \_ ->
+                  pure (TargetAuthorityTrustObserved 7 observed)
+              , compareAndSwapTargetAuthorityTrust = \_ _ _ -> do
+                  modifyIORef' regressionCasAttempts (+ 1)
+                  pure (Right ())
+              }
+      installTargetAuthorityTrust
+        (refusingRepository prior)
+        (authorityForAgentAt workerAgentIdentity (AuthorityEpoch 2))
+        `shouldReturn` Left TargetAuthorityTrustEpochRegressed
+      installTargetAuthorityTrust (refusingRepository foreignRecord) acceptedAuthority
+        `shouldReturn` Left TargetAuthorityTrustAgentIdentityChanged
+      readIORef regressionCasAttempts `shouldReturn` 0
 
     it "admits only an exact named ServiceAccount GET with an API-assigned UID" $ do
       let expectedUid =
@@ -1026,16 +1213,38 @@ controlPlaneTargetSecretWorkerSuite =
       readIORef deleted `shouldReturn` 1
       readIORef absent `shouldReturn` 1
 
-    it "renders a secret-free, immutable, Guaranteed-QoS one-shot Job" $ do
-      let rendered =
+    it "Sprint 2.116 renders a secret-free, explicit-non-root, Guaranteed-QoS one-shot Job" $ do
+      let job = mustRight (renderTargetSecretWorkerJob "registry/prodbox" 300 workerIntent)
+          rendered =
             LazyByteString.toStrict
-              (Aeson.encode (mustRight (renderTargetSecretWorkerJob "registry/prodbox" 300 workerIntent)))
+              (Aeson.encode job)
       ByteString.isInfixOf "target-secret-value" rendered `shouldBe` False
       ByteString.isInfixOf "prodbox-target-secret-worker" rendered `shouldBe` True
       ByteString.isInfixOf "sha256:" rendered `shouldBe` True
       ByteString.isInfixOf "automountServiceAccountToken\":false" rendered `shouldBe` True
       ByteString.isInfixOf "Memory" rendered `shouldBe` True
       ByteString.isInfixOf "stdinOnce\":true" rendered `shouldBe` True
+      ByteString.isInfixOf "\"ephemeral-storage\":\"256Mi\"" rendered `shouldBe` True
+      targetWorkerPodSecurityContext job
+        `shouldBe` Just
+          ( Aeson.object
+              [ "runAsNonRoot" Aeson..= True
+              , "runAsUser" Aeson..= (65532 :: Int)
+              , "runAsGroup" Aeson..= (65532 :: Int)
+              , "fsGroup" Aeson..= (65532 :: Int)
+              , "fsGroupChangePolicy" Aeson..= ("OnRootMismatch" :: Text)
+              , "seccompProfile"
+                  Aeson..= Aeson.object ["type" Aeson..= ("RuntimeDefault" :: Text)]
+              ]
+          )
+
+targetWorkerPodSecurityContext :: Aeson.Value -> Maybe Aeson.Value
+targetWorkerPodSecurityContext (Aeson.Object root) = do
+  Aeson.Object spec <- AesonKeyMap.lookup "spec" root
+  Aeson.Object template <- AesonKeyMap.lookup "template" spec
+  Aeson.Object podSpec <- AesonKeyMap.lookup "spec" template
+  AesonKeyMap.lookup "securityContext" podSpec
+targetWorkerPodSecurityContext _ = Nothing
 
 agentDeploymentObservation
   :: TargetAgentIdentity -> Natural -> Natural -> Text -> ByteString.ByteString
@@ -1080,6 +1289,31 @@ agentDeploymentObservationWithTemplateDigest identity generation observedGenerat
                                     ]
                               ]
                         ]
+                  ]
+            , "status"
+                Aeson..= Aeson.object
+                  ["observedGeneration" Aeson..= observedGeneration]
+            ]
+        )
+    )
+
+agentDeploymentObservationWithoutAnnotations
+  :: Natural -> Natural -> ByteString.ByteString
+agentDeploymentObservationWithoutAnnotations generation observedGeneration =
+  LazyByteString.toStrict
+    ( Aeson.encode
+        ( Aeson.object
+            [ "metadata"
+                Aeson..= Aeson.object
+                  [ "name" Aeson..= ("target-secret-agent" :: Text)
+                  , "uid" Aeson..= ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" :: Text)
+                  , "generation" Aeson..= generation
+                  ]
+            , "spec"
+                Aeson..= Aeson.object
+                  [ "template"
+                      Aeson..= Aeson.object
+                        ["metadata" Aeson..= Aeson.object []]
                   ]
             , "status"
                 Aeson..= Aeson.object
@@ -1561,6 +1795,29 @@ workerAgentIdentity :: TargetAgentIdentity
 workerAgentIdentity =
   mustRight
     (mkTargetAgentIdentity ("home@sha256:" <> Text.replicate 64 "a"))
+
+priorWorkerAgentIdentity :: TargetAgentIdentity
+priorWorkerAgentIdentity =
+  mustRight
+    (mkTargetAgentIdentity ("home@sha256:" <> Text.replicate 64 "b"))
+
+foreignWorkerAgentIdentity :: TargetAgentIdentity
+foreignWorkerAgentIdentity =
+  mustRight
+    (mkTargetAgentIdentity ("foreign@sha256:" <> Text.replicate 64 "a"))
+
+authorityForAgentAt :: TargetAgentIdentity -> AuthorityEpoch -> AcceptedTargetAuthority
+authorityForAgentAt agentIdentity epoch =
+  mustRight
+    ( mkAcceptedTargetAuthority
+        issuerGeneration
+        "lifecycle-authority"
+        (targetIntentSigningPublicKey signingKey)
+        epoch
+        (mustRight (mkFencingToken 5))
+        agentIdentity
+        workerSink
+    )
 
 workerAgentRollout :: TargetAgentRolloutEvidence
 workerAgentRollout =

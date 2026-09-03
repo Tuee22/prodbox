@@ -22,6 +22,7 @@ module Prodbox.ControlPlane.AuthenticationRegistry
   , externalMaterialIngressAuditorVaultRole
   , credentialProvisionerVaultRole
   , credentialProvisionerAuditorVaultRole
+  , credentialProvisionerAuditorMaximumLeaseSeconds
   , credentialProvisionerCompletionVaultRole
   , adminActionRunnerVaultRole
   , adminActionRunnerAuditorVaultRole
@@ -75,6 +76,7 @@ controlPlaneSigningKeyRefFor principal =
     CallerTestHarness -> "test-harness"
     CallerAdminActionRunner -> "admin-action-runner"
     CallerCredentialProvisioner -> "credential-provisioner"
+    CallerCredentialProvisionerCompletion -> "credential-provisioner-completion"
 
 controlPlaneSigningKeyInventory :: [ControlPlaneSigningKeyRef]
 controlPlaneSigningKeyInventory = fmap controlPlaneSigningKeyRefFor allCallerPrincipals
@@ -105,6 +107,12 @@ credentialProvisionerVaultRole = "prodbox-credential-provisioner"
 credentialProvisionerAuditorVaultRole :: Text
 credentialProvisionerAuditorVaultRole =
   "prodbox-credential-provisioner-auditor"
+
+-- | The batch auditor spans the bounded 180-second Target-worker action plus
+-- its surrounding journal and stable-absence finalization. It remains
+-- accessor-free and cannot be renewed.
+credentialProvisionerAuditorMaximumLeaseSeconds :: Int
+credentialProvisionerAuditorMaximumLeaseSeconds = 300
 
 -- | Accessor-free batch identity used only after the AWS-admin worker service
 -- session has been proven absent. It signs the terminal Authority receipt and
@@ -188,7 +196,7 @@ controlPlaneRouteCallerTopology =
   , row LifecycleAdminAction []
   ,
     ( LifecycleAwsAdminProvisioner
-    , [CallerOperatorCli, CallerTestHarness, CallerCredentialProvisioner]
+    , [CallerOperatorCli, CallerTestHarness, CallerCredentialProvisionerCompletion]
     )
   , (LifecycleAdminActionExecution, [CallerAdminActionRunner])
   , row LifecycleProviderDispatch []
@@ -213,8 +221,9 @@ controlPlaneRouteCallerTopology =
   , (TargetTlsHomeRewrap, [authority])
   , (TargetTlsRestore, [authority])
   , (TargetTlsVerifySource, [authority])
-  , row LifecycleTlsRetentionObserve []
-  , row LifecycleTlsRetentionPromote []
+  , row LifecycleTlsRetentionObserve [authority]
+  , row LifecycleTlsRetentionPromote [authority]
+  , row LifecycleTlsRetentionWorkflow []
   , row LifecyclePulumiCheckpoint [providerWorker]
   , (LifecycleBootstrapHandoffAccept, [bootstrapBroker])
   , (LifecycleBootstrapHandoffObserve, [bootstrapBroker])

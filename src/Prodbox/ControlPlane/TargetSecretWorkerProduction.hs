@@ -15,7 +15,9 @@ module Prodbox.ControlPlane.TargetSecretWorkerProduction
   , targetWorkerAttachSubprocess
   , targetWorkerKubernetesBoundary
   , recoverTargetWorkerCreateWith
+  , terminalTargetWorkerObservation
   , parseTargetAgentRolloutObservation
+  , classifyTargetAgentRolloutExit
   , parseTargetWorkerServiceAccountObservation
   , classifyTargetWorkerServiceAccountObservation
   , runtimeImageIdentityMatches
@@ -24,6 +26,7 @@ module Prodbox.ControlPlane.TargetSecretWorkerProduction
   , targetWorkerControllerAuditOps
   , targetWorkerRoleWideAccessorSubject
   , targetWorkerActiveAccessorSubject
+  , targetWorkerOutcomeExitMatches
   )
 where
 
@@ -70,6 +73,7 @@ import Prodbox.ControlPlane.TargetIntentAuthorityClient
   )
 import Prodbox.ControlPlane.TargetSecretAgentExecution
   ( TargetAgentRolloutEvidence
+  , TargetAgentRolloutObservationCause (..)
   , mkTargetAgentIdentity
   , mkTargetAgentRolloutEvidence
   )
@@ -123,6 +127,9 @@ import Prodbox.ControlPlane.VaultServiceSessionJournal
   ( vaultServiceSessionJournalRepository
   )
 import Prodbox.Error (errorMsg)
+import Prodbox.Lifecycle.CredentialProvisioner.ImageIdentity
+  ( credentialProvisionerRuntimeManifestDigest
+  )
 import Prodbox.Observation.AbsenceMarker
   ( AbsenceProbe (..)
   , reportsAbsence
@@ -207,9 +214,9 @@ targetWorkerKubernetesBoundary connection =
         observeLimits
         (targetWorkerObserveAgentSubprocess connection)
     pure $ case attempted of
-      Left err -> Left (bounded (errorMsg err))
+      Left _ -> Left TargetAgentRolloutSubprocessUnavailable
       Right output -> case processExitCode output of
-        ExitFailure _ -> Left "selected Target Agent Deployment is not observable"
+        ExitFailure _ -> Left (classifyTargetAgentRolloutExit output)
         ExitSuccess ->
           parseTargetAgentRolloutObservation
             (ByteString8.pack (processStdout output))
@@ -285,18 +292,22 @@ targetWorkerKubernetesBoundary connection =
               intent
               (ByteString8.pack (processStdout output))
 
-  observeIntent intent = waitForObservation observationAttempts
+  observeIntent intent = waitForObservation observationAttempts Nothing
    where
-    waitForObservation remaining = do
+    waitForObservation remaining lastFailure = do
       result <- observePodsOnce connection intent
       case result of
         Right (Just observed) -> pure (Right (Just observed))
         Right Nothing
-          | remaining <= 1 -> pure (Right Nothing)
-          | otherwise -> threadDelay observationDelayMicros >> waitForObservation (remaining - 1)
+          | remaining <= 1 -> pure (terminalTargetWorkerObservation lastFailure result)
+          | otherwise ->
+              threadDelay observationDelayMicros
+                >> waitForObservation (remaining - 1) lastFailure
         Left detail
           | remaining <= 1 -> pure (Left detail)
-          | otherwise -> threadDelay observationDelayMicros >> waitForObservation (remaining - 1)
+          | otherwise ->
+              threadDelay observationDelayMicros
+                >> waitForObservation (remaining - 1) (Just detail)
 
   attachIngress attestation frame decide = do
     attempted <-
@@ -313,7 +324,9 @@ targetWorkerKubernetesBoundary connection =
       Left (FramedSubprocessExchangeTransportError _) ->
         Left (TargetWorkerCoordinatorAttachFailed "Target worker attach transport failed")
       Left (FramedSubprocessExchangeDecisionError err output)
-        | cleanupCompletionObserved output && processFailed output -> Left err
+        | cleanupCompletionObserved output
+            && targetWorkerAttachProcessSucceeded (processExitCode output) ->
+            Left err
         | otherwise ->
             Left
               ( TargetWorkerCoordinatorAttachFailed
@@ -555,48 +568,77 @@ instance FromJSON DeploymentIdentityDto where
 -- Pod-template annotations must agree, and status must have observed the
 -- current desired generation; a selected-cluster name alone is insufficient.
 parseTargetAgentRolloutObservation
-  :: ByteString -> Either Text TargetAgentRolloutEvidence
+  :: ByteString -> Either TargetAgentRolloutObservationCause TargetAgentRolloutEvidence
 parseTargetAgentRolloutObservation bytes = do
   DeploymentIdentityDto name uid generation observedGeneration annotations templateAnnotations <-
-    firstText
-      "Kubernetes Target Agent Deployment response is invalid"
+    first
+      (const TargetAgentRolloutResponseInvalid)
       (eitherDecodeStrict' bytes)
   unless
     (name == "target-secret-agent")
-    (Left "selected Target Agent Deployment name is invalid")
+    (Left TargetAgentRolloutDeploymentNameInvalid)
   identity <-
     maybe
-      (Left "selected Target Agent Deployment identity is absent")
+      (Left TargetAgentRolloutDeploymentIdentityAbsent)
       Right
       (Map.lookup targetAgentIdentityAnnotation annotations)
   templateIdentity <-
     maybe
-      (Left "selected Target Agent Pod-template identity is absent")
+      (Left TargetAgentRolloutPodTemplateIdentityAbsent)
       Right
       (Map.lookup targetAgentIdentityAnnotation templateAnnotations)
   unless
     (templateIdentity == identity)
-    (Left "selected Target Agent Deployment identity is inconsistent")
+    (Left TargetAgentRolloutIdentityInconsistent)
   rollout <-
     maybe
-      (Left "selected Target Agent Deployment rollout digest is absent")
+      (Left TargetAgentRolloutDeploymentDigestAbsent)
       Right
       (Map.lookup targetAgentRolloutAnnotation annotations)
   templateRollout <-
     maybe
-      (Left "selected Target Agent Pod-template rollout digest is absent")
+      (Left TargetAgentRolloutPodTemplateDigestAbsent)
       Right
       (Map.lookup targetAgentRolloutAnnotation templateAnnotations)
   unless
     (templateRollout == rollout)
-    (Left "selected Target Agent Deployment rollout digest is inconsistent")
-  parsedIdentity <- mkTargetAgentIdentity identity
-  mkTargetAgentRolloutEvidence
-    parsedIdentity
-    uid
-    generation
-    observedGeneration
-    rollout
+    (Left TargetAgentRolloutDigestInconsistent)
+  parsedIdentity <- first (const TargetAgentRolloutIdentityInvalid) (mkTargetAgentIdentity identity)
+  first
+    classifyTargetAgentRolloutEvidenceError
+    ( mkTargetAgentRolloutEvidence
+        parsedIdentity
+        uid
+        generation
+        observedGeneration
+        rollout
+    )
+
+-- | Classify only stable kubectl failure shapes. The captured response is
+-- inspected locally and then erased; no endpoint, user, or server text is
+-- returned to the recovery journal.
+classifyTargetAgentRolloutExit :: ProcessOutput -> TargetAgentRolloutObservationCause
+classifyTargetAgentRolloutExit output
+  | "localhost:8080" `Text.isInfixOf` combined
+      && "refused" `Text.isInfixOf` combined =
+      TargetAgentRolloutKubeconfigUnavailable
+  | "forbidden" `Text.isInfixOf` combined = TargetAgentRolloutAuthorizationRefused
+  | "notfound" `Text.isInfixOf` compact
+      || "not found" `Text.isInfixOf` combined =
+      TargetAgentRolloutDeploymentAbsent
+  | otherwise = TargetAgentRolloutKubernetesExitOther
+ where
+  combined = Text.toLower (Text.pack (processStdout output <> processStderr output))
+  compact = Text.filter (/= ' ') combined
+
+classifyTargetAgentRolloutEvidenceError :: Text -> TargetAgentRolloutObservationCause
+classifyTargetAgentRolloutEvidenceError detail = case detail of
+  "Target Agent Deployment UID is invalid" -> TargetAgentRolloutDeploymentUidInvalid
+  "Target Agent Deployment generation is not fully observed" ->
+    TargetAgentRolloutGenerationNotFullyObserved
+  "Target Agent Deployment rollout digest does not match its registered identity" ->
+    TargetAgentRolloutRegisteredDigestMismatch
+  _ -> TargetAgentRolloutObservationOther
 
 observePodsOnce
   :: TargetWorkerJobConnection
@@ -630,6 +672,18 @@ parsePodListForIntent bytes = do
     [pod] -> Right (Just pod)
     _ -> Left "Target worker Job has multiple Pods"
 
+-- | A final clean absence may classify the workload as absent only when no
+-- prior poll reached the workload and failed to validate its observation.
+-- Kubernetes may delete a deadline-expired Pod between the penultimate and
+-- final samples; that disappearance must not erase the last typed failure.
+terminalTargetWorkerObservation
+  :: Maybe Text
+  -> Either Text (Maybe observation)
+  -> Either Text (Maybe observation)
+terminalTargetWorkerObservation lastFailure observed = case observed of
+  Right Nothing -> maybe observed Left lastFailure
+  _ -> observed
+
 podObservation
   :: TargetWorkerIntent
   -> TargetWorkerServiceAccountUid
@@ -654,7 +708,7 @@ podObservation intent serviceAccountUid pod = do
     maybe
       (Left "Target worker runtime image identity is invalid")
       Right
-      (runtimeImageDigest runtimeImageId)
+      (credentialProvisionerRuntimeManifestDigest runtimeImageId)
   let expectedDigest = targetWorkerImageDigestText (targetWorkerIntentImageDigest intent)
   unless
     (runtimeImageIdentityMatches expectedDigest runtimeImageId)
@@ -858,21 +912,12 @@ findContainer name = find (\(ContainerDto actual _) -> actual == name)
 findStatus :: Text -> [ContainerStatusDto] -> Maybe ContainerStatusDto
 findStatus name = find (\(ContainerStatusDto actual _ _ _) -> actual == name)
 
-runtimeImageDigest :: Text -> Maybe Text
-runtimeImageDigest value =
-  let candidate = case Text.breakOnEnd "://" value of
-        (prefix, suffix) | not (Text.null prefix) -> suffix
-        _ -> value
-   in if "sha256:" `Text.isPrefixOf` candidate && Text.length candidate == 71
-        then Just candidate
-        else Nothing
-
 -- | Compare a Kubernetes-observed runtime identity with a signed intent digest.
 -- The declared Pod image is intentionally not an input: it is a request, not
 -- evidence of what the runtime started.
 runtimeImageIdentityMatches :: Text -> Text -> Bool
 runtimeImageIdentityMatches expectedDigest observedImageId =
-  runtimeImageDigest observedImageId == Just expectedDigest
+  credentialProvisionerRuntimeManifestDigest observedImageId == Just expectedDigest
 
 deleteRaw
   :: TargetWorkerJobConnection
@@ -1001,17 +1046,19 @@ cleanupCompletionObserved :: ProcessOutput -> Bool
 cleanupCompletionObserved output =
   ByteString8.pack (processStdout output) == targetWorkerCleanupCompletion
 
-processFailed :: ProcessOutput -> Bool
-processFailed output = case processExitCode output of
-  ExitFailure _ -> True
-  ExitSuccess -> False
+targetWorkerAttachProcessSucceeded :: ExitCode -> Bool
+targetWorkerAttachProcessSucceeded exitCode = case exitCode of
+  ExitSuccess -> True
+  ExitFailure _ -> False
 
 targetWorkerOutcomeExitMatches
   :: TargetWorkerProvisionalOutcome -> ExitCode -> Bool
-targetWorkerOutcomeExitMatches outcome exitCode = case (outcome, exitCode) of
-  (TargetWorkerProvisionalSucceeded _, ExitSuccess) -> True
-  (TargetWorkerProvisionalRefused _, ExitFailure _) -> True
-  _ -> False
+targetWorkerOutcomeExitMatches outcome exitCode =
+  case outcome of
+    -- The authenticated provisional frame is the domain result.  kubectl's
+    -- exit reports only whether its local attach stream completed.
+    TargetWorkerProvisionalSucceeded _ -> targetWorkerAttachProcessSucceeded exitCode
+    TargetWorkerProvisionalRefused _ -> targetWorkerAttachProcessSucceeded exitCode
 
 -- | Resolve an ambiguous create without treating the first @NotFound@ as
 -- absence.  The two absence observations straddle the caller-supplied API

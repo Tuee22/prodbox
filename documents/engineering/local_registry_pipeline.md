@@ -58,33 +58,40 @@ The authoritative `prodbox cluster reconcile` contract is owned by
 
 The target native Haskell lifecycle reconciles registry state in this order:
 
-1. Observe the exact legacy Harbor release. If present, execute its committed
+1. Before Kubernetes readiness, reconcile host-Docker runtime-image retention for the exact
+   managed `prodbox-runtime` repository. Inventory is machine-formatted and constrained to
+   `dangling=true`; only canonical full image IDs under that exact repository can enter individual
+   `docker image rm` calls. Tagged images, foreign repositories, broad prune, and build cache are
+   outside the program. Malformed/duplicate/noncanonical inventory, command failure, or nonempty
+   read-back refuses. The same fold runs again after the publication/import attempt so the moving
+   tags cannot leave the predecessor accumulating.
+2. Observe the exact legacy Harbor release. If present, execute its committed
    `ReconcileManagedResourceAbsent` intent and read back absence. Failure/unobservability is typed,
    retained in the cleanup report, and blocks only the conflicting registry apply—not independent
    always-run cleanup.
-2. Registry storage-backend bootstrap from public `quay.io/minio/*` image refs, including MinIO
+3. Registry storage-backend bootstrap from public `quay.io/minio/*` image refs, including MinIO
    reconcile plus the `prodbox-harbor-registry` bucket and credential bootstrap. The bootstrap Job
    reads MinIO root credentials through the `minio` service account and Vault Kubernetes auth; the
    registry itself receives a generated, persisted MinIO user in its `harbor-registry-s3` storage
    Secret (whose keys are `REGISTRY_STORAGE_S3_ACCESSKEY` / `REGISTRY_STORAGE_S3_SECRETKEY`,
    injected via `envFrom`).
-3. `kubectl apply` of the `registry:2` Deployment, its NodePort Service (nodePort `30080`), and the
+4. `kubectl apply` of the `registry:2` Deployment, its NodePort Service (nodePort `30080`), and the
    `config.yml` ConfigMap, configured to use that MinIO-backed S3 storage driver
    (`storage.s3` in `config.yml`).
-4. Registry readiness-contract reconcile (`GET /v2/`).
-5. Registry readiness wait.
-6. Stable registry external-endpoint wait.
-7. Required public-image mirror into the registry (anonymous push — see below). Repositories
+5. Registry readiness-contract reconcile (`GET /v2/`).
+6. Registry readiness wait.
+7. Stable registry external-endpoint wait.
+8. Required public-image mirror into the registry (anonymous push — see below). Repositories
    auto-create on first push, so there is **no** projects REST API reconcile.
-8. Host-native custom-image build, push, and import for the single Haskell union runtime image
+9. Host-native custom-image build, push, and import for the single Haskell union runtime image
    (`prodbox-runtime`, shared by the gateway daemon and the `api`/`websocket` workloads).
-9. `registries.yaml` reconcile and conditional RKE2 restart.
-10. Registry-backed platform-runtime install for MetalLB, Envoy Gateway, cert-manager, and the
+10. `registries.yaml` reconcile and conditional RKE2 restart.
+11. Registry-backed platform-runtime install for MetalLB, Envoy Gateway, cert-manager, and the
     Percona PostgreSQL operator.
-11. On home only, exact registered Gateway-DNS A-record reconcile through its bounded capability.
+12. On home only, exact registered Gateway-DNS A-record reconcile through its bounded capability.
     The current optional direct Route 53 bootstrap call is pre-cutover residue removed by Sprint
     `4.50`; AWS-substrate A records are Lifecycle Authority provider intents owned by Sprint `7.33`.
-12. MinIO steady-state re-reconcile, kept on the **public** `quay.io/minio/minio` image (never
+13. MinIO steady-state re-reconcile, kept on the **public** `quay.io/minio/minio` image (never
     the registry mirror): MinIO is the registry's own storage backend, so it cannot source its
     image from the registry — a circular dependency a non-surging single-replica StatefulSet
     cannot break (a registry-sourced MinIO image would deadlock: MinIO down → registry 5xx → MinIO
@@ -310,6 +317,13 @@ Container build requirements:
    worker during cutover, but target Gateway-DNS uses its bounded managed adapter and Gateway
    Runtime cannot invoke `aws route53`; the direct in-pod Gateway subprocess path is Sprint `4.50`
    removal residue
+10. bound host-Docker generation retention to exact canonical dangling image IDs observed under
+    the managed union-runtime repository; run it before build and after the publication/import
+    attempt, require empty read-back, and never substitute broad prune or build-cache deletion
+11. after copying the resolved executable, delete `.build`, Cabal's downloaded package cache, and
+    Cabal's build state before the same build `RUN` commits; retain the pinned in-image toolchain,
+    repository source, YAML Provider programs, and installed binary, and do not substitute global
+    Docker build-cache deletion
 
 ### 6.1 Host `docker` CLI auth isolation (registry push vs the operator's Docker Hub login)
 
@@ -416,18 +430,20 @@ in an `image` field. A `dev check` rule, `checkWorkerImagePullReferenceOwner`, k
 closed across the Bootstrap Broker, Target Secret Worker, Credential Provisioner, and Admin Action
 Pod-image owners.
 
-**No repository code reads a manifest digest deliberately.** There is no `Docker-Content-Digest`
-consumer, no `.RepoDigests` read, and no `buildx --push` digest capture.
-`Prodbox.Lib.ChartPlatform.resolveLocalImageBuildToken` reads `docker image inspect --format
-'{{.Id}}'`, which on this host yields a manifest digest — but per the table above that is a
-consequence of the daemon's image store rather than of anything the code requires, so the value is
-sound as a **rollout token** (it changes when the image changes) and unsound as a declared
-registry coordinate. Sprint `4.83` therefore keeps that token for rollout detection, supplies the
-declared `repository:tag` to every Pod `image` field, and obtains the separately named runtime
-attestation identity from the pushed OCI manifest's `config.digest` via
-`docker buildx imagetools inspect --raw`. Kubernetes observers parse
-`status.containerStatuses[].imageID` and compare that runtime identity with the signed intent;
-their own declared spec is no longer accepted as proof of what ran.
+The repository deliberately resolves the registry-manifest identity from the exact repository's
+`.RepoDigests` after publication. `Prodbox.Lib.ChartPlatform.resolveLocalImageBuildToken` separately
+reads `docker image inspect --format '{{.Id}}'`; because that reporter depends on the host image
+store, its value is only a **rollout token** and cannot satisfy a registry-manifest obligation.
+Chart rendering keeps that token solely in the Pod rollout annotation and supplies the declared
+`repository:tag` to every Pod `image` field.
+
+Credential Provisioner and Target materialization Jobs use `imagePullPolicy: Always`; on this path
+Kubernetes reports the pulled registry manifest in `status.containerStatuses[].imageID`. Their
+signed attestation identity is therefore the independently resolved repository-manifest digest.
+The registered Target Agent identity that supplies the downstream Target-worker expectation is
+derived from that manifest digest too, never from the Docker-local rollout token. The standing
+Target Agent Pod's `IfNotPresent` runtime representation may remain the bare config identity; that
+separate observation neither authorizes nor substitutes for the downstream `Always`-pull join.
 
 ## 7. Operator Runbook
 

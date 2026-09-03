@@ -19,8 +19,11 @@ module Prodbox.Vault.Reconcile
   , VaultReconcileHttpOperation (..)
   , VaultReconcileError (..)
   , defaultVaultReconcilePlan
+  , provisionerVaultReconcilePlan
   , bootstrapBrokerRotatableTransitKeys
   , bootstrapProvisionerRole
+  , bootstrapProvisionerPolicySpec
+  , bootstrapPolicyRepairRole
   , bootstrapPkiOperatorRole
   , bootstrapControlPlaneClientRole
   , bootstrapSealRole
@@ -54,6 +57,7 @@ import Prodbox.ControlPlane.AuthenticationRegistry
   , controlPlaneSigningKeyInventory
   , controlPlaneSigningKeyName
   , controlPlaneSigningKeyRefFor
+  , credentialProvisionerAuditorMaximumLeaseSeconds
   , credentialProvisionerAuditorVaultRole
   , credentialProvisionerCompletionVaultRole
   , credentialProvisionerVaultRole
@@ -308,7 +312,8 @@ defaultVaultReconcilePlan =
         , VaultPolicySpec
             (vaultRoleIdText VaultRoleBootstrapBroker)
             bootstrapBrokerPolicy
-        , VaultPolicySpec bootstrapProvisionerRole bootstrapProvisionerPolicy
+        , bootstrapProvisionerPolicySpec
+        , VaultPolicySpec bootstrapPolicyRepairRole bootstrapPolicyRepairPolicy
         , VaultPolicySpec bootstrapPkiOperatorRole bootstrapPkiOperatorPolicy
         , VaultPolicySpec bootstrapSealRole bootstrapSealPolicy
         , VaultPolicySpec
@@ -365,10 +370,12 @@ defaultVaultReconcilePlan =
             )
         , VaultPolicySpec
             credentialProvisionerVaultRole
-            credentialProvisionerPolicy
+            ( credentialProvisionerPolicy
+                <> externalControlPlaneAuthenticationPolicy CallerCredentialProvisioner
+            )
         , VaultPolicySpec
             credentialProvisionerCompletionVaultRole
-            (externalControlPlaneAuthenticationPolicy CallerCredentialProvisioner)
+            (externalControlPlaneAuthenticationPolicy CallerCredentialProvisionerCompletion)
         , VaultPolicySpec
             adminActionRunnerVaultRole
             ( adminActionRunnerPolicy
@@ -424,6 +431,14 @@ defaultVaultReconcilePlan =
             "5m"
             VaultKubernetesServiceToken
         , VaultKubernetesRoleSpec
+            bootstrapPolicyRepairRole
+            ["prodbox-bootstrap-broker"]
+            ["bootstrap-broker"]
+            [bootstrapPolicyRepairRole]
+            Nothing
+            "2m"
+            VaultKubernetesBatchToken
+        , VaultKubernetesRoleSpec
             bootstrapPkiOperatorRole
             ["prodbox-bootstrap-broker"]
             ["bootstrap-broker"]
@@ -471,20 +486,25 @@ defaultVaultReconcilePlan =
             Nothing
             "1h"
             VaultKubernetesServiceToken
-        , standingRole
+        , standingRoleInNamespace
             VaultRoleLifecycleAuthority
+            "lifecycle-authority"
             "prodbox-lifecycle-authority"
-        , standingRole
+        , standingRoleInNamespace
             VaultRoleProviderWorker
+            "provider-worker"
             "prodbox-provider-worker"
-        , standingRole
+        , standingRoleInNamespace
             VaultRoleAuthorityBackup
+            "authority-backup"
             "prodbox-authority-backup"
-        , standingRole
+        , standingRoleInNamespace
             VaultRoleTlsRetention
+            "tls-retention"
             "prodbox-tls-retention"
-        , standingRole
+        , standingRoleInNamespace
             VaultRoleTargetSecretAgent
+            "target-secret-agent"
             "prodbox-target-secret-agent"
         , VaultKubernetesRoleSpec
             operatorControlPlaneVaultRole
@@ -524,7 +544,7 @@ defaultVaultReconcilePlan =
             ["credential-provisioner"]
             [credentialProvisionerAuditorVaultRole]
             (Just "prodbox-control-plane")
-            "2m"
+            (Text.pack (show credentialProvisionerAuditorMaximumLeaseSeconds) <> "s")
             VaultKubernetesBatchToken
         , VaultKubernetesRoleSpec
             credentialProvisionerVaultRole
@@ -596,12 +616,19 @@ defaultVaultReconcilePlan =
         controlPlaneAuthorityEpochSeed : chartVaultManagedSecretObjects
     }
 
-standingRole :: VaultRoleId -> Text -> VaultKubernetesRoleSpec
-standingRole role policy =
+-- | The ordinary provisioner repairs the non-policy Vault baseline. ACL policy
+-- replacement is root-protected and therefore belongs to the disjoint batch
+-- repair role below, never to the long-enough-lived provisioner session.
+provisionerVaultReconcilePlan :: VaultReconcilePlan
+provisionerVaultReconcilePlan =
+  defaultVaultReconcilePlan {vaultReconcilePolicies = []}
+
+standingRoleInNamespace :: VaultRoleId -> Text -> Text -> VaultKubernetesRoleSpec
+standingRoleInNamespace role namespace policy =
   VaultKubernetesRoleSpec
     (vaultRoleIdText role)
     [vaultRoleIdText role]
-    ["gateway"]
+    [namespace]
     [policy]
     Nothing
     "1h"
@@ -1268,6 +1295,16 @@ bootstrapBrokerPolicy =
 bootstrapProvisionerRole :: Text
 bootstrapProvisionerRole = "prodbox-bootstrap-provisioner"
 
+bootstrapProvisionerPolicySpec :: VaultPolicySpec
+bootstrapProvisionerPolicySpec =
+  VaultPolicySpec bootstrapProvisionerRole bootstrapProvisionerPolicy
+
+-- | Accessor-free batch role that may replace and read back only the ordinary
+-- provisioner's ACL policy. It cannot edit its own policy or any other Vault
+-- policy, so its root-protected @sudo@ capability cannot be self-expanded.
+bootstrapPolicyRepairRole :: Text
+bootstrapPolicyRepairRole = "prodbox-bootstrap-policy-repair"
+
 -- | Accessor-free batch role for post-bootstrap PKI observation and the exact
 -- compiled test-certificate issuance.  It cannot reconcile mounts, policies,
 -- auth roles, secrets, or seal Vault.
@@ -1404,14 +1441,33 @@ bootstrapProvisionerPolicy =
     , "path \"sys/auth/kubernetes\" { capabilities = [\"create\", \"read\", \"update\"] }"
     , "path \"auth/kubernetes/config\" { capabilities = [\"create\", \"read\", \"update\"] }"
     , "path \"transit/keys/prodbox-*\" { capabilities = [\"create\", \"read\", \"update\"] }"
-    , "path \"sys/policies/acl/prodbox-*\" { capabilities = [\"create\", \"read\", \"update\"] }"
-    , "path \"auth/kubernetes/role/prodbox-*\" { capabilities = [\"create\", \"read\", \"update\"] }"
     , "path \"secret/data/*\" { capabilities = [\"create\", \"read\", \"update\"] }"
     , "path \"secret/metadata/*\" { capabilities = [\"read\"] }"
     , "path \"pki/issuers\" { capabilities = [\"list\"] }"
     , "path \"pki/root/generate/internal\" { capabilities = [\"update\"] }"
     , "path \"pki/roles/prodbox-bootstrap-test\" { capabilities = [\"create\", \"read\", \"update\"] }"
     , "path \"pki/issue/prodbox-bootstrap-test\" { capabilities = [\"update\"] }"
+    ]
+    <> Text.concat
+      ( map
+          provisionerKubernetesRolePolicyStanza
+          (vaultReconcileKubernetesRoles defaultVaultReconcilePlan)
+      )
+
+provisionerKubernetesRolePolicyStanza :: VaultKubernetesRoleSpec -> Text
+provisionerKubernetesRolePolicyStanza role =
+  Text.unlines
+    [ "path \"auth/kubernetes/role/"
+        <> vaultKubernetesRoleSpecName role
+        <> "\" { capabilities = [\"create\", \"read\", \"update\"] }"
+    ]
+
+bootstrapPolicyRepairPolicy :: Text
+bootstrapPolicyRepairPolicy =
+  Text.unlines
+    [ "path \"sys/policies/acl/prodbox-bootstrap-provisioner\" {"
+    , "  capabilities = [\"create\", \"read\", \"update\", \"sudo\"]"
+    , "}"
     ]
 
 bootstrapPkiOperatorPolicy :: Text
@@ -1484,6 +1540,9 @@ lifecycleAuthorityPolicy =
     , "}"
     , "path \"secret/data/control-plane/bootstrap-handoff\" {"
     , "  capabilities = [\"create\", \"read\", \"update\"]"
+    , "}"
+    , "path \"secret/data/control-plane/aws-admin-executions/*\" {"
+    , "  capabilities = [\"read\"]"
     , "}"
     ]
 

@@ -60,6 +60,17 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.ports.controlPlane }}
+    # The worker dials the pre-DNAT Kubernetes Service, while NetworkPolicy is
+    # evaluated against the post-DNAT endpoint. Both exact coordinates come
+    # from the compiled `endpoints/kubernetes` observation.
+    - to:
+        {{- range .Values.kubernetesApiEgress.addresses }}
+        - ipBlock:
+            cidr: {{ . }}/32
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.kubernetesApiEgress.port }}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

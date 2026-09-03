@@ -242,12 +242,28 @@ canonicalEnvelopeTests =
           (testWireRoute . testWireClaims . decodeTestWire . encodeSignedControlPlaneRequest)
           requests
           @?= [19, 20, 21]
+    , testCase "assigns the Authority TLS workflow route additive stable code 60" $ do
+        let request =
+              signedRequest
+                signer
+                LifecycleTlsRetentionWorkflow
+                LifecycleAuthorityRuntime
+                scopeA
+                authorityEpochGenesis
+                deadline
+                nonceA
+                body
+        testWireRoute
+          (testWireClaims (decodeTestWire (encodeSignedControlPlaneRequest request)))
+          @?= 60
     , testCase "round-trips every closed caller principal under an independently pinned key" $
         mapM_ verifyCaller allCallerPrincipals
-    , testCase "assigns stable service, operator CLI, and test-harness caller codes" $ do
+    , testCase "assigns stable caller codes and appends completion authority" $ do
         callerPrincipalCode (CallerService LifecycleAuthorityRuntime) @?= 3
         callerPrincipalCode CallerOperatorCli @?= 100
         callerPrincipalCode CallerTestHarness @?= 101
+        callerPrincipalCode CallerCredentialProvisioner @?= 103
+        callerPrincipalCode CallerCredentialProvisionerCompletion @?= 104
         mapM_
           (\principal -> callerPrincipalFromCode (callerPrincipalCode principal) @?= Just principal)
           allCallerPrincipals

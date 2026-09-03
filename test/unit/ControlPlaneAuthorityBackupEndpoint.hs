@@ -4,6 +4,7 @@
 
 module ControlPlaneAuthorityBackupEndpoint (controlPlaneAuthorityBackupEndpointSuite) where
 
+import Control.Monad (forM_)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -13,6 +14,12 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Numeric.Natural (Natural)
+import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
+  ( AuthenticatedRolePlainResponseObservation (..)
+  , allAuthenticatedRolePlainResponseCauses
+  , authenticatedRolePlainResponse
+  )
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   ( AuthorityAdmissionRepository (..)
   , AuthorityAdmissionSnapshot (..)
@@ -23,40 +30,50 @@ import Prodbox.ControlPlane.AuthorityBackupAdapter
   )
 import Prodbox.ControlPlane.AuthorityBackupClient
   ( AuthorityAggregateBackupClient (..)
+  , AuthorityAggregateBackupClientError (..)
   , AuthorityAggregateBackupObservation (..)
+  , decodeAuthorityAggregateBackupResponse
   )
 import Prodbox.ControlPlane.AuthorityBackupEndpoint
 import Prodbox.ControlPlane.AuthorityBackupExportClient
-  ( mkAuthorityBackupExportClient
+  ( AuthorityBackupExportResponseObservation (..)
+  , authorityBackupExportResponseObservationToken
+  , classifyAuthorityBackupExportResponse
+  , mkAuthorityBackupExportClient
   )
 import Prodbox.ControlPlane.AuthorityBackupExportEndpoint
 import Prodbox.ControlPlane.AuthorityBackupReconcileProduction
 import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   ( AwsAdminFirstReconcileProjection (..)
   )
+import Prodbox.ControlPlane.Client (ControlPlaneResponse (..))
 import Prodbox.ControlPlane.Codec
   ( ControlPlaneRequestCodecError (ControlPlaneRequestInvalid, ControlPlaneRequestTooLarge)
   , decodeControlPlaneResponse
   , encodeControlPlaneRequest
+  , encodeControlPlaneResponse
   )
 import Prodbox.ControlPlane.DedicatedAdapterStore
   ( AdapterObjectObservation (..)
   , AdapterObjectVersion
   , AdapterPutResult (..)
   , DedicatedAdapterKind (AuthorityBackupAdapter)
+  , DedicatedAdapterStoreError (..)
   , DedicatedAdapterTransport (..)
+  , adapterBindingTransport
   , adapterObjectNameText
   , authorityBackupBlobObjectName
   , authorityBackupCredentialPath
   , authorityBackupStorePrefix
   , awsS3EndpointForRegion
+  , deferredAuthorityBackupBinding
   , mkAdapterObjectVersion
   , mkAuthorityBackupStoreConfig
   , mkTlsRetentionStoreConfig
   , tlsRetentionCredentialPath
   )
 import Prodbox.ControlPlane.TargetSecretAgentExecution (mkTargetAgentIdentity)
-import Prodbox.Http.ReplyStatus (ReplyStatus (..))
+import Prodbox.Http.ReplyStatus (ReplyStatus (..), replyStatusCode)
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionCommand (ApplyAuthorityGenesis)
   , initialCleanInstallAuthority
@@ -72,6 +89,7 @@ import Prodbox.Lifecycle.Authority.Genesis
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   ( awsAdminPermitIntentCredentialClass
+  , awsAdminPermitIntentDeadline
   , mkAuthorityBackupIamParameters
   , mkGatewayDnsIamParameters
   , mkLifecycleProviderIamParameters
@@ -81,7 +99,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   , defaultFirstReconcileProvisioningPlan
   , firstReconcilePlanMembers
   )
-import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
+import Prodbox.Lifecycle.Lease (authorityTimeFromMicros, authorityTimeMicros)
 import Prodbox.Settings (Credentials (..))
 import TestSupport
 
@@ -125,6 +143,44 @@ controlPlaneAuthorityBackupEndpointSuite =
         "test.example"
         "authority-backup-store/home"
         `shouldSatisfy` isLeft
+    it "keeps one binding closed until its per-operation credential loader succeeds" $ do
+      available <- newIORef False
+      loadCount <- newIORef (0 :: Int)
+      (native, _, putCount) <- freshMemoryTransport False
+      let config =
+            mustRight
+              ( mkAuthorityBackupStoreConfig
+                  "home"
+                  (awsS3EndpointForRegion (fixtureAwsRegion FixtureCaCentral1))
+                  (fixtureAwsRegion FixtureCaCentral1)
+                  "prodbox-retained"
+                  "authority-backup-store/home"
+              )
+          loadTransport = do
+            modifyIORef' loadCount (+ 1)
+            current <- readIORef available
+            pure $
+              if current
+                then Right native
+                else Left (DedicatedAdapterVaultReadFailed authorityBackupCredentialPath "status-404")
+          transport =
+            adapterBindingTransport
+              (deferredAuthorityBackupBinding config loadTransport)
+          objectName =
+            mustRight
+              (authorityBackupBlobObjectName "checkpoint" (Text.replicate 64 "a"))
+      adapterObjectStoreReady transport `shouldReturn` False
+      putAdapterObjectIfAbsent transport objectName "before-genesis"
+        `shouldReturn` Left "Authority Backup store credential is unavailable"
+      readIORef putCount `shouldReturn` 0
+      writeIORef available True
+      adapterObjectStoreReady transport `shouldReturn` True
+      putAdapterObjectIfAbsent transport objectName "after-genesis"
+        `shouldReturn` Right AdapterPutApplied
+      observed <- observeAdapterObject transport objectName
+      observed `shouldSatisfy` isObservedBytes "after-genesis"
+      readIORef putCount `shouldReturn` 1
+      readIORef loadCount `shouldReturn` 5
     it "copies opaque ciphertext and returns a canonical binary receipt" $ do
       (transport, _, _) <- freshMemoryTransport False
       let repository = authorityBackupRepositoryWithTransport transport
@@ -281,6 +337,10 @@ controlPlaneAuthorityBackupEndpointSuite =
           authorityBackupExportEnvelope response
             `shouldBe` "canonical-retained-aggregate"
           authorityBackupExportDigest response `shouldSatisfy` ((== 64) . Text.length)
+          decodeControlPlaneResponse
+            authorityBackupExportMaximumResponseBytes
+            (LazyByteString.fromStrict (authorityBackupExportResponseBody exported))
+            `shouldBe` Right response
         other -> expectationFailure ("expected aggregate export, got " <> show other)
       mismatched <-
         serveAuthorityBackupExportRequest
@@ -290,6 +350,75 @@ controlPlaneAuthorityBackupEndpointSuite =
           (request (ExportGenesisAggregate "different-plan"))
       mismatched `shouldBe` AuthorityBackupExportPurposeMismatch
       authorityBackupExportHttpStatus mismatched `shouldBe` ReplyConflict
+      authorityBackupExportResponseBody mismatched `shouldBe` "purpose-mismatch"
+    it "classifies the export response shape without retaining response values" $ do
+      let responseA = AuthorityBackupExportResponse "private-aggregate-a" "private-digest-a"
+          responseB = AuthorityBackupExportResponse "private-aggregate-b" "private-digest-b"
+          encoded value = LazyByteString.toStrict (encodeControlPlaneResponse value)
+          observations = [minBound .. maxBound]
+          tokens = fmap authorityBackupExportResponseObservationToken observations
+      classifyAuthorityBackupExportResponse (encoded responseA)
+        `shouldBe` AuthorityBackupExportResponseDirect
+      classifyAuthorityBackupExportResponse
+        (encoded (Right responseA :: Either Text AuthorityBackupExportResponse))
+        `shouldBe` AuthorityBackupExportResponseEndpointSuccess
+      classifyAuthorityBackupExportResponse
+        (encoded (Right responseB :: Either Text AuthorityBackupExportResponse))
+        `shouldBe` AuthorityBackupExportResponseEndpointSuccess
+      classifyAuthorityBackupExportResponse
+        (encoded (Left "private-failure-a" :: Either Text AuthorityBackupExportResponse))
+        `shouldBe` AuthorityBackupExportResponseEndpointFailure
+      classifyAuthorityBackupExportResponse
+        (encoded (Left "private-failure-b" :: Either Text AuthorityBackupExportResponse))
+        `shouldBe` AuthorityBackupExportResponseEndpointFailure
+      classifyAuthorityBackupExportResponse ByteString.empty
+        `shouldBe` AuthorityBackupExportResponseEmpty
+      classifyAuthorityBackupExportResponse "not-canonical-cbor"
+        `shouldBe` AuthorityBackupExportResponseOther
+      List.nub tokens `shouldBe` tokens
+    it "Sprint 2.125 classifies aggregate decode failures by exact authenticated-role pair" $ do
+      let decodeAggregate response =
+            decodeAuthorityAggregateBackupResponse response
+              :: Either
+                   AuthorityAggregateBackupClientError
+                   AuthorityBackupBlobObservation
+          wrongStatus status
+            | replyStatusCode status == 500 = 503
+            | otherwise = 500
+      forM_ allAuthenticatedRolePlainResponseCauses $ \cause -> do
+        let (status, body) = authenticatedRolePlainResponse cause
+            known = AuthenticatedRolePlainResponseKnown cause
+            invalidAt responseStatus responseBody =
+              Left
+                ( AuthorityAggregateBackupResponseInvalid
+                    ControlPlaneRequestInvalid
+                    ( if responseStatus == replyStatusCode status && responseBody == body
+                        then known
+                        else AuthenticatedRolePlainResponseOther
+                    )
+                )
+        decodeAggregate (ControlPlaneResponse (replyStatusCode status) body)
+          `shouldBe` invalidAt (replyStatusCode status) body
+        decodeAggregate (ControlPlaneResponse (wrongStatus status) body)
+          `shouldBe` invalidAt (wrongStatus status) body
+        decodeAggregate
+          (ControlPlaneResponse (replyStatusCode status) ("private-prefix" <> body))
+          `shouldBe` invalidAt (replyStatusCode status) ("private-prefix" <> body)
+        decodeAggregate
+          (ControlPlaneResponse (replyStatusCode status) (body <> "private-suffix"))
+          `shouldBe` invalidAt (replyStatusCode status) (body <> "private-suffix")
+      decodeAggregate (ControlPlaneResponse 503 "private-aggregate-response-a")
+        `shouldBe` Left
+          ( AuthorityAggregateBackupResponseInvalid
+              ControlPlaneRequestInvalid
+              AuthenticatedRolePlainResponseOther
+          )
+      decodeAggregate (ControlPlaneResponse 503 "different-private-aggregate-response-b")
+        `shouldBe` Left
+          ( AuthorityAggregateBackupResponseInvalid
+              ControlPlaneRequestInvalid
+              AuthenticatedRolePlainResponseOther
+          )
     it "retains the immutable Adapter digest and re-observes that exact backup" $ do
       let envelope = "canonical-retained-aggregate"
           ciphertext = mustRight (mkAuthorityBackupCiphertext envelope)
@@ -388,7 +517,7 @@ controlPlaneAuthorityBackupEndpointSuite =
         member
         (genesisIntentIamParameters parameters)
         `shouldSatisfy` isLeft
-    it "re-observes and advances each retained continuation member" $ do
+    it "Sprint 2.108 re-observes each retained member under the fresh active deadline" $ do
       let parameters =
             GenesisAwsAdminIntentParameters
               { genesisIntentIamParameters =
@@ -419,7 +548,7 @@ controlPlaneAuthorityBackupEndpointSuite =
               { awsAdminFirstReconcileClass = credentialClass
               , awsAdminFirstReconcileMemberIndex = memberIndex
               , awsAdminFirstReconcileMemberDigest = Text.replicate 64 digestByte
-              , awsAdminFirstReconcileDeadlineMicros = 60000000
+              , awsAdminFirstReconcileDeadlineMicros = 10000000
               }
           firstShow :: (Show err) => Either err value -> Either Text value
           firstShow = either (Left . Text.pack . show) Right
@@ -429,6 +558,7 @@ controlPlaneAuthorityBackupEndpointSuite =
           , continuation GatewayDnsCredential 2 "d"
           ]
       coordinated <- newIORef ([] :: [AwsCredentialClass])
+      activeDeadlines <- newIORef ([] :: [Natural])
       let observe = atomicModifyIORef' continuations popContinuation
           resolveIam _ credentialClass = pure $ case credentialClass of
             LifecycleProviderCredential ->
@@ -445,6 +575,9 @@ controlPlaneAuthorityBackupEndpointSuite =
             modifyIORef'
               coordinated
               (<> [awsAdminPermitIntentCredentialClass intent])
+            modifyIORef'
+              activeDeadlines
+              (<> [authorityTimeMicros (awsAdminPermitIntentDeadline intent)])
             pure (Right ())
       result <-
         reconcileRemainingFirstReconcileCredentialsWith
@@ -456,6 +589,7 @@ controlPlaneAuthorityBackupEndpointSuite =
       result `shouldBe` Right ()
       readIORef coordinated
         `shouldReturn` [LifecycleProviderCredential, GatewayDnsCredential]
+      readIORef activeDeadlines `shouldReturn` [60000000, 60000000]
     it "compiles repair from the retained epoch, generation, and backup digest" $ do
       let parameters =
             GenesisAwsAdminIntentParameters
@@ -545,6 +679,14 @@ isRight :: Either left right -> Bool
 isRight value = case value of
   Left _ -> False
   Right _ -> True
+
+isObservedBytes
+  :: ByteString
+  -> Either Text AdapterObjectObservation
+  -> Bool
+isObservedBytes expected observation = case observation of
+  Right (AdapterObjectObserved _ bytes) -> bytes == expected
+  _ -> False
 
 mustRight :: (Show err) => Either err value -> value
 mustRight = either (error . show) id

@@ -170,6 +170,7 @@ module Prodbox.Bootstrap.Broker.Types
   , baselineReadBackStorageGeneration
   , baselineReadBackTargets
   , baselineReadBackDigest
+  , baselineTargetsAreCurrent
   , ProvisionerLoginReceipt
   , mkProvisionerLoginReceipt
   , provisionerLoginStorageGeneration
@@ -1060,6 +1061,14 @@ data BaselineTarget
   | BaselineTokenAccessorAuditorRole
   | BaselineAuthorityGenesisSigningKey
   | BaselinePkiTestRole
+  | BaselineBootstrapPolicyRepairPolicy
+  | BaselineBootstrapPolicyRepairRole
+  | BaselineTargetSecretAgentStandingRole
+  | BaselineLifecycleAuthorityStandingRole
+  | BaselineStandingRoleNamespaceBindings
+  | BaselineLifecycleAuthorityAwsAdminJournalObserver
+  | BaselineCredentialProvisionerCompletionPrincipal
+  | BaselineCredentialProvisionerAuditorLeaseContainment
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 requiredRootBaselineTargets :: [BaselineTarget]
@@ -1129,7 +1138,7 @@ mkBaselineReadBackReceipt
   -> ArtifactDigest
   -> Either BootstrapValueError BaselineReadBackReceipt
 mkBaselineReadBackReceipt sessionId generation targets digest
-  | sort (nub targets) /= requiredRootBaselineTargets =
+  | not (baselineTargetsAreCurrent targets) =
       Left (BootstrapBaselineTargetsIncomplete (sort (nub targets)))
   | otherwise =
       Right
@@ -1151,6 +1160,10 @@ baselineReadBackTargets (BaselineReadBackReceipt _ _ targets _) = targets
 
 baselineReadBackDigest :: BaselineReadBackReceipt -> ArtifactDigest
 baselineReadBackDigest (BaselineReadBackReceipt _ _ _ digest) = digest
+
+baselineTargetsAreCurrent :: [BaselineTarget] -> Bool
+baselineTargetsAreCurrent targets =
+  sort (nub targets) == requiredRootBaselineTargets
 
 data ProvisionerLoginReceipt
   = ProvisionerLoginReceipt

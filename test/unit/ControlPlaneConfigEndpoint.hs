@@ -6,6 +6,7 @@ module ControlPlaneConfigEndpoint
 where
 
 import Codec.Serialise (DeserialiseFailure, deserialiseOrFail, serialise)
+import Control.Monad (forM_)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -19,16 +20,32 @@ import Data.IORef
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Word (Word8)
+import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
+  ( AuthenticatedRolePlainResponseObservation (..)
+  , allAuthenticatedRolePlainResponseCauses
+  , authenticatedRolePlainResponse
+  )
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   ( AuthorityAdmissionRepository (..)
   , AuthorityAdmissionSnapshot (..)
   )
+import Prodbox.ControlPlane.AuthorityBackupEndpoint
+  ( AuthorityBackupBlobObservation
+  )
 import Prodbox.ControlPlane.CallerPrincipal
   ( CallerPrincipal (..)
   )
-import Prodbox.ControlPlane.Codec (encodeControlPlaneRequest)
+import Prodbox.ControlPlane.Client (ControlPlaneResponse (..))
+import Prodbox.ControlPlane.Codec
+  ( ControlPlaneRequestCodecError (ControlPlaneRequestInvalid)
+  , encodeControlPlaneRequest
+  )
+import Prodbox.ControlPlane.ConfigBackupClient
+  ( ConfigBackupClientError (..)
+  , decodeConfigBackupResponse
+  )
 import Prodbox.ControlPlane.ConfigEndpoint
-import Prodbox.Http.ReplyStatus (ReplyStatus (..))
+import Prodbox.Http.ReplyStatus (ReplyStatus (..), replyStatusCode)
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , AuthorityAdmissionCommand (..)
@@ -109,6 +126,48 @@ controlPlaneConfigEndpointSuite =
         `shouldBe` True
       either (const True) (const False) (decodeConfigProjectionScope [130, 0, 0])
         `shouldBe` True
+
+    it "Sprint 2.126 classifies config decode failures by exact authenticated-role pair" $ do
+      let decodeConfig response =
+            decodeConfigBackupResponse response
+              :: Either ConfigBackupClientError AuthorityBackupBlobObservation
+          wrongStatus status
+            | replyStatusCode status == 500 = 503
+            | otherwise = 500
+      forM_ allAuthenticatedRolePlainResponseCauses $ \cause -> do
+        let (status, body) = authenticatedRolePlainResponse cause
+            known = AuthenticatedRolePlainResponseKnown cause
+            invalidAt responseStatus responseBody =
+              Left
+                ( ConfigBackupResponseInvalid
+                    ControlPlaneRequestInvalid
+                    ( if responseStatus == replyStatusCode status && responseBody == body
+                        then known
+                        else AuthenticatedRolePlainResponseOther
+                    )
+                )
+        decodeConfig (ControlPlaneResponse (replyStatusCode status) body)
+          `shouldBe` invalidAt (replyStatusCode status) body
+        decodeConfig (ControlPlaneResponse (wrongStatus status) body)
+          `shouldBe` invalidAt (wrongStatus status) body
+        decodeConfig
+          (ControlPlaneResponse (replyStatusCode status) ("private-prefix" <> body))
+          `shouldBe` invalidAt (replyStatusCode status) ("private-prefix" <> body)
+        decodeConfig
+          (ControlPlaneResponse (replyStatusCode status) (body <> "private-suffix"))
+          `shouldBe` invalidAt (replyStatusCode status) (body <> "private-suffix")
+      decodeConfig (ControlPlaneResponse 503 "private-config-response-a")
+        `shouldBe` Left
+          ( ConfigBackupResponseInvalid
+              ControlPlaneRequestInvalid
+              AuthenticatedRolePlainResponseOther
+          )
+      decodeConfig (ControlPlaneResponse 503 "different-private-config-response-b")
+        `shouldBe` Left
+          ( ConfigBackupResponseInvalid
+              ControlPlaneRequestInvalid
+              AuthenticatedRolePlainResponseOther
+          )
 
     it "keeps proposals frozen until both genesis read-backs establish backup" $ do
       fixture <- newConfigFixture frozenAuthority

@@ -41,6 +41,7 @@ import Prodbox.ControlPlane.TargetSecretAgentExecution
   ( AcceptedTargetAuthority
   , TargetAgentIdentity
   , TargetAgentRolloutEvidence
+  , TargetAgentRolloutObservationCause
   , targetAgentRolloutEvidenceIdentity
   )
 import Prodbox.ControlPlane.TargetSecretWorker
@@ -104,7 +105,7 @@ data TargetWorkerProvisionalOutcome
 
 data TargetWorkerKubernetesBoundary m = TargetWorkerKubernetesBoundary
   { observeSelectedTargetAgentRollout
-      :: m (Either Text TargetAgentRolloutEvidence)
+      :: m (Either TargetAgentRolloutObservationCause TargetAgentRolloutEvidence)
   , createTargetWorkerIntent
       :: TargetWorkerIntent
       -> m (Either Text TargetWorkerJobUid)
@@ -167,7 +168,7 @@ data TargetWorkerExecutionBoundary m = TargetWorkerExecutionBoundary
   }
 
 data TargetWorkerCoordinatorError
-  = TargetWorkerCoordinatorAgentIdentityUnavailable !Text
+  = TargetWorkerCoordinatorAgentIdentityUnavailable !TargetAgentRolloutObservationCause
   | TargetWorkerCoordinatorAgentIdentityMismatch
   | TargetWorkerCoordinatorIntentRejected !TargetWorkerIntentError
   | TargetWorkerCoordinatorCreateFailed !Text

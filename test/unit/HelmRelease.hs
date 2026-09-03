@@ -1,6 +1,7 @@
 module HelmRelease (helmReleaseSuite) where
 
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.List (nub)
 import Prodbox.Lifecycle.HelmRelease
 import Prodbox.Subprocess (ProcessOutput (..))
 import System.Exit (ExitCode (..))
@@ -138,6 +139,57 @@ helmReleaseSuite =
         `shouldBe` Left (HelmReleaseWriteRefused (HelmWriteConcurrentOperation HelmStatusPendingUpgrade))
       readIORef calls `shouldReturn` ["observe"]
 
+    it "Sprint 3.46: exhausts every release status into proceed, recover, or refuse" $ do
+      let decision status = helmUpgradePreparation (HelmReleasePresent status)
+          terminalStatuses = [HelmStatusFailed, HelmStatusUninstalled, HelmStatusSuperseded]
+          concurrentStatuses =
+            [ HelmStatusPendingInstall
+            , HelmStatusPendingUpgrade
+            , HelmStatusPendingRollback
+            , HelmStatusUninstalling
+            ]
+      decision HelmStatusDeployed `shouldBe` Right HelmUpgradeAdmit
+      map decision terminalStatuses
+        `shouldBe` map (Right . HelmUpgradeRequireExactAbsence) terminalStatuses
+      map decision concurrentStatuses
+        `shouldBe` map (Left . HelmWriteConcurrentOperation) concurrentStatuses
+      let classifiedStatuses = nub (HelmStatusDeployed : terminalStatuses ++ concurrentStatuses)
+      length classifiedStatuses `shouldBe` length ([minBound .. maxBound] :: [HelmReleaseStatus])
+      map (`elem` classifiedStatuses) ([minBound .. maxBound] :: [HelmReleaseStatus])
+        `shouldBe` replicate (length classifiedStatuses) True
+      helmUpgradePreparation HelmReleaseAbsent `shouldBe` Right HelmUpgradeAdmit
+      helmUpgradePreparation (HelmReleaseUnobservable "api down")
+        `shouldBe` Left (HelmWriteUnobservable "api down")
+
+    it "Sprint 3.46: recovers failed state before upgrade and refuses pending state without effects" $ do
+      failedObservations <-
+        newIORef [HelmReleasePresent HelmStatusFailed, HelmReleaseAbsent]
+      failedCalls <- newIORef ([] :: [String])
+      failedResult <-
+        prepareThenUpgrade
+          failedCalls
+          HelmReleaseHooks
+            { helmObserve = modifyIORef' failedCalls (++ ["observe"]) >> pop failedObservations
+            , helmUninstall = modifyIORef' failedCalls (++ ["uninstall"]) >> pure (Right ())
+            }
+      failedResult
+        `shouldBe` Right (HelmUpgradeRecoveredTerminal HelmStatusFailed)
+      readIORef failedCalls `shouldReturn` ["observe", "uninstall", "observe", "upgrade"]
+
+      pendingCalls <- newIORef ([] :: [String])
+      pendingResult <-
+        prepareThenUpgrade
+          pendingCalls
+          HelmReleaseHooks
+            { helmObserve =
+                modifyIORef' pendingCalls (++ ["observe"])
+                  >> pure (HelmReleasePresent HelmStatusPendingUpgrade)
+            , helmUninstall = modifyIORef' pendingCalls (++ ["uninstall"]) >> pure (Right ())
+            }
+      pendingResult
+        `shouldBe` Left (HelmReleaseWriteRefused (HelmWriteConcurrentOperation HelmStatusPendingUpgrade))
+      readIORef pendingCalls `shouldReturn` ["observe"]
+
 output :: ExitCode -> String -> String -> ProcessOutput
 output exit stdout stderr =
   ProcessOutput
@@ -160,3 +212,15 @@ isUnobservableObservation observation = case observation of
 
 isRightPermit :: Either HelmWriteRefusal HelmWritePermit -> Bool
 isRightPermit = either (const False) (const True)
+
+prepareThenUpgrade
+  :: IORef [String]
+  -> HelmReleaseHooks IO
+  -> IO (Either HelmReleaseAbsenceFailure HelmUpgradePreparation)
+prepareThenUpgrade calls hooks = do
+  preparation <- prepareHelmReleaseForUpgradeWith hooks
+  case preparation of
+    Left failure -> pure (Left failure)
+    Right prepared -> do
+      modifyIORef' calls (++ ["upgrade"])
+      pure (Right prepared)

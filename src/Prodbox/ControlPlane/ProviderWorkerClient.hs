@@ -12,6 +12,7 @@ module Prodbox.ControlPlane.ProviderWorkerClient
   , ProviderWorkerClientError (..)
   , providerWorkerResponseMaximumBytes
   , providerWorkerExecutionAuthenticatedHandler
+  , providerWorkerExecutionAuthenticatedHandlerObserved
   , dispatchProviderCommittedIntent
   )
 where
@@ -46,11 +47,21 @@ import Prodbox.ControlPlane.Codec
 import Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal
   ( providerExecutionResultForAuthority
   )
+import Prodbox.ControlPlane.ProviderWorkerDiagnostic
+  ( ProviderWorkerRequestCause (..)
+  , ProviderWorkerRequestObserver
+  , ProviderWorkerRequestStage (..)
+  , observeProviderWorkerRequest
+  )
 import Prodbox.ControlPlane.ProviderWorkerExecution
-  ( ProviderIntentExecutionResult
+  ( ExecutedProviderIntent
+  , ProviderIntentExecutionError
+  , ProviderIntentExecutionResult
   , ProviderWorkerExecutionBoundary
+  , VerifiedProviderCommittedIntent
   , admitProviderCommittedIntent
   , executeVerifiedProviderIntentBound
+  , executeVerifiedProviderIntentBoundObserved
   )
 import Prodbox.ControlPlane.RequestAuthentication
   ( verifiedCallerSlotPrincipal
@@ -87,47 +98,94 @@ providerWorkerExecutionAuthenticatedHandler
   -> AuthenticatedRoleHandler m
   -> AuthenticatedRoleHandler m
 providerWorkerExecutionAuthenticatedHandler maximumBytes boundary fallback =
+  providerWorkerExecutionAuthenticatedHandlerWith
+    (\_ _ -> pure ())
+    boundary
+    (executeVerifiedProviderIntentBound boundary)
+    maximumBytes
+    fallback
+
+providerWorkerExecutionAuthenticatedHandlerObserved
+  :: Int
+  -> ProviderWorkerRequestObserver
+  -> ProviderWorkerExecutionBoundary IO session
+  -> AuthenticatedRoleHandler IO
+  -> AuthenticatedRoleHandler IO
+providerWorkerExecutionAuthenticatedHandlerObserved maximumBytes observer boundary fallback =
+  providerWorkerExecutionAuthenticatedHandlerWith
+    (observeProviderWorkerRequest observer)
+    boundary
+    (executeVerifiedProviderIntentBoundObserved observer boundary)
+    maximumBytes
+    fallback
+
+providerWorkerExecutionAuthenticatedHandlerWith
+  :: (Monad m)
+  => (ProviderWorkerRequestStage -> ProviderWorkerRequestCause -> m ())
+  -> ProviderWorkerExecutionBoundary m session
+  -> ( VerifiedProviderCommittedIntent
+       -> m (Either ProviderIntentExecutionError ExecutedProviderIntent)
+     )
+  -> Int
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+providerWorkerExecutionAuthenticatedHandlerWith observeStage boundary executeBound maximumBytes fallback =
   AuthenticatedRoleHandler
     { authenticatedHandlerReadiness = authenticatedHandlerReadiness fallback
     , authenticatedHandlerHandle = handle
     }
  where
   handle caller route body = case route of
-    ProviderWorkApply
-      | verifiedCallerSlotPrincipal caller
-          == CallerService LifecycleAuthorityRuntime ->
-          Just <$> serve body
-      | otherwise ->
-          pure (Just (ReplyForbidden, responseBody (ProviderWorkerAdmissionRefused "caller-refused")))
+    ProviderWorkApply ->
+      Just <$> do
+        completeStage ProviderWorkerAuthenticatedIngress
+        observeStage ProviderWorkerIntentAdmission ProviderWorkerStageStarted
+        if verifiedCallerSlotPrincipal caller
+          == CallerService LifecycleAuthorityRuntime
+          then serve body
+          else do
+            refuseStage ProviderWorkerIntentAdmission
+            respond ReplyForbidden (ProviderWorkerAdmissionRefused "caller-refused")
     _ -> authenticatedHandlerHandle fallback caller route body
 
   serve body = do
     admitted <- admitProviderCommittedIntent maximumBytes boundary body
     case admitted of
-      Left err ->
-        pure
-          ( ReplyConflict
-          , responseBody
-              (ProviderWorkerAdmissionRefused (Text.pack (show err)))
-          )
+      Left err -> do
+        refuseStage ProviderWorkerIntentAdmission
+        respond
+          ReplyConflict
+          (ProviderWorkerAdmissionRefused (Text.pack (show err)))
       Right verified -> do
-        executed <- executeVerifiedProviderIntentBound boundary verified
-        pure $ case executed of
+        completeStage ProviderWorkerIntentAdmission
+        executed <- executeBound verified
+        case executed of
           Left err ->
-            ( ReplyServiceUnavailable
-            , responseBody
-                (ProviderWorkerExecutionFailed (Text.pack (show err)))
-            )
-          Right bound -> case providerExecutionResultForAuthority bound of
-            Left err ->
-              ( ReplyServiceUnavailable
-              , responseBody
+            respond
+              ReplyServiceUnavailable
+              (ProviderWorkerExecutionFailed (Text.pack (show err)))
+          Right bound -> do
+            observeStage ProviderWorkerAuthorityProjection ProviderWorkerStageStarted
+            case providerExecutionResultForAuthority bound of
+              Left err -> do
+                refuseStage ProviderWorkerAuthorityProjection
+                respond
+                  ReplyServiceUnavailable
                   (ProviderWorkerExecutionFailed (Text.pack (show err)))
-              )
-            Right result ->
-              (ReplyOk, responseBody (ProviderWorkerExecuted result))
+              Right result -> do
+                completeStage ProviderWorkerAuthorityProjection
+                respond ReplyOk (ProviderWorkerExecuted result)
+
+  respond status response = do
+    observeStage ProviderWorkerResponseEncoding ProviderWorkerStageStarted
+    case responseBody response of
+      encoded -> do
+        completeStage ProviderWorkerResponseEncoding
+        pure (status, encoded)
 
   responseBody = LazyByteString.toStrict . encodeControlPlaneResponse
+  completeStage stage = observeStage stage ProviderWorkerStageCompleted
+  refuseStage stage = observeStage stage ProviderWorkerStageRefused
 
 dispatchProviderCommittedIntent
   :: AuthenticatedClientTransport 'ProviderWorkerRuntime

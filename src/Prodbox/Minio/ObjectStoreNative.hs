@@ -27,6 +27,15 @@ module Prodbox.Minio.ObjectStoreNative
   , S3Timestamp (..)
   , signS3Request
   , objectStoreService
+  , ObjectStoreHttpStatusClass (..)
+  , allObjectStoreHttpStatusClasses
+  , renderObjectStoreHttpStatusClass
+  , objectStoreHttpStatusClass
+  , objectStoreGetFailureStatusClass
+  , ObjectStoreS3ErrorCodeClass (..)
+  , allObjectStoreS3ErrorCodeClasses
+  , renderObjectStoreS3ErrorCodeClass
+  , objectStoreGetFailureS3ErrorCodeClass
   )
 where
 
@@ -36,10 +45,12 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.CaseInsensitive qualified as CI
+import Data.Char (isAlphaNum, isAscii)
 import Data.List (find)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Text.Read qualified as TextRead
 import Data.Time.Clock (UTCTime, getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Network.HTTP.Client
@@ -57,6 +68,119 @@ import Prodbox.Minio.ObjectStoreTypes
 
 objectStoreService :: ByteString
 objectStoreService = "s3"
+
+-- | Closed, payload-free classification of an HTTP status returned by the
+-- native object-store boundary. The raw status and response remain available
+-- to existing internal error consumers; protected diagnostics retain only this
+-- class.
+data ObjectStoreHttpStatusClass
+  = ObjectStoreHttpAuthentication
+  | ObjectStoreHttpAuthorization
+  | ObjectStoreHttpOtherClient
+  | ObjectStoreHttpServer
+  | ObjectStoreHttpUnexpectedNonError
+  | ObjectStoreHttpUnknown
+  deriving (Bounded, Enum, Eq, Show)
+
+allObjectStoreHttpStatusClasses :: [ObjectStoreHttpStatusClass]
+allObjectStoreHttpStatusClasses = [minBound .. maxBound]
+
+renderObjectStoreHttpStatusClass :: ObjectStoreHttpStatusClass -> Text
+renderObjectStoreHttpStatusClass statusClass = case statusClass of
+  ObjectStoreHttpAuthentication -> "authentication"
+  ObjectStoreHttpAuthorization -> "authorization"
+  ObjectStoreHttpOtherClient -> "client-other"
+  ObjectStoreHttpServer -> "server"
+  ObjectStoreHttpUnexpectedNonError -> "unexpected-non-error"
+  ObjectStoreHttpUnknown -> "unknown"
+
+objectStoreHttpStatusClass :: Int -> ObjectStoreHttpStatusClass
+objectStoreHttpStatusClass status
+  | status == 401 = ObjectStoreHttpAuthentication
+  | status == 403 = ObjectStoreHttpAuthorization
+  | status >= 400 && status < 500 = ObjectStoreHttpOtherClient
+  | status >= 500 && status < 600 = ObjectStoreHttpServer
+  | status >= 100 && status < 400 = ObjectStoreHttpUnexpectedNonError
+  | otherwise = ObjectStoreHttpUnknown
+
+-- | Recover the closed status class from the native GET failure rendering.
+-- This is deliberately partial only for errors that are not native GET HTTP
+-- failures; malformed or out-of-range status text stays fail-closed as
+-- 'ObjectStoreHttpUnknown'.
+objectStoreGetFailureStatusClass :: Text -> Maybe ObjectStoreHttpStatusClass
+objectStoreGetFailureStatusClass detail = do
+  statusAndBody <- Text.stripPrefix "object-store GET failed (" detail
+  let (renderedStatus, closingAndBody) = Text.breakOn ")" statusAndBody
+  if Text.null closingAndBody
+    then Just ObjectStoreHttpUnknown
+    else case TextRead.decimal renderedStatus of
+      Right (status, trailing)
+        | Text.null trailing -> Just (objectStoreHttpStatusClass status)
+      _ -> Just ObjectStoreHttpUnknown
+
+-- | Closed S3 error-code vocabulary for a native HTTP refusal. The XML code is
+-- classified but never retained, and all other response fields stay solely in
+-- the existing internal error.
+data ObjectStoreS3ErrorCodeClass
+  = ObjectStoreS3AccessDenied
+  | ObjectStoreS3InvalidAccessKey
+  | ObjectStoreS3SignatureMismatch
+  | ObjectStoreS3RequestTimeSkewed
+  | ObjectStoreS3AuthorizationHeaderMalformed
+  | ObjectStoreS3ExpiredToken
+  | ObjectStoreS3Other
+  | ObjectStoreS3MalformedOrUnknown
+  deriving (Bounded, Enum, Eq, Show)
+
+allObjectStoreS3ErrorCodeClasses :: [ObjectStoreS3ErrorCodeClass]
+allObjectStoreS3ErrorCodeClasses = [minBound .. maxBound]
+
+renderObjectStoreS3ErrorCodeClass :: ObjectStoreS3ErrorCodeClass -> Text
+renderObjectStoreS3ErrorCodeClass codeClass = case codeClass of
+  ObjectStoreS3AccessDenied -> "access-denied"
+  ObjectStoreS3InvalidAccessKey -> "invalid-access-key"
+  ObjectStoreS3SignatureMismatch -> "signature-mismatch"
+  ObjectStoreS3RequestTimeSkewed -> "request-time-skewed"
+  ObjectStoreS3AuthorizationHeaderMalformed -> "authorization-header-malformed"
+  ObjectStoreS3ExpiredToken -> "expired-token"
+  ObjectStoreS3Other -> "other"
+  ObjectStoreS3MalformedOrUnknown -> "malformed-or-unknown"
+
+objectStoreGetFailureS3ErrorCodeClass :: Text -> Maybe ObjectStoreS3ErrorCodeClass
+objectStoreGetFailureS3ErrorCodeClass detail = do
+  statusAndBody <- Text.stripPrefix "object-store GET failed (" detail
+  let (_, closingAndBody) = Text.breakOn ")" statusAndBody
+  body <- Text.stripPrefix "): " closingAndBody
+  pure (classifyS3ErrorBody body)
+
+classifyS3ErrorBody :: Text -> ObjectStoreS3ErrorCodeClass
+classifyS3ErrorBody body =
+  case Text.breakOn "<Code>" body of
+    (_, codeElement)
+      | Text.null codeElement -> ObjectStoreS3MalformedOrUnknown
+      | otherwise ->
+          let afterOpen = Text.drop (Text.length "<Code>") codeElement
+              (code, closingAndTail) = Text.breakOn "</Code>" afterOpen
+              afterClose = Text.drop (Text.length "</Code>") closingAndTail
+           in if Text.null closingAndTail
+                || Text.null code
+                || "<Code>" `Text.isInfixOf` afterClose
+                then ObjectStoreS3MalformedOrUnknown
+                else classifyS3ErrorCode code
+
+classifyS3ErrorCode :: Text -> ObjectStoreS3ErrorCodeClass
+classifyS3ErrorCode code
+  | Text.length code > 64
+      || not (Text.all (\character -> isAscii character && isAlphaNum character) code) =
+      ObjectStoreS3MalformedOrUnknown
+  | otherwise = case code of
+      "AccessDenied" -> ObjectStoreS3AccessDenied
+      "InvalidAccessKeyId" -> ObjectStoreS3InvalidAccessKey
+      "SignatureDoesNotMatch" -> ObjectStoreS3SignatureMismatch
+      "RequestTimeTooSkewed" -> ObjectStoreS3RequestTimeSkewed
+      "AuthorizationHeaderMalformed" -> ObjectStoreS3AuthorizationHeaderMalformed
+      "ExpiredToken" -> ObjectStoreS3ExpiredToken
+      _ -> ObjectStoreS3Other
 
 -- | The two SigV4 timestamps: @amzDate@ is @YYYYMMDDTHHMMSSZ@ and @dateStamp@
 -- is @YYYYMMDD@. Split out so the signing algebra is pure and testable.

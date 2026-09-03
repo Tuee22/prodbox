@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | Authenticated client for the Target Secret Agent's exact TLS lane. The
 -- five operations are closed constructors; no method accepts a namespace,
@@ -7,6 +8,9 @@
 module Prodbox.ControlPlane.TlsTargetAgentClient
   ( TlsTargetAgentClient (..)
   , TlsTargetAgentClientError (..)
+  , classifyTlsTargetAgentHttpStatus
+  , renderTlsTargetAgentClientCause
+  , tlsTargetAgentClientReplayCapacityExhausted
   , tlsTargetAgentClientWithTransport
   )
 where
@@ -15,6 +19,13 @@ import Codec.Serialise (Serialise)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.Text (Text)
+import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
+  ( AuthenticatedRolePlainResponseCause (AuthenticatedRoleReplayCapacityExhausted)
+  , AuthenticatedRolePlainResponseObservation (..)
+  , classifyAuthenticatedRolePlainResponse
+  , renderAuthenticatedRolePlainResponseObservation
+  )
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError
   , AuthenticatedClientTransport
@@ -86,11 +97,41 @@ data TlsTargetAgentClient m = TlsTargetAgentClient
 
 data TlsTargetAgentClientError
   = TlsTargetAgentClientTransportFailed !AuthenticatedClientError
-  | TlsTargetAgentClientHttpStatus !Int
+  | TlsTargetAgentClientHttpStatus
+      !Int
+      !AuthenticatedRolePlainResponseObservation
   | TlsTargetAgentClientResponseInvalid !ControlPlaneResponseCodecError
   | TlsTargetAgentClientRetentionVersionMismatch
   | TlsTargetAgentClientRestoreReferenceMismatch
   deriving stock (Eq, Show)
+
+-- | Preserve only an exact static authenticated-role response pair. Arbitrary
+-- Target response bytes never cross this client boundary.
+classifyTlsTargetAgentHttpStatus :: Int -> ByteString -> TlsTargetAgentClientError
+classifyTlsTargetAgentHttpStatus status body =
+  TlsTargetAgentClientHttpStatus
+    status
+    (classifyAuthenticatedRolePlainResponse status body)
+
+tlsTargetAgentClientReplayCapacityExhausted :: TlsTargetAgentClientError -> Bool
+tlsTargetAgentClientReplayCapacityExhausted clientError = case clientError of
+  TlsTargetAgentClientHttpStatus
+    _
+    ( AuthenticatedRolePlainResponseKnown
+        AuthenticatedRoleReplayCapacityExhausted
+      ) -> True
+  _ -> False
+
+-- | Closed, payload-free diagnosis for the TLS Target client. Transport,
+-- codec, response, and retained-reference details never enter the token.
+renderTlsTargetAgentClientCause :: TlsTargetAgentClientError -> Text
+renderTlsTargetAgentClientCause clientError = case clientError of
+  TlsTargetAgentClientTransportFailed _ -> "transport-failed"
+  TlsTargetAgentClientHttpStatus _ observation ->
+    "http-status/" <> renderAuthenticatedRolePlainResponseObservation observation
+  TlsTargetAgentClientResponseInvalid _ -> "response-invalid"
+  TlsTargetAgentClientRetentionVersionMismatch -> "retention-version-mismatch"
+  TlsTargetAgentClientRestoreReferenceMismatch -> "restore-reference-mismatch"
 
 tlsTargetAgentMaximumResponseBytes :: Int
 tlsTargetAgentMaximumResponseBytes = 2 * 1024 * 1024
@@ -189,7 +230,7 @@ callSuccess transport route request = do
     ControlPlaneResponse status responseBytes <-
       first TlsTargetAgentClientTransportFailed attempted
     if status /= 200
-      then Left (TlsTargetAgentClientHttpStatus status)
+      then Left (classifyTlsTargetAgentHttpStatus status responseBytes)
       else
         first
           TlsTargetAgentClientResponseInvalid

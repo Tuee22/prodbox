@@ -6,30 +6,45 @@ module ControlPlaneVaultSession
 where
 
 import Data.Either (isLeft, isRight)
+import Data.List (nub)
 import Data.Text qualified as Text
 import Prodbox.ControlPlane.AuthenticationRegistry
-  ( controlPlaneSigningKeyInventory
+  ( callerMayCallRoute
+  , controlPlaneSigningKeyInventory
   , controlPlaneSigningKeyName
   , controlPlaneSigningKeyRefFor
+  , credentialProvisionerAuditorMaximumLeaseSeconds
+  , credentialProvisionerAuditorVaultRole
   , credentialProvisionerCompletionVaultRole
   , credentialProvisionerVaultRole
   , harnessControlPlaneVaultRole
   , operatorControlPlaneVaultRole
   )
-import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal (CallerService))
+import Prodbox.ControlPlane.CallerPrincipal
+  ( CallerPrincipal
+      ( CallerCredentialProvisioner
+      , CallerCredentialProvisionerCompletion
+      , CallerService
+      )
+  )
 import Prodbox.ControlPlane.InClusterAuthorityStore
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalCallerTokenError (..)
   , ExternalLifecycleAuthorityCaller (..)
+  , KubernetesTokenRequestLifetimeError (..)
   , ServiceAccountObservationFailure (..)
   , classifyServiceAccountObservation
+  , classifyTokenRequest
   , externalCallerServiceAccount
   , externalCallerServiceAccountReadArguments
   , externalCallerTokenAuthorityReached
   , externalCallerTokenAuthorityRefusedAuthorization
   , externalCallerTokenEligibilityArguments
+  , externalCallerTokenLifetime
   , externalCallerTokenRequestArguments
   , externalCallerTokenSessionError
+  , kubernetesTokenRequestLifetimeSeconds
+  , mkKubernetesTokenRequestLifetime
   , renderExternalCallerTokenError
   , renderServiceAccountObservationFailure
   , serviceAccountObservationAuthorityReached
@@ -38,6 +53,14 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
 import Prodbox.ControlPlane.RetainedAuthentication
   ( controlPlaneAuthorityEpochPath
   , controlPlaneRequestReplayPath
+  )
+import Prodbox.ControlPlane.Route
+  ( ControlPlaneRoute
+      ( LifecycleAwsAdminProvisioner
+      , LifecycleRetainedMaterialDelivery
+      , LifecycleTargetIntentIssue
+      , TargetMaterialObserve
+      )
   )
 import Prodbox.ControlPlane.Runtime
   ( LifecycleAuthorityCoordinates (..)
@@ -53,6 +76,9 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , checkpointAuthorityVaultKeyspace
   , modelBObjectLogicalName
   )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorker
+  ( awsAdminTargetWorkerMaximumRuntimeSeconds
+  )
 import Prodbox.Minio.ObjectStoreTypes (defaultObjectStoreBucket)
 import Prodbox.Runtime.Role
 import Prodbox.Secret.VaultInventory qualified as VaultInventory
@@ -60,6 +86,7 @@ import Prodbox.Subprocess (ProcessOutput (..))
 import Prodbox.Vault.Client (VaultAddress (..))
 import Prodbox.Vault.Reconcile
   ( VaultKubernetesRoleSpec (..)
+  , VaultKubernetesTokenType (..)
   , VaultPolicySpec (..)
   , VaultReconcilePlan (..)
   , VaultTransitKeySpec (..)
@@ -107,6 +134,41 @@ controlPlaneVaultSessionSuite =
     it "reconciles one distinct policy and Kubernetes role for every standing process" $
       mapM_ assertReconciledStandingRole standingRoleBindings
 
+    it "Sprint 2.83 binds the Target Secret Agent role to its deployed namespace" $ do
+      let targetRole =
+            exactlyOneRole
+              (vaultRoleIdText VaultRoleTargetSecretAgent)
+              (vaultReconcileKubernetesRoles defaultVaultReconcilePlan)
+      fmap vaultKubernetesRoleSpecServiceAccounts targetRole
+        `shouldBe` Just ["prodbox-target-secret-agent"]
+      fmap vaultKubernetesRoleSpecNamespaces targetRole
+        `shouldBe` Just ["target-secret-agent"]
+
+    it "Sprint 2.98 binds every standing role to its exact deployed namespace" $ do
+      let roles = vaultReconcileKubernetesRoles defaultVaultReconcilePlan
+          authorityRole = exactlyOneRole (vaultRoleIdText VaultRoleLifecycleAuthority) roles
+      authorityRole
+        `shouldBe` Just
+          ( VaultKubernetesRoleSpec
+              (vaultRoleIdText VaultRoleLifecycleAuthority)
+              ["prodbox-lifecycle-authority"]
+              ["lifecycle-authority"]
+              ["prodbox-lifecycle-authority"]
+              Nothing
+              "1h"
+              VaultKubernetesServiceToken
+          )
+      mapM_
+        ( \(roleId, namespace) ->
+            fmap vaultKubernetesRoleSpecNamespaces (exactlyOneRole (vaultRoleIdText roleId) roles)
+              `shouldBe` Just [namespace]
+        )
+        [ (VaultRoleProviderWorker, "provider-worker")
+        , (VaultRoleAuthorityBackup, "authority-backup")
+        , (VaultRoleTlsRetention, "tls-retention")
+        , (VaultRoleTargetSecretAgent, "target-secret-agent")
+        ]
+
     it "binds custom projected JWT audiences only on exact one-shot roles" $ do
       let roles = vaultReconcileKubernetesRoles defaultVaultReconcilePlan
           audienceOf name =
@@ -131,6 +193,17 @@ controlPlaneVaultSessionSuite =
       audienceOf (vaultRoleIdText VaultRoleLifecycleAuthority)
         `shouldBe` Just Nothing
 
+    it "Sprint 2.116 keeps the AWS-admin auditor alive beyond its bounded Target worker" $ do
+      let roles = vaultReconcileKubernetesRoles defaultVaultReconcilePlan
+          auditor = exactlyOneRole credentialProvisionerAuditorVaultRole roles
+      fmap vaultKubernetesRoleSpecTtl auditor
+        `shouldBe` Just
+          (Text.pack (show credentialProvisionerAuditorMaximumLeaseSeconds) <> "s")
+      fmap vaultKubernetesRoleSpecTokenType auditor
+        `shouldBe` Just VaultKubernetesBatchToken
+      fromIntegral awsAdminTargetWorkerMaximumRuntimeSeconds
+        `shouldSatisfy` (< credentialProvisionerAuditorMaximumLeaseSeconds)
+
     it "separates the AWS-admin worker data session from its accessor-free terminal signer" $ do
       let policies = vaultReconcilePolicies defaultVaultReconcilePlan
           documentFor name =
@@ -140,11 +213,43 @@ controlPlaneVaultSessionSuite =
           workerDocument = documentFor credentialProvisionerVaultRole
           completionDocument = documentFor credentialProvisionerCompletionVaultRole
       workerDocument `shouldContain` "secret/data/control-plane/aws-admin-executions/*"
-      workerDocument `shouldNotContain` "transit/sign/prodbox-control-plane-credential-provisioner"
-      completionDocument `shouldContain` "transit/sign/prodbox-control-plane-credential-provisioner"
+      workerDocument
+        `shouldContain` "path \"transit/sign/prodbox-control-plane-credential-provisioner\" {"
+      workerDocument
+        `shouldNotContain` "path \"transit/sign/prodbox-control-plane-credential-provisioner-completion\" {"
+      completionDocument
+        `shouldContain` "path \"transit/sign/prodbox-control-plane-credential-provisioner-completion\" {"
+      completionDocument
+        `shouldNotContain` "path \"transit/sign/prodbox-control-plane-credential-provisioner\" {"
       completionDocument `shouldContain` "secret/data/control-plane/authority-epoch"
       completionDocument `shouldNotContain` "aws-admin-executions"
       completionDocument `shouldNotContain` "auth/token/"
+      map
+        (callerMayCallRoute CallerCredentialProvisioner)
+        [TargetMaterialObserve, LifecycleTargetIntentIssue, LifecycleRetainedMaterialDelivery]
+        `shouldBe` [True, True, True]
+      callerMayCallRoute CallerCredentialProvisioner LifecycleAwsAdminProvisioner
+        `shouldBe` False
+      callerMayCallRoute CallerCredentialProvisionerCompletion LifecycleAwsAdminProvisioner
+        `shouldBe` True
+      map
+        (callerMayCallRoute CallerCredentialProvisionerCompletion)
+        [TargetMaterialObserve, LifecycleTargetIntentIssue, LifecycleRetainedMaterialDelivery]
+        `shouldBe` [False, False, False]
+
+    it "Sprint 2.115 gives Lifecycle Authority read-only execution-journal observation" $ do
+      let policies = vaultReconcilePolicies defaultVaultReconcilePlan
+          authorityDocument = case filter
+            ((== vaultRoleIdText VaultRoleLifecycleAuthority) . vaultPolicySpecName)
+            policies of
+            [policy] -> Text.unpack (vaultPolicySpecDocument policy)
+            other -> error ("expected one Lifecycle Authority policy, got " <> show other)
+      authorityDocument
+        `shouldContain` unlines
+          [ "path \"secret/data/control-plane/aws-admin-executions/*\" {"
+          , "  capabilities = [\"read\"]"
+          , "}"
+          ]
 
     it "reconciles the closed Ed25519 Transit inventory and exact retained auth paths" $ do
       let transitKeys = vaultReconcileTransitKeys defaultVaultReconcilePlan
@@ -217,13 +322,15 @@ controlPlaneVaultSessionSuite =
                        ]
                    ]
 
-    it "binds each host caller to an exact non-automounting self-TokenRequest identity" $ do
+    it "Sprint 2.100 binds each host caller to an exact minimum-valid self-TokenRequest identity" $ do
       let operator = LifecycleAuthorityOperator
           harness = LifecycleAuthorityTestHarness
           expectedSubject namespace name =
             "--as=system:serviceaccount:" ++ namespace ++ ":" ++ name
-          assertCaller caller namespace name duration = do
+          assertCaller caller namespace name durationSeconds vaultTtl = do
             externalCallerServiceAccount caller `shouldBe` Text.pack name
+            kubernetesTokenRequestLifetimeSeconds (externalCallerTokenLifetime caller)
+              `shouldBe` durationSeconds
             externalCallerServiceAccountReadArguments caller
               `shouldBe` [ "get"
                          , "serviceaccount"
@@ -249,9 +356,13 @@ controlPlaneVaultSessionSuite =
                          , name
                          , "--namespace"
                          , namespace
-                         , "--duration=" ++ duration
+                         , "--duration=" ++ show durationSeconds ++ "s"
                          , expectedSubject namespace name
                          ]
+            fmap
+              vaultKubernetesRoleSpecTtl
+              (exactlyOneRole (Text.pack name) (vaultReconcileKubernetesRoles defaultVaultReconcilePlan))
+              `shouldBe` Just vaultTtl
             validateExternalCallerServiceAccountReadBack
               caller
               (namespace ++ "\n" ++ name ++ "\nfalse\n")
@@ -260,8 +371,62 @@ controlPlaneVaultSessionSuite =
               caller
               (namespace ++ "\n" ++ name ++ "\ntrue\n")
               `shouldSatisfy` isLeft
-      assertCaller operator "bootstrap-broker" "prodbox-control-plane-operator" "5m"
-      assertCaller harness "gateway" "prodbox-control-plane-test-harness" "15m"
+      assertCaller operator "bootstrap-broker" "prodbox-control-plane-operator" 600 "5m"
+      assertCaller harness "gateway" "prodbox-control-plane-test-harness" 900 "15m"
+
+    it "Sprint 2.100 refuses TokenRequest lifetimes below the Kubernetes floor" $ do
+      mkKubernetesTokenRequestLifetime 0
+        `shouldBe` Left KubernetesTokenRequestLifetimeBelowMinimum
+      mkKubernetesTokenRequestLifetime 599
+        `shouldBe` Left KubernetesTokenRequestLifetimeBelowMinimum
+      fmap kubernetesTokenRequestLifetimeSeconds (mkKubernetesTokenRequestLifetime 600)
+        `shouldBe` Right 600
+      fmap kubernetesTokenRequestLifetimeSeconds (mkKubernetesTokenRequestLifetime 900)
+        `shouldBe` Right 900
+
+    it "Sprint 2.100 classifies TokenRequest validation without calling it authorization" $ do
+      let failed diagnostic =
+            classifyTokenRequest
+              ( Right
+                  ProcessOutput
+                    { processExitCode = ExitFailure 1
+                    , processStdout = ""
+                    , processStderr = diagnostic
+                    }
+              )
+      failed
+        "The TokenRequest is invalid: spec.expirationSeconds: Invalid value: 300: may not specify a duration less than 10 minutes"
+        `shouldBe` Left ExternalCallerTokenRequestInvalid
+      failed
+        "Error from server (Forbidden): serviceaccounts/token is forbidden: User cannot create resource"
+        `shouldBe` Left ExternalCallerTokenRequestAuthorizationRefused
+      failed "The connection to the server 127.0.0.1:6443 was refused"
+        `shouldBe` Left ExternalCallerTokenRequestApiUnreachable
+      failed "error: current-context is not set"
+        `shouldBe` Left ExternalCallerTokenRequestContextUnavailable
+      failed "the API returned an unfamiliar refusal"
+        `shouldBe` Left ExternalCallerTokenRequestUnclassified
+      classifyTokenRequest (Left ("subprocess" :: String))
+        `shouldBe` Left ExternalCallerTokenRequestSubprocessUnavailable
+      classifyTokenRequest
+        ( Right
+            ProcessOutput
+              { processExitCode = ExitSuccess
+              , processStdout = "not a bearer token"
+              , processStderr = ""
+              }
+        )
+        `shouldBe` Left ExternalCallerTokenMalformed
+      let distinctDiagnostics =
+            [ ExternalCallerTokenRequestInvalid
+            , ExternalCallerTokenRequestAuthorizationRefused
+            , ExternalCallerTokenRequestApiUnreachable
+            , ExternalCallerTokenRequestContextUnavailable
+            , ExternalCallerTokenRequestUnclassified
+            ]
+          rendered = map (renderExternalCallerTokenError LifecycleAuthorityOperator) distinctDiagnostics
+      mapM_ (`shouldNotContain` "Invalid value: 300") rendered
+      length rendered `shouldBe` length (nub rendered)
 
     it "Sprint 4.84 classifies each distinguishable ServiceAccount observation cause" $ do
       -- kubectl exits 1 for every one of these, so the exit code alone
@@ -340,7 +505,8 @@ controlPlaneVaultSessionSuite =
               [ ExternalCallerServiceAccountUnobservable
                   (ServiceAccountObservationForbidden "x")
               , ExternalCallerTokenEligibilityRefused
-              , ExternalCallerTokenRequestRefused
+              , ExternalCallerTokenRequestInvalid
+              , ExternalCallerTokenRequestAuthorizationRefused
               , ExternalCallerTokenMalformed
               ]
           unreached =
@@ -350,9 +516,12 @@ controlPlaneVaultSessionSuite =
                   (ServiceAccountObservationApiUnreachable "x")
               , ExternalCallerTokenEligibilitySubprocessUnavailable
               , ExternalCallerTokenRequestSubprocessUnavailable
+              , ExternalCallerTokenRequestApiUnreachable
+              , ExternalCallerTokenRequestContextUnavailable
+              , ExternalCallerTokenRequestUnclassified
               ]
-      reached `shouldBe` [True, True, True, True]
-      unreached `shouldBe` [False, False, False]
+      reached `shouldBe` [True, True, True, True, True]
+      unreached `shouldBe` [False, False, False, False, False, False]
       -- Refused authorization is strictly narrower than "the API answered": an
       -- absent ServiceAccount and a mismatched read-back are answers, and
       -- neither is a denial.
@@ -361,9 +530,13 @@ controlPlaneVaultSessionSuite =
         [ ExternalCallerServiceAccountUnobservable ServiceAccountObservationAbsent
         , ExternalCallerServiceAccountUnobservable
             (ServiceAccountObservationIdentityMismatch "x")
+        , ExternalCallerTokenRequestInvalid
+        , ExternalCallerTokenRequestApiUnreachable
+        , ExternalCallerTokenRequestContextUnavailable
+        , ExternalCallerTokenRequestUnclassified
         , ExternalCallerTokenMalformed
         ]
-        `shouldBe` [False, False, False]
+        `shouldBe` [False, False, False, False, False, False, False]
       map
         externalCallerTokenAuthorityRefusedAuthorization
         [ ExternalCallerServiceAccountUnobservable
@@ -371,7 +544,7 @@ controlPlaneVaultSessionSuite =
         , ExternalCallerServiceAccountUnobservable
             (ServiceAccountObservationUnauthenticated "x")
         , ExternalCallerTokenEligibilityRefused
-        , ExternalCallerTokenRequestRefused
+        , ExternalCallerTokenRequestAuthorizationRefused
         ]
         `shouldBe` [True, True, True, True]
 
@@ -382,7 +555,11 @@ controlPlaneVaultSessionSuite =
       let caller = LifecycleAuthorityOperator
           classOf = sessionErrorClass . externalCallerTokenSessionError caller
       classOf ExternalCallerTokenEligibilityRefused `shouldBe` "forbidden"
-      classOf ExternalCallerTokenRequestRefused `shouldBe` "forbidden"
+      classOf ExternalCallerTokenRequestAuthorizationRefused `shouldBe` "forbidden"
+      classOf ExternalCallerTokenRequestInvalid `shouldBe` "unavailable"
+      classOf ExternalCallerTokenRequestApiUnreachable `shouldBe` "unavailable"
+      classOf ExternalCallerTokenRequestContextUnavailable `shouldBe` "unavailable"
+      classOf ExternalCallerTokenRequestUnclassified `shouldBe` "unavailable"
       classOf
         ( ExternalCallerServiceAccountUnobservable
             (ServiceAccountObservationForbidden "x")
@@ -523,11 +700,23 @@ assertReconciledStandingRole (_, vaultRole) = do
   case (matchingRoles, matchingPolicies) of
     ([role], [_]) -> do
       vaultKubernetesRoleSpecServiceAccounts role `shouldBe` [roleName]
-      vaultKubernetesRoleSpecNamespaces role `shouldBe` ["gateway"]
+      vaultKubernetesRoleSpecNamespaces role `shouldBe` [expectedNamespace vaultRole]
       vaultKubernetesRoleSpecPolicies role `shouldBe` [roleName]
+      vaultKubernetesRoleSpecAudience role `shouldBe` Nothing
+      vaultKubernetesRoleSpecTtl role `shouldBe` "1h"
+      vaultKubernetesRoleSpecTokenType role `shouldBe` VaultKubernetesServiceToken
     other ->
       expectationFailure
         ("expected one standing role and policy, got " ++ show other)
+ where
+  expectedNamespace role = case role of
+    VaultRoleLifecycleAuthority -> "lifecycle-authority"
+    VaultRoleProviderWorker -> "provider-worker"
+    VaultRoleAuthorityBackup -> "authority-backup"
+    VaultRoleTlsRetention -> "tls-retention"
+    VaultRoleTargetSecretAgent -> "target-secret-agent"
+    VaultRoleGatewayDaemon -> "gateway"
+    VaultRoleBootstrapBroker -> "bootstrap-broker"
 
 exactlyOneRole
   :: Text.Text -> [VaultKubernetesRoleSpec] -> Maybe VaultKubernetesRoleSpec

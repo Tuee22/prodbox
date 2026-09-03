@@ -60,6 +60,7 @@ module Prodbox.CheckCode
   , doctrineViolationsInPaths
   , extractMarkdownLinkTargets
   , extractStringLiterals
+  , forceViolationFindings
   , generatedSectionRules
   , generatedSectionsReconcilerViolations
   , gatewayProbeViolations
@@ -106,6 +107,8 @@ module Prodbox.CheckCode
   , rendererDeterminismViolations
   , rendererSourceViolations
   , runCheckCode
+  , lintSubprocessArgs
+  , runFailFastPhases
   , scannedCredentialPatternsPresent
   , scannedCredentialViolations
   , serviceErrorRetryableLiteralViolations
@@ -294,7 +297,7 @@ import System.Directory
   , doesFileExist
   , listDirectory
   )
-import System.Environment (getEnvironment)
+import System.Environment (getEnvironment, getExecutablePath)
 import System.Exit
   ( ExitCode (..)
   )
@@ -662,18 +665,35 @@ runLintCommand repoRoot command = do
 
 runLintAll :: FilePath -> [(String, String)] -> IO ExitCode
 runLintAll repoRoot environment = do
-  filesExit <- runFileLint repoRoot
-  case filesExit of
-    ExitFailure _ -> pure filesExit
-    ExitSuccess -> do
-      docsExit <- runGeneratedArtifactLint repoRoot False
-      case docsExit of
-        ExitFailure _ -> pure docsExit
-        ExitSuccess -> do
-          haskellExit <- runHaskellLint repoRoot environment False
-          case haskellExit of
-            ExitFailure _ -> pure haskellExit
-            ExitSuccess -> runChartLint repoRoot
+  executablePath <- getExecutablePath
+  runFailFastPhases
+    ( map
+        (runSubprocessStreaming repoRoot environment executablePath)
+        lintSubprocessArgs
+    )
+
+-- | Every isolated child re-enters one lint leaf. Leaf arms call their
+-- implementations directly, so none can recurse into 'runLintAll'.
+lintSubprocessArgs :: [[String]]
+lintSubprocessArgs =
+  [ ["dev", "lint", "files"]
+  , ["dev", "lint", "docs"]
+  , ["dev", "lint", "haskell"]
+  , ["dev", "lint", "chart"]
+  ]
+
+-- | Preserve the gate's exact fail-fast behavior across a process-lifetime
+-- boundary. A failed phase returns its original exit code and never starts the
+-- remaining phases.
+runFailFastPhases :: [IO ExitCode] -> IO ExitCode
+runFailFastPhases phases =
+  case phases of
+    [] -> pure ExitSuccess
+    phase : remaining -> do
+      phaseExit <- phase
+      case phaseExit of
+        ExitFailure _ -> pure phaseExit
+        ExitSuccess -> runFailFastPhases remaining
 
 runFileLint :: FilePath -> IO ExitCode
 runFileLint repoRoot = do
@@ -1930,39 +1950,41 @@ runDoctrineAlignmentCheck repoRoot = do
 haskellStyleViolations :: FilePath -> IO [String]
 haskellStyleViolations repoRoot = do
   thinMainResult <- verifyThinMainEntrypoint repoRoot
-  hlintConfigViolations <- checkHlintDoctrineCoverage repoRoot
+  hlintConfigViolations <- forceViolationFindings (checkHlintDoctrineCoverage repoRoot)
   parserModuleViolation <- checkParserModuleImports repoRoot
-  nestedCaseViolations <- checkNestedCaseViolations repoRoot
-  daemonRuntimeViolations <- checkDaemonRuntimeImports repoRoot
-  daemonHookViolations <- checkDaemonHookContract repoRoot
-  daemonLifecycleTestViolations <- checkDaemonLifecycleTestBoundaries repoRoot
-  subprocessViolations <- checkSubprocessBoundaries repoRoot
-  errorBoundaryViolations <- checkErrorBoundaryViolations repoRoot
-  operatorVocabularyViolations <- checkOperatorVocabulary repoRoot
-  envVarConfigViolations <- checkEnvVarConfigReads repoRoot
-  testSuiteTypeViolations <- checkTestSuiteInterfaces repoRoot
-  forbidDotProdboxStateViolations <- checkForbidDotProdboxState repoRoot
-  secretPayloadInternalViolations <- checkSecretPayloadInternalBoundary repoRoot
-  targetSinkVersionViolations <- checkTargetSinkVersionBoundary repoRoot
-  targetSinkRecordViolations <- checkTargetSinkRecordMinter repoRoot
-  roundTripWitnessViolations <- checkRoundTripWitnessBoundary repoRoot
-  dnsOwnerAuthorityViolations <- checkDnsOwnerAuthorityBoundary repoRoot
-  dependencyAdmissionViolations <- checkDependencyAdmissionBoundary repoRoot
-  responseObligationFindings <- checkResponseObligation repoRoot
-  tier0EncoderFindings <- checkTier0FixtureEncoder repoRoot
-  sharedRetryViolations <- checkSharedRetrySchedule repoRoot
-  brokerReadinessViolations <- checkBrokerReadinessProjection repoRoot
-  roleReadinessViolations <- checkRoleReadinessProjection repoRoot
-  supervisedWorkerViolationsFound <- checkSupervisedWorkers repoRoot
-  replyStatusViolations <- checkControlPlaneReplyStatusCoverage repoRoot
-  committedValueViolations <- checkCommittedValueHygiene repoRoot
-  vaultCasFindings <- checkVaultCasClassification repoRoot
-  validatedSettingsFindings <- checkValidatedSettingsMinter repoRoot
-  tier0CoordinateFindings <- checkTier0CoordinateReads repoRoot
-  listenPortFindings <- checkControlPlaneListenPortOwner repoRoot
-  residueMinterFindings <- checkResidueObservationMinter repoRoot
-  workerImagePullFindings <- checkWorkerImagePullReferenceOwner repoRoot
-  testNamespaceFindings <- checkTestNamespaceBoundary repoRoot
+  nestedCaseViolations <- forceViolationFindings (checkNestedCaseViolations repoRoot)
+  daemonRuntimeViolations <- forceViolationFindings (checkDaemonRuntimeImports repoRoot)
+  daemonHookViolations <- forceViolationFindings (checkDaemonHookContract repoRoot)
+  daemonLifecycleTestViolations <-
+    forceViolationFindings (checkDaemonLifecycleTestBoundaries repoRoot)
+  subprocessViolations <- forceViolationFindings (checkSubprocessBoundaries repoRoot)
+  errorBoundaryViolations <- forceViolationFindings (checkErrorBoundaryViolations repoRoot)
+  operatorVocabularyViolations <- forceViolationFindings (checkOperatorVocabulary repoRoot)
+  envVarConfigViolations <- forceViolationFindings (checkEnvVarConfigReads repoRoot)
+  testSuiteTypeViolations <- forceViolationFindings (checkTestSuiteInterfaces repoRoot)
+  forbidDotProdboxStateViolations <- forceViolationFindings (checkForbidDotProdboxState repoRoot)
+  secretPayloadInternalViolations <-
+    forceViolationFindings (checkSecretPayloadInternalBoundary repoRoot)
+  targetSinkVersionViolations <- forceViolationFindings (checkTargetSinkVersionBoundary repoRoot)
+  targetSinkRecordViolations <- forceViolationFindings (checkTargetSinkRecordMinter repoRoot)
+  roundTripWitnessViolations <- forceViolationFindings (checkRoundTripWitnessBoundary repoRoot)
+  dnsOwnerAuthorityViolations <- forceViolationFindings (checkDnsOwnerAuthorityBoundary repoRoot)
+  dependencyAdmissionViolations <- forceViolationFindings (checkDependencyAdmissionBoundary repoRoot)
+  responseObligationFindings <- forceViolationFindings (checkResponseObligation repoRoot)
+  tier0EncoderFindings <- forceViolationFindings (checkTier0FixtureEncoder repoRoot)
+  sharedRetryViolations <- forceViolationFindings (checkSharedRetrySchedule repoRoot)
+  brokerReadinessViolations <- forceViolationFindings (checkBrokerReadinessProjection repoRoot)
+  roleReadinessViolations <- forceViolationFindings (checkRoleReadinessProjection repoRoot)
+  supervisedWorkerViolationsFound <- forceViolationFindings (checkSupervisedWorkers repoRoot)
+  replyStatusViolations <- forceViolationFindings (checkControlPlaneReplyStatusCoverage repoRoot)
+  committedValueViolations <- forceViolationFindings (checkCommittedValueHygiene repoRoot)
+  vaultCasFindings <- forceViolationFindings (checkVaultCasClassification repoRoot)
+  validatedSettingsFindings <- forceViolationFindings (checkValidatedSettingsMinter repoRoot)
+  tier0CoordinateFindings <- forceViolationFindings (checkTier0CoordinateReads repoRoot)
+  listenPortFindings <- forceViolationFindings (checkControlPlaneListenPortOwner repoRoot)
+  residueMinterFindings <- forceViolationFindings (checkResidueObservationMinter repoRoot)
+  workerImagePullFindings <- forceViolationFindings (checkWorkerImagePullReferenceOwner repoRoot)
+  testNamespaceFindings <- forceViolationFindings (checkTestNamespaceBoundary repoRoot)
   pure
     ( either pure (const []) thinMainResult
         ++ hlintConfigViolations
@@ -1999,6 +2021,15 @@ haskellStyleViolations repoRoot = do
         ++ testNamespaceFindings
         ++ residueMinterFindings
     )
+
+-- | Force a check's complete finding payload before its file-reading frame can
+-- leave scope. Most successful checks return @[]@; without this boundary their
+-- lazy scans retain source contents until the final concatenation is inspected.
+forceViolationFindings :: IO [String] -> IO [String]
+forceViolationFindings action = do
+  findings <- action
+  _ <- evaluate (sum (map length findings))
+  pure findings
 
 checkHlintDoctrineCoverage :: FilePath -> IO [String]
 checkHlintDoctrineCoverage repoRoot = do
@@ -2792,6 +2823,9 @@ harnessDeploymentConfigRequiredFragments =
       , "legacy_machine_id :: Text"
       , "legacy_vault_address :: Text"
       , "legacy_minio_endpoint :: Text"
+      , "aws_substrate_subzone_name :: Text"
+      , "aws_substrate_profile :: Maybe AwsSubstrateProfile"
+      , "aws_eks_node_group_size :: Natural"
       ]
     )
   ,
@@ -2801,7 +2835,9 @@ harnessDeploymentConfigRequiredFragments =
       , "emptyHarnessValidationCredentials"
       , "requiredHarnessField \"test_served_fqdn\""
       , "requiredHarnessField \"test_acme_email\""
-      , "legacyHarnessDeploymentInput"
+      , "harnessDeploymentInputForSubstrate"
+      , "mkEksTopology (aws_eks_node_group_size secrets)"
+      , "profile = aws_substrate_profile secrets"
       , "fittedResult <- fitHarnessConfig generated"
       , "validateConfigWithContext repoRoot contextInput fitted"
       , "Tier0.writeOperatorDeploymentConfigToTier0"
@@ -2837,6 +2873,9 @@ harnessDeploymentConfigRequiredFragments =
       , "legacy_machine_id : Text"
       , "legacy_vault_address : Text"
       , "legacy_minio_endpoint : Text"
+      , "aws_substrate_subzone_name : Text"
+      , "aws_substrate_profile :"
+      , "aws_eks_node_group_size : Natural"
       ]
     )
   ]
@@ -8556,6 +8595,7 @@ recoveryObserverRbacChartViolations chartName chartDir
             ++ forbiddenAuthority templatePath template
             ++ generatedSubject valuesPath values
             ++ lifecycleAuthorityApiEgress networkPolicy
+            ++ lifecycleAuthoritySelfServiceEgress networkPolicy
         )
  where
   readFileIfExists path = do
@@ -8607,6 +8647,26 @@ recoveryObserverRbacChartViolations chartName chartDir
             [ "range .Values.kubernetesApiEgress.addresses"
             , ".Values.kubernetesApiEgress.port"
             ]
+        ]
+
+  lifecycleAuthoritySelfServiceEgress contents
+    | chartName /= "lifecycle-authority" = []
+    | otherwise =
+        [ "charts/lifecycle-authority NetworkPolicy must admit the exact release-bound Authority self-Service egress lane."
+        | unlines
+            [ "    - to:"
+            , "        - namespaceSelector:"
+            , "            matchLabels:"
+            , "              kubernetes.io/metadata.name: {{ .Values.global.namespace }}"
+            , "          podSelector:"
+            , "            matchLabels:"
+            , "              app.kubernetes.io/name: prodbox-lifecycle-authority"
+            , "              app.kubernetes.io/instance: {{ .Release.Name }}"
+            , "      ports:"
+            , "        - protocol: TCP"
+            , "          port: {{ .Values.ports.controlPlane }}"
+            ]
+            `notElemIn` contents
         ]
 
   needle `notElemIn` haystack = not (needle `isInfixOf` haystack)

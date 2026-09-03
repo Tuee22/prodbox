@@ -20,6 +20,7 @@
 module Prodbox.Vault.Session
   ( VaultSession
   , VaultSessionError (..)
+  , VaultSessionOperationError (..)
   , renderVaultSessionError
   , CachedToken (..)
   , LoginLease (..)
@@ -31,6 +32,7 @@ module Prodbox.Vault.Session
   , sessionToken
   , sessionForceRelogin
   , withSessionToken
+  , withSessionTokenDetailed
   , cachedTokenFresh
   , renewalDueSeconds
   , isForbiddenHttpError
@@ -62,6 +64,15 @@ data VaultSessionError
   = VaultSessionSealed String
   | VaultSessionForbidden String
   | VaultSessionUnavailable String
+  deriving (Eq, Show)
+
+-- | Exact provenance for a token-backed Vault request.  Keeping acquisition,
+-- relogin, and request failures distinct lets protected startup diagnostics
+-- classify an error without parsing rendered text or exposing response bodies.
+data VaultSessionOperationError
+  = VaultSessionAcquisitionFailed !VaultSessionError
+  | VaultSessionReloginFailed !VaultSessionError
+  | VaultSessionRequestFailed !HttpError
   deriving (Eq, Show)
 
 renderVaultSessionError :: VaultSessionError -> String
@@ -236,10 +247,19 @@ withSessionToken
   :: VaultSession
   -> (VaultToken -> IO (Either HttpError a))
   -> IO (Either HttpError a)
-withSessionToken session op = do
+withSessionToken session op =
+  fmap (either (Left . operationErrorToHttp) Right) (withSessionTokenDetailed session op)
+
+-- | The same single-flight and one-relogin protocol as 'withSessionToken',
+-- retaining which boundary failed for callers that need a closed diagnostic.
+withSessionTokenDetailed
+  :: VaultSession
+  -> (VaultToken -> IO (Either HttpError a))
+  -> IO (Either VaultSessionOperationError a)
+withSessionTokenDetailed session op = do
   tokenResult <- sessionToken session
   case tokenResult of
-    Left sessionErr -> pure (Left (sessionErrorToHttp sessionErr))
+    Left sessionErr -> pure (Left (VaultSessionAcquisitionFailed sessionErr))
     Right token -> do
       firstResult <- op token
       case firstResult of
@@ -247,9 +267,17 @@ withSessionToken session op = do
           | isForbiddenHttpError err -> do
               reloginResult <- reloginAfterForbidden session token
               case reloginResult of
-                Left sessionErr -> pure (Left (sessionErrorToHttp sessionErr))
-                Right freshToken -> op freshToken
-        _ -> pure firstResult
+                Left sessionErr -> pure (Left (VaultSessionReloginFailed sessionErr))
+                Right freshToken ->
+                  fmap (either (Left . VaultSessionRequestFailed) Right) (op freshToken)
+        Left err -> pure (Left (VaultSessionRequestFailed err))
+        Right value -> pure (Right value)
+
+operationErrorToHttp :: VaultSessionOperationError -> HttpError
+operationErrorToHttp operationError = case operationError of
+  VaultSessionAcquisitionFailed sessionError -> sessionErrorToHttp sessionError
+  VaultSessionReloginFailed sessionError -> sessionErrorToHttp sessionError
+  VaultSessionRequestFailed httpError -> httpError
 
 -- | The identity of a shared session: one persistent 'VaultSession' per
 -- (address, auth path, role).

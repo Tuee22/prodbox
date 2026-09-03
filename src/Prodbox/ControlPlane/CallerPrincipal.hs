@@ -30,6 +30,7 @@ data CallerPrincipal
   | CallerTestHarness
   | CallerAdminActionRunner
   | CallerCredentialProvisioner
+  | CallerCredentialProvisionerCompletion
   deriving stock (Eq, Ord, Show)
 
 allCallerPrincipals :: [CallerPrincipal]
@@ -39,6 +40,7 @@ allCallerPrincipals =
        , CallerTestHarness
        , CallerAdminActionRunner
        , CallerCredentialProvisioner
+       , CallerCredentialProvisionerCompletion
        ]
 
 -- | Stable authentication/replay wire identity.  Codes 1--7 deliberately
@@ -58,6 +60,7 @@ callerPrincipalCode principal = case principal of
   CallerTestHarness -> 101
   CallerAdminActionRunner -> 102
   CallerCredentialProvisioner -> 103
+  CallerCredentialProvisionerCompletion -> 104
 
 callerPrincipalFromCode :: Word -> Maybe CallerPrincipal
 callerPrincipalFromCode code = case code of
@@ -72,6 +75,7 @@ callerPrincipalFromCode code = case code of
   101 -> Just CallerTestHarness
   102 -> Just CallerAdminActionRunner
   103 -> Just CallerCredentialProvisioner
+  104 -> Just CallerCredentialProvisionerCompletion
   _ -> Nothing
 
 -- | Stable configuration/diagnostic text for a closed caller principal.
@@ -83,3 +87,4 @@ callerPrincipalText principal = case principal of
   CallerTestHarness -> "test/harness"
   CallerAdminActionRunner -> "worker/admin-action-runner"
   CallerCredentialProvisioner -> "worker/credential-provisioner"
+  CallerCredentialProvisionerCompletion -> "worker/credential-provisioner-completion"

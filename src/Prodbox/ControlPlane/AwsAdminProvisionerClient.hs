@@ -9,6 +9,7 @@ module Prodbox.ControlPlane.AwsAdminProvisionerClient
   , AwsAdminPreparedProvisioning (..)
   , mkAwsAdminProvisionerClient
   , awsAdminProvisionerClient
+  , classifyAwsAdminProvisionerHttpResponse
   , prepareAwsAdminProvisioning
   , attestAwsAdminProvisioning
   , authorizeAwsAdminProvisioning
@@ -132,16 +133,20 @@ awsAdminProvisionerClient transport = AwsAdminProvisionerClient $ \request -> do
       LifecycleAwsAdminProvisionerRoute
       (LazyByteString.toStrict (encodeControlPlaneRequest request))
   pure $ do
-    ControlPlaneResponse status body <-
-      first AwsAdminProvisionerClientTransportFailed attempted
-    response <-
-      first
-        AwsAdminProvisionerClientResponseInvalid
-        ( decodeControlPlaneResponse
-            awsAdminProvisionerResponseMaximumBytes
-            (LazyByteString.fromStrict body)
-        )
-    case response of
+    raw <- first AwsAdminProvisionerClientTransportFailed attempted
+    classifyAwsAdminProvisionerHttpResponse raw
+
+classifyAwsAdminProvisionerHttpResponse
+  :: ControlPlaneResponse
+  -> Either AwsAdminProvisionerClientError AwsAdminProvisionerResponse
+classifyAwsAdminProvisionerHttpResponse (ControlPlaneResponse status body) =
+  case decodeControlPlaneResponse
+    awsAdminProvisionerResponseMaximumBytes
+    (LazyByteString.fromStrict body) of
+    Left err
+      | status == 200 -> Left (AwsAdminProvisionerClientResponseInvalid err)
+      | otherwise -> Left (AwsAdminProvisionerClientHttpStatus status)
+    Right response -> case response of
       AwsAdminProvisioningRefused detail ->
         Left (AwsAdminProvisionerClientRefused detail)
       AwsAdminProvisioningUnavailable detail ->

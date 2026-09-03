@@ -114,7 +114,7 @@ retainPublicEdgeTlsWorkflow workflow approval = do
               version
               (tlsDekPreparedPublicKey homePrepared)
           case retainedResult of
-            Left (TlsTargetAgentClientHttpStatus 404) ->
+            Left (TlsTargetAgentClientHttpStatus 404 _) ->
               pure (Right TlsWorkflowNothingToRetain)
             Left err -> pure (Left (TlsWorkflowSelectedAgentFailed err))
             Right retained -> do

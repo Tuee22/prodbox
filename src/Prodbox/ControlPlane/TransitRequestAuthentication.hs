@@ -5,7 +5,9 @@
 -- caller's Kubernetes-auth session; signing refuses a rotated generation until
 -- the process restarts and pins the new public half deliberately.
 module Prodbox.ControlPlane.TransitRequestAuthentication
-  ( resolveTransitPublicGeneration
+  ( TransitPublicGenerationError (..)
+  , resolveTransitPublicGeneration
+  , resolveTransitPublicGenerationDetailed
   , resolveTransitRequestSigningCapability
   , transitAuthenticatedClientProviders
   )
@@ -51,31 +53,62 @@ import Prodbox.Vault.Client
   )
 import Prodbox.Vault.Session
   ( VaultSession
+  , VaultSessionOperationError (..)
+  , renderVaultSessionError
   , sessionAddress
   , withSessionToken
+  , withSessionTokenDetailed
   )
+
+-- | Secret-safe provenance for one Transit public-generation lookup.  The
+-- session layer retains acquisition/relogin/request boundaries; identity
+-- mismatch is separate from every Vault or transport failure.
+data TransitPublicGenerationError
+  = TransitPublicGenerationVaultFailure !VaultSessionOperationError
+  | TransitPublicGenerationIdentityMismatch
+  deriving (Eq, Show)
 
 resolveTransitPublicGeneration
   :: VaultSession
   -> ControlPlaneSigningKeyRef
   -> IO (Either Text (Natural, ByteString))
 resolveTransitPublicGeneration session ref = do
+  result <- resolveTransitPublicGenerationDetailed session ref
+  pure (mapLeft renderFailure result)
+ where
+  renderFailure failure = case failure of
+    TransitPublicGenerationVaultFailure operationError ->
+      Text.pack (renderOperationError operationError)
+    TransitPublicGenerationIdentityMismatch ->
+      "Vault returned a different Transit signing-key identity"
+
+resolveTransitPublicGenerationDetailed
+  :: VaultSession
+  -> ControlPlaneSigningKeyRef
+  -> IO (Either TransitPublicGenerationError (Natural, ByteString))
+resolveTransitPublicGenerationDetailed session ref = do
   result <-
-    withSessionToken session $ \token ->
+    withSessionTokenDetailed session $ \token ->
       vaultReadTransitSigningKey
         (sessionAddress session)
         token
         (controlPlaneSigningKeyName ref)
   pure $ case result of
-    Left err -> Left (Text.pack (renderHttpError err))
+    Left err -> Left (TransitPublicGenerationVaultFailure err)
     Right info
       | transitSigningKeyName info /= controlPlaneSigningKeyName ref ->
-          Left "Vault returned a different Transit signing-key identity"
+          Left TransitPublicGenerationIdentityMismatch
       | otherwise ->
           Right
             ( transitSigningKeyVersion info
             , transitSigningPublicKey info
             )
+
+renderOperationError :: VaultSessionOperationError -> String
+renderOperationError operationError = case operationError of
+  VaultSessionAcquisitionFailed sessionError -> renderVaultSessionError sessionError
+  VaultSessionReloginFailed sessionError -> renderVaultSessionError sessionError
+  VaultSessionRequestFailed httpError -> renderHttpError httpError
 
 resolveTransitRequestSigningCapability
   :: VaultSession

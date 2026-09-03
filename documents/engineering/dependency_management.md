@@ -41,6 +41,11 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   native home DNS and IAM/S3/STS/Route53/ServiceQuotas adapters do not depend on the CLI. The
   supported custom-image publish path
   uses ordinary host-native `docker build` plus `docker push` to the canonical in-cluster registry endpoint (`127.0.0.1:30080`).
+- The Cabal build step installs the resolved executable and removes `.build`, Cabal's downloaded
+  package cache, and Cabal's build state before that same Dockerfile `RUN` commits. The pinned
+  in-image GHC/Cabal toolchain, repository source, YAML Provider programs, and installed executable
+  remain present; only per-generation compilation output is excluded from the runtime layer. This
+  bounds unique generation growth without a global Docker build-cache prune.
 - The build uses **basic `docker` commands only** with the daemon's default builder. There is no
   supported `docker buildx`, no `docker-container`-driver builder, and no multi-arch publication
   (native-host-architecture only). The Dockerfiles carry **no BuildKit-only features**: no

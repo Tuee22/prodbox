@@ -130,6 +130,7 @@ import Prodbox.Aws.Native.Wire
   , readBoundedNativeAwsHttpOutcome
   , renderFormBody
   )
+import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Lifecycle.OwnedResourceTags (longLivedPulumiStateBucketTags)
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
@@ -783,6 +784,27 @@ awsNativeClientsSuite =
       it "maps a HEAD 404 to positive absence" $ do
         let s3 = newS3Client baseHandle (respond 404 "")
         observeBucket s3 "prodbox-long-lived" `shouldReturn` Right S3BucketAbsent
+      it "signs every S3 request with its required payload-hash header" $ do
+        requests <- newIORef []
+        let sender request = do
+              modifyIORef' requests (<> [request])
+              pure (Right (HttpOutcome 200 [] ""))
+            s3 = newS3Client baseHandle sender
+        observeBucket s3 "prodbox-long-lived" `shouldReturn` Right S3BucketPresent
+        putBucketHardening s3 "prodbox-long-lived" `shouldReturn` Right ()
+        captured <- readIORef requests
+        length captured `shouldBe` 6
+        map (lookup "x-amz-content-sha256" . shrHeaders) captured
+          `shouldBe` map (Just . hexSha256 . shrBody) captured
+        map
+          ( maybe
+              False
+              (BS8.isInfixOf "x-amz-content-sha256")
+              . lookup "Authorization"
+              . shrHeaders
+          )
+          captured
+          `shouldBe` replicate 6 True
       it "reads the complete expected hardening state from five bounded GETs" $ do
         let sender request
               | "?versioning=" `isSuffixOf` shrUrl request =

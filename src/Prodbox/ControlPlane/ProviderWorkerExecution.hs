@@ -80,6 +80,7 @@ module Prodbox.ControlPlane.ProviderWorkerExecution
   , providerIntentCredentialBindingRegressionReceiptRotationRefused
   , providerIntentCredentialBindingRegressionRotationSkipsCapability
   , executeVerifiedProviderIntentBound
+  , executeVerifiedProviderIntentBoundObserved
   , executeVerifiedProviderIntent
   )
 where
@@ -124,6 +125,12 @@ import Prodbox.ControlPlane.ProviderNarrowSession
   , ProviderNarrowSessionRunner (..)
   , ProviderReadOnly (..)
   , operationForProviderIntent
+  )
+import Prodbox.ControlPlane.ProviderWorkerDiagnostic
+  ( ProviderWorkerRequestCause (..)
+  , ProviderWorkerRequestObserver
+  , ProviderWorkerRequestStage (..)
+  , observeProviderWorkerRequest
   )
 import Prodbox.ControlPlane.RequestAuthentication
   ( CallerPrincipal (..)
@@ -1799,25 +1806,57 @@ executeVerifiedProviderIntentBound
   => ProviderWorkerExecutionBoundary m session
   -> VerifiedProviderCommittedIntent
   -> m (Either ProviderIntentExecutionError ExecutedProviderIntent)
-executeVerifiedProviderIntentBound boundary verified = do
+executeVerifiedProviderIntentBound =
+  executeVerifiedProviderIntentBoundWith (\_ _ -> pure ())
+
+-- | Production diagnostic wrapper over the unchanged execution boundary. The
+-- observer accepts only closed stage/cause values and swallows synchronous
+-- diagnostic failures, so it cannot change the execution result.
+executeVerifiedProviderIntentBoundObserved
+  :: ProviderWorkerRequestObserver
+  -> ProviderWorkerExecutionBoundary IO session
+  -> VerifiedProviderCommittedIntent
+  -> IO (Either ProviderIntentExecutionError ExecutedProviderIntent)
+executeVerifiedProviderIntentBoundObserved observer =
+  executeVerifiedProviderIntentBoundWith (observeProviderWorkerRequest observer)
+
+executeVerifiedProviderIntentBoundWith
+  :: (Monad m)
+  => (ProviderWorkerRequestStage -> ProviderWorkerRequestCause -> m ())
+  -> ProviderWorkerExecutionBoundary m session
+  -> VerifiedProviderCommittedIntent
+  -> m (Either ProviderIntentExecutionError ExecutedProviderIntent)
+executeVerifiedProviderIntentBoundWith observeStage boundary verified = do
+  observeStage ProviderWorkerTrustRevalidation ProviderWorkerStageStarted
   acceptedResult <-
     readAcceptedProviderAuthority
       (providerExecutionTrustRepository boundary)
   case acceptedResult of
-    Left detail -> pure (Left (ProviderIntentExecutionTrustUnavailable detail))
+    Left detail ->
+      refuseStage ProviderWorkerTrustRevalidation
+        >> pure (Left (ProviderIntentExecutionTrustUnavailable detail))
     Right currentAccepted
-      | currentAccepted /= internalVerifiedProviderAuthority verified ->
+      | currentAccepted /= internalVerifiedProviderAuthority verified -> do
+          refuseStage ProviderWorkerTrustRevalidation
           pure (Left ProviderIntentExecutionTrustChanged)
-      | not (expectedAcceptedAuthorityMatches currentAccepted) ->
+      | not (expectedAcceptedAuthorityMatches currentAccepted) -> do
+          refuseStage ProviderWorkerTrustRevalidation
           pure (Left ProviderIntentExecutionAcceptedAuthorityBindingMismatch)
       | otherwise -> do
+          completeStage ProviderWorkerTrustRevalidation
+          observeStage ProviderWorkerClockRevalidation ProviderWorkerStageStarted
           nowResult <- providerExecutionAuthorityNow boundary
           case nowResult of
-            Left detail -> pure (Left (ProviderIntentExecutionClockUnavailable detail))
+            Left detail ->
+              refuseStage ProviderWorkerClockRevalidation
+                >> pure (Left (ProviderIntentExecutionClockUnavailable detail))
             Right now
-              | authorityTimeMicros now >= authorityTimeMicros deadline ->
+              | authorityTimeMicros now >= authorityTimeMicros deadline -> do
+                  refuseStage ProviderWorkerClockRevalidation
                   pure (Left (ProviderIntentExecutionDeadlineReached now deadline))
-              | otherwise -> runNarrowSession
+              | otherwise -> do
+                  completeStage ProviderWorkerClockRevalidation
+                  runNarrowSession
  where
   unsigned = internalVerifiedProviderUnsigned verified
   spec = internalProviderCommittedIntentSpec unsigned
@@ -1835,33 +1874,51 @@ executeVerifiedProviderIntentBound boundary verified = do
       Just expected -> expected == acceptedAuthorityDigest accepted
 
   runNarrowSession = do
+    observeStage ProviderWorkerNarrowSession ProviderWorkerStageStarted
     sessionResult <-
       withProviderNarrowSession
         (providerExecutionNarrowSession boundary)
         intent
         deadline
         executeWithCredentialBinding
-    pure $ case sessionResult of
-      Left detail -> Left (ProviderIntentExecutionSessionUnavailable detail)
-      Right (Left err) -> Left err
+    case sessionResult of
+      Left detail -> do
+        refuseStage ProviderWorkerNarrowSession
+        pure (Left (ProviderIntentExecutionSessionUnavailable detail))
+      Right (Left err) -> pure (Left err)
       Right (Right (result, actualCredentialBinding)) ->
-        Right
-          ExecutedProviderIntent
-            { internalExecutedProviderVerified = verified
-            , internalExecutedProviderResult = result
-            , internalExecutedProviderCredentialSession = actualCredentialBinding
-            , internalExecutedProviderAcceptedAuthority =
-                acceptedAuthorityDigest (internalVerifiedProviderAuthority verified)
-            }
+        pure
+          ( Right
+              ExecutedProviderIntent
+                { internalExecutedProviderVerified = verified
+                , internalExecutedProviderResult = result
+                , internalExecutedProviderCredentialSession = actualCredentialBinding
+                , internalExecutedProviderAcceptedAuthority =
+                    acceptedAuthorityDigest (internalVerifiedProviderAuthority verified)
+                }
+          )
 
   executeWithCredentialBinding actualBinding session =
     do
-      result <-
-        runWithCredentialSessionExpectation
-          (providerIntentExpectedCredentialSession spec)
-          actualBinding
-          (executeUnderSession session)
-      pure (Right (fmap (,actualBinding) result))
+      completeStage ProviderWorkerNarrowSession
+      observeStage ProviderWorkerCredentialBinding ProviderWorkerStageStarted
+      case credentialSessionExpectation
+        (providerIntentExpectedCredentialSession spec)
+        actualBinding of
+        Left err -> do
+          refuseStage ProviderWorkerCredentialBinding
+          pure (Right (Left err))
+        Right () -> do
+          completeStage ProviderWorkerCredentialBinding
+          observeStage ProviderWorkerCapabilityExecution ProviderWorkerStageStarted
+          result <- executeUnderSession session
+          case result of
+            Left _ -> refuseStage ProviderWorkerCapabilityExecution
+            Right _ -> completeStage ProviderWorkerCapabilityExecution
+          pure (Right (fmap (,actualBinding) result))
+
+  completeStage stage = observeStage stage ProviderWorkerStageCompleted
+  refuseStage stage = observeStage stage ProviderWorkerStageRefused
 
   executeUnderSession session =
     case operationForProviderIntent (providerExecutionCapabilities boundary) intent of

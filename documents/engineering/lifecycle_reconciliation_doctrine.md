@@ -121,6 +121,37 @@ precondition, never a lifecycle fencing token. Vault envelope/HMAC rules remain 
 remain canonical in
 [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
+The Authority's purpose-bound aggregate export is itself an authenticated, replay-protected
+operation. Its HTTP-200 body remains subject to the same bounded canonical codec as every other
+control-plane response. HTTP 200 carries the direct canonical export response; non-200 cases carry
+only their closed bounded summaries. The client fails closed on every other shape, and the
+Sprint-`2.117` diagnostic may classify only direct, endpoint-success, endpoint-failure, empty, or
+other without exposing or accepting retained aggregate material.
+
+When the aggregate-backup or config-backup client cannot decode its canonical response, it also
+applies the authenticated-role interpreter's total exact status/body projection and retains only
+that closed observation beside the codec cause. Wrong-status text, prefixes, suffixes, private
+bodies, and all other pairs collapse to `other`; neither response bytes nor the numeric status
+enter the error. This classification is confined to those decode failures and changes neither
+checkpoint backup nor any decode, retry, observation, projection, or reconciliation decision.
+
+Each retained authenticated replay window covers its role's complete reconcile envelope and one
+immediate unchanged retry while the earlier attempt remains inside its deadline-plus-skew horizon.
+Lifecycle Authority derives `2 * (56 + 4) = 120`: 56 requests for the hard eight-member
+first-reconcile protocol, then config observe, proposal/read-back, the Authority-bound retained-root
+marker's fresh authenticated observation, and in-force projection load. Authority Backup derives a
+separate `2 * (3 + 6) = 18`: at most three aggregate repair requests and six config-backup requests
+per attempt. Target Secret Agent derives `2 * (5 + 8 + 6 + 8) = 54`: five requests for provider-
+credential/source recovery and retained delivery; eight for TLS retention's four one-shot calls plus
+their four Authority trust installations; six for restore's three one-shot calls plus trust
+installations; and eight for the retain-on-ready capture. Its encoded ceiling is 112 MiB so 54
+accepted 2 MiB responses plus metadata fit. The Vault listener's finite 160 MiB request ceiling
+covers that projection's at-most 149.34 MiB Base64 expansion plus the bounded KV JSON envelope. TLS
+Retention and Provider Worker keep generic capacity four and the 12 MiB ceiling. Capacity widening
+migrates canonical v2/v3/v4/v5/v6/v7 state to v8 without dropping an entry or changing response-
+size, clock-skew, or CAS bounds. The encoded-byte and Vault-request ceilings may widen only to these
+compiled finite bounds; capacity shrink and all other limit drift fail closed.
+
 Backup restore is scoped to loss/corruption of the Authority primary MinIO namespace while the home
 Vault/Transit keys, `secret/aws/authority-backup-store` custody, and long-lived S3 backup remain
 intact. Losing the whole home `.data` trust root, including Vault, makes those ciphertexts
@@ -175,6 +206,303 @@ no provider, DNS, config, or suite effect is legal in genesis. The complete stat
 transport protocol is canonical in
 [Lifecycle Control-Plane Architecture §5.0](./lifecycle_control_plane_architecture.md#50-closing-the-backup-bootstrap-cycle).
 
+The Kubernetes coordinator samples the host heartbeat once at the start of each permit-created Job
+attempt, not once around the multi-member first-reconcile loop. The exact sample is shared by that
+attempt's manifest, Job/Pod read-back, Authority attestation, and pre-delete object observation.
+Completed-permit cleanup takes the already signed attestation heartbeat, never a new sample. Clock
+failure precedes Job create, and neither a fresh attempt heartbeat nor recovery cleanup changes the
+retained absolute plan/permit deadline or the Authority's freshness bound.
+
+Every native S3 request in that closed program sends the SHA-256 of its exact body as
+`x-amz-content-sha256` and includes the header in its SigV4 signature. Empty HEAD/GET bodies use the
+SHA-256 of the empty byte string; hardening PUTs bind the exact rendered document. A valid STS
+identity, owned bucket, or correct bucket region cannot substitute for this request-level S3
+authentication obligation.
+
+The pre-delivery Target read-back has the same fail-closed diagnostic rule. Its authenticated
+client reduces signer, scope, epoch, deadline, nonce, binding, signing, framing, endpoint,
+transport, bounded-response, response-codec, response-status, and the two authored remote-refusal
+outcomes into a finite value-free cause at the client source. HTTP statuses are retained only as
+closed semantic classes. A canonically undecodable Target-material body retains the accompanying
+status only through that same closed vocabulary, so authentication/replay plaintext refusals and a
+malformed success remain distinguishable without retaining either the body or numeric status. This
+server-class arm recognizes only an exact status/body pair from the authenticated-role
+interpreter's total static-response projection; near misses and all private response bytes collapse
+to `other`. The interpreter renders from that same projection, while the Target client retains only
+the closed observation. This diagnostic changes no decoding or observation behavior. The direct
+Target Agent and retained SES
+custody branches then lift those causes into one closed AWS-admin observation algebra before execution classification. Provider or
+Vault text, HTTP bodies, status numbers, receipt values, and delivery details cannot enter the
+worker terminal line; an unobservable read-back never permits delivery, retry, or inferred state.
+
+The signed Target-intent path likewise classifies trust installation before rendering its
+unavailable response. Its finite payload-free vocabulary separates generic authenticated-client
+transport/codec/status causes from the Target trust endpoint's exact semantic refusals,
+observation-unavailable, CAS-unavailable, and client read-back failures. The Authority endpoint and
+AWS-admin worker preserve only the canonical cause below
+`intent/unavailable/trust-install`; unknown private detail becomes `other`. A codec-invalid
+non-server response retains only its closed status class, while a codec-invalid server response
+retains only an exact static authenticated-role status/body classification or `other`; neither path
+retains response bytes or the numeric status. The classifier changes neither trust/CAS/read-back
+state nor response class, retry, cleanup, remint, or delivery authority.
+The Target's observation cause separately records session acquisition or relogin class, exact 401
+versus 403, other closed HTTP/transport failure, or invalid/mismatched stored-record projection.
+Only exact request 404 is missing; unavailable state never supplies absence or CAS authority.
+An exact decoded trust record from a prior rollout remains observable only when its target and
+Agent cluster equal the endpoint-local selection. The desired CAS record must name the endpoint's
+exact current rollout, and existing issuer identity/generation/key, Authority epoch, fence,
+version-CAS, and read-back checks remain mandatory. Cross-cluster stored state is unobservable and
+cross-cluster advance refuses; rollout observability never grants an arbitrary desired identity.
+
+The journal coordinate is initialized only after definitive absence. Its first admitted request
+owns the retained plan-origin deadline; subsequent prompt retries validate the compiled action
+topology against it and resume the exact journal without overwriting it. The origin deadline binds
+plan identity but does not extend a Job or permit: each prompt attempt has its own bounded active
+deadline. Only an exact expired `Prepared` state can renew before attestation, under immutable
+request/plan equality and outbox-before-state CAS/read-back. A retry never clears receipts or resets
+the cursor. An expired `Authorized` state has one narrower recovery: the Authority must
+independently observe HTTP 404 for the exact permit-bound Job and Pod, then read the exact
+permit-derived execution-journal coordinate. Authenticated KV-v2 404 proves the unused attempt.
+The exact canonical `intent-committed/initial-attempt` phase also admits a fresh
+binding-equivalent `Prepared` intent: before that phase advances, the worker may have reconciled
+and read back only idempotent bucket/IAM-user/tag/policy/role prerequisites; access-key creation is
+impossible until `create-attempt-prepared` is durably committed. The predecessor journal remains
+retained evidence and the replacement starts its own permit-derived journal. A closed set of later
+pre-target phases instead admits only a cleanup continuation: remint intent, create-attempt
+prepared, key created, cleanup required, or cleanup proven, with either recovery flag where the
+phase carries one. The Genesis-or-normal replacement kind retains its existing program family and
+binds the digest of the exact predecessor signed permit; its distinct journal starts at
+`cleanup-required/initial-attempt`, deletes the bounded IAM key
+family, and must commit stable absence before it can advance to the one remint. It cannot inherit
+or copy a key-created phase and cannot mint first. Target committed, complete, embedded-permit
+mismatch, invalid bytes, authorization failure, timeout, and every other unobservable result still
+refuse; deadline expiry alone is never quiescence. The replacement still commits and reads back
+its prepared-target outbox before the exact Authorized-to-Prepared Authority CAS. Attested,
+Completed, noncanonical, corrupt, unready, cursor-invalid, or binding-drifted state fails closed.
+Backup repair remains a distinct `BackupRepairFrozen` program and cannot be selected by this
+expired-`Authorized` recovery path.
+For protected diagnosis and exact durable-continuation selection, the same single journal
+read may additionally project a payload-free phase: intent committed, create attempt prepared, key
+created, target committed, cleanup required, cleanup proven, or complete, including the closed
+initial-attempt/remint-used bit where the retained phase carries it. Embedded-permit mismatch and
+invalid bytes remain present refusals; session/request failures remain unobservable. This
+projection adds no write/delete authority. Exact absent and initial-attempt intent evidence select
+the no-effect continuation; the closed pre-target set above selects the predecessor-bound
+cleanup-only continuation; Target-committed, complete, invalid, mismatched, and unobservable arms
+refuse.
+Because prepared-target outbox publication precedes the Authority-state CAS, interruption may
+leave that outbox exactly one renewal ahead. The recovery classifier consumes the Authority's
+observed time together with its retained expired predecessor. Besides exact replay and replacement
+of that exact predecessor, it admits only a strictly-forward outbox successor whose own deadline
+has expired and whose owner, fence, target, generation, request digest, and plan binding are
+unchanged. Because the receipt digest binds the successor deadline and selected Agent, it is not
+equal to the predecessor's receipt. The legacy observation-only codec also omits the execution
+image that receipt binds, so an already-persisted legacy successor is admitted only under the
+authenticated exclusive-writer provenance plus the strict immutable/deadline predicate. Its CAS
+replacement stores the complete canonical intent in a versioned envelope. Every such new envelope
+must rederive its exact prepared receipt from that complete intent before it can participate in
+recovery. Active, equal/backward-deadline, malformed, canonical receipt-invalid, unobservable, or
+binding-drifted outboxes remain divergent; the outbox alone cannot authorize a worker.
+The private server diagnostic for a divergent outbox is a closed, value-free classification: it
+may name the schema family, each binding's match/mismatch class, the deadline relation, and the
+canonical receipt-binding relation, but it never renders either retained or proposed values.
+
+Permit preparation does not imply Kubernetes execution readiness. Before first-reconcile genesis,
+the mandatory retained-local control-plane plan must reconcile and independently observe the fixed
+Credential Provisioner namespace, both schema-specific ServiceAccounts, schema-selecting
+default-deny network isolation, and its narrow Job/Pod/attach/read-back controller permissions.
+The same substrate gives Lifecycle Authority a separate GET-only Job/Pod observer Role for the
+expired-Authorized proof; it grants no list, watch, attach, log, or mutation verb. The Authority's
+Vault role likewise receives only read on the execution-journal prefix, while the worker remains
+the sole create/update owner.
+The worker's single terminal refusal line is a closed, value-free projection. An IAM prerequisite
+failure is classified before `ProductionIamError` becomes bounded private text: its token names
+only the finite error constructor and, for a native AWS failure, the authored operation stage plus
+a closed signing/transport/service/parse/ambiguity class. Unknown operation labels and AWS service
+codes map to explicit fallback classes. Credential values, IAM names, provider messages, request
+IDs, status bodies, counts, and boundary detail never enter the line. This diagnostic changes no
+IAM program, request, retry, permission, journal transition, or receipt behavior.
+For `CreateRole`, the finite client-side service refinement is exactly concurrent modification,
+entity already exists, invalid input, limit exceeded, and malformed policy document. The documented
+server failure stays in the server class and unknown 4xx codes stay in the `other-client` fallback;
+private provider fields never choose between tokens.
+The subsequent role read-back refusal is likewise closed: absence, name mismatch, ARN mismatch,
+or trust-policy mismatch. The policy arm distinguishes invalid JSON, equality after only IAM's
+documented singleton `Statement`, `Action`, and `Principal.AWS` forms, or other difference. It
+cannot carry the observed role or policy. Trust-policy acceptance admits exact decoded equality or
+equality after only those singleton normalizations; invalid JSON and every other difference remain
+refused. User and role permissions-policy comparison remains exact, and the reconciliation
+sequence is unchanged.
+This prerequisite contains no standing workload and no Secret/ConfigMap read. A Job create is
+admitted only after that exact observation; apply exit, another chart's readiness, or a later
+Job-absence read-back cannot stand in for it. Selecting an AWS target does not move or duplicate
+this authority on EKS.
+The created Pod's admission identity is also manifest-owned: both Credential Provisioner ingress
+schemas use the same explicit nonzero numeric UID/GID/fsGroup, `runAsNonRoot`, and RuntimeDefault
+seccomp projection. A union image's default user is not evidence of a safe runtime identity, and a
+Job that cannot be admitted and attested under this projection cannot execute its permit.
+ServiceAccount automount stays disabled for both schemas. AWS-admin alone projects a second,
+independent in-cluster Kubernetes client identity: the Kubernetes-API-audience token, projected
+root CA, and downward namespace occupy the standard client directory, while the existing
+`prodbox-control-plane`-audience Vault-login token remains at `/var/run/secrets/prodbox/token`.
+Neither token is accepted as authority for the other's boundary. Its NetworkPolicy consumes the
+compiled post-DNAT `endpoints/kubernetes` address/port coordinate; the public `0.0.0.0/0:443` rule
+remains a distinct provider-HTTPS coordinate and is not evidence of API reachability. The
+external-EAB worker has no Kubernetes client projection or API egress because its closed effect is
+retained-custody sealing. Exact namespaced RBAC still decides which API operations the AWS-admin
+identity may perform.
+Job creation also does not imply immediate Pod readiness. The attestation observer may retry only
+the exact immutable owned Pod through a bounded absent-phase/Pending/not-yet-ready convergence
+window. Job/Pod/ServiceAccount or image drift, deletion, a terminal phase, API failure, malformed
+state, and a spent bound remain distinct fail-closed outcomes; a fresh read alone can supply the
+Running, ready, zero-restart runtime-image evidence used for attestation.
+The runtime-image key on this `Always`-pull path is the exact registry-manifest digest. Image
+resolution must not substitute the manifest's config digest; the permit and Kubernetes imageID
+read-back join on the manifest identity, while the validated pullable tag remains a separate
+addressing hint. A runtime digest is never assembled into a pull reference. Plain, URI-qualified,
+and repository-qualified imageID encodings are representation variants only when each yields
+exactly one complete `sha256:` digest; one canonical parser supplies that interpretation to both
+the credential worker and its downstream Target-worker observer. Malformed or foreign identities
+refuse.
+The registered Target Agent identity supplies the downstream Target-worker expectation and is
+therefore derived from that independently resolved repository manifest by both chart rendering and
+first-reconcile permit construction. Docker's host-local image ID is retained only as a rollout
+trigger; it cannot enter the signed Target-worker image join. The freshly observed declared tag
+remains the worker Pod's addressing hint and cannot substitute for Kubernetes runtime evidence.
+For AWS-admin ingress, the native renderer also parses that validated pullable execution reference
+once, derives its normalized untagged repository, and supplies the parser-required Target Worker
+repository option. A separately supplied repository cannot diverge because no such input exists;
+malformed or digested execution references refuse before Job rendering. That repository is an
+address for the later Target Worker materialization, not evidence for the permit/runtime manifest
+join.
+
+Each ingress schema's worker receipt crosses stdout as a bounded canonical-base64 ASCII envelope
+around its canonical binary receipt, with a distinct fixed-version prefix that cannot be accepted
+by the other schema. The external-material v2 receipt binds the exact retained-custody HMAC source
+receipt alongside its permit, generation, commitment, ciphertext digest, and Vault version; no
+caller may synthesize the source receipt from the permit identity. Its state v3 migration accepts a
+valid completed v2 state only by returning it to its exact signed permit-committed phase, where the
+existing Target-source observation reconstructs and CAS-commits the complete receipt before
+delivery. Exit success is not receipt success: the coordinator accepts only the complete
+source-specific envelope and inner encoding, preserves transport or decode failure as a refusal,
+and still runs exact Job/Pod cleanup. Both native one-shot stdin renderers bind
+`stdinOnce: true`; disconnect after the single attested attach closes the container stream and is
+the EOF that releases the bounded worker reader. The AWS-admin protected value-free diagnostic may
+distinguish only
+empty/within-bound/oversize capture, the closed raw receipt and envelope decoder causes,
+absent/LF/CRLF terminal ending, those closed causes after removing exactly one present ending,
+empty/single/multiple line topology, none/unique/ambiguous canonical receipt-envelope lines,
+none/unique/ambiguous fixed-prefix lines, and the worker's closed terminal-refusal cause. An
+execution refusal further carries exactly one exhaustive subcause derived from the closed
+`AwsAdminExecutionError` constructor: journal, IAM, cleanup, material, delivery, identity, or
+receipt stage. The mapping discards every boundary payload, count, codec version, and nested value
+before rendering, so those values and exception detail cannot enter the Pod log and then be
+mistaken for diagnostic authority. An exact one-remint refusal additionally retains only its
+closed cleanup trigger: resumed cleanup-proven journal, nonempty inventory at intent,
+prepared-inventory divergence, create dispatch ambiguity, lost successful create result,
+predecessor collision, unavailable created material, invalid material, Target delivery failure, or
+Target receipt mismatch. The trigger is value-free and changes no cleanup, remint, journal, or
+delivery behavior. Its Target-delivery arm further distinguishes only the closed direct-preflight
+stage, authenticated Target-intent transport/codec/HTTP/refusal/unavailability/decoder class,
+Target-worker coordinator constructor, or retained-custody boundary. Every variable HTTP,
+provider, Kubernetes, identity, payload, material, and retained-store detail is discarded. The
+Agent-rollout-observation arm retains only whether subprocess acquisition, in-cluster Kubernetes
+client configuration, authorization, Deployment presence, Kubernetes exit, or one exact
+response/identity/digest/UID/generation validation stage failed, with an explicit unknown arm.
+Target-worker Pod observation further retains only Pod Kubernetes exit, invalid list, cardinality,
+Job-label/controller-UID binding, container presence, declared/runtime-image shape or digest,
+annotation binding, named ServiceAccount Kubernetes/response/name/namespace/UID failure, or
+`other`. Pod JSON, annotation names/values, image identities, UIDs, subprocess text, and Kubernetes
+responses are not renderable.
+That projection changes no delivery, authentication, retry, worker, cleanup, remint, permit,
+journal, observation, or receipt behavior. An
+unrecognized or multiple worker-terminal line remains a closed refusal. The diagnostic exposes no
+raw bytes, lines, values, lengths, or versions and grants no normalization or line selection
+authority by itself.
+The external-EAB worker independently collapses its internal failure algebra to fixed value-free
+stdin, frame, Pod-UID, permit, clock, Vault-login, Authority-key, custody-handoff,
+session-revocation, and unhandled-exception terminal causes. Its coordinator may recover one cause
+only from a unique exact whole prefixed line in attach stderr or the exact Pod-log capture; an
+unknown, missing, or multiple prefixed line remains the pre-existing transport or receipt refusal.
+Raw stderr, input sizes, nested wire values, Vault bodies, tokens, provider output, and exception
+detail cannot become controller state or diagnostic authority. Its behavior-neutral transport
+observation is limited to attach/Pod-log source, process success/failure, stdout/stderr
+empty/nonempty, and each side's none/known/unrecognized/ambiguous terminal-line disposition. Exit
+integers, bytes, lines, sizes, and subprocess text are unrepresentable, and the observation changes
+no retry, decode, cleanup, or public result.
+The permit-created Target Secret Worker owns an explicit numeric UID, GID, and filesystem group at
+the Pod boundary, including `OnRootMismatch`, `runAsNonRoot`, and RuntimeDefault seccomp. The union
+image's default user is never an admission proof. Privilege escalation remains denied, the root
+filesystem remains read-only, every capability remains dropped, and only the bounded memory-backed
+runtime volume is writable; changing runtime identity cannot weaken attestation or terminal
+Job/Pod absence.
+The session-revocation arm is likewise finite and value-free. It distinguishes auditor login or
+role cleanup from the fenced lifecycle's journal, binding, pre-clean, cleaned-login-ambiguity,
+cleanup, cleanup-exception, and cleanup-journal stages. Pre-clean and cleanup nest only closed
+identity, observation, classification, visibility-wait, and stable-zero causes. Revoke transport
+status remains provisional and cannot authorize a receipt; the independent accessor-absence proof
+still dominates every action outcome. No token, accessor, journal coordinate, Vault response,
+operation identity, target value, or receipt value is renderable.
+Journal unavailability additionally retains only whether it occurred during binding allocation,
+before the worker action began, or during finalization after action entry. Acquisition and
+finalization then retain only authentication rejection, authorization rejection, not found,
+timeout, transport failure, decode failure, invalid journal state, or other. A closed two-state
+action-progress latch supplies the stage distinction; it carries no time, action result, exception,
+token/accessor, provider, journal, target, or receipt value and changes no lifecycle transition.
+The accessor-free journal auditor must remain live for the complete bounded child-worker action
+and stable-absence finalization. Its maximum lifetime has one compiled owner shared by Vault-role
+reconciliation and exact issued-lease validation, and strictly exceeds the child-worker runtime
+bound. An otherwise valid shorter lease refuses before action entry rather than treating the
+source role plan as evidence about the token in hand. It remains a non-renewable batch identity
+with unchanged policy; duration containment is not authority to weaken the terminal absence proof.
+The lease-bound revision is also an appended exact root-baseline target. Its predecessor target set
+is accepted only as a closed restart input and is neither current nor admissible in-progress; the
+ordinary planner must advance the root-session identity, reapply the revised role, and obtain exact
+complete-target read-back before continuing.
+An exact successful-but-empty attach is the only fallback admission for either ingress schema: the
+controller may issue one
+bounded log read for the same attested Pod and fixed worker container through the predeclared
+GET-only `pods/log` capability. The worker precedes its fixed-version canonical envelope line with
+one LF record separator so prior same-line output cannot contaminate the receipt coordinate.
+Non-empty attach bytes always win and must be exactly that separator plus the one envelope, with no
+other ending or line. A failed log read leaves the original empty capture and existing decode
+refusal intact. A successful log read requires the single final LF observed on the supported
+Kubernetes log surface, refuses CRLF or a repeated final ending, and selects the receipt only when
+exactly one whole line has the fixed prefix, canonical base64, and canonical inner receipt. No match
+or multiple matches refuse. This is a source-specific record grammar, not generic trimming or
+substring selection.
+
+Delivery and terminal completion use disjoint authenticated caller identities. The accessor-bearing
+worker session holds the stable Credential Provisioner delivery identity and may reach only the
+exact Target observation, Target-intent, and retained-material delivery routes required while the
+secret-bearing program is active; it cannot call the AWS-admin completion route. Only after that
+session is proven absent may the worker acquire the accessor-free batch completion identity, whose
+signing key and route authority are limited to the terminal AWS-admin completion call. The
+completion identity cannot prepare a permit or reach any delivery route. Appending this identity to
+the caller wire registry does not renumber the existing delivery identity, and neither identity may
+borrow the other's Transit signing key.
+
+The retained-delivery interpreter obtains its Target execution intent through the authenticated
+Lifecycle Authority Service route even though the interpreter is hosted by that Authority. This
+preserves one route/authentication/replay decision instead of introducing an in-process authority
+bypass. Default-deny network isolation must consequently admit the exact release-bound Authority
+Pod back to its own Service control-plane port; that physical self-Service lane grants no route or
+capability by itself.
+
+Target-intent issuance binds the exact prepared custody receipt, not the material later attached to
+the Target worker. A retained delivery therefore projects its durable attestation as that receipt
+digest. The rewrap envelope and destination opening keep their own digest coordinates for response
+validation and worker execution; equal textual digest shapes do not make those coordinates
+interchangeable. Issuance also recovers the deadline from the sole exact pending retained-delivery
+outbox operation after validating its registered Agent, target, source receipt, generation, and
+attestation. It never reuses the completed ingress intent's historical deadline or accepts a
+deadline from the caller.
+
+The bounded Target-worker Pod observer distinguishes clean absence from a reached workload whose
+observation failed validation. It retains the last typed failure across retries, so a Job deadline
+deleting the Pod immediately before the final sample cannot collapse that failure into
+`WorkloadAbsent`. Only an all-absence observation history admits the absent result.
+
 The cleanup fold observes a flat signed genesis marker: positively absent, consumed, corrupt, or
 unobservable. Positive absence authorizes only conditional deletion/read-back from reconstructed
 Tier-0 intent, lost storage/authority generation, and exact registered ownership; it does not
@@ -198,7 +526,11 @@ credentialed. Selected Agents use exact Kubernetes-Secret capabilities; retained
 uses the `prodbox-tls-envelope` Transit key to issue/unwrap a DEK and encrypt it to the selected
 one-shot worker's attested ephemeral key. Authority explicitly transports the bounded
 ciphertext/wrapped-DEK bytes between Agent and Adapter; a reference from one disjoint store is not
-dereferenceable by the other. Each `(substrate, canonical scope set)` has one fenced
+dereferenceable by the other. A host client can select only the closed Authority retain/restore request and
+its compiled substrate/scope slot. Authority self-authenticates that fold and alone authenticates
+the Adapter and Target TLS calls; operator/test-harness identities are deliberately absent from all
+six Target TLS route trust lists.
+Each `(substrate, canonical scope set)` has one fenced
 pending/current fold binding
 Secret UID/resourceVersion equality witness, cert serial/validity/SPKI, Authority sequence, immutable
 S3 object version, and byte/digest read-back. Promotion re-observes the exact source Secret; stale,
@@ -234,6 +566,39 @@ The flat custody observation is present, positively absent, corrupt, digest-mism
 unobservable, and only exact present/read-back can drive delivery. This is the mandatory source for
 adding a later target and for repopulating a fresh AWS Vault/EBS without admin re-prompt, IAM remint,
 or EAB re-entry.
+
+Reconciling an already receipt-backed source into the retained source catalog or a target outbox is
+a fresh metadata-only Authority transaction, not a replay of the custody-seal effect. It receives a
+new five-minute Authority-time admission deadline and predecessor-grace bound. The historical
+external-ingress or provisioning deadline remains evidence about its own effect and is never reused
+as this transaction's clock; refreshing the metadata deadline cannot authorize a new source seal,
+remint, or operator input.
+
+The one pre-binding retained-material v1 legacy shape has a closed correction: its current source
+receipt equals its source operation because the earlier host substituted the permit identity before
+the Target receipt carried the HMAC source receipt. An authenticated exact source observation may
+replace only that field when generation, operation, ciphertext digest, commitment, and Vault version
+are unchanged, observation time does not regress, and no completed delivery names the legacy
+receipt. The Authority transition is idempotent after response loss. A pending legacy envelope is
+not rewritten: exact Target absence and strict expiry are still required before its deterministic
+successor may bind the corrected current receipt and a fresh key.
+
+Each target-delivery attempt has an Authority-time five-minute absolute deadline and a fresh
+ephemeral destination key. If exact Target observation is absent after that deadline, the Authority
+atomically replaces the pending attempt with the one deterministic successor operation in its
+lineage. The successor preserves source receipt, target, generation, and attestation, but requires a
+different key and a fresh later deadline. A caller cannot select or mint that operation. Exact
+replacement replay is idempotent after a lost response and resumes the persisted successor with the
+same in-memory key; it never reruns the expired envelope. Recovery searches a bounded lineage of at
+most 256 successors and fails closed if no exact logical binding is present. Any signed Target
+execution intent for that attempt takes this persisted successor deadline, not the expired
+external-ingress/provisioning deadline that produced the already committed custody receipt.
+
+The authenticated request that waits for terminal delivery has a route-specific finite response
+budget containing that persisted five-minute operation plus 30 seconds for authenticated framing,
+projection, encoding, and socket completion. The host EAB path and in-cluster SES worker path
+consume the same typed 330-second constant. Generic Lifecycle Authority clients do not inherit
+this budget, so a long-running delivery cannot widen unrelated request deadlines.
 
 A superseded source remains until every target transition and recovery/idempotency window closes.
 Explicit SES teardown stops/read-backs consumers, deletes/read-backs the external SMTP
@@ -291,6 +656,15 @@ rotation always uses a new Job/prompt. Policies and trust are exact; no
 base key, Vault path, ServiceAccount, cleanup node, or permit constructor is shared across roles.
 Explicit SES destroy/migration/retained compatibility/quota request uses the separate Admin Action
 Runner, and `nuke` uses only its post-export Decommission Runner.
+
+Provider dispatch progress is observation, never lifecycle evidence. The Provider Worker may emit
+only the closed request stages and `started`/`completed`/`refused` causes defined by the control-
+plane architecture; no Provider intent, operation/resource coordinate, credential binding, Vault
+or AWS result, subprocess output, transport body, exception, or request identifier is representable
+in that line. The trace preserves the original signed-intent admission, replay record, response
+bytes, timeout, readiness, and terminal Provider observation. In particular, `socket-completion`
+is not a completion receipt and cannot settle an operation: only the registered Provider result and
+its exact read-back evidence do that.
 
 **Legacy checkpoint migration.** First-touch migration is owned by
 `Prodbox.Pulumi.EncryptedBackend`, but its admin-authenticated interpreter runs only in the
@@ -1633,6 +2007,19 @@ static `rke2.reserved + eviction.floor <= host.physical` lemma in
 RKE2/kubelet/containerd; pod-level runaway behavior is separately bounded by
 the chart-rendered Kubernetes `resources`, `ResourceQuota`, and `LimitRange`.
 
+Home-local custom runtime publication must not manufacture disk pressure merely to re-admit an
+identity already held by RKE2 containerd. After the registry push and host-Docker pull, the
+reconciler independently observes the canonical Docker config digest and the exact same tag's
+canonical containerd config digest. The containerd descriptor must use exactly the Docker config
+media type preserved by a Docker-archive import or the native OCI config media type; no other
+descriptor qualifies. Only one unique qualifying descriptor equal to Docker's exact observation
+may bypass the
+`docker save` / `ctr images import` transfer. An absent tag, unequal digest, failed command,
+noncanonical digest, malformed inspection, or ambiguous config line requires the import. Thus the
+optimization cannot turn an unobservable or stale containerd image into an already-current claim,
+while repeated reconciles avoid staging a multi-gigabyte archive across the kubelet's authored
+ephemeral-storage floor.
+
 ### 5a.3. Reconcile Bring-Up Order Is a Projection Over the Component Graph (Sprints 4.43/4.45)
 
 `prodbox cluster reconcile`'s bring-up steps are not two hand-written parallel
@@ -1662,8 +2049,17 @@ registry dependencies for cert-manager, the Bootstrap Broker, MetalLB, Envoy
 Gateway, and Percona. Vault-unsealed depends on the Bootstrap Broker; the Lifecycle Authority and
 Target Secret Agent depend on unsealed Vault, and the Lifecycle Authority additionally depends on
 steady-state MinIO. Bootstrap baseline also precedes genesis-signing and retained-home TLS-envelope
-trust. Authority Backup Adapter, TLS Retention Adapter, and fenced Provider Worker are independent
-steady workloads with distinct capability edges. Credential Provisioner and Admin Action Runner are
+trust. Authority Backup Adapter, TLS Retention Adapter, and fenced Provider Worker are distinct
+steady workloads with distinct capability edges. Full Gateway orchestration additionally depends
+on the Provider Worker's exact rollout/readiness barrier because its host-owned namespace
+guardrail performs the first operational-AWS Provider observation. The edge prevents a stable
+topological sibling tie from placing that Provider dispatch before the worker Service exists; it
+does not grant the Gateway runtime Provider authority. The Provider Worker NetworkPolicy admits
+that dispatch only from the exact Lifecycle Authority namespace-plus-Pod identity on the named
+Provider port; the namespace-local lane remains separate, and no namespace-wide Authority or
+unrestricted ingress is implied. The caller's own default-deny policy reciprocally selects the
+`provider-worker` namespace plus `prodbox-provider-worker` Pod identity on the control-plane port;
+neither direction relies on namespace-wide reachability. Credential Provisioner and Admin Action Runner are
 permit-bound Job nodes, not injected callbacks: genesis admits only the former under
 `GenesisBackupPermit`; normal provider/TLS work waits for permanent genesis-disable and
 `AdmissionOpen`; admin actions require their own backup-receipted permit. MetalLB, Envoy Gateway,

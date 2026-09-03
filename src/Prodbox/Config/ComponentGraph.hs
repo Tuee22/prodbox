@@ -833,6 +833,11 @@ defaultComponentGraph =
       [ orderingOn ComponentVaultUnsealed
       , orderingOn ComponentChartLifecycleAuthority
       , orderingOn ComponentChartAuthorityBackup
+      , -- The gateway component group includes host-owned namespace guardrails
+        -- that observe operational AWS readiness through Provider dispatch.
+        -- Keep the whole group behind the exact standing worker so no sibling
+        -- topological tie can put first Provider use before worker readiness.
+        orderingOn ComponentChartProviderWorker
       , backendWriteOn ComponentMinio
       ]
       (ProbeBackendRoundTrip ComponentMinio)

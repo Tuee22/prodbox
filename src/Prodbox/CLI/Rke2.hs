@@ -14,6 +14,9 @@ module Prodbox.CLI.Rke2
   , adminPublicEdgeManifestItems
   , ensureHarborRegistryRuntime
   , ensureHarborRegistryStorageBackend
+  , harborStorageBackendManifestItems
+  , harborRegistryStorageWaitArguments
+  , harborRegistryStorageDeleteArguments
   , ensureMinioRuntime
   , ensurePostgresOperatorRuntime
   , ensureVaultRuntime
@@ -39,10 +42,13 @@ module Prodbox.CLI.Rke2
   , buildNativeDeletePlan
   , buildNativeInstallExecutionPlan
   , NativeInstallPayload (..)
+  , nativeHarnessBootstrapFloorStepOrder
   , ReconcileStepAnchor (..)
   , ReconcileStepId (..)
   , nativeInstallStepOrder
   , nativeComponentReadinessTarget
+  , authorityBackupReadinessChecks
+  , componentReadinessRetryPolicyFor
   , renderNativeDeletePlan
   , renderNativeInstallPlan
   , nativeInstallStepOrderRespectsGraph
@@ -76,6 +82,11 @@ module Prodbox.CLI.Rke2
   , renderResourceVectorRuntime
   , renderRke2ResourceGuardrailConfig
   , renderRke2SystemdResourceDropIn
+  , Rke2ImageImportDecision (..)
+  , decideRke2ImageImport
+  , RuntimeImageRetentionObservationError (..)
+  , managedRuntimeImageRetentionInventoryArguments
+  , selectManagedDanglingRuntimeImageIds
   , renderMinioChartArgs
   , retainedStorageInventoryEntries
   , harborRegistryStorageBackend
@@ -90,6 +101,8 @@ module Prodbox.CLI.Rke2
   , operationalAwsCredentialGateFromResult
   , runAnchoredReconcileSteps
   , runEdgeCommand
+  , runNativeHarnessBootstrapFloor
+  , reconcileHarnessLifecycleProviderCredential
   , runNativeDeleteCascade
   , runCascadeDrainResult
   , runRke2Command
@@ -103,6 +116,7 @@ import Control.Exception
   , SomeException
   , bracket
   , displayException
+  , onException
   , try
   )
 import Control.Monad (foldM)
@@ -137,7 +151,7 @@ import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
-import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Data.Word (Word8)
 import Numeric.Natural (Natural)
 import Prodbox.Aws (adminAwsEnvironment)
@@ -225,6 +239,8 @@ import Prodbox.ControlPlane.AuthorityBackupExportClient
   )
 import Prodbox.ControlPlane.AuthorityBackupReconcileProduction
   ( GenesisAwsAdminIntentParameters (..)
+  , compileNormalAwsAdminIntentForScope
+  , normalAwsAdminOperationIdForScope
   , productionAuthorityBackupReconcileBoundary
   , reconcileRemainingFirstReconcileCredentials
   )
@@ -232,7 +248,14 @@ import Prodbox.ControlPlane.AuthorityControlClient
   ( authorityControlClientWithTransport
   )
 import Prodbox.ControlPlane.AwsAdminProvisionerClient
-  ( awsAdminProvisionerClient
+  ( AwsAdminProvisionerClient
+  , AwsAdminProvisionerClientError (AwsAdminProvisionerClientRefused)
+  , awsAdminProvisionerClient
+  , observeAwsAdminProvisioning
+  )
+import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
+  ( AwsAdminProvisionerChallenge (awsAdminChallengeCanonicalIntent)
+  , AwsAdminProvisionerObservation (awsAdminObservedChallenge)
   )
 import Prodbox.ControlPlane.CapabilityRequirement (requirementCoordinate')
 import Prodbox.ControlPlane.Coordinate (coordGeneration)
@@ -251,11 +274,14 @@ import Prodbox.ControlPlane.ExternalMaterialIngressWorkflow
   , runExternalMaterialIngressWorkflowWithDelivery
   )
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
-  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator, LifecycleAuthorityTestHarness)
+  , externalCallerKubernetesSubject
   , renderLifecycleAuthorityAuthenticationError
   , withAuthorityBackupAuthenticatedTransport
   , withHostLifecycleAuthorityAuthentication
   , withLifecycleAuthorityAuthenticatedTransport
+  , withLifecycleAuthorityRetainedDeliveryAuthenticatedTransport
+  , withTargetSecretAgentAuthenticatedTransport
   )
 import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
 import Prodbox.ControlPlane.ProviderCaller
@@ -265,11 +291,19 @@ import Prodbox.ControlPlane.ProviderCaller
 import Prodbox.ControlPlane.RetainedMaterialDeliveryClient
   ( retainedMaterialDeliveryClient
   )
+import Prodbox.ControlPlane.TargetMaterialClient
+  ( observeRegisteredTargetMaterial
+  , targetMaterialClient
+  )
+import Prodbox.ControlPlane.TargetMaterialEndpoint
+  ( TargetMaterialObservation (targetMaterialObservedGeneration)
+  )
 import Prodbox.ControlPlane.TargetMaterialFixture
   ( seedAcmeEabFromTestSecrets
   )
-import Prodbox.ControlPlane.TargetSecretAgentExecution
-  ( mkTargetAgentRolloutIdentity
+import Prodbox.ControlPlane.TargetMaterialRegistry
+  ( AwsCredentialIdentity (AwsLifecycleProvider)
+  , TargetSecretId (TargetAwsCredential)
   )
 import Prodbox.DockerConfig (withEphemeralDockerConfig)
 import Prodbox.Error (fatalError)
@@ -298,8 +332,10 @@ import Prodbox.Lib.ChartPlatform
   , keycloakRealmName
   , keycloakVscodeClientId
   , operatorAvailableTarget
+  , readKubernetesApiEgressCoordinate
   , resolveChartSecrets
   , resolveRuntimeChartImageForSubstrate
+  , resolvedCustomImageTargetAgentIdentity
   )
 import Prodbox.Lib.EksCustomImagePush
   ( EksCustomImagePushConfig (..)
@@ -331,13 +367,19 @@ import Prodbox.Lifecycle.CapabilityReadinessBarrier
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminCoordinator
   ( AwsAdminKubernetesBoundary
+  , coordinateAwsAdminProvisioning
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminKubernetes
-  ( mkAwsAdminJobResources
+  ( oneShotAwsAdminJobResources
   , productionAwsAdminKubernetesBoundary
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
-  ( CredentialIamParameters
+  ( AwsAdminPermitIntent
+  , CredentialIamParameters
+  , awsAdminPermitIntentAction
+  , awsAdminPermitIntentCredentialClass
+  , awsAdminPermitIntentGeneration
+  , decodeAwsAdminPermitIntent
   , mkAuthorityBackupIamParameters
   , mkGatewayDnsIamParameters
   , mkHomeDns01IamParameters
@@ -345,13 +387,22 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , mkTlsRetentionIamParameters
   )
 import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
-  ( ExternalMaterialIngressPhase (ExternalMaterialIngressReceiptCommitted)
+  ( ExternalMaterialIngressPhase
+      ( ExternalMaterialIngressIntentCommitted
+      , ExternalMaterialIngressPermitCommitted
+      , ExternalMaterialIngressReceiptCommitted
+      )
   )
 import Prodbox.Lifecycle.CredentialProvisioner.KubernetesJob
   ( CredentialProvisionerJobConnection (..)
   )
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( AwsCredentialClass (..)
+  , OperatorMaterialAction (InstallOperatorMaterial, RevokeOperatorMaterial, RotateOperatorMaterial)
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.Substrate
+  ( productionCredentialProvisionerSubstrateBoundary
+  , reconcileCredentialProvisionerSubstrate
   )
 import Prodbox.Lifecycle.DependencyAdmission
   ( AdmissionRefusal
@@ -393,6 +444,7 @@ import Prodbox.Lifecycle.RegistryBackendWitness (registryBackendWitness)
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
+import Prodbox.Lifecycle.TargetCommitIntent (credentialGenerationValue)
 import Prodbox.Lifecycle.Teardown.RecoveryPlane
   ( RecoveryPlaneFinalDisposition (RecoveryPlaneNotEstablished)
   )
@@ -424,7 +476,9 @@ import Prodbox.PublicEdge
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
-  ( customImagePushRetryPolicy
+  ( RetryPolicy
+  , customImagePushRetryPolicy
+  , deploymentRevisionObservationRetryPolicy
   , drawRetryDelayMicros
   , helmTransientRetryPolicy
   , retryPolicyMaxAttempts
@@ -711,6 +765,30 @@ harborStoragePolicyName = "prodbox-harbor-registry-policy"
 
 harborRegistryStorageBootstrapJobName :: String
 harborRegistryStorageBootstrapJobName = "harbor-registry-bucket-init"
+
+-- | Sprint 3.44: the host waiter and explicit delete are the single cleanup
+-- owner for this Job.  Keeping their exact argument vectors as values makes
+-- the observed name, namespace, and completion bound independently testable.
+harborRegistryStorageWaitArguments :: [String]
+harborRegistryStorageWaitArguments =
+  [ "wait"
+  , "--for=condition=complete"
+  , "job/" ++ harborRegistryStorageBootstrapJobName
+  , "-n"
+  , minioNamespace
+  , "--timeout=300s"
+  ]
+
+harborRegistryStorageDeleteArguments :: [String]
+harborRegistryStorageDeleteArguments =
+  [ "delete"
+  , "job"
+  , harborRegistryStorageBootstrapJobName
+  , "-n"
+  , minioNamespace
+  , "--ignore-not-found=true"
+  , "--wait=true"
+  ]
 
 -- | Job name plus canonical IAM principal and policy name for the
 -- gateway daemon's MinIO object-store surface, provisioned in one unified pass
@@ -1447,6 +1525,37 @@ runNativeInstall repoRoot planOptions withEdge = do
                 plan
                 (applyNativeInstallPlan repoRoot bootstrapSettings)
 
+-- | Internal automation bootstrap used before the test harness can refresh
+-- its Lifecycle-provider credential. It executes the ordinary graph through
+-- the retained Authority/config transition and stops before every steady
+-- component, especially Provider Worker deep readiness. The public
+-- @cluster reconcile@ path always uses the full mode below.
+runNativeHarnessBootstrapFloor :: FilePath -> IO ExitCode
+runNativeHarnessBootstrapFloor repoRoot = do
+  settingsResult <- validateAndLoadBootstrapSettings repoRoot
+  case settingsResult of
+    Left err -> failWith err
+    Right bootstrapSettings -> do
+      identityResult <- resolveMachineIdentity
+      case identityResult of
+        Left err -> failWith err
+        Right (machineId, prodboxId) -> do
+          let labelValue = prodboxIdToLabelValue prodboxId
+          case buildNativeInstallExecutionPlan
+            repoRoot
+            bootstrapSettings
+            machineId
+            prodboxId
+            labelValue
+            False of
+            Left structuredError -> failWith (errorNarrative structuredError)
+            Right plan ->
+              applyNativeInstallPlanWithMode
+                NativeInstallHarnessBootstrapFloor
+                repoRoot
+                bootstrapSettings
+                (planPayload plan)
+
 -- | @prodbox edge ...@ dispatch. @edge reconcile@ is the AWS-gated,
 -- edge-only reconcile (the same plan @cluster reconcile --with-edge@
 -- appends, but standalone). @edge status@ is routed to the existing
@@ -1490,6 +1599,7 @@ renderEdgeReconcilePlan repoRoot (_prodboxId, _labelValue) =
 data ReconcileStepId
   = StepRke2ResourceGuardrails
   | StepHostInotifyLimits
+  | StepManagedRuntimeImageRetention
   | StepRke2ServerInstalled
   | StepRke2IngressController
   | StepEnableRke2Service
@@ -1513,9 +1623,11 @@ data ReconcileStepId
   | StepBootstrapBrokerChartReady
   | StepFederatedVaultLifecycle
   | StepTargetSecretAgentChartReady
+  | StepCredentialProvisionerSubstrateReady
   | StepLifecycleAuthorityChartReady
   | StepPostUnsealHandoff
   | StepAuthorityBackupChartReady
+  | StepAuthorityBackupRolloutReady
   | StepEstablishAuthorityBackup
   | StepReconcileInForceConfig
   | StepLoadInForceSettings
@@ -1539,6 +1651,7 @@ reconcileStepToken :: ReconcileStepId -> String
 reconcileStepToken step = case step of
   StepRke2ResourceGuardrails -> "ensure_rke2_resource_guardrails"
   StepHostInotifyLimits -> "ensure_host_inotify_limits"
+  StepManagedRuntimeImageRetention -> "reconcile_managed_runtime_image_retention"
   StepRke2ServerInstalled -> "ensure_rke2_server_installed"
   StepRke2IngressController -> "ensure_rke2_ingress_controller"
   StepEnableRke2Service -> "enable_rke2_service"
@@ -1562,9 +1675,11 @@ reconcileStepToken step = case step of
   StepBootstrapBrokerChartReady -> "ensure_bootstrap_broker_chart_ready"
   StepFederatedVaultLifecycle -> "ensure_federated_vault_lifecycle"
   StepTargetSecretAgentChartReady -> "ensure_target_secret_agent_chart_ready"
+  StepCredentialProvisionerSubstrateReady -> "ensure_credential_provisioner_substrate_ready"
   StepLifecycleAuthorityChartReady -> "ensure_lifecycle_authority_chart_ready"
   StepPostUnsealHandoff -> "reconcile_post_unseal_handoff"
   StepAuthorityBackupChartReady -> "ensure_authority_backup_chart_ready"
+  StepAuthorityBackupRolloutReady -> "observe_authority_backup_rollout_ready"
   StepEstablishAuthorityBackup -> "establish_authority_backup_admission"
   StepReconcileInForceConfig -> "reconcile_authority_in_force_config"
   StepLoadInForceSettings -> "load_authority_in_force_settings"
@@ -1586,6 +1701,7 @@ reconcileStepPhase :: ReconcileStepId -> ReconcilePhase
 reconcileStepPhase step = case step of
   StepRke2ResourceGuardrails -> PhaseBootstrap
   StepHostInotifyLimits -> PhaseBootstrap
+  StepManagedRuntimeImageRetention -> PhaseBootstrap
   StepRke2ServerInstalled -> PhaseBootstrap
   StepRke2IngressController -> PhaseBootstrap
   StepEnableRke2Service -> PhaseBootstrap
@@ -1609,9 +1725,11 @@ reconcileStepPhase step = case step of
   StepBootstrapBrokerChartReady -> PhaseBootstrap
   StepFederatedVaultLifecycle -> PhaseTransition
   StepTargetSecretAgentChartReady -> PhaseTransition
+  StepCredentialProvisionerSubstrateReady -> PhaseTransition
   StepLifecycleAuthorityChartReady -> PhaseTransition
   StepPostUnsealHandoff -> PhaseTransition
   StepAuthorityBackupChartReady -> PhaseTransition
+  StepAuthorityBackupRolloutReady -> PhaseTransition
   StepEstablishAuthorityBackup -> PhaseTransition
   StepReconcileInForceConfig -> PhaseTransition
   StepLoadInForceSettings -> PhaseTransition
@@ -1620,7 +1738,7 @@ reconcileStepPhase step = case step of
   StepMetalLbRuntime -> PhaseSteady
   StepEnvoyGatewayRuntime -> PhaseSteady
   StepPostgresOperatorRuntime -> PhaseSteady
-  StepGatewayMinioBootstrap -> PhaseSteady
+  StepGatewayMinioBootstrap -> PhaseTransition
   StepGatewayChartReady -> PhaseSteady
   StepRootChartNamespaceGuardrails -> PhaseSteady
   StepAdminPublicEdgeRoutes -> PhaseSteady
@@ -1636,6 +1754,7 @@ reconcileStepAnchor :: ReconcileStepId -> ReconcileStepAnchor
 reconcileStepAnchor step = case step of
   StepRke2ResourceGuardrails -> HostPrepBefore ComponentClusterBase
   StepHostInotifyLimits -> HostPrepBefore ComponentClusterBase
+  StepManagedRuntimeImageRetention -> HostPrepBefore ComponentClusterBase
   StepRke2ServerInstalled -> ComponentMutation ComponentClusterBase
   StepRke2IngressController -> ComponentMutation ComponentClusterBase
   StepEnableRke2Service -> ComponentMutation ComponentClusterBase
@@ -1663,9 +1782,11 @@ reconcileStepAnchor step = case step of
   -- production-readiness barrier.
   StepFederatedVaultLifecycle -> ComponentReadiness ComponentVaultUnsealed
   StepTargetSecretAgentChartReady -> ComponentReadiness ComponentChartTargetSecretAgent
+  StepCredentialProvisionerSubstrateReady -> HostPrepBefore ComponentChartAuthorityBackup
   StepLifecycleAuthorityChartReady -> ComponentReadiness ComponentChartLifecycleAuthority
   StepPostUnsealHandoff -> ComponentReadiness ComponentChartLifecycleAuthority
   StepAuthorityBackupChartReady -> ComponentMutation ComponentChartAuthorityBackup
+  StepAuthorityBackupRolloutReady -> ComponentReadiness ComponentChartAuthorityBackup
   StepEstablishAuthorityBackup -> TransitionFor ComponentChartAuthorityBackup
   StepReconcileInForceConfig -> TransitionFor ComponentChartAuthorityBackup
   StepLoadInForceSettings -> ComponentReadiness ComponentChartAuthorityBackup
@@ -1674,7 +1795,10 @@ reconcileStepAnchor step = case step of
   StepMetalLbRuntime -> ComponentReadiness ComponentMetalLB
   StepEnvoyGatewayRuntime -> ComponentReadiness ComponentEnvoyGateway
   StepPostgresOperatorRuntime -> ComponentReadiness ComponentPerconaPostgresOperator
-  StepGatewayMinioBootstrap -> HostPrepBefore ComponentGatewayDaemonFull
+  -- The unified Gateway/Authority IAM reconcile reads Vault, so it belongs
+  -- after unseal; the Authority consumes its dedicated principal during
+  -- initial admission, so the reconcile must precede that chart.
+  StepGatewayMinioBootstrap -> HostPrepBefore ComponentChartLifecycleAuthority
   StepGatewayChartReady -> ComponentReadiness ComponentGatewayDaemonFull
   StepRootChartNamespaceGuardrails -> HostPostAfter ComponentGatewayDaemonFull
   StepAdminPublicEdgeRoutes -> HostPostAfter ComponentGatewayDaemonFull
@@ -1691,6 +1815,7 @@ stepsForComponent component = case component of
   ComponentClusterBase ->
     [ StepRke2ResourceGuardrails
     , StepHostInotifyLimits
+    , StepManagedRuntimeImageRetention
     , StepRke2ServerInstalled
     , StepRke2IngressController
     , StepEnableRke2Service
@@ -1722,8 +1847,7 @@ stepsForComponent component = case component of
   ComponentPerconaPostgresOperator -> [StepPostgresOperatorRuntime]
   ComponentGatewayDaemonPreVault -> []
   ComponentGatewayDaemonFull ->
-    [ StepGatewayMinioBootstrap
-    , StepGatewayChartReady
+    [ StepGatewayChartReady
     , StepRootChartNamespaceGuardrails
     , StepAdminPublicEdgeRoutes
     , StepReconcileManagedAnnotations
@@ -1741,10 +1865,15 @@ stepsForComponent component = case component of
   -- chart's own rollout/readiness barrier.
   ComponentChartBootstrapBroker -> [StepBootstrapBrokerChartReady]
   ComponentChartLifecycleAuthority ->
-    [StepLifecycleAuthorityChartReady, StepPostUnsealHandoff]
+    [ StepGatewayMinioBootstrap
+    , StepLifecycleAuthorityChartReady
+    , StepPostUnsealHandoff
+    ]
   ComponentChartProviderWorker -> [StepProviderWorkerChartReady]
   ComponentChartAuthorityBackup ->
-    [ StepAuthorityBackupChartReady
+    [ StepCredentialProvisionerSubstrateReady
+    , StepAuthorityBackupChartReady
+    , StepAuthorityBackupRolloutReady
     , StepEstablishAuthorityBackup
     , StepReconcileInForceConfig
     , StepLoadInForceSettings
@@ -1770,6 +1899,17 @@ nativeInstallStepOrder dag =
 nativeInstallStepsForRun :: [ReconcileStepId] -> Bool -> [ReconcileStepId]
 nativeInstallStepsForRun order withEdge =
   [step | step <- order, withEdge || reconcileStepPhase step /= PhaseEdge]
+
+-- | The exact graph prefix the automation harness may establish before it
+-- refreshes the Provider credential. This is a projection of the same ordered
+-- step table as full reconcile, not a second authored bootstrap plan.
+nativeHarnessBootstrapFloorStepOrder :: [ReconcileStepId] -> [ReconcileStepId]
+nativeHarnessBootstrapFloorStepOrder =
+  filter
+    ( \step ->
+        reconcileStepPhase step == PhaseBootstrap
+          || reconcileStepPhase step == PhaseTransition
+    )
 
 deriveNativeInstallStepOrder
   :: [ComponentNode] -> Either String (ComponentDag, [ReconcileStepId])
@@ -1911,7 +2051,20 @@ applyNativeInstallPlan
   -> ValidatedSettings
   -> NativeInstallPayload
   -> IO ExitCode
-applyNativeInstallPlan repoRoot bootstrapSettings payload = do
+applyNativeInstallPlan = applyNativeInstallPlanWithMode NativeInstallFull
+
+data NativeInstallMode
+  = NativeInstallFull
+  | NativeInstallHarnessBootstrapFloor
+  deriving (Eq)
+
+applyNativeInstallPlanWithMode
+  :: NativeInstallMode
+  -> FilePath
+  -> ValidatedSettings
+  -> NativeInstallPayload
+  -> IO ExitCode
+applyNativeInstallPlanWithMode mode repoRoot bootstrapSettings payload = do
   -- Sprint 4.43: execution is projected from the SAME ordered step table
   -- (`nativeInstallStepOrder`) the plan narration reads, so the two cannot drift
   -- (bootstrap_readiness_doctrine.md M1). The pre-Vault bootstrap runs the
@@ -1995,34 +2148,40 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
                               authorityObserved
                       case inForceAuthorityReady of
                         ExitFailure _ -> pure inForceAuthorityReady
-                        ExitSuccess -> do
-                          lanDefaultsResult <- resolveClusterPlatformLanDefaults
-                          case lanDefaultsResult of
-                            Left err -> failWith err
-                            Right lanDefaults -> do
-                              (steadyExit, _steadyAdmissions) <-
-                                runAnchoredReconcileSteps
-                                  repoRoot
-                                  settings
-                                  dag
-                                  (steadyStepAction settings lanDefaults)
-                                  authorityAdmissions
-                                  [step | step <- order, reconcileStepPhase step == PhaseSteady]
-                              case steadyExit of
-                                ExitFailure _ -> pure steadyExit
-                                ExitSuccess
-                                  -- The public edge (Route 53 DNS + ZeroSSL DNS-01 TLS) is the only
-                                  -- part of reconcile that needs operational AWS credentials.
-                                  | withEdge ->
-                                      applyPublicEdgeReconcile repoRoot settings prodboxId labelValue
-                                  | otherwise -> pure ExitSuccess
+                        ExitSuccess
+                          | mode == NativeInstallHarnessBootstrapFloor ->
+                              pure ExitSuccess
+                          | otherwise -> do
+                              lanDefaultsResult <- resolveClusterPlatformLanDefaults
+                              case lanDefaultsResult of
+                                Left err -> failWith err
+                                Right lanDefaults -> do
+                                  (steadyExit, _steadyAdmissions) <-
+                                    runAnchoredReconcileSteps
+                                      repoRoot
+                                      settings
+                                      dag
+                                      (steadyStepAction settings lanDefaults)
+                                      authorityAdmissions
+                                      [step | step <- order, reconcileStepPhase step == PhaseSteady]
+                                  case steadyExit of
+                                    ExitFailure _ -> pure steadyExit
+                                    ExitSuccess
+                                      -- The public edge (Route 53 DNS + ZeroSSL DNS-01 TLS) is the only
+                                      -- part of reconcile that needs operational AWS credentials.
+                                      | withEdge ->
+                                          applyPublicEdgeReconcile repoRoot settings prodboxId labelValue
+                                      | otherwise -> pure ExitSuccess
  where
   machineId = nativeInstallPayloadMachineId payload
   prodboxId = nativeInstallPayloadProdboxId payload
   labelValue = nativeInstallPayloadLabelValue payload
   withEdge = nativeInstallPayloadWithEdge payload
   dag = nativeInstallPayloadDag payload
-  order = nativeInstallPayloadStepOrder payload
+  order = case mode of
+    NativeInstallFull -> nativeInstallPayloadStepOrder payload
+    NativeInstallHarnessBootstrapFloor ->
+      nativeHarnessBootstrapFloorStepOrder (nativeInstallPayloadStepOrder payload)
 
   -- The @PhaseBootstrap@ executor is total. A wrong-phase call fails loudly;
   -- no newly-added step can silently no-op through a wildcard.
@@ -2030,6 +2189,7 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
   bootstrapStepAction step = case step of
     StepRke2ResourceGuardrails -> ensureRke2ResourceGuardrails repoRoot bootstrapSettings
     StepHostInotifyLimits -> ensureHostInotifyLimits repoRoot
+    StepManagedRuntimeImageRetention -> reconcileManagedRuntimeImageRetention repoRoot
     StepRke2ServerInstalled -> ensureRke2ServerInstalled repoRoot
     StepRke2IngressController -> ensureRke2IngressController repoRoot
     StepEnableRke2Service ->
@@ -2082,9 +2242,11 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
     StepFederatedVaultLifecycle -> wrongPhaseStep PhaseBootstrap step
     StepLoadInForceSettings -> wrongPhaseStep PhaseBootstrap step
     StepTargetSecretAgentChartReady -> wrongPhaseStep PhaseBootstrap step
+    StepCredentialProvisionerSubstrateReady -> wrongPhaseStep PhaseBootstrap step
     StepLifecycleAuthorityChartReady -> wrongPhaseStep PhaseBootstrap step
     StepPostUnsealHandoff -> wrongPhaseStep PhaseBootstrap step
     StepAuthorityBackupChartReady -> wrongPhaseStep PhaseBootstrap step
+    StepAuthorityBackupRolloutReady -> wrongPhaseStep PhaseBootstrap step
     StepEstablishAuthorityBackup -> wrongPhaseStep PhaseBootstrap step
     StepReconcileInForceConfig -> wrongPhaseStep PhaseBootstrap step
     StepProviderWorkerChartReady -> wrongPhaseStep PhaseBootstrap step
@@ -2109,6 +2271,8 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
         bootstrapSettings
         SubstrateHomeLocal
         ComponentChartTargetSecretAgent
+    StepCredentialProvisionerSubstrateReady ->
+      ensureCredentialProvisionerSubstrateReady repoRoot
     StepLifecycleAuthorityChartReady ->
       ensureInternalControlPlaneChartReady
         repoRoot
@@ -2122,8 +2286,13 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
         bootstrapSettings
         SubstrateHomeLocal
         ComponentChartAuthorityBackup
+    -- Authority Backup is deliberately applied without Helm waiting because
+    -- its capability-backed readiness is graph-owned. This requested-revision
+    -- barrier separates that mutation from the first backup-admission request;
+    -- otherwise the old Available condition can race the Recreate rollout.
+    StepAuthorityBackupRolloutReady -> pure ExitSuccess
     StepEstablishAuthorityBackup ->
-      requireEstablishedAuthorityBackupAdmission repoRoot
+      requireEstablishedAuthorityBackupAdmission repoRoot bootstrapSettings
     StepReconcileInForceConfig -> do
       reconciled <-
         reconcileInForceConfigFromFile LifecycleAuthorityOperator repoRoot
@@ -2142,6 +2311,7 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
     StepLoadInForceSettings -> wrongPhaseStep PhaseTransition step
     StepRke2ResourceGuardrails -> wrongPhaseStep PhaseTransition step
     StepHostInotifyLimits -> wrongPhaseStep PhaseTransition step
+    StepManagedRuntimeImageRetention -> wrongPhaseStep PhaseTransition step
     StepRke2ServerInstalled -> wrongPhaseStep PhaseTransition step
     StepRke2IngressController -> wrongPhaseStep PhaseTransition step
     StepEnableRke2Service -> wrongPhaseStep PhaseTransition step
@@ -2168,7 +2338,7 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
     StepMetalLbRuntime -> wrongPhaseStep PhaseTransition step
     StepEnvoyGatewayRuntime -> wrongPhaseStep PhaseTransition step
     StepPostgresOperatorRuntime -> wrongPhaseStep PhaseTransition step
-    StepGatewayMinioBootstrap -> wrongPhaseStep PhaseTransition step
+    StepGatewayMinioBootstrap -> ensureGatewayMinioBootstrap repoRoot
     StepGatewayChartReady -> wrongPhaseStep PhaseTransition step
     StepRootChartNamespaceGuardrails -> wrongPhaseStep PhaseTransition step
     StepAdminPublicEdgeRoutes -> wrongPhaseStep PhaseTransition step
@@ -2197,7 +2367,7 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
     StepEnvoyGatewayRuntime ->
       ensureEnvoyGatewayRuntime repoRoot settings prodboxId labelValue edgeLbIp
     StepPostgresOperatorRuntime -> ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
-    StepGatewayMinioBootstrap -> ensureGatewayMinioBootstrap repoRoot
+    StepGatewayMinioBootstrap -> wrongPhaseStep PhaseSteady step
     StepGatewayChartReady -> ensureGatewayChartReadyPostVault repoRoot settings SubstrateHomeLocal
     StepRootChartNamespaceGuardrails -> ensureRootChartNamespaceGuardrails repoRoot settings
     StepAdminPublicEdgeRoutes ->
@@ -2205,6 +2375,7 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
     StepReconcileManagedAnnotations -> reconcileManagedAnnotations repoRoot prodboxId labelValue
     StepRke2ResourceGuardrails -> wrongPhaseStep PhaseSteady step
     StepHostInotifyLimits -> wrongPhaseStep PhaseSteady step
+    StepManagedRuntimeImageRetention -> wrongPhaseStep PhaseSteady step
     StepRke2ServerInstalled -> wrongPhaseStep PhaseSteady step
     StepRke2IngressController -> wrongPhaseStep PhaseSteady step
     StepEnableRke2Service -> wrongPhaseStep PhaseSteady step
@@ -2228,9 +2399,11 @@ applyNativeInstallPlan repoRoot bootstrapSettings payload = do
     StepFederatedVaultLifecycle -> wrongPhaseStep PhaseSteady step
     StepLoadInForceSettings -> wrongPhaseStep PhaseSteady step
     StepTargetSecretAgentChartReady -> wrongPhaseStep PhaseSteady step
+    StepCredentialProvisionerSubstrateReady -> wrongPhaseStep PhaseSteady step
     StepLifecycleAuthorityChartReady -> wrongPhaseStep PhaseSteady step
     StepPostUnsealHandoff -> wrongPhaseStep PhaseSteady step
     StepAuthorityBackupChartReady -> wrongPhaseStep PhaseSteady step
+    StepAuthorityBackupRolloutReady -> wrongPhaseStep PhaseSteady step
     StepEstablishAuthorityBackup -> wrongPhaseStep PhaseSteady step
     StepReconcileInForceConfig -> wrongPhaseStep PhaseSteady step
     StepRequireOperationalAwsCredentials -> wrongPhaseStep PhaseSteady step
@@ -2363,7 +2536,7 @@ requireNativeComponentReadiness repoRoot settings dag component =
                   target
           readinessResult <-
             observeReadinessThroughCapability
-              componentReadinessRetryPolicy
+              (componentReadinessRetryPolicyFor component)
               client
               component
               requirement
@@ -2378,6 +2551,17 @@ requireNativeComponentReadiness repoRoot settings dag component =
                     ++ " within the bounded readiness budget: "
                     ++ Text.unpack detail
                 )
+
+-- | The Broker and Authority Backup Helm applies deliberately do not wait for
+-- their capability-backed readiness. Their exact requested-revision
+-- observations therefore own a longer finite controller-convergence window;
+-- all other component barriers retain the small shared jitter budget.
+componentReadinessRetryPolicyFor :: ComponentId -> RetryPolicy
+componentReadinessRetryPolicyFor component =
+  case component of
+    ComponentChartBootstrapBroker -> deploymentRevisionObservationRetryPolicy
+    ComponentChartAuthorityBackup -> deploymentRevisionObservationRetryPolicy
+    _ -> componentReadinessRetryPolicy
 
 -- | Production one-shot target registry for every component the native home
 -- reconcile mutates. Chart-only nodes are owned by ChartPlatform and fail
@@ -2495,7 +2679,14 @@ nativeComponentReadinessTarget repoRoot settings component =
     ComponentChartProviderWorker ->
       deploymentRolloutTarget component "provider-worker" "provider-worker"
     ComponentChartAuthorityBackup ->
-      deploymentRolloutTarget component "authority-backup" "authority-backup"
+      Right
+        ( RolloutCompleteTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                authorityBackupReadinessChecks
+            )
+        )
     ComponentChartTlsRetention ->
       deploymentRolloutTarget component "tls-retention" "tls-retention"
     ComponentChartTargetSecretAgent ->
@@ -2510,6 +2701,14 @@ nativeComponentReadinessTarget repoRoot settings component =
               [DeploymentAvailable namespace deployment]
           )
       )
+
+-- | Exact requested-revision barrier between the no-wait Authority Backup
+-- Helm mutation and the first authenticated backup request.
+authorityBackupReadinessChecks :: [KubernetesReadinessCheck]
+authorityBackupReadinessChecks =
+  [ DeploymentRevisionObserved "authority-backup" "authority-backup"
+  , DeploymentAvailable "authority-backup" "authority-backup"
+  ]
 
 unsupportedNativeReadiness :: ComponentId -> Either Text.Text value
 unsupportedNativeReadiness component =
@@ -2776,17 +2975,15 @@ observeGatewayReadyzOnceAt endpoint = do
 -- | Drive genesis or backup repair through the retained Authority fold, the
 -- attested AWS-admin Credential Provisioner Job, and the physically separate
 -- Authority Backup Adapter before config/provider/DNS effects may run.
-requireEstablishedAuthorityBackupAdmission :: FilePath -> IO ExitCode
-requireEstablishedAuthorityBackupAdmission repoRoot = do
+requireEstablishedAuthorityBackupAdmission :: FilePath -> ValidatedSettings -> IO ExitCode
+requireEstablishedAuthorityBackupAdmission repoRoot settings = do
   basicsResult <- loadUnencryptedBasics repoRoot
-  settingsResult <- loadPostMinioLifecycleSettings repoRoot
   imageResult <- resolveRuntimeChartImageForSubstrate SubstrateHomeLocal
   now <- round . (* 1000000) <$> getPOSIXTime
-  case (basicsResult, settingsResult, imageResult) of
-    (Left detail, _, _) -> failWith detail
-    (_, Left detail, _) -> failWith detail
-    (_, _, Left detail) -> failWith detail
-    (Right basics, Right settings, Right (Just image)) ->
+  case (basicsResult, imageResult) of
+    (Left detail, _) -> failWith detail
+    (_, Left detail) -> failWith detail
+    (Right basics, Right (Just image)) ->
       case authorityBackupRuntimeInputs repoRoot basics settings image now of
         Left detail -> failWith detail
         Right (coordinate, intentParameters, kubernetes) -> do
@@ -2843,7 +3040,7 @@ requireEstablishedAuthorityBackupAdmission repoRoot = do
                     ++ show health
                     ++ "; no config or normal lifecycle work was started."
                 )
-    (_, _, Right Nothing) ->
+    (_, Right Nothing) ->
       failWith "The pinned runtime image is unavailable for the Credential Provisioner Job."
 
 authorityBackupRuntimeInputs
@@ -2859,23 +3056,14 @@ authorityBackupRuntimeInputs
        , AwsAdminKubernetesBoundary IO
        )
 authorityBackupRuntimeInputs repoRoot basics settings image heartbeat = do
-  rollout <-
+  manifestDigest <-
     maybe
-      (Left "The runtime image has no immutable Docker image digest.")
+      (Left "The runtime image has no immutable repository manifest digest.")
       Right
-      (resolvedCustomImageRolloutToken image)
-  runtimeDigest <-
-    maybe
-      (Left "The runtime image manifest has no config digest.")
-      Right
-      (resolvedCustomImageRuntimeDigest image)
+      (resolvedCustomImageManifestDigest image)
   selectedAgent <-
-    either
-      (Left . Text.unpack)
-      Right
-      (mkTargetAgentRolloutIdentity (basicsClusterId basics) (Text.pack rollout))
-  resources <-
-    either (Left . show) Right (mkAwsAdminJobResources "250m" "256Mi")
+    resolvedCustomImageTargetAgentIdentity (basicsClusterId basics) image
+  let resources = oneShotAwsAdminJobResources
   let backend = pulumi_state_backend (validatedConfig settings)
       coordinate = "authority-backup-store/" <> basicsClusterId basics
   iamParameters <-
@@ -2891,12 +3079,14 @@ authorityBackupRuntimeInputs repoRoot basics settings image heartbeat = do
         CredentialProvisionerJobConnection
           { credentialProvisionerJobEnvironment = Nothing
           , credentialProvisionerJobWorkingDirectory = repoRoot
+          , credentialProvisionerJobControllerSubject =
+              Just (externalCallerKubernetesSubject LifecycleAuthorityOperator)
           }
       deadline = authorityTimeFromMicros (heartbeat + 30 * 60 * 1000000)
       parameters =
         GenesisAwsAdminIntentParameters
           { genesisIntentIamParameters = iamParameters
-          , genesisIntentImageDigest = Text.pack runtimeDigest
+          , genesisIntentImageDigest = Text.pack manifestDigest
           , genesisIntentAuthorityScope = basicsClusterId basics
           , genesisIntentAuthorityEndpoint =
               -- Sprint 3.35: the port is the compiled owner. The host form is
@@ -2918,8 +3108,179 @@ authorityBackupRuntimeInputs repoRoot basics settings image heartbeat = do
               (resolvedCustomImageRepository image ++ ":" ++ resolvedCustomImageTag image)
           )
           resources
-          heartbeat
+          currentAwsAdminJobHeartbeat
   Right (coordinate, parameters, kubernetes)
+
+currentAwsAdminJobHeartbeat :: IO (Either Text.Text Natural)
+currentAwsAdminJobHeartbeat = do
+  attempted <- try getPOSIXTime :: IO (Either IOException POSIXTime)
+  pure $ case attempted of
+    Left _ -> Left "AWS-admin Job heartbeat clock is unavailable"
+    Right posix ->
+      Right
+        ( fromInteger
+            (max 0 (floor (toRational posix * 1000000) :: Integer))
+        )
+
+-- | Refresh the harness's operational Lifecycle-provider credential through
+-- the authenticated, attested Credential Provisioner. The operation scope is
+-- stable for a qualification cycle. If a response is lost after Target
+-- material advances, the matching retained Authority operation is recovered
+-- byte-for-byte instead of allocating another generation.
+reconcileHarnessLifecycleProviderCredential
+  :: FilePath
+  -> Text.Text
+  -> IO ExitCode
+reconcileHarnessLifecycleProviderCredential repoRoot operationScope = do
+  settingsResult <- validateAndLoadSettings repoRoot
+  basicsResult <- loadUnencryptedBasics repoRoot
+  imageResult <- resolveRuntimeChartImageForSubstrate SubstrateHomeLocal
+  adminResult <- loadAdminAwsCredentials repoRoot
+  now <- round . (* 1000000) <$> getPOSIXTime
+  case (settingsResult, basicsResult, imageResult, adminResult) of
+    (Left detail, _, _, _) -> failWith detail
+    (_, Left detail, _, _) -> failWith detail
+    (_, _, Left detail, _) -> failWith detail
+    (_, _, Right Nothing, _) ->
+      failWith "The pinned runtime image is unavailable for the Credential Provisioner Job."
+    (_, _, _, Left detail) -> failWith detail
+    (Right settings, Right basics, Right (Just image), Right adminCredentials) ->
+      case authorityBackupRuntimeInputs repoRoot basics settings image now of
+        Left detail -> failWith detail
+        Right (_, parameters, kubernetes) -> do
+          iamResult <-
+            firstReconcileIamParameters
+              basics
+              settings
+              adminCredentials
+              LifecycleProviderCredential
+          case iamResult of
+            Left detail -> failWith (Text.unpack detail)
+            Right iamParameters -> do
+              reconciled <-
+                withHostLifecycleAuthorityAuthentication
+                  LifecycleAuthorityTestHarness
+                  repoRoot
+                  ( \authentication -> do
+                      targetResult <-
+                        withTargetSecretAgentAuthenticatedTransport authentication $ \transport ->
+                          observeRegisteredTargetMaterial
+                            (targetMaterialClient transport)
+                            (TargetAwsCredential AwsLifecycleProvider)
+                      case targetResult of
+                        Left err ->
+                          pure (Left (renderLifecycleAuthorityAuthenticationError err))
+                        Right (Left err) ->
+                          pure (Left ("observe Lifecycle-provider Target generation: " ++ show err))
+                        Right (Right observedTarget) -> do
+                          authorityResult <-
+                            withLifecycleAuthorityAuthenticatedTransport authentication $ \transport -> do
+                              let client = awsAdminProvisionerClient transport
+                              intentResult <-
+                                resolveHarnessLifecycleProviderIntent
+                                  client
+                                  parameters
+                                  operationScope
+                                  iamParameters
+                                  observedTarget
+                              case intentResult of
+                                Left detail -> pure (Left detail)
+                                Right intent -> do
+                                  coordinated <-
+                                    coordinateAwsAdminProvisioning
+                                      client
+                                      kubernetes
+                                      adminCredentials
+                                      intent
+                                  pure $ case coordinated of
+                                    Left err -> Left ("coordinate Lifecycle-provider credential: " ++ show err)
+                                    Right _ ->
+                                      Right
+                                        ( credentialGenerationValue
+                                            (awsAdminPermitIntentGeneration intent)
+                                        )
+                          pure $ case authorityResult of
+                            Left err -> Left (renderLifecycleAuthorityAuthenticationError err)
+                            Right outcome -> outcome
+                  )
+              case reconciled of
+                Left err -> failWith (renderLifecycleAuthorityAuthenticationError err)
+                Right (Left detail) -> failWith detail
+                Right (Right generation) -> do
+                  writeOutputLine
+                    ( "Lifecycle-provider credential is current through the authenticated Credential Provisioner at generation "
+                        ++ show generation
+                        ++ "."
+                    )
+                  pure ExitSuccess
+
+resolveHarnessLifecycleProviderIntent
+  :: AwsAdminProvisionerClient IO
+  -> GenesisAwsAdminIntentParameters
+  -> Text.Text
+  -> CredentialIamParameters
+  -> Maybe TargetMaterialObservation
+  -> IO (Either String AwsAdminPermitIntent)
+resolveHarnessLifecycleProviderIntent client parameters operationScope iamParameters observedTarget = do
+  let observedGeneration = maybe 1 targetMaterialObservedGeneration observedTarget
+  case normalAwsAdminOperationIdForScope
+    operationScope
+    LifecycleProviderCredential
+    observedGeneration of
+    Left detail -> pure (Left (Text.unpack detail))
+    Right operationId -> do
+      existing <- observeAwsAdminProvisioning client operationId
+      case existing of
+        Right observation ->
+          pure
+            ( decodeAndValidateHarnessLifecycleProviderIntent
+                observedGeneration
+                observation
+            )
+        Left (AwsAdminProvisionerClientRefused "operation-not-found") ->
+          pure $ do
+            let (action, generation) = case observedTarget of
+                  Nothing -> (InstallOperatorMaterial, 1)
+                  Just target ->
+                    ( RotateOperatorMaterial
+                    , targetMaterialObservedGeneration target + 1
+                    )
+            firstText
+              ( compileNormalAwsAdminIntentForScope
+                  parameters
+                  operationScope
+                  LifecycleProviderCredential
+                  action
+                  generation
+                  iamParameters
+              )
+        Left err ->
+          pure (Left ("observe retained Lifecycle-provider credential operation: " ++ show err))
+ where
+  firstText = Bifunctor.first Text.unpack
+
+decodeAndValidateHarnessLifecycleProviderIntent
+  :: Natural
+  -> AwsAdminProvisionerObservation
+  -> Either String AwsAdminPermitIntent
+decodeAndValidateHarnessLifecycleProviderIntent expectedGeneration observation = do
+  intent <-
+    Bifunctor.first
+      show
+      ( decodeAwsAdminPermitIntent
+          (awsAdminChallengeCanonicalIntent (awsAdminObservedChallenge observation))
+      )
+  if awsAdminPermitIntentCredentialClass intent == LifecycleProviderCredential
+    then Right ()
+    else Left "retained harness credential operation names a different credential class"
+  if credentialGenerationValue (awsAdminPermitIntentGeneration intent) == expectedGeneration
+    then Right ()
+    else Left "retained harness credential operation names a different Target generation"
+  case awsAdminPermitIntentAction intent of
+    InstallOperatorMaterial -> Right intent
+    RotateOperatorMaterial -> Right intent
+    RevokeOperatorMaterial ->
+      Left "retained harness credential operation is a revocation, not an install or rotation"
 
 firstReconcileIamParameters
   :: UnencryptedBasics
@@ -4536,15 +4897,7 @@ ensureHarborRegistryStorageBackend repoRoot = do
         [ runCommand
             Subprocess
               { subprocessPath = "kubectl"
-              , subprocessArguments =
-                  [ "delete"
-                  , "job"
-                  , harborRegistryStorageBootstrapJobName
-                  , "-n"
-                  , minioNamespace
-                  , "--ignore-not-found=true"
-                  , "--wait=true"
-                  ]
+              , subprocessArguments = harborRegistryStorageDeleteArguments
               , subprocessEnvironment = Nothing
               , subprocessWorkingDirectory = Just repoRoot
               }
@@ -4563,29 +4916,14 @@ ensureHarborRegistryStorageBackend repoRoot = do
         , runCommand
             Subprocess
               { subprocessPath = "kubectl"
-              , subprocessArguments =
-                  [ "wait"
-                  , "--for=condition=complete"
-                  , "job/" ++ harborRegistryStorageBootstrapJobName
-                  , "-n"
-                  , minioNamespace
-                  , "--timeout=300s"
-                  ]
+              , subprocessArguments = harborRegistryStorageWaitArguments
               , subprocessEnvironment = Nothing
               , subprocessWorkingDirectory = Just repoRoot
               }
         , runCommand
             Subprocess
               { subprocessPath = "kubectl"
-              , subprocessArguments =
-                  [ "delete"
-                  , "job"
-                  , harborRegistryStorageBootstrapJobName
-                  , "-n"
-                  , minioNamespace
-                  , "--ignore-not-found=true"
-                  , "--wait=true"
-                  ]
+              , subprocessArguments = harborRegistryStorageDeleteArguments
               , subprocessEnvironment = Nothing
               , subprocessWorkingDirectory = Just repoRoot
               }
@@ -5091,8 +5429,10 @@ harborStorageBackendManifestItems accessKey secretKey =
       , "spec"
           .= object
             [ "backoffLimit" .= (3 :: Int)
-            , "ttlSecondsAfterFinished" .= (60 :: Int)
-            , "template"
+            , -- The creating reconcile waits for this exact Job and explicitly
+              -- deletes it afterwards. A TTL controller could remove terminal
+              -- evidence before that bounded waiter observes it.
+              "template"
                 .= object
                   [ "spec"
                       .= object
@@ -5704,6 +6044,31 @@ homeSubstratePlatformComponents =
   , ContainerImage.ComponentZeroSslDns01
   , ContainerImage.ComponentVault
   ]
+
+-- | Reconcile the non-secret, retained-local substrate for permit-created
+-- Credential Provisioner Jobs and accept it only after an independent exact
+-- observation.  No Job or credential material is part of this step.
+ensureCredentialProvisionerSubstrateReady :: FilePath -> IO ExitCode
+ensureCredentialProvisionerSubstrateReady repoRoot = do
+  apiCoordinateResult <- readKubernetesApiEgressCoordinate
+  case apiCoordinateResult of
+    Left err ->
+      failWith
+        ( "Credential Provisioner Kubernetes API egress observation failed: "
+            ++ err
+        )
+    Right apiCoordinate -> do
+      reconciled <-
+        reconcileCredentialProvisionerSubstrate
+          apiCoordinate
+          (productionCredentialProvisionerSubstrateBoundary repoRoot)
+      case reconciled of
+        Left err ->
+          failWith
+            ( "Credential Provisioner execution substrate reconciliation failed: "
+                ++ show err
+            )
+        Right () -> pure ExitSuccess
 
 -- | Reconcile one internal control-plane chart in its own namespace. The
 -- component graph still carries role-to-role edges so the native plan derives
@@ -6976,8 +7341,9 @@ submitAcmeEabFixture caller repoRoot ingressFrame = do
     (_, Left detail) -> pure (Left detail)
     (_, Right Nothing) -> pure (Left "The runtime image is unavailable for ACME EAB ingress.")
     (Right basics, Right (Just image)) ->
-      case resolvedCustomImageRuntimeDigest image of
-        Nothing -> pure (Left "The runtime image manifest has no config digest for ACME EAB ingress.")
+      case resolvedCustomImageManifestDigest image of
+        Nothing ->
+          pure (Left "The runtime image has no immutable repository manifest digest for ACME EAB ingress.")
         Just digest -> do
           let operationId = "acme-eab-fixture-" <> basicsClusterId basics
               repository =
@@ -6989,6 +7355,8 @@ submitAcmeEabFixture caller repoRoot ingressFrame = do
                   CredentialProvisionerJobConnection
                     { credentialProvisionerJobEnvironment = Nothing
                     , credentialProvisionerJobWorkingDirectory = repoRoot
+                    , credentialProvisionerJobControllerSubject =
+                        Just (externalCallerKubernetesSubject caller)
                     }
           submitted <-
             withHostLifecycleAuthorityAuthentication
@@ -6996,30 +7364,35 @@ submitAcmeEabFixture caller repoRoot ingressFrame = do
               repoRoot
               ( \authentication ->
                   withLifecycleAuthorityAuthenticatedTransport authentication $ \transport -> do
-                    let client = externalMaterialIngressClient transport
-                    observed <- observeCurrentExternalMaterialIngress client
-                    case externalMaterialRequestForObservation
-                      operationId
-                      repository
-                      currentImageDigest
-                      heartbeat
-                      observed of
-                      Left detail -> pure (Left detail)
-                      Right request ->
-                        Bifunctor.first show
-                          <$> runExternalMaterialIngressWorkflowWithDelivery
-                            client
-                            (retainedMaterialDeliveryClient transport)
-                            (basicsClusterId basics)
-                            jobs
-                            request
-                            ingressFrame
+                    withLifecycleAuthorityRetainedDeliveryAuthenticatedTransport
+                      authentication
+                      ( \deliveryTransport -> do
+                          let client = externalMaterialIngressClient transport
+                          observed <- observeCurrentExternalMaterialIngress client
+                          case externalMaterialRequestForObservation
+                            operationId
+                            repository
+                            currentImageDigest
+                            heartbeat
+                            observed of
+                            Left detail -> pure (Left detail)
+                            Right request ->
+                              Bifunctor.first show
+                                <$> runExternalMaterialIngressWorkflowWithDelivery
+                                  client
+                                  (retainedMaterialDeliveryClient deliveryTransport)
+                                  (basicsClusterId basics)
+                                  jobs
+                                  request
+                                  ingressFrame
+                      )
               )
           pure $ case submitted of
             Left err -> Left (renderLifecycleAuthorityAuthenticationError err)
             Right (Left err) -> Left (renderLifecycleAuthorityAuthenticationError err)
-            Right (Right (Left err)) -> Left err
-            Right (Right (Right _)) -> Right ()
+            Right (Right (Left err)) -> Left (renderLifecycleAuthorityAuthenticationError err)
+            Right (Right (Right (Left err))) -> Left err
+            Right (Right (Right (Right _))) -> Right ()
 
 externalMaterialRequestForObservation
   :: Text.Text
@@ -7041,7 +7414,7 @@ externalMaterialRequestForObservation operationId repository imageDigest heartbe
                 if externalMaterialChallengeGeneration challenge == 1
                   then ExternalMaterialInstall
                   else ExternalMaterialRotate
-           in Right
+              retainedReplay =
                 ( freshRequest
                     action
                     (externalMaterialChallengeGeneration challenge)
@@ -7050,6 +7423,20 @@ externalMaterialRequestForObservation operationId repository imageDigest heartbe
                 )
                   { externalMaterialWorkflowDeadline = authorityTimeFromMicros deadline
                   }
+           in Right
+                ( if externalMaterialObservedPhase current
+                    `elem` [ ExternalMaterialIngressIntentCommitted
+                           , ExternalMaterialIngressPermitCommitted
+                           ]
+                    && deadline <= heartbeat
+                    then
+                      freshRequest
+                        action
+                        (externalMaterialChallengeGeneration challenge)
+                        imageDigest
+                        heartbeat
+                    else retainedReplay
+                )
       | externalMaterialObservedPhase current == ExternalMaterialIngressReceiptCommitted ->
           Right
             ( freshRequest
@@ -7580,7 +7967,7 @@ acmeEabMaterializerManifests prodboxId labelValue =
       , "token=\"$(cat \"${SERVICEACCOUNT_TOKEN_FILE}\")\""
       , "hmac_b64=\"$(base64 < /vault-materialized/hmac-key | tr -d '\\n')\""
       , "key_id=\"$(cat /vault-materialized/key-id)\""
-      , "printf '%s' \"${key_id}\" | grep -Eq '^[A-Za-z0-9._~-]{1,512}$' || { echo 'materialized EAB key ID has an unsupported shape' >&2; exit 1; }"
+      , "[ -n \"${key_id}\" ] && [ \"${#key_id}\" -le 512 ] && printf '%s' \"${key_id}\" | grep -Eq '^[A-Za-z0-9._~-]+$' || { echo 'materialized EAB key ID has an unsupported shape' >&2; exit 1; }"
       , -- Fail loud rather than materialize an empty Secret: an empty HMAC
         -- here surfaces only later as the opaque ZeroSSL "cannot sign JWS
         -- with an empty MAC key" error. If the handoff file is empty or
@@ -8105,14 +8492,33 @@ ensureRuntimeImageForSubstrate substrate repoRoot prodboxId = do
   let runtimeTag = prodboxIdToLabelValue prodboxId
       runtimeImage = ContainerImage.harborRuntimeImageRepository ++ ":" ++ runtimeTag
       latestImage = ContainerImage.harborRuntimeImageRepository ++ ":latest"
-  ensureCustomImageVariantsForSubstrate
-    substrate
-    repoRoot
-    CustomImageBuildPlan
-      { customImageDockerfile = "docker/prodbox.Dockerfile"
-      }
-    [runtimeImage, latestImage]
-    runtimeImage
+  withManagedRuntimeImageRetention repoRoot $
+    ensureCustomImageVariantsForSubstrate
+      substrate
+      repoRoot
+      CustomImageBuildPlan
+        { customImageDockerfile = "docker/prodbox.Dockerfile"
+        }
+      [runtimeImage, latestImage]
+      runtimeImage
+
+-- | Bound Docker's retained host-side generations for the one managed union
+-- runtime repository. The pre-pass creates headroom before a changed build;
+-- the post-pass removes the predecessor that becomes dangling when the moving
+-- tags advance. Both passes use exact IDs from a machine-formatted observation,
+-- never a broad Docker prune.
+withManagedRuntimeImageRetention :: FilePath -> IO ExitCode -> IO ExitCode
+withManagedRuntimeImageRetention repoRoot action = do
+  preRetentionExit <- reconcileManagedRuntimeImageRetention repoRoot
+  case preRetentionExit of
+    ExitFailure _ -> pure preRetentionExit
+    ExitSuccess -> do
+      actionExit <-
+        action `onException` do
+          _ <- reconcileManagedRuntimeImageRetention repoRoot
+          pure ()
+      postRetentionExit <- reconcileManagedRuntimeImageRetention repoRoot
+      pure (firstNonSuccess [actionExit, postRetentionExit])
 
 -- | Sprint 7.5.c.v.b — substrate-aware custom-image publication.
 --
@@ -8147,11 +8553,11 @@ ensureCustomImageVariantsHomeLocal repoRoot imageBuildPlan taggedRefs importRef 
     buildExit <- buildAndPushCustomImageVariants repoRoot imageBuildPlan taggedRefs
     case buildExit of
       ExitFailure _ -> pure buildExit
-      ExitSuccess ->
-        runSequentially
-          [ runCommand =<< dockerSubprocessFor repoRoot ["pull", importRef]
-          , importImageIntoRke2Containerd repoRoot importRef
-          ]
+      ExitSuccess -> do
+        pullExit <- runCommand =<< dockerSubprocessFor repoRoot ["pull", importRef]
+        case pullExit of
+          ExitFailure _ -> pure pullExit
+          ExitSuccess -> importImageIntoRke2Containerd repoRoot importRef
 
 -- | AWS-substrate custom-image publication path. Builds the image on
 -- the operator host via @docker build@ (which is available locally),
@@ -8559,24 +8965,194 @@ isHarborHostedImage :: String -> Bool
 isHarborHostedImage imageRef =
   (harborRegistryEndpoint ++ "/") `isPrefixOf` imageRef
 
+data Rke2ImageImportDecision
+  = Rke2ImageAlreadyCurrent
+  | Rke2ImageImportRequired
+  deriving (Eq, Show)
+
+-- | Closed failures while selecting the exact managed dangling Docker image
+-- IDs. The parser never returns a partially trusted deletion plan.
+data RuntimeImageRetentionObservationError
+  = RuntimeImageRetentionMalformedRow
+  | RuntimeImageRetentionInvalidManagedImageId
+  | RuntimeImageRetentionDuplicateManagedImageId
+  deriving (Eq, Show)
+
+-- | Machine-shaped inventory constrained to dangling images. Tagged images
+-- are absent from the observation rather than filtered after parsing.
+managedRuntimeImageRetentionInventoryArguments :: [String]
+managedRuntimeImageRetentionInventoryArguments =
+  [ "image"
+  , "ls"
+  , "--filter"
+  , "dangling=true"
+  , "--no-trunc"
+  , "--format"
+  , "{{.Repository}}\t{{.ID}}"
+  ]
+
+-- | Select only canonical IDs still associated with the exact managed runtime
+-- repository. Foreign repositories are observed but never become deletion
+-- targets. Any malformed machine row or managed ID refuses the whole plan.
+selectManagedDanglingRuntimeImageIds
+  :: String -> Either RuntimeImageRetentionObservationError [String]
+selectManagedDanglingRuntimeImageIds output =
+  foldM selectRow [] (lines output)
+ where
+  selectRow selected row =
+    case break (== '\t') row of
+      (repository, '\t' : imageId)
+        | '\t' `notElem` imageId ->
+            if repository /= ContainerImage.harborRuntimeImageRepository
+              then Right selected
+              else
+                if not (isCanonicalSha256Digest imageId)
+                  then Left RuntimeImageRetentionInvalidManagedImageId
+                  else
+                    if imageId `elem` selected
+                      then Left RuntimeImageRetentionDuplicateManagedImageId
+                      else Right (selected ++ [imageId])
+      _ -> Left RuntimeImageRetentionMalformedRow
+
+reconcileManagedRuntimeImageRetention :: FilePath -> IO ExitCode
+reconcileManagedRuntimeImageRetention repoRoot = do
+  observationResult <-
+    captureDockerToolOutput repoRoot managedRuntimeImageRetentionInventoryArguments
+  case selectRuntimeImageRetentionObservation observationResult of
+    Left err -> failWith (renderRuntimeImageRetentionObservationError err)
+    Right [] -> pure ExitSuccess
+    Right imageIds -> do
+      removalExit <-
+        runSequentially
+          [ runCommand =<< dockerSubprocessFor repoRoot ["image", "rm", imageId]
+          | imageId <- imageIds
+          ]
+      case removalExit of
+        ExitFailure _ -> pure removalExit
+        ExitSuccess -> do
+          readBackResult <-
+            captureDockerToolOutput repoRoot managedRuntimeImageRetentionInventoryArguments
+          case selectRuntimeImageRetentionObservation readBackResult of
+            Left err -> failWith (renderRuntimeImageRetentionObservationError err)
+            Right [] -> pure ExitSuccess
+            Right _ -> failWith "Managed runtime-image retention read-back is not empty."
+
+selectRuntimeImageRetentionObservation
+  :: Either String ProcessOutput
+  -> Either RuntimeImageRetentionObservationError [String]
+selectRuntimeImageRetentionObservation outputResult =
+  case outputResult of
+    Left _ -> Left RuntimeImageRetentionMalformedRow
+    Right output ->
+      case processExitCode output of
+        ExitFailure _ -> Left RuntimeImageRetentionMalformedRow
+        ExitSuccess -> selectManagedDanglingRuntimeImageIds (processStdout output)
+
+renderRuntimeImageRetentionObservationError
+  :: RuntimeImageRetentionObservationError -> String
+renderRuntimeImageRetentionObservationError err = case err of
+  RuntimeImageRetentionMalformedRow ->
+    "Managed runtime-image retention observation is unavailable or malformed."
+  RuntimeImageRetentionInvalidManagedImageId ->
+    "Managed runtime-image retention observed a noncanonical managed image ID."
+  RuntimeImageRetentionDuplicateManagedImageId ->
+    "Managed runtime-image retention observed a duplicate managed image ID."
+
+-- | Skip the multi-gigabyte archive only when both independent stores report
+-- the same canonical config digest for the exact tag. Containerd preserves
+-- Docker archives with the Docker config media type and may expose native OCI
+-- images with the OCI config media type; no other descriptor qualifies. Every
+-- unavailable, malformed, absent, or ambiguous observation requires the
+-- existing import.
+decideRke2ImageImport :: String -> Maybe String -> Maybe String -> Rke2ImageImportDecision
+decideRke2ImageImport imageRef maybeDockerIdentity maybeContainerdInspection =
+  case ( maybeDockerIdentity >>= parseCanonicalDigestOutput
+       , maybeContainerdInspection >>= parseContainerdConfigDigest imageRef
+       ) of
+    (Just dockerDigest, Just containerdDigest)
+      | dockerDigest == containerdDigest -> Rke2ImageAlreadyCurrent
+    _ -> Rke2ImageImportRequired
+
+parseCanonicalDigestOutput :: String -> Maybe String
+parseCanonicalDigestOutput output =
+  case output of
+    digest
+      | isCanonicalSha256Digest digest -> Just digest
+    _ ->
+      case reverse output of
+        '\n' : reversedDigest ->
+          let digest = reverse reversedDigest
+           in if isCanonicalSha256Digest digest then Just digest else Nothing
+        _ -> Nothing
+
+parseContainerdConfigDigest :: String -> String -> Maybe String
+parseContainerdConfigDigest imageRef output = do
+  case filter (not . null) (lines output) of
+    observedRef : _ | observedRef == imageRef -> pure ()
+    _ -> Nothing
+  case [ drop 1 digestToken
+       | line <- lines output
+       , let tokens = words line
+       , (mediaType, digestToken) <- zip tokens (drop 1 tokens)
+       , mediaType `elem` containerdConfigMediaTypes
+       , "@sha256:" `isPrefixOf` digestToken
+       , isCanonicalSha256Digest (drop 1 digestToken)
+       ] of
+    [digest] -> Just digest
+    _ -> Nothing
+
+containerdConfigMediaTypes :: [String]
+containerdConfigMediaTypes =
+  [ "application/vnd.docker.container.image.v1+json"
+  , "application/vnd.oci.image.config.v1+json"
+  ]
+
+isCanonicalSha256Digest :: String -> Bool
+isCanonicalSha256Digest digest =
+  case stripPrefix "sha256:" digest of
+    Just hex -> length hex == 64 && all (\c -> isDigit c || c `elem` ['a' .. 'f']) hex
+    Nothing -> False
+
 importImageIntoRke2Containerd :: FilePath -> String -> IO ExitCode
 importImageIntoRke2Containerd repoRoot imageRef = do
   socketResult <- resolveContainerdSocket
   case socketResult of
     Left err -> failWith err
-    Right socketPath ->
-      withTemporaryTextFile "prodbox-image" "" $ \archivePath ->
-        runSequentially
-          [ runCommand =<< dockerSubprocessFor repoRoot ["save", "-o", archivePath, imageRef]
-          , runCommand
-              Subprocess
-                { subprocessPath = "sudo"
-                , subprocessArguments =
-                    ["ctr", "--address", socketPath, "-n", "k8s.io", "images", "import", archivePath]
-                , subprocessEnvironment = Nothing
-                , subprocessWorkingDirectory = Just repoRoot
-                }
-          ]
+    Right socketPath -> do
+      dockerIdentityResult <-
+        captureDockerToolOutput repoRoot ["image", "inspect", "--format", "{{.Id}}", imageRef]
+      containerdInspectionResult <-
+        captureToolOutput
+          repoRoot
+          "sudo"
+          ["ctr", "--address", socketPath, "-n", "k8s.io", "images", "inspect", imageRef]
+      let successfulStdout outputResult = do
+            output <- either (const Nothing) Just outputResult
+            case processExitCode output of
+              ExitSuccess -> Just (processStdout output)
+              ExitFailure _ -> Nothing
+          decision =
+            decideRke2ImageImport
+              imageRef
+              (successfulStdout dockerIdentityResult)
+              (successfulStdout containerdInspectionResult)
+      case decision of
+        Rke2ImageAlreadyCurrent -> do
+          writeOutputLine ("RKE2 containerd runtime image already current: " ++ imageRef)
+          pure ExitSuccess
+        Rke2ImageImportRequired ->
+          withTemporaryTextFile "prodbox-image" "" $ \archivePath ->
+            runSequentially
+              [ runCommand =<< dockerSubprocessFor repoRoot ["save", "-o", archivePath, imageRef]
+              , runCommand
+                  Subprocess
+                    { subprocessPath = "sudo"
+                    , subprocessArguments =
+                        ["ctr", "--address", socketPath, "-n", "k8s.io", "images", "import", archivePath]
+                    , subprocessEnvironment = Nothing
+                    , subprocessWorkingDirectory = Just repoRoot
+                    }
+              ]
 
 -- | Persisted content of 'inotifyDropInPath'. Kept deterministic (stable
 -- comment block + trailing newline) so 'ensureHostInotifyLimits' can compare
@@ -8623,13 +9199,22 @@ renderRke2SystemdResourceDropIn plan =
     , "CPUAccounting=true"
     , "MemoryAccounting=true"
     , "TasksAccounting=true"
-    , "CPUQuota=" ++ show (cpuQuotaPercent (Capacity.milli_cpu (Capacity.rke2_reserved plan))) ++ "%"
-    , "MemoryHigh=" ++ show (Capacity.memory_mib (Capacity.rke2_reserved plan)) ++ "M"
+    , "CPUQuota=" ++ show (cpuQuotaPercent systemdCpuBudget) ++ "%"
+    , "MemoryHigh=" ++ show (Capacity.memory_mib systemdBase) ++ "M"
     , "MemoryMax=" ++ show (Capacity.memory_mib systemdMax) ++ "M"
     , "TasksMax=4096"
     ]
  where
-  systemdMax = Capacity.rke2_reserved plan `Capacity.plusResourceVector` Capacity.eviction_floor plan
+  systemdBase =
+    Capacity.rke2_reserved plan
+      `Capacity.plusResourceVector` Capacity.resourceVectorScale
+        2
+        (Capacity.limit Capacity.oneShotSecretWorkerEnvelope)
+  systemdMax = systemdBase `Capacity.plusResourceVector` Capacity.eviction_floor plan
+  -- The systemd boundary contains the complete RKE2 process tree. Preserve its
+  -- established full-core/2GiB containment while kubelet's host-only
+  -- reservation excludes the explicit one-shot workload peak.
+  systemdCpuBudget = Capacity.milli_cpu systemdBase
 
 renderKubeletReservation :: Capacity.ResourceVector -> String
 renderKubeletReservation vector =

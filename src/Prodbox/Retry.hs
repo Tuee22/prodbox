@@ -56,6 +56,7 @@ module Prodbox.Retry
 
     -- * The compiled schedules
   , componentReadinessRetryPolicy
+  , deploymentRevisionObservationRetryPolicy
   , helmTransientRetryPolicy
   , customImagePushRetryPolicy
   , daemonRestartBridgeRetryPolicy
@@ -279,6 +280,15 @@ componentReadinessRetryPolicy :: RetryPolicy
 componentReadinessRetryPolicy =
   RetryPolicy 3 1_000_000 1 1_000_000 defaultJitterFraction
 
+-- | The Bootstrap Broker is applied without Helm's post-Vault readiness wait,
+-- so its exact Deployment-revision observer owns the controller convergence
+-- window.  Keep this distinct from the small final-barrier jitter budget: a
+-- measured home-local rollout needed fourteen seconds before
+-- @status.updatedReplicas@ appeared.
+deploymentRevisionObservationRetryPolicy :: RetryPolicy
+deploymentRevisionObservationRetryPolicy =
+  RetryPolicy 60 1_000_000 1 1_000_000 defaultJitterFraction
+
 -- | Helm's transient-failure budget.
 helmTransientRetryPolicy :: RetryPolicy
 helmTransientRetryPolicy =
@@ -318,6 +328,7 @@ daemonWorkerRetryPolicy =
 compiledRetryPolicies :: [RetryPolicy]
 compiledRetryPolicies =
   [ componentReadinessRetryPolicy
+  , deploymentRevisionObservationRetryPolicy
   , helmTransientRetryPolicy
   , customImagePushRetryPolicy
   , daemonRestartBridgeRetryPolicy

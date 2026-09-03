@@ -48,6 +48,14 @@ module Prodbox.Bootstrap.Broker.Engine
   , ProvisionerAccessorCleanupHttpFailure (..)
   , ProvisionerAccessorCleanupCause (..)
   , provisionerAccessorCleanupCauseName
+  , ProvisionerAccessorRevocationHttpOperation (..)
+  , ProvisionerAccessorRevocationHttpFailure (..)
+  , ProvisionerAccessorRevocationCause (..)
+  , provisionerAccessorRevocationCauseName
+  , ProvisionerAccessorAbsenceHttpOperation (..)
+  , ProvisionerAccessorAbsenceHttpFailure (..)
+  , ProvisionerAccessorAbsenceCause (..)
+  , provisionerAccessorAbsenceCauseName
   , ProvisionerPolicyApplicationCause (..)
   , provisionerPolicyApplicationCauseName
   , BrokerEngineError (..)
@@ -188,6 +196,7 @@ import Prodbox.Bootstrap.Broker.PgpBoundary
   , GeneratedChildRecoveryPublicKey
   , GeneratedChildRecoveryWorkflow (..)
   , GeneratedRootCiphertext
+  , GeneratedRootCoreHttpFailure
   , GeneratedRootCoreReconcileCause
   , GeneratedRootPkiReconcileCause
   , GeneratedRootPublicKey
@@ -195,6 +204,7 @@ import Prodbox.Bootstrap.Broker.PgpBoundary
   , PgpBoundary (..)
   , PgpBoundaryError
   , PreparedInitRecipients
+  , generatedRootCoreHttpFailureName
   , generatedRootCoreReconcileCauseName
   , generatedRootPkiReconcileCauseName
   , preparedInitBurnPublicKeyBase64
@@ -319,6 +329,8 @@ import Prodbox.Bootstrap.Broker.Types
   , baselineReadBackDigest
   , baselineReadBackSessionId
   , baselineReadBackStorageGeneration
+  , baselineReadBackTargets
+  , baselineTargetsAreCurrent
   , childRecoveryConsumptionObservationMatches
   , childRecoveryDeliveryDigest
   , childRecoveryDeliveryNonce
@@ -386,6 +398,10 @@ data EngineBoundaryError
   | EngineBoundaryRootAccessorRevocation !RootAccessorRevocationCause
   | EngineBoundaryRootAccessorInventory !RootAccessorInventoryCause
   | EngineBoundaryProvisionerAccessorCleanup !ProvisionerAccessorCleanupCause
+  | EngineBoundaryProvisionerAccessorRevocation
+      !ProvisionerAccessorRevocationCause
+  | EngineBoundaryProvisionerAccessorAbsence
+      !ProvisionerAccessorAbsenceCause
   | EngineBoundaryProvisionerPolicyApplication
       !ProvisionerPolicyApplicationCause
   deriving stock (Eq, Show)
@@ -638,13 +654,137 @@ provisionerAccessorCleanupCauseName cause = case cause of
     ProvisionerAccessorCleanupHttpStatus status -> "status-" ++ show status
     ProvisionerAccessorCleanupHttpDecode -> "decode"
 
+data ProvisionerAccessorRevocationHttpOperation
+  = ProvisionerAccessorRevocationAuditorLogin
+  | ProvisionerAccessorRevocationInitialListAccessors
+  | ProvisionerAccessorRevocationTargetLookupAccessor
+  | ProvisionerAccessorRevocationRevokeAccessor
+  | ProvisionerAccessorRevocationPostListAccessors
+  | ProvisionerAccessorRevocationPostLookupAccessor
+  deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+data ProvisionerAccessorRevocationHttpFailure
+  = ProvisionerAccessorRevocationHttpConnectionFailure
+  | ProvisionerAccessorRevocationHttpTimeout
+  | ProvisionerAccessorRevocationHttpStatus !Int
+  | ProvisionerAccessorRevocationHttpDecode
+  deriving stock (Eq, Ord, Show)
+
+-- | Payload-free causes for revoking the exact provisioner session and
+-- proving both its target accessor and its complete role subject absent.
+-- Accessors, subjects, roles, bearer tokens, response bodies, paths, and
+-- exception text cannot inhabit this type.
+data ProvisionerAccessorRevocationCause
+  = ProvisionerAccessorRevocationProjectedTokenUnavailable
+  | ProvisionerAccessorRevocationHttpFailure
+      !ProvisionerAccessorRevocationHttpOperation
+      !ProvisionerAccessorRevocationHttpFailure
+  | ProvisionerAccessorRevocationAuditorLoginInvalid
+  | ProvisionerAccessorRevocationAuditorCleanupUnavailable
+  | ProvisionerAccessorRevocationAuditorCleanupRefused
+  | ProvisionerAccessorRevocationAuditorCleanupAmbiguous
+  | ProvisionerAccessorRevocationTargetIdentityInvalid
+  | ProvisionerAccessorRevocationTargetStillPresent
+  | ProvisionerAccessorRevocationRoleAccessorStillPresent
+  deriving stock (Eq, Ord, Show)
+
+provisionerAccessorRevocationCauseName
+  :: ProvisionerAccessorRevocationCause -> String
+provisionerAccessorRevocationCauseName cause = case cause of
+  ProvisionerAccessorRevocationProjectedTokenUnavailable -> "projected-token-unavailable"
+  ProvisionerAccessorRevocationHttpFailure operation failure ->
+    "http/" ++ httpOperationName operation ++ "/" ++ httpFailureName failure
+  ProvisionerAccessorRevocationAuditorLoginInvalid -> "auditor-login-invalid"
+  ProvisionerAccessorRevocationAuditorCleanupUnavailable -> "auditor-cleanup-unavailable"
+  ProvisionerAccessorRevocationAuditorCleanupRefused -> "auditor-cleanup-refused"
+  ProvisionerAccessorRevocationAuditorCleanupAmbiguous -> "auditor-cleanup-ambiguous"
+  ProvisionerAccessorRevocationTargetIdentityInvalid -> "target-identity-invalid"
+  ProvisionerAccessorRevocationTargetStillPresent -> "target-still-present"
+  ProvisionerAccessorRevocationRoleAccessorStillPresent -> "role-accessor-still-present"
+ where
+  httpOperationName operation = case operation of
+    ProvisionerAccessorRevocationAuditorLogin -> "auditor-login"
+    ProvisionerAccessorRevocationInitialListAccessors -> "initial-list-accessors"
+    ProvisionerAccessorRevocationTargetLookupAccessor -> "target-lookup-accessor"
+    ProvisionerAccessorRevocationRevokeAccessor -> "revoke-accessor"
+    ProvisionerAccessorRevocationPostListAccessors -> "post-list-accessors"
+    ProvisionerAccessorRevocationPostLookupAccessor -> "post-lookup-accessor"
+  httpFailureName failure = case failure of
+    ProvisionerAccessorRevocationHttpConnectionFailure -> "connection-failure"
+    ProvisionerAccessorRevocationHttpTimeout -> "timeout"
+    ProvisionerAccessorRevocationHttpStatus status -> "status-" ++ show status
+    ProvisionerAccessorRevocationHttpDecode -> "decode"
+
+data ProvisionerAccessorAbsenceHttpOperation
+  = ProvisionerAccessorAbsenceAuditorLogin
+  | ProvisionerAccessorAbsenceListAccessors
+  | ProvisionerAccessorAbsenceLookupAccessor
+  deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+data ProvisionerAccessorAbsenceHttpFailure
+  = ProvisionerAccessorAbsenceHttpConnectionFailure
+  | ProvisionerAccessorAbsenceHttpTimeout
+  | ProvisionerAccessorAbsenceHttpStatus !Int
+  | ProvisionerAccessorAbsenceHttpDecode
+  deriving stock (Eq, Ord, Show)
+
+-- | Payload-free causes for the final provisioner session absence proof.
+-- Accessors, subjects, roles, bearer tokens, Vault paths, response bodies,
+-- and exception text cannot inhabit this type.
+data ProvisionerAccessorAbsenceCause
+  = ProvisionerAccessorAbsenceProjectedTokenUnavailable
+  | ProvisionerAccessorAbsenceHttpFailure
+      !ProvisionerAccessorAbsenceHttpOperation
+      !ProvisionerAccessorAbsenceHttpFailure
+  | ProvisionerAccessorAbsenceAuditorLoginInvalid
+  | ProvisionerAccessorAbsenceAuditorCleanupUnavailable
+  | ProvisionerAccessorAbsenceAuditorCleanupRefused
+  | ProvisionerAccessorAbsenceAuditorCleanupAmbiguous
+  | ProvisionerAccessorAbsenceRoleAccessorStillPresent
+  | ProvisionerAccessorAbsenceObservedAccessorInvalid
+  | ProvisionerAccessorAbsenceObservedInventoryTooLarge
+  | ProvisionerAccessorAbsenceObservedInventoryDuplicate
+  deriving stock (Eq, Ord, Show)
+
+provisionerAccessorAbsenceCauseName
+  :: ProvisionerAccessorAbsenceCause -> String
+provisionerAccessorAbsenceCauseName cause = case cause of
+  ProvisionerAccessorAbsenceProjectedTokenUnavailable -> "projected-token-unavailable"
+  ProvisionerAccessorAbsenceHttpFailure operation failure ->
+    "http/" ++ httpOperationName operation ++ "/" ++ httpFailureName failure
+  ProvisionerAccessorAbsenceAuditorLoginInvalid -> "auditor-login-invalid"
+  ProvisionerAccessorAbsenceAuditorCleanupUnavailable -> "auditor-cleanup-unavailable"
+  ProvisionerAccessorAbsenceAuditorCleanupRefused -> "auditor-cleanup-refused"
+  ProvisionerAccessorAbsenceAuditorCleanupAmbiguous -> "auditor-cleanup-ambiguous"
+  ProvisionerAccessorAbsenceRoleAccessorStillPresent -> "role-accessor-still-present"
+  ProvisionerAccessorAbsenceObservedAccessorInvalid -> "observed-accessor-invalid"
+  ProvisionerAccessorAbsenceObservedInventoryTooLarge -> "observed-inventory-too-large"
+  ProvisionerAccessorAbsenceObservedInventoryDuplicate -> "observed-inventory-duplicate"
+ where
+  httpOperationName operation = case operation of
+    ProvisionerAccessorAbsenceAuditorLogin -> "auditor-login"
+    ProvisionerAccessorAbsenceListAccessors -> "list-accessors"
+    ProvisionerAccessorAbsenceLookupAccessor -> "lookup-accessor"
+  httpFailureName failure = case failure of
+    ProvisionerAccessorAbsenceHttpConnectionFailure -> "connection-failure"
+    ProvisionerAccessorAbsenceHttpTimeout -> "timeout"
+    ProvisionerAccessorAbsenceHttpStatus status -> "status-" ++ show status
+    ProvisionerAccessorAbsenceHttpDecode -> "decode"
+
 -- | Payload-free causes for the provisioner session's policy-application
--- stage. The core and PKI folds use the same exhaustive projections as the
--- generated-root lane; only the stage-specific token-registry failure is new.
--- Tokens, paths, policy material, response bodies, and free-form text cannot
--- inhabit this type.
+-- stage. A disjoint batch repair authority contributes only its availability,
+-- write/read HTTP class, or exact-document mismatch; the core and PKI folds
+-- reuse the generated-root lane's exhaustive projections. Tokens, paths,
+-- policy material, response bodies, and free-form text cannot inhabit this
+-- type.
 data ProvisionerPolicyApplicationCause
   = ProvisionerPolicyApplicationTokenUnavailable
+  | ProvisionerPolicyApplicationRepairAuthorityUnavailable
+  | ProvisionerPolicyApplicationRepairWriteHttp
+      !GeneratedRootCoreHttpFailure
+  | ProvisionerPolicyApplicationRepairReadBackHttp
+      !GeneratedRootCoreHttpFailure
+  | ProvisionerPolicyApplicationRepairReadBackMismatch
   | ProvisionerPolicyApplicationCoreReconcile
       !GeneratedRootCoreReconcileCause
   | ProvisionerPolicyApplicationPkiReconcile
@@ -655,6 +795,14 @@ provisionerPolicyApplicationCauseName
   :: ProvisionerPolicyApplicationCause -> String
 provisionerPolicyApplicationCauseName cause = case cause of
   ProvisionerPolicyApplicationTokenUnavailable -> "token-unavailable"
+  ProvisionerPolicyApplicationRepairAuthorityUnavailable ->
+    "repair-authority-unavailable"
+  ProvisionerPolicyApplicationRepairWriteHttp failure ->
+    "repair-write/" ++ generatedRootCoreHttpFailureName failure
+  ProvisionerPolicyApplicationRepairReadBackHttp failure ->
+    "repair-read-back/" ++ generatedRootCoreHttpFailureName failure
+  ProvisionerPolicyApplicationRepairReadBackMismatch ->
+    "repair-read-back-mismatch"
   ProvisionerPolicyApplicationCoreReconcile failure ->
     "core-reconcile/" ++ generatedRootCoreReconcileCauseName failure
   ProvisionerPolicyApplicationPkiReconcile failure ->
@@ -4474,8 +4622,11 @@ loadOrCreateRootSessionJournal engine attempt sessionId custody = do
           pure (Left EngineStoreReadBackMismatch)
       | otherwise ->
           case planRootSession observed of
-            RootSessionPlanComplete _ ->
-              resumeCompletedRootSession version observed
+            RootSessionPlanComplete completion
+              | baselineTargetsAreCurrent
+                  (baselineReadBackTargets (completedRootBaselineReadBack completion)) ->
+                  resumeCompletedRootSession version observed
+              | otherwise -> restartLoadedRootSession generation version observed
             RootSessionPlanCancelledClean _ -> pure (Right (version, observed))
             _
               | rootSessionBindingId (rootSessionStateBinding observed) == sessionId ->

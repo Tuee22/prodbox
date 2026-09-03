@@ -177,4 +177,5 @@ adminCallerAllowed caller = case verifiedCallerSlotPrincipal caller of
   CallerTestHarness -> True
   CallerAdminActionRunner -> False
   CallerCredentialProvisioner -> False
+  CallerCredentialProvisionerCompletion -> False
   CallerService _ -> False

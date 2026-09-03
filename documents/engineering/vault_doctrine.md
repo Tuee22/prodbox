@@ -235,6 +235,10 @@ Requirements:
 - The Vault chart defaults to root Shamir mode. Child clusters set `seal.mode = transit`, render a
   `seal "transit"` stanza pointing at the parent Vault, and source the parent Transit token from
   `VAULT_TOKEN` rather than from the ConfigMap.
+- The TCP listener carries an explicit finite 160 MiB request ceiling. This admits the Target
+  Agent's 112 MiB replay projection after its at-most 149.34 MiB Base64 expansion and bounded KV
+  JSON envelope; it is not an unbounded listener override. The replay projection itself remains
+  limited independently by its 54-entry and 2 MiB-per-response bounds.
 - Startup readiness gates that distinguish: not deployed; deployed but uninitialized; initialized
   but sealed; initialized and unsealed; policy reconciled.
 
@@ -613,6 +617,10 @@ unavailable.
   revoked and observed absent inside the Broker transaction. Generated-root share submission and
   encrypted-token recovery cross the fenced one-shot worker boundary; the controller receives only
   the typed ciphertext and decrypts it inside the already-bound ephemeral PGP scope.
+  The provisioner policy derives one exact `auth/kubernetes/role/<canonical-name>` path for each
+  Kubernetes role in the compiled reconcile plan. It contains no role-path glob and no `sudo`;
+  the ordinary plan writes and reads back exactly that same closed role set. ACL-policy writes stay
+  absent from the ordinary plan and remain isolated in the separate repair authority below.
   Transit-key creation preserves each compiled desired type exactly. HMAC-only commitment keys
   encode `type=hmac` with an explicit 32-byte `key_size`, which is Vault's 256-bit HMAC size;
   AES and Ed25519 requests omit `key_size`. Read-back still requires the exact desired key type,
@@ -637,7 +645,9 @@ unavailable.
   Root-accessor revocation has its own closed boundary cause rather than borrowing the subsequent
   absence-proof vocabulary: projected-token failure, bounded auditor login/invalid-login cleanup,
   revoke HTTP, immediate list read-back HTTP, and exact target-still-present are exhaustive. HTTP
-  failures retain only connection/timeout/numeric-status/decode class. Only the protected baseline
+  failures retain only connection/timeout/numeric-status/decode class. An immediate LIST HTTP 404
+  after successful revocation is the exact empty-collection result and supplies absence; all other
+  failures retain their cause, and an observed target still refuses. Only the protected baseline
   diagnostic renders that cause; accessors, tokens, Vault bodies, paths, and arbitrary error text
   cannot inhabit it, and the public response remains generic.
   Root-accessor inventory also carries a separate closed protected cause: projected-token failure,
@@ -658,23 +668,55 @@ unavailable.
   supplies an empty role-wide inventory, while connection failure, timeout, every other status,
   and decode failure remain closed. Public and unrelated-route replies remain generic.
   Provisioner-policy application has a separate closed protected cause after cleanup and login.
-  Missing process-local token state, the core reconcile fold, and the PKI reconcile/read-back fold
-  are distinct. Core and PKI failures reuse the generated-root lane's exhaustive payload-free
+  Missing process-local token state, unavailable exact-policy repair authority, repair write/read
+  HTTP class, exact document mismatch, the core reconcile fold, and the PKI reconcile/read-back
+  fold are distinct. ACL-policy replacement uses an accessor-free batch role whose root-protected
+  `sudo` capability names only `sys/policies/acl/prodbox-bootstrap-provisioner`; it writes and
+  immediately reads back that compiled document, cannot edit itself or a wildcard, and the
+  ordinary provisioner reconciliation contains no ACL-policy writes. Core and PKI failures reuse the generated-root lane's exhaustive payload-free
   projections and classifiers, including every HTTP operation/class, typed drift,
   secret-bootstrap CAS disposition, nested PKI observation failure, and non-exact PKI status.
   Tokens, paths, names, policies, secret values, response bodies, and arbitrary text cannot cross
   this boundary. Only the protected baseline diagnostic renders the exact cause; all public arms
   remain the same generic HTTP 503 `boundary-unavailable` response until a deployed diagnostic
   observes the invariant that may be corrected.
+  Baseline target additions append without changing prior constructor tags. The repair policy/role
+  pair, the exact Target Secret Agent and Lifecycle Authority standing roles, and the Lifecycle
+  Authority AWS-admin journal-observer policy revision are independently named targets. A retained
+  receipt therefore cannot call an old `gateway`-namespace role projection current after either
+  role moves to its deployed namespace, or suppress the later read-only execution-journal grant.
+  A completed retained root receipt with
+  any exact older target set restarts through the native cancellation, root-accessor stable-zero, and
+  short-lived generated-root program; the retained store accepts those historical lists only in
+  `RootSessionClosed`, as restart input. Construction and every in-progress receipt remain
+  current-only, while partial or arbitrary old lists are corrupt. Production evidence reuses a
+  retained session ID only for current completion or cancelled-clean evidence; an admitted older
+  completion selects a fresh ID, as do unfinished or absent journals, so restart's
+  identity-advance rule remains structural. The refreshed exact
+  receipt must include every appended coordinate before provisioner work resumes. There is no host, ambient,
+  or retained plaintext-root migration path.
   Provisioner-accessor revocation is a separate boundary from cleanup, policy application, and
   root-accessor revocation. Its target protected cause distinguishes bounded-auditor login and
   invalid-login cleanup, initial inventory, target lookup and subject verification, revoke HTTP,
   authoritative post-revocation inventory, and exact target/role absence status. HTTP failures
   retain only connection/timeout/numeric-status/decode class; accessors, subjects, roles, tokens,
-  paths, bodies, and arbitrary text cannot cross. Public responses remain generic. The current
-  production interpreter still collapses these outcomes; adoption is scheduled in
-  [Sprint `2.75`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md#sprint-275-provisioner-accessor-revocation-needs-an-exact-cause),
+  paths, bodies, and arbitrary text cannot cross. Public responses remain generic. The production
+  diagnostic projects these outcomes while preserving the previous public reply classes. Vault's
+  exact HTTP 404 at either the initial or post-revocation accessor LIST supplies an empty
+  inventory; non-list operations, connection/timeout/decode failures, and every other status
+  remain closed refusals. These independently live-observed corrections are owned by
+  [Sprints `2.75`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md#sprint-275-provisioner-accessor-revocation-needs-an-exact-cause)
+  and [`2.81`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md#sprint-281-empty-post-revocation-provisioner-inventory-is-list-404),
   while current execution status remains owned by the development-plan resumption ledger.
+  The later durable final provisioner-accessor absence proof has its own closed payload-free cause
+  for bounded-auditor acquisition and invalid-login cleanup, role-wide accessor LIST and
+  per-accessor lookup HTTP classes, exact role absence, and inventory construction. Its protected
+  diagnostic preserves the prior public unavailable/ambiguous/refused replies and cannot carry
+  accessors, subjects, roles, tokens, paths, response bodies, or arbitrary text. Sprint
+  [`2.82`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md#sprint-282-final-provisioner-accessor-absence-needs-an-exact-cause)
+  owns the diagnostic deployment and its evidence-licensed correction: exact HTTP 404 at the
+  role-wide accessor LIST supplies an empty inventory, while lookup 404 and every other failure
+  remain closed.
   Baseline reconciliation closes its durable root/provisioner session without requiring a
   post-unseal consumer that cannot yet exist. After the native plan observes Lifecycle Authority
   rollout, its separate secret-free fixed-coordinate handoff mutation resolves the durable custody
@@ -1071,7 +1113,36 @@ standing control-plane process. Lifecycle Authority receives only retained-store
 access; Provider Worker, Authority Backup, and TLS Retention each read only the exact credential
 path named above; Target Secret Agent receives only its registered target-secret lanes. Each
 schema-v2 mounted configuration binds the exact role before its cached renewable session is
-constructed. A process cannot borrow the Gateway identity or another standing role.
+constructed. Lifecycle Authority binds ServiceAccount `prodbox-lifecycle-authority` only in
+namespace `lifecycle-authority`; Provider Worker binds `prodbox-provider-worker` only in
+`provider-worker`; Authority Backup binds `prodbox-authority-backup` only in `authority-backup`;
+TLS Retention binds `prodbox-tls-retention` only in `tls-retention`; and Target Secret Agent binds
+`prodbox-target-secret-agent` only in `target-secret-agent`. No separately deployed control-plane
+role inherits the Gateway namespace. A process cannot borrow the Gateway identity or another
+standing role.
+Changing the desired body of an existing root-baseline target is a baseline protocol revision, not
+an implementation-only edit. The append-only baseline inventory must gain an explicit semantic-
+revision target; only the exact preceding inventory in a terminal closed root session may restart
+under a fresh session identity and reapply the complete baseline. An unchanged target list cannot
+receipt a changed policy or Kubernetes-auth role body, and partial or in-progress older inventories
+remain corrupt.
+The appended Credential Provisioner completion principal is one such semantic revision: it adds a
+Transit key, changes the Lifecycle Authority's exact inbound public-key reads, and changes the two
+Provisioner policy documents. Its own terminal baseline target therefore makes the immediately
+preceding 18-target receipt restart-only; no process may treat that receipt as evidence that caller
+code 104 or either derived policy has been reconciled.
+Authority Backup listener construction deliberately does not require
+`secret/aws/authority-backup-store` to exist: genesis owns creation of that value and must call the
+listener after sealing it. The Adapter's already-authenticated exact-role Vault session reads and
+validates the credential separately for every readiness probe and S3 operation. Missing, malformed,
+wrong-region, or unreadable material keeps readiness false and closes the operation before S3; no
+ambient credential fallback exists and plaintext fields are not cached between calls. This
+pre-establishment exception does not apply to TLS Retention or Provider Worker.
+The Target child-custody path commitment is not part of the Authority's retained-store HMAC
+authority: `transit/hmac/prodbox-retained-material-commitment` and
+`secret/data/target-agent/child-custody/*` remain on their narrow Target worker identities. The
+standing Authority calls the authenticated custody client and therefore neither probes nor gains
+the worker repository's Vault capability for readiness.
 
 For EKS DNS01, `aws-cert-manager-run` binds only ServiceAccount
 `aws-dns01-target-materializer` in namespace `cert-manager` and grants only
@@ -1169,6 +1240,26 @@ reads back the closed EAB custody source; later one-shot workers rewrap that exa
 to each attested selected Agent, which performs the allowlisted `secret/acme/eab` generation CAS and
 read-back. Lifecycle Authority persists only custody/target ciphertext digests, opaque Agent/Vault
 keyed-HMAC commitment references, generations, and outbox state—never an unkeyed secret hash.
+The ingress worker returns its secret-free receipt through an external-material-specific,
+fixed-version `prodbox-external-material-target-receipt-v2:` canonical-base64 record envelope
+around the canonical binary receipt. That receipt includes the exact custody HMAC source receipt
+required for rewrap; neither the host nor Authority may replace it with the permit identity. A
+valid completed state-v2 value omitted that binding and therefore migrates only to the exact signed
+permit-committed phase, where authoritative Target-source recovery must reconstruct and CAS-commit
+the complete state-v3 receipt before delivery.
+Attach and Pod-log recovery admit only their exact source-specific LF grammar; a non-empty invalid
+attach cannot be replaced by log output, and AWS-admin's distinct envelope cannot cross this
+schema boundary. A failed ingress worker renders only one closed value-free terminal cause, and the
+controller recognizes it only as one unique exact whole prefixed attach-stderr or Pod-log line.
+Unknown or multiple prefixed lines remain generic refusals; raw stderr, counts, nested wire values,
+Vault bodies, tokens, provider output, and exception detail never cross the worker boundary. A
+protected transport observation retains only attach/Pod-log source, process success/failure,
+stdout/stderr empty/nonempty, and each side's closed terminal-line disposition; it cannot retain an
+exit integer, byte, line, size, or subprocess text and changes no behavior.
+After an ingress-worker response loss, the authenticated retained-home Agent may return that same
+secret-free source metadata only for the exact schema, permit-derived operation, generation, and
+fresh bounded observation deadline. Authority uses it to reconstruct and receipt-commit the
+already-applied effect; it never reads the custody path or asks a successor worker to reseal it.
 cert-manager reads the HMAC only through its in-cluster role-specific materializer. The non-secret
 key ID reaches issuer reconcile only as a typed generation-bound Agent/`ConfigObserve` projection;
 no host Vault client reads it. Neither host nor Gateway reads EAB material or writes the
@@ -1257,6 +1348,18 @@ the workload-specific Keycloak, MinIO, VS Code, Patroni, OIDC, certificate, and 
 Every materializer fails closed on sealed or unreachable Vault; none may widen a control-plane
 role to solve a chart-delivery problem.
 
+Host Lifecycle Authority callers authenticate in two explicit stages whose lifetimes are not the
+same value. Kubernetes first issues a short-lived ServiceAccount bearer through the exact
+self-`TokenRequest` Role; only a hidden-constructor duration of at least Kubernetes' 600-second API
+minimum can reach that subprocess. The operator requests exactly ten minutes and the test harness
+fifteen minutes. Vault then exchanges that bearer for the role's independently bounded session:
+five minutes for the operator and fifteen minutes for the harness. Increasing the operator's
+Kubernetes bearer from five to ten minutes does not widen the Vault lease or its policy.
+TokenRequest parameter validation, TokenRequest authorization denial, API unreachability, context
+unavailability, an unclassified failure, subprocess unavailability, and malformed success remain
+separate closed payload-free causes; only the authorization cause lowers to a Vault-session
+forbidden result.
+
 Authority-backup genesis and repair are the only pre-normal backup exceptions. A mode-indexed
 Credential Provisioner accepts only a signed `GenesisBackupPermit`, `GenesisCleanupPermit`,
 `RepairPermit`, or normally backup-receipted schema-indexed `OperatorMaterialPermit`; a distinct Admin Action Runner accepts only a committed
@@ -1267,6 +1370,16 @@ disk, or logs. AWS-admin and externally supplied EAB frames have different decod
 share a Job/session. SMTP raw IAM-secret bytes remain only in Provisioner memory long enough to
 derive `SesSmtpSource`; only that derived source enters retained-home Transit custody. The normal
 Provider Worker accepts neither permit family.
+
+The AWS-admin Provisioner itself has two disjoint control-plane signing identities. Its
+accessor-bearing service session receives the stable delivery signing key only, which authenticates
+the exact Target observation, Target-intent, and retained-material delivery calls made before
+session revocation. Its fresh post-revocation batch session receives only the separately appended
+completion signing key and may authenticate only the terminal AWS-admin completion call. The
+service session cannot complete, the batch session cannot prepare or deliver, and neither Vault
+policy contains the other's Transit signing path. This split preserves the requirement that a
+terminal receipt cannot escape while the secret-capable worker session still exists without
+denying the active worker the delivery authority its program requires.
 
 The Admin Action Kubernetes login must return its exact server-issued token accessor. The Runner
 revokes its own short session after mandatory action read-back, then authenticates once through the
@@ -1462,6 +1575,11 @@ the auto-unseal mechanics, and the custody and config-authority flows.
   generation, and immutable encrypted blob read-back. Root config governs every downstream
   cluster; no caller receives a root token or MinIO credential, and stale/corrupt/unobservable
   state refuses.
+- The first-reconcile transition validates the filesystem Tier-0 proposal once and carries that
+  value through Authority Backup establishment. It does not invoke the steady-state in-force
+  loader before generation 1 exists. Only after backup admission closes does config CAS submit and
+  read back the proposal; the post-CAS component-readiness barrier then loads the in-force
+  projection. This ordering changes no credential, backup-store, or config authority.
 
 The typed parent-custody capability registers a child, stores its recovery material and
 revoked-token attestation, and reads the
@@ -1514,7 +1632,7 @@ Plan.
 | 7 | Federation depth + child-registration surface | Parent custody uses a dedicated typed Vault capability. Gateway Runtime receives only the bounded peer projection and exposes no child-secret listing or bootstrap proxy (§16). |
 | 8 | In-force config ownership | Lifecycle Authority owns `ConfigObserve`/`ConfigProposeCas`, immutable encrypted config blobs, and the aggregate generation/digest/reference; host and Gateway direct object access is removed. |
 | 9 | AWS identity split | Operational Lifecycle-provider/AWS-DNS01 and LongLived Authority-backup, TLS-retention, home Gateway-DNS/home-DNS01 identities use separate IAM resources, Vault paths/policies/generations, consumers, and lifecycle-class-correct cleanup nodes. Provider Worker owns only non-credential SES/S3; Credential Provisioner owns SMTP desired-present/repair; exact `DestroyAwsSes` owns registered terminal SES+SMTP absence. Credential Provisioner, Admin Action Runner, Provider Worker, Backup Adapter, and TLS Adapter are physically and cryptographically disjoint. |
-| 10 | Retained cross-substrate operator material | The retained home Agent Transit-seals only the closed SMTP/EAB source schemas, then rewraps an exact current receipt to an attested selected Agent. Authority sees ciphertext/receipts only. AWS-admin and external-EAB ingress are distinct; raw IAM secret bytes never enter custody. Current receipts restore new targets/fresh AWS Vault, and target tombstones precede custody tombstones. |
+| 10 | Retained cross-substrate operator material | The retained home Agent Transit-seals only the closed SMTP/EAB source schemas, then rewraps an exact current receipt to an attested selected Agent. Authority sees ciphertext/receipts only. For an expired committed EAB permit, authenticated typed source absence may reset only an immutable-equivalent request to a fresh deadline; a separate exact-Job stable-absence proof still precedes successor creation and fresh authorization. Present sources recover their receipt, while mismatched or unobservable custody refuses. AWS-admin and external-EAB ingress are distinct; raw IAM secret bytes never enter custody. Current receipts restore new targets/fresh AWS Vault, and target tombstones precede custody tombstones. |
 
 ## 19. Red-team checklist
 

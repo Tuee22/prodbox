@@ -18,7 +18,10 @@ import Control.Concurrent.MVar
   )
 import Control.Exception (SomeException, bracket, finally, try)
 import Control.Monad (filterM, void, when)
+import Data.Aeson qualified as Aeson
 import Data.ByteString.Char8 qualified as BS8
+import Data.ByteString.Lazy.Char8 qualified as LazyBS8
+import Data.Either (isLeft)
 import Data.List (find, findIndex, intercalate, isInfixOf, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -53,12 +56,15 @@ import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 import Prodbox.Config.ComponentGraph qualified as ComponentGraph
 import Prodbox.Config.Tier0 qualified as Tier0
+import Prodbox.ControlPlane.LocalClient qualified as LocalClient
 import Prodbox.Http.Client
   ( HttpConfig (..)
   , HttpError (..)
   , defaultHttpConfig
   , httpGetText
   )
+import Prodbox.Lib.ChartPlatform qualified as ChartPlatform
+import Prodbox.Lifecycle.CredentialProvisioner.Substrate qualified as CredentialProvisionerSubstrate
 
 -- Sprint 4.64: the empty admission set is package-internal so no production
 -- module can begin a phase with one; a fixture driving the executor directly
@@ -88,8 +94,9 @@ import System.FilePath (takeDirectory, (</>))
 import System.IO qualified as IO
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process
-  ( CreateProcess (cwd, env)
+  ( CreateProcess (cwd, env, std_out)
   , ProcessHandle
+  , StdStream (CreatePipe)
   , createProcess
   , getProcessExitCode
   , proc
@@ -684,7 +691,8 @@ integrationCliSuite = do
         writeTier0Fixture
           (tmpDir </> ".build")
           (tier0FixtureWithParameters validConfig)
-        envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
+        envVars <-
+          (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
         writeExecutable (tmpDir </> "bin" </> "cabal") (fakeCabalListBinScript binary)
 
         (exitCode, stdoutText, stderrText) <-
@@ -730,7 +738,8 @@ integrationCliSuite = do
         writeTier0Fixture
           (tmpDir </> ".build")
           (tier0FixtureWithParameters validConfig)
-        envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
+        envVars <-
+          (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
         writeExecutable (tmpDir </> "bin" </> "cabal") (fakeCabalListBinScript binary)
 
         (exitCode, stdoutText, stderrText) <-
@@ -917,6 +926,15 @@ integrationCliSuite = do
         deployStdout `shouldContain` "CHART_DEPLOYMENT"
         deployStdout `shouldContain` "ROOT_CHART=vscode"
 
+        -- Sprint 5.38: the first reconcile drives the fake's explicit empty
+        -- inventory through the production Helm-status classifier. Unsupported
+        -- status, exit-zero empty output, or a non-canonical JSON body all stop
+        -- before upgrade and fail this installed-boundary case.
+        firstStatusRecord <- readFile (tmpDir </> "fake-chart-state" </> "helm-status.txt")
+        firstStatusRecord
+          `shouldContain` "status|keycloak-postgres|--namespace|vscode|--output|json"
+        firstStatusRecord `shouldContain` "status|vscode|--namespace|vscode|--output|json"
+
         -- Sprint 3.19: host-side Secret pre-apply is retired; chart deploy
         -- storage manifests are still asserted by content rather than apply
         -- ordinal.
@@ -983,6 +1001,18 @@ integrationCliSuite = do
         secondDeployStdout `shouldContain` "CHART_DEPLOYMENT"
         secondDeployStdout `shouldContain` "ROOT_CHART=vscode"
 
+        -- Changing only the explicit inventory makes the same fake command
+        -- emit canonical deployed JSON before production converges each release.
+        secondStatusRecord <- readFile (tmpDir </> "fake-chart-state" </> "helm-status.txt")
+        countRecordLines
+          "status|keycloak-postgres|--namespace|vscode|--output|json"
+          secondStatusRecord
+          `shouldBe` 2
+        countRecordLines
+          "status|vscode|--namespace|vscode|--output|json"
+          secondStatusRecord
+          `shouldBe` 2
+
         upgradeRecordAfterSecondDeploy <- readFile (tmpDir </> "fake-chart-state" </> "helm-upgrade.txt")
         upgradeRecordAfterSecondDeploy
           `shouldContain` "upgrade|--install|--wait|--timeout|30m0s|keycloak-postgres"
@@ -1026,6 +1056,42 @@ integrationCliSuite = do
         deleteRecord `shouldContain` "delete|pvc|data-vscode-0|--namespace|vscode"
         deleteRecord `shouldContain` "delete|pv|prodbox-retained-vscode-vscode-0"
         deleteRecord `shouldContain` "delete|namespace|vscode"
+
+        -- The RKE2 fake shares the same exact-absence contract for every
+        -- non-Harbor release and retains Harbor's present/uninstall/absent
+        -- transition. Keep this check in the installed-boundary case so the
+        -- suite count stays stable while both fake interpreters are covered.
+        let rke2HelmPath = tmpDir </> "fake-rke2-helm"
+            rke2HelmState = tmpDir </> "fake-rke2-helm-state"
+            rke2HelmEnvironment =
+              ("PRODBOX_FAKE_RKE2_RECORD_DIR", rke2HelmState)
+                : filter ((/= "PRODBOX_FAKE_RKE2_RECORD_DIR") . fst) envVars
+            runRke2Helm arguments =
+              readCreateProcessWithExitCode
+                (proc rke2HelmPath arguments) {env = Just rke2HelmEnvironment}
+                ""
+        writeExecutable rke2HelmPath fakeRke2HelmScript
+
+        (nonHarborExit, nonHarborStdout, nonHarborStderr) <-
+          runRke2Helm ["status", "bootstrap-broker", "--namespace", "bootstrap-broker", "--output", "json"]
+        (nonHarborExit, nonHarborStdout, nonHarborStderr)
+          `shouldBe` (ExitFailure 1, "", "Error: release: not found\n")
+
+        (harborPresentExit, harborPresentStdout, harborPresentStderr) <-
+          runRke2Helm ["status", "harbor", "--namespace", "harbor", "--output", "json"]
+        harborPresentExit `shouldBe` ExitSuccess
+        harborPresentStderr `shouldBe` ""
+        harborPresentStdout
+          `shouldBe` "{\"name\":\"harbor\",\"namespace\":\"harbor\",\"info\":{\"status\":\"deployed\"}}\n"
+
+        (harborUninstallExit, _, harborUninstallStderr) <-
+          runRke2Helm ["uninstall", "harbor", "--namespace", "harbor", "--ignore-not-found"]
+        (harborUninstallExit, harborUninstallStderr) `shouldBe` (ExitSuccess, "")
+
+        (harborAbsentExit, harborAbsentStdout, harborAbsentStderr) <-
+          runRke2Helm ["status", "harbor", "--namespace", "harbor", "--output", "json"]
+        (harborAbsentExit, harborAbsentStdout, harborAbsentStderr)
+          `shouldBe` (ExitFailure 1, "", "Error: release: not found\n")
 
     it "stages retained Patroni restore from ordinal-0 host data when no live primary exists" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1122,6 +1188,233 @@ integrationCliSuite = do
         logsStderr `shouldBe` ""
         logsStdout `shouldContain` "RKE2_LOG_LINES"
 
+        let fakeDocker = tmpDir </> "bin" </> "docker"
+            danglingRuntimeImageId = "sha256:" ++ replicate 64 'd'
+            populatedDockerEnvironment =
+              ("PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID", danglingRuntimeImageId)
+                : envVars
+
+        (emptyInventoryExit, emptyInventoryStdout, emptyInventoryStderr) <-
+          readCreateProcessWithExitCode
+            (proc fakeDocker Rke2.managedRuntimeImageRetentionInventoryArguments)
+              { cwd = Just tmpDir
+              , env = Just envVars
+              }
+            ""
+        emptyInventoryExit `shouldBe` ExitSuccess
+        emptyInventoryStderr `shouldBe` ""
+        Rke2.selectManagedDanglingRuntimeImageIds emptyInventoryStdout
+          `shouldBe` Right []
+
+        (populatedInventoryExit, populatedInventoryStdout, populatedInventoryStderr) <-
+          readCreateProcessWithExitCode
+            (proc fakeDocker Rke2.managedRuntimeImageRetentionInventoryArguments)
+              { cwd = Just tmpDir
+              , env = Just populatedDockerEnvironment
+              }
+            ""
+        populatedInventoryExit `shouldBe` ExitSuccess
+        populatedInventoryStderr `shouldBe` ""
+        Rke2.selectManagedDanglingRuntimeImageIds populatedInventoryStdout
+          `shouldBe` Right [danglingRuntimeImageId]
+
+        (removeImageExit, removeImageStdout, removeImageStderr) <-
+          readCreateProcessWithExitCode
+            (proc fakeDocker ["image", "rm", danglingRuntimeImageId])
+              { cwd = Just tmpDir
+              , env = Just populatedDockerEnvironment
+              }
+            ""
+        removeImageExit `shouldBe` ExitSuccess
+        removeImageStdout `shouldBe` ""
+        removeImageStderr `shouldBe` ""
+
+        (absentReadBackExit, absentReadBackStdout, absentReadBackStderr) <-
+          readCreateProcessWithExitCode
+            (proc fakeDocker Rke2.managedRuntimeImageRetentionInventoryArguments)
+              { cwd = Just tmpDir
+              , env = Just populatedDockerEnvironment
+              }
+            ""
+        absentReadBackExit `shouldBe` ExitSuccess
+        absentReadBackStderr `shouldBe` ""
+        Rke2.selectManagedDanglingRuntimeImageIds absentReadBackStdout
+          `shouldBe` Right []
+
+        let runtimeRepository = "127.0.0.1:30080/prodbox/prodbox-runtime"
+            runtimeImageRef = runtimeRepository ++ ":prodbox-fixture"
+            runtimeConfigDigest =
+              "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            runtimeManifestDigest = "sha256:" ++ replicate 64 'a'
+
+        (configIdentityExit, configIdentityStdout, configIdentityStderr) <-
+          readCreateProcessWithExitCode
+            (proc fakeDocker ["image", "inspect", "--format", "{{.Id}}", runtimeImageRef])
+              { cwd = Just tmpDir
+              , env = Just envVars
+              }
+            ""
+        configIdentityExit `shouldBe` ExitSuccess
+        configIdentityStdout `shouldBe` (runtimeConfigDigest ++ "\n")
+        configIdentityStderr `shouldBe` ""
+
+        (manifestInventoryExit, manifestInventoryStdout, manifestInventoryStderr) <-
+          readCreateProcessWithExitCode
+            ( proc
+                fakeDocker
+                [ "image"
+                , "inspect"
+                , "--format"
+                , "{{json .RepoDigests}}"
+                , runtimeImageRef
+                ]
+            )
+              { cwd = Just tmpDir
+              , env = Just envVars
+              }
+            ""
+        manifestInventoryExit `shouldBe` ExitSuccess
+        manifestInventoryStderr `shouldBe` ""
+        case Aeson.eitherDecodeStrict' (BS8.pack manifestInventoryStdout) of
+          Left detail -> expectationFailure detail
+          Right repositoryDigests -> do
+            repositoryDigests
+              `shouldBe` [runtimeRepository ++ "@" ++ runtimeManifestDigest]
+            ChartPlatform.selectRepositoryManifestDigest runtimeRepository repositoryDigests
+              `shouldBe` Just runtimeManifestDigest
+
+        let fakeKubectl = tmpDir </> "bin" </> "kubectl"
+            desiredSubstrate =
+              CredentialProvisionerSubstrate.credentialProvisionerSubstrateManifest
+                ChartPlatform.KubernetesApiEgressCoordinate
+                  { ChartPlatform.kubernetesApiEgressAddresses = ["192.0.2.10"]
+                  , ChartPlatform.kubernetesApiEgressPort = 6443
+                  }
+            desiredSubstrateJson = LazyBS8.unpack (Aeson.encode desiredSubstrate)
+            substrateObservationArguments =
+              [ "get"
+              , "--filename=-"
+              , "--output=json"
+              , "--ignore-not-found=true"
+              ]
+            storedSubstratePath =
+              tmpDir
+                </> "fake-rke2-state"
+                </> "credential-provisioner-substrate.json"
+
+        (absentSubstrateExit, absentSubstrateStdout, absentSubstrateStderr) <-
+          readCreateProcessWithExitCode
+            (proc fakeKubectl substrateObservationArguments)
+              { cwd = Just tmpDir
+              , env = Just envVars
+              }
+            desiredSubstrateJson
+        absentSubstrateExit `shouldBe` ExitFailure 1
+        absentSubstrateStdout `shouldBe` ""
+        absentSubstrateStderr
+          `shouldContain` "Credential Provisioner substrate has not been applied"
+
+        (applySubstrateExit, applySubstrateStdout, applySubstrateStderr) <-
+          readCreateProcessWithExitCode
+            (proc fakeKubectl ["apply", "--filename=-"])
+              { cwd = Just tmpDir
+              , env = Just envVars
+              }
+            desiredSubstrateJson
+        applySubstrateExit `shouldBe` ExitSuccess
+        applySubstrateStdout `shouldBe` ""
+        applySubstrateStderr `shouldBe` ""
+
+        (observeSubstrateExit, observeSubstrateStdout, observeSubstrateStderr) <-
+          readCreateProcessWithExitCode
+            (proc fakeKubectl substrateObservationArguments)
+              { cwd = Just tmpDir
+              , env = Just envVars
+              }
+            desiredSubstrateJson
+        observeSubstrateExit `shouldBe` ExitSuccess
+        observeSubstrateStderr `shouldBe` ""
+        case Aeson.eitherDecodeStrict' (BS8.pack observeSubstrateStdout) of
+          Left detail -> expectationFailure detail
+          Right observedSubstrate ->
+            CredentialProvisionerSubstrate.credentialProvisionerSubstrateMatches
+              desiredSubstrate
+              observedSubstrate
+              `shouldBe` True
+
+        writeFile storedSubstratePath "{"
+        (malformedSubstrateExit, malformedSubstrateStdout, malformedSubstrateStderr) <-
+          readCreateProcessWithExitCode
+            (proc fakeKubectl substrateObservationArguments)
+              { cwd = Just tmpDir
+              , env = Just envVars
+              }
+            desiredSubstrateJson
+        malformedSubstrateExit `shouldBe` ExitSuccess
+        malformedSubstrateStderr `shouldBe` ""
+        (Aeson.eitherDecodeStrict' (BS8.pack malformedSubstrateStdout) :: Either String Aeson.Value)
+          `shouldSatisfy` isLeft
+
+        let obsoleteAuthorityBackupTarget =
+              [ "--namespace"
+              , "authority-backup"
+              , "port-forward"
+              , "service/authority-backup"
+              , "45124:8600"
+              ]
+        (obsoleteForwardExit, obsoleteForwardStdout, obsoleteForwardStderr) <-
+          readCreateProcessWithExitCode
+            (proc fakeKubectl obsoleteAuthorityBackupTarget)
+              { cwd = Just tmpDir
+              , env = Just envVars
+              }
+            ""
+        obsoleteForwardExit `shouldBe` ExitFailure 1
+        obsoleteForwardStdout `shouldBe` ""
+        obsoleteForwardStderr
+          `shouldContain` "unsupported fake Authority Backup port-forward target"
+
+        authorityBackupForwardPort <- reserveClosedLoopbackPort
+        let authorityBackupForwardMapping = show authorityBackupForwardPort ++ ":8600"
+            authorityBackupForwardArguments =
+              [ "--namespace"
+              , "authority-backup"
+              , "port-forward"
+              , "deployment/authority-backup"
+              , authorityBackupForwardMapping
+              ]
+            stopForward (_, _, _, processHandle) = do
+              _ <- try (terminateProcess processHandle) :: IO (Either SomeException ())
+              _ <- try (waitForProcess processHandle) :: IO (Either SomeException ExitCode)
+              pure ()
+            assertForwardStartup (_, maybeStdoutHandle, _, _) =
+              case maybeStdoutHandle of
+                Nothing -> expectationFailure "fake Authority Backup forward had no stdout pipe"
+                Just stdoutHandle -> do
+                  startupLine <- IO.hGetLine stdoutHandle
+                  LocalClient.classifyAuthorityBackupForwardStartup
+                    authorityBackupForwardPort
+                    (LocalClient.AuthorityBackupForwardStartupLine startupLine)
+                    `shouldBe` Right ()
+                  httpGetText
+                    (defaultHttpConfig {httpRequestTimeoutMicros = 250000})
+                    ("http://127.0.0.1:" ++ show authorityBackupForwardPort ++ "/readyz")
+                    `shouldReturn` Right "{}"
+
+        bracket
+          ( createProcess
+              (proc fakeKubectl authorityBackupForwardArguments)
+                { cwd = Just tmpDir
+                , env = Just envVars
+                , std_out = CreatePipe
+                }
+          )
+          stopForward
+          assertForwardStartup
+        readFile
+          (tmpDir </> "fake-rke2-state" </> "authority-backup-forward-child.state")
+          `shouldReturn` "stopped\n"
+
         systemctlRecord <- readFile (tmpDir </> "fake-rke2-state" </> "systemctl.txt")
         systemctlRecord `shouldContain` "is-active|rke2-server.service"
         systemctlRecord `shouldContain` "start|rke2-server.service"
@@ -1146,7 +1439,12 @@ integrationCliSuite = do
         -- the test seam so it does not try to decrypt an unlock bundle (none
         -- exists in this temp repo). The in-force SSoT seed against the real
         -- Vault fail-WARNs and the config read falls back to .parameters.
-        envVars <- (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
+        baseEnvVars <-
+          (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
+        let danglingRuntimeImageId = "sha256:" ++ replicate 64 'd'
+            envVars =
+              ("PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID", danglingRuntimeImageId)
+                : baseEnvVars
 
         (installExitCode, installStdout, installStderr) <-
           runRke2ReconcileWithFakeGateway
@@ -1325,6 +1623,10 @@ integrationCliSuite = do
         helmRecord `shouldNotContain` "persistence.imageChartStorage.type=s3"
         helmRecord `shouldContain` "status|harbor|--namespace|harbor|--output|json"
         helmRecord `shouldContain` "uninstall|harbor|--namespace|harbor|--ignore-not-found"
+        -- Sprint 5.38: non-Harbor status is explicit absence rather than
+        -- successful empty output, so production can admit the upgrade.
+        helmRecord
+          `shouldContain` "status|bootstrap-broker|--namespace|bootstrap-broker|--output|json"
         helmRecord `shouldContain` "repo|add|metallb|https://metallb.github.io/metallb"
         helmRecord `shouldContain` "upgrade|--install|metallb|metallb/metallb"
         helmRecord `shouldContain` "metallb/metallb|--force-conflicts|--version|0.14.9"
@@ -1342,11 +1644,20 @@ integrationCliSuite = do
           `shouldSatisfy` (< findRecordLineIndex "/charts/vault|--namespace|vault" helmRecord)
 
         dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")
+        -- Sprint 5.39: the populated machine inventory is removed once and
+        -- every later observation reads exact empty output. Other RKE2 cases
+        -- exercise the default-empty arm.
+        dockerRecord
+          `shouldContain` "image|ls|--filter|dangling=true|--no-trunc|--format|{{.Repository}}\t{{.ID}}"
+        countRecordLines ("image|rm|" ++ danglingRuntimeImageId) dockerRecord `shouldBe` 1
         -- NO `docker login` runs at all — the registry:2 NodePort is anonymous, so
         -- pushes carry no credential; public pulls use the host docker.io login.
         dockerRecord `shouldNotContain` "login|127.0.0.1:30080"
         dockerRecord
-          `shouldContain` "buildx|imagetools|inspect|--raw|127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-"
+          `shouldContain` "image|inspect|--format|{{.Id}}|127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-"
+        dockerRecord
+          `shouldContain` "image|inspect|--format|{{json .RepoDigests}}|127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-"
+        dockerRecord `shouldNotContain` "buildx|imagetools|inspect"
         dockerRecord `shouldNotContain` "docker/bitnami-postgresql-repmgr.Dockerfile"
         dockerRecord `shouldNotContain` "docker/bitnami-pgpool.Dockerfile"
         dockerRecord `shouldContain` "pull|127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:2.9.0"
@@ -3236,6 +3547,29 @@ fakeHelmScript =
     , "  list)"
     , "    printf '%s\\n' \"${PRODBOX_FAKE_HELM_LIST_JSON:-[]}\""
     , "    ;;"
+    , "  status)"
+    , "    append_args \"$record_dir/helm-status.txt\" \"$@\""
+    , "    release=${2:-}"
+    , "    namespace=''"
+    , "    shift 2"
+    , "    while [[ $# -gt 0 ]]; do"
+    , "      if [[ \"${1:-}\" == '--namespace' ]]; then"
+    , "        namespace=${2:-}"
+    , "        shift 2"
+    , "      else"
+    , "        shift"
+    , "      fi"
+    , "    done"
+    , "    inventory=${PRODBOX_FAKE_HELM_LIST_JSON:-[]}"
+    , "    compact_inventory=${inventory//[[:space:]]/}"
+    , "    deployed_entry=\"\\\"name\\\":\\\"$release\\\",\\\"namespace\\\":\\\"$namespace\\\",\\\"status\\\":\\\"deployed\\\"\""
+    , "    if [[ \"$compact_inventory\" == *\"$deployed_entry\"* ]]; then"
+    , "      printf '{\"name\":\"%s\",\"namespace\":\"%s\",\"info\":{\"status\":\"deployed\"}}\\n' \"$release\" \"$namespace\""
+    , "    else"
+    , "      printf 'Error: release: not found\\n' >&2"
+    , "      exit 1"
+    , "    fi"
+    , "    ;;"
     , "  upgrade)"
     , "    append_args \"$record_dir/helm-upgrade.txt\" \"$@\""
     , "    ;;"
@@ -3311,7 +3645,7 @@ fakeKubectlScript =
     , "  'get service')"
     , "    if [[ \"${3:-}\" == 'kubernetes' ]]; then printf '10.43.0.1'; else exit 1; fi"
     , "    ;;"
-    , "  'port-forward service/lifecycle-authority'|'port-forward service/authority-backup'|'port-forward service/target-secret-agent'|'port-forward service/tls-retention')"
+    , "  'port-forward service/lifecycle-authority'|'port-forward deployment/authority-backup'|'port-forward service/target-secret-agent'|'port-forward service/tls-retention')"
     , "    mapping=${!#}"
     , "    local_port=${mapping%%:*}"
     , "    exec \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-authority-server \"$local_port\""
@@ -3505,6 +3839,7 @@ fakeRke2Environment repoRoot = do
               key
                 `notElem` [ "PATH"
                           , "PRODBOX_FAKE_RKE2_RECORD_DIR"
+                          , "PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID"
                           , "PRODBOX_RKE2_CONTAINERD_SOCKET"
                           , "PRODBOX_RKE2_ENDPOINT_STATUS_ROOT"
                           , "PRODBOX_TEST_RESIDUE_UNREACHABLE"
@@ -4011,6 +4346,19 @@ fakeRke2KubectlScript =
     , "    fi"
     , "    ;;"
     , "  get)"
+    , "    if [[ $# -eq 4 && \"${2:-}\" == '--filename=-' && \"${3:-}\" == '--output=json' && \"${4:-}\" == '--ignore-not-found=true' ]]; then"
+    , "      /bin/cat >/dev/null"
+    , "      substrate_observation=\"$record_dir/credential-provisioner-substrate.json\""
+    , "      if [[ ! -s \"$substrate_observation\" ]]; then"
+    , "        printf 'Credential Provisioner substrate has not been applied\n' >&2"
+    , "        exit 1"
+    , "      fi"
+    , "      /bin/cat \"$substrate_observation\""
+    , "      exit 0"
+    , "    elif [[ \"${2:-}\" == --filename=* ]]; then"
+    , "      printf 'unsupported fake kubectl filename observation: %s\n' \"$*\" >&2"
+    , "      exit 1"
+    , "    fi"
     , "    case \"${2:-}\" in"
     , "      serviceaccount)"
     , "        printf '%s\\n%s\\nfalse\\n' \"$requested_namespace\" \"${3:-}\""
@@ -4199,7 +4547,57 @@ fakeRke2KubectlScript =
     , "      mapping=${!#}"
     , "      local_port=${mapping%%:*}"
     , "      exec \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-broker-server \"$local_port\""
-    , "    elif [[ \"$*\" == *'service/lifecycle-authority'* || \"$*\" == *'service/authority-backup'* ]]; then"
+    , "    elif [[ \"$*\" == *'deployment/authority-backup'* ]]; then"
+    , "      mapping=${!#}"
+    , "      local_port=${mapping%%:*}"
+    , "      remote_port=${mapping#*:}"
+    , "      child_state_file=\"$record_dir/authority-backup-forward-child.state\""
+    , "      \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-authority-server \"$local_port\" &"
+    , "      server_pid=$!"
+    , "      cleanup_authority_backup_forward() {"
+    , "        local forward_exit=$?"
+    , "        trap - TERM INT EXIT"
+    , "        if kill -0 \"$server_pid\" 2>/dev/null; then"
+    , "          kill \"$server_pid\" 2>/dev/null || true"
+    , "        fi"
+    , "        wait \"$server_pid\" 2>/dev/null || true"
+    , "        printf 'stopped\\n' > \"$child_state_file\""
+    , "        return \"$forward_exit\""
+    , "      }"
+    , "      trap cleanup_authority_backup_forward EXIT"
+    , "      trap 'exit 143' TERM"
+    , "      trap 'exit 130' INT"
+    , "      listener_ready=0"
+    , "      for _attempt in {1..100}; do"
+    , "        readiness_status="
+    , "        if { exec 3<>\"/dev/tcp/127.0.0.1/$local_port\"; } 2>/dev/null; then"
+    , "          printf 'GET /readyz HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n' >&3"
+    , "          if IFS= read -r -t 1 readiness_status <&3; then"
+    , "            /bin/cat <&3 >/dev/null"
+    , "          fi"
+    , "          exec 3>&-"
+    , "          exec 3<&-"
+    , "          if [[ \"$readiness_status\" == $'HTTP/1.1 200 OK\\r' ]]; then"
+    , "            listener_ready=1"
+    , "            break"
+    , "          fi"
+    , "        fi"
+    , "        if ! kill -0 \"$server_pid\" 2>/dev/null; then"
+    , "          printf 'fake Authority Backup fixture server exited before listener readiness\\n' >&2"
+    , "          exit 1"
+    , "        fi"
+    , "        /bin/sleep 0.01"
+    , "      done"
+    , "      if [[ \"$listener_ready\" -ne 1 ]]; then"
+    , "        printf 'fake Authority Backup fixture listener did not become ready: 127.0.0.1:%s\\n' \"$local_port\" >&2"
+    , "        exit 1"
+    , "      fi"
+    , "      printf 'Forwarding from 127.0.0.1:%s -> %s\\n' \"$local_port\" \"$remote_port\""
+    , "      wait \"$server_pid\""
+    , "    elif [[ \"$*\" == *'service/authority-backup'* ]]; then"
+    , "      printf 'unsupported fake Authority Backup port-forward target: %s\\n' \"$*\" >&2"
+    , "      exit 1"
+    , "    elif [[ \"$*\" == *'service/lifecycle-authority'* ]]; then"
     , "      mapping=${!#}"
     , "      local_port=${mapping%%:*}"
     , "      exec \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-authority-server \"$local_port\""
@@ -4212,7 +4610,14 @@ fakeRke2KubectlScript =
     , "    ;;"
     , "  apply)"
     , "    target=$(next_apply_target)"
-    , "    if [[ \"${3:-}\" == \"-\" ]]; then"
+    , "    if [[ $# -eq 2 && \"${2:-}\" == '--filename=-' ]]; then"
+    , "      /bin/cat > \"$target\""
+    , "      if [[ ! -s \"$target\" ]]; then"
+    , "        printf 'Credential Provisioner substrate apply received empty input\n' >&2"
+    , "        exit 1"
+    , "      fi"
+    , "      /bin/cp \"$target\" \"$record_dir/credential-provisioner-substrate.json\""
+    , "    elif [[ \"${3:-}\" == \"-\" ]]; then"
     , "      # Sprint 2.19: `kubectl apply -f -` (stdin) is the second leg of the"
     , "      # `create namespace --dry-run | apply -f -` and `create secret"
     , "      # generic --dry-run | apply -f -` pipelines used by"
@@ -4294,6 +4699,9 @@ fakeRke2HelmScript =
     , "    elif [[ \"${2:-}\" == 'harbor' ]]; then"
     , "      printf 'Error: release: not found\\n' >&2"
     , "      exit 1"
+    , "    else"
+    , "      printf 'Error: release: not found\\n' >&2"
+    , "      exit 1"
     , "    fi"
     , "    ;;"
     , "  uninstall)"
@@ -4331,16 +4739,31 @@ fakeRke2DockerScript =
     , "printf '\\n' >> \"$record_dir/docker.txt\""
     , "case \"${1:-}\" in"
     , "  image)"
-    , "    if [[ \"${2:-}\" == 'inspect' ]]; then"
-    , "      printf 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n'"
+    , "    if [[ \"${2:-}\" == 'ls' ]]; then"
+    , "      dangling_id=${PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID:-}"
+    , "      if [[ -n \"$dangling_id\" && ! -f \"$record_dir/dangling-runtime-image-removed\" ]]; then"
+    , "        printf '127.0.0.1:30080/prodbox/prodbox-runtime\\t%s\\n' \"$dangling_id\""
+    , "      fi"
     , "      exit 0"
-    , "    fi"
-    , "    exit 1"
-    , "    ;;"
-    , "  buildx)"
-    , "    if [[ \"${2:-}\" == 'imagetools' && \"${3:-}\" == 'inspect' && \"${4:-}\" == '--raw' ]]; then"
-    , "      printf '{\"config\":{\"digest\":\"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}}\\n'"
-    , "      exit 0"
+    , "    elif [[ \"${2:-}\" == 'rm' ]]; then"
+    , "      dangling_id=${PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID:-}"
+    , "      if [[ -n \"$dangling_id\" && \"${3:-}\" == \"$dangling_id\" ]]; then"
+    , "        : > \"$record_dir/dangling-runtime-image-removed\""
+    , "        exit 0"
+    , "      fi"
+    , "      exit 1"
+    , "    elif [[ \"${2:-}\" == 'inspect' ]]; then"
+    , "      if [[ \"${3:-}\" == '--format' && \"${4:-}\" == '{{.Id}}' ]]; then"
+    , "        printf 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n'"
+    , "        exit 0"
+    , "      elif [[ \"${3:-}\" == '--format' && \"${4:-}\" == '{{json .RepoDigests}}' ]]; then"
+    , "        image_ref=${5:-}"
+    , "        if [[ \"$image_ref\" == 127.0.0.1:30080/prodbox/prodbox-runtime:* ]]; then"
+    , "          printf '[\"127.0.0.1:30080/prodbox/prodbox-runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]\\n'"
+    , "          exit 0"
+    , "        fi"
+    , "      fi"
+    , "      exit 1"
     , "    fi"
     , "    exit 1"
     , "    ;;"
@@ -5083,6 +5506,9 @@ testSecretsOperatorIdFields =
   , ", ses_capture_bucket = \"\""
   , ", pulumi_state_backend_bucket_name = \"\""
   , ", pulumi_state_backend_region = \"\""
+  , ", aws_substrate_subzone_name = \"\""
+  , ", aws_substrate_profile = None { operator_cidr : Text, eks_node_instance_type : Text, eks_node_disk_size_gib : Natural, eks_node_min_size : Natural, eks_node_max_size : Natural, aws_test_instance_types : List Text, aws_test_root_volume_types : List Text, aws_test_root_volume_sizes_gib : List Natural, static_ebs_volume_type : Text, eks_vpc_cidr : Text, eks_subnet_cidrs : List Text, aws_test_vpc_cidr : Text, aws_test_subnet_cidrs : List Text }"
+  , ", aws_eks_node_group_size = 0"
   ]
 
 -- | A @test-secrets.dhall@ with a populated @aws_admin_for_test_simulation@

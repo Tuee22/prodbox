@@ -40,6 +40,7 @@ module Prodbox.ControlPlane.RoleInterpreters
   , LifecycleAuthorityDecommissionInputs (..)
   , lifecycleAuthorityDecommissionAuthenticatedHandler
   , lifecycleAuthorityTlsRetentionAuthenticatedHandler
+  , lifecycleAuthorityTlsRetentionWorkflowAuthenticatedHandler
   , lifecycleAuthorityAdminActionExecutionAuthenticatedHandler
   , tlsRetentionInterpreter
   , authorityBackupInterpreter
@@ -266,6 +267,7 @@ import Prodbox.ControlPlane.Route
       , LifecycleRetainedSesLease
       , LifecycleTlsRetentionObserve
       , LifecycleTlsRetentionPromote
+      , LifecycleTlsRetentionWorkflow
       , ProviderWorkApply
       , ProviderWorkObserve
       , TargetSecretAdminActionCustodyTombstone
@@ -305,6 +307,12 @@ import Prodbox.ControlPlane.TlsRetentionEndpoint
   , tlsRestoreResponseBody
   , tlsStoreHttpStatus
   , tlsStoreResponseBody
+  )
+import Prodbox.ControlPlane.TlsRetentionWorkflowAuthorityEndpoint
+  ( TlsRetentionWorkflowAuthorityBoundary
+  , serveTlsRetentionWorkflowAuthorityRequest
+  , tlsRetentionWorkflowAuthorityResponseBody
+  , tlsRetentionWorkflowAuthorityResponseHttpStatus
   )
 import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   ( TlsSecretBoundary
@@ -966,6 +974,37 @@ lifecycleAuthorityTlsRetentionAuthenticatedHandler maximumBytes resolve inner =
           resolve
           (LazyByteString.fromStrict body)
       pure (Just (tlsAuthorityResponseHttpStatus response, tlsAuthorityResponseBody response))
+    _ -> authenticatedHandlerHandle inner callerSlot route body
+
+-- | Add the closed host trigger for the Authority-routed TLS custody workflow.
+-- Target-Agent and TLS-Adapter calls are constructed by the retained Authority
+-- runtime; the verified external caller can select no downstream endpoint,
+-- Secret, Transit key, object key, or DEK recipient.
+lifecycleAuthorityTlsRetentionWorkflowAuthenticatedHandler
+  :: (Monad m)
+  => Int
+  -> TlsRetentionWorkflowAuthorityBoundary m
+  -> AuthenticatedRoleHandler m
+  -> AuthenticatedRoleHandler m
+lifecycleAuthorityTlsRetentionWorkflowAuthenticatedHandler maximumBytes boundary inner =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadiness = authenticatedHandlerReadiness inner
+    , authenticatedHandlerHandle = handle
+    }
+ where
+  handle callerSlot route body = case route of
+    LifecycleTlsRetentionWorkflow -> do
+      response <-
+        serveTlsRetentionWorkflowAuthorityRequest
+          maximumBytes
+          boundary
+          (LazyByteString.fromStrict body)
+      pure
+        ( Just
+            ( tlsRetentionWorkflowAuthorityResponseHttpStatus response
+            , tlsRetentionWorkflowAuthorityResponseBody response
+            )
+        )
     _ -> authenticatedHandlerHandle inner callerSlot route body
 
 -- | Add the one Admin-Action-only Authority execution lane.  Besides the

@@ -13,6 +13,7 @@ module Prodbox.ControlPlane.VaultAccessorAudit
   , VaultAccessorAuditOps (..)
   , VaultAccessorAuditDetailedOps (..)
   , isBoundedBatchAuditorLogin
+  , isExactBoundedBatchAuditorLogin
   , vaultAccessorMatchesSubject
   , revokeAndProveVaultAccessorSubjectAbsent
   , revokeAndProveVaultAccessorSubjectAbsentDetailed
@@ -100,6 +101,16 @@ isBoundedBatchAuditorLogin maximumLeaseSeconds login =
     && not (vaultLoginRenewable login)
     && vaultLoginLeaseSeconds login > 0
     && vaultLoginLeaseSeconds login <= maximumLeaseSeconds
+
+-- | Require both the safe batch-token shape and the exact compiled lease.
+-- This is for callers whose child runtime is contained by that lease; merely
+-- accepting a shorter server-issued lease would make the containment proof
+-- about source configuration rather than the token actually in use.
+isExactBoundedBatchAuditorLogin
+  :: Int -> VaultKubernetesLoginResult -> Bool
+isExactBoundedBatchAuditorLogin leaseSeconds login =
+  isBoundedBatchAuditorLogin leaseSeconds login
+    && vaultLoginLeaseSeconds login == fromIntegral leaseSeconds
 
 vaultAccessorMatchesSubject
   :: VaultAccessorSubject -> TokenAccessorInfo -> Bool

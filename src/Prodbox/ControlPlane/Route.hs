@@ -68,6 +68,7 @@ data ControlPlaneRoute
   | TargetTlsVerifySource
   | LifecycleTlsRetentionObserve
   | LifecycleTlsRetentionPromote
+  | LifecycleTlsRetentionWorkflow
   | LifecycleAdminActionExecution
   | TargetSecretAdminActionGenerationTombstone
   | TargetSecretAdminActionCustodyTombstone
@@ -133,6 +134,7 @@ controlPlaneRouteMethod route = case route of
   TargetTlsVerifySource -> ControlPlanePost
   LifecycleTlsRetentionObserve -> ControlPlanePost
   LifecycleTlsRetentionPromote -> ControlPlanePost
+  LifecycleTlsRetentionWorkflow -> ControlPlanePost
   LifecycleAdminActionExecution -> ControlPlanePost
   TargetSecretAdminActionGenerationTombstone -> ControlPlanePost
   TargetSecretAdminActionCustodyTombstone -> ControlPlanePost
@@ -195,6 +197,7 @@ controlPlaneRoutePath route = case route of
   TargetTlsVerifySource -> "/v1/target-tls/verify-source"
   LifecycleTlsRetentionObserve -> "/v1/authority/tls-retention/observe"
   LifecycleTlsRetentionPromote -> "/v1/authority/tls-retention/promote"
+  LifecycleTlsRetentionWorkflow -> "/v1/authority/tls-retention/workflow"
   LifecycleAdminActionExecution -> "/v1/authority/admin-action/execute"
   TargetSecretAdminActionGenerationTombstone ->
     "/v1/target-secret/admin-action/generation-tombstone"
@@ -261,6 +264,7 @@ controlPlaneRouteRole route = case route of
   TargetTlsVerifySource -> TargetSecretAgentRuntime
   LifecycleTlsRetentionObserve -> LifecycleAuthorityRuntime
   LifecycleTlsRetentionPromote -> LifecycleAuthorityRuntime
+  LifecycleTlsRetentionWorkflow -> LifecycleAuthorityRuntime
   LifecycleAdminActionExecution -> LifecycleAuthorityRuntime
   TargetSecretAdminActionGenerationTombstone -> TargetSecretAgentRuntime
   TargetSecretAdminActionCustodyTombstone -> TargetSecretAgentRuntime

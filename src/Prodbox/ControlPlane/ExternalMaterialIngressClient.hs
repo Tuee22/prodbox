@@ -8,6 +8,7 @@
 module Prodbox.ControlPlane.ExternalMaterialIngressClient
   ( ExternalMaterialIngressClient
   , ExternalMaterialIngressClientError (..)
+  , ExternalMaterialIngressPreparation (..)
   , mkExternalMaterialIngressClient
   , externalMaterialIngressClient
   , prepareExternalMaterialIngress
@@ -81,6 +82,13 @@ data ExternalMaterialIngressClientError
   | ExternalMaterialIngressClientUnexpectedResponse
   deriving stock (Eq, Show)
 
+data ExternalMaterialIngressPreparation
+  = ExternalMaterialIngressPreparedChallenge !ExternalMaterialIngressChallenge
+  | ExternalMaterialIngressRecoveredReceipt
+      !ExternalMaterialIngressChallenge
+      !ExternalMaterialTargetReceipt
+  deriving stock (Eq, Show)
+
 externalMaterialIngressClient
   :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
   -> ExternalMaterialIngressClient IO
@@ -121,7 +129,7 @@ prepareExternalMaterialIngress
   -> m
        ( Either
            ExternalMaterialIngressClientError
-           ExternalMaterialIngressChallenge
+           ExternalMaterialIngressPreparation
        )
 prepareExternalMaterialIngress client action operationId generation imageDigest deadline = do
   response <-
@@ -137,7 +145,10 @@ prepareExternalMaterialIngress client action operationId generation imageDigest 
   pure $ do
     result <- response
     case result of
-      ExternalMaterialIngressPrepared challenge -> Right challenge
+      ExternalMaterialIngressPrepared challenge ->
+        Right (ExternalMaterialIngressPreparedChallenge challenge)
+      ExternalMaterialIngressRecovered challenge receipt ->
+        Right (ExternalMaterialIngressRecoveredReceipt challenge receipt)
       _ -> Left ExternalMaterialIngressClientUnexpectedResponse
 
 authorizeExternalMaterialIngress

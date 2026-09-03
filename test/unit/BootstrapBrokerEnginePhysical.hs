@@ -79,15 +79,21 @@ import Prodbox.Bootstrap.Broker.ProductionCryptoParameters
   ( productionPristineStorageProof
   )
 import Prodbox.Bootstrap.Broker.ProductionEngine
-  ( classifyProvisionerAccessorCleanupHttpFailure
+  ( classifyProvisionerAccessorAbsenceHttpFailure
+  , classifyProvisionerAccessorAbsenceListing
+  , classifyProvisionerAccessorCleanupHttpFailure
   , classifyProvisionerAccessorCleanupListing
+  , classifyProvisionerAccessorRevocationHttpFailure
+  , classifyProvisionerAccessorRevocationListing
   , classifyProvisionerPolicyCoreReconcileFailure
   , classifyProvisionerPolicyPkiReconcileFailure
+  , classifyProvisionerPolicyRepairHttpFailure
   , classifyRootAccessorAbsenceHttpFailure
   , classifyRootAccessorAbsenceListing
   , classifyRootAccessorInventoryHttpFailure
   , classifyRootAccessorInventoryListing
   , classifyRootAccessorRevocationHttpFailure
+  , classifyRootAccessorRevocationListing
   , decideRootAccessorAbsenceProof
   )
 import Prodbox.Bootstrap.Broker.ProductionSecretWorker
@@ -300,6 +306,32 @@ enginePhysicalSuite =
                    , RootAccessorRevocationHttpDecode
                    ]
 
+    it "Sprint 2.76 treats only post-revocation LIST 404 as an empty accessor set" $ do
+      let secret = "post-revocation-list-body-must-not-cross"
+          listFailure httpFailure =
+            Left
+              ( RootAccessorRevocationHttpFailure
+                  RootAccessorRevocationListReadBack
+                  httpFailure
+              )
+      classifyRootAccessorRevocationListing
+        (Right (Vault.TokenAccessorListing ["accessor-a"]))
+        `shouldBe` Right ["accessor-a"]
+      classifyRootAccessorRevocationListing (Left (HttpStatus 404 secret))
+        `shouldBe` Right []
+      map
+        classifyRootAccessorRevocationListing
+        [ Left (HttpConnectionFailure secret)
+        , Left (HttpTimeout secret)
+        , Left (HttpStatus 503 secret)
+        , Left (HttpDecode secret)
+        ]
+        `shouldBe` [ listFailure RootAccessorRevocationHttpConnectionFailure
+                   , listFailure RootAccessorRevocationHttpTimeout
+                   , listFailure (RootAccessorRevocationHttpStatus 503)
+                   , listFailure RootAccessorRevocationHttpDecode
+                   ]
+
     it "Sprint 2.72 exhausts the payload-free root-accessor inventory causes" $ do
       let operations = [minBound .. maxBound] :: [RootAccessorInventoryHttpOperation]
           httpFailures =
@@ -499,6 +531,200 @@ enginePhysicalSuite =
           , ProvisionerAccessorCleanupHttpDecode
           ]
 
+    it "Sprint 2.75 exhausts the payload-free provisioner-accessor revocation causes" $ do
+      let operations = [minBound .. maxBound] :: [ProvisionerAccessorRevocationHttpOperation]
+          httpFailures =
+            [ ProvisionerAccessorRevocationHttpConnectionFailure
+            , ProvisionerAccessorRevocationHttpTimeout
+            , ProvisionerAccessorRevocationHttpStatus 503
+            , ProvisionerAccessorRevocationHttpDecode
+            ]
+          causes =
+            [ ProvisionerAccessorRevocationProjectedTokenUnavailable
+            , ProvisionerAccessorRevocationAuditorLoginInvalid
+            , ProvisionerAccessorRevocationAuditorCleanupUnavailable
+            , ProvisionerAccessorRevocationAuditorCleanupRefused
+            , ProvisionerAccessorRevocationAuditorCleanupAmbiguous
+            , ProvisionerAccessorRevocationTargetIdentityInvalid
+            , ProvisionerAccessorRevocationTargetStillPresent
+            , ProvisionerAccessorRevocationRoleAccessorStillPresent
+            ]
+              ++ [ ProvisionerAccessorRevocationHttpFailure operation httpFailure
+                 | operation <- operations
+                 , httpFailure <- httpFailures
+                 ]
+          rendered = map provisionerAccessorRevocationCauseName causes
+          failure cause =
+            EngineBaselinePhysicalCallRefused
+              BaselineRevokeProvisionerAccessor
+              (EngineBoundaryProvisionerAccessorRevocation cause)
+          protected cause =
+            brokerEngineErrorDiagnostic BrokerVaultBaselineReconcile (failure cause)
+          unrelated cause = brokerEngineErrorDiagnostic BrokerVaultStatus (failure cause)
+      length operations `shouldBe` 6
+      length causes `shouldBe` 32
+      length (nub rendered) `shouldBe` length rendered
+      forM_ causes $ \cause -> do
+        protected cause
+          `shouldContain` ("provisioner-accessor-revocation-cause=" <> provisionerAccessorRevocationCauseName cause)
+        unrelated cause `shouldNotContain` "provisioner-accessor-revocation-cause="
+      protected
+        ( ProvisionerAccessorRevocationHttpFailure
+            ProvisionerAccessorRevocationInitialListAccessors
+            (ProvisionerAccessorRevocationHttpStatus 503)
+        )
+        `shouldBe` "bootstrap-broker refused /v1/bootstrap/vault/baseline/reconcile: EngineBaselinePhysicalCallRefused (baseline-stage=revoke-provisioner-accessor; provisioner-accessor-revocation-cause=http/initial-list-accessors/status-503)"
+      engineErrorReply (failure ProvisionerAccessorRevocationTargetStillPresent)
+        `shouldBe` (Server.BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+      engineErrorReply
+        ( failure
+            ( ProvisionerAccessorRevocationHttpFailure
+                ProvisionerAccessorRevocationInitialListAccessors
+                ProvisionerAccessorRevocationHttpTimeout
+            )
+        )
+        `shouldBe` (Server.BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
+      engineErrorReply
+        ( failure
+            ( ProvisionerAccessorRevocationHttpFailure
+                ProvisionerAccessorRevocationTargetLookupAccessor
+                ProvisionerAccessorRevocationHttpTimeout
+            )
+        )
+        `shouldBe` (Server.BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+      engineErrorReply (failure ProvisionerAccessorRevocationAuditorCleanupAmbiguous)
+        `shouldBe` (Server.BrokerReplyGatewayTimeout, "{\"status\":\"boundary-ambiguous\"}")
+
+    it "Sprints 2.75/2.81 admit 404 only for revocation LIST operations" $ do
+      let secret = "provisioner-accessor-and-vault-body-must-not-cross"
+          operation = ProvisionerAccessorRevocationInitialListAccessors
+      map
+        classifyProvisionerAccessorRevocationHttpFailure
+        [ HttpConnectionFailure secret
+        , HttpTimeout secret
+        , HttpStatus 503 secret
+        , HttpDecode secret
+        ]
+        `shouldBe` [ ProvisionerAccessorRevocationHttpConnectionFailure
+                   , ProvisionerAccessorRevocationHttpTimeout
+                   , ProvisionerAccessorRevocationHttpStatus 503
+                   , ProvisionerAccessorRevocationHttpDecode
+                   ]
+      classifyProvisionerAccessorRevocationListing
+        operation
+        (Right (Vault.TokenAccessorListing ["accessor-a"]))
+        `shouldBe` Right ["accessor-a"]
+      classifyProvisionerAccessorRevocationListing
+        operation
+        (Left (HttpStatus 404 secret))
+        `shouldBe` Right []
+      classifyProvisionerAccessorRevocationListing
+        ProvisionerAccessorRevocationPostListAccessors
+        (Left (HttpStatus 404 secret))
+        `shouldBe` Right []
+      classifyProvisionerAccessorRevocationListing
+        ProvisionerAccessorRevocationTargetLookupAccessor
+        (Left (HttpStatus 404 secret))
+        `shouldBe` Left
+          ( ProvisionerAccessorRevocationHttpFailure
+              ProvisionerAccessorRevocationTargetLookupAccessor
+              (ProvisionerAccessorRevocationHttpStatus 404)
+          )
+
+    it "Sprint 2.82 exhausts final provisioner-accessor absence causes" $ do
+      let operations = [minBound .. maxBound] :: [ProvisionerAccessorAbsenceHttpOperation]
+          httpFailures =
+            [ ProvisionerAccessorAbsenceHttpConnectionFailure
+            , ProvisionerAccessorAbsenceHttpTimeout
+            , ProvisionerAccessorAbsenceHttpStatus 503
+            , ProvisionerAccessorAbsenceHttpDecode
+            ]
+          causes =
+            [ ProvisionerAccessorAbsenceProjectedTokenUnavailable
+            , ProvisionerAccessorAbsenceAuditorLoginInvalid
+            , ProvisionerAccessorAbsenceAuditorCleanupUnavailable
+            , ProvisionerAccessorAbsenceAuditorCleanupRefused
+            , ProvisionerAccessorAbsenceAuditorCleanupAmbiguous
+            , ProvisionerAccessorAbsenceRoleAccessorStillPresent
+            , ProvisionerAccessorAbsenceObservedAccessorInvalid
+            , ProvisionerAccessorAbsenceObservedInventoryTooLarge
+            , ProvisionerAccessorAbsenceObservedInventoryDuplicate
+            ]
+              ++ [ ProvisionerAccessorAbsenceHttpFailure operation httpFailure
+                 | operation <- operations
+                 , httpFailure <- httpFailures
+                 ]
+          rendered = map provisionerAccessorAbsenceCauseName causes
+          failure cause =
+            EngineBaselinePhysicalCallRefused
+              BaselineProveProvisionerAccessorAbsent
+              (EngineBoundaryProvisionerAccessorAbsence cause)
+          protected cause =
+            brokerEngineErrorDiagnostic BrokerVaultBaselineReconcile (failure cause)
+          unrelated cause = brokerEngineErrorDiagnostic BrokerVaultStatus (failure cause)
+      length operations `shouldBe` 3
+      length causes `shouldBe` 21
+      length (nub rendered) `shouldBe` length rendered
+      forM_ causes $ \cause -> do
+        protected cause
+          `shouldContain` ("provisioner-accessor-absence-cause=" <> provisionerAccessorAbsenceCauseName cause)
+        unrelated cause `shouldNotContain` "provisioner-accessor-absence-cause="
+      protected
+        ( ProvisionerAccessorAbsenceHttpFailure
+            ProvisionerAccessorAbsenceListAccessors
+            (ProvisionerAccessorAbsenceHttpStatus 404)
+        )
+        `shouldBe` "bootstrap-broker refused /v1/bootstrap/vault/baseline/reconcile: EngineBaselinePhysicalCallRefused (baseline-stage=prove-provisioner-accessor-absent; provisioner-accessor-absence-cause=http/list-accessors/status-404)"
+      engineErrorReply (failure ProvisionerAccessorAbsenceRoleAccessorStillPresent)
+        `shouldBe` (Server.BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+      engineErrorReply
+        ( failure
+            ( ProvisionerAccessorAbsenceHttpFailure
+                ProvisionerAccessorAbsenceLookupAccessor
+                ProvisionerAccessorAbsenceHttpTimeout
+            )
+        )
+        `shouldBe` (Server.BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
+      engineErrorReply (failure ProvisionerAccessorAbsenceAuditorCleanupAmbiguous)
+        `shouldBe` (Server.BrokerReplyGatewayTimeout, "{\"status\":\"boundary-ambiguous\"}")
+
+    it "Sprint 2.82 admits only final absence LIST 404 without retaining payloads" $ do
+      let secret = "provisioner-absence-vault-body-must-not-cross"
+      map
+        classifyProvisionerAccessorAbsenceHttpFailure
+        [ HttpConnectionFailure secret
+        , HttpTimeout secret
+        , HttpStatus 404 secret
+        , HttpDecode secret
+        ]
+        `shouldBe` [ ProvisionerAccessorAbsenceHttpConnectionFailure
+                   , ProvisionerAccessorAbsenceHttpTimeout
+                   , ProvisionerAccessorAbsenceHttpStatus 404
+                   , ProvisionerAccessorAbsenceHttpDecode
+                   ]
+      classifyProvisionerAccessorAbsenceListing
+        (Right (Vault.TokenAccessorListing ["accessor-a"]))
+        `shouldBe` Right ["accessor-a"]
+      classifyProvisionerAccessorAbsenceListing (Left (HttpStatus 404 secret))
+        `shouldBe` Right []
+      map
+        classifyProvisionerAccessorAbsenceListing
+        [ Left (HttpConnectionFailure secret)
+        , Left (HttpTimeout secret)
+        , Left (HttpStatus 503 secret)
+        , Left (HttpDecode secret)
+        ]
+        `shouldBe` map
+          ( Left
+              . ProvisionerAccessorAbsenceHttpFailure
+                ProvisionerAccessorAbsenceListAccessors
+          )
+          [ ProvisionerAccessorAbsenceHttpConnectionFailure
+          , ProvisionerAccessorAbsenceHttpTimeout
+          , ProvisionerAccessorAbsenceHttpStatus 503
+          , ProvisionerAccessorAbsenceHttpDecode
+          ]
+
     it "Sprint 2.74 exhausts the payload-free provisioner-policy application causes" $ do
       let httpFailures =
             [ Pgp.GeneratedRootCoreHttpConnectionFailure
@@ -551,9 +777,16 @@ enginePhysicalSuite =
             map
               Pgp.GeneratedRootPkiReconcileReadBackNotExact
               [minBound .. maxBound]
+          repairCauses =
+            [ ProvisionerPolicyApplicationRepairAuthorityUnavailable
+            , ProvisionerPolicyApplicationRepairReadBackMismatch
+            ]
+              ++ map ProvisionerPolicyApplicationRepairWriteHttp httpFailures
+              ++ map ProvisionerPolicyApplicationRepairReadBackHttp httpFailures
           causes =
             ProvisionerPolicyApplicationTokenUnavailable
-              : map ProvisionerPolicyApplicationCoreReconcile (coreHttpCauses ++ coreOtherCauses)
+              : repairCauses
+              ++ map ProvisionerPolicyApplicationCoreReconcile (coreHttpCauses ++ coreOtherCauses)
               ++ map
                 ProvisionerPolicyApplicationPkiReconcile
                 (pkiHttpCauses ++ pkiObserveCauses ++ pkiStatusCauses)
@@ -570,7 +803,7 @@ enginePhysicalSuite =
       length pkiHttpCauses `shouldBe` 12
       length pkiObserveCauses `shouldBe` 8
       length pkiStatusCauses `shouldBe` 3
-      length causes `shouldBe` 78
+      length causes `shouldBe` 88
       length (nub rendered) `shouldBe` length rendered
       forM_ causes $ \cause -> do
         protected cause
@@ -586,6 +819,9 @@ enginePhysicalSuite =
             )
         )
         `shouldBe` "bootstrap-broker refused /v1/bootstrap/vault/baseline/reconcile: EngineBaselinePhysicalCallRefused (baseline-stage=apply-provisioner-policy; provisioner-policy-application-cause=core-reconcile/http/write-policy/status-403)"
+      protected
+        (ProvisionerPolicyApplicationRepairWriteHttp (Pgp.GeneratedRootCoreHttpStatus 403))
+        `shouldBe` "bootstrap-broker refused /v1/bootstrap/vault/baseline/reconcile: EngineBaselinePhysicalCallRefused (baseline-stage=apply-provisioner-policy; provisioner-policy-application-cause=repair-write/status-403)"
 
     it "Sprint 2.74 classifies every core and PKI failure without retaining payloads" $ do
       let secretText = "policy-and-vault-body-must-not-cross"
@@ -693,6 +929,9 @@ enginePhysicalSuite =
             (VaultReconcile.VaultReconcileHttpError operation secretText httpFailure)
             `shouldBe` ProvisionerPolicyApplicationCoreReconcile
               (Pgp.GeneratedRootCoreHttpFailure expectedOperation expectedHttpFailure)
+      forM_ httpFailures $ \(httpFailure, expectedHttpFailure) ->
+        classifyProvisionerPolicyRepairHttpFailure httpFailure
+          `shouldBe` expectedHttpFailure
       forM_ coreOtherFailures $ \(failure, expected) ->
         classifyProvisionerPolicyCoreReconcileFailure failure
           `shouldBe` ProvisionerPolicyApplicationCoreReconcile expected

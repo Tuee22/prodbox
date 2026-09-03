@@ -13,11 +13,14 @@ where
 
 import Control.Monad (unless)
 import Data.Aeson (Value, object, (.=))
+import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.Render qualified as CapacityRender
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( targetSecretIdToken
   )
@@ -44,6 +47,12 @@ import Prodbox.Lifecycle.TargetCommitIntent (targetValueDigestText)
 
 targetWorkerContainerName :: Text
 targetWorkerContainerName = "target-secret-worker"
+
+-- The union runtime image deliberately has root metadata, so this one-shot
+-- role owns its non-root identity in the Pod rather than inheriting an image
+-- default.
+targetWorkerRuntimeIdentity :: Int64
+targetWorkerRuntimeIdentity = 65532
 
 targetWorkerAnnotations :: TargetWorkerIntent -> Map Text Text
 targetWorkerAnnotations intent =
@@ -113,6 +122,10 @@ renderTargetSecretWorkerJob imageRepository maximumRuntimeSeconds intent = do
                           , "securityContext"
                               .= object
                                 [ "runAsNonRoot" .= True
+                                , "runAsUser" .= targetWorkerRuntimeIdentity
+                                , "runAsGroup" .= targetWorkerRuntimeIdentity
+                                , "fsGroup" .= targetWorkerRuntimeIdentity
+                                , "fsGroupChangePolicy" .= ("OnRootMismatch" :: Text)
                                 , "seccompProfile" .= object ["type" .= ("RuntimeDefault" :: Text)]
                                 ]
                           , "containers"
@@ -133,15 +146,11 @@ renderTargetSecretWorkerJob imageRepository maximumRuntimeSeconds intent = do
                                      , "resources"
                                          .= object
                                            [ "requests"
-                                               .= object
-                                                 [ "cpu" .= ("250m" :: Text)
-                                                 , "memory" .= ("256Mi" :: Text)
-                                                 ]
+                                               .= CapacityRender.resourceVectorRuntimeValue
+                                                 (Capacity.request Capacity.oneShotSecretWorkerEnvelope)
                                            , "limits"
-                                               .= object
-                                                 [ "cpu" .= ("250m" :: Text)
-                                                 , "memory" .= ("256Mi" :: Text)
-                                                 ]
+                                               .= CapacityRender.resourceVectorRuntimeValue
+                                                 (Capacity.limit Capacity.oneShotSecretWorkerEnvelope)
                                            ]
                                      , "volumeMounts"
                                          .= [ object

@@ -89,17 +89,20 @@ validateTargetMaterialMetadataInternal metadata = do
       , validatedTargetMaterialImageDigest = imageDigest
       }
 
--- | Readiness-only migration check.  A legacy document is accepted here only
--- when its complete eight-field shape becomes a valid strict document by
--- binding it to the current Vault version.  Proof observations and Provider
--- sessions continue to call 'validateTargetMaterialMetadataInternal' and
--- therefore refuse this legacy arm until the Target Worker repairs metadata.
+-- | Readiness-only migration check. A positive-version document with no custom
+-- metadata is the exact pre-receipt legacy shape and is admitted so the
+-- Lifecycle Authority can start and drive its repair. The later complete
+-- eight-field legacy shape is accepted only when binding it to the current
+-- Vault version makes it strict-valid. Proof observations and Provider sessions
+-- continue to call 'validateTargetMaterialMetadataInternal' and therefore
+-- refuse both migration arms until the Target Worker repairs metadata.
 validateTargetMaterialMetadataReadinessInternal
   :: KvV2SecretMetadata -> Either Text ()
 validateTargetMaterialMetadataReadinessInternal metadata =
   case validateTargetMaterialMetadataInternal metadata of
     Right _ -> Right ()
     Left strictError
+      | Map.null fields && kvV2SecretMetadataCurrentVersion metadata > 0 -> Right ()
       | Map.keysSet fields == legacyMetadataFields ->
           void
             ( validateTargetMaterialMetadataInternal

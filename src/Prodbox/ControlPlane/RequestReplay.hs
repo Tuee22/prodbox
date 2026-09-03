@@ -532,7 +532,10 @@ data RequestReplayValueWire
   deriving anyclass (Serialise)
 
 requestReplayCodecVersion :: Word16
-requestReplayCodecVersion = 2
+requestReplayCodecVersion = 8
+
+legacyRequestReplayCodecVersions :: [Word16]
+legacyRequestReplayCodecVersions = [2, 3, 4, 5, 6, 7]
 
 encodeRequestReplayProjection
   :: Int
@@ -571,10 +574,11 @@ decodeRequestReplayProjection maximumBytes expectedLimits bytes
       envelope <- case deserialiseOrFail (LazyByteString.fromStrict bytes) of
         Left _ -> Left RequestReplayEnvelopeInvalid
         Right decoded -> Right decoded
-      if replayEnvelopeVersion envelope == requestReplayCodecVersion
+      if replayEnvelopeVersion envelope
+        `elem` (requestReplayCodecVersion : legacyRequestReplayCodecVersions)
         then pure ()
         else Left (RequestReplayEnvelopeUnsupportedVersion (replayEnvelopeVersion envelope))
-      if envelopeLimitsMatch expectedLimits envelope
+      if envelopeLimitsCompatible expectedLimits envelope
         then pure ()
         else Left RequestReplayLimitsMismatch
       decodedEntries <- traverse (entryFromWire expectedLimits) (replayEnvelopeEntries envelope)
@@ -629,13 +633,21 @@ validateReplayProjection expectedLimits projection
         (validateReplayResponse expectedLimits response)
     ReplayTombstonedEntry _ _ -> Right ()
 
-envelopeLimitsMatch :: RequestReplayLimits -> RequestReplayEnvelope -> Bool
-envelopeLimitsMatch limits envelope =
-  replayEnvelopeCapacity envelope == requestReplayCapacity limits
+envelopeLimitsCompatible :: RequestReplayLimits -> RequestReplayEnvelope -> Bool
+envelopeLimitsCompatible limits envelope =
+  capacityCompatible
     && replayEnvelopeMaximumResponseBytes envelope
       == requestReplayMaximumResponseBytes limits
     && replayEnvelopeClockSkewMicros envelope
       == authorityDurationMicros (requestReplayClockSkew limits)
+ where
+  capacityCompatible = case replayEnvelopeVersion envelope of
+    version
+      | version == requestReplayCodecVersion ->
+          replayEnvelopeCapacity envelope == requestReplayCapacity limits
+      | version `elem` legacyRequestReplayCodecVersions ->
+          replayEnvelopeCapacity envelope <= requestReplayCapacity limits
+      | otherwise -> False
 
 entryToWire :: (RequestReplayKey, ReplayEntry) -> RequestReplayEntryWire
 entryToWire (key, value) =

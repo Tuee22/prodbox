@@ -399,7 +399,7 @@ awsStepAnchor step = case step of
   StepAwsTargetSecretAgentReady -> ComponentReadiness ComponentChartTargetSecretAgent
   StepAwsLifecycleAuthority -> ComponentMutation ComponentChartLifecycleAuthority
   StepAwsLifecycleAuthorityReady -> ComponentReadiness ComponentChartLifecycleAuthority
-  StepAwsGatewayMinioBootstrap -> ComponentMutation ComponentGatewayDaemonFull
+  StepAwsGatewayMinioBootstrap -> HostPrepBefore ComponentChartLifecycleAuthority
   StepAwsGatewayPostVault -> ComponentMutation ComponentGatewayDaemonFull
   StepAwsGatewayFullReady -> ComponentReadiness ComponentGatewayDaemonFull
   StepAwsAuthorityBackup -> ComponentMutation ComponentChartAuthorityBackup
@@ -442,8 +442,7 @@ awsStepsForComponent component = case component of
     [StepAwsPostgresOperatorRuntime, StepAwsPostgresOperatorReady]
   ComponentGatewayDaemonPreVault -> []
   ComponentGatewayDaemonFull ->
-    [ StepAwsGatewayMinioBootstrap
-    , StepAwsGatewayPostVault
+    [ StepAwsGatewayPostVault
     , StepAwsGatewayFullReady
     ]
   ComponentChartPulsar -> []
@@ -457,7 +456,10 @@ awsStepsForComponent component = case component of
   ComponentChartBootstrapBroker ->
     [StepAwsBootstrapBroker, StepAwsBootstrapBrokerReady]
   ComponentChartLifecycleAuthority ->
-    [StepAwsLifecycleAuthority, StepAwsLifecycleAuthorityReady]
+    [ StepAwsGatewayMinioBootstrap
+    , StepAwsLifecycleAuthority
+    , StepAwsLifecycleAuthorityReady
+    ]
   ComponentChartProviderWorker ->
     [StepAwsProviderWorker, StepAwsProviderWorkerReady]
   ComponentChartAuthorityBackup ->

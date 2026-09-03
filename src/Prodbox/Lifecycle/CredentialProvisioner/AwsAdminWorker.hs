@@ -16,6 +16,9 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorker
   , runAwsAdminWorker
   , runAwsAdminWorkerWith
   , finishAwsAdminWorkerSession
+  , awsAdminTargetWorkerMaximumRuntimeSeconds
+  , awsAdminAuthorityHttpConfig
+  , awsAdminRetainedDeliveryHttpConfig
   )
 where
 
@@ -36,6 +39,7 @@ import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Numeric (showHex)
 import Numeric.Natural (Natural)
 import Prodbox.CLI.Output (writeDiagnosticLine)
+import Prodbox.Capacity.RetainedMaterialDeliveryBudget qualified as RetainedMaterialDeliveryBudget
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientTransport
   , mkAuthenticatedClientTransport
@@ -43,6 +47,7 @@ import Prodbox.ControlPlane.AuthenticatedTransport
   )
 import Prodbox.ControlPlane.AuthenticationRegistry
   ( controlPlaneSigningKeyRefFor
+  , credentialProvisionerAuditorMaximumLeaseSeconds
   , credentialProvisionerAuditorVaultRole
   , credentialProvisionerCompletionVaultRole
   , credentialProvisionerVaultRole
@@ -55,7 +60,10 @@ import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   ( awsAdminProvisionerResponseMaximumBytes
   )
 import Prodbox.ControlPlane.CallerPrincipal
-  ( CallerPrincipal (CallerCredentialProvisioner)
+  ( CallerPrincipal
+      ( CallerCredentialProvisioner
+      , CallerCredentialProvisionerCompletion
+      )
   )
 import Prodbox.ControlPlane.Client
   ( mkLifecycleAuthorityEndpoint
@@ -110,15 +118,17 @@ import Prodbox.ControlPlane.TransitRequestAuthentication
   , transitAuthenticatedClientProviders
   )
 import Prodbox.ControlPlane.VaultAccessorAudit
-  ( VaultAccessorAuditOps (..)
+  ( VaultAccessorAuditError (..)
+  , VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
   , isBoundedBatchAuditorLogin
+  , isExactBoundedBatchAuditorLogin
   , revokeAndProveVaultAccessorSubjectAbsent
   )
 import Prodbox.ControlPlane.VaultServiceSessionJournal
   ( vaultServiceSessionJournalRepository
   )
-import Prodbox.Http.Client (defaultHttpConfig)
+import Prodbox.Http.Client (HttpConfig (..), defaultHttpConfig)
 import Prodbox.Lifecycle.Authority.RetainedMaterial
   ( RetainedMaterialSchema (RetainedSesSmtpMaterial)
   , RetainedMaterialSource
@@ -126,16 +136,24 @@ import Prodbox.Lifecycle.Authority.RetainedMaterial
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   ( AwsAdminDeliveryBoundary
+  , AwsAdminWorkerActionProgress (..)
+  , AwsAdminWorkerExecutionCause (AwsAdminWorkerExecutionUnclassified)
   , AwsAdminWorkerReceipt
-  , encodeAwsAdminWorkerReceipt
+  , AwsAdminWorkerSessionClosureCause (..)
+  , AwsAdminWorkerTerminalCause (..)
+  , classifyAwsAdminExecutionError
+  , classifyAwsAdminWorkerJournalUnavailable
+  , encodeAwsAdminWorkerReceiptTextEnvelope
   , executeAwsAdminPermit
   , productionAwsAdminIamBoundary
+  , renderAwsAdminWorkerTerminalCause
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecutionVault
   ( vaultAwsAdminExecutionJournalBoundary
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
-  ( AwsAdminPermitKind (..)
+  ( AwsAdminCleanupRecoveryProgram (..)
+  , AwsAdminPermitKind (..)
   , SignedAwsAdminPermit
   , awsAdminJobPodName
   , awsAdminJobPodUid
@@ -266,8 +284,8 @@ data AwsAdminWorkerError
   | AwsAdminWorkerPermitRejected
   | AwsAdminWorkerIamProgramInvalid
   | AwsAdminWorkerIamSessionUnavailable
-  | AwsAdminWorkerExecutionFailed
-  | AwsAdminWorkerSessionRevocationFailed
+  | AwsAdminWorkerExecutionFailed !AwsAdminWorkerExecutionCause
+  | AwsAdminWorkerSessionRevocationFailed !AwsAdminWorkerSessionClosureCause
   | AwsAdminWorkerCompletionUnavailable
   | AwsAdminWorkerUnhandledException
   deriving stock (Eq, Show)
@@ -299,11 +317,38 @@ emitWorkerResult :: Either AwsAdminWorkerError AwsAdminWorkerReceipt -> IO ExitC
 emitWorkerResult result =
   case result of
     Left err -> do
-      writeDiagnosticLine ("AWS-admin credential worker refused: " <> show err)
+      writeDiagnosticLine
+        ( "AWS-admin credential worker refused: "
+            <> Text.unpack (renderAwsAdminWorkerTerminalCause (workerTerminalCause err))
+        )
       pure (ExitFailure 1)
     Right receipt -> do
-      ByteString.hPut stdout (encodeAwsAdminWorkerReceipt receipt)
+      ByteString.hPut stdout ("\n" <> encodeAwsAdminWorkerReceiptTextEnvelope receipt)
       pure ExitSuccess
+
+workerTerminalCause :: AwsAdminWorkerError -> AwsAdminWorkerTerminalCause
+workerTerminalCause err = case err of
+  AwsAdminWorkerDeliveryCompositionUnavailable -> AwsAdminWorkerTerminalDeliveryCompositionUnavailable
+  AwsAdminWorkerStdinReadFailed -> AwsAdminWorkerTerminalStdinReadFailed
+  AwsAdminWorkerStdinTooLarge _ _ -> AwsAdminWorkerTerminalStdinTooLarge
+  AwsAdminWorkerFrameRejected _ -> AwsAdminWorkerTerminalFrameRejected
+  AwsAdminWorkerPodIdentityReadFailed -> AwsAdminWorkerTerminalPodIdentityReadFailed
+  AwsAdminWorkerPodIdentityInvalid -> AwsAdminWorkerTerminalPodIdentityInvalid
+  AwsAdminWorkerPodIdentityMismatch -> AwsAdminWorkerTerminalPodIdentityMismatch
+  AwsAdminWorkerPermitMetadataMismatch -> AwsAdminWorkerTerminalPermitMetadataMismatch
+  AwsAdminWorkerModeMismatch -> AwsAdminWorkerTerminalModeMismatch
+  AwsAdminWorkerProjectedIdentityMismatch -> AwsAdminWorkerTerminalProjectedIdentityMismatch
+  AwsAdminWorkerClockUnavailable -> AwsAdminWorkerTerminalClockUnavailable
+  AwsAdminWorkerVaultLoginUnavailable -> AwsAdminWorkerTerminalVaultLoginUnavailable
+  AwsAdminWorkerAuthorityKeyUnavailable -> AwsAdminWorkerTerminalAuthorityKeyUnavailable
+  AwsAdminWorkerPermitRejected -> AwsAdminWorkerTerminalPermitRejected
+  AwsAdminWorkerIamProgramInvalid -> AwsAdminWorkerTerminalIamProgramInvalid
+  AwsAdminWorkerIamSessionUnavailable -> AwsAdminWorkerTerminalIamSessionUnavailable
+  AwsAdminWorkerExecutionFailed cause -> AwsAdminWorkerTerminalExecutionFailed cause
+  AwsAdminWorkerSessionRevocationFailed cause ->
+    AwsAdminWorkerTerminalSessionRevocationFailed cause
+  AwsAdminWorkerCompletionUnavailable -> AwsAdminWorkerTerminalCompletionUnavailable
+  AwsAdminWorkerUnhandledException -> AwsAdminWorkerTerminalUnhandledException
 
 runWorker
   :: ( VaultSession
@@ -367,7 +412,9 @@ permitMatchesOptions options permit =
 permitModeMatches :: AwsAdminWorkerMode -> SignedAwsAdminPermit -> Bool
 permitModeMatches mode permit = case (mode, awsAdminPermitIntentKind intent) of
   (AwsAdminNormalMode, NormalOperatorMaterialKind) -> True
+  (AwsAdminNormalMode, CleanupRecoveryKind NormalOperatorMaterialCleanupProgram _) -> True
   (AwsAdminGenesisBackupMode, GenesisBackupKind _) -> True
+  (AwsAdminGenesisBackupMode, CleanupRecoveryKind (GenesisBackupCleanupProgram _) _) -> True
   (AwsAdminBackupRepairMode, BackupRepairFrozenKind _) -> True
   _ -> False
  where
@@ -427,7 +474,11 @@ executeAuthenticated resolveDelivery options session now permit credentials = do
                             (resolvedAwsAdminDirectDelivery delivery)
                         )
                         permit
-                    pure (either (const (Left AwsAdminWorkerExecutionFailed)) Right executed)
+                    pure
+                      ( first
+                          (AwsAdminWorkerExecutionFailed . classifyAwsAdminExecutionError)
+                          executed
+                      )
 
 -- | Revoke response is provisional; the exact accessor and correlated role
 -- inventory must both reach stable absence before a receipt can escape.
@@ -439,7 +490,7 @@ finishAwsAdminWorkerSession
 finishAwsAdminWorkerSession =
   finishClosedSession
     AwsAdminWorkerUnhandledException
-    AwsAdminWorkerSessionRevocationFailed
+    (AwsAdminWorkerSessionRevocationFailed AwsAdminWorkerSessionClosureAbsenceUnproven)
 
 data WorkerVaultLogin = WorkerVaultLogin
   { workerLoginSession :: !VaultSession
@@ -487,9 +538,16 @@ withWorkerVaultSession options permit podName podUid action = do
                     (operatorMaterialOperationIdText (awsAdminPermitIntentOperationId intent))
                     (workerAttemptId permit)
                 case allocated of
-                  Left _ -> pure (Left AwsAdminWorkerSessionRevocationFailed)
+                  Left _ ->
+                    pure
+                      ( Left
+                          ( AwsAdminWorkerSessionRevocationFailed
+                              AwsAdminWorkerSessionClosureBindingAllocationFailed
+                          )
+                      )
                   Right sessionBinding -> do
                     actionError <- newIORef Nothing
+                    actionProgress <- newIORef AwsAdminWorkerActionNotStarted
                     result <-
                       withFencedServiceSession
                         repository
@@ -497,16 +555,18 @@ withWorkerVaultSession options permit podName podUid action = do
                         (workerSessionSubjects (awsAdminJobServiceAccountUid binding))
                         sessionBinding
                         (workerLoginBoundary jwt)
-                        (runAction actionError)
+                        (runAction actionError actionProgress)
                     case result of
                       Left lifecycleError -> do
                         original <- readIORef actionError
-                        pure (Left (mapLifecycleError original lifecycleError))
+                        progress <- readIORef actionProgress
+                        pure (Left (mapLifecycleError original progress lifecycleError))
                       Right receipt -> commitWorkerCompletion jwt permit receipt
  where
   intent = signedAwsAdminPermitIntent permit
   binding = signedAwsAdminPermitBinding permit
-  runAction actionError login = do
+  runAction actionError actionProgress login = do
+    writeIORef actionProgress AwsAdminWorkerActionAttempted
     result <- action (workerLoginSession login)
     case result of
       Left err -> do
@@ -564,7 +624,13 @@ newWorkerAuditor
 newWorkerAuditor jwt = seek workerAuditorRecoveryAttempts []
  where
   seek remaining leakedAccessors
-    | remaining <= 0 = pure (Left AwsAdminWorkerSessionRevocationFailed)
+    | remaining <= 0 =
+        pure
+          ( Left
+              ( AwsAdminWorkerSessionRevocationFailed
+                  AwsAdminWorkerSessionClosureAuditorLoginFailed
+              )
+          )
     | otherwise = do
         loggedIn <-
           vaultKubernetesLoginWithLease
@@ -575,15 +641,34 @@ newWorkerAuditor jwt = seek workerAuditorRecoveryAttempts []
         case loggedIn of
           Left _ -> seek (remaining - 1) leakedAccessors
           Right auditor
-            | isBoundedBatchAuditorLogin workerAuditorMaximumLeaseSeconds auditor -> do
+            | isExactBoundedBatchAuditorLogin
+                credentialProvisionerAuditorMaximumLeaseSeconds
+                auditor -> do
                 closed <-
                   closeWorkerRoleAccessors
                     auditor
                     credentialProvisionerAuditorVaultRole
                     (reverse leakedAccessors)
                 pure $ case closed of
-                  Left _ -> Left AwsAdminWorkerSessionRevocationFailed
+                  Left _ ->
+                    Left
+                      ( AwsAdminWorkerSessionRevocationFailed
+                          AwsAdminWorkerSessionClosureAuditorRoleCleanupFailed
+                      )
                   Right () -> Right auditor
+            | isBoundedBatchAuditorLogin
+                credentialProvisionerAuditorMaximumLeaseSeconds
+                auditor -> do
+                -- A shorter issued lease cannot contain the compiled child
+                -- runtime even when its type/accessor/renewability shape is
+                -- otherwise valid. Refuse before entering the fenced action.
+                _ <- vaultRevokeSelf workerVaultAddress (vaultLoginToken auditor)
+                pure
+                  ( Left
+                      ( AwsAdminWorkerSessionRevocationFailed
+                          AwsAdminWorkerSessionClosureAuditorLeaseInsufficient
+                      )
+                  )
             | otherwise -> do
                 -- A drifted role may return an accessor-bearing service
                 -- token. Revoke its bearer now, retain any canonical
@@ -609,10 +694,27 @@ revokeWorkerSession :: VaultSession -> IO (Either AwsAdminWorkerError ())
 revokeWorkerSession session = do
   tokenResult <- sessionToken session
   case tokenResult of
-    Left _ -> pure (Left AwsAdminWorkerSessionRevocationFailed)
+    Left _ ->
+      pure
+        ( Left
+            ( AwsAdminWorkerSessionRevocationFailed
+                AwsAdminWorkerSessionClosureAbsenceUnproven
+            )
+        )
     Right token -> do
       revoked <- vaultRevokeSelf (sessionAddress session) token
-      pure (either (const (Left AwsAdminWorkerSessionRevocationFailed)) Right revoked)
+      pure
+        ( either
+            ( const
+                ( Left
+                    ( AwsAdminWorkerSessionRevocationFailed
+                        AwsAdminWorkerSessionClosureAbsenceUnproven
+                    )
+                )
+            )
+            Right
+            revoked
+        )
 
 workerAccessorAuditOps
   :: VaultKubernetesLoginResult -> VaultAccessorAuditOps IO
@@ -660,17 +762,105 @@ workerSessionSubjects serviceAccountUid =
 
 mapLifecycleError
   :: Maybe AwsAdminWorkerError
+  -> AwsAdminWorkerActionProgress
   -> ServiceSessionLifecycleError
   -> AwsAdminWorkerError
-mapLifecycleError original lifecycleError = case lifecycleError of
+mapLifecycleError original actionProgress lifecycleError = case lifecycleError of
   ServiceSessionLifecycleActionFailed _ ->
-    maybe AwsAdminWorkerExecutionFailed id original
+    maybe
+      (AwsAdminWorkerExecutionFailed AwsAdminWorkerExecutionUnclassified)
+      id
+      original
   ServiceSessionLifecycleLoginFailedCleaned _ -> AwsAdminWorkerVaultLoginUnavailable
   ServiceSessionLifecycleAccessorInvalid -> AwsAdminWorkerVaultLoginUnavailable
   ServiceSessionLifecycleAccessorIdentityMismatch -> AwsAdminWorkerVaultLoginUnavailable
   ServiceSessionLifecycleUnhandledException ->
     maybe AwsAdminWorkerUnhandledException id original
-  _ -> AwsAdminWorkerSessionRevocationFailed
+  _ ->
+    AwsAdminWorkerSessionRevocationFailed
+      (classifySessionClosureError actionProgress lifecycleError)
+
+classifySessionClosureError
+  :: AwsAdminWorkerActionProgress
+  -> ServiceSessionLifecycleError
+  -> AwsAdminWorkerSessionClosureCause
+classifySessionClosureError actionProgress lifecycleError = case lifecycleError of
+  ServiceSessionLifecycleJournalFailed _ ->
+    AwsAdminWorkerSessionClosureJournalCommitFailed
+  ServiceSessionLifecycleJournalUnavailable detail ->
+    classifyAwsAdminWorkerJournalUnavailable actionProgress detail
+  ServiceSessionLifecycleBindingRoleMismatch ->
+    AwsAdminWorkerSessionClosureBindingRoleMismatch
+  ServiceSessionLifecycleRoleOccupied ->
+    AwsAdminWorkerSessionClosureRoleOccupied
+  ServiceSessionLifecycleBindingInvalid _ ->
+    AwsAdminWorkerSessionClosureBindingInvalid
+  ServiceSessionLifecyclePrecleanFailed auditError ->
+    classifyPrecleanAuditError auditError
+  ServiceSessionLifecycleLoginFailedCleaned _ ->
+    AwsAdminWorkerSessionClosureAbsenceUnproven
+  ServiceSessionLifecycleLoginAmbiguityCleaned ->
+    AwsAdminWorkerSessionClosureLoginAmbiguityCleaned
+  ServiceSessionLifecycleAccessorInvalid ->
+    AwsAdminWorkerSessionClosureAbsenceUnproven
+  ServiceSessionLifecycleAccessorIdentityMismatch ->
+    AwsAdminWorkerSessionClosureAbsenceUnproven
+  ServiceSessionLifecycleCleanupFailed auditError ->
+    classifyCleanupAuditError auditError
+  ServiceSessionLifecycleCleanupThrew ->
+    AwsAdminWorkerSessionClosureCleanupThrew
+  ServiceSessionLifecycleCleanupJournalFailed _ ->
+    AwsAdminWorkerSessionClosureCleanupJournalCommitFailed
+  ServiceSessionLifecycleActionFailed _ ->
+    AwsAdminWorkerSessionClosureAbsenceUnproven
+  ServiceSessionLifecycleUnhandledException ->
+    AwsAdminWorkerSessionClosureAbsenceUnproven
+
+classifyPrecleanAuditError
+  :: VaultAccessorAuditError
+  -> AwsAdminWorkerSessionClosureCause
+classifyPrecleanAuditError auditError = case auditError of
+  VaultAccessorAuditIdentityInvalid ->
+    AwsAdminWorkerSessionClosurePrecleanIdentityInvalid
+  VaultAccessorAuditorLoginFailed ->
+    AwsAdminWorkerSessionClosurePrecleanObservationFailed
+  VaultAccessorAuditorEvidenceInvalid ->
+    AwsAdminWorkerSessionClosurePrecleanObservationFailed
+  VaultAccessorObservationFailed ->
+    AwsAdminWorkerSessionClosurePrecleanObservationFailed
+  VaultAccessorClassificationFailed ->
+    AwsAdminWorkerSessionClosurePrecleanClassificationFailed
+  VaultAccessorKnownIdentityMismatch ->
+    AwsAdminWorkerSessionClosurePrecleanIdentityInvalid
+  VaultAccessorRevocationFailed ->
+    AwsAdminWorkerSessionClosurePrecleanStableAbsenceFailed
+  VaultAccessorVisibilityWaitFailed ->
+    AwsAdminWorkerSessionClosurePrecleanVisibilityWaitFailed
+  VaultAccessorStableAbsenceFailed ->
+    AwsAdminWorkerSessionClosurePrecleanStableAbsenceFailed
+
+classifyCleanupAuditError
+  :: VaultAccessorAuditError
+  -> AwsAdminWorkerSessionClosureCause
+classifyCleanupAuditError auditError = case auditError of
+  VaultAccessorAuditIdentityInvalid ->
+    AwsAdminWorkerSessionClosureCleanupIdentityInvalid
+  VaultAccessorAuditorLoginFailed ->
+    AwsAdminWorkerSessionClosureCleanupObservationFailed
+  VaultAccessorAuditorEvidenceInvalid ->
+    AwsAdminWorkerSessionClosureCleanupObservationFailed
+  VaultAccessorObservationFailed ->
+    AwsAdminWorkerSessionClosureCleanupObservationFailed
+  VaultAccessorClassificationFailed ->
+    AwsAdminWorkerSessionClosureCleanupClassificationFailed
+  VaultAccessorKnownIdentityMismatch ->
+    AwsAdminWorkerSessionClosureCleanupIdentityInvalid
+  VaultAccessorRevocationFailed ->
+    AwsAdminWorkerSessionClosureCleanupStableAbsenceFailed
+  VaultAccessorVisibilityWaitFailed ->
+    AwsAdminWorkerSessionClosureCleanupVisibilityWaitFailed
+  VaultAccessorStableAbsenceFailed ->
+    AwsAdminWorkerSessionClosureCleanupStableAbsenceFailed
 
 commitWorkerCompletion
   :: Text
@@ -799,8 +989,8 @@ completionTransport session permit = do
   signerResult <-
     resolveTransitRequestSigningCapability
       session
-      CallerCredentialProvisioner
-      (controlPlaneSigningKeyRefFor CallerCredentialProvisioner)
+      CallerCredentialProvisionerCompletion
+      (controlPlaneSigningKeyRefFor CallerCredentialProvisionerCompletion)
   pure $ do
     signer <- first (const AwsAdminWorkerCompletionUnavailable) signerResult
     bounds <-
@@ -827,7 +1017,7 @@ completionTransport session permit = do
       first
         (const AwsAdminWorkerCompletionUnavailable)
         ( newControlPlaneClient
-            defaultHttpConfig
+            awsAdminAuthorityHttpConfig
             awsAdminProvisionerResponseMaximumBytes
             endpoint
         )
@@ -848,10 +1038,10 @@ productionDeliveryResolver
   -> AwsAdminWorkerOptions
   -> IO (Either AwsAdminWorkerError ResolvedAwsAdminDelivery)
 productionDeliveryResolver session _ permit options = do
-  authorityResult <- completionTransport session permit
+  authorityResult <- deliveryAuthorityTransports session permit
   targetResult <- targetAgentTransport session permit
   pure $ do
-    authorityTransport <- authorityResult
+    (authorityTransport, retainedAuthorityTransport) <- authorityResult
     targetTransport <- targetResult
     let boundary =
           productionTargetMaterializationBoundary
@@ -863,7 +1053,7 @@ productionDeliveryResolver session _ permit options = do
               { targetWorkerJobEnvironment = Nothing
               , targetWorkerJobWorkingDirectory = "/run/prodbox"
               , targetWorkerJobImageRepository = awsAdminWorkerTargetImageRepository options
-              , targetWorkerJobMaximumRuntimeSeconds = workerTargetJobMaximumRuntimeSeconds
+              , targetWorkerJobMaximumRuntimeSeconds = awsAdminTargetWorkerMaximumRuntimeSeconds
               }
             (targetIntentAuthorityClient authorityTransport)
             (first (Text.pack . show) <$> currentTime)
@@ -895,10 +1085,87 @@ productionDeliveryResolver session _ permit options = do
                   (awsAdminPermitIntentDeadline retainedIntent)
           result <-
             requestRetainedMaterialDelivery
-              (retainedMaterialDeliveryClient authorityTransport)
+              (retainedMaterialDeliveryClient retainedAuthorityTransport)
               request
           pure (first (Text.take 256 . Text.pack . show) (void result))
     Right (ResolvedAwsAdminDelivery directDelivery retainedDelivery)
+
+deliveryAuthorityTransports
+  :: VaultSession
+  -> SignedAwsAdminPermit
+  -> IO
+       ( Either
+           AwsAdminWorkerError
+           ( AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+           , AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+           )
+       )
+deliveryAuthorityTransports session permit = do
+  signerResult <-
+    resolveTransitRequestSigningCapability
+      session
+      CallerCredentialProvisioner
+      (controlPlaneSigningKeyRefFor CallerCredentialProvisioner)
+  pure $ do
+    signer <- first (const AwsAdminWorkerDeliveryCompositionUnavailable) signerResult
+    bounds <-
+      first
+        (const AwsAdminWorkerDeliveryCompositionUnavailable)
+        ( mkAuthenticatedTransportBounds
+            workerCompletionFrameMaximum
+            workerCompletionMetadataMaximum
+            workerCompletionEnvelopeMaximum
+        )
+    scope <-
+      first
+        (const AwsAdminWorkerDeliveryCompositionUnavailable)
+        (mkAuthorityScope (awsAdminPermitIntentAuthorityScope intent))
+    lifetime <-
+      first
+        (const AwsAdminWorkerDeliveryCompositionUnavailable)
+        (authorityDurationFromMicros workerCompletionAuthenticationLifetimeMicros)
+    endpoint <-
+      first
+        (const AwsAdminWorkerDeliveryCompositionUnavailable)
+        (mkLifecycleAuthorityEndpoint (awsAdminPermitIntentAuthorityEndpoint intent))
+    client <-
+      first
+        (const AwsAdminWorkerDeliveryCompositionUnavailable)
+        ( newControlPlaneClient
+            defaultHttpConfig
+            awsAdminProvisionerResponseMaximumBytes
+            endpoint
+        )
+    retainedClient <-
+      first
+        (const AwsAdminWorkerDeliveryCompositionUnavailable)
+        ( newControlPlaneClient
+            awsAdminRetainedDeliveryHttpConfig
+            awsAdminProvisionerResponseMaximumBytes
+            endpoint
+        )
+    let providers =
+          transitAuthenticatedClientProviders
+            signer
+            (pure (Right scope))
+            (readRetainedAuthorityEpoch session)
+            lifetime
+    Right
+      ( mkAuthenticatedClientTransport bounds providers client
+      , mkAuthenticatedClientTransport bounds providers retainedClient
+      )
+ where
+  intent = signedAwsAdminPermitIntent permit
+
+awsAdminRetainedDeliveryHttpConfig :: HttpConfig
+awsAdminRetainedDeliveryHttpConfig =
+  defaultHttpConfig
+    { httpRequestTimeoutMicros =
+        RetainedMaterialDeliveryBudget.retainedMaterialDeliveryResponseTimeoutMicros
+    }
+
+awsAdminAuthorityHttpConfig :: HttpConfig
+awsAdminAuthorityHttpConfig = defaultHttpConfig
 
 targetAgentTransport
   :: VaultSession
@@ -1028,17 +1295,14 @@ targetSecretAgentServiceEndpoint :: Text
 targetSecretAgentServiceEndpoint =
   controlPlaneClusterServiceUrlText "target-secret-agent" "target-secret-agent"
 
-workerTargetJobMaximumRuntimeSeconds :: Natural
-workerTargetJobMaximumRuntimeSeconds = 180
+awsAdminTargetWorkerMaximumRuntimeSeconds :: Natural
+awsAdminTargetWorkerMaximumRuntimeSeconds = 180
 
 awsAdminWorkerNamespace :: Text
 awsAdminWorkerNamespace = "credential-provisioner"
 
 workerMaximumLeaseSeconds :: Int
 workerMaximumLeaseSeconds = 600
-
-workerAuditorMaximumLeaseSeconds :: Int
-workerAuditorMaximumLeaseSeconds = 120
 
 workerAuditorRecoveryAttempts :: Int
 workerAuditorRecoveryAttempts = 4

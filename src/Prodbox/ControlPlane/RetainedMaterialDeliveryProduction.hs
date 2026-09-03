@@ -9,6 +9,7 @@ module Prodbox.ControlPlane.RetainedMaterialDeliveryProduction
   ( RetainedMaterialDeliveryResult (..)
   , productionRetainedMaterialDelivery
   , productionRetainedMaterialDeliveryWithKeyPair
+  , retainedTargetIntentReceiptDigest
   )
 where
 
@@ -157,30 +158,44 @@ productionRetainedMaterialDeliveryWithKeyPair schema boundary rewrapClient agent
               case workerSchema of
                 Left detail -> pure (Left detail)
                 Right ingressSchema -> do
-                  let operationText = retainedMaterialRefText (retainedDeliveryOperationId intent)
-                      materialization =
-                        TargetMaterializationRequest
-                          { targetMaterializationTarget = target
-                          , targetMaterializationAgentIdentity = agent
-                          , targetMaterializationGeneration = retainedDeliveryTargetGeneration intent
-                          , targetMaterializationReceiptDigest = sha256TargetValueDigest opening
-                          , targetMaterializationOperationId = operationText
-                          , targetMaterializationActionIndex = 0
-                          , targetMaterializationIdempotencyKey = operationText
-                          , targetMaterializationIngressSchema = ingressSchema
-                          , targetMaterializationWorkerImage = image
-                          , targetMaterializationNow = now
-                          }
-                  delivered <-
-                    productionRewrappedTargetMaterializer boundary materialization opening
-                  pure $ do
-                    targetReceipt <- delivered
-                    Right
-                      RetainedMaterialDeliveryResult
-                        { retainedMaterialDeliveryTargetReceipt = targetReceipt
-                        , retainedMaterialDeliveryRewrapReceipt = receiptRef
-                        , retainedMaterialDeliveryEnvelopeDigest = envelopeDigest
-                        }
+                  case retainedTargetIntentReceiptDigest intent of
+                    Left detail -> pure (Left detail)
+                    Right receiptDigest -> do
+                      let operationText = retainedMaterialRefText (retainedDeliveryOperationId intent)
+                          materialization =
+                            TargetMaterializationRequest
+                              { targetMaterializationTarget = target
+                              , targetMaterializationAgentIdentity = agent
+                              , targetMaterializationGeneration = retainedDeliveryTargetGeneration intent
+                              , targetMaterializationReceiptDigest = receiptDigest
+                              , targetMaterializationOperationId = operationText
+                              , targetMaterializationActionIndex = 0
+                              , targetMaterializationIdempotencyKey = operationText
+                              , targetMaterializationIngressSchema = ingressSchema
+                              , targetMaterializationWorkerImage = image
+                              , targetMaterializationNow = now
+                              }
+                      delivered <-
+                        productionRewrappedTargetMaterializer boundary materialization opening
+                      pure $ do
+                        targetReceipt <- delivered
+                        Right
+                          RetainedMaterialDeliveryResult
+                            { retainedMaterialDeliveryTargetReceipt = targetReceipt
+                            , retainedMaterialDeliveryRewrapReceipt = receiptRef
+                            , retainedMaterialDeliveryEnvelopeDigest = envelopeDigest
+                            }
+
+-- | The retained outbox's attestation is the digest of the prepared custody
+-- receipt authorized by the Target-intent issuer. The rewrapped opening has a
+-- separate worker-material digest and cannot substitute for that receipt.
+retainedTargetIntentReceiptDigest
+  :: RetainedDeliveryIntent schema -> Either Text TargetValueDigest
+retainedTargetIntentReceiptDigest =
+  first (Text.pack . show)
+    . mkTargetValueDigest
+    . retainedMaterialRefText
+    . retainedDeliveryAttestationRef
 
 prepareOpening
   :: SRetainedMaterialSchema schema

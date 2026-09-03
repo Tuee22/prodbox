@@ -14,7 +14,9 @@ module Prodbox.ControlPlane.AuthenticatedRuntime
   , validateControlPlaneAuthenticationWire
   , validatedAuthenticationSigningPrincipal
   , validatedAuthenticationSigningKeyRef
+  , RouteTrustResolutionFailure (..)
   , resolveRouteTrustRegistryWith
+  , resolveRouteTrustRegistryWithFailure
   , AuthenticatedRuntimeInputs (..)
   , AuthenticatedRuntimeInstallError (..)
   , installAuthenticatedRuntimeInterpreter
@@ -140,6 +142,14 @@ data ValidatedAuthenticationTopology = ValidatedAuthenticationTopology
   , validatedAuthenticationCallers :: ![ValidatedTrustedCaller]
   }
 
+-- | Typed failure boundary for resolving a validated topology.  The public
+-- key lookup error remains caller-selected, while all post-resolution
+-- construction errors retain the closed authentication taxonomy.
+data RouteTrustResolutionFailure error
+  = RouteTrustPublicGenerationUnavailable !ControlPlaneSigningKeyRef !error
+  | RouteTrustConfigurationInvalid !ControlPlaneAuthenticationConfigError
+  deriving (Eq, Show)
+
 validateControlPlaneAuthenticationWire
   :: RuntimeRole
   -> ControlPlaneAuthenticationWire
@@ -260,12 +270,35 @@ resolveRouteTrustRegistryWith
   -> ValidatedAuthenticationTopology
   -> m (Either ControlPlaneAuthenticationConfigError RouteTrustRegistry)
 resolveRouteTrustRegistryWith resolveKey topology = do
+  result <- resolveRouteTrustRegistryWithFailure resolveKey topology
+  pure (mapLeft renderFailure result)
+ where
+  renderFailure failure = case failure of
+    RouteTrustPublicGenerationUnavailable ref detail ->
+      ControlPlaneAuthenticationPublicGenerationUnavailable
+        (controlPlaneSigningKeyName ref)
+        detail
+    RouteTrustConfigurationInvalid configError -> configError
+
+-- | Generic variant used by protected runtimes that must classify the exact
+-- lookup boundary without string matching.  It performs the same ordered,
+-- unique-key resolution and registry construction as the compatibility
+-- wrapper above.
+resolveRouteTrustRegistryWithFailure
+  :: (Monad m)
+  => (ControlPlaneSigningKeyRef -> m (Either error (Natural, ByteString)))
+  -> ValidatedAuthenticationTopology
+  -> m (Either (RouteTrustResolutionFailure error) RouteTrustRegistry)
+resolveRouteTrustRegistryWithFailure resolveKey topology = do
   resolved <- foldM resolveOne (Right Map.empty) (validatedAuthenticationCallers topology)
   pure $ do
     keyMap <- resolved
-    entries <- traverse (trustedEntryFromPinned keyMap) (validatedAuthenticationCallers topology)
+    entries <-
+      mapLeft
+        RouteTrustConfigurationInvalid
+        (traverse (trustedEntryFromPinned keyMap) (validatedAuthenticationCallers topology))
     mapLeft
-      ControlPlaneAuthenticationRouteTrustInvalid
+      (RouteTrustConfigurationInvalid . ControlPlaneAuthenticationRouteTrustInvalid)
       ( mkRouteTrustRegistry
           (validatedAuthenticationRole topology)
           (validatedAuthenticationMaximum topology)
@@ -282,12 +315,7 @@ resolveRouteTrustRegistryWith resolveKey topology = do
             Nothing -> do
               result <- resolveKey ref
               pure $ case result of
-                Left detail ->
-                  Left
-                    ( ControlPlaneAuthenticationPublicGenerationUnavailable
-                        name
-                        detail
-                    )
+                Left detail -> Left (RouteTrustPublicGenerationUnavailable ref detail)
                 Right pinned -> Right (Map.insert name pinned keys)
 
 trustedEntryFromPinned

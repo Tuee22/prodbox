@@ -201,6 +201,8 @@ import Prodbox.Bootstrap.Broker.Types
   , resetReplacementPristine
   , rootInitStorageGeneration
   )
+import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.Render qualified as CapacityRender
 import Prodbox.ControlPlane.AuthorityClock (operationDeadlineMicros)
 import Prodbox.ControlPlane.Deadline
   ( Deadline
@@ -1104,15 +1106,11 @@ workerPodManifestForIntent namespace pullReference intent =
                      , "resources"
                          .= object
                            [ "requests"
-                               .= object
-                                 [ "cpu" .= ("250m" :: Text)
-                                 , "memory" .= ("256Mi" :: Text)
-                                 ]
+                               .= CapacityRender.resourceVectorRuntimeValue
+                                 (Capacity.request Capacity.oneShotSecretWorkerEnvelope)
                            , "limits"
-                               .= object
-                                 [ "cpu" .= ("250m" :: Text)
-                                 , "memory" .= ("256Mi" :: Text)
-                                 ]
+                               .= CapacityRender.resourceVectorRuntimeValue
+                                 (Capacity.limit Capacity.oneShotSecretWorkerEnvelope)
                            ]
                      , "volumeMounts"
                          .= [ object

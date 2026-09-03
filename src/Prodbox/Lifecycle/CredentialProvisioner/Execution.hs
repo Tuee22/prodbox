@@ -29,6 +29,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.Execution
   , provisionedAccessKeyIdText
   , AccessKeyInventoryObservation (..)
   , observedAccessKeyInventory
+  , AwsAccessKeyCreateAmbiguityCause (..)
   , AwsAccessKeyCreateResult (..)
   , OperatorMaterialRevocationReadBack
   , mkOperatorMaterialRevocationReadBack
@@ -305,9 +306,14 @@ observedAccessKeyInventory keys
 iamAccessKeyMaximum :: Int
 iamAccessKeyMaximum = 2
 
+data AwsAccessKeyCreateAmbiguityCause
+  = AwsAccessKeyCreateDispatchAmbiguous
+  | AwsAccessKeyCreateLostResult
+  deriving (Bounded, Enum, Eq, Show)
+
 data AwsAccessKeyCreateResult
   = AwsAccessKeyCreated !ProvisionedAccessKeyId !CreatedAwsAccessKey
-  | AwsAccessKeyCreateResponseLost
+  | AwsAccessKeyCreateResponseLost !AwsAccessKeyCreateAmbiguityCause
   | AwsAccessKeyCreateFailed !Text
 
 data OperatorMaterialRevocationReadBack = OperatorMaterialRevocationReadBack
@@ -788,7 +794,7 @@ runAwsWithSession boundary targetClient region permit session = do
                 case targetMaterialForRequest region request createdKey of
                   Left err -> pure (Left (CredentialProvisionerMaterialInvalid err))
                   Right material -> deliverAndCommit boundary targetClient permit material
-      AwsAccessKeyCreateResponseLost
+      AwsAccessKeyCreateResponseLost _
         | isRecovery -> pure (Left CredentialProvisionerRecoveryRemintAmbiguous)
         | otherwise -> do
             recovered <-

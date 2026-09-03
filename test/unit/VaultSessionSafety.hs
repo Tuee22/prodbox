@@ -33,6 +33,7 @@ import Prodbox.ControlPlane.VaultAccessorAudit
   , VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
   , isBoundedBatchAuditorLogin
+  , isExactBoundedBatchAuditorLogin
   , revokeAndProveVaultAccessorSubjectAbsent
   , revokeAndProveVaultAccessorSubjectAbsentDetailed
   )
@@ -68,6 +69,13 @@ vaultSessionSafetySuite =
         300
         validBatchLogin {vaultLoginLeaseSeconds = 301}
         `shouldBe` False
+
+    it "Sprint 2.116 requires the issued auditor lease to equal its compiled bound" $ do
+      isExactBoundedBatchAuditorLogin
+        300
+        validBatchLogin {vaultLoginLeaseSeconds = 300}
+        `shouldBe` True
+      isExactBoundedBatchAuditorLogin 300 validBatchLogin `shouldBe` False
 
     it "rejects projected-token ServiceAccount UID substitution" $ do
       let decoded = decodeProjectedServiceAccountIdentity (projectedJwt "service-account-uid-1")

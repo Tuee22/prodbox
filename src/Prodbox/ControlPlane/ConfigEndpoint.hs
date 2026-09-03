@@ -235,6 +235,7 @@ configProjectionScopeForCaller principal = case principal of
   CallerTestHarness -> ConfigProjectionTestHarness
   CallerAdminActionRunner -> ConfigProjectionAdminActionRunner
   CallerCredentialProvisioner -> ConfigProjectionCredentialProvisioner
+  CallerCredentialProvisionerCompletion -> ConfigProjectionCredentialProvisioner
   CallerService role -> case role of
     BootstrapBroker -> ConfigProjectionBootstrapBroker
     GatewayRuntime -> ConfigProjectionGatewayRuntime
@@ -454,6 +455,7 @@ serveConfigProposeCasRequest maximumBytes repository callerSlot body
     CallerTestHarness -> True
     CallerAdminActionRunner -> False
     CallerCredentialProvisioner -> False
+    CallerCredentialProvisionerCompletion -> False
     CallerService _ -> False
 
 configEndpointHttpStatus :: ConfigEndpointResult response -> ReplyStatus

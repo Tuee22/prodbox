@@ -131,15 +131,13 @@ authorityBackupExportHttpStatus result = case result of
   AuthorityBackupExportEncodeFailed _ -> ReplyInternalError
 
 authorityBackupExportResponseBody :: AuthorityBackupExportResult -> ByteString
-authorityBackupExportResponseBody result =
-  LazyByteString.toStrict
-    ( encodeControlPlaneResponse $ case result of
-        AuthorityBackupExported response -> Right response
-        AuthorityBackupExportPurposeMismatch -> Left ("purpose-mismatch" :: Text)
-        AuthorityBackupExportBadRequest _ -> Left ("bad-request" :: Text)
-        AuthorityBackupExportReadFailed _ -> Left ("read-failed" :: Text)
-        AuthorityBackupExportEncodeFailed _ -> Left ("encode-failed" :: Text)
-    )
+authorityBackupExportResponseBody result = case result of
+  AuthorityBackupExported response ->
+    LazyByteString.toStrict (encodeControlPlaneResponse response)
+  AuthorityBackupExportPurposeMismatch -> "purpose-mismatch"
+  AuthorityBackupExportBadRequest _ -> "bad-request"
+  AuthorityBackupExportReadFailed _ -> "read-failed"
+  AuthorityBackupExportEncodeFailed _ -> "encode-failed"
 
 digestBytes :: ByteString -> Text
 digestBytes = Text.pack . concatMap byteHex . ByteString.unpack . SHA256.hash

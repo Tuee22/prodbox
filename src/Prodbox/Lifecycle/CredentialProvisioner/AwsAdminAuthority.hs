@@ -21,6 +21,17 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
   , awsAdminAuthorityCurrentIntent
   , awsAdminAuthorityCurrentPermit
   , commitAwsAdminPrepared
+  , commitAwsAdminPreparedRenewal
+  , awsAdminPreparedRenewalBindingsMatch
+  , AwsAdminAttemptResourceObservation (..)
+  , AwsAdminRecoveryCleanupPhase (..)
+  , AwsAdminAttemptJournalObservation (..)
+  , AwsAdminAuthorizedRecoveryError (..)
+  , AwsAdminAuthorizedRecoveryProof
+  , proveAwsAdminAuthorizedRecovery
+  , bindAwsAdminPreparedRenewalIntent
+  , bindAwsAdminAuthorizedRecoveryIntent
+  , commitAwsAdminPreparedAuthorizedRecovery
   , commitAwsAdminAttested
   , commitAwsAdminAuthorized
   , commitAwsAdminCompleted
@@ -34,6 +45,8 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
   , AwsAdminPreparedTargetBoundary (..)
   , AwsAdminAuthorityRepositoryError (..)
   , prepareAwsAdminAuthority
+  , prepareAwsAdminAuthorityRenewal
+  , prepareAwsAdminAuthorityAuthorizedRecovery
   , attestAwsAdminAuthority
   , authorizeAwsAdminAuthority
   , completeAwsAdminAuthority
@@ -72,13 +85,29 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   , validateAwsAdminWorkerReceiptForPermit
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
-  ( AwsAdminJobBinding
+  ( AwsAdminCleanupRecoveryProgram (..)
+  , AwsAdminJobBinding
   , AwsAdminPermitError
   , AwsAdminPermitIntent
+  , AwsAdminPermitKind (..)
   , SignedAwsAdminPermit
   , awsAdminJobHeartbeat
+  , awsAdminPermitIntentAction
+  , awsAdminPermitIntentAuthorityEndpoint
+  , awsAdminPermitIntentAuthorityScope
+  , awsAdminPermitIntentCleanupPredecessor
+  , awsAdminPermitIntentCredentialClass
+  , awsAdminPermitIntentDeadline
+  , awsAdminPermitIntentGeneration
+  , awsAdminPermitIntentIamParameters
+  , awsAdminPermitIntentKind
+  , awsAdminPermitIntentOperationId
+  , awsAdminPermitIntentPermitId
+  , awsAdminPermitIntentPlanBinding
   , awsAdminPermitIntentPreparedTarget
+  , awsAdminPermitIntentRequestDigest
   , awsAdminPermitSigningPayload
+  , bindAwsAdminPermitIntentCleanupRecovery
   , decodeAwsAdminJobBinding
   , decodeAwsAdminPermitIntent
   , decodeSignedAwsAdminPermit
@@ -93,12 +122,20 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   )
 import Prodbox.Lifecycle.CredentialProvisioner.PreparedTarget
   ( PreparedCredentialTargetObservation
+  , preparedCredentialTargetDeadline
+  , preparedCredentialTargetFence
+  , preparedCredentialTargetGeneration
+  , preparedCredentialTargetId
+  , preparedCredentialTargetOwnerNonce
+  , preparedCredentialTargetPlanBinding
+  , preparedCredentialTargetRequestDigest
   )
 import Prodbox.Lifecycle.Decommission.AuthorityExport
   ( AuthorityManifestSigner (..)
   )
 import Prodbox.Lifecycle.Decommission.Manifest (manifestPublicKeyBytes)
 import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
+import Prodbox.Lifecycle.TargetCommitIntent (sha256TargetValueDigest)
 
 data AwsAdminAuthorityState
   = AwsAdminAuthorityVacant
@@ -134,12 +171,165 @@ data AwsAdminAuthorityStateError
   | AwsAdminAuthorityBindingInvalid !AwsAdminPermitError
   | AwsAdminAuthorityPermitInvalid !AwsAdminPermitError
   | AwsAdminAuthorityReceiptInvalid !AwsAdminExecutionError
+  | AwsAdminAuthorityRenewalNotPrepared
+  | AwsAdminAuthorityRenewalDeadlineInvalid
+  | AwsAdminAuthorityRenewalBindingMismatch
+  | AwsAdminAuthorityRecoveryNotAuthorized
+  | AwsAdminAuthorityRecoveryProofMismatch
   | AwsAdminAuthorityStateTooLarge !Int !Int
   | AwsAdminAuthorityStateDecodeFailed
   | AwsAdminAuthorityStateUnsupportedVersion !Word16
   | AwsAdminAuthorityStateInvalid
   | AwsAdminAuthorityStateNonCanonical
   deriving stock (Eq, Show)
+
+-- | Independent observations admitted by the expired-attempt recovery proof.
+-- Only an exact named-object 404 is absence; presence and every failed or
+-- unauthorized observation remain distinct closed refusals.
+data AwsAdminAttemptResourceObservation
+  = AwsAdminAttemptResourceAbsent
+  | AwsAdminAttemptResourcePresent
+  | AwsAdminAttemptResourceUnobservable
+  deriving stock (Bounded, Enum, Eq, Show)
+
+-- | Exact pre-target phases that require a cleanup-only continuation.  None
+-- carries a target receipt, so a fresh permit may first delete the bounded IAM
+-- key family, prove stable absence, and only then consume its one remint.
+data AwsAdminRecoveryCleanupPhase
+  = AwsAdminRecoveryIntentCommittedRemintUsed
+  | AwsAdminRecoveryCreateAttemptPreparedInitial
+  | AwsAdminRecoveryCreateAttemptPreparedRemintUsed
+  | AwsAdminRecoveryKeyCreatedInitial
+  | AwsAdminRecoveryKeyCreatedRemintUsed
+  | AwsAdminRecoveryCleanupRequiredInitial
+  | AwsAdminRecoveryCleanupRequiredRemintUsed
+  | AwsAdminRecoveryCleanupProvenInitial
+  | AwsAdminRecoveryCleanupProvenRemintUsed
+  deriving stock (Bounded, Enum, Eq, Show)
+
+data AwsAdminAttemptJournalObservation
+  = AwsAdminAttemptJournalAbsent
+  | AwsAdminAttemptJournalInitialIntentCommitted
+  | AwsAdminAttemptJournalCleanupContinuation !AwsAdminRecoveryCleanupPhase
+  | AwsAdminAttemptJournalPresent
+  | AwsAdminAttemptJournalUnobservable
+  deriving stock (Eq, Show)
+
+data AwsAdminAuthorizedRecoveryError
+  = AwsAdminAuthorizedRecoveryNotAuthorized
+  | AwsAdminAuthorizedRecoveryDeadlineActive
+  | AwsAdminAuthorizedRecoveryJobPresent
+  | AwsAdminAuthorizedRecoveryJobUnobservable
+  | AwsAdminAuthorizedRecoveryPodPresent
+  | AwsAdminAuthorizedRecoveryPodUnobservable
+  | AwsAdminAuthorizedRecoveryJournalPresent
+  | AwsAdminAuthorizedRecoveryJournalUnobservable
+  deriving stock (Bounded, Enum, Eq, Show)
+
+-- The constructor is deliberately private. The endpoint can receive this
+-- capability only from 'proveAwsAdminAuthorizedRecovery', after exact Job and
+-- Pod absence plus either no-effect journal evidence or an explicitly closed
+-- pre-target cleanup phase has been supplied.
+data AwsAdminAuthorizedRecoveryProof = AwsAdminAuthorizedRecoveryProof
+  { recoveryProofNow :: !AuthorityTime
+  , recoveryProofPermit :: !SignedAwsAdminPermit
+  , recoveryProofRequiresCleanup :: !Bool
+  }
+  deriving stock (Eq, Show)
+
+proveAwsAdminAuthorizedRecovery
+  :: AuthorityTime
+  -> AwsAdminAuthorityState
+  -> AwsAdminAttemptResourceObservation
+  -> AwsAdminAttemptResourceObservation
+  -> AwsAdminAttemptJournalObservation
+  -> Either AwsAdminAuthorizedRecoveryError AwsAdminAuthorizedRecoveryProof
+proveAwsAdminAuthorizedRecovery now state jobObservation podObservation journalObservation = do
+  permit <- case state of
+    AwsAdminAuthorityAuthorized retained -> Right retained
+    _ -> Left AwsAdminAuthorizedRecoveryNotAuthorized
+  when
+    ( authorityTimeMicros now
+        < authorityTimeMicros
+          (awsAdminPermitIntentDeadline (signedAwsAdminPermitIntent permit))
+    )
+    (Left AwsAdminAuthorizedRecoveryDeadlineActive)
+  requireResourceAbsence
+    AwsAdminAuthorizedRecoveryJobPresent
+    AwsAdminAuthorizedRecoveryJobUnobservable
+    jobObservation
+  requireResourceAbsence
+    AwsAdminAuthorizedRecoveryPodPresent
+    AwsAdminAuthorizedRecoveryPodUnobservable
+    podObservation
+  requiresCleanup <- case journalObservation of
+    AwsAdminAttemptJournalAbsent -> Right False
+    AwsAdminAttemptJournalInitialIntentCommitted -> Right False
+    AwsAdminAttemptJournalCleanupContinuation _ -> Right True
+    AwsAdminAttemptJournalPresent -> Left AwsAdminAuthorizedRecoveryJournalPresent
+    AwsAdminAttemptJournalUnobservable -> Left AwsAdminAuthorizedRecoveryJournalUnobservable
+  pure
+    AwsAdminAuthorizedRecoveryProof
+      { recoveryProofNow = now
+      , recoveryProofPermit = permit
+      , recoveryProofRequiresCleanup = requiresCleanup
+      }
+
+bindAwsAdminPreparedRenewalIntent
+  :: AwsAdminPermitIntent
+  -> AwsAdminPermitIntent
+  -> Either AwsAdminAuthorityStateError AwsAdminPermitIntent
+bindAwsAdminPreparedRenewalIntent retained replacement =
+  case awsAdminPermitIntentCleanupPredecessor retained of
+    Just predecessor ->
+      first
+        AwsAdminAuthorityIntentInvalid
+        ( bindAwsAdminPermitIntentCleanupRecovery
+            (awsAdminPermitIntentKind retained)
+            predecessor
+            replacement
+        )
+    Nothing -> Right replacement
+
+bindAwsAdminAuthorizedRecoveryIntent
+  :: AwsAdminAuthorizedRecoveryProof
+  -> AwsAdminPermitIntent
+  -> Either AwsAdminAuthorityStateError AwsAdminPermitIntent
+bindAwsAdminAuthorizedRecoveryIntent proof replacement
+  | recoveryProofRequiresCleanup proof =
+      first
+        AwsAdminAuthorityIntentInvalid
+        ( bindAwsAdminPermitIntentCleanupRecovery
+            retainedKind
+            predecessorDigest
+            replacement
+        )
+  | Just retainedPredecessor <- awsAdminPermitIntentCleanupPredecessor retainedIntent =
+      first
+        AwsAdminAuthorityIntentInvalid
+        ( bindAwsAdminPermitIntentCleanupRecovery
+            retainedKind
+            retainedPredecessor
+            replacement
+        )
+  | renewableKindMatches retainedKind (awsAdminPermitIntentKind replacement) = Right replacement
+  | otherwise = Left AwsAdminAuthorityRenewalBindingMismatch
+ where
+  retainedIntent = signedAwsAdminPermitIntent (recoveryProofPermit proof)
+  retainedKind = awsAdminPermitIntentKind retainedIntent
+  predecessorDigest =
+    sha256TargetValueDigest
+      (encodeSignedAwsAdminPermit (recoveryProofPermit proof))
+
+requireResourceAbsence
+  :: AwsAdminAuthorizedRecoveryError
+  -> AwsAdminAuthorizedRecoveryError
+  -> AwsAdminAttemptResourceObservation
+  -> Either AwsAdminAuthorizedRecoveryError ()
+requireResourceAbsence presentError unobservableError observation = case observation of
+  AwsAdminAttemptResourceAbsent -> Right ()
+  AwsAdminAttemptResourcePresent -> Left presentError
+  AwsAdminAttemptResourceUnobservable -> Left unobservableError
 
 commitAwsAdminPrepared
   :: AwsAdminPermitIntent
@@ -154,6 +344,155 @@ commitAwsAdminPrepared intent state = do
     Nothing -> case state of
       AwsAdminAuthorityVacant -> Right (AwsAdminAuthorityPrepared validatedIntent)
       _ -> Left AwsAdminAuthorityTransitionRefused
+
+-- | Replace only an expired, prepared-but-unattested attempt.  The expired
+-- deadline prevents a concurrent attestation from being admitted; every
+-- durable request and plan binding remains exact while the active deadline,
+-- image, selected Agent, and derived prepared receipt may advance.
+commitAwsAdminPreparedRenewal
+  :: AuthorityTime
+  -> AwsAdminPermitIntent
+  -> AwsAdminPermitIntent
+  -> AwsAdminAuthorityState
+  -> Either AwsAdminAuthorityStateError AwsAdminAuthorityState
+commitAwsAdminPreparedRenewal now retained replacement state = do
+  validatedRetained <- validateCanonicalIntent retained
+  validatedReplacement <- validateCanonicalIntent replacement
+  case state of
+    AwsAdminAuthorityPrepared current
+      | current == validatedReplacement -> Right state
+      | current /= validatedRetained -> Left AwsAdminAuthorityRenewalNotPrepared
+      | not (renewalDeadlineValid now current validatedReplacement) ->
+          Left AwsAdminAuthorityRenewalDeadlineInvalid
+      | not (renewalBindingsMatch current validatedReplacement) ->
+          Left AwsAdminAuthorityRenewalBindingMismatch
+      | otherwise -> Right (AwsAdminAuthorityPrepared validatedReplacement)
+    _ -> Left AwsAdminAuthorityRenewalNotPrepared
+
+-- | Recover exactly the expired Authorized attempt captured by the opaque
+-- proof. The fresh intent must retain every immutable renewal binding. Exact
+-- replay of the replacement Prepared state closes the CAS-response-loss case.
+commitAwsAdminPreparedAuthorizedRecovery
+  :: AwsAdminAuthorizedRecoveryProof
+  -> AwsAdminPermitIntent
+  -> AwsAdminAuthorityState
+  -> Either AwsAdminAuthorityStateError AwsAdminAuthorityState
+commitAwsAdminPreparedAuthorizedRecovery proof replacement state = do
+  validatedReplacement <- validateCanonicalIntent replacement
+  let retainedPermit = recoveryProofPermit proof
+      retained = signedAwsAdminPermitIntent retainedPermit
+      now = recoveryProofNow proof
+  case state of
+    AwsAdminAuthorityPrepared current
+      | current == validatedReplacement -> Right state
+    AwsAdminAuthorityAuthorized currentPermit
+      | currentPermit /= retainedPermit -> Left AwsAdminAuthorityRecoveryProofMismatch
+      | not (renewalDeadlineValid now retained validatedReplacement) ->
+          Left AwsAdminAuthorityRenewalDeadlineInvalid
+      | not (authorizedRecoveryKindMatches proof validatedReplacement) ->
+          Left AwsAdminAuthorityRenewalBindingMismatch
+      | not (renewalCoreBindingsMatch retained validatedReplacement) ->
+          Left AwsAdminAuthorityRenewalBindingMismatch
+      | otherwise -> Right (AwsAdminAuthorityPrepared validatedReplacement)
+    _ -> Left AwsAdminAuthorityRecoveryNotAuthorized
+
+renewalDeadlineValid
+  :: AuthorityTime -> AwsAdminPermitIntent -> AwsAdminPermitIntent -> Bool
+renewalDeadlineValid now retained replacement =
+  authorityTimeMicros (awsAdminPermitIntentDeadline retained)
+    <= authorityTimeMicros now
+    && authorityTimeMicros now
+      < authorityTimeMicros (awsAdminPermitIntentDeadline replacement)
+    && authorityTimeMicros (awsAdminPermitIntentDeadline retained)
+      < authorityTimeMicros (awsAdminPermitIntentDeadline replacement)
+
+renewalBindingsMatch :: AwsAdminPermitIntent -> AwsAdminPermitIntent -> Bool
+renewalBindingsMatch retained replacement =
+  renewableKindMatches
+    (awsAdminPermitIntentKind retained)
+    (awsAdminPermitIntentKind replacement)
+    && renewalCoreBindingsMatch retained replacement
+
+renewalCoreBindingsMatch :: AwsAdminPermitIntent -> AwsAdminPermitIntent -> Bool
+renewalCoreBindingsMatch retained replacement =
+  awsAdminPermitIntentPermitId retained == awsAdminPermitIntentPermitId replacement
+    && awsAdminPermitIntentCredentialClass retained == awsAdminPermitIntentCredentialClass replacement
+    && awsAdminPermitIntentAction retained == awsAdminPermitIntentAction replacement
+    && awsAdminPermitIntentOperationId retained == awsAdminPermitIntentOperationId replacement
+    && awsAdminPermitIntentGeneration retained == awsAdminPermitIntentGeneration replacement
+    && awsAdminPermitIntentRequestDigest retained == awsAdminPermitIntentRequestDigest replacement
+    && planBindingIsExact
+    && awsAdminPermitIntentIamParameters retained == awsAdminPermitIntentIamParameters replacement
+    && awsAdminPermitIntentAuthorityScope retained == awsAdminPermitIntentAuthorityScope replacement
+    && awsAdminPermitIntentAuthorityEndpoint retained == awsAdminPermitIntentAuthorityEndpoint replacement
+    && preparedBindingsMatch
+ where
+  retainedPrepared = awsAdminPermitIntentPreparedTarget retained
+  replacementPrepared = awsAdminPermitIntentPreparedTarget replacement
+  planBindingIsExact =
+    awsAdminPermitIntentPlanBinding retained
+      == awsAdminPermitIntentPlanBinding replacement
+      && awsAdminPermitIntentPlanBinding retained /= Nothing
+  preparedBindingsMatch =
+    preparedCredentialTargetOwnerNonce retainedPrepared
+      == preparedCredentialTargetOwnerNonce replacementPrepared
+      && preparedCredentialTargetFence retainedPrepared
+        == preparedCredentialTargetFence replacementPrepared
+      && preparedCredentialTargetId retainedPrepared
+        == preparedCredentialTargetId replacementPrepared
+      && preparedCredentialTargetGeneration retainedPrepared
+        == preparedCredentialTargetGeneration replacementPrepared
+      && preparedCredentialTargetRequestDigest retainedPrepared
+        == preparedCredentialTargetRequestDigest replacementPrepared
+      && preparedCredentialTargetPlanBinding retainedPrepared
+        == preparedCredentialTargetPlanBinding replacementPrepared
+      && preparedCredentialTargetDeadline retainedPrepared
+        == awsAdminPermitIntentDeadline retained
+      && preparedCredentialTargetDeadline replacementPrepared
+        == awsAdminPermitIntentDeadline replacement
+
+awsAdminPreparedRenewalBindingsMatch
+  :: AwsAdminPermitIntent -> AwsAdminPermitIntent -> Bool
+awsAdminPreparedRenewalBindingsMatch = renewalBindingsMatch
+
+renewableKindMatches :: AwsAdminPermitKind -> AwsAdminPermitKind -> Bool
+renewableKindMatches retained replacement = case (retained, replacement) of
+  (GenesisBackupKind _, GenesisBackupKind _) -> True
+  (NormalOperatorMaterialKind, NormalOperatorMaterialKind) -> True
+  (BackupRepairFrozenKind left, BackupRepairFrozenKind right) -> left == right
+  ( CleanupRecoveryKind retainedProgram retainedPredecessor
+    , CleanupRecoveryKind replacementProgram replacementPredecessor
+    ) ->
+      retainedPredecessor == replacementPredecessor
+        && cleanupProgramsRenewablyMatch retainedProgram replacementProgram
+  _ -> False
+
+cleanupProgramsRenewablyMatch
+  :: AwsAdminCleanupRecoveryProgram
+  -> AwsAdminCleanupRecoveryProgram
+  -> Bool
+cleanupProgramsRenewablyMatch retained replacement = case (retained, replacement) of
+  (NormalOperatorMaterialCleanupProgram, NormalOperatorMaterialCleanupProgram) -> True
+  (GenesisBackupCleanupProgram _, GenesisBackupCleanupProgram _) -> True
+  _ -> False
+
+authorizedRecoveryKindMatches
+  :: AwsAdminAuthorizedRecoveryProof -> AwsAdminPermitIntent -> Bool
+authorizedRecoveryKindMatches proof replacement
+  | recoveryProofRequiresCleanup proof =
+      exactCleanupBinding predecessorDigest
+  | Just retainedPredecessor <- awsAdminPermitIntentCleanupPredecessor retained =
+      exactCleanupBinding retainedPredecessor
+  | otherwise = renewableKindMatches retainedKind (awsAdminPermitIntentKind replacement)
+ where
+  retained = signedAwsAdminPermitIntent (recoveryProofPermit proof)
+  retainedKind = awsAdminPermitIntentKind retained
+  predecessorDigest =
+    sha256TargetValueDigest
+      (encodeSignedAwsAdminPermit (recoveryProofPermit proof))
+  exactCleanupBinding predecessor =
+    bindAwsAdminPermitIntentCleanupRecovery retainedKind predecessor replacement
+      == Right replacement
 
 commitAwsAdminAttested
   :: AwsAdminJobBinding
@@ -414,6 +753,47 @@ prepareAwsAdminAuthority repository targetBoundary intent = do
           transitionAndCommit repository (commitAwsAdminPrepared intent)
  where
   expectedPrepared = awsAdminPermitIntentPreparedTarget intent
+
+prepareAwsAdminAuthorityRenewal
+  :: (Monad m)
+  => AwsAdminAuthorityRepository m revision
+  -> AwsAdminPreparedTargetBoundary m
+  -> AuthorityTime
+  -> AwsAdminPermitIntent
+  -> AwsAdminPermitIntent
+  -> m (Either AwsAdminAuthorityRepositoryError AwsAdminAuthorityState)
+prepareAwsAdminAuthorityRenewal repository targetBoundary now retained replacement = do
+  observed <- reobserveAwsAdminPreparedTarget targetBoundary replacement
+  case observed of
+    Left detail ->
+      pure (Left (AwsAdminAuthorityPreparedTargetUnavailable detail))
+    Right prepared
+      | prepared /= awsAdminPermitIntentPreparedTarget replacement ->
+          pure (Left AwsAdminAuthorityPreparedTargetMismatch)
+      | otherwise ->
+          transitionAndCommit
+            repository
+            (commitAwsAdminPreparedRenewal now retained replacement)
+
+prepareAwsAdminAuthorityAuthorizedRecovery
+  :: (Monad m)
+  => AwsAdminAuthorityRepository m revision
+  -> AwsAdminPreparedTargetBoundary m
+  -> AwsAdminAuthorizedRecoveryProof
+  -> AwsAdminPermitIntent
+  -> m (Either AwsAdminAuthorityRepositoryError AwsAdminAuthorityState)
+prepareAwsAdminAuthorityAuthorizedRecovery repository targetBoundary proof replacement = do
+  observed <- reobserveAwsAdminPreparedTarget targetBoundary replacement
+  case observed of
+    Left detail ->
+      pure (Left (AwsAdminAuthorityPreparedTargetUnavailable detail))
+    Right prepared
+      | prepared /= awsAdminPermitIntentPreparedTarget replacement ->
+          pure (Left AwsAdminAuthorityPreparedTargetMismatch)
+      | otherwise ->
+          transitionAndCommit
+            repository
+            (commitAwsAdminPreparedAuthorizedRecovery proof replacement)
 
 attestAwsAdminAuthority
   :: (Monad m)

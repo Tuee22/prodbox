@@ -7,17 +7,34 @@ module LifecycleAuthorityRetainedMaterial
 where
 
 import Data.ByteString qualified as ByteString
-import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
+import Data.Either (isLeft)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.ControlPlane.RetainedMaterialDeliveryCoordinator
   ( RetainedMaterialDeliveryRequest (..)
+  , coordinateRetainedMaterialDelivery
   , ensureRetainedMaterialCurrentSource
+  )
+import Prodbox.ControlPlane.RetainedMaterialDeliveryProduction
+  ( retainedTargetIntentReceiptDigest
   )
 import Prodbox.ControlPlane.RetainedMaterialRepository
   ( RetainedMaterialRepository (..)
   , RetainedMaterialSnapshot (..)
   , applyRetainedMaterialCommand
+  )
+import Prodbox.ControlPlane.TargetIntentAuthority
+  ( TargetIntentIssueRequest (..)
+  )
+import Prodbox.ControlPlane.TargetIntentAuthorityProduction
+  ( selectRetainedAcmeEabDeliveryIntent
+  )
+import Prodbox.ControlPlane.TargetMaterialRegistry
+  ( TargetSecretId (TargetAcmeEab)
+  )
+import Prodbox.ControlPlane.TargetSecretAgentExecution
+  ( mkTargetAgentIdentity
   )
 import Prodbox.Lifecycle.Authority.RetainedMaterial
 import Prodbox.Lifecycle.CheckpointAuthority
@@ -32,6 +49,7 @@ import Prodbox.Lifecycle.TargetCommitIntent
   , TargetValueDigest
   , mkCredentialGeneration
   , mkTargetValueDigest
+  , targetValueDigestText
   )
 import TestSupport
 
@@ -70,6 +88,68 @@ lifecycleAuthorityRetainedMaterialSuite =
         `shouldBe` "retained-material/delivery/acme-eab-source/aws-run"
       retainedMaterialTargetSecretPath target `shouldBe` "secret/acme/eab"
       retainedMaterialTargetSecretPath smtpTarget `shouldBe` "secret/keycloak/smtp"
+
+    it "projects the prepared custody-receipt digest without substituting worker material" $ do
+      let exactAttestation = ref (targetValueDigestText digestA)
+          exactDelivery =
+            mkRetainedDeliveryIntent
+              deliveryOperation1
+              sourceReceipt1
+              target1
+              generation1
+              exactAttestation
+              digestB
+              deadline
+      retainedTargetIntentReceiptDigest exactDelivery `shouldBe` Right digestA
+      retainedTargetIntentReceiptDigest delivery1 `shouldSatisfy` isLeft
+
+    it "recovers the Target-intent deadline from the exact pending delivery successor" $ do
+      let agent =
+            must
+              ( mkTargetAgentIdentity
+                  ("home@sha256:" <> hexDigest 'f')
+              )
+          request =
+            TargetIntentIssueRequest
+              { targetIntentIssueTarget = TargetAcmeEab
+              , targetIntentIssueExpectedAgentIdentity = agent
+              , targetIntentIssueExpectedGeneration = generation1
+              , targetIntentIssueExpectedReceiptDigest = digestA
+              , targetIntentIssueOperationId = "delivery-op-1"
+              , targetIntentIssueActionIndex = 0
+              , targetIntentIssueIdempotencyKey = "delivery-op-1"
+              }
+          freshDeadline = authorityTimeFromMicros 9000
+          delivery =
+            mkRetainedDeliveryIntent
+              deliveryOperation1
+              sourceReceipt1
+              target1
+              generation1
+              (ref (targetValueDigestText digestA))
+              digestB
+              freshDeadline
+      fmap
+        retainedDeliveryDeadline
+        ( selectRetainedAcmeEabDeliveryIntent
+            agent
+            request
+            sourceReceipt1
+            [delivery]
+        )
+        `shouldBe` Right freshDeadline
+      selectRetainedAcmeEabDeliveryIntent
+        agent
+        request
+        sourceReceipt2
+        [delivery]
+        `shouldSatisfy` isLeft
+      selectRetainedAcmeEabDeliveryIntent
+        agent
+        request
+        sourceReceipt1
+        []
+        `shouldSatisfy` isLeft
 
     it "commits one exact generation and makes response-loss replay idempotent" $ do
       let (begin, begun) =
@@ -165,6 +245,213 @@ lifecycleAuthorityRetainedMaterialSuite =
         cleared
         (ExpireRetainedMaterialDelivery deliveryOperation1 afterDeadline)
         `shouldBe` RetainedMaterialRefused RetainedDeliveryExpiryNotPending
+
+    it "atomically replaces an expired delivery with its exact deterministic successor" $ do
+      let current = committedSource seal1 source1 initialRetainedMaterialAggregate
+          (_, pending) =
+            stepRetainedMaterial
+              current
+              (BeginRetainedMaterialDelivery (RetainedCustodyPresent source1) now delivery1)
+      decideRetainedMaterial
+        pending
+        (ReplaceExpiredRetainedMaterialDelivery deliveryOperation1 deadline deliverySuccessor1)
+        `shouldBe` RetainedMaterialRefused RetainedDeliveryExpiryActive
+      decideRetainedMaterial
+        pending
+        (ReplaceExpiredRetainedMaterialDelivery deliveryOperation1 afterDeadline delivery1)
+        `shouldBe` RetainedMaterialRefused RetainedDeliverySuccessorMismatch
+      let (replaced, successorPending) =
+            stepRetainedMaterial
+              pending
+              ( ReplaceExpiredRetainedMaterialDelivery
+                  deliveryOperation1
+                  afterDeadline
+                  deliverySuccessor1
+              )
+      replaced `shouldBe` RetainedDeliveryReplaced deliveryOperation1 deliverySuccessor1
+      retainedMaterialPendingDeliveries successorPending `shouldBe` [deliverySuccessor1]
+      decideRetainedMaterial
+        successorPending
+        ( ReplaceExpiredRetainedMaterialDelivery
+            deliveryOperation1
+            afterDeadline
+            deliverySuccessor1
+        )
+        `shouldBe` RetainedDeliveryAlreadyReplaced deliverySuccessor1
+
+    it "coordinates one successor and resumes it without rerunning the expired effect" $ do
+      let current = committedSource seal1 source1 initialRetainedMaterialAggregate
+          (_, pending) =
+            stepRetainedMaterial
+              current
+              (BeginRetainedMaterialDelivery (RetainedCustodyPresent source1) now delivery1)
+      state <- newIORef (0 :: Int, pending)
+      runs <- newIORef (0 :: Int)
+      let repository = ioRefRepository state
+          request =
+            RetainedMaterialDeliveryRequest
+              { retainedDeliveryRequestOperationId = deliveryOperation1
+              , retainedDeliveryRequestTarget = target1
+              , retainedDeliveryRequestGeneration = generation1
+              , retainedDeliveryRequestAttestationRef = attestation1
+              , retainedDeliveryRequestDeadline = deadline
+              }
+          observe _ = pure (Right Nothing)
+          run _ _ = modifyIORef' runs (+ 1) >> pure (Left "stop-after-successor")
+      coordinateRetainedMaterialDelivery
+        repository
+        afterDeadline
+        source1
+        request
+        observe
+        run
+        `shouldReturn` Left "stop-after-successor"
+      (_, successorPending) <- readIORef state
+      case retainedMaterialPendingDeliveries successorPending of
+        [successor] -> do
+          retainedDeliveryOperationId successor
+            `shouldBe` retainedDeliverySuccessorOperationId deliveryOperation1
+          retainedDeliveryDeadline successor
+            `shouldBe` authorityTimeFromMicros (201 + 5 * 60 * 1000000)
+        other -> expectationFailure ("expected one successor, got " ++ show other)
+      readIORef runs `shouldReturn` 1
+      coordinateRetainedMaterialDelivery
+        repository
+        afterDeadline
+        source1
+        request
+        observe
+        run
+        `shouldReturn` Left "retained delivery remains pending until its absolute deadline"
+      readIORef runs `shouldReturn` 1
+
+    it "executes the exact successor after recovering an applied replacement response loss" $ do
+      let current = committedSource seal1 source1 initialRetainedMaterialAggregate
+          (_, pending) =
+            stepRetainedMaterial
+              current
+              (BeginRetainedMaterialDelivery (RetainedCustodyPresent source1) now delivery1)
+      state <- newIORef (0 :: Int, pending)
+      loseWriteResponse <- newIORef True
+      runs <- newIORef (0 :: Int)
+      let repository =
+            (ioRefRepository state)
+              { compareAndSwapRetainedMaterial = \expected aggregate -> do
+                  (revision, _) <- readIORef state
+                  if expected /= Just revision
+                    then pure (Left "conflict")
+                    else do
+                      writeIORef state (revision + 1, aggregate)
+                      lose <- readIORef loseWriteResponse
+                      writeIORef loseWriteResponse False
+                      pure (if lose then Left "replacement response lost" else Right ())
+              }
+          request =
+            RetainedMaterialDeliveryRequest
+              { retainedDeliveryRequestOperationId = deliveryOperation1
+              , retainedDeliveryRequestTarget = target1
+              , retainedDeliveryRequestGeneration = generation1
+              , retainedDeliveryRequestAttestationRef = attestation1
+              , retainedDeliveryRequestDeadline = deadline
+              }
+      coordinateRetainedMaterialDelivery
+        repository
+        afterDeadline
+        source1
+        request
+        (\_ -> pure (Right Nothing))
+        (\_ _ -> modifyIORef' runs (+ 1) >> pure (Left "stop-after-recovered-successor"))
+        `shouldReturn` Left "stop-after-recovered-successor"
+      readIORef runs `shouldReturn` 1
+      (_, successorPending) <- readIORef state
+      fmap retainedDeliveryOperationId (retainedMaterialPendingDeliveries successorPending)
+        `shouldBe` [retainedDeliverySuccessorOperationId deliveryOperation1]
+
+    it "corrects only the exact legacy source receipt and replays the correction" $ do
+      let legacyCurrent =
+            committedSource legacySeal1 legacySource1 initialRetainedMaterialAggregate
+          (corrected, current) =
+            stepRetainedMaterial
+              legacyCurrent
+              (ObserveLegacyRetainedMaterialSourceReceiptCorrection source1)
+      corrected `shouldBe` RetainedLegacySourceReceiptCorrected legacySource1 source1
+      retainedMaterialCurrent current `shouldBe` Just source1
+      decideRetainedMaterial
+        current
+        (ObserveLegacyRetainedMaterialSourceReceiptCorrection source1)
+        `shouldBe` RetainedLegacySourceReceiptAlreadyCorrected source1
+      decideRetainedMaterial
+        legacyCurrent
+        (ObserveLegacyRetainedMaterialSourceReceiptCorrection source2)
+        `shouldBe` RetainedMaterialRefused RetainedLegacySourceReceiptCorrectionMismatch
+      let (_, legacyPending) =
+            stepRetainedMaterial
+              legacyCurrent
+              (BeginRetainedMaterialDelivery (RetainedCustodyPresent legacySource1) now legacyDelivery1)
+          (_, legacyCompleted) =
+            stepRetainedMaterial legacyPending (ObserveRetainedMaterialDelivery legacyDeliveryReceipt1)
+      decideRetainedMaterial
+        legacyCompleted
+        (ObserveLegacyRetainedMaterialSourceReceiptCorrection source1)
+        `shouldBe` RetainedMaterialRefused RetainedLegacySourceReceiptCorrectionHasCompletedDelivery
+
+    it "recovers a lost legacy correction response and succeeds the expired delivery once" $ do
+      let legacyCurrent =
+            committedSource legacySeal1 legacySource1 initialRetainedMaterialAggregate
+          (_, legacyPending) =
+            stepRetainedMaterial
+              legacyCurrent
+              (BeginRetainedMaterialDelivery (RetainedCustodyPresent legacySource1) now legacyDelivery1)
+      state <- newIORef (0 :: Int, legacyPending)
+      loseCorrectionResponse <- newIORef True
+      runs <- newIORef (0 :: Int)
+      let repository =
+            (ioRefRepository state)
+              { compareAndSwapRetainedMaterial = \expected aggregate -> do
+                  (revision, _) <- readIORef state
+                  if expected /= Just revision
+                    then pure (Left "conflict")
+                    else do
+                      writeIORef state (revision + 1, aggregate)
+                      lose <- readIORef loseCorrectionResponse
+                      writeIORef loseCorrectionResponse False
+                      pure (if lose then Left "correction response lost" else Right ())
+              }
+          request =
+            RetainedMaterialDeliveryRequest
+              { retainedDeliveryRequestOperationId = deliveryOperation1
+              , retainedDeliveryRequestTarget = target1
+              , retainedDeliveryRequestGeneration = generation1
+              , retainedDeliveryRequestAttestationRef = attestation1
+              , retainedDeliveryRequestDeadline = deadline
+              }
+          run _ _ = modifyIORef' runs (+ 1) >> pure (Left "stop-after-corrected-successor")
+      coordinateRetainedMaterialDelivery
+        repository
+        afterDeadline
+        source1
+        request
+        (\_ -> pure (Right Nothing))
+        run
+        `shouldReturn` Left "stop-after-corrected-successor"
+      (_, successorPending) <- readIORef state
+      retainedMaterialCurrent successorPending `shouldBe` Just source1
+      case retainedMaterialPendingDeliveries successorPending of
+        [successor] -> do
+          retainedDeliveryOperationId successor
+            `shouldBe` retainedDeliverySuccessorOperationId deliveryOperation1
+          retainedDeliverySourceReceipt successor `shouldBe` sourceReceipt1
+        other -> expectationFailure ("expected one corrected successor, got " ++ show other)
+      readIORef runs `shouldReturn` 1
+      coordinateRetainedMaterialDelivery
+        repository
+        afterDeadline
+        source1
+        request
+        (\_ -> pure (Right Nothing))
+        run
+        `shouldReturn` Left "retained delivery remains pending until its absolute deadline"
+      readIORef runs `shouldReturn` 1
 
     it "retains a rotated predecessor through grace and pending delivery recovery" $ do
       let current1 = committedSource seal1 source1 initialRetainedMaterialAggregate
@@ -262,7 +549,7 @@ lifecycleAuthorityRetainedMaterialSuite =
         `shouldReturn` Right (RetainedSealAlreadyBegun seal1)
       readIORef writes `shouldReturn` 1
 
-    it "rotates the retained source catalog instead of accepting any existing current source" $ do
+    it "rotates the source catalog under a fresh deadline after the ingress deadline expired" $ do
       state <- newIORef (0 :: Int, committedSource seal1 source1 initialRetainedMaterialAggregate)
       let repository =
             RetainedMaterialRepository
@@ -275,15 +562,7 @@ lifecycleAuthorityRetainedMaterialSuite =
                     then writeIORef state (revision + 1, aggregate) >> pure (Right ())
                     else pure (Left "conflict")
               }
-          request =
-            RetainedMaterialDeliveryRequest
-              { retainedDeliveryRequestOperationId = deliveryOperation1
-              , retainedDeliveryRequestTarget = target1
-              , retainedDeliveryRequestGeneration = generation2
-              , retainedDeliveryRequestAttestationRef = attestation1
-              , retainedDeliveryRequestDeadline = deadline
-              }
-      ensureRetainedMaterialCurrentSource repository now source2 request
+      ensureRetainedMaterialCurrentSource repository afterDeadline source2
         `shouldReturn` Right ()
       (_, aggregate) <- readIORef state
       retainedMaterialCurrent aggregate `shouldBe` Just source2
@@ -299,6 +578,21 @@ committedSource intent source aggregate =
       (_, committed) =
         stepRetainedMaterial begun (ObserveRetainedMaterialSeal source)
    in committed
+
+ioRefRepository
+  :: IORef (Int, RetainedMaterialAggregate schema)
+  -> RetainedMaterialRepository schema IO Int
+ioRefRepository state =
+  RetainedMaterialRepository
+    { readRetainedMaterialSnapshot = do
+        (revision, aggregate) <- readIORef state
+        pure (Right (RetainedMaterialSnapshot (Just revision) aggregate))
+    , compareAndSwapRetainedMaterial = \expected aggregate -> do
+        (revision, _) <- readIORef state
+        if expected == Just revision
+          then writeIORef state (revision + 1, aggregate) >> pure (Right ())
+          else pure (Left "conflict")
+    }
 
 seal1 :: RetainedSealIntent 'RetainedAcmeEabMaterial
 seal1 =
@@ -322,6 +616,18 @@ seal2 =
         digestB
         deadline
         grace2
+    )
+
+legacySeal1 :: RetainedSealIntent 'RetainedAcmeEabMaterial
+legacySeal1 =
+  must
+    ( mkRetainedSealIntent
+        operation1
+        generation1
+        operation1
+        digestA
+        deadline
+        grace1
     )
 
 source1 :: RetainedMaterialSource 'RetainedAcmeEabMaterial
@@ -350,6 +656,19 @@ source2 =
         now
     )
 
+legacySource1 :: RetainedMaterialSource 'RetainedAcmeEabMaterial
+legacySource1 =
+  must
+    ( mkRetainedMaterialSource
+        generation1
+        operation1
+        operation1
+        digestA
+        commitment1
+        1
+        now
+    )
+
 delivery1 :: RetainedDeliveryIntent 'RetainedAcmeEabMaterial
 delivery1 =
   mkRetainedDeliveryIntent
@@ -360,6 +679,40 @@ delivery1 =
     attestation1
     digestC
     deadline
+
+legacyDelivery1 :: RetainedDeliveryIntent 'RetainedAcmeEabMaterial
+legacyDelivery1 =
+  mkRetainedDeliveryIntent
+    deliveryOperation1
+    operation1
+    target1
+    generation1
+    attestation1
+    digestC
+    deadline
+
+legacyDeliveryReceipt1 :: RetainedDeliveryReceipt 'RetainedAcmeEabMaterial
+legacyDeliveryReceipt1 =
+  must
+    ( mkRetainedDeliveryReceipt
+        deliveryOperation1
+        operation1
+        target1
+        generation1
+        9
+        targetCommitment1
+    )
+
+deliverySuccessor1 :: RetainedDeliveryIntent 'RetainedAcmeEabMaterial
+deliverySuccessor1 =
+  mkRetainedDeliveryIntent
+    (retainedDeliverySuccessorOperationId deliveryOperation1)
+    sourceReceipt1
+    target1
+    generation1
+    attestation1
+    digestB
+    (authorityTimeFromMicros 500)
 
 deliveryReceipt1 :: RetainedDeliveryReceipt 'RetainedAcmeEabMaterial
 deliveryReceipt1 =

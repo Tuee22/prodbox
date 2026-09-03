@@ -266,7 +266,7 @@ Verify the Authority intent and attested Pod binding, then perform one exact reg
 Options:
 - --target <TARGET> - Exact registered Target identity
 - --target-agent-identity <AGENT> - Exact cluster and immutable Target Agent rollout identity
-- --material-schema <SCHEMA> - Closed direct/rewrapped material schema
+- --material-schema <SCHEMA> - Closed Target worker ingress schema
 - --image-digest <SHA256> - Immutable attested image digest
 - --request-digest <SHA256> - Exact worker request digest
 - --deadline-micros <MICROS> - Absolute Authority deadline

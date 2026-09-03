@@ -14,6 +14,9 @@ import Data.Bifunctor (first)
 import Data.List (find)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.Capacity.RetainedMaterialDeliveryBudget
+  ( retainedMaterialDeliveryOperationLifetimeMicros
+  )
 import Prodbox.ControlPlane.RetainedMaterialEnvelope
   ( RetainedDestinationKeyPair
   , generateRetainedDestinationKeyPair
@@ -38,16 +41,22 @@ import Prodbox.Lifecycle.Authority.RetainedMaterial
   , RetainedMaterialCommand (..)
   , RetainedMaterialDecision (..)
   , RetainedMaterialRef
+  , RetainedMaterialRefusal (..)
   , RetainedMaterialSource
   , RetainedMaterialTarget
   , mkRetainedDeliveryIntent
   , mkRetainedDeliveryReceipt
   , mkRetainedMaterialRef
   , mkRetainedSealIntent
+  , retainedDeliveryAttestationRef
   , retainedDeliveryDeadline
   , retainedDeliveryOperationId
+  , retainedDeliveryReceiptGeneration
   , retainedDeliveryReceiptOperationId
+  , retainedDeliveryReceiptSource
+  , retainedDeliveryReceiptTarget
   , retainedDeliverySourceReceipt
+  , retainedDeliverySuccessorOperationId
   , retainedDeliveryTarget
   , retainedDeliveryTargetGeneration
   , retainedMaterialCompletedDeliveries
@@ -60,7 +69,11 @@ import Prodbox.Lifecycle.Authority.RetainedMaterial
   , retainedSourceReceiptRef
   , retainedSourceVaultVersion
   )
-import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
+import Prodbox.Lifecycle.Lease
+  ( AuthorityTime
+  , authorityTimeFromMicros
+  , authorityTimeMicros
+  )
 import Prodbox.Lifecycle.TargetCommitIntent (CredentialGeneration)
 
 data RetainedMaterialDeliveryRequest schema = RetainedMaterialDeliveryRequest
@@ -86,7 +99,7 @@ coordinateRetainedMaterialDelivery
      )
   -> IO (Either Text (RetainedDeliveryReceipt schema))
 coordinateRetainedMaterialDelivery repository now source request observeDelivery runDelivery = do
-  prepared <- ensureRetainedMaterialCurrentSource repository now source request
+  prepared <- ensureRetainedMaterialCurrentSource repository now source
   case prepared of
     Left detail -> pure (Left detail)
     Right () -> resumeOrBegin
@@ -105,7 +118,7 @@ coordinateRetainedMaterialDelivery repository now source request observeDelivery
 
   beginFresh = do
     keyPair <- generateRetainedDestinationKeyPair
-    let intent = deliveryIntent keyPair request source
+    let intent = deliveryIntent now keyPair request source
     begun <-
       applyRetainedMaterialCommand
         repository
@@ -134,15 +147,26 @@ coordinateRetainedMaterialDelivery repository now source request observeDelivery
             <= authorityTimeMicros (retainedDeliveryDeadline intent) ->
             pure (Left "retained delivery remains pending until its absolute deadline")
         | otherwise -> do
-            expired <-
-              applyRetainedMaterialCommand
-                repository
-                (ExpireRetainedMaterialDelivery (retainedDeliveryOperationId intent) now)
-            pure $ case expired of
-              Right (RetainedDeliveryExpired _) ->
-                Left "retained delivery expired without an observed Target receipt; use a successor operation"
-              Right decision -> Left (unexpected "expiry" decision)
-              Left detail -> Left detail
+            keyPair <- generateRetainedDestinationKeyPair
+            let successor = successorDeliveryIntent now keyPair source intent
+                replacement =
+                  ReplaceExpiredRetainedMaterialDelivery
+                    (retainedDeliveryOperationId intent)
+                    now
+                    successor
+            replaced <- applyRetainedMaterialCommand repository replacement
+            confirmed <- case replaced of
+              Left _ -> applyRetainedMaterialCommand repository replacement
+              Right decision -> pure (Right decision)
+            case confirmed of
+              Right (RetainedDeliveryReplaced _ persisted)
+                | persisted == successor -> execute successor keyPair
+              Right (RetainedDeliveryAlreadyReplaced persisted)
+                | persisted == successor -> execute successor keyPair
+              Right (RetainedMaterialRefused refusal) ->
+                pure (Left ("retained delivery successor refused: " <> Text.pack (show refusal)))
+              Right decision -> pure (Left (unexpected "successor" decision))
+              Left detail -> pure (Left detail)
 
   commitReceipt intent workerReceipt =
     case deliveryReceipt intent workerReceipt of
@@ -159,30 +183,76 @@ coordinateRetainedMaterialDelivery repository now source request observeDelivery
           Left detail -> Left detail
 
   pendingForOperation aggregate =
-    findByOperation retainedDeliveryOperationId (retainedMaterialPendingDeliveries aggregate)
+    find pendingMatchesRequest (retainedMaterialPendingDeliveries aggregate)
 
   completedForOperation aggregate =
-    findByOperation retainedDeliveryReceiptOperationId (retainedMaterialCompletedDeliveries aggregate)
+    find completedMatchesRequest (retainedMaterialCompletedDeliveries aggregate)
 
-  findByOperation operationOf =
-    find ((== retainedDeliveryRequestOperationId request) . operationOf)
+  pendingMatchesRequest intent =
+    operationBelongsToRequest (retainedDeliveryOperationId intent)
+      && pendingSourceMatchesRequest intent
+      && retainedDeliveryTarget intent == retainedDeliveryRequestTarget request
+      && retainedDeliveryTargetGeneration intent == retainedDeliveryRequestGeneration request
+      && retainedDeliveryAttestationRef intent == retainedDeliveryRequestAttestationRef request
+
+  pendingSourceMatchesRequest intent =
+    retainedDeliverySourceReceipt intent == retainedSourceReceiptRef source
+      || ( retainedDeliverySourceReceipt intent == retainedSourceOperationId source
+             && retainedSourceReceiptRef source /= retainedSourceOperationId source
+         )
+
+  completedMatchesRequest receipt =
+    operationBelongsToRequest (retainedDeliveryReceiptOperationId receipt)
+      && retainedDeliveryReceiptSource receipt == retainedSourceReceiptRef source
+      && retainedDeliveryReceiptTarget receipt == retainedDeliveryRequestTarget request
+      && retainedDeliveryReceiptGeneration receipt == retainedDeliveryRequestGeneration request
+
+  operationBelongsToRequest operationId =
+    operationId `elem` take retainedDeliverySuccessorSearchBound operationLineage
+
+  operationLineage =
+    iterate retainedDeliverySuccessorOperationId (retainedDeliveryRequestOperationId request)
 
 ensureRetainedMaterialCurrentSource
   :: RetainedMaterialRepository schema IO revision
   -> AuthorityTime
   -> RetainedMaterialSource schema
-  -> RetainedMaterialDeliveryRequest schema
   -> IO (Either Text ())
-ensureRetainedMaterialCurrentSource repository now source request = do
+ensureRetainedMaterialCurrentSource repository now source = do
   observed <- readRetainedMaterialSnapshot repository
   case observed of
     Left detail -> pure (Left detail)
     Right snapshot -> case retainedMaterialCurrent (retainedMaterialSnapshotAggregate snapshot) of
       Just current
         | sourceIdentityMatches current source -> pure (Right ())
-        | otherwise -> beginSource
+        | otherwise -> correctLegacyOrBegin
       Nothing -> beginSource
  where
+  correctLegacyOrBegin = do
+    corrected <-
+      applyRetainedMaterialCommand
+        repository
+        (ObserveLegacyRetainedMaterialSourceReceiptCorrection source)
+    confirmed <- case corrected of
+      Left _ ->
+        applyRetainedMaterialCommand
+          repository
+          (ObserveLegacyRetainedMaterialSourceReceiptCorrection source)
+      Right decision -> pure (Right decision)
+    case confirmed of
+      Left detail -> pure (Left detail)
+      Right (RetainedLegacySourceReceiptCorrected _ confirmedSource)
+        | sourceIdentityMatches confirmedSource source -> pure (Right ())
+      Right (RetainedLegacySourceReceiptAlreadyCorrected confirmedSource)
+        | sourceIdentityMatches confirmedSource source -> pure (Right ())
+      Right
+        ( RetainedMaterialRefused
+            RetainedLegacySourceReceiptCorrectionMismatch
+          ) -> beginSource
+      Right (RetainedMaterialRefused refusal) ->
+        pure (Left ("retained source correction refused: " <> Text.pack (show refusal)))
+      Right decision -> pure (Left (unexpected "source-correction" decision))
+
   beginSource = do
     let sealIntent =
           mkRetainedSealIntent
@@ -190,8 +260,8 @@ ensureRetainedMaterialCurrentSource repository now source request = do
             (retainedSourceGeneration source)
             (retainedSourceReceiptRef source)
             (retainedSourceCiphertextDigest source)
-            (retainedDeliveryRequestDeadline request)
-            (retainedDeliveryRequestDeadline request)
+            (freshRetainedMaterialDeadline now)
+            (freshRetainedMaterialDeadline now)
     case sealIntent of
       Left detail -> pure (Left detail)
       Right intent -> do
@@ -201,7 +271,10 @@ ensureRetainedMaterialCurrentSource repository now source request = do
           Left detail -> pure (Left detail)
           Right (RetainedSealBegun _) -> commitSource
           Right (RetainedSealAlreadyBegun _) -> commitSource
-          Right (RetainedSealAlreadyCommitted _) -> pure (Right ())
+          Right (RetainedSealAlreadyCommitted confirmed)
+            | sourceIdentityMatches confirmed source -> pure (Right ())
+          Right (RetainedSealAlreadyCommitted _) ->
+            pure (Left "retained source replay did not match the exact current receipt")
           Right decision -> pure (Left (unexpected "source-begin" decision))
 
   commitSource = do
@@ -224,11 +297,12 @@ sourceIdentityMatches left right =
     && retainedSourceVaultVersion left == retainedSourceVaultVersion right
 
 deliveryIntent
-  :: RetainedDestinationKeyPair schema
+  :: AuthorityTime
+  -> RetainedDestinationKeyPair schema
   -> RetainedMaterialDeliveryRequest schema
   -> RetainedMaterialSource schema
   -> RetainedDeliveryIntent schema
-deliveryIntent keyPair request source =
+deliveryIntent now keyPair request source =
   mkRetainedDeliveryIntent
     (retainedDeliveryRequestOperationId request)
     (retainedSourceReceiptRef source)
@@ -236,7 +310,31 @@ deliveryIntent keyPair request source =
     (retainedDeliveryRequestGeneration request)
     (retainedDeliveryRequestAttestationRef request)
     (retainedDestinationPublicKeyDigest (retainedDestinationPublicKey keyPair))
-    (retainedDeliveryRequestDeadline request)
+    (freshRetainedMaterialDeadline now)
+
+successorDeliveryIntent
+  :: AuthorityTime
+  -> RetainedDestinationKeyPair schema
+  -> RetainedMaterialSource schema
+  -> RetainedDeliveryIntent schema
+  -> RetainedDeliveryIntent schema
+successorDeliveryIntent now keyPair source predecessor =
+  mkRetainedDeliveryIntent
+    (retainedDeliverySuccessorOperationId (retainedDeliveryOperationId predecessor))
+    (retainedSourceReceiptRef source)
+    (retainedDeliveryTarget predecessor)
+    (retainedDeliveryTargetGeneration predecessor)
+    (retainedDeliveryAttestationRef predecessor)
+    (retainedDestinationPublicKeyDigest (retainedDestinationPublicKey keyPair))
+    (freshRetainedMaterialDeadline now)
+
+freshRetainedMaterialDeadline :: AuthorityTime -> AuthorityTime
+freshRetainedMaterialDeadline now =
+  authorityTimeFromMicros
+    (authorityTimeMicros now + retainedMaterialDeliveryOperationLifetimeMicros)
+
+retainedDeliverySuccessorSearchBound :: Int
+retainedDeliverySuccessorSearchBound = 257
 
 deliveryReceipt
   :: RetainedDeliveryIntent schema

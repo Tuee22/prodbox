@@ -19,7 +19,10 @@ import Prodbox.Bootstrap.Broker.Engine
   ( BrokerEngine
   , BrokerEngineError (..)
   , EngineBoundaryError (..)
+  , ProvisionerAccessorAbsenceCause (..)
   , ProvisionerAccessorCleanupCause (..)
+  , ProvisionerAccessorRevocationCause (..)
+  , ProvisionerAccessorRevocationHttpOperation (..)
   , RootAccessorAbsenceProofCause (..)
   , RootAccessorInventoryCause (..)
   , RootAccessorRevocationCause (..)
@@ -30,7 +33,9 @@ import Prodbox.Bootstrap.Broker.Engine
   , executeBrokerCall
   , mkEngineExecutionContext
   , prepareBrokerCall
+  , provisionerAccessorAbsenceCauseName
   , provisionerAccessorCleanupCauseName
+  , provisionerAccessorRevocationCauseName
   , provisionerPolicyApplicationCauseName
   , renderBaselinePhysicalStage
   , rootAccessorAbsenceProofCauseName
@@ -162,6 +167,24 @@ brokerEngineErrorDiagnostic route failure =
               ++ "; provisioner-policy-application-cause="
               ++ provisionerPolicyApplicationCauseName cause
               ++ ")"
+    EngineBaselinePhysicalCallRefused
+      stage
+      (EngineBoundaryProvisionerAccessorRevocation cause)
+        | route == BrokerVaultBaselineReconcile ->
+            " (baseline-stage="
+              ++ renderBaselinePhysicalStage stage
+              ++ "; provisioner-accessor-revocation-cause="
+              ++ provisionerAccessorRevocationCauseName cause
+              ++ ")"
+    EngineBaselinePhysicalCallRefused
+      stage
+      (EngineBoundaryProvisionerAccessorAbsence cause)
+        | route == BrokerVaultBaselineReconcile ->
+            " (baseline-stage="
+              ++ renderBaselinePhysicalStage stage
+              ++ "; provisioner-accessor-absence-cause="
+              ++ provisionerAccessorAbsenceCauseName cause
+              ++ ")"
     EngineBaselinePhysicalCallRefused stage boundary
       | route == BrokerVaultBaselineReconcile ->
           " (baseline-stage="
@@ -195,6 +218,10 @@ brokerEngineErrorDiagnostic route failure =
       rootAccessorInventoryBoundaryName cause
     EngineBoundaryProvisionerAccessorCleanup cause ->
       provisionerAccessorCleanupBoundaryName cause
+    EngineBoundaryProvisionerAccessorRevocation cause ->
+      provisionerAccessorRevocationBoundaryName cause
+    EngineBoundaryProvisionerAccessorAbsence cause ->
+      provisionerAccessorAbsenceBoundaryName cause
     EngineBoundaryProvisionerPolicyApplication _ ->
       "boundary-unavailable"
 
@@ -412,6 +439,20 @@ boundaryReply failure = case failure of
       "boundary-ambiguous" ->
         (BrokerReplyGatewayTimeout, "{\"status\":\"boundary-ambiguous\"}")
       _ -> (BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+  EngineBoundaryProvisionerAccessorRevocation cause ->
+    case provisionerAccessorRevocationBoundaryName cause of
+      "boundary-unavailable" ->
+        (BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
+      "boundary-ambiguous" ->
+        (BrokerReplyGatewayTimeout, "{\"status\":\"boundary-ambiguous\"}")
+      _ -> (BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+  EngineBoundaryProvisionerAccessorAbsence cause ->
+    case provisionerAccessorAbsenceBoundaryName cause of
+      "boundary-unavailable" ->
+        (BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
+      "boundary-ambiguous" ->
+        (BrokerReplyGatewayTimeout, "{\"status\":\"boundary-ambiguous\"}")
+      _ -> (BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
   EngineBoundaryProvisionerPolicyApplication _ ->
     (BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
 
@@ -468,6 +509,35 @@ provisionerAccessorCleanupBoundaryName cause = case cause of
   ProvisionerAccessorCleanupObservedAccessorInvalid -> "boundary-refused"
   ProvisionerAccessorCleanupObservedInventoryTooLarge -> "boundary-refused"
   ProvisionerAccessorCleanupObservedInventoryDuplicate -> "boundary-refused"
+
+provisionerAccessorRevocationBoundaryName
+  :: ProvisionerAccessorRevocationCause -> String
+provisionerAccessorRevocationBoundaryName cause = case cause of
+  ProvisionerAccessorRevocationProjectedTokenUnavailable -> "boundary-unavailable"
+  ProvisionerAccessorRevocationHttpFailure operation _ -> case operation of
+    ProvisionerAccessorRevocationTargetLookupAccessor -> "boundary-refused"
+    _ -> "boundary-unavailable"
+  ProvisionerAccessorRevocationAuditorCleanupUnavailable -> "boundary-unavailable"
+  ProvisionerAccessorRevocationAuditorCleanupAmbiguous -> "boundary-ambiguous"
+  ProvisionerAccessorRevocationAuditorLoginInvalid -> "boundary-refused"
+  ProvisionerAccessorRevocationAuditorCleanupRefused -> "boundary-refused"
+  ProvisionerAccessorRevocationTargetIdentityInvalid -> "boundary-refused"
+  ProvisionerAccessorRevocationTargetStillPresent -> "boundary-refused"
+  ProvisionerAccessorRevocationRoleAccessorStillPresent -> "boundary-refused"
+
+provisionerAccessorAbsenceBoundaryName
+  :: ProvisionerAccessorAbsenceCause -> String
+provisionerAccessorAbsenceBoundaryName cause = case cause of
+  ProvisionerAccessorAbsenceProjectedTokenUnavailable -> "boundary-unavailable"
+  ProvisionerAccessorAbsenceHttpFailure {} -> "boundary-unavailable"
+  ProvisionerAccessorAbsenceAuditorCleanupUnavailable -> "boundary-unavailable"
+  ProvisionerAccessorAbsenceAuditorCleanupAmbiguous -> "boundary-ambiguous"
+  ProvisionerAccessorAbsenceAuditorLoginInvalid -> "boundary-refused"
+  ProvisionerAccessorAbsenceAuditorCleanupRefused -> "boundary-refused"
+  ProvisionerAccessorAbsenceRoleAccessorStillPresent -> "boundary-refused"
+  ProvisionerAccessorAbsenceObservedAccessorInvalid -> "boundary-refused"
+  ProvisionerAccessorAbsenceObservedInventoryTooLarge -> "boundary-refused"
+  ProvisionerAccessorAbsenceObservedInventoryDuplicate -> "boundary-refused"
 
 storeReply :: StoreBoundaryError -> (BrokerReplyStatus, ByteString)
 storeReply failure = case failure of

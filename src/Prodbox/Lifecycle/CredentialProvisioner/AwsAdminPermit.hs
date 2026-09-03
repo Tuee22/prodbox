@@ -32,6 +32,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , mkBackupRepairFrozenPermit
   , AwsAdminPermitIntent
   , AwsAdminPermitKind (..)
+  , AwsAdminCleanupRecoveryProgram (..)
   , mkNormalAwsAdminPermitIntent
   , mkGenesisAwsAdminPermitIntent
   , mkBackupRepairAwsAdminPermitIntent
@@ -50,6 +51,8 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , awsAdminPermitIntentAuthorityEndpoint
   , awsAdminPermitIntentPreparedTarget
   , awsAdminPermitIntentTarget
+  , awsAdminPermitIntentCleanupPredecessor
+  , bindAwsAdminPermitIntentCleanupRecovery
   , awsAdminGenesisKindMatches
   , bindAwsAdminPermitIntentPreparedTarget
   , rebindAwsAdminPermitIntentPreparedTarget
@@ -378,6 +381,14 @@ data AwsAdminPermitKind
   = NormalOperatorMaterialKind
   | GenesisBackupKind !TargetValueDigest
   | BackupRepairFrozenKind !BackupRepairFrozenBinding
+  | CleanupRecoveryKind
+      !AwsAdminCleanupRecoveryProgram
+      !TargetValueDigest
+  deriving stock (Eq, Show)
+
+data AwsAdminCleanupRecoveryProgram
+  = NormalOperatorMaterialCleanupProgram
+  | GenesisBackupCleanupProgram !TargetValueDigest
   deriving stock (Eq, Show)
 
 data AwsAdminPermitIntent = AwsAdminPermitIntent
@@ -521,6 +532,23 @@ validateKindRequest kind credentialClass action = case kind of
     unless
       (credentialClass == AuthorityBackupStoreCredential && action == RotateOperatorMaterial)
       (Left AwsAdminPermitKindMismatch)
+  CleanupRecoveryKind program _ ->
+    validateCleanupRecoveryProgramRequest program credentialClass action
+
+validateCleanupRecoveryProgramRequest
+  :: AwsAdminCleanupRecoveryProgram
+  -> AwsCredentialClass
+  -> OperatorMaterialAction
+  -> Either AwsAdminPermitError ()
+validateCleanupRecoveryProgramRequest program credentialClass action = case program of
+  NormalOperatorMaterialCleanupProgram ->
+    when
+      (credentialClass == AuthorityBackupStoreCredential && action == InstallOperatorMaterial)
+      (Left AwsAdminPermitKindMismatch)
+  GenesisBackupCleanupProgram _ ->
+    unless
+      (credentialClass == AuthorityBackupStoreCredential && action == InstallOperatorMaterial)
+      (Left AwsAdminPermitKindMismatch)
 
 awsAdminPermitIntentKind :: AwsAdminPermitIntent -> AwsAdminPermitKind
 awsAdminPermitIntentKind = internalAwsAdminIntentKind
@@ -569,6 +597,57 @@ awsAdminPermitIntentPreparedTarget = internalAwsAdminIntentPreparedTarget
 awsAdminPermitIntentTarget :: AwsAdminPermitIntent -> TargetSecretId
 awsAdminPermitIntentTarget = targetForClass . awsAdminPermitIntentCredentialClass
 
+awsAdminPermitIntentCleanupPredecessor
+  :: AwsAdminPermitIntent -> Maybe TargetValueDigest
+awsAdminPermitIntentCleanupPredecessor intent = case awsAdminPermitIntentKind intent of
+  CleanupRecoveryKind _ predecessor -> Just predecessor
+  _ -> Nothing
+
+-- | Bind a mode-indexed caller draft to the exact predecessor permit
+-- authorized by a later-journal cleanup proof. Only its digest crosses into
+-- the new permit; Genesis retains its existing closed binding. Backup repair
+-- is not an expired-Authorized renewal program and remains unrepresentable.
+bindAwsAdminPermitIntentCleanupRecovery
+  :: AwsAdminPermitKind
+  -> TargetValueDigest
+  -> AwsAdminPermitIntent
+  -> Either AwsAdminPermitError AwsAdminPermitIntent
+bindAwsAdminPermitIntentCleanupRecovery retainedKind predecessor intent = do
+  retainedProgram <- cleanupProgramForKind retainedKind
+  replacementProgram <- cleanupProgramForKind (awsAdminPermitIntentKind intent)
+  unless
+    (cleanupProgramsRenewablyMatch retainedProgram replacementProgram)
+    (Left AwsAdminPermitKindMismatch)
+  case awsAdminPermitIntentKind intent of
+    CleanupRecoveryKind _ existing ->
+      unless (existing == predecessor) (Left AwsAdminPermitKindMismatch)
+    _ -> pure ()
+  let rebound =
+        intent
+          { internalAwsAdminIntentKind =
+              CleanupRecoveryKind replacementProgram predecessor
+          }
+  validateIntent rebound
+  pure rebound
+
+cleanupProgramForKind
+  :: AwsAdminPermitKind
+  -> Either AwsAdminPermitError AwsAdminCleanupRecoveryProgram
+cleanupProgramForKind kind = case kind of
+  NormalOperatorMaterialKind -> Right NormalOperatorMaterialCleanupProgram
+  GenesisBackupKind digest -> Right (GenesisBackupCleanupProgram digest)
+  BackupRepairFrozenKind _ -> Left AwsAdminPermitKindMismatch
+  CleanupRecoveryKind program _ -> Right program
+
+cleanupProgramsRenewablyMatch
+  :: AwsAdminCleanupRecoveryProgram
+  -> AwsAdminCleanupRecoveryProgram
+  -> Bool
+cleanupProgramsRenewablyMatch retained replacement = case (retained, replacement) of
+  (NormalOperatorMaterialCleanupProgram, NormalOperatorMaterialCleanupProgram) -> True
+  (GenesisBackupCleanupProgram _, GenesisBackupCleanupProgram _) -> True
+  _ -> False
+
 -- | Check the exceptional genesis kind against the exact retained genesis
 -- plan and first-reconcile member.  The kind digest deliberately binds the
 -- request and deadline but no raw credential material.
@@ -580,6 +659,8 @@ awsAdminGenesisKindMatches
 awsAdminGenesisKindMatches genesisPlan member intent =
   case awsAdminPermitIntentKind intent of
     GenesisBackupKind actual -> actual == genesisKindDigest genesisPlan member intent
+    CleanupRecoveryKind (GenesisBackupCleanupProgram actual) _ ->
+      actual == genesisKindDigest genesisPlan member intent
     _ -> False
 
 -- | Authority-only canonicalization of a caller draft.  The retained
@@ -608,6 +689,18 @@ bindAwsAdminPermitIntentPreparedTarget genesisContext planBinding deadline owner
     BackupRepairFrozenKind repair -> do
       unless (genesisContext == Nothing) (Left AwsAdminPermitKindMismatch)
       pure (BackupRepairFrozenKind repair)
+    CleanupRecoveryKind program predecessor -> case program of
+      NormalOperatorMaterialCleanupProgram -> do
+        unless (genesisContext == Nothing) (Left AwsAdminPermitKindMismatch)
+        pure (CleanupRecoveryKind program predecessor)
+      GenesisBackupCleanupProgram _ -> case genesisContext of
+        Nothing -> Left AwsAdminPermitKindMismatch
+        Just (genesisPlan, member) ->
+          pure
+            ( CleanupRecoveryKind
+                (GenesisBackupCleanupProgram (genesisKindDigest genesisPlan member core))
+                predecessor
+            )
   let canonicalCore = core {internalAwsAdminIntentKind = canonicalKind}
       receiptDigest =
         awsAdminPreparedTargetReceiptDigest
@@ -876,6 +969,15 @@ data WirePermitKind
   = WireNormalPermit
   | WireGenesisPermit !Text
   | WireBackupRepairFrozenPermit !WireRepairBinding
+  | WireCleanupRecoveryPermit
+      !WireCleanupRecoveryProgram
+      !Text
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data WireCleanupRecoveryProgram
+  = WireNormalOperatorMaterialCleanupProgram
+  | WireGenesisBackupCleanupProgram !Text
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -1032,9 +1134,10 @@ mkSignedNormalOperatorMaterialPermit
   -> ByteString
   -> Either AwsAdminPermitError SignedNormalOperatorMaterialPermit
 mkSignedNormalOperatorMaterialPermit generation intent binding signature = do
-  unless
-    (awsAdminPermitIntentKind intent == NormalOperatorMaterialKind)
-    (Left AwsAdminPermitKindMismatch)
+  case awsAdminPermitIntentKind intent of
+    NormalOperatorMaterialKind -> pure ()
+    CleanupRecoveryKind NormalOperatorMaterialCleanupProgram _ -> pure ()
+    _ -> Left AwsAdminPermitKindMismatch
   SignedNormalOperatorMaterialPermit
     <$> mkSignedAwsAdminPermit generation intent binding signature
 
@@ -1047,6 +1150,7 @@ mkSignedGenesisBackupPermit
 mkSignedGenesisBackupPermit generation intent binding signature = do
   case awsAdminPermitIntentKind intent of
     GenesisBackupKind _ -> pure ()
+    CleanupRecoveryKind (GenesisBackupCleanupProgram _) _ -> pure ()
     _ -> Left AwsAdminPermitKindMismatch
   SignedGenesisBackupPermit
     <$> mkSignedAwsAdminPermit generation intent binding signature
@@ -1079,7 +1183,12 @@ mkSomeSignedAwsAdminPermit generation intent binding signature = do
     NormalOperatorMaterialKind ->
       SomeSignedNormalOperatorMaterialPermit
         (SignedNormalOperatorMaterialPermit permit)
+    CleanupRecoveryKind NormalOperatorMaterialCleanupProgram _ ->
+      SomeSignedNormalOperatorMaterialPermit
+        (SignedNormalOperatorMaterialPermit permit)
     GenesisBackupKind _ ->
+      SomeSignedGenesisBackupPermit (SignedGenesisBackupPermit permit)
+    CleanupRecoveryKind (GenesisBackupCleanupProgram _) _ ->
       SomeSignedGenesisBackupPermit (SignedGenesisBackupPermit permit)
     BackupRepairFrozenKind _ ->
       SomeSignedBackupRepairFrozenPermit (SignedBackupRepairFrozenPermit permit)
@@ -1261,7 +1370,13 @@ validatePreparedTargetBinding intent =
 validateKindPlanBinding :: AwsAdminPermitIntent -> Either AwsAdminPermitError ()
 validateKindPlanBinding intent = case awsAdminPermitIntentKind intent of
   NormalOperatorMaterialKind -> pure ()
+  CleanupRecoveryKind NormalOperatorMaterialCleanupProgram _ -> pure ()
   GenesisBackupKind _ ->
+    case awsAdminPermitIntentPlanBinding intent of
+      Just binding
+        | firstReconcilePermitMemberIndex binding == 0 -> pure ()
+      _ -> Left AwsAdminPermitPlanBindingMismatch
+  CleanupRecoveryKind (GenesisBackupCleanupProgram _) _ ->
     case awsAdminPermitIntentPlanBinding intent of
       Just binding
         | firstReconcilePermitMemberIndex binding == 0 -> pure ()
@@ -1356,31 +1471,61 @@ kindToWire kind = case kind of
   NormalOperatorMaterialKind -> WireNormalPermit
   GenesisBackupKind digest -> WireGenesisPermit (targetValueDigestText digest)
   BackupRepairFrozenKind binding ->
-    WireBackupRepairFrozenPermit
-      WireRepairBinding
-        { wireRepairAuthorityEpoch = backupRepairFrozenAuthorityEpoch binding
-        , wireRepairPlanDigest = targetValueDigestText (backupRepairFrozenPlanDigest binding)
-        , wireRepairObservationDigest =
-            targetValueDigestText (backupRepairFrozenObservationDigest binding)
-        , wireRepairLostGeneration =
-            credentialGenerationValue (backupRepairFrozenLostGeneration binding)
-        }
+    WireBackupRepairFrozenPermit (repairBindingToWire binding)
+  CleanupRecoveryKind program predecessor ->
+    WireCleanupRecoveryPermit
+      (cleanupProgramToWire program)
+      (targetValueDigestText predecessor)
 
 kindFromWire :: WirePermitKind -> Either AwsAdminPermitError AwsAdminPermitKind
 kindFromWire wire = case wire of
   WireNormalPermit -> Right NormalOperatorMaterialKind
   WireGenesisPermit rawDigest -> GenesisBackupKind <$> mapInvalid (mkTargetValueDigest rawDigest)
-  WireBackupRepairFrozenPermit repair -> do
-    planDigest <- mapInvalid (mkTargetValueDigest (wireRepairPlanDigest repair))
-    observationDigest <-
-      mapInvalid (mkTargetValueDigest (wireRepairObservationDigest repair))
-    generation <- mapInvalid (mkCredentialGeneration (wireRepairLostGeneration repair))
-    BackupRepairFrozenKind
-      <$> mkBackupRepairFrozenBinding
-        (wireRepairAuthorityEpoch repair)
-        planDigest
-        observationDigest
-        generation
+  WireBackupRepairFrozenPermit repair ->
+    BackupRepairFrozenKind <$> repairBindingFromWire repair
+  WireCleanupRecoveryPermit program predecessor ->
+    CleanupRecoveryKind
+      <$> cleanupProgramFromWire program
+      <*> mapInvalid (mkTargetValueDigest predecessor)
+
+cleanupProgramToWire
+  :: AwsAdminCleanupRecoveryProgram -> WireCleanupRecoveryProgram
+cleanupProgramToWire program = case program of
+  NormalOperatorMaterialCleanupProgram -> WireNormalOperatorMaterialCleanupProgram
+  GenesisBackupCleanupProgram digest ->
+    WireGenesisBackupCleanupProgram (targetValueDigestText digest)
+
+cleanupProgramFromWire
+  :: WireCleanupRecoveryProgram
+  -> Either AwsAdminPermitError AwsAdminCleanupRecoveryProgram
+cleanupProgramFromWire program = case program of
+  WireNormalOperatorMaterialCleanupProgram -> Right NormalOperatorMaterialCleanupProgram
+  WireGenesisBackupCleanupProgram digest ->
+    GenesisBackupCleanupProgram <$> mapInvalid (mkTargetValueDigest digest)
+
+repairBindingToWire :: BackupRepairFrozenBinding -> WireRepairBinding
+repairBindingToWire binding =
+  WireRepairBinding
+    { wireRepairAuthorityEpoch = backupRepairFrozenAuthorityEpoch binding
+    , wireRepairPlanDigest = targetValueDigestText (backupRepairFrozenPlanDigest binding)
+    , wireRepairObservationDigest =
+        targetValueDigestText (backupRepairFrozenObservationDigest binding)
+    , wireRepairLostGeneration =
+        credentialGenerationValue (backupRepairFrozenLostGeneration binding)
+    }
+
+repairBindingFromWire
+  :: WireRepairBinding -> Either AwsAdminPermitError BackupRepairFrozenBinding
+repairBindingFromWire repair = do
+  planDigest <- mapInvalid (mkTargetValueDigest (wireRepairPlanDigest repair))
+  observationDigest <-
+    mapInvalid (mkTargetValueDigest (wireRepairObservationDigest repair))
+  generation <- mapInvalid (mkCredentialGeneration (wireRepairLostGeneration repair))
+  mkBackupRepairFrozenBinding
+    (wireRepairAuthorityEpoch repair)
+    planDigest
+    observationDigest
+    generation
 
 planBindingToWire :: FirstReconcilePermitBinding -> WirePlanBinding
 planBindingToWire binding =

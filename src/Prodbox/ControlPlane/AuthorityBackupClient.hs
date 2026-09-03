@@ -16,15 +16,21 @@ module Prodbox.ControlPlane.AuthorityBackupClient
   , authorityCheckpointBackupClient
   , authorityCheckpointBackupClientWithTransport
   , authorityAggregateBackupClientWithTransport
+  , decodeAuthorityAggregateBackupResponse
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isControl, isSpace)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
+  ( AuthenticatedRolePlainResponseObservation
+  , classifyAuthenticatedRolePlainResponse
+  )
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError
   , AuthenticatedClientProviders
@@ -133,7 +139,9 @@ data AuthorityAggregateBackupClientError
   | AuthorityAggregateBackupDigestInvalid !Text
   | AuthorityAggregateBackupTransportFailed !AuthenticatedClientError
   | AuthorityAggregateBackupHttpStatus !Int
-  | AuthorityAggregateBackupResponseInvalid !ControlPlaneResponseCodecError
+  | AuthorityAggregateBackupResponseInvalid
+      !ControlPlaneResponseCodecError
+      !AuthenticatedRolePlainResponseObservation
   | AuthorityAggregateBackupReceiptClassMismatch
   | AuthorityAggregateBackupReceiptDigestMismatch !Text !Text
   | AuthorityAggregateBackupReceiptVersionInvalid !Text
@@ -329,12 +337,12 @@ authorityAggregateBackupClientWithTransport transport =
               )
           )
       pure $ do
-        ControlPlaneResponse status body <-
+        response@(ControlPlaneResponse status _) <-
           first AuthorityAggregateBackupTransportFailed attempted
         if status /= 200
           then Left (AuthorityAggregateBackupHttpStatus status)
           else do
-            receipt <- decodeAggregateResponse body
+            receipt <- decodeAuthorityAggregateBackupResponse response
             validateAggregateReceipt
               (authorityBackupCiphertextDigest ciphertext)
               receipt
@@ -356,9 +364,9 @@ authorityAggregateBackupClientWithTransport transport =
               )
           )
       pure $ do
-        ControlPlaneResponse status body <-
+        response@(ControlPlaneResponse status _) <-
           first AuthorityAggregateBackupTransportFailed attempted
-        observation <- decodeAggregateResponse body
+        observation <- decodeAuthorityAggregateBackupResponse response
         case observation of
           AuthorityBackupBlobMissing
             | status == 404 -> Right AuthorityAggregateBackupMissing
@@ -374,13 +382,21 @@ authorityAggregateBackupClientWithTransport transport =
                 validateAggregateReceipt digest receipt
                 Right (AuthorityAggregateBackupCurrent ciphertext receipt)
 
-  decodeAggregateResponse body =
-    first
-      AuthorityAggregateBackupResponseInvalid
-      ( decodeControlPlaneResponse
-          authorityCheckpointBackupMaximumResponseBytes
-          (LazyByteString.fromStrict body)
-      )
+decodeAuthorityAggregateBackupResponse
+  :: (Serialise response)
+  => ControlPlaneResponse
+  -> Either AuthorityAggregateBackupClientError response
+decodeAuthorityAggregateBackupResponse (ControlPlaneResponse status body) =
+  first
+    ( \err ->
+        AuthorityAggregateBackupResponseInvalid
+          err
+          (classifyAuthenticatedRolePlainResponse status body)
+    )
+    ( decodeControlPlaneResponse
+        authorityCheckpointBackupMaximumResponseBytes
+        (LazyByteString.fromStrict body)
+    )
 
 validateAggregateReceipt
   :: AuthorityBackupDigest

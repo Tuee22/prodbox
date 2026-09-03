@@ -13,6 +13,8 @@ module Prodbox.ControlPlane.AuthorityBackupReconcileProduction
   , compileGenesisAwsAdminIntent
   , compileFirstReconcileAwsAdminIntent
   , compileFirstReconcileContinuationAwsAdminIntent
+  , normalAwsAdminOperationIdForScope
+  , compileNormalAwsAdminIntentForScope
   , reconcileRemainingFirstReconcileCredentials
   , reconcileRemainingFirstReconcileCredentialsWith
   , compileBackupRepairPermit
@@ -123,6 +125,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   , mkOperatorMaterialOperationId
   , mkOperatorMaterialPermit
   , mkOperatorMaterialPermitId
+  , operatorMaterialOperationIdText
   , operatorMaterialPermitPlanBinding
   , operatorMaterialPermitRequestDigest
   , withGenesisBackupOperatorPermit
@@ -130,7 +133,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
 import Prodbox.Lifecycle.CredentialProvisioner.PreparedTarget
   ( mkPreparedCredentialTargetObservation
   )
-import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeFromMicros)
+import Prodbox.Lifecycle.Lease (AuthorityTime)
 import Prodbox.Lifecycle.TargetCommitIntent
   ( credentialGenerationValue
   , mkCredentialGeneration
@@ -298,7 +301,7 @@ compileFirstReconcileContinuationAwsAdminIntent parameters continuation iamParam
   compileFirstReconcileClassIntent
     parameters
     (awsAdminFirstReconcileClass continuation)
-    (authorityTimeFromMicros (awsAdminFirstReconcileDeadlineMicros continuation))
+    (genesisIntentDeadline parameters)
     iamParameters
 
 compileFirstReconcileClassIntent
@@ -359,6 +362,97 @@ compileFirstReconcileClassIntent parameters credentialClass deadline iamParamete
         (genesisIntentAuthorityScope parameters)
         (genesisIntentAuthorityEndpoint parameters)
         prepared
+    )
+
+-- | A retry-stable operation coordinate for one ordinary credential action.
+-- The action is deliberately absent from the coordinate: after a Target write
+-- and response loss, observing the now-present generation must recover the
+-- original install operation rather than derive a different rotate operation.
+normalAwsAdminOperationIdForScope
+  :: Text
+  -> AwsCredentialClass
+  -> Natural
+  -> Either Text Text
+normalAwsAdminOperationIdForScope operationScope credentialClass generation = do
+  _ <- mapShow (mkCredentialGeneration generation)
+  operationId <-
+    mapShow
+      ( mkOperatorMaterialOperationId
+          ("normal-" <> operationIdentity operationScope credentialClass generation)
+      )
+  pure (operatorMaterialOperationIdText operationId)
+
+-- | Compile one normal post-genesis Credential Provisioner request. The
+-- retained Authority replaces the draft owner/fence with its current exact
+-- admission context before it signs anything. A stable caller scope plus
+-- generation makes retries recover the same operation and lets a later cycle
+-- select the next generation without sharing an allocator.
+compileNormalAwsAdminIntentForScope
+  :: GenesisAwsAdminIntentParameters
+  -> Text
+  -> AwsCredentialClass
+  -> OperatorMaterialAction
+  -> Natural
+  -> CredentialIamParameters
+  -> Either Text AwsAdminPermitIntent
+compileNormalAwsAdminIntentForScope parameters operationScope credentialClass action generationValue iamParameters = do
+  let identity = operationIdentity operationScope credentialClass generationValue
+  permitId <- mapShow (mkOperatorMaterialPermitId ("normal-" <> identity))
+  operationId <- mapShow (mkOperatorMaterialOperationId ("normal-" <> identity))
+  generation <- mapShow (mkCredentialGeneration generationValue)
+  request <-
+    mapShow
+      ( mkAwsOperatorMaterialRequest
+          credentialClass
+          action
+          operationId
+          generation
+      )
+  permit <-
+    mapShow
+      ( mkOperatorMaterialPermit
+          permitId
+          request
+          (genesisIntentDeadline parameters)
+          Nothing
+          "authenticated-normal-intent-v1"
+      )
+  prepared <-
+    mapShow
+      ( mkPreparedCredentialTargetObservation
+          ("normal-" <> identity)
+          1
+          (genesisIntentSelectedAgent parameters)
+          (awsCredentialTarget credentialClass)
+          generation
+          (operatorMaterialPermitRequestDigest permit)
+          (operatorMaterialPermitRequestDigest permit)
+          Nothing
+          (genesisIntentDeadline parameters)
+      )
+  mapShow
+    ( mkNormalAwsAdminPermitIntent
+        permit
+        iamParameters
+        (genesisIntentImageDigest parameters)
+        (genesisIntentAuthorityScope parameters)
+        (genesisIntentAuthorityEndpoint parameters)
+        prepared
+    )
+
+operationIdentity :: Text -> AwsCredentialClass -> Natural -> Text
+operationIdentity operationScope credentialClass generation =
+  Text.take
+    48
+    ( digestText
+        ( Text.intercalate
+            ":"
+            [ "normal-aws-admin-v1"
+            , operationScope
+            , Text.pack (show credentialClass)
+            , Text.pack (show generation)
+            ]
+        )
     )
 
 reconcileRemainingFirstReconcileCredentials

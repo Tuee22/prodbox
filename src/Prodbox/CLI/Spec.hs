@@ -112,8 +112,9 @@ import Prodbox.ControlPlane.TargetSecretAgentExecution
   )
 import Prodbox.ControlPlane.TargetSecretWorker
   ( TargetWorkerImageDigest
-  , TargetWorkerIngressSchema (..)
+  , TargetWorkerIngressSchema
   , mkTargetWorkerImageDigest
+  , parseTargetWorkerIngressSchema
   , targetWorkerImageDigestText
   )
 import Prodbox.ControlPlane.TargetSecretWorkerRuntime
@@ -905,13 +906,9 @@ targetAgentIdentityReader = eitherReader readTargetAgentIdentity
     Right identity -> Right identity
 
 targetWorkerSchemaReader :: ReadM TargetWorkerIngressSchema
-targetWorkerSchemaReader = eitherReader readTargetWorkerSchema
- where
-  readTargetWorkerSchema raw = case raw of
-    "direct-aws" -> Right TargetWorkerDirectAws
-    "rewrapped-ses-smtp" -> Right TargetWorkerRewrappedSesSmtp
-    "rewrapped-acme-eab" -> Right TargetWorkerRewrappedAcmeEab
-    _ -> Left "--material-schema must be direct-aws, rewrapped-ses-smtp, or rewrapped-acme-eab"
+targetWorkerSchemaReader =
+  eitherReader
+    (either (Left . Text.unpack) Right . parseTargetWorkerIngressSchema . Text.pack)
 
 targetWorkerImageDigestReader :: ReadM TargetWorkerImageDigest
 targetWorkerImageDigestReader = eitherReader $ \raw ->
@@ -1895,7 +1892,7 @@ credentialProvisionerGroup =
             Nothing
             "AGENT"
             "Exact cluster and immutable Target Agent rollout identity"
-        , requiredOption "material-schema" Nothing "SCHEMA" "Closed direct/rewrapped material schema"
+        , requiredOption "material-schema" Nothing "SCHEMA" "Closed Target worker ingress schema"
         , requiredOption "image-digest" Nothing "SHA256" "Immutable attested image digest"
         , requiredOption "request-digest" Nothing "SHA256" "Exact worker request digest"
         , requiredOption "deadline-micros" Nothing "MICROS" "Absolute Authority deadline"

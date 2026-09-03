@@ -965,7 +965,12 @@ Containerization is first-class for integration/runtime image publishing:
   substitute the Lifecycle-provider or cert-manager identity
 - the publish path runs an ordinary host-native `docker build`, then pushes the resulting registry
   tags from the repo-owned single-stage `ubuntu:24.04` Dockerfile with in-image `ghcup` and
-  pinned GHC `9.12.4`
+  pinned GHC `9.12.4`; after installing the binary, the same build step removes only its ephemeral
+  `.build` and Cabal cache/state roots so compilation output cannot become unique retained bytes in
+  every runtime generation
+- before cluster readiness and again after the publication/import attempt, the host-Docker cache
+  reconciles only canonical dangling image IDs from the exact managed union-runtime repository to
+  empty read-back; tagged/foreign images, broad prune, and build-cache deletion are not admitted
 - The in-cluster registry (registry:2) is the supported source for the gateway workload image, and the host-arch variant is
   pulled back into local Docker before import into the RKE2 containerd cache
 - Kubernetes pod integration tests run against that registry-published image by default
@@ -1020,6 +1025,70 @@ Bootstrap Broker alone accesses the pre-Vault unlock-bundle store. Target Secret
 allowlisted generation-checked target Vault CAS/read-back. Any gateway object-store routes or
 `prodbox-gateway` MinIO authority are historical migration surfaces; their removal status is owned
 by the Development Plan.
+
+The Target Secret Agent also owns its startup refusal diagnostic boundary. Config decode and
+validation, Vault configuration, mounted request-authentication trust/signer resolution, and
+handler construction all remain fail-closed and return exit code 1. Trust resolution retains typed
+initial-session, relogin, and Transit-read provenance before projecting forbidden/sealed/
+unavailable session outcomes and status/transport/decode/identity/registry read outcomes onto the
+diagnostic. Handler construction preserves separate target-sink, trusted-sink, tombstone-boundary,
+tombstone-binding, tombstone-registry, and retained-custody stages before projecting one closed
+cause. Tombstone registration derives its manifest reference from the compiled sink identity, not
+from the independent deployment cluster ID. Only that closed payload-free cause is written to the protected Pod log; underlying
+Dhall, projected-token, Vault/HTTP bodies or details, identity, path, and handler error text never
+crosses that boundary. Other control-plane roles do not inherit this diagnostic as an
+operator-visible surface. Its Vault Kubernetes-auth role is bound to the
+Agent's exact `target-secret-agent` namespace and `prodbox-target-secret-agent` ServiceAccount, so
+mounted trust resolution never depends on a foreign `gateway` namespace identity.
+
+Lifecycle Authority owns a separate protected startup diagnostic. Its closed cause distinguishes
+configuration decode/validation, Vault configuration, target-agent identity, mounted
+authentication topology and typed trust/signer resolution, primary-store credential/HMAC reads and
+known required-field validation, coordinate construction, and interpreter construction. The
+interpreter boundary separately names registered-client projection, initial admission, authority
+scope, transport bounds, authentication lifetime, replay clock skew/limits/CAS attempts, each
+backup/Target/local-Authority/Provider endpoint and client, recovery-plane observer construction,
+admission and manifest-signer read-back, Target Worker image validation, and authenticated-runtime
+installation. Initial admission is itself closed over projection-registration coordinate
+construction, corrupt/unready registration observations, clean-install versus migration admission
+construction, and the unobservable observation's exact payload-free family: coordinate-authority
+rejection, native store endpoint/request/HTTP/version failure, envelope open, invalid Model-B
+version, or the fail-closed `other` arm. A native S3 404 remains positive absence through the
+encrypted-object, authority-object, and Model-B layers and therefore selects clean install rather
+than an unobservable cause. The clean generation-56 diagnostic proves that the current live
+unobservable family is native store HTTP; the plan-owned next diagnostic refines only its closed
+status class before any store behavior changes. That nested taxonomy is authentication,
+authorization, other-client, server, unexpected-non-error, or unknown; it retains no raw status or
+response detail and leaves the internal error unchanged. The clean generation-57 diagnostic proves
+authorization is the current live class; the plan-owned next diagnostic refines only its closed S3
+error-code class before any credential, policy, signer, clock, or store behavior changes. That
+nested taxonomy is access-denied, invalid-access-key, signature-mismatch, request-time-skewed,
+authorization-header-malformed, expired-token, other, or malformed-or-unknown; it retains no XML
+code or response field and leaves the internal error unchanged. The store
+projection retains only whether the fixed credential or HMAC document/read/field failed, with an
+`other` arm for unrecognized coordinates; paths, field values, HTTP details, decoded configuration,
+and interpreter text cannot enter the cause. Only the Authority process emits this event, and every
+failure retains the existing exit-1 decision. Its standing Kubernetes-auth role binds only
+ServiceAccount `prodbox-lifecycle-authority` in namespace `lifecycle-authority`; the independent
+`gateway` namespace is not an admissible identity.
+The role is also an append-only member of root-baseline currentness. A terminal receipt from before
+that member is accepted only as restart input under a fresh root-session ID and re-enters the native
+cancellation, root-accessor stable-zero, and generated-root baseline program; it is never current,
+and no partial or in-progress old receipt is admitted.
+
+Target Agent readiness uses the same protected diagnostic rule without changing the shared
+readiness contract. One Target-only resolver wrapper reads the composed cached facts once,
+computes the ordinary state, projects only a closed starting/stale or dependency-family cause, and
+returns the state unchanged. The HTTP probe still exposes only `ready` or `not-ready`; arbitrary
+dependency detail never enters the Pod event, and other control-plane roles retain the ordinary
+resolver without this operator-visible diagnostic. Within the target-material family, the same
+background pass refines a refusal to one compiled `TargetSecretId` and a closed `metadata-read` or
+`metadata-validation` stage. Missing and valid targets still project ready, while read and invalid
+metadata outcomes still project unavailable; only the protected diagnostic label changes.
+For bootstrap ordering, the readiness-only metadata fold admits the exact positive-version,
+empty-custom-metadata pre-receipt document and the already supported complete eight-field legacy
+receipt. This is not a proof migration: target observation and Provider-session paths retain the
+strict receipt validator until a Target Worker repairs the document.
 
 The gateway's only durable state-write authority is its own encrypted identity-bound emitter journal on
 an explicitly registered retained volume. Vault supplies a renewable journal-key session at

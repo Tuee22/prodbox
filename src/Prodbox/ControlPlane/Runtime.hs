@@ -19,6 +19,42 @@ module Prodbox.ControlPlane.Runtime
   , TlsRetentionStoreWire (..)
   , ValidatedRoleStore (..)
   , ControlPlaneConfigError (..)
+  , TargetSecretAgentStartupCause (..)
+  , allTargetSecretAgentStartupCauses
+  , renderTargetSecretAgentStartupCause
+  , TargetSecretAgentReadinessCause (..)
+  , allTargetSecretAgentReadinessCauses
+  , renderTargetSecretAgentReadinessCause
+  , targetSecretAgentReadinessCause
+  , targetSecretAgentReadinessDiagnosticDisposition
+  , targetSecretAgentTombstoneReference
+  , targetSecretAgentTrustResolutionCause
+  , targetSecretAgentStartupRefusalDisposition
+  , LifecycleAuthorityStartupCause (..)
+  , allLifecycleAuthorityStartupCauses
+  , renderLifecycleAuthorityStartupCause
+  , LifecycleAuthorityInterpreterCause (..)
+  , allLifecycleAuthorityInterpreterCauses
+  , renderLifecycleAuthorityInterpreterCause
+  , LifecycleAuthorityInitialAdmissionCause (..)
+  , allLifecycleAuthorityInitialAdmissionCauses
+  , renderLifecycleAuthorityInitialAdmissionCause
+  , LifecycleAuthorityRegistrationUnobservableCause (..)
+  , LifecycleAuthorityRegistrationStoreHttpCause (..)
+  , allLifecycleAuthorityRegistrationStoreHttpCauses
+  , renderLifecycleAuthorityRegistrationStoreHttpCause
+  , ObjectStoreHttpStatusClass (..)
+  , allObjectStoreHttpStatusClasses
+  , renderObjectStoreHttpStatusClass
+  , ObjectStoreS3ErrorCodeClass (..)
+  , allObjectStoreS3ErrorCodeClasses
+  , renderObjectStoreS3ErrorCodeClass
+  , allLifecycleAuthorityRegistrationUnobservableCauses
+  , renderLifecycleAuthorityRegistrationUnobservableCause
+  , lifecycleAuthorityRegistrationUnobservableCause
+  , lifecycleAuthorityInitialAdmissionModeFromRegistration
+  , lifecycleAuthorityStartupCauseFromStoreError
+  , lifecycleAuthorityStartupRefusalDisposition
   , AuthenticatedRuntimeInputs (..)
   , AuthenticatedRuntimeInstallError (..)
   , AuthenticatedRuntimeProvisioningGap (..)
@@ -28,6 +64,17 @@ module Prodbox.ControlPlane.Runtime
   , authorityStartupModeFromRegistration
   , lifecycleAuthoritySubmissionCapacity
   , lifecycleAuthorityRetainedSubmissionCapacity
+  , lifecycleAuthorityFirstReconcileRequestMaximum
+  , lifecycleAuthorityReconcileAttemptRequestMaximum
+  , lifecycleAuthorityReplayCapacity
+  , authorityBackupReconcileAttemptRequestMaximum
+  , authorityBackupReplayCapacity
+  , targetSecretAgentReconcileAttemptRequestMaximum
+  , targetSecretAgentReplayCapacity
+  , targetSecretAgentReplayMaximumEncodedBytes
+  , classifyTlsRetentionWorkflowFailure
+  , LifecycleAuthorityReadinessDependency (..)
+  , lifecycleAuthorityReadinessDependencies
   , registeredClientTableFromTrustRegistry
   , validateControlPlaneConfig
   , mkLifecycleAuthorityCoordinates
@@ -40,6 +87,9 @@ module Prodbox.ControlPlane.Runtime
   , controlPlaneCapacityInputs
   , controlPlaneCapacityPlan
   , controlPlaneRequestBudget
+  , lifecycleAuthorityProviderHttpConfig
+  , lifecycleAuthorityTargetObservationHttpConfig
+  , lifecycleAuthorityTargetOneShotHttpConfig
   , refuseControlPlaneConnection
   )
 where
@@ -54,6 +104,7 @@ import Control.Concurrent.STM
   , newTVarIO
   , readTBQueue
   , readTVar
+  , readTVarIO
   , stateTVar
   , writeTBQueue
   , writeTVar
@@ -91,6 +142,9 @@ import Prodbox.CLI.Command
   , buildPlan
   , runPlanWithOptions
   )
+import Prodbox.CLI.Output (writeDiagnosticLine)
+import Prodbox.Capacity.ProviderWorkerBudget qualified as ProviderWorkerBudget
+import Prodbox.Capacity.TargetWorkerBudget qualified as TargetWorkerBudget
 import Prodbox.ControlPlane.AdminActionAuthorityExecutionEndpoint
   ( AdminActionAuthorityExecutionBoundary (..)
   , AdminLegacyDestinationBoundary (..)
@@ -117,9 +171,10 @@ import Prodbox.ControlPlane.AuthenticatedRuntime
   , ControlPlaneAuthenticationConfigError
   , ControlPlaneAuthenticationWire (..)
   , ControlPlaneTrustedCallerWire (..)
+  , RouteTrustResolutionFailure (..)
   , ValidatedAuthenticationTopology
   , installAuthenticatedRuntimeInterpreter
-  , resolveRouteTrustRegistryWith
+  , resolveRouteTrustRegistryWithFailure
   , validateControlPlaneAuthenticationWire
   , validatedAuthenticationSigningKeyRef
   , validatedAuthenticationSigningPrincipal
@@ -162,6 +217,9 @@ import Prodbox.ControlPlane.AuthorityProviderEndpoint
   ( AuthorityProviderDispatchBoundary (..)
   , authorityProviderDispatchAuthenticatedHandler
   )
+import Prodbox.ControlPlane.AwsAdminAuthorizedRecoveryProduction
+  ( productionProveAwsAdminAuthorizedRecovery
+  )
 import Prodbox.ControlPlane.AwsAdminPreparedTargetProduction
   ( productionAwsAdminPreparedTargetLifecycle
   )
@@ -179,7 +237,6 @@ import Prodbox.ControlPlane.AwsStackReaderRepository.Internal
   , modelBAwsStackReaderRepository
   )
 import Prodbox.ControlPlane.BootstrapCustodyClient qualified as BootstrapCustody
-import Prodbox.ControlPlane.BootstrapCustodyEndpoint (observeTargetChildCustodyDependency)
 import Prodbox.ControlPlane.BootstrapHandoffEndpoint
   ( bootstrapHandoffAuthenticatedHandler
   , observeBootstrapHandoffDependency
@@ -221,6 +278,7 @@ import Prodbox.ControlPlane.Client
   , mkLifecycleAuthorityEndpoint
   , mkProviderWorkerEndpoint
   , mkTargetSecretAgentEndpoint
+  , mkTlsRetentionEndpoint
   , newControlPlaneClient
   )
 import Prodbox.ControlPlane.ConfigBackupClient (configBackupClient)
@@ -281,7 +339,9 @@ import Prodbox.ControlPlane.EksDrainReadBackReceiptRepository
   , modelBEksDrainReadBackReceiptRepository
   )
 import Prodbox.ControlPlane.ExternalMaterialIngressEndpoint
-  ( externalMaterialIngressAuthenticatedHandler
+  ( ExternalMaterialIngressReceiptRecovery (..)
+  , ExternalMaterialIngressReceiptRecoveryResult (..)
+  , externalMaterialIngressAuthenticatedHandler
   , externalMaterialIngressMaximumEncodedBytes
   , modelBExternalMaterialIngressRepository
   )
@@ -296,6 +356,7 @@ import Prodbox.ControlPlane.InClusterAuthorityStore
   ( InClusterAuthorityStore
   , InClusterAuthorityStoreConfig
   , InClusterAuthorityStoreConfigError
+  , InClusterAuthorityStoreError (..)
   , inClusterAuthorityCheckpointAuthority
   , inClusterAuthorityModelBCasAdapter
   , inClusterAuthorityReady
@@ -340,8 +401,17 @@ import Prodbox.ControlPlane.ProviderProduction
   )
 import Prodbox.ControlPlane.ProviderWorkerClient
   ( dispatchProviderCommittedIntent
-  , providerWorkerExecutionAuthenticatedHandler
+  , providerWorkerExecutionAuthenticatedHandlerObserved
   , providerWorkerResponseMaximumBytes
+  )
+import Prodbox.ControlPlane.ProviderWorkerDiagnostic
+  ( ProviderWorkerRequestCause (..)
+  , ProviderWorkerRequestObserver
+  , ProviderWorkerRequestStage (..)
+  , mkProviderWorkerRequestObserver
+  , observeProviderWorkerRequest
+  , renderProviderWorkerRequestCause
+  , renderProviderWorkerRequestStage
   )
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderWorkerTrustRepository (..)
@@ -450,16 +520,21 @@ import Prodbox.ControlPlane.RoleInterpreters
   , lifecycleAuthorityOwnershipManifestAuthenticatedHandler
   , lifecycleAuthorityRecoveryPlaneAuthenticatedHandler
   , lifecycleAuthorityTlsRetentionAuthenticatedHandler
+  , lifecycleAuthorityTlsRetentionWorkflowAuthenticatedHandler
   , targetSecretAgentAdminActionAuthenticatedHandler
   , targetSecretAgentDecommissionAuthenticatedHandler
   , tlsRetentionInterpreter
   )
 import Prodbox.ControlPlane.RoleReadiness
-  ( RoleDependencyObservation (RoleDependencyReady, RoleDependencyUnavailable)
+  ( RoleDependencyObservation (..)
+  , RoleReadinessFacts (..)
+  , RoleReadinessState (..)
+  , computeRoleReadiness
   , controlPlaneRoleReadinessSchedule
   , layerRoleReadinessSource
   , noRoleReadinessContribution
   , roleDependencyFromOutcome
+  , roleReadinessSnapshot
   )
 import Prodbox.ControlPlane.RoleReadinessObserver
   ( RoleReadinessObserver
@@ -472,10 +547,12 @@ import Prodbox.ControlPlane.Route
   , routesForRole
   )
 import Prodbox.ControlPlane.Server
-  ( ControlPlaneFramingError
+  ( ControlPlaneDisposition (..)
+  , ControlPlaneFramingError
   , ControlPlaneFramingProgress (..)
   , RoleInterpreter (interpreterReadiness)
-  , RoleReadinessResolver
+  , RoleReadinessResolver (..)
+  , classifyControlPlaneRequest
   , controlPlaneMaximumBodyBytes
   , finishControlPlaneRequestFraming
   , inspectControlPlaneRequestFraming
@@ -506,7 +583,11 @@ import Prodbox.ControlPlane.TargetMaterialClient
   , targetWorkerReceiptFromMaterialObservation
   )
 import Prodbox.ControlPlane.TargetMaterialEndpoint
-  ( observeVaultTargetMaterialDependencies
+  ( TargetMaterialReadinessStage
+  , allTargetMaterialReadinessStages
+  , decodeTargetMaterialReadinessDependencyLabel
+  , observeVaultTargetMaterialDependencies
+  , renderTargetMaterialReadinessStage
   , targetMaterialObservationAuthenticatedHandler
   , vaultTargetMaterialRepository
   )
@@ -517,10 +598,14 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
       , TargetPublicEdgeTls
       , TargetSesSmtp
       )
+  , allTargetMaterialIds
   , compiledTargetSecretSink
+  , targetSecretIdToken
   )
 import Prodbox.ControlPlane.TargetMaterializationProduction
-  ( productionTargetMaterializationBoundary
+  ( classifyTargetIntentIssueError
+  , productionTargetMaterializationBoundary
+  , renderTargetWorkerCoordinatorDiagnostic
   )
 import Prodbox.ControlPlane.TargetOneShotOperationEndpoint
   ( TargetOneShotOperationBoundary (..)
@@ -530,10 +615,16 @@ import Prodbox.ControlPlane.TargetRetainedMaterialRewrapClient
   ( targetRetainedMaterialRewrapClient
   )
 import Prodbox.ControlPlane.TargetRetainedMaterialRewrapEndpoint
-  ( targetRetainedMaterialRewrapAuthenticatedHandler
+  ( TargetRetainedMaterialSourceObservation (..)
+  , targetRetainedMaterialRewrapAuthenticatedHandler
   )
 import Prodbox.ControlPlane.TargetRetainedMaterialRewrapProduction
   ( productionTargetRetainedMaterialRewrapBoundary
+  )
+import Prodbox.ControlPlane.TargetRetainedMaterialSourceClient
+  ( TargetRetainedMaterialSourceResult (..)
+  , observeTargetRetainedMaterialSource
+  , renderTargetRetainedMaterialSourceClientCause
   )
 import Prodbox.ControlPlane.TargetSecretAgentExecution
   ( TargetAgentIdentity
@@ -545,6 +636,7 @@ import Prodbox.ControlPlane.TargetSecretAgentExecution
 import Prodbox.ControlPlane.TargetSecretWorker
   ( TargetWorkerIngressSchema (..)
   , mkTargetWorkerImageDigest
+  , targetWorkerSchemaToken
   )
 import Prodbox.ControlPlane.TargetSecretWorkerCoordinator
   ( coordinateTargetOneShotOperation
@@ -568,8 +660,35 @@ import Prodbox.ControlPlane.TlsRetentionAuthority
   , tlsRetentionAuthorityCoordinate
   , tlsRetentionStateCodec
   )
+import Prodbox.ControlPlane.TlsRetentionAuthorityClient
+  ( mkTlsRetentionAuthorityClient
+  )
+import Prodbox.ControlPlane.TlsRetentionClient
+  ( tlsRetentionClientWithTransport
+  , tlsRetentionMaximumResponseBytes
+  )
+import Prodbox.ControlPlane.TlsRetentionWorkflow
+  ( TlsRetentionWorkflow (..)
+  , TlsRetentionWorkflowError (..)
+  , TlsWorkflowRestoreOutcome (..)
+  , TlsWorkflowRetainOutcome (..)
+  , restorePublicEdgeTlsWorkflow
+  , retainPublicEdgeTlsWorkflow
+  )
+import Prodbox.ControlPlane.TlsRetentionWorkflowAuthorityEndpoint
+  ( TlsRetentionWorkflowAuthorityBoundary (..)
+  , TlsRetentionWorkflowAuthorityFailure (..)
+  , TlsRetentionWorkflowAuthorityRequest (..)
+  , TlsRetentionWorkflowAuthorityResponse (..)
+  )
+import Prodbox.ControlPlane.TlsTargetAgentClient
+  ( renderTlsTargetAgentClientCause
+  , tlsTargetAgentClientReplayCapacityExhausted
+  , tlsTargetAgentClientWithTransport
+  )
 import Prodbox.ControlPlane.TransitRequestAuthentication
-  ( resolveTransitPublicGeneration
+  ( TransitPublicGenerationError (..)
+  , resolveTransitPublicGenerationDetailed
   , resolveTransitRequestSigningCapability
   , transitAuthenticatedClientProviders
   )
@@ -587,8 +706,8 @@ import Prodbox.ControlPlane.VaultSession
   , newControlPlaneVaultSession
   , readProjectedServiceAccountJwt
   )
-import Prodbox.Gateway.Logging (field, logError)
-import Prodbox.Http.Client (defaultHttpConfig)
+import Prodbox.Gateway.Logging (field, logError, logInfo)
+import Prodbox.Http.Client (HttpConfig (..), HttpError (..), defaultHttpConfig)
 import Prodbox.Http.ReplyStatus
   ( ReplyStatus (..)
   , replyStatusCode
@@ -654,11 +773,13 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBObjectCoordinate
   , ModelBObservation (..)
   , StoreLifetime (ClusterRetained)
+  , TargetClusterSecretSink
   , checkpointAuthorityClusterId
   , checkpointAuthorityObjectBucket
   , mkClusterRetainedCoordinate
   , mkCrossClusterDurableCoordinate
   , mkLongLivedCheckpointAuthority
+  , targetSecretSinkIdentity
   )
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupRunIndexRepository (..)
@@ -678,8 +799,18 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
   ( awsAdminAuthorityStateCodec
   , modelBAwsAdminAuthorityRepository
   )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
+  ( renderAwsAdminTargetIntentIssueCause
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
   ( externalMaterialIngressStateCodec
+  , mkExternalMaterialTargetReceipt
+  , signedExternalMaterialGeneration
+  , signedExternalMaterialPermitId
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
+  ( firstReconcileHardMaximum
+  , operatorMaterialPermitIdText
   )
 import Prodbox.Lifecycle.Decommission.AuthorityExport
   ( AuthorityManifestSigner (readAuthorityManifestPublicKey)
@@ -728,7 +859,8 @@ import Prodbox.Lifecycle.PulumiCheckpoint
   , registeredPulumiCheckpointByName
   )
 import Prodbox.Lifecycle.TargetCommitIntent
-  ( mkCredentialGeneration
+  ( credentialGenerationValue
+  , mkCredentialGeneration
   , targetValueDigestText
   )
 import Prodbox.Lifecycle.Teardown.RecoveryPlaneComponentObserver.Internal
@@ -736,6 +868,16 @@ import Prodbox.Lifecycle.Teardown.RecoveryPlaneComponentObserver.Internal
   )
 import Prodbox.Lifecycle.Teardown.RecoveryPlaneInterpreter.Internal
   ( recoveryPlaneAuthorityReadBackInterpreterInternal
+  )
+import Prodbox.Minio.ObjectStoreNative
+  ( ObjectStoreHttpStatusClass (..)
+  , ObjectStoreS3ErrorCodeClass (..)
+  , allObjectStoreHttpStatusClasses
+  , allObjectStoreS3ErrorCodeClasses
+  , objectStoreGetFailureS3ErrorCodeClass
+  , objectStoreGetFailureStatusClass
+  , renderObjectStoreHttpStatusClass
+  , renderObjectStoreS3ErrorCodeClass
   )
 import Prodbox.Pulumi.EncryptedBackend
   ( LegacyPulumiBackend (..)
@@ -750,6 +892,8 @@ import Prodbox.Vault.Client
   )
 import Prodbox.Vault.Session
   ( VaultSession
+  , VaultSessionError (..)
+  , VaultSessionOperationError (..)
   , sessionAddress
   )
 import System.Environment (getEnvironment)
@@ -845,6 +989,790 @@ data ControlPlaneConfigError
   | ControlPlaneConfigDedicatedStoreInvalid !DedicatedAdapterStoreError
   deriving (Eq, Show)
 
+-- | Payload-free startup refusal for the Target Secret Agent. The runtime's
+-- mounted Dhall, projected JWTs, Vault replies, and handler-construction
+-- errors may carry operator or secret-adjacent values, so none of those error
+-- payloads crosses this protected diagnostic boundary.
+data TargetSecretAgentStartupCause
+  = TargetSecretAgentStartupConfigDecode
+  | TargetSecretAgentStartupConfigValidation
+  | TargetSecretAgentStartupVaultConfiguration
+  | TargetSecretAgentStartupIdentityValidation
+  | TargetSecretAgentStartupAuthenticationTopology
+  | TargetSecretAgentStartupAuthenticationTrustResolution
+  | TargetSecretAgentStartupAuthenticationSessionAcquireForbidden
+  | TargetSecretAgentStartupAuthenticationSessionAcquireSealed
+  | TargetSecretAgentStartupAuthenticationSessionAcquireUnavailable
+  | TargetSecretAgentStartupAuthenticationSessionReloginForbidden
+  | TargetSecretAgentStartupAuthenticationSessionReloginSealed
+  | TargetSecretAgentStartupAuthenticationSessionReloginUnavailable
+  | TargetSecretAgentStartupAuthenticationTrustReadForbidden
+  | TargetSecretAgentStartupAuthenticationTrustReadMissing
+  | TargetSecretAgentStartupAuthenticationTrustReadStatus
+  | TargetSecretAgentStartupAuthenticationTrustReadConnection
+  | TargetSecretAgentStartupAuthenticationTrustReadTimeout
+  | TargetSecretAgentStartupAuthenticationTrustReadDecode
+  | TargetSecretAgentStartupAuthenticationTrustIdentityMismatch
+  | TargetSecretAgentStartupAuthenticationTrustConstruction
+  | TargetSecretAgentStartupAuthenticationSignerResolution
+  | TargetSecretAgentStartupHandlerBoundaries
+  | TargetSecretAgentStartupHandlerTargetSink
+  | TargetSecretAgentStartupHandlerTrustedSink
+  | TargetSecretAgentStartupHandlerTombstoneBoundary
+  | TargetSecretAgentStartupHandlerTombstoneBinding
+  | TargetSecretAgentStartupHandlerTombstoneRegistry
+  | TargetSecretAgentStartupHandlerRetainedCustody
+  | TargetSecretAgentStartupHandlerOneShotBoundary
+  | TargetSecretAgentStartupHandlerAuthorityManifest
+  deriving (Bounded, Enum, Eq, Show)
+
+allTargetSecretAgentStartupCauses :: [TargetSecretAgentStartupCause]
+allTargetSecretAgentStartupCauses = [minBound .. maxBound]
+
+renderTargetSecretAgentStartupCause :: TargetSecretAgentStartupCause -> Text
+renderTargetSecretAgentStartupCause cause = case cause of
+  TargetSecretAgentStartupConfigDecode -> "config/decode"
+  TargetSecretAgentStartupConfigValidation -> "config/validation"
+  TargetSecretAgentStartupVaultConfiguration -> "vault/configuration"
+  TargetSecretAgentStartupIdentityValidation -> "target-agent-identity/validation"
+  TargetSecretAgentStartupAuthenticationTopology -> "authentication/topology"
+  TargetSecretAgentStartupAuthenticationTrustResolution -> "authentication/trust-resolution"
+  TargetSecretAgentStartupAuthenticationSessionAcquireForbidden ->
+    "authentication/session-acquire/forbidden"
+  TargetSecretAgentStartupAuthenticationSessionAcquireSealed ->
+    "authentication/session-acquire/sealed"
+  TargetSecretAgentStartupAuthenticationSessionAcquireUnavailable ->
+    "authentication/session-acquire/unavailable"
+  TargetSecretAgentStartupAuthenticationSessionReloginForbidden ->
+    "authentication/session-relogin/forbidden"
+  TargetSecretAgentStartupAuthenticationSessionReloginSealed ->
+    "authentication/session-relogin/sealed"
+  TargetSecretAgentStartupAuthenticationSessionReloginUnavailable ->
+    "authentication/session-relogin/unavailable"
+  TargetSecretAgentStartupAuthenticationTrustReadForbidden ->
+    "authentication/trust-read/status-403"
+  TargetSecretAgentStartupAuthenticationTrustReadMissing ->
+    "authentication/trust-read/status-404"
+  TargetSecretAgentStartupAuthenticationTrustReadStatus ->
+    "authentication/trust-read/status-other"
+  TargetSecretAgentStartupAuthenticationTrustReadConnection ->
+    "authentication/trust-read/connection"
+  TargetSecretAgentStartupAuthenticationTrustReadTimeout ->
+    "authentication/trust-read/timeout"
+  TargetSecretAgentStartupAuthenticationTrustReadDecode ->
+    "authentication/trust-read/decode"
+  TargetSecretAgentStartupAuthenticationTrustIdentityMismatch ->
+    "authentication/trust-read/identity-mismatch"
+  TargetSecretAgentStartupAuthenticationTrustConstruction ->
+    "authentication/trust-registry/construction"
+  TargetSecretAgentStartupAuthenticationSignerResolution -> "authentication/signer-resolution"
+  TargetSecretAgentStartupHandlerBoundaries -> "handler/boundaries"
+  TargetSecretAgentStartupHandlerTargetSink -> "handler/boundaries/target-sink"
+  TargetSecretAgentStartupHandlerTrustedSink -> "handler/boundaries/trusted-sink"
+  TargetSecretAgentStartupHandlerTombstoneBoundary -> "handler/boundaries/tombstone-boundary"
+  TargetSecretAgentStartupHandlerTombstoneBinding -> "handler/boundaries/tombstone-binding"
+  TargetSecretAgentStartupHandlerTombstoneRegistry -> "handler/boundaries/tombstone-registry"
+  TargetSecretAgentStartupHandlerRetainedCustody -> "handler/boundaries/retained-custody"
+  TargetSecretAgentStartupHandlerOneShotBoundary -> "handler/one-shot-boundary"
+  TargetSecretAgentStartupHandlerAuthorityManifest -> "handler/authority-manifest"
+
+-- | Pure seam proving that diagnostics are role-local while refusal remains
+-- exit 1 for every role. Production performs the optional log effect below.
+targetSecretAgentStartupRefusalDisposition
+  :: RuntimeRole
+  -> TargetSecretAgentStartupCause
+  -> (Maybe Text, ExitCode)
+targetSecretAgentStartupRefusalDisposition role cause =
+  ( if role == TargetSecretAgentRuntime
+      then Just (renderTargetSecretAgentStartupCause cause)
+      else Nothing
+  , ExitFailure 1
+  )
+
+-- | Payload-free startup refusal for the retained Lifecycle Authority.  The
+-- constructors close over boundary and typed failure class only; Vault paths,
+-- fields, HTTP details, decoded configuration, and interpreter text are never
+-- retained by the diagnostic.
+data LifecycleAuthorityStartupCause
+  = LifecycleAuthorityStartupConfigDecode
+  | LifecycleAuthorityStartupConfigValidation
+  | LifecycleAuthorityStartupVaultConfiguration
+  | LifecycleAuthorityStartupTargetAgentIdentityValidation
+  | LifecycleAuthorityStartupAuthenticationTopology
+  | LifecycleAuthorityStartupAuthenticationTrustResolution
+  | LifecycleAuthorityStartupAuthenticationSessionAcquireForbidden
+  | LifecycleAuthorityStartupAuthenticationSessionAcquireSealed
+  | LifecycleAuthorityStartupAuthenticationSessionAcquireUnavailable
+  | LifecycleAuthorityStartupAuthenticationSessionReloginForbidden
+  | LifecycleAuthorityStartupAuthenticationSessionReloginSealed
+  | LifecycleAuthorityStartupAuthenticationSessionReloginUnavailable
+  | LifecycleAuthorityStartupAuthenticationTrustReadForbidden
+  | LifecycleAuthorityStartupAuthenticationTrustReadMissing
+  | LifecycleAuthorityStartupAuthenticationTrustReadStatus
+  | LifecycleAuthorityStartupAuthenticationTrustReadConnection
+  | LifecycleAuthorityStartupAuthenticationTrustReadTimeout
+  | LifecycleAuthorityStartupAuthenticationTrustReadDecode
+  | LifecycleAuthorityStartupAuthenticationTrustIdentityMismatch
+  | LifecycleAuthorityStartupAuthenticationTrustConstruction
+  | LifecycleAuthorityStartupAuthenticationSignerResolution
+  | LifecycleAuthorityStartupPrimaryStoreCredentialRead
+  | LifecycleAuthorityStartupPrimaryStoreHmacRead
+  | LifecycleAuthorityStartupPrimaryStoreOtherRead
+  | LifecycleAuthorityStartupPrimaryStoreAccessKeyMissing
+  | LifecycleAuthorityStartupPrimaryStoreSecretKeyMissing
+  | LifecycleAuthorityStartupPrimaryStoreHmacKeyMissing
+  | LifecycleAuthorityStartupPrimaryStoreOtherFieldMissing
+  | LifecycleAuthorityStartupPrimaryStoreAccessKeyEmpty
+  | LifecycleAuthorityStartupPrimaryStoreSecretKeyEmpty
+  | LifecycleAuthorityStartupPrimaryStoreHmacKeyEmpty
+  | LifecycleAuthorityStartupPrimaryStoreOtherFieldEmpty
+  | LifecycleAuthorityStartupCoordinateConstruction
+  | LifecycleAuthorityStartupInterpreterConstruction !LifecycleAuthorityInterpreterCause
+  | LifecycleAuthorityStartupOther
+  deriving (Eq, Show)
+
+data LifecycleAuthorityInterpreterCause
+  = LifecycleAuthorityInterpreterRegisteredClients
+  | LifecycleAuthorityInterpreterInitialAdmission !LifecycleAuthorityInitialAdmissionCause
+  | LifecycleAuthorityInterpreterAuthorityScope
+  | LifecycleAuthorityInterpreterTransportBounds
+  | LifecycleAuthorityInterpreterAuthenticationLifetime
+  | LifecycleAuthorityInterpreterReplayClockSkew
+  | LifecycleAuthorityInterpreterReplayLimits
+  | LifecycleAuthorityInterpreterReplayCasAttempts
+  | LifecycleAuthorityInterpreterBackupEndpoint
+  | LifecycleAuthorityInterpreterBackupClient
+  | LifecycleAuthorityInterpreterTargetEndpoint
+  | LifecycleAuthorityInterpreterTargetClient
+  | LifecycleAuthorityInterpreterTlsRetentionEndpoint
+  | LifecycleAuthorityInterpreterTlsRetentionClient
+  | LifecycleAuthorityInterpreterLocalAuthorityEndpoint
+  | LifecycleAuthorityInterpreterLocalAuthorityClient
+  | LifecycleAuthorityInterpreterProviderEndpoint
+  | LifecycleAuthorityInterpreterProviderClient
+  | LifecycleAuthorityInterpreterRecoveryPlaneObserver
+  | LifecycleAuthorityInterpreterAdmissionRead
+  | LifecycleAuthorityInterpreterManifestSignerRead
+  | LifecycleAuthorityInterpreterTargetWorkerImage
+  | LifecycleAuthorityInterpreterAuthenticatedRuntimeInstall
+  deriving (Eq, Show)
+
+data LifecycleAuthorityInitialAdmissionCause
+  = LifecycleAuthorityInitialAdmissionRegistrationCoordinate
+  | LifecycleAuthorityInitialAdmissionRegistrationCorrupt
+  | LifecycleAuthorityInitialAdmissionRegistrationEndpointUnready
+  | LifecycleAuthorityInitialAdmissionRegistrationUnobservable
+      !LifecycleAuthorityRegistrationUnobservableCause
+  | LifecycleAuthorityInitialAdmissionCleanInstall
+  | LifecycleAuthorityInitialAdmissionMigration
+  deriving (Eq, Show)
+
+data LifecycleAuthorityRegistrationUnobservableCause
+  = LifecycleAuthorityRegistrationCoordinateAuthority
+  | LifecycleAuthorityRegistrationStoreEndpoint
+  | LifecycleAuthorityRegistrationStoreRequest
+  | LifecycleAuthorityRegistrationStoreHttp !LifecycleAuthorityRegistrationStoreHttpCause
+  | LifecycleAuthorityRegistrationStoreVersion
+  | LifecycleAuthorityRegistrationEnvelopeOpen
+  | LifecycleAuthorityRegistrationModelBVersion
+  | LifecycleAuthorityRegistrationOther
+  deriving (Eq, Show)
+
+data LifecycleAuthorityRegistrationStoreHttpCause
+  = LifecycleAuthorityRegistrationStoreHttpAuthentication
+  | LifecycleAuthorityRegistrationStoreHttpAuthorization !ObjectStoreS3ErrorCodeClass
+  | LifecycleAuthorityRegistrationStoreHttpOtherClient
+  | LifecycleAuthorityRegistrationStoreHttpServer
+  | LifecycleAuthorityRegistrationStoreHttpUnexpectedNonError
+  | LifecycleAuthorityRegistrationStoreHttpUnknown
+  deriving (Eq, Show)
+
+allLifecycleAuthorityRegistrationStoreHttpCauses
+  :: [LifecycleAuthorityRegistrationStoreHttpCause]
+allLifecycleAuthorityRegistrationStoreHttpCauses =
+  [LifecycleAuthorityRegistrationStoreHttpAuthentication]
+    <> map
+      LifecycleAuthorityRegistrationStoreHttpAuthorization
+      allObjectStoreS3ErrorCodeClasses
+    <> [ LifecycleAuthorityRegistrationStoreHttpOtherClient
+       , LifecycleAuthorityRegistrationStoreHttpServer
+       , LifecycleAuthorityRegistrationStoreHttpUnexpectedNonError
+       , LifecycleAuthorityRegistrationStoreHttpUnknown
+       ]
+
+renderLifecycleAuthorityRegistrationStoreHttpCause
+  :: LifecycleAuthorityRegistrationStoreHttpCause -> Text
+renderLifecycleAuthorityRegistrationStoreHttpCause cause = case cause of
+  LifecycleAuthorityRegistrationStoreHttpAuthentication -> "authentication"
+  LifecycleAuthorityRegistrationStoreHttpAuthorization codeClass ->
+    "authorization/" <> renderObjectStoreS3ErrorCodeClass codeClass
+  LifecycleAuthorityRegistrationStoreHttpOtherClient -> "client-other"
+  LifecycleAuthorityRegistrationStoreHttpServer -> "server"
+  LifecycleAuthorityRegistrationStoreHttpUnexpectedNonError -> "unexpected-non-error"
+  LifecycleAuthorityRegistrationStoreHttpUnknown -> "unknown"
+
+allLifecycleAuthorityRegistrationUnobservableCauses
+  :: [LifecycleAuthorityRegistrationUnobservableCause]
+allLifecycleAuthorityRegistrationUnobservableCauses =
+  [ LifecycleAuthorityRegistrationCoordinateAuthority
+  , LifecycleAuthorityRegistrationStoreEndpoint
+  , LifecycleAuthorityRegistrationStoreRequest
+  ]
+    <> map
+      LifecycleAuthorityRegistrationStoreHttp
+      allLifecycleAuthorityRegistrationStoreHttpCauses
+    <> [ LifecycleAuthorityRegistrationStoreVersion
+       , LifecycleAuthorityRegistrationEnvelopeOpen
+       , LifecycleAuthorityRegistrationModelBVersion
+       , LifecycleAuthorityRegistrationOther
+       ]
+
+renderLifecycleAuthorityRegistrationUnobservableCause
+  :: LifecycleAuthorityRegistrationUnobservableCause -> Text
+renderLifecycleAuthorityRegistrationUnobservableCause cause = case cause of
+  LifecycleAuthorityRegistrationCoordinateAuthority -> "coordinate-authority"
+  LifecycleAuthorityRegistrationStoreEndpoint -> "store-endpoint"
+  LifecycleAuthorityRegistrationStoreRequest -> "store-request"
+  LifecycleAuthorityRegistrationStoreHttp httpCause ->
+    "store-http/" <> renderLifecycleAuthorityRegistrationStoreHttpCause httpCause
+  LifecycleAuthorityRegistrationStoreVersion -> "store-version"
+  LifecycleAuthorityRegistrationEnvelopeOpen -> "envelope-open"
+  LifecycleAuthorityRegistrationModelBVersion -> "model-b-version"
+  LifecycleAuthorityRegistrationOther -> "other"
+
+allLifecycleAuthorityInitialAdmissionCauses :: [LifecycleAuthorityInitialAdmissionCause]
+allLifecycleAuthorityInitialAdmissionCauses =
+  [ LifecycleAuthorityInitialAdmissionRegistrationCoordinate
+  , LifecycleAuthorityInitialAdmissionRegistrationCorrupt
+  , LifecycleAuthorityInitialAdmissionRegistrationEndpointUnready
+  ]
+    <> map
+      LifecycleAuthorityInitialAdmissionRegistrationUnobservable
+      allLifecycleAuthorityRegistrationUnobservableCauses
+    <> [ LifecycleAuthorityInitialAdmissionCleanInstall
+       , LifecycleAuthorityInitialAdmissionMigration
+       ]
+
+renderLifecycleAuthorityInitialAdmissionCause :: LifecycleAuthorityInitialAdmissionCause -> Text
+renderLifecycleAuthorityInitialAdmissionCause cause = case cause of
+  LifecycleAuthorityInitialAdmissionRegistrationCoordinate -> "registration-coordinate"
+  LifecycleAuthorityInitialAdmissionRegistrationCorrupt -> "registration-corrupt"
+  LifecycleAuthorityInitialAdmissionRegistrationEndpointUnready -> "registration-endpoint-unready"
+  LifecycleAuthorityInitialAdmissionRegistrationUnobservable unobservableCause ->
+    "registration-unobservable/"
+      <> renderLifecycleAuthorityRegistrationUnobservableCause unobservableCause
+  LifecycleAuthorityInitialAdmissionCleanInstall -> "clean-install"
+  LifecycleAuthorityInitialAdmissionMigration -> "migration"
+
+allLifecycleAuthorityInterpreterCauses :: [LifecycleAuthorityInterpreterCause]
+allLifecycleAuthorityInterpreterCauses =
+  [LifecycleAuthorityInterpreterRegisteredClients]
+    <> map LifecycleAuthorityInterpreterInitialAdmission allLifecycleAuthorityInitialAdmissionCauses
+    <> [ LifecycleAuthorityInterpreterAuthorityScope
+       , LifecycleAuthorityInterpreterTransportBounds
+       , LifecycleAuthorityInterpreterAuthenticationLifetime
+       , LifecycleAuthorityInterpreterReplayClockSkew
+       , LifecycleAuthorityInterpreterReplayLimits
+       , LifecycleAuthorityInterpreterReplayCasAttempts
+       , LifecycleAuthorityInterpreterBackupEndpoint
+       , LifecycleAuthorityInterpreterBackupClient
+       , LifecycleAuthorityInterpreterTargetEndpoint
+       , LifecycleAuthorityInterpreterTargetClient
+       , LifecycleAuthorityInterpreterTlsRetentionEndpoint
+       , LifecycleAuthorityInterpreterTlsRetentionClient
+       , LifecycleAuthorityInterpreterLocalAuthorityEndpoint
+       , LifecycleAuthorityInterpreterLocalAuthorityClient
+       , LifecycleAuthorityInterpreterProviderEndpoint
+       , LifecycleAuthorityInterpreterProviderClient
+       , LifecycleAuthorityInterpreterRecoveryPlaneObserver
+       , LifecycleAuthorityInterpreterAdmissionRead
+       , LifecycleAuthorityInterpreterManifestSignerRead
+       , LifecycleAuthorityInterpreterTargetWorkerImage
+       , LifecycleAuthorityInterpreterAuthenticatedRuntimeInstall
+       ]
+
+renderLifecycleAuthorityInterpreterCause :: LifecycleAuthorityInterpreterCause -> Text
+renderLifecycleAuthorityInterpreterCause cause = case cause of
+  LifecycleAuthorityInterpreterRegisteredClients -> "registered-clients"
+  LifecycleAuthorityInterpreterInitialAdmission initialAdmissionCause ->
+    "initial-admission/" <> renderLifecycleAuthorityInitialAdmissionCause initialAdmissionCause
+  LifecycleAuthorityInterpreterAuthorityScope -> "authority-scope"
+  LifecycleAuthorityInterpreterTransportBounds -> "transport-bounds"
+  LifecycleAuthorityInterpreterAuthenticationLifetime -> "authentication-lifetime"
+  LifecycleAuthorityInterpreterReplayClockSkew -> "replay-clock-skew"
+  LifecycleAuthorityInterpreterReplayLimits -> "replay-limits"
+  LifecycleAuthorityInterpreterReplayCasAttempts -> "replay-cas-attempts"
+  LifecycleAuthorityInterpreterBackupEndpoint -> "backup/endpoint"
+  LifecycleAuthorityInterpreterBackupClient -> "backup/client"
+  LifecycleAuthorityInterpreterTargetEndpoint -> "target-agent/endpoint"
+  LifecycleAuthorityInterpreterTargetClient -> "target-agent/client"
+  LifecycleAuthorityInterpreterTlsRetentionEndpoint -> "tls-retention/endpoint"
+  LifecycleAuthorityInterpreterTlsRetentionClient -> "tls-retention/client"
+  LifecycleAuthorityInterpreterLocalAuthorityEndpoint -> "local-authority/endpoint"
+  LifecycleAuthorityInterpreterLocalAuthorityClient -> "local-authority/client"
+  LifecycleAuthorityInterpreterProviderEndpoint -> "provider/endpoint"
+  LifecycleAuthorityInterpreterProviderClient -> "provider/client"
+  LifecycleAuthorityInterpreterRecoveryPlaneObserver -> "recovery-plane/observer"
+  LifecycleAuthorityInterpreterAdmissionRead -> "admission/read"
+  LifecycleAuthorityInterpreterManifestSignerRead -> "manifest-signer/read"
+  LifecycleAuthorityInterpreterTargetWorkerImage -> "target-worker/image"
+  LifecycleAuthorityInterpreterAuthenticatedRuntimeInstall -> "authenticated-runtime/install"
+
+allLifecycleAuthorityStartupCauses :: [LifecycleAuthorityStartupCause]
+allLifecycleAuthorityStartupCauses =
+  [ LifecycleAuthorityStartupConfigDecode
+  , LifecycleAuthorityStartupConfigValidation
+  , LifecycleAuthorityStartupVaultConfiguration
+  , LifecycleAuthorityStartupTargetAgentIdentityValidation
+  , LifecycleAuthorityStartupAuthenticationTopology
+  , LifecycleAuthorityStartupAuthenticationTrustResolution
+  , LifecycleAuthorityStartupAuthenticationSessionAcquireForbidden
+  , LifecycleAuthorityStartupAuthenticationSessionAcquireSealed
+  , LifecycleAuthorityStartupAuthenticationSessionAcquireUnavailable
+  , LifecycleAuthorityStartupAuthenticationSessionReloginForbidden
+  , LifecycleAuthorityStartupAuthenticationSessionReloginSealed
+  , LifecycleAuthorityStartupAuthenticationSessionReloginUnavailable
+  , LifecycleAuthorityStartupAuthenticationTrustReadForbidden
+  , LifecycleAuthorityStartupAuthenticationTrustReadMissing
+  , LifecycleAuthorityStartupAuthenticationTrustReadStatus
+  , LifecycleAuthorityStartupAuthenticationTrustReadConnection
+  , LifecycleAuthorityStartupAuthenticationTrustReadTimeout
+  , LifecycleAuthorityStartupAuthenticationTrustReadDecode
+  , LifecycleAuthorityStartupAuthenticationTrustIdentityMismatch
+  , LifecycleAuthorityStartupAuthenticationTrustConstruction
+  , LifecycleAuthorityStartupAuthenticationSignerResolution
+  , LifecycleAuthorityStartupPrimaryStoreCredentialRead
+  , LifecycleAuthorityStartupPrimaryStoreHmacRead
+  , LifecycleAuthorityStartupPrimaryStoreOtherRead
+  , LifecycleAuthorityStartupPrimaryStoreAccessKeyMissing
+  , LifecycleAuthorityStartupPrimaryStoreSecretKeyMissing
+  , LifecycleAuthorityStartupPrimaryStoreHmacKeyMissing
+  , LifecycleAuthorityStartupPrimaryStoreOtherFieldMissing
+  , LifecycleAuthorityStartupPrimaryStoreAccessKeyEmpty
+  , LifecycleAuthorityStartupPrimaryStoreSecretKeyEmpty
+  , LifecycleAuthorityStartupPrimaryStoreHmacKeyEmpty
+  , LifecycleAuthorityStartupPrimaryStoreOtherFieldEmpty
+  , LifecycleAuthorityStartupCoordinateConstruction
+  ]
+    ++ map
+      LifecycleAuthorityStartupInterpreterConstruction
+      allLifecycleAuthorityInterpreterCauses
+    ++ [LifecycleAuthorityStartupOther]
+
+renderLifecycleAuthorityStartupCause :: LifecycleAuthorityStartupCause -> Text
+renderLifecycleAuthorityStartupCause cause = case cause of
+  LifecycleAuthorityStartupConfigDecode -> "config/decode"
+  LifecycleAuthorityStartupConfigValidation -> "config/validation"
+  LifecycleAuthorityStartupVaultConfiguration -> "vault/configuration"
+  LifecycleAuthorityStartupTargetAgentIdentityValidation ->
+    "target-agent-identity/validation"
+  LifecycleAuthorityStartupAuthenticationTopology -> "authentication/topology"
+  LifecycleAuthorityStartupAuthenticationTrustResolution ->
+    "authentication/trust-resolution"
+  LifecycleAuthorityStartupAuthenticationSessionAcquireForbidden ->
+    "authentication/session-acquire/forbidden"
+  LifecycleAuthorityStartupAuthenticationSessionAcquireSealed ->
+    "authentication/session-acquire/sealed"
+  LifecycleAuthorityStartupAuthenticationSessionAcquireUnavailable ->
+    "authentication/session-acquire/unavailable"
+  LifecycleAuthorityStartupAuthenticationSessionReloginForbidden ->
+    "authentication/session-relogin/forbidden"
+  LifecycleAuthorityStartupAuthenticationSessionReloginSealed ->
+    "authentication/session-relogin/sealed"
+  LifecycleAuthorityStartupAuthenticationSessionReloginUnavailable ->
+    "authentication/session-relogin/unavailable"
+  LifecycleAuthorityStartupAuthenticationTrustReadForbidden ->
+    "authentication/trust-read/status-403"
+  LifecycleAuthorityStartupAuthenticationTrustReadMissing ->
+    "authentication/trust-read/status-404"
+  LifecycleAuthorityStartupAuthenticationTrustReadStatus ->
+    "authentication/trust-read/status-other"
+  LifecycleAuthorityStartupAuthenticationTrustReadConnection ->
+    "authentication/trust-read/connection"
+  LifecycleAuthorityStartupAuthenticationTrustReadTimeout ->
+    "authentication/trust-read/timeout"
+  LifecycleAuthorityStartupAuthenticationTrustReadDecode ->
+    "authentication/trust-read/decode"
+  LifecycleAuthorityStartupAuthenticationTrustIdentityMismatch ->
+    "authentication/trust-read/identity-mismatch"
+  LifecycleAuthorityStartupAuthenticationTrustConstruction ->
+    "authentication/trust-registry/construction"
+  LifecycleAuthorityStartupAuthenticationSignerResolution ->
+    "authentication/signer-resolution"
+  LifecycleAuthorityStartupPrimaryStoreCredentialRead ->
+    "primary-store/vault-read/credentials"
+  LifecycleAuthorityStartupPrimaryStoreHmacRead ->
+    "primary-store/vault-read/hmac"
+  LifecycleAuthorityStartupPrimaryStoreOtherRead ->
+    "primary-store/vault-read/other"
+  LifecycleAuthorityStartupPrimaryStoreAccessKeyMissing ->
+    "primary-store/field-missing/minio-access-key"
+  LifecycleAuthorityStartupPrimaryStoreSecretKeyMissing ->
+    "primary-store/field-missing/minio-secret-key"
+  LifecycleAuthorityStartupPrimaryStoreHmacKeyMissing ->
+    "primary-store/field-missing/hmac-key"
+  LifecycleAuthorityStartupPrimaryStoreOtherFieldMissing ->
+    "primary-store/field-missing/other"
+  LifecycleAuthorityStartupPrimaryStoreAccessKeyEmpty ->
+    "primary-store/field-empty/minio-access-key"
+  LifecycleAuthorityStartupPrimaryStoreSecretKeyEmpty ->
+    "primary-store/field-empty/minio-secret-key"
+  LifecycleAuthorityStartupPrimaryStoreHmacKeyEmpty ->
+    "primary-store/field-empty/hmac-key"
+  LifecycleAuthorityStartupPrimaryStoreOtherFieldEmpty ->
+    "primary-store/field-empty/other"
+  LifecycleAuthorityStartupCoordinateConstruction -> "coordinates/construction"
+  LifecycleAuthorityStartupInterpreterConstruction interpreterCause ->
+    "interpreter/" <> renderLifecycleAuthorityInterpreterCause interpreterCause
+  LifecycleAuthorityStartupOther -> "other"
+
+lifecycleAuthorityStartupRefusalDisposition
+  :: RuntimeRole
+  -> LifecycleAuthorityStartupCause
+  -> (Maybe Text, ExitCode)
+lifecycleAuthorityStartupRefusalDisposition role cause =
+  ( if role == LifecycleAuthorityRuntime
+      then Just (renderLifecycleAuthorityStartupCause cause)
+      else Nothing
+  , ExitFailure 1
+  )
+
+lifecycleAuthorityStartupCauseFromStoreError
+  :: InClusterAuthorityStoreError
+  -> LifecycleAuthorityStartupCause
+lifecycleAuthorityStartupCauseFromStoreError storeError = case storeError of
+  InClusterAuthorityVaultReadFailed path _
+    | path == "minio/lifecycle-authority" ->
+        LifecycleAuthorityStartupPrimaryStoreCredentialRead
+    | path == "object-store/hmac" -> LifecycleAuthorityStartupPrimaryStoreHmacRead
+    | otherwise -> LifecycleAuthorityStartupPrimaryStoreOtherRead
+  InClusterAuthorityVaultFieldMissing path fieldName ->
+    classifyStoreField
+      LifecycleAuthorityStartupPrimaryStoreAccessKeyMissing
+      LifecycleAuthorityStartupPrimaryStoreSecretKeyMissing
+      LifecycleAuthorityStartupPrimaryStoreHmacKeyMissing
+      LifecycleAuthorityStartupPrimaryStoreOtherFieldMissing
+      path
+      fieldName
+  InClusterAuthorityVaultFieldEmpty path fieldName ->
+    classifyStoreField
+      LifecycleAuthorityStartupPrimaryStoreAccessKeyEmpty
+      LifecycleAuthorityStartupPrimaryStoreSecretKeyEmpty
+      LifecycleAuthorityStartupPrimaryStoreHmacKeyEmpty
+      LifecycleAuthorityStartupPrimaryStoreOtherFieldEmpty
+      path
+      fieldName
+ where
+  classifyStoreField accessKey secretKey hmacKey other path fieldName
+    | path == "minio/lifecycle-authority" && fieldName == "minio_access_key" = accessKey
+    | path == "minio/lifecycle-authority" && fieldName == "minio_secret_key" = secretKey
+    | path == "object-store/hmac" && fieldName == "key" = hmacKey
+    | otherwise = other
+
+lifecycleAuthorityStartupCauseFromShared
+  :: TargetSecretAgentStartupCause
+  -> LifecycleAuthorityStartupCause
+lifecycleAuthorityStartupCauseFromShared cause = case cause of
+  TargetSecretAgentStartupConfigDecode -> LifecycleAuthorityStartupConfigDecode
+  TargetSecretAgentStartupConfigValidation -> LifecycleAuthorityStartupConfigValidation
+  TargetSecretAgentStartupVaultConfiguration -> LifecycleAuthorityStartupVaultConfiguration
+  TargetSecretAgentStartupIdentityValidation ->
+    LifecycleAuthorityStartupTargetAgentIdentityValidation
+  TargetSecretAgentStartupAuthenticationTopology ->
+    LifecycleAuthorityStartupAuthenticationTopology
+  TargetSecretAgentStartupAuthenticationTrustResolution ->
+    LifecycleAuthorityStartupAuthenticationTrustResolution
+  TargetSecretAgentStartupAuthenticationSessionAcquireForbidden ->
+    LifecycleAuthorityStartupAuthenticationSessionAcquireForbidden
+  TargetSecretAgentStartupAuthenticationSessionAcquireSealed ->
+    LifecycleAuthorityStartupAuthenticationSessionAcquireSealed
+  TargetSecretAgentStartupAuthenticationSessionAcquireUnavailable ->
+    LifecycleAuthorityStartupAuthenticationSessionAcquireUnavailable
+  TargetSecretAgentStartupAuthenticationSessionReloginForbidden ->
+    LifecycleAuthorityStartupAuthenticationSessionReloginForbidden
+  TargetSecretAgentStartupAuthenticationSessionReloginSealed ->
+    LifecycleAuthorityStartupAuthenticationSessionReloginSealed
+  TargetSecretAgentStartupAuthenticationSessionReloginUnavailable ->
+    LifecycleAuthorityStartupAuthenticationSessionReloginUnavailable
+  TargetSecretAgentStartupAuthenticationTrustReadForbidden ->
+    LifecycleAuthorityStartupAuthenticationTrustReadForbidden
+  TargetSecretAgentStartupAuthenticationTrustReadMissing ->
+    LifecycleAuthorityStartupAuthenticationTrustReadMissing
+  TargetSecretAgentStartupAuthenticationTrustReadStatus ->
+    LifecycleAuthorityStartupAuthenticationTrustReadStatus
+  TargetSecretAgentStartupAuthenticationTrustReadConnection ->
+    LifecycleAuthorityStartupAuthenticationTrustReadConnection
+  TargetSecretAgentStartupAuthenticationTrustReadTimeout ->
+    LifecycleAuthorityStartupAuthenticationTrustReadTimeout
+  TargetSecretAgentStartupAuthenticationTrustReadDecode ->
+    LifecycleAuthorityStartupAuthenticationTrustReadDecode
+  TargetSecretAgentStartupAuthenticationTrustIdentityMismatch ->
+    LifecycleAuthorityStartupAuthenticationTrustIdentityMismatch
+  TargetSecretAgentStartupAuthenticationTrustConstruction ->
+    LifecycleAuthorityStartupAuthenticationTrustConstruction
+  TargetSecretAgentStartupAuthenticationSignerResolution ->
+    LifecycleAuthorityStartupAuthenticationSignerResolution
+  _ -> LifecycleAuthorityStartupOther
+
+-- | The tombstone registry must use the exact identity fixed by its compiled
+-- sink. The deployment cluster ID is an independent authority coordinate and
+-- cannot be substituted for this manifest reference.
+targetSecretAgentTombstoneReference :: TargetClusterSecretSink -> Text
+targetSecretAgentTombstoneReference = targetSecretSinkIdentity
+
+-- | Closed diagnostic projection for the Target Agent's composed readiness
+-- facts. Dependency detail text is deliberately discarded before rendering.
+data TargetSecretAgentReadinessCause
+  = TargetSecretAgentReadinessStarting
+  | TargetSecretAgentReadinessStale
+  | TargetSecretAgentReadinessTargetMaterialUnavailable
+      !TargetSecretId
+      !TargetMaterialReadinessStage
+  | TargetSecretAgentReadinessAuthorityClockUnavailable
+  | TargetSecretAgentReadinessProjectedTokenUnavailable
+  | TargetSecretAgentReadinessRetainedEpochUnavailable
+  | TargetSecretAgentReadinessReplayProjectionUnavailable
+  | TargetSecretAgentReadinessOtherUnavailable
+  | TargetSecretAgentReadinessTargetMaterialIdentityRejected
+      !TargetSecretId
+      !TargetMaterialReadinessStage
+  | TargetSecretAgentReadinessAuthorityClockIdentityRejected
+  | TargetSecretAgentReadinessProjectedTokenIdentityRejected
+  | TargetSecretAgentReadinessRetainedEpochIdentityRejected
+  | TargetSecretAgentReadinessReplayProjectionIdentityRejected
+  | TargetSecretAgentReadinessOtherIdentityRejected
+  deriving (Eq, Show)
+
+allTargetSecretAgentReadinessCauses :: [TargetSecretAgentReadinessCause]
+allTargetSecretAgentReadinessCauses =
+  [ TargetSecretAgentReadinessStarting
+  , TargetSecretAgentReadinessStale
+  ]
+    <> [ TargetSecretAgentReadinessTargetMaterialUnavailable target stage
+       | target <- allTargetMaterialIds
+       , stage <- allTargetMaterialReadinessStages
+       ]
+    <> [ TargetSecretAgentReadinessAuthorityClockUnavailable
+       , TargetSecretAgentReadinessProjectedTokenUnavailable
+       , TargetSecretAgentReadinessRetainedEpochUnavailable
+       , TargetSecretAgentReadinessReplayProjectionUnavailable
+       , TargetSecretAgentReadinessOtherUnavailable
+       ]
+    <> [ TargetSecretAgentReadinessTargetMaterialIdentityRejected target stage
+       | target <- allTargetMaterialIds
+       , stage <- allTargetMaterialReadinessStages
+       ]
+    <> [ TargetSecretAgentReadinessAuthorityClockIdentityRejected
+       , TargetSecretAgentReadinessProjectedTokenIdentityRejected
+       , TargetSecretAgentReadinessRetainedEpochIdentityRejected
+       , TargetSecretAgentReadinessReplayProjectionIdentityRejected
+       , TargetSecretAgentReadinessOtherIdentityRejected
+       ]
+
+renderTargetSecretAgentReadinessCause :: TargetSecretAgentReadinessCause -> Text
+renderTargetSecretAgentReadinessCause cause = case cause of
+  TargetSecretAgentReadinessStarting -> "readiness/starting"
+  TargetSecretAgentReadinessStale -> "readiness/stale"
+  TargetSecretAgentReadinessTargetMaterialUnavailable target stage ->
+    targetMaterialCause "readiness/dependency-unavailable/target-material" target stage
+  TargetSecretAgentReadinessAuthorityClockUnavailable ->
+    "readiness/dependency-unavailable/authority-clock"
+  TargetSecretAgentReadinessProjectedTokenUnavailable ->
+    "readiness/dependency-unavailable/projected-service-account-token"
+  TargetSecretAgentReadinessRetainedEpochUnavailable ->
+    "readiness/dependency-unavailable/retained-authority-epoch"
+  TargetSecretAgentReadinessReplayProjectionUnavailable ->
+    "readiness/dependency-unavailable/request-replay-projection"
+  TargetSecretAgentReadinessOtherUnavailable ->
+    "readiness/dependency-unavailable/other"
+  TargetSecretAgentReadinessTargetMaterialIdentityRejected target stage ->
+    targetMaterialCause "readiness/identity-rejected/target-material" target stage
+  TargetSecretAgentReadinessAuthorityClockIdentityRejected ->
+    "readiness/identity-rejected/authority-clock"
+  TargetSecretAgentReadinessProjectedTokenIdentityRejected ->
+    "readiness/identity-rejected/projected-service-account-token"
+  TargetSecretAgentReadinessRetainedEpochIdentityRejected ->
+    "readiness/identity-rejected/retained-authority-epoch"
+  TargetSecretAgentReadinessReplayProjectionIdentityRejected ->
+    "readiness/identity-rejected/request-replay-projection"
+  TargetSecretAgentReadinessOtherIdentityRejected ->
+    "readiness/identity-rejected/other"
+ where
+  targetMaterialCause prefix target stage =
+    Text.intercalate
+      "/"
+      [prefix, targetSecretIdToken target, renderTargetMaterialReadinessStage stage]
+
+targetSecretAgentReadinessCause
+  :: RoleReadinessState
+  -> RoleReadinessFacts
+  -> Maybe TargetSecretAgentReadinessCause
+targetSecretAgentReadinessCause state facts = case state of
+  RoleReadinessReady -> Nothing
+  RoleReadinessStarting _ ->
+    Just
+      ( case roleFactObservedAtMicros facts of
+          Nothing -> TargetSecretAgentReadinessStarting
+          Just _
+            | any isUnobserved (roleFactDependencies facts) ->
+                TargetSecretAgentReadinessStarting
+            | otherwise -> TargetSecretAgentReadinessStale
+      )
+  RoleReadinessDependencyUnavailable _ ->
+    Just
+      ( classifyUnavailable
+          (firstDependencyLabel isUnavailable (roleFactDependencies facts))
+      )
+  RoleReadinessIdentityRejected _ ->
+    Just
+      ( classifyIdentityRejected
+          (firstDependencyLabel isIdentityRejected (roleFactDependencies facts))
+      )
+ where
+  isUnobserved (_, observation) = case observation of
+    RoleDependencyUnobserved -> True
+    _ -> False
+  isUnavailable observation = case observation of
+    RoleDependencyUnavailable _ -> True
+    _ -> False
+  isIdentityRejected observation = case observation of
+    RoleDependencyIdentityRejected _ -> True
+    _ -> False
+
+  firstDependencyLabel matches = go
+   where
+    go [] = Nothing
+    go ((label, observation) : rest)
+      | matches observation = Just label
+      | otherwise = go rest
+
+  classifyUnavailable label = case classifyReadinessDependency label of
+    TargetReadinessTargetMaterial target stage ->
+      TargetSecretAgentReadinessTargetMaterialUnavailable target stage
+    TargetReadinessAuthorityClock -> TargetSecretAgentReadinessAuthorityClockUnavailable
+    TargetReadinessProjectedToken -> TargetSecretAgentReadinessProjectedTokenUnavailable
+    TargetReadinessRetainedEpoch -> TargetSecretAgentReadinessRetainedEpochUnavailable
+    TargetReadinessReplayProjection -> TargetSecretAgentReadinessReplayProjectionUnavailable
+    TargetReadinessOther -> TargetSecretAgentReadinessOtherUnavailable
+
+  classifyIdentityRejected label = case classifyReadinessDependency label of
+    TargetReadinessTargetMaterial target stage ->
+      TargetSecretAgentReadinessTargetMaterialIdentityRejected target stage
+    TargetReadinessAuthorityClock -> TargetSecretAgentReadinessAuthorityClockIdentityRejected
+    TargetReadinessProjectedToken -> TargetSecretAgentReadinessProjectedTokenIdentityRejected
+    TargetReadinessRetainedEpoch -> TargetSecretAgentReadinessRetainedEpochIdentityRejected
+    TargetReadinessReplayProjection -> TargetSecretAgentReadinessReplayProjectionIdentityRejected
+    TargetReadinessOther -> TargetSecretAgentReadinessOtherIdentityRejected
+
+targetSecretAgentReadinessDiagnosticDisposition
+  :: RoleReadinessState
+  -> RoleReadinessFacts
+  -> (Maybe TargetSecretAgentReadinessCause, RoleReadinessState)
+targetSecretAgentReadinessDiagnosticDisposition state facts =
+  (targetSecretAgentReadinessCause state facts, state)
+
+data TargetReadinessDependency
+  = TargetReadinessTargetMaterial !TargetSecretId !TargetMaterialReadinessStage
+  | TargetReadinessAuthorityClock
+  | TargetReadinessProjectedToken
+  | TargetReadinessRetainedEpoch
+  | TargetReadinessReplayProjection
+  | TargetReadinessOther
+
+classifyReadinessDependency :: Maybe Text -> TargetReadinessDependency
+classifyReadinessDependency maybeLabel = case maybeLabel of
+  Just label
+    | Just (target, stage) <- decodeTargetMaterialReadinessDependencyLabel label ->
+        TargetReadinessTargetMaterial target stage
+    | label == "authority-clock" -> TargetReadinessAuthorityClock
+    | label == "projected-service-account-token" -> TargetReadinessProjectedToken
+    | label == "retained-authority-epoch" -> TargetReadinessRetainedEpoch
+    | label == "request-replay-projection" -> TargetReadinessReplayProjection
+  _ -> TargetReadinessOther
+
+-- | Close every typed session and Transit-read failure over a payload-free
+-- diagnostic. Response bodies, transport details, and key names never cross
+-- this boundary.
+targetSecretAgentTrustResolutionCause
+  :: RouteTrustResolutionFailure TransitPublicGenerationError
+  -> TargetSecretAgentStartupCause
+targetSecretAgentTrustResolutionCause failure = case failure of
+  RouteTrustConfigurationInvalid _ ->
+    TargetSecretAgentStartupAuthenticationTrustConstruction
+  RouteTrustPublicGenerationUnavailable _ transitFailure ->
+    case transitFailure of
+      TransitPublicGenerationIdentityMismatch ->
+        TargetSecretAgentStartupAuthenticationTrustIdentityMismatch
+      TransitPublicGenerationVaultFailure operationFailure ->
+        case operationFailure of
+          VaultSessionAcquisitionFailed sessionFailure ->
+            classifySessionFailure
+              TargetSecretAgentStartupAuthenticationSessionAcquireForbidden
+              TargetSecretAgentStartupAuthenticationSessionAcquireSealed
+              TargetSecretAgentStartupAuthenticationSessionAcquireUnavailable
+              sessionFailure
+          VaultSessionReloginFailed sessionFailure ->
+            classifySessionFailure
+              TargetSecretAgentStartupAuthenticationSessionReloginForbidden
+              TargetSecretAgentStartupAuthenticationSessionReloginSealed
+              TargetSecretAgentStartupAuthenticationSessionReloginUnavailable
+              sessionFailure
+          VaultSessionRequestFailed httpFailure -> case httpFailure of
+            HttpStatus 403 _ -> TargetSecretAgentStartupAuthenticationTrustReadForbidden
+            HttpStatus 404 _ -> TargetSecretAgentStartupAuthenticationTrustReadMissing
+            HttpStatus _ _ -> TargetSecretAgentStartupAuthenticationTrustReadStatus
+            HttpConnectionFailure _ ->
+              TargetSecretAgentStartupAuthenticationTrustReadConnection
+            HttpTimeout _ -> TargetSecretAgentStartupAuthenticationTrustReadTimeout
+            HttpDecode _ -> TargetSecretAgentStartupAuthenticationTrustReadDecode
+ where
+  classifySessionFailure forbidden sealed unavailable sessionFailure = case sessionFailure of
+    VaultSessionForbidden _ -> forbidden
+    VaultSessionSealed _ -> sealed
+    VaultSessionUnavailable _ -> unavailable
+
+refuseControlPlaneStartup
+  :: RuntimeRole -> TargetSecretAgentStartupCause -> IO ExitCode
+refuseControlPlaneStartup role cause = do
+  let (maybeTargetCause, exitCode) =
+        targetSecretAgentStartupRefusalDisposition role cause
+      (maybeAuthorityCause, _) =
+        lifecycleAuthorityStartupRefusalDisposition
+          role
+          (lifecycleAuthorityStartupCauseFromShared cause)
+  case maybeTargetCause of
+    Nothing -> pure ()
+    Just renderedCause ->
+      logError
+        "target_secret_agent_startup_refused"
+        [ field "role" (runtimeRoleName role)
+        , field "cause" renderedCause
+        ]
+  case maybeAuthorityCause of
+    Nothing -> pure ()
+    Just renderedCause ->
+      logError
+        "lifecycle_authority_startup_refused"
+        [ field "role" (runtimeRoleName role)
+        , field "cause" renderedCause
+        ]
+  pure exitCode
+
+refuseLifecycleAuthorityStartup
+  :: LifecycleAuthorityStartupCause -> IO ExitCode
+refuseLifecycleAuthorityStartup cause = do
+  let (maybeCause, exitCode) =
+        lifecycleAuthorityStartupRefusalDisposition LifecycleAuthorityRuntime cause
+  case maybeCause of
+    Nothing -> pure ()
+    Just renderedCause ->
+      logError
+        "lifecycle_authority_startup_refused"
+        [ field "role" (runtimeRoleName LifecycleAuthorityRuntime)
+        , field "cause" renderedCause
+        ]
+  pure exitCode
+
 data LifecycleAuthorityCoordinates = LifecycleAuthorityCoordinates
   { lifecycleCheckpointAuthority :: !LongLivedCheckpointAuthority
   , lifecycleAuthorityAdmissionCoordinate :: !(ModelBObjectCoordinate 'ClusterRetained)
@@ -885,11 +1813,107 @@ authorityStartupModeFromRegistration observation = case observation of
   ModelBUnobservable detail ->
     Left ("projection-import registration is unobservable: " <> detail)
 
+-- | Protected startup classification of the same registration observation.
+-- Unlike the operator-internal detailed helper above, this result cannot retain
+-- endpoint or decoder detail in the public Authority refusal event.
+lifecycleAuthorityInitialAdmissionModeFromRegistration
+  :: ModelBObservation registration
+  -> Either LifecycleAuthorityInitialAdmissionCause AuthorityStartupMode
+lifecycleAuthorityInitialAdmissionModeFromRegistration observation = case observation of
+  ModelBMissing -> Right AuthorityCleanInstallStartup
+  ModelBObserved {} -> Right AuthorityMigrationStartup
+  ModelBCorrupt {} -> Left LifecycleAuthorityInitialAdmissionRegistrationCorrupt
+  ModelBEndpointUnready {} ->
+    Left LifecycleAuthorityInitialAdmissionRegistrationEndpointUnready
+  ModelBUnobservable detail ->
+    Left
+      ( LifecycleAuthorityInitialAdmissionRegistrationUnobservable
+          (lifecycleAuthorityRegistrationUnobservableCause detail)
+      )
+
+-- | Collapse the operator-internal Model-B failure detail into a closed cause
+-- before it reaches the protected Authority startup event. These prefixes are
+-- the exact renderings of the existing coordinate guard, native S3 client,
+-- encrypted-object layer, and Model-B version validator; the underlying text
+-- is otherwise preserved unchanged for its existing internal consumers.
+lifecycleAuthorityRegistrationUnobservableCause
+  :: Text -> LifecycleAuthorityRegistrationUnobservableCause
+lifecycleAuthorityRegistrationUnobservableCause detail
+  | detail
+      == "Model-B coordinate does not belong to the configured long-lived checkpoint authority" =
+      LifecycleAuthorityRegistrationCoordinateAuthority
+  | "failed to fetch encrypted object: invalid object-store endpoint:"
+      `Text.isPrefixOf` detail =
+      LifecycleAuthorityRegistrationStoreEndpoint
+  | "failed to fetch encrypted object: object-store request failed:"
+      `Text.isPrefixOf` detail =
+      LifecycleAuthorityRegistrationStoreRequest
+  | Just storeDetail <- Text.stripPrefix "failed to fetch encrypted object: " detail
+  , Just statusClass <- objectStoreGetFailureStatusClass storeDetail =
+      LifecycleAuthorityRegistrationStoreHttp
+        (lifecycleAuthorityRegistrationStoreHttpCause storeDetail statusClass)
+  | "failed to fetch encrypted object: object-store GET succeeded but returned no ETag version"
+      `Text.isPrefixOf` detail =
+      LifecycleAuthorityRegistrationStoreVersion
+  | "failed to open encrypted object:" `Text.isPrefixOf` detail =
+      LifecycleAuthorityRegistrationEnvelopeOpen
+  | "model_b_object_version" `Text.isInfixOf` detail =
+      LifecycleAuthorityRegistrationModelBVersion
+  | otherwise = LifecycleAuthorityRegistrationOther
+
+lifecycleAuthorityRegistrationStoreHttpCause
+  :: Text
+  -> ObjectStoreHttpStatusClass
+  -> LifecycleAuthorityRegistrationStoreHttpCause
+lifecycleAuthorityRegistrationStoreHttpCause storeDetail statusClass = case statusClass of
+  ObjectStoreHttpAuthentication -> LifecycleAuthorityRegistrationStoreHttpAuthentication
+  ObjectStoreHttpAuthorization ->
+    LifecycleAuthorityRegistrationStoreHttpAuthorization
+      ( fromMaybe
+          ObjectStoreS3MalformedOrUnknown
+          (objectStoreGetFailureS3ErrorCodeClass storeDetail)
+      )
+  ObjectStoreHttpOtherClient -> LifecycleAuthorityRegistrationStoreHttpOtherClient
+  ObjectStoreHttpServer -> LifecycleAuthorityRegistrationStoreHttpServer
+  ObjectStoreHttpUnexpectedNonError -> LifecycleAuthorityRegistrationStoreHttpUnexpectedNonError
+  ObjectStoreHttpUnknown -> LifecycleAuthorityRegistrationStoreHttpUnknown
+
 lifecycleAuthoritySubmissionCapacity :: Natural
 lifecycleAuthoritySubmissionCapacity = 256
 
 lifecycleAuthorityRetainedSubmissionCapacity :: Natural
 lifecycleAuthorityRetainedSubmissionCapacity = 1024
+
+-- | The complete dependency inventory owned by the standing Lifecycle
+-- Authority readiness observer. Target-worker custody is deliberately absent:
+-- Authority reaches that repository through its authenticated client and has
+-- no right to the worker's commitment-HMAC or KV capabilities.
+data LifecycleAuthorityReadinessDependency
+  = LifecycleAuthorityReadinessObjectStore
+  | LifecycleAuthorityReadinessBootstrapHandoff
+  deriving (Bounded, Enum, Eq, Show)
+
+lifecycleAuthorityReadinessDependencies :: [LifecycleAuthorityReadinessDependency]
+lifecycleAuthorityReadinessDependencies = [minBound .. maxBound]
+
+observeLifecycleAuthorityReadinessDependency
+  :: VaultSession
+  -> InClusterAuthorityStore
+  -> LifecycleAuthorityReadinessDependency
+  -> IO (Text, RoleDependencyObservation)
+observeLifecycleAuthorityReadinessDependency vaultSession store dependency = case dependency of
+  LifecycleAuthorityReadinessObjectStore -> do
+    observed <- inClusterAuthorityReady store
+    pure
+      ( "authority-object-store"
+      , if observed
+          then RoleDependencyReady
+          else
+            RoleDependencyUnavailable
+              "the retained Authority object store did not answer a signed list"
+      )
+  LifecycleAuthorityReadinessBootstrapHandoff ->
+    observeBootstrapHandoffDependency vaultSession
 
 -- | Derive the immutable operation-client registry from the exact trust
 -- entries on @operations/submit@.  Authentication and admission therefore
@@ -972,7 +1996,7 @@ lifecycleAuthorityRuntimeInterpreter
   -> InClusterAuthorityStore
   -> LifecycleAuthorityCoordinates
   -> TargetAgentIdentity
-  -> IO (Either Text (RoleInterpreter IO, RoleReadinessObserver))
+  -> IO (Either LifecycleAuthorityInterpreterCause (RoleInterpreter IO, RoleReadinessObserver))
 lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clientSigner store coordinates registeredAgentIdentity = do
   -- Sprint 4.55: five layers of this role's handler stack each took
   -- `inClusterAuthorityReady store` — a signed S3 LIST through the dedicated
@@ -985,36 +2009,31 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
       controlPlaneRoleReadinessSchedule
       "lifecycle-authority-dependencies"
       monotonicNowMicros
-      ( do
-          observed <- inClusterAuthorityReady store
-          custodyDependency <- observeTargetChildCustodyDependency vaultSession
-          handoffDependency <- observeBootstrapHandoffDependency vaultSession
-          pure
-            [
-              ( "authority-object-store"
-              , if observed
-                  then RoleDependencyReady
-                  else
-                    RoleDependencyUnavailable
-                      "the retained Authority object store did not answer a signed list"
-              )
-            , custodyDependency
-            , handoffDependency
-            ]
+      ( traverse
+          (observeLifecycleAuthorityReadinessDependency vaultSession store)
+          lifecycleAuthorityReadinessDependencies
       )
   let authorityReadiness = roleReadinessObserverSource readinessObserver
-  let registeredClientsResult = registeredClientTableFromTrustRegistry trustRegistry
+  let registeredClientsResult =
+        mapLeft
+          (const LifecycleAuthorityInterpreterRegisteredClients)
+          (registeredClientTableFromTrustRegistry trustRegistry)
   initialAdmissionResult <- case registeredClientsResult of
-    Left detail -> pure (Left detail)
-    Right registeredClients -> resolveInitialAdmission registeredClients
+    Left cause -> pure (Left cause)
+    Right registeredClients ->
+      fmap
+        (mapLeft LifecycleAuthorityInterpreterInitialAdmission)
+        (resolveInitialAdmission registeredClients)
   case do
     registeredClients <- registeredClientsResult
     initialAdmission <- initialAdmissionResult
     authorityScope <-
-      mapLeft (Text.pack . show) (mkAuthorityScope (checkpointAuthorityClusterId authority))
+      mapLeft
+        (const LifecycleAuthorityInterpreterAuthorityScope)
+        (mkAuthorityScope (checkpointAuthorityClusterId authority))
     transportBounds <-
       mapLeft
-        (Text.pack . show)
+        (const LifecycleAuthorityInterpreterTransportBounds)
         ( mkAuthenticatedTransportBounds
             lifecycleAuthorityAuthenticatedFrameMaximumBytes
             lifecycleAuthorityAuthenticationMetadataMaximumBytes
@@ -1022,29 +2041,31 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
         )
     maximumLifetime <-
       mapLeft
-        (Text.pack . show)
+        (const LifecycleAuthorityInterpreterAuthenticationLifetime)
         (authorityDurationFromMicros lifecycleAuthorityAuthenticationLifetimeMicros)
     replayClockSkew <-
       mapLeft
-        (Text.pack . show)
+        (const LifecycleAuthorityInterpreterReplayClockSkew)
         (authorityDurationFromMicros lifecycleAuthorityReplayClockSkewMicros)
     replayLimits <-
       mapLeft
-        (Text.pack . show)
+        (const LifecycleAuthorityInterpreterReplayLimits)
         ( mkRequestReplayLimits
             lifecycleAuthorityReplayCapacity
             lifecycleAuthorityReplayResponseMaximumBytes
             replayClockSkew
         )
     casAttempts <-
-      mapLeft (Text.pack . show) (mkReplayCasAttempts lifecycleAuthorityReplayCasAttempts)
+      mapLeft
+        (const LifecycleAuthorityInterpreterReplayCasAttempts)
+        (mkReplayCasAttempts lifecycleAuthorityReplayCasAttempts)
     backupEndpoint <-
       mapLeft
-        (Text.pack . show)
+        (const LifecycleAuthorityInterpreterBackupEndpoint)
         (mkAuthorityBackupEndpoint authorityBackupServiceEndpoint)
     backupTransport <-
       mapLeft
-        (Text.pack . show)
+        (const LifecycleAuthorityInterpreterBackupClient)
         ( newControlPlaneClient
             defaultHttpConfig
             authorityCheckpointBackupMaximumResponseBytes
@@ -1052,23 +2073,43 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
         )
     targetEndpoint <-
       mapLeft
-        (Text.pack . show)
+        (const LifecycleAuthorityInterpreterTargetEndpoint)
         (mkTargetSecretAgentEndpoint targetSecretAgentServiceEndpoint)
     targetClient <-
       mapLeft
-        (Text.pack . show)
+        (const LifecycleAuthorityInterpreterTargetClient)
         ( newControlPlaneClient
-            defaultHttpConfig
+            lifecycleAuthorityTargetObservationHttpConfig
             targetDecommissionInventoryMaximumResponseBytes
             targetEndpoint
         )
+    targetOneShotClient <-
+      mapLeft
+        (const LifecycleAuthorityInterpreterTargetClient)
+        ( newControlPlaneClient
+            lifecycleAuthorityTargetOneShotHttpConfig
+            targetDecommissionInventoryMaximumResponseBytes
+            targetEndpoint
+        )
+    tlsRetentionEndpoint <-
+      mapLeft
+        (const LifecycleAuthorityInterpreterTlsRetentionEndpoint)
+        (mkTlsRetentionEndpoint tlsRetentionServiceEndpoint)
+    tlsRetentionClient <-
+      mapLeft
+        (const LifecycleAuthorityInterpreterTlsRetentionClient)
+        ( newControlPlaneClient
+            defaultHttpConfig
+            tlsRetentionMaximumResponseBytes
+            tlsRetentionEndpoint
+        )
     localAuthorityEndpoint <-
       mapLeft
-        (Text.pack . show)
+        (const LifecycleAuthorityInterpreterLocalAuthorityEndpoint)
         (mkLifecycleAuthorityEndpoint lifecycleAuthorityServiceEndpoint)
     localAuthorityClient <-
       mapLeft
-        (Text.pack . show)
+        (const LifecycleAuthorityInterpreterLocalAuthorityClient)
         ( newControlPlaneClient
             defaultHttpConfig
             lifecycleAuthorityAuthenticatedFrameMaximumBytes
@@ -1076,13 +2117,13 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
         )
     providerEndpoint <-
       mapLeft
-        (Text.pack . show)
+        (const LifecycleAuthorityInterpreterProviderEndpoint)
         (mkProviderWorkerEndpoint providerWorkerServiceEndpoint)
     providerClient <-
       mapLeft
-        (Text.pack . show)
+        (const LifecycleAuthorityInterpreterProviderClient)
         ( newControlPlaneClient
-            defaultHttpConfig
+            lifecycleAuthorityProviderHttpConfig
             providerWorkerResponseMaximumBytes
             providerEndpoint
         )
@@ -1096,10 +2137,12 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
       , casAttempts
       , backupTransport
       , targetClient
+      , targetOneShotClient
+      , tlsRetentionClient
       , localAuthorityClient
       , providerClient
       ) of
-    Left detail -> pure (Left detail)
+    Left cause -> pure (Left cause)
     Right
       ( registeredClients
         , initialAdmission
@@ -1110,6 +2153,8 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
         , casAttempts
         , backupTransport
         , targetClient
+        , targetOneShotClient
+        , tlsRetentionClient
         , localAuthorityClient
         , providerClient
         ) -> do
@@ -1180,6 +2225,16 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                 transportBounds
                 checkpointClientProviders
                 targetClient
+            targetOneShotTransport =
+              mkAuthenticatedClientTransport
+                transportBounds
+                checkpointClientProviders
+                targetOneShotClient
+            tlsRetentionTransport =
+              mkAuthenticatedClientTransport
+                transportBounds
+                checkpointClientProviders
+                tlsRetentionClient
             localAuthorityTransport =
               mkAuthenticatedClientTransport
                 transportBounds
@@ -1442,6 +2497,56 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                     )
                 )
                 (lifecycleAuthorityExternalMaterialIngressCoordinate coordinates)
+            externalMaterialReceiptRecovery =
+              ExternalMaterialIngressReceiptRecovery $ \now permit -> do
+                let permitId =
+                      operatorMaterialPermitIdText
+                        (signedExternalMaterialPermitId permit)
+                    generation =
+                      credentialGenerationValue
+                        (signedExternalMaterialGeneration permit)
+                    observationDeadline =
+                      authorityTimeMicros now + 30 * 1000000
+                observed <-
+                  observeTargetRetainedMaterialSource
+                    targetTransport
+                    TargetAcmeEab
+                    permitId
+                    generation
+                    observationDeadline
+                case observed of
+                  Left err -> do
+                    writeDiagnosticLine
+                      ( "external-material/retained-receipt-recovery target-source="
+                          ++ Text.unpack (renderTargetRetainedMaterialSourceClientCause err)
+                      )
+                    pure (Left "target-source-unavailable")
+                  Right (TargetRetainedMaterialSourcePositivelyAbsent absentTarget) -> do
+                    writeDiagnosticLine
+                      "external-material/retained-receipt-recovery target-source=source-absent"
+                    pure $
+                      if absentTarget == TargetAcmeEab
+                        then Right ExternalMaterialIngressSourcePositivelyAbsent
+                        else Left "target-source-target-mismatch"
+                  Right (TargetRetainedMaterialSourcePresent source) ->
+                    pure $
+                      if targetRetainedSourceObservedTarget source /= TargetAcmeEab
+                        then Left "target-source-target-mismatch"
+                        else
+                          if targetRetainedSourceObservedOperationId source /= permitId
+                            then Left "target-source-operation-mismatch"
+                            else
+                              if targetRetainedSourceObservedGeneration source /= generation
+                                then Left "target-source-generation-mismatch"
+                                else case mkExternalMaterialTargetReceipt
+                                  permit
+                                  (targetRetainedSourceObservedReceiptRef source)
+                                  (targetRetainedSourceObservedCommitment source)
+                                  (targetRetainedSourceObservedCiphertextDigest source)
+                                  (targetRetainedSourceObservedVaultVersion source) of
+                                  Left _ -> Left "target-source-receipt-invalid"
+                                  Right receipt ->
+                                    Right (ExternalMaterialIngressReceiptRecovered receipt)
             awsAdminRepositoryResolver operationId = do
               coordinate <-
                 mapLeft
@@ -1467,6 +2572,9 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                 (lifecycleAuthorityFirstReconcileCoordinate coordinates)
                 registeredAgentIdentity
                 currentAuthorityTime
+                ( productionProveAwsAdminAuthorizedRecovery
+                    vaultSession
+                )
             adminActionRepositoryResolver operationId = do
               coordinate <-
                 mapLeft
@@ -1523,6 +2631,83 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                     )
                     coordinate
                 )
+            tlsWorkflowBoundary =
+              TlsRetentionWorkflowAuthorityBoundary runAuthorityTlsWorkflowRequest
+             where
+              runAuthorityTlsWorkflowRequest request = case request of
+                TlsRetentionWorkflowAuthorityRetain substrate scope approval ->
+                  runAuthorityTlsWorkflow substrate scope $ \workflow -> do
+                    retained <- retainPublicEdgeTlsWorkflow workflow approval
+                    case retained of
+                      Left failure -> do
+                        observeTlsWorkflowFailure failure
+                        pure
+                          ( TlsRetentionWorkflowAuthorityRefused
+                              (classifyTlsRetentionWorkflowFailure failure)
+                          )
+                      Right TlsWorkflowNothingToRetain ->
+                        pure TlsRetentionWorkflowAuthorityNothingToRetain
+                      Right (TlsWorkflowRetained _) ->
+                        pure TlsRetentionWorkflowAuthorityRetained
+                TlsRetentionWorkflowAuthorityRestore substrate scope ->
+                  runAuthorityTlsWorkflow substrate scope $ \workflow -> do
+                    nowResult <- currentAuthorityTime
+                    case nowResult of
+                      Left _ ->
+                        pure
+                          ( TlsRetentionWorkflowAuthorityRefused
+                              TlsRetentionWorkflowAuthorityStateUnavailable
+                          )
+                      Right now -> do
+                        restored <-
+                          restorePublicEdgeTlsWorkflow
+                            workflow
+                            (authorityTimeMicros now `div` 1000000)
+                        case restored of
+                          Left failure -> do
+                            observeTlsWorkflowFailure failure
+                            pure
+                              ( TlsRetentionWorkflowAuthorityRefused
+                                  (classifyTlsRetentionWorkflowFailure failure)
+                              )
+                          Right (TlsWorkflowRestored _) ->
+                            pure TlsRetentionWorkflowAuthorityRestored
+                          Right TlsWorkflowIssuancePermitted ->
+                            pure TlsRetentionWorkflowAuthorityIssuancePermitted
+
+              runAuthorityTlsWorkflow substrate scope action
+                | Text.strip substrate /= "home-local" =
+                    pure
+                      ( TlsRetentionWorkflowAuthorityRefused
+                          TlsRetentionWorkflowAuthorityTargetUnsupported
+                      )
+                | otherwise =
+                    case mkTlsRetentionAuthorityClient
+                      localAuthorityTransport
+                      substrate
+                      scope of
+                      Left _ ->
+                        pure
+                          ( TlsRetentionWorkflowAuthorityRefused
+                              TlsRetentionWorkflowAuthoritySlotInvalid
+                          )
+                      Right authorityClient ->
+                        action
+                          TlsRetentionWorkflow
+                            { tlsWorkflowAuthority = authorityClient
+                            , tlsWorkflowAdapter =
+                                tlsRetentionClientWithTransport tlsRetentionTransport
+                            , tlsWorkflowRetainedHomeAgent =
+                                tlsTargetAgentClientWithTransport targetOneShotTransport
+                            , tlsWorkflowSelectedAgent =
+                                tlsTargetAgentClientWithTransport targetOneShotTransport
+                            }
+
+              observeTlsWorkflowFailure failure =
+                writeClosedDiagnostic
+                  ( "tls-retention/workflow failure="
+                      <> Text.unpack (renderTlsWorkflowFailureCause failure)
+                  )
             retainedSesSmtpRepository =
               modelBRetainedMaterialRepository
                 ( inClusterAuthorityModelBCasAdapter
@@ -1542,11 +2727,17 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
         synchronized <- readAuthorityAdmission admissionRepository
         signerResult <- readAuthorityManifestPublicKey manifestSigner
         pure $ do
-          _ <- synchronized
-          (_, manifestPublicKey) <- signerResult
+          _ <-
+            mapLeft
+              (const LifecycleAuthorityInterpreterAdmissionRead)
+              synchronized
+          (_, manifestPublicKey) <-
+            mapLeft
+              (const LifecycleAuthorityInterpreterManifestSignerRead)
+              signerResult
           targetWorkerImage <-
             mapLeft
-              ("registered Target Agent rollout is not an image digest: " <>)
+              (const LifecycleAuthorityInterpreterTargetWorkerImage)
               (mkTargetWorkerImageDigest (targetAgentRolloutDigest registeredAgentIdentity))
           let signerDigest = manifestPublicKeyDigest manifestPublicKey
               retainedTargetObserver target = do
@@ -1571,12 +2762,13 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                     , targetWorkerJobWorkingDirectory = "/opt/build"
                     , targetWorkerJobImageRepository =
                         "127.0.0.1:30080/prodbox/prodbox-runtime"
-                    , targetWorkerJobMaximumRuntimeSeconds = 180
+                    , targetWorkerJobMaximumRuntimeSeconds =
+                        TargetWorkerBudget.targetWorkerMaximumRuntimeSeconds
                     }
                   (targetIntentAuthorityClient localAuthorityTransport)
                   currentAuthorityTime
               retainedRewrapClient =
-                targetRetainedMaterialRewrapClient targetTransport
+                targetRetainedMaterialRewrapClient targetOneShotTransport
               retainedDeliveryBoundary =
                 RetainedMaterialDeliveryBoundary
                   { deliverRetainedSesSmtp = \now source request ->
@@ -1597,7 +2789,6 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                                 retainedSesSmtpRepository
                                 now
                                 source
-                                request
                             case sourceReady of
                               Left detail -> pure (Left detail)
                               Right () ->
@@ -1645,7 +2836,6 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                                 retainedAcmeEabRepository
                                 now
                                 source
-                                request
                             case sourceReady of
                               Left detail -> pure (Left detail)
                               Right () ->
@@ -1704,6 +2894,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                   currentAuthorityTime
                   noRoleReadinessContribution
                   externalMaterialRepository
+                  externalMaterialReceiptRecovery
                   manifestSigner
                   ( lifecycleAuthorityEksDrainIntentAuthenticatedHandler
                       eksDrainIntentClient
@@ -1790,6 +2981,11 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                   controlPlaneMaximumBodyBytes
                   tlsAuthorityRepositoryResolver
                   decommissionHandler
+              tlsWorkflowHandler =
+                lifecycleAuthorityTlsRetentionWorkflowAuthenticatedHandler
+                  controlPlaneMaximumBodyBytes
+                  tlsWorkflowBoundary
+                  tlsAuthenticatedHandler
               targetIntentBoundary =
                 productionTargetIntentIssuerBoundary
                   store
@@ -1807,7 +3003,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                 bootstrapHandoffAuthenticatedHandler
                   controlPlaneMaximumBodyBytes
                   (vaultBootstrapHandoffRepository vaultSession noRoleReadinessContribution)
-                  tlsAuthenticatedHandler
+                  tlsWorkflowHandler
               federationBoundary =
                 FederationRegistrationBoundary
                   { resolveFederationRegistrationRepository = \operationDigest -> do
@@ -1844,7 +3040,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                           fmap
                             (mapLeft (Text.pack . show))
                             ( BootstrapCustody.commitChildCustody
-                                (BootstrapCustody.bootstrapCustodyClient targetTransport)
+                                (BootstrapCustody.bootstrapCustodyClient targetOneShotTransport)
                                 intent
                             )
                   , federationRegistrationBoundaryReadiness = noRoleReadinessContribution
@@ -1866,11 +3062,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                   targetIntentBoundary
                   retainedDeliveryHandler
           case recoveryPlaneObserverResult of
-            Left err ->
-              Left
-                ( "construct Lifecycle Authority recovery-plane observer: "
-                    <> Text.pack (show err)
-                )
+            Left _ -> Left LifecycleAuthorityInterpreterRecoveryPlaneObserver
             Right recoveryPlaneObserver ->
               let recoveryPlaneRepository =
                     modelBRecoveryPlaneRepository
@@ -1893,7 +3085,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                       recoveryPlaneHandler
                       authenticatedHandler
                in mapLeft
-                    (Text.pack . show)
+                    (const LifecycleAuthorityInterpreterAuthenticatedRuntimeInstall)
                     ( fmap
                         (,readinessObserver)
                         ( installAuthenticatedRuntimeInterpreter
@@ -1934,25 +3126,28 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
             )
   resolveInitialAdmission registeredClients =
     case projectionImportRegistrationCoordinate authority of
-      Left err -> pure (Left (Text.pack (show err)))
+      Left _ -> pure (Left LifecycleAuthorityInitialAdmissionRegistrationCoordinate)
       Right registrationCoordinate -> do
         observed <- modelBObserve registrationAdapter registrationCoordinate
         pure $ do
-          mode <- authorityStartupModeFromRegistration observed
-          mapLeft
-            (Text.pack . show)
-            ( case mode of
-                AuthorityCleanInstallStartup ->
-                  initialCleanInstallAuthorityWithRegisteredClients
+          mode <- lifecycleAuthorityInitialAdmissionModeFromRegistration observed
+          case mode of
+            AuthorityCleanInstallStartup ->
+              mapLeft
+                (const LifecycleAuthorityInitialAdmissionCleanInstall)
+                ( initialCleanInstallAuthorityWithRegisteredClients
                     lifecycleAuthoritySubmissionCapacity
                     lifecycleAuthorityRetainedSubmissionCapacity
                     registeredClients
-                AuthorityMigrationStartup ->
-                  initialMigratingAuthorityWithRegisteredClients
+                )
+            AuthorityMigrationStartup ->
+              mapLeft
+                (const LifecycleAuthorityInitialAdmissionMigration)
+                ( initialMigratingAuthorityWithRegisteredClients
                     lifecycleAuthoritySubmissionCapacity
                     lifecycleAuthorityRetainedSubmissionCapacity
                     registeredClients
-            )
+                )
   projectionImportHandler admissionRepository =
     resolvingProjectionImportHandler
       (resolveProjectionImportHandler admissionRepository)
@@ -2244,11 +3439,118 @@ lifecycleAuthoritySignedEnvelopeMaximumBytes =
 lifecycleAuthorityAuthenticationLifetimeMicros :: Natural
 lifecycleAuthorityAuthenticationLifetimeMicros = 5 * 60 * 1000000
 
+-- | Only the Provider capability lane needs to contain a finite child-action
+-- schedule. Other control-plane clients retain 'defaultHttpConfig'.
+lifecycleAuthorityProviderHttpConfig :: HttpConfig
+lifecycleAuthorityProviderHttpConfig =
+  defaultHttpConfig
+    { httpRequestTimeoutMicros =
+        ProviderWorkerBudget.providerWorkerResponseTimeoutMicros
+    }
+
+-- | Ordinary Target observations remain on the generic short request budget.
+lifecycleAuthorityTargetObservationHttpConfig :: HttpConfig
+lifecycleAuthorityTargetObservationHttpConfig = defaultHttpConfig
+
+-- | Only Target routes which run an attested one-shot worker need to contain
+-- the operation authorization lifetime and its terminal response overhead.
+lifecycleAuthorityTargetOneShotHttpConfig :: HttpConfig
+lifecycleAuthorityTargetOneShotHttpConfig =
+  defaultHttpConfig
+    { httpRequestTimeoutMicros =
+        TargetWorkerBudget.targetOneShotResponseTimeoutMicros
+    }
+
 lifecycleAuthorityReplayClockSkewMicros :: Natural
 lifecycleAuthorityReplayClockSkewMicros = 60 * 1000000
 
+lifecycleAuthorityFirstReconcileRequestMaximum :: Natural
+lifecycleAuthorityFirstReconcileRequestMaximum =
+  initialAdmissionRequests
+    + genesisProvisionerRequests
+    + genesisReceiptRequests
+    + remainingMemberCount * requestsPerRemainingMember
+    + finalContinuationObservation
+ where
+  initialAdmissionRequests = 3
+  genesisProvisionerRequests = 5
+  genesisReceiptRequests = 5
+  remainingMemberCount = fromIntegral (firstReconcileHardMaximum - 1)
+  requestsPerRemainingMember = 6
+  finalContinuationObservation = 1
+
+lifecycleAuthorityReconcileAttemptRequestMaximum :: Natural
+lifecycleAuthorityReconcileAttemptRequestMaximum =
+  lifecycleAuthorityFirstReconcileRequestMaximum
+    + inForceConfigTransitionRequests
+ where
+  -- Observe the current generation, propose/read back that exact generation,
+  -- freshly observe it while reconciling the Authority-bound retained-root
+  -- marker, then load the in-force projection as the final transition barrier.
+  inForceConfigTransitionRequests = 4
+
 lifecycleAuthorityReplayCapacity :: Natural
-lifecycleAuthorityReplayCapacity = 4
+lifecycleAuthorityReplayCapacity =
+  immediateSupportedAttemptCount * lifecycleAuthorityReconcileAttemptRequestMaximum
+ where
+  -- A rollout attempt can finish while all of its five-minute requests still
+  -- occupy the additional one-minute replay-skew horizon. The immediately
+  -- supported unchanged retry therefore needs a second complete envelope.
+  immediateSupportedAttemptCount = 2
+
+-- | The Authority Backup Adapter sees a different request envelope from the
+-- Lifecycle Authority that calls it. A complete attempt can repair the
+-- retained aggregate (observe, copy, and final health observation), then
+-- advance config (initial observation, copy, copy read-back, promotion
+-- read-back, marker observation, and final in-force load).
+authorityBackupReconcileAttemptRequestMaximum :: Natural
+authorityBackupReconcileAttemptRequestMaximum =
+  authorityBackupAdmissionRequestMaximum + authorityBackupConfigRequestMaximum
+ where
+  authorityBackupAdmissionRequestMaximum = 3
+  authorityBackupConfigRequestMaximum = 6
+
+authorityBackupReplayCapacity :: Natural
+authorityBackupReplayCapacity =
+  immediateSupportedAttemptCount * authorityBackupReconcileAttemptRequestMaximum
+ where
+  immediateSupportedAttemptCount = 2
+
+-- | One complete qualification attempt can observe the provider credential and
+-- an already committed external-material source, then perform the retained
+-- delivery's target observation, rewrap, and trust installation. The supported
+-- runtime restore then retains the owned TLS Secret, restores it after namespace
+-- recreation, and captures the ready Secret again. Every TLS one-shot request
+-- also causes the Authority to install/read back its exact Target trust before
+-- the worker can run, so both calls reach this same retained replay coordinate.
+targetSecretAgentReconcileAttemptRequestMaximum :: Natural
+targetSecretAgentReconcileAttemptRequestMaximum =
+  providerCredentialTargetObservationRequests
+    + committedExternalMaterialRecoveryObservationRequests
+    + retainedMaterialDeliveryRequests
+    + tlsRetainRequests
+    + tlsRestoreRequests
+    + tlsRetainOnReadyRequests
+ where
+  providerCredentialTargetObservationRequests = 1
+  committedExternalMaterialRecoveryObservationRequests = 1
+  retainedMaterialDeliveryRequests = 3
+  tlsRetainRequests = 2 * 4
+  tlsRestoreRequests = 2 * 3
+  tlsRetainOnReadyRequests = 2 * 4
+
+targetSecretAgentReplayCapacity :: Natural
+targetSecretAgentReplayCapacity =
+  immediateSupportedAttemptCount * targetSecretAgentReconcileAttemptRequestMaximum
+ where
+  immediateSupportedAttemptCount = 2
+
+-- Fifty-four maximum-size responses plus their retained replay metadata must
+-- fit in the encoded projection. The corresponding Vault listener request
+-- ceiling includes the Base64/JSON expansion of this finite bound.
+targetSecretAgentReplayMaximumEncodedBytes :: Int
+targetSecretAgentReplayMaximumEncodedBytes =
+  56 * standardAuthenticatedResponseMaximumBytes
 
 -- Replay stores the bounded response, not the potentially large checkpoint
 -- request.  Keeping this limit independent from the request frame prevents a
@@ -2299,6 +3601,59 @@ lifecycleAuthorityTargetControllerTokenFile =
 targetSecretAgentServiceEndpoint :: Text
 targetSecretAgentServiceEndpoint =
   controlPlaneClusterServiceUrlText "target-secret-agent" "target-secret-agent"
+
+tlsRetentionServiceEndpoint :: Text
+tlsRetentionServiceEndpoint =
+  controlPlaneClusterServiceUrlText "tls-retention" "tls-retention"
+
+classifyTlsRetentionWorkflowFailure
+  :: TlsRetentionWorkflowError -> TlsRetentionWorkflowAuthorityFailure
+classifyTlsRetentionWorkflowFailure failure = case failure of
+  TlsWorkflowAuthorityFailed _ -> TlsRetentionWorkflowAuthorityStateUnavailable
+  TlsWorkflowAdapterFailed _ -> TlsRetentionWorkflowAuthorityAdapterUnavailable
+  TlsWorkflowHomeAgentFailed clientError
+    | tlsTargetAgentClientReplayCapacityExhausted clientError ->
+        TlsRetentionWorkflowAuthorityHomeAgentReplayCapacityExhausted
+    | otherwise -> TlsRetentionWorkflowAuthorityHomeAgentUnavailable
+  TlsWorkflowSelectedAgentFailed clientError
+    | tlsTargetAgentClientReplayCapacityExhausted clientError ->
+        TlsRetentionWorkflowAuthoritySelectedAgentReplayCapacityExhausted
+    | otherwise -> TlsRetentionWorkflowAuthoritySelectedAgentUnavailable
+  TlsWorkflowEnvelopeInvalid _ -> TlsRetentionWorkflowAuthorityEnvelopeInvalid
+  TlsWorkflowAdapterReadBackMismatch ->
+    TlsRetentionWorkflowAuthorityAdapterReadBackMismatch
+  TlsWorkflowSourceReadBackMismatch ->
+    TlsRetentionWorkflowAuthoritySourceReadBackMismatch
+  TlsWorkflowPromotionStateMismatch ->
+    TlsRetentionWorkflowAuthorityPromotionStateMismatch
+  TlsWorkflowRestoreRefused _ -> TlsRetentionWorkflowAuthorityRestoreRefused
+  TlsWorkflowWrappedDekInvalid -> TlsRetentionWorkflowAuthorityWrappedDekInvalid
+
+renderTlsWorkflowFailureCause :: TlsRetentionWorkflowError -> Text
+renderTlsWorkflowFailureCause failure = case failure of
+  TlsWorkflowAuthorityFailed _ -> "authority-state-unavailable"
+  TlsWorkflowAdapterFailed _ -> "adapter-unavailable"
+  TlsWorkflowHomeAgentFailed clientError ->
+    "home-agent/" <> renderTlsTargetAgentClientCause clientError
+  TlsWorkflowSelectedAgentFailed clientError ->
+    "selected-agent/" <> renderTlsTargetAgentClientCause clientError
+  TlsWorkflowEnvelopeInvalid _ -> "envelope-invalid"
+  TlsWorkflowAdapterReadBackMismatch -> "adapter-read-back-mismatch"
+  TlsWorkflowSourceReadBackMismatch -> "source-read-back-mismatch"
+  TlsWorkflowPromotionStateMismatch -> "promotion-state-mismatch"
+  TlsWorkflowRestoreRefused _ -> "restore-refused"
+  TlsWorkflowWrappedDekInvalid -> "wrapped-dek-invalid"
+
+-- | Diagnostics cannot change an operation result. Async cancellation remains
+-- cancellation; an ordinary stderr failure is ignored.
+writeClosedDiagnostic :: String -> IO ()
+writeClosedDiagnostic line = do
+  result <- try (writeDiagnosticLine line) :: IO (Either SomeException ())
+  case result of
+    Right () -> pure ()
+    Left exception -> case fromException exception :: Maybe SomeAsyncException of
+      Just _ -> throwIO exception
+      Nothing -> pure ()
 
 targetDecommissionInventoryMaximumResponseBytes :: Int
 targetDecommissionInventoryMaximumResponseBytes = 64 * 1024
@@ -2515,10 +3870,12 @@ runControlPlaneRole :: RuntimeRole -> ControlPlaneLaunchOptions -> IO ExitCode
 runControlPlaneRole role options = do
   decoded <- try (Dhall.inputFile Dhall.auto (controlPlaneConfigPath options))
   case decoded of
-    Left (_ :: SomeException) -> pure (ExitFailure 1)
+    Left (_ :: SomeException) ->
+      refuseControlPlaneStartup role TargetSecretAgentStartupConfigDecode
     Right config ->
       case validateControlPlaneConfig role config of
-        Left _ -> pure (ExitFailure 1)
+        Left _ ->
+          refuseControlPlaneStartup role TargetSecretAgentStartupConfigValidation
         Right validatedStore ->
           case mkControlPlaneVaultConfig
             role
@@ -2527,11 +3884,12 @@ runControlPlaneRole role options = do
             (vault_role config)
             (Text.unpack (service_account_token_file config)) of
             Left _ ->
-              pure (ExitFailure 1)
+              refuseControlPlaneStartup role TargetSecretAgentStartupVaultConfiguration
             Right vaultConfig -> do
               vaultSession <- newControlPlaneVaultSession vaultConfig
               case mkTargetAgentIdentity (target_agent_identity config) of
-                Left _ -> pure (ExitFailure 1)
+                Left _ ->
+                  refuseControlPlaneStartup role TargetSecretAgentStartupIdentityValidation
                 Right agentIdentity ->
                   runRolePlan
                     role
@@ -2560,25 +3918,26 @@ data ResolvedAuthenticationProvisioning = ResolvedAuthenticationProvisioning
 resolveMountedAuthenticationProvisioning
   :: VaultSession
   -> ValidatedAuthenticationTopology
-  -> IO (Either Text ResolvedAuthenticationProvisioning)
+  -> IO (Either TargetSecretAgentStartupCause ResolvedAuthenticationProvisioning)
 resolveMountedAuthenticationProvisioning vaultSession topology = do
   trustResult <-
-    resolveRouteTrustRegistryWith
-      (resolveTransitPublicGeneration vaultSession)
+    resolveRouteTrustRegistryWithFailure
+      (resolveTransitPublicGenerationDetailed vaultSession)
       topology
   signerResult <-
     resolveTransitRequestSigningCapability
       vaultSession
       (validatedAuthenticationSigningPrincipal topology)
       (validatedAuthenticationSigningKeyRef topology)
-  pure $ do
-    trust <- mapLeft (Text.pack . show) trustResult
-    signer <- signerResult
-    Right
-      ResolvedAuthenticationProvisioning
-        { resolvedAuthenticationTrustRegistry = trust
-        , resolvedAuthenticationClientSigner = signer
-        }
+  pure $ case (trustResult, signerResult) of
+    (Left failure, _) -> Left (targetSecretAgentTrustResolutionCause failure)
+    (Right _, Left _) -> Left TargetSecretAgentStartupAuthenticationSignerResolution
+    (Right trust, Right signer) ->
+      Right
+        ResolvedAuthenticationProvisioning
+          { resolvedAuthenticationTrustRegistry = trust
+          , resolvedAuthenticationClientSigner = signer
+          }
 
 runRolePlan
   :: RuntimeRole
@@ -2638,11 +3997,11 @@ runRoleServer
   -> IO ExitCode
 runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdentity authenticationProvisioning =
   case authenticationProvisioning of
-    Left _ -> pure (ExitFailure 1)
+    Left _ -> refuseControlPlaneStartup role TargetSecretAgentStartupAuthenticationTopology
     Right topology -> do
       resolved <- resolveMountedAuthenticationProvisioning vaultSession topology
       case resolved of
-        Left _ -> pure (ExitFailure 1)
+        Left cause -> refuseControlPlaneStartup role cause
         Right authentication ->
           runResolvedRole authentication
  where
@@ -2652,10 +4011,14 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
       ) -> do
         storeResult <- newInClusterAuthorityStore vaultSession storeConfig
         case storeResult of
-          Left _ -> pure (ExitFailure 1)
+          Left storeError ->
+            refuseLifecycleAuthorityStartup
+              (lifecycleAuthorityStartupCauseFromStoreError storeError)
           Right store ->
             case mkLifecycleAuthorityCoordinates storeConfig of
-              Left _ -> pure (ExitFailure 1)
+              Left _ ->
+                refuseLifecycleAuthorityStartup
+                  LifecycleAuthorityStartupCoordinateConstruction
               Right coordinates -> do
                 interpreterResult <-
                   lifecycleAuthorityRuntimeInterpreter
@@ -2667,7 +4030,9 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
                     coordinates
                     agentIdentity
                 case interpreterResult of
-                  Left _ -> pure (ExitFailure 1)
+                  Left cause ->
+                    refuseLifecycleAuthorityStartup
+                      (LifecycleAuthorityStartupInterpreterConstruction cause)
                   Right (interpreter, readinessObserver) ->
                     withRoleReadinessObservers
                       [readinessObserver]
@@ -2684,7 +4049,7 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
             interpreter
             largeAuthenticatedFrameMaximumBytes
             standardAuthenticatedResponseMaximumBytes
-            standardReplayCapacity
+            authorityBackupReplayCapacity
             standardReplayMaximumEncodedBytes
     (TlsRetentionRuntime, ValidatedTlsRetentionStore storeConfig) -> do
       bindingResult <- newTlsRetentionAdapterBinding vaultSession storeConfig
@@ -2726,7 +4091,7 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
           agentIdentity
           (resolvedAuthenticationClientSigner authentication)
       case handlerResult of
-        Left _ -> pure (ExitFailure 1)
+        Left cause -> refuseControlPlaneStartup role cause
         Right (handler, readinessObserver) ->
           runAuthenticatedHandlerObserving
             [readinessObserver]
@@ -2734,8 +4099,8 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
             handler
             standardAuthenticatedFrameMaximumBytes
             standardAuthenticatedResponseMaximumBytes
-            standardReplayCapacity
-            standardReplayMaximumEncodedBytes
+            targetSecretAgentReplayCapacity
+            targetSecretAgentReplayMaximumEncodedBytes
     _ -> pure (ExitFailure 1)
 
   runAuthenticatedContextFreeObserving
@@ -2916,12 +4281,26 @@ providerWorkerRuntimeHandler vaultSession clusterId trustRegistry clientSigner =
             , authenticatedHandlerHandle = \_ _ _ -> pure Nothing
             }
     pure
-      ( providerWorkerExecutionAuthenticatedHandler
+      ( providerWorkerExecutionAuthenticatedHandlerObserved
           providerCommittedIntentMaximumEncodedBytes
+          productionProviderWorkerRequestObserver
           boundary
           fallback
       , observer
       )
+
+-- | The production sink receives only the two closed tokens. The observer
+-- wrapper swallows synchronous logging failures, so this path cannot alter the
+-- Provider reply; asynchronous cancellation remains visible to the server.
+productionProviderWorkerRequestObserver :: ProviderWorkerRequestObserver
+productionProviderWorkerRequestObserver =
+  mkProviderWorkerRequestObserver $ \stage cause ->
+    logInfo
+      "provider_worker_request_progress"
+      [ field "role" (runtimeRoleName ProviderWorkerRuntime)
+      , field "stage" (renderProviderWorkerRequestStage stage)
+      , field "cause" (renderProviderWorkerRequestCause cause)
+      ]
 
 -- | The monotonic clock a readiness observer stamps with and a readiness
 -- projection is evaluated against. One reader, so the observer's stamp and the
@@ -2937,6 +4316,33 @@ productionRoleReadinessResolver :: RoleReadinessResolver IO
 productionRoleReadinessResolver =
   mkRoleReadinessResolver controlPlaneRoleReadinessSchedule monotonicNowMicros atomically
 
+-- | Target-Agent-only protected diagnostic wrapper. It computes the same
+-- readiness state from the same cached snapshot as the ordinary resolver, logs
+-- only a closed cause when that state refuses readiness, and returns the state
+-- unchanged to the HTTP renderer.
+targetSecretAgentRoleReadinessResolver :: RoleReadinessResolver IO
+targetSecretAgentRoleReadinessResolver =
+  RoleReadinessResolver $ \source -> do
+    now <- monotonicNowMicros
+    facts <- atomically (roleReadinessSnapshot source)
+    let state = computeRoleReadiness controlPlaneRoleReadinessSchedule now facts
+        (diagnostic, unchangedState) =
+          targetSecretAgentReadinessDiagnosticDisposition state facts
+    case diagnostic of
+      Nothing -> pure ()
+      Just cause ->
+        logError
+          "target_secret_agent_readiness_refused"
+          [ field "role" (runtimeRoleName TargetSecretAgentRuntime)
+          , field "cause" (renderTargetSecretAgentReadinessCause cause)
+          ]
+    pure unchangedState
+
+productionRoleReadinessResolverFor :: RuntimeRole -> RoleReadinessResolver IO
+productionRoleReadinessResolverFor role
+  | role == TargetSecretAgentRuntime = targetSecretAgentRoleReadinessResolver
+  | otherwise = productionRoleReadinessResolver
+
 -- | Production Target Secret Agent binding. Secret-bearing TLS and
 -- post-initialization federation operations are authorized by the Lifecycle
 -- Authority and attached directly to an exact attested one-shot worker. The
@@ -2947,7 +4353,11 @@ targetSecretAgentRuntimeHandler
   -> Text
   -> TargetAgentIdentity
   -> RequestSigningCapability IO
-  -> IO (Either Text (AuthenticatedRoleHandler IO, RoleReadinessObserver))
+  -> IO
+       ( Either
+           TargetSecretAgentStartupCause
+           (AuthenticatedRoleHandler IO, RoleReadinessObserver)
+       )
 targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity clientSigner = do
   -- Sprint 4.55: the agent's readiness used to run an `allM` over every
   -- registered target — up to 32 sequential Vault KV reads, and `allM`
@@ -2981,57 +4391,59 @@ targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity
       )
   let agentReadiness = roleReadinessObserverSource readinessObserver
   case (buildBoundaries, targetOneShotRuntimeBoundary agentReadiness) of
-    (Left detail, _) -> pure (Left detail)
-    (_, Left detail) -> pure (Left detail)
+    (Left cause, _) -> pure (Left cause)
+    (_, Left _) -> pure (Left TargetSecretAgentStartupHandlerOneShotBoundary)
     (Right (registry, inventory, custody), Right oneShotBoundary) -> do
       let signer = vaultAuthorityManifestSigner vaultSession
       signerResult <- readAuthorityManifestPublicKey signer
-      pure $ fmap (,readinessObserver) $ do
-        (_, publicKey) <- signerResult
-        let decommissionInputs =
-              TargetSecretAgentDecommissionProvisioned
-                (manifestPublicKeyDigest publicKey)
-                registry
-                inventory
-                custody
-            metadataOnlyFallback =
-              targetMaterialObservationAuthenticatedHandler
-                controlPlaneMaximumBodyBytes
-                (vaultTargetMaterialRepository vaultSession agentReadiness)
-            retainedMaterialHandler =
-              targetRetainedMaterialRewrapAuthenticatedHandler
-                controlPlaneMaximumBodyBytes
-                currentAuthorityTime
-                ( productionTargetRetainedMaterialRewrapBoundary
-                    vaultSession
-                    clusterId
+      pure $ case signerResult of
+        Left _ -> Left TargetSecretAgentStartupHandlerAuthorityManifest
+        Right (_, publicKey) ->
+          let decommissionInputs =
+                TargetSecretAgentDecommissionProvisioned
+                  (manifestPublicKeyDigest publicKey)
+                  registry
+                  inventory
+                  custody
+              metadataOnlyFallback =
+                targetMaterialObservationAuthenticatedHandler
+                  controlPlaneMaximumBodyBytes
+                  (vaultTargetMaterialRepository vaultSession agentReadiness)
+              retainedMaterialHandler =
+                targetRetainedMaterialRewrapAuthenticatedHandler
+                  controlPlaneMaximumBodyBytes
+                  currentAuthorityTime
+                  ( productionTargetRetainedMaterialRewrapBoundary
+                      vaultSession
+                      clusterId
+                  )
+                  metadataOnlyFallback
+              decommissionHandler =
+                targetSecretAgentDecommissionAuthenticatedHandler
+                  controlPlaneMaximumBodyBytes
+                  decommissionInputs
+                  retainedMaterialHandler
+              adminActionHandler =
+                targetSecretAgentAdminActionAuthenticatedHandler
+                  controlPlaneMaximumBodyBytes
+                  signer
+                  currentAuthorityTime
+                  clusterId
+                  registry
+                  custody
+                  decommissionHandler
+              oneShotHandler =
+                targetOneShotOperationAuthenticatedHandler
+                  controlPlaneMaximumBodyBytes
+                  oneShotBoundary
+                  adminActionHandler
+           in Right
+                ( targetAuthorityTrustAuthenticatedHandler
+                    controlPlaneMaximumBodyBytes
+                    (vaultTargetAuthorityTrustRepository agentIdentity vaultSession)
+                    oneShotHandler
+                , readinessObserver
                 )
-                metadataOnlyFallback
-            decommissionHandler =
-              targetSecretAgentDecommissionAuthenticatedHandler
-                controlPlaneMaximumBodyBytes
-                decommissionInputs
-                retainedMaterialHandler
-            adminActionHandler =
-              targetSecretAgentAdminActionAuthenticatedHandler
-                controlPlaneMaximumBodyBytes
-                signer
-                currentAuthorityTime
-                clusterId
-                registry
-                custody
-                decommissionHandler
-            oneShotHandler =
-              targetOneShotOperationAuthenticatedHandler
-                controlPlaneMaximumBodyBytes
-                oneShotBoundary
-                adminActionHandler
-        Right
-          ( targetAuthorityTrustAuthenticatedHandler
-              controlPlaneMaximumBodyBytes
-              (vaultTargetAuthorityTrustRepository agentIdentity vaultSession)
-              oneShotHandler
-          )
  where
   targetOneShotRuntimeBoundary oneShotReadiness = do
     scope <- mapLeft (Text.pack . show) (mkAuthorityScope clusterId)
@@ -3085,7 +4497,8 @@ targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity
               , targetWorkerJobWorkingDirectory = "/opt/build"
               , targetWorkerJobImageRepository =
                   "127.0.0.1:30080/prodbox/prodbox-runtime"
-              , targetWorkerJobMaximumRuntimeSeconds = 180
+              , targetWorkerJobMaximumRuntimeSeconds =
+                  TargetWorkerBudget.targetWorkerMaximumRuntimeSeconds
               }
         runOperation operation = do
           nowResult <- currentAuthorityTime
@@ -3093,8 +4506,12 @@ targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity
             readProjectedServiceAccountJwt
               targetSecretControllerAuditorTokenFile
           case (nowResult, jwtResult) of
-            (Left detail, _) -> pure (Left detail)
-            (_, Left detail) -> pure (Left detail)
+            (Left detail, _) -> do
+              observeOneShotFailure operation "authority-clock-unavailable"
+              pure (Left detail)
+            (_, Left detail) -> do
+              observeOneShotFailure operation "controller-token-unavailable"
+              pure (Left detail)
             (Right now, Right jwt) -> do
               auditorResult <-
                 vaultKubernetesLoginWithLease
@@ -3103,12 +4520,17 @@ targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity
                   targetSecretControllerAuditorVaultRole
                   jwt
               case auditorResult of
-                Left _ -> pure (Left "Target worker controller auditor login unavailable")
+                Left _ -> do
+                  observeOneShotFailure operation "controller-auditor-login-unavailable"
+                  pure (Left "Target worker controller auditor login unavailable")
                 Right auditor
-                  | not (isBoundedBatchAuditorLogin 300 auditor) ->
+                  | not (isBoundedBatchAuditorLogin 300 auditor) -> do
+                      observeOneShotFailure operation "controller-auditor-lease-invalid"
                       pure (Left "Target worker controller auditor login was not bounded batch")
                   | otherwise -> case operationTarget operation of
-                      Left detail -> pure (Left detail)
+                      Left detail -> do
+                        observeOneShotFailure operation "target-forbidden"
+                        pure (Left detail)
                       Right target -> do
                         let operationDigest = targetWorkerOperationRequestDigest operation
                             operationSuffix =
@@ -3129,34 +4551,50 @@ targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity
                             0
                             operationIdentity
                         case issued of
-                          Left err -> pure (Left (Text.pack (show err)))
+                          Left err -> do
+                            observeOneShotFailure
+                              operation
+                              ( "intent/"
+                                  <> renderAwsAdminTargetIntentIssueCause
+                                    (classifyTargetIntentIssueError err)
+                              )
+                            pure (Left (Text.pack (show err)))
                           Right (signed, accepted) -> do
                             executionNow <- currentAuthorityTime
                             case executionNow of
-                              Left detail -> pure (Left detail)
-                              Right verifiedNow ->
-                                fmap
-                                  (mapLeft (Text.pack . show))
-                                  ( coordinateTargetOneShotOperation
-                                      kubernetesBoundary
-                                      ( vaultTargetWorkerRetainedExecutionBoundary
-                                          (sessionAddress vaultSession)
-                                          (vaultLoginToken auditor)
-                                          ( targetWorkerControllerAuditOps
-                                              (sessionAddress vaultSession)
-                                              (vaultLoginToken auditor)
-                                          )
-                                          intentClient
-                                      )
-                                      accepted
-                                      verifiedNow
-                                      agentIdentity
-                                      target
-                                      (targetWorkerOperationInputSchema operation)
-                                      image
-                                      (encodeSignedTargetCommittedIntent signed)
+                              Left detail -> do
+                                observeOneShotFailure operation "execution-clock-unavailable"
+                                pure (Left detail)
+                              Right verifiedNow -> do
+                                coordinated <-
+                                  coordinateTargetOneShotOperation
+                                    kubernetesBoundary
+                                    ( vaultTargetWorkerRetainedExecutionBoundary
+                                        (sessionAddress vaultSession)
+                                        (vaultLoginToken auditor)
+                                        ( targetWorkerControllerAuditOps
+                                            (sessionAddress vaultSession)
+                                            (vaultLoginToken auditor)
+                                        )
+                                        intentClient
+                                    )
+                                    accepted
+                                    verifiedNow
+                                    agentIdentity
+                                    target
+                                    (targetWorkerOperationInputSchema operation)
+                                    image
+                                    (encodeSignedTargetCommittedIntent signed)
+                                    operation
+                                case coordinated of
+                                  Left err -> do
+                                    observeOneShotFailure
                                       operation
-                                  )
+                                      ( "coordinator/"
+                                          <> renderTargetWorkerCoordinatorDiagnostic err
+                                      )
+                                    pure (Left (Text.pack (show err)))
+                                  Right result -> pure (Right result)
     Right
       TargetOneShotOperationBoundary
         { runTargetOneShotOperation = runOperation
@@ -3182,25 +4620,45 @@ targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity
     TargetWorkerRewrappedSesSmtp -> Left "standing Target operation cannot carry SES material"
     TargetWorkerRewrappedAcmeEab -> Left "standing Target operation cannot carry EAB material"
 
+  observeOneShotFailure operation cause =
+    writeClosedDiagnostic
+      ( "target-one-shot/"
+          <> Text.unpack
+            (targetWorkerSchemaToken (targetWorkerOperationInputSchema operation))
+          <> " failure="
+          <> Text.unpack cause
+      )
+
   targetSecretControllerAuditorTokenFile =
     "/var/run/secrets/prodbox-target-controller/token"
 
   buildBoundaries = do
-    sink <- compiledTargetSecretSink TargetSesSmtp
-    trusted <- vaultTrustedTargetSink vaultSession clusterId sink
+    sink <-
+      mapLeft
+        (const TargetSecretAgentStartupHandlerTargetSink)
+        (compiledTargetSecretSink TargetSesSmtp)
+    trusted <-
+      mapLeft
+        (const TargetSecretAgentStartupHandlerTrustedSink)
+        (vaultTrustedTargetSink vaultSession clusterId sink)
     tombstone <-
-      vaultTargetGenerationTombstoneBoundary vaultSession clusterId sink
+      mapLeft
+        (const TargetSecretAgentStartupHandlerTombstoneBoundary)
+        (vaultTargetGenerationTombstoneBoundary vaultSession clusterId sink)
     binding <-
       mapLeft
-        (Text.pack . show)
-        (mkTargetGenerationTombstoneBinding clusterId tombstone)
+        (const TargetSecretAgentStartupHandlerTombstoneBinding)
+        ( mkTargetGenerationTombstoneBinding
+            (targetSecretAgentTombstoneReference sink)
+            tombstone
+        )
     registry <-
       mapLeft
-        (Text.pack . show)
+        (const TargetSecretAgentStartupHandlerTombstoneRegistry)
         (mkTargetGenerationTombstoneRegistry [binding])
     custody <-
       mapLeft
-        (Text.pack . show)
+        (const TargetSecretAgentStartupHandlerRetainedCustody)
         (vaultRetainedCustodyBoundary vaultSession)
     Right
       ( registry
@@ -3617,7 +5075,8 @@ serveControlPlaneConnection
   -> Deadline
   -> Socket
   -> IO ()
-serveControlPlaneConnection activeRole interpreter deadline client =
+serveControlPlaneConnection activeRole interpreter deadline client = do
+  providerWorkRequest <- newTVarIO False
   withResponseObligation (controlPlaneResponseObligation activeRole) client $ do
     now <- monotonicInstantFromMicros <$> controlPlaneMonotonicMicros
     case deadlineObservation now deadline of
@@ -3625,16 +5084,33 @@ serveControlPlaneConnection activeRole interpreter deadline client =
         drainBeforeRefusal client
         pure controlPlaneDeadlineReply
       DeadlineOpen (RemainingDuration remaining) -> do
-        answered <- timeout (controlPlaneTimeoutMicros remaining) served
+        answered <- timeout (controlPlaneTimeoutMicros remaining) (served providerWorkRequest)
         pure (fromMaybe controlPlaneDeadlineReply answered)
+  observedProviderWork <- readTVarIO providerWorkRequest
+  if observedProviderWork
+    then
+      observeProviderWorkerRequest
+        productionProviderWorkerRequestObserver
+        ProviderWorkerSocketCompletion
+        ProviderWorkerStageCompleted
+    else pure ()
  where
-  served = do
+  served providerWorkRequest = do
     framed <- receiveControlPlaneRequest client
     case framed of
       Left _ -> pure (ReplyBadRequest, "bad-request\n")
-      Right request ->
+      Right request -> do
+        case classifyControlPlaneRequest activeRole request of
+          DispositionOwnedRoute ProviderWorkApply _
+            | activeRole == ProviderWorkerRuntime -> do
+                atomically (writeTVar providerWorkRequest True)
+                observeProviderWorkerRequest
+                  productionProviderWorkerRequestObserver
+                  ProviderWorkerSocketIngress
+                  ProviderWorkerStageCompleted
+          _ -> pure ()
         serveControlPlaneRequest
-          productionRoleReadinessResolver
+          (productionRoleReadinessResolverFor activeRole)
           interpreter
           activeRole
           request

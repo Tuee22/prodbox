@@ -33,8 +33,11 @@ data:
 {{ end }}
 
     listener "tcp" {
-      address     = "0.0.0.0:{{ .Values.ports.api }}"
-      tls_disable = true
+      address          = "0.0.0.0:{{ .Values.ports.api }}"
+      tls_disable      = true
+      # The 112 MiB Target replay projection expands to at most 149.34 MiB
+      # inside its Base64 JSON KV write. Keep a finite margin above that bound.
+      max_request_size = 167772160
     }
 
     api_addr     = "http://vault.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.ports.api }}"

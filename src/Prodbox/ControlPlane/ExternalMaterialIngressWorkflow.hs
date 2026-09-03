@@ -39,6 +39,7 @@ import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.ExternalMaterialIngressClient
   ( ExternalMaterialIngressClient
   , ExternalMaterialIngressClientError
+  , ExternalMaterialIngressPreparation (..)
   , authorizeExternalMaterialIngress
   , completeExternalMaterialIngress
   , observeExternalMaterialIngress
@@ -78,6 +79,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
   , externalMaterialTargetReceiptGeneration
   , externalMaterialTargetReceiptPermitId
   , externalMaterialTargetReceiptReadBackVersion
+  , externalMaterialTargetReceiptSourceReceipt
   , mkExternalMaterialIngressIntent
   )
 import Prodbox.Lifecycle.CredentialProvisioner.Kubernetes
@@ -239,26 +241,40 @@ runExternalMaterialIngressWorkflow authority jobs request ingressFrame = do
       (authorityTimeMicros (externalMaterialWorkflowDeadline request))
   case prepared of
     Left err -> pure (Left (ExternalMaterialWorkflowAuthorityFailed err))
-    Right challenge -> case intentFromChallenge request challenge of
-      Left err -> pure (Left (ExternalMaterialWorkflowChallengeInvalid err))
-      Right intent -> do
-        observed <-
-          observeExternalMaterialIngress
-            authority
-            (externalMaterialWorkflowOperationId request)
-        case observed of
-          Left err -> pure (Left (ExternalMaterialWorkflowAuthorityFailed err))
-          Right observation
-            | not (observationMatchesChallenge challenge observation) ->
-                pure (Left ExternalMaterialWorkflowAuthorityObservationMismatch)
-            | otherwise ->
-                dispatchObservedPhase
-                  authority
-                  jobs
-                  request
-                  intent
-                  observation
-                  ingressFrame
+    Right (ExternalMaterialIngressRecoveredReceipt challenge receipt) ->
+      case intentFromChallenge
+        ( request
+            { externalMaterialWorkflowImageDigest =
+                externalMaterialChallengeImageDigest challenge
+            , externalMaterialWorkflowDeadline =
+                authorityTimeFromMicros
+                  (externalMaterialChallengeDeadlineMicros challenge)
+            }
+        )
+        challenge of
+        Left err -> pure (Left (ExternalMaterialWorkflowChallengeInvalid err))
+        Right intent -> finishRecoveredReceipt jobs intent receipt
+    Right (ExternalMaterialIngressPreparedChallenge challenge) ->
+      case intentFromChallenge request challenge of
+        Left err -> pure (Left (ExternalMaterialWorkflowChallengeInvalid err))
+        Right intent -> do
+          observed <-
+            observeExternalMaterialIngress
+              authority
+              (externalMaterialWorkflowOperationId request)
+          case observed of
+            Left err -> pure (Left (ExternalMaterialWorkflowAuthorityFailed err))
+            Right observation
+              | not (observationMatchesChallenge challenge observation) ->
+                  pure (Left ExternalMaterialWorkflowAuthorityObservationMismatch)
+              | otherwise ->
+                  dispatchObservedPhase
+                    authority
+                    jobs
+                    request
+                    intent
+                    observation
+                    ingressFrame
 
 runExternalMaterialIngressWorkflowWithDelivery
   :: ExternalMaterialIngressClient IO
@@ -291,7 +307,7 @@ runExternalMaterialIngressWorkflowWithDelivery authority delivery target jobs re
   deliveryRequest now receipt = do
     let permitId = operatorMaterialPermitIdText (externalMaterialTargetReceiptPermitId receipt)
     operationId <- mkRetainedMaterialRef permitId
-    sourceReceipt <- mkRetainedMaterialRef permitId
+    sourceReceipt <- mkRetainedMaterialRef (externalMaterialTargetReceiptSourceReceipt receipt)
     commitment <- mkRetainedMaterialRef (externalMaterialTargetReceiptCommitment receipt)
     source <-
       mkRetainedMaterialSource
@@ -529,9 +545,10 @@ attachAndCommit authority jobs request exactPod signedPermit ingressFrame = do
       ingressFrame
   receipt <- case attached of
     Right value -> pure (Right value)
-    Left _ -> do
+    Left (CredentialProvisionerJobAttachFailed _) -> do
       recovered <- recoverExternalMaterialReceipt jobs exactPod
       pure (first ExternalMaterialWorkflowJobFailed recovered)
+    Left err -> pure (Left (ExternalMaterialWorkflowJobFailed err))
   case receipt of
     Left err -> pure (Left err)
     Right value -> commitReceiptWithRecovery authority request value

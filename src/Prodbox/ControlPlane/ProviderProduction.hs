@@ -16,10 +16,13 @@ module Prodbox.ControlPlane.ProviderProduction
   , providerProductionNarrowSession
   , providerProductionCapabilities
   , providerProductionReady
+  , providerAwsCliLimits
+  , withProviderChildProcessPermit
   )
 where
 
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Monad qualified
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson
@@ -79,6 +82,7 @@ import Prodbox.ControlPlane.ProviderNarrowSession
   , ProviderNarrowSessionRunner (..)
   , ProviderReadOnly (..)
   )
+import Prodbox.Error (errorMsg)
 import Prodbox.Http.Client (renderHttpError)
 import Prodbox.Infra.AwsEksTestStack (pulumiAwsProviderEnv)
 import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
@@ -202,8 +206,10 @@ import Prodbox.Settings.AwsSubstrateProfile
   , renderAwsSubstrateProfileError
   )
 import Prodbox.Subprocess
-  ( ProcessOutput (..)
+  ( BoundedSubprocessLimits (..)
+  , ProcessOutput (..)
   , Subprocess (..)
+  , captureSubprocessBounded
   , captureSubprocessResult
   )
 import Prodbox.Substrate (Substrate (SubstrateAws))
@@ -220,6 +226,7 @@ import Prodbox.Vault.Session
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
+import System.IO.Unsafe (unsafePerformIO)
 import System.Timeout (timeout)
 
 data ProviderProductionSession = ProviderProductionSession
@@ -654,7 +661,7 @@ runPulumi
   -> [String]
   -> IO ProcessOutput
 runPulumi compiled environment arguments = do
-  result <-
+  result <- withProviderChildProcessPermit $ do
     captureSubprocessResult
       Subprocess
         { subprocessPath = "/usr/local/bin/pulumi"
@@ -1965,10 +1972,38 @@ parseEksTokenExpiration raw =
 firstShow :: (Show err) => Either err value -> Either Text value
 firstShow = either (Left . Text.pack . show) Right
 
+-- | Physical bounds for every AWS CLI child started by the Provider Worker.
+--
+-- The 30-second lifetime is the same deadline compiled into the Provider
+-- runtime-memory child schedule. Output ceilings are deliberately wider than
+-- any accepted Provider evidence while still preventing a child from growing
+-- the parent heap without bound.
+providerAwsCliLimits :: BoundedSubprocessLimits
+providerAwsCliLimits =
+  BoundedSubprocessLimits
+    { boundedSubprocessMaximumInputBytes = 1
+    , boundedSubprocessMaximumStdoutBytes = 4 * 1024 * 1024
+    , boundedSubprocessMaximumStderrBytes = 1024 * 1024
+    , boundedSubprocessTimeoutMicros = 30 * 1000 * 1000
+    }
+
+-- | The Provider process owns one physical subprocess lane shared by its four
+-- request workers and independent readiness observer. The top-level cell is
+-- process-local and deliberately non-reentrant: AWS and Pulumi launch sites are
+-- both leaves, so no permitted action attempts to acquire it twice.
+{-# NOINLINE providerChildProcessPermit #-}
+providerChildProcessPermit :: MVar ()
+providerChildProcessPermit = unsafePerformIO (newMVar ())
+
+withProviderChildProcessPermit :: IO value -> IO value
+withProviderChildProcessPermit =
+  withMVar providerChildProcessPermit . const
+
 runAws :: [(String, String)] -> [String] -> IO ProcessOutput
 runAws environment arguments = do
-  result <-
-    captureSubprocessResult
+  result <- withProviderChildProcessPermit $ do
+    captureSubprocessBounded
+      providerAwsCliLimits
       Subprocess
         { subprocessPath = "aws"
         , subprocessArguments = arguments
@@ -1976,8 +2011,8 @@ runAws environment arguments = do
         , subprocessWorkingDirectory = Nothing
         }
   pure $ case result of
-    Success output -> output
-    Failure detail -> ProcessOutput (ExitFailure 1) "" detail
+    Right output -> output
+    Left detail -> ProcessOutput (ExitFailure 1) "" (Text.unpack (errorMsg detail))
 
 firstText :: Either String value -> Either Text value
 firstText = either (Left . Text.pack) Right

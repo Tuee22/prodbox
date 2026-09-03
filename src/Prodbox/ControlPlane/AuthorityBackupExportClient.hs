@@ -6,7 +6,10 @@
 module Prodbox.ControlPlane.AuthorityBackupExportClient
   ( AuthorityBackupExportClient
   , AuthorityBackupExportClientError (..)
+  , AuthorityBackupExportResponseObservation (..)
   , authorityBackupExportClient
+  , authorityBackupExportResponseObservationToken
+  , classifyAuthorityBackupExportResponse
   , mkAuthorityBackupExportClient
   , exportAuthorityBackupAggregate
   )
@@ -58,10 +61,57 @@ mkAuthorityBackupExportClient = AuthorityBackupExportClient
 data AuthorityBackupExportClientError
   = AuthorityBackupExportTransportFailed !AuthenticatedClientError
   | AuthorityBackupExportHttpStatus !Int
-  | AuthorityBackupExportResponseInvalid !ControlPlaneResponseCodecError
+  | AuthorityBackupExportResponseInvalid
+      !ControlPlaneResponseCodecError
+      !AuthorityBackupExportResponseObservation
   | AuthorityBackupExportEnvelopeInvalid
   | AuthorityBackupExportDigestMismatch
   deriving stock (Eq, Show)
+
+-- | Value-free classification of the bounded HTTP-200 response body.  This is
+-- diagnostic only: recognizing an endpoint-result envelope does not make the
+-- client accept it as the direct response type.
+data AuthorityBackupExportResponseObservation
+  = AuthorityBackupExportResponseDirect
+  | AuthorityBackupExportResponseEndpointSuccess
+  | AuthorityBackupExportResponseEndpointFailure
+  | AuthorityBackupExportResponseEmpty
+  | AuthorityBackupExportResponseOther
+  deriving stock (Bounded, Enum, Eq, Show)
+
+authorityBackupExportResponseObservationToken
+  :: AuthorityBackupExportResponseObservation -> Text
+authorityBackupExportResponseObservationToken observation = case observation of
+  AuthorityBackupExportResponseDirect -> "direct"
+  AuthorityBackupExportResponseEndpointSuccess -> "endpoint-success"
+  AuthorityBackupExportResponseEndpointFailure -> "endpoint-failure"
+  AuthorityBackupExportResponseEmpty -> "empty"
+  AuthorityBackupExportResponseOther -> "other"
+
+classifyAuthorityBackupExportResponse
+  :: ByteString -> AuthorityBackupExportResponseObservation
+classifyAuthorityBackupExportResponse body
+  | ByteString.null body = AuthorityBackupExportResponseEmpty
+  | otherwise =
+      case directResponse of
+        Right _ -> AuthorityBackupExportResponseDirect
+        Left _ -> case endpointResponse of
+          Right (Right _) -> AuthorityBackupExportResponseEndpointSuccess
+          Right (Left _) -> AuthorityBackupExportResponseEndpointFailure
+          Left _ -> AuthorityBackupExportResponseOther
+ where
+  directResponse =
+    decodeControlPlaneResponse
+      authorityBackupExportMaximumResponseBytes
+      (LazyByteString.fromStrict body)
+      :: Either ControlPlaneResponseCodecError AuthorityBackupExportResponse
+  endpointResponse =
+    decodeControlPlaneResponse
+      authorityBackupExportMaximumResponseBytes
+      (LazyByteString.fromStrict body)
+      :: Either
+           ControlPlaneResponseCodecError
+           (Either Text AuthorityBackupExportResponse)
 
 authorityBackupExportClient
   :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
@@ -82,7 +132,11 @@ authorityBackupExportClient transport =
         else do
           response <-
             first
-              AuthorityBackupExportResponseInvalid
+              ( \err ->
+                  AuthorityBackupExportResponseInvalid
+                    err
+                    (classifyAuthorityBackupExportResponse body)
+              )
               ( decodeControlPlaneResponse
                   authorityBackupExportMaximumResponseBytes
                   (LazyByteString.fromStrict body)

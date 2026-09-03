@@ -45,6 +45,7 @@ module Prodbox.ControlPlane.DedicatedAdapterStore
   , tlsRetentionStoreScopeKey
   , authorityBackupBlobObjectName
   , tlsRetentionEnvelopeObjectName
+  , deferredAuthorityBackupBinding
   , newAuthorityBackupAdapterBinding
   , newTlsRetentionAdapterBinding
   )
@@ -356,14 +357,39 @@ newAuthorityBackupAdapterBinding
            (DedicatedAdapterBinding 'AuthorityBackupAdapter)
        )
 newAuthorityBackupAdapterBinding session config =
-  newDedicatedAdapterBinding
-    session
-    authorityBackupCredentialPath
-    (internalAuthorityBackupEndpoint config)
-    (internalAuthorityBackupRegion config)
-    (internalAuthorityBackupBucket config)
-    (internalAuthorityBackupPrefix config)
-    (internalAuthorityBackupCoordinate config)
+  pure
+    ( Right
+        ( deferredAuthorityBackupBinding
+            config
+            ( loadDedicatedAdapterTransport
+                session
+                authorityBackupCredentialPath
+                (internalAuthorityBackupEndpoint config)
+                (internalAuthorityBackupRegion config)
+                (internalAuthorityBackupBucket config)
+                (internalAuthorityBackupPrefix config)
+            )
+        )
+    )
+
+-- | Authority Backup is deployed before genesis creates its long-lived
+-- credential. The binding therefore fixes only validated static coordinates;
+-- every readiness probe and operation acquires a fresh credential-bound
+-- transport. A missing credential keeps readiness false and closes the
+-- operation before native S3 is reached.
+deferredAuthorityBackupBinding
+  :: AuthorityBackupStoreConfig
+  -> IO
+       ( Either
+           DedicatedAdapterStoreError
+           (DedicatedAdapterTransport 'AuthorityBackupAdapter IO)
+       )
+  -> DedicatedAdapterBinding 'AuthorityBackupAdapter
+deferredAuthorityBackupBinding config loadTransport =
+  DedicatedAdapterBinding
+    { internalAdapterBindingCoordinate = internalAuthorityBackupCoordinate config
+    , internalAdapterBindingTransport = deferredTransport loadTransport
+    }
 
 newTlsRetentionAdapterBinding
   :: VaultSession
@@ -513,6 +539,25 @@ newDedicatedAdapterBinding
   -> DedicatedAdapterCoordinate kind
   -> IO (Either DedicatedAdapterStoreError (DedicatedAdapterBinding kind))
 newDedicatedAdapterBinding session credentialPath endpoint region bucket prefix coordinate = do
+  transportResult <-
+    loadDedicatedAdapterTransport session credentialPath endpoint region bucket prefix
+  pure $ do
+    transport <- transportResult
+    Right
+      DedicatedAdapterBinding
+        { internalAdapterBindingCoordinate = coordinate
+        , internalAdapterBindingTransport = transport
+        }
+
+loadDedicatedAdapterTransport
+  :: VaultSession
+  -> Text
+  -> Text
+  -> Text
+  -> Text
+  -> Text
+  -> IO (Either DedicatedAdapterStoreError (DedicatedAdapterTransport kind IO))
+loadDedicatedAdapterTransport session credentialPath endpoint region bucket prefix = do
   credentialsResult <- readDedicatedCredentials session credentialPath
   pure $ do
     credentials <- credentialsResult
@@ -534,11 +579,30 @@ newDedicatedAdapterBinding session credentialPath endpoint region bucket prefix 
             , nativeS3SessionToken =
                 TextEncoding.encodeUtf8 <$> credentialSessionToken credentials
             }
-    Right
-      DedicatedAdapterBinding
-        { internalAdapterBindingCoordinate = coordinate
-        , internalAdapterBindingTransport = nativeTransport nativeConfig
-        }
+    Right (nativeTransport nativeConfig)
+
+deferredTransport
+  :: IO (Either DedicatedAdapterStoreError (DedicatedAdapterTransport kind IO))
+  -> DedicatedAdapterTransport kind IO
+deferredTransport loadTransport =
+  DedicatedAdapterTransport
+    { observeAdapterObject = \objectName ->
+        withCurrentTransport (\transport -> observeAdapterObject transport objectName)
+    , putAdapterObjectIfAbsent = \objectName bytes ->
+        withCurrentTransport
+          (\transport -> putAdapterObjectIfAbsent transport objectName bytes)
+    , adapterObjectStoreReady = do
+        current <- loadTransport
+        case current of
+          Left _ -> pure False
+          Right transport -> adapterObjectStoreReady transport
+    }
+ where
+  withCurrentTransport action = do
+    current <- loadTransport
+    case current of
+      Left _ -> pure (Left "Authority Backup store credential is unavailable")
+      Right transport -> action transport
 
 data DedicatedCredentials = DedicatedCredentials
   { credentialAccessKey :: !Text

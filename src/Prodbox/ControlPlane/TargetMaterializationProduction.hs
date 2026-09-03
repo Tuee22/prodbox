@@ -11,6 +11,9 @@ module Prodbox.ControlPlane.TargetMaterializationProduction
   , productionAwsAdminPreparedTargetMaterializer
   , productionAwsAdminDeliveryBoundary
   , productionRewrappedTargetMaterializer
+  , classifyTargetIntentIssueError
+  , classifyTargetWorkerError
+  , renderTargetWorkerCoordinatorDiagnostic
   )
 where
 
@@ -19,11 +22,17 @@ import Data.ByteString (ByteString)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.ControlPlane.TargetAuthorityTrust
+  ( TargetAuthorityTrustBoundaryCause (TargetAuthorityTrustBoundaryOther)
+  , parseTargetAuthorityTrustBoundaryCause
+  )
 import Prodbox.ControlPlane.TargetIntentAuthorityClient
   ( TargetIntentAuthorityClient
+  , TargetIntentAuthorityClientError (..)
   )
 import Prodbox.ControlPlane.TargetMaterialClient
   ( TargetMaterialClient (observeRegisteredTargetMaterial)
+  , classifyTargetMaterialClientError
   , targetWorkerReceiptFromMaterialObservation
   )
 import Prodbox.ControlPlane.TargetMaterialEndpoint
@@ -38,6 +47,7 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
   )
 import Prodbox.ControlPlane.TargetMaterializationWorkflow
   ( TargetMaterializationRequest (..)
+  , TargetMaterializationWorkflowError (..)
   , runDirectTargetMaterializationWorkflow
   , runRewrappedTargetMaterializationWorkflow
   )
@@ -45,7 +55,11 @@ import Prodbox.ControlPlane.TargetSecretWorker
   ( TargetWorkerIngressSchema (TargetWorkerDirectAws)
   , TargetWorkerReceipt
   , mkTargetWorkerImageDigest
+  , renderTargetWorkerAttestationError
   , targetWorkerSchemaForTarget
+  )
+import Prodbox.ControlPlane.TargetSecretWorkerCoordinator
+  ( TargetWorkerCoordinatorError (..)
   )
 import Prodbox.ControlPlane.TargetSecretWorkerProduction
   ( TargetWorkerJobConnection
@@ -53,12 +67,22 @@ import Prodbox.ControlPlane.TargetSecretWorkerProduction
   , targetWorkerKubernetesBoundary
   , vaultTargetWorkerRetainedExecutionBoundary
   )
+import Prodbox.ControlPlane.TargetSecretWorkerRuntime
+  ( TargetSecretWorkerRuntimeError (..)
+  , renderTargetSecretWorkerRuntimeRefusal
+  )
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( isBoundedBatchAuditorLogin
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   ( AwsAdminDeliveryBoundary
+  , AwsAdminTargetDeliveryCause (..)
+  , AwsAdminTargetIntentIssueCause (..)
+  , AwsAdminTargetObservationCause (..)
+  , AwsAdminTargetWorkerCause (..)
+  , classifyAwsAdminTargetWorkerObservationFailure
   , mkAwsAdminDeliveryBoundary
+  , renderAwsAdminTargetWorkerCause
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   ( SignedAwsAdminPermit
@@ -132,16 +156,16 @@ productionAwsAdminPreparedTargetMaterializer
   -> SignedAwsAdminPermit
   -> PreparedCredentialTargetObservation
   -> TargetSecretPayload
-  -> IO (Either Text TargetWorkerReceipt)
+  -> IO (Either AwsAdminTargetDeliveryCause TargetWorkerReceipt)
 productionAwsAdminPreparedTargetMaterializer boundary permit prepared payload =
   case buildRequest permit prepared payload of
-    Left detail -> pure (Left detail)
+    Left cause -> pure (Left cause)
     Right buildAtTime -> do
       timeResult <- productionTargetReadTime boundary
       tokenResult <- productionTargetReadControllerToken boundary
       case (timeResult, tokenResult) of
-        (Left detail, _) -> pure (Left detail)
-        (_, Left detail) -> pure (Left detail)
+        (Left _, _) -> pure (Left AwsAdminTargetDeliveryTimeUnavailable)
+        (_, Left _) -> pure (Left AwsAdminTargetDeliveryControllerTokenUnavailable)
         (Right now, Right jwt) -> do
           loginResult <-
             vaultKubernetesLoginWithLease
@@ -150,10 +174,10 @@ productionAwsAdminPreparedTargetMaterializer boundary permit prepared payload =
               (productionTargetControllerAuditorRole boundary)
               jwt
           case loginResult of
-            Left _ -> pure (Left "Target worker controller auditor login unavailable")
+            Left _ -> pure (Left AwsAdminTargetDeliveryAuditorLoginUnavailable)
             Right login
               | not (isBoundedBatchAuditorLogin controllerMaximumLeaseSeconds login) ->
-                  pure (Left "Target worker controller auditor login was not bounded batch")
+                  pure (Left AwsAdminTargetDeliveryAuditorLoginInvalid)
               | otherwise -> do
                   let intentClient = productionTargetIntentClient boundary
                       execution =
@@ -174,7 +198,7 @@ productionAwsAdminPreparedTargetMaterializer boundary permit prepared payload =
                       execution
                       (buildAtTime now)
                       payload
-                  pure (first (Text.take 256 . Text.pack . show) result)
+                  pure (first classifyTargetMaterializationWorkflowError result)
 
 productionRewrappedTargetMaterializer
   :: ProductionTargetMaterializationBoundary
@@ -228,18 +252,18 @@ productionAwsAdminDeliveryBoundary boundary observer expectedPermit =
   mkAwsAdminDeliveryBoundary deliver revoke observe
  where
   deliver prepared permit material
-    | permit /= expectedPermit = pure (Left "AWS-admin delivery permit substitution")
+    | permit /= expectedPermit = pure (Left AwsAdminTargetDeliveryPermitSubstitution)
     | otherwise = case directPayload material of
-        Left detail -> pure (Left detail)
+        Left cause -> pure (Left cause)
         Right payload ->
           productionAwsAdminPreparedTargetMaterializer boundary permit prepared payload
   revoke _ _ = pure (Left "ordinary AWS-admin delivery cannot revoke a Target generation")
   observe prepared permit
-    | permit /= expectedPermit = pure (Left "AWS-admin observation permit substitution")
+    | permit /= expectedPermit = pure (Left AwsAdminTargetObservationPermitSubstitution)
     | otherwise = do
         observed <- observeRegisteredTargetMaterial observer (preparedCredentialTargetId prepared)
         pure $ case observed of
-          Left err -> Left (Text.take 256 (Text.pack (show err)))
+          Left err -> Left (AwsAdminTargetObservationClient (classifyTargetMaterialClientError err))
           Right Nothing -> Right Nothing
           Right (Just metadata)
             | targetMaterialObservedGeneration metadata
@@ -247,24 +271,28 @@ productionAwsAdminDeliveryBoundary boundary observer expectedPermit =
                 Right Nothing
             | targetMaterialObservedGeneration metadata
                 > credentialGenerationValue (preparedCredentialTargetGeneration prepared) ->
-                Left "Target generation advanced beyond prepared generation"
+                Left AwsAdminTargetObservationGenerationAdvanced
             | otherwise ->
-                Just
-                  <$> targetWorkerReceiptFromMaterialObservation
-                    (preparedCredentialTargetId prepared)
-                    metadata
+                first
+                  (const AwsAdminTargetObservationReceiptInvalid)
+                  ( Just
+                      <$> targetWorkerReceiptFromMaterialObservation
+                        (preparedCredentialTargetId prepared)
+                        metadata
+                  )
 
 directPayload
-  :: ProvisionedTargetMaterial schema -> Either Text TargetSecretPayload
+  :: ProvisionedTargetMaterial schema -> Either AwsAdminTargetDeliveryCause TargetSecretPayload
 directPayload material =
   withProvisionedTargetMaterial
     material
     awsPayload
-    (\_ _ _ _ -> Left "SES SMTP requires retained custody")
-    (\_ _ _ -> Left "ACME EAB cannot enter AWS-admin delivery")
+    (\_ _ _ _ -> Left AwsAdminTargetDeliveryRetainedTargetRequired)
+    (\_ _ _ -> Left AwsAdminTargetDeliveryPayloadInvalid)
  where
   awsPayload credentialClass keyId secret region _ = do
-    identity <- awsCredentialIdentity credentialClass
+    identity <-
+      first (const AwsAdminTargetDeliveryPayloadInvalid) (awsCredentialIdentity credentialClass)
     pure (AwsCredentialMaterial identity keyId secret "" region)
 
 awsCredentialIdentity :: AwsCredentialClass -> Either Text AwsCredentialIdentity
@@ -281,28 +309,31 @@ buildRequest
   :: SignedAwsAdminPermit
   -> PreparedCredentialTargetObservation
   -> TargetSecretPayload
-  -> Either Text (AuthorityTime -> TargetMaterializationRequest)
+  -> Either AwsAdminTargetDeliveryCause (AuthorityTime -> TargetMaterializationRequest)
 buildRequest permit prepared payload = do
   let intent = signedAwsAdminPermitIntent permit
       target = preparedCredentialTargetId prepared
   if awsAdminPermitIntentPreparedTarget intent == prepared
     then Right ()
-    else Left "AWS-admin permit prepared-target binding mismatch"
+    else Left AwsAdminTargetDeliveryPreparedTargetMismatch
   if targetSecretPayloadId payload == target
     then Right ()
-    else Left "AWS-admin payload target differs from prepared outbox"
+    else Left AwsAdminTargetDeliveryPayloadTargetMismatch
   if target == TargetSesSmtp
-    then Left "SES SMTP must enter retained-home custody, not direct materialization"
+    then Left AwsAdminTargetDeliveryRetainedTargetRequired
     else Right ()
   if awsAdminPermitIntentAction intent == RevokeOperatorMaterial
-    then Left "AWS-admin revoke cannot carry direct Target material"
+    then Left AwsAdminTargetDeliveryRevokeRejected
     else Right ()
-  validateTargetSecretPayload payload
-  schema <- first (Text.take 256 . Text.pack . show) (targetWorkerSchemaForTarget target)
+  first (const AwsAdminTargetDeliveryPayloadInvalid) (validateTargetSecretPayload payload)
+  schema <- first (const AwsAdminTargetDeliverySchemaUnavailable) (targetWorkerSchemaForTarget target)
   if schema == TargetWorkerDirectAws
     then Right ()
-    else Left "AWS-admin target is not in the direct materialization schema"
-  image <- mkTargetWorkerImageDigest (awsAdminPermitIntentImageDigest intent)
+    else Left AwsAdminTargetDeliverySchemaMismatch
+  image <-
+    first
+      (const AwsAdminTargetDeliveryImageInvalid)
+      (mkTargetWorkerImageDigest (awsAdminPermitIntentImageDigest intent))
   pure $ \now ->
     TargetMaterializationRequest
       { targetMaterializationTarget = target
@@ -349,3 +380,145 @@ actionIndexForPermit permit prepared =
 
 controllerMaximumLeaseSeconds :: Int
 controllerMaximumLeaseSeconds = 300
+
+classifyTargetMaterializationWorkflowError
+  :: TargetMaterializationWorkflowError -> AwsAdminTargetDeliveryCause
+classifyTargetMaterializationWorkflowError err = case err of
+  TargetMaterializationIntentIssueFailed issueError ->
+    AwsAdminTargetDeliveryIntentIssue (classifyTargetIntentIssueError issueError)
+  TargetMaterializationWorkerFailed workerError ->
+    AwsAdminTargetDeliveryWorker (classifyTargetWorkerError workerError)
+
+classifyTargetIntentIssueError
+  :: TargetIntentAuthorityClientError -> AwsAdminTargetIntentIssueCause
+classifyTargetIntentIssueError err = case err of
+  TargetIntentAuthorityTransportFailed _ -> AwsAdminTargetIntentTransportFailed
+  TargetIntentAuthorityResponseInvalid _ -> AwsAdminTargetIntentResponseInvalid
+  TargetIntentAuthorityAuthenticatedResponseInvalid observation _ ->
+    AwsAdminTargetIntentAuthenticatedResponseInvalid observation
+  TargetIntentAuthorityHttpStatus status -> classifyTargetIntentHttpStatus status
+  TargetIntentAuthorityRefused detail -> classifyTargetIntentRefusal detail
+  TargetIntentAuthorityUnavailable detail -> classifyTargetIntentUnavailable detail
+  TargetIntentAuthoritySignedIntentInvalid -> AwsAdminTargetIntentSignedIntentInvalid
+  TargetIntentAuthorityTrustRecordInvalid -> AwsAdminTargetIntentTrustRecordInvalid
+  TargetIntentAuthorityExecutionPermitInvalid -> AwsAdminTargetIntentExecutionPermitInvalid
+
+classifyTargetIntentHttpStatus :: Int -> AwsAdminTargetIntentIssueCause
+classifyTargetIntentHttpStatus status = case status of
+  400 -> AwsAdminTargetIntentHttpBadRequest
+  401 -> AwsAdminTargetIntentHttpUnauthorized
+  403 -> AwsAdminTargetIntentHttpForbidden
+  404 -> AwsAdminTargetIntentHttpNotFound
+  409 -> AwsAdminTargetIntentHttpConflict
+  429 -> AwsAdminTargetIntentHttpTooManyRequests
+  _
+    | status >= 500 && status <= 599 -> AwsAdminTargetIntentHttpServerError
+    | otherwise -> AwsAdminTargetIntentHttpOther
+
+classifyTargetIntentRefusal :: Text -> AwsAdminTargetIntentIssueCause
+classifyTargetIntentRefusal detail = case detail of
+  "target-agent-identity-invalid" -> AwsAdminTargetIntentRefusedAgentIdentityInvalid
+  "generation-invalid" -> AwsAdminTargetIntentRefusedGenerationInvalid
+  "receipt-digest-invalid" -> AwsAdminTargetIntentRefusedReceiptDigestInvalid
+  "target-agent-material-intent-forbidden" -> AwsAdminTargetIntentRefusedCallerForbidden
+  "operation-intent-requires-target-agent" -> AwsAdminTargetIntentRefusedCallerForbidden
+  "authority-signer-rotated" -> AwsAdminTargetIntentRefusedSignerRotated
+  "target-unregistered" -> AwsAdminTargetIntentRefusedTargetUnregistered
+  "target-mismatch" -> AwsAdminTargetIntentRefusedTargetMismatch
+  "target-agent-identity-mismatch" -> AwsAdminTargetIntentRefusedAgentIdentityMismatch
+  "intent-not-prepared" -> AwsAdminTargetIntentRefusedNotPrepared
+  "generation-mismatch" -> AwsAdminTargetIntentRefusedGenerationMismatch
+  "receipt-digest-mismatch" -> AwsAdminTargetIntentRefusedReceiptDigestMismatch
+  "intent-deadline-reached" -> AwsAdminTargetIntentRefusedDeadlineReached
+  "intent-value-invalid" -> AwsAdminTargetIntentRefusedValueInvalid
+  "intent-signature-invalid" -> AwsAdminTargetIntentRefusedSignatureInvalid
+  "target-trust-read-back-mismatch" -> AwsAdminTargetIntentRefusedTrustReadBackMismatch
+  _ -> AwsAdminTargetIntentRefusedOther
+
+classifyTargetIntentUnavailable :: Text -> AwsAdminTargetIntentIssueCause
+classifyTargetIntentUnavailable detail =
+  case Text.stripPrefix "target-trust-install-unavailable/" detail
+    >>= parseTargetAuthorityTrustBoundaryCause of
+    Just cause -> AwsAdminTargetIntentUnavailableTrustInstall cause
+    Nothing -> case detail of
+      "prepared-intent-unavailable" -> AwsAdminTargetIntentUnavailablePreparedIntent
+      "authority-clock-unavailable" -> AwsAdminTargetIntentUnavailableClock
+      "authority-epoch-unavailable" -> AwsAdminTargetIntentUnavailableEpoch
+      "authority-signer-unavailable" -> AwsAdminTargetIntentUnavailableSigner
+      "target-trust-install-unavailable" ->
+        AwsAdminTargetIntentUnavailableTrustInstall TargetAuthorityTrustBoundaryOther
+      _ -> AwsAdminTargetIntentUnavailableOther
+
+classifyTargetWorkerError :: TargetWorkerCoordinatorError -> AwsAdminTargetWorkerCause
+classifyTargetWorkerError err = case err of
+  TargetWorkerCoordinatorAgentIdentityUnavailable cause ->
+    AwsAdminTargetWorkerAgentIdentityUnavailable cause
+  TargetWorkerCoordinatorAgentIdentityMismatch -> AwsAdminTargetWorkerAgentIdentityMismatch
+  TargetWorkerCoordinatorIntentRejected _ -> AwsAdminTargetWorkerIntentRejected
+  TargetWorkerCoordinatorCreateFailed _ -> AwsAdminTargetWorkerCreateFailed
+  TargetWorkerCoordinatorObservationFailed detail ->
+    AwsAdminTargetWorkerObservationFailed
+      (classifyAwsAdminTargetWorkerObservationFailure detail)
+  TargetWorkerCoordinatorWorkloadAbsent -> AwsAdminTargetWorkerWorkloadAbsent
+  TargetWorkerCoordinatorCleanupBindingInvalid -> AwsAdminTargetWorkerCleanupBindingInvalid
+  TargetWorkerCoordinatorAttestationFailed _ -> AwsAdminTargetWorkerAttestationFailed
+  TargetWorkerCoordinatorSessionPrepareFailed _ -> AwsAdminTargetWorkerSessionPrepareFailed
+  TargetWorkerCoordinatorPermitUnavailable _ -> AwsAdminTargetWorkerPermitUnavailable
+  TargetWorkerCoordinatorPermitRejected _ -> AwsAdminTargetWorkerPermitRejected
+  TargetWorkerCoordinatorPermitBindingMismatch -> AwsAdminTargetWorkerPermitBindingMismatch
+  TargetWorkerCoordinatorFrameRejected _ -> AwsAdminTargetWorkerFrameRejected
+  TargetWorkerCoordinatorAttachFailed _ -> AwsAdminTargetWorkerAttachFailed
+  TargetWorkerCoordinatorProvisionalRejected _ -> AwsAdminTargetWorkerProvisionalRejected
+  TargetWorkerCoordinatorReceiptBindingMismatch -> AwsAdminTargetWorkerReceiptBindingMismatch
+  TargetWorkerCoordinatorSessionActivateFailed _ -> AwsAdminTargetWorkerSessionActivateFailed
+  TargetWorkerCoordinatorMaterializationRefused _ -> AwsAdminTargetWorkerMaterializationRefused
+  TargetWorkerCoordinatorSessionCleanupFailed _ -> AwsAdminTargetWorkerSessionCleanupFailed
+  TargetWorkerCoordinatorDeleteFailed _ -> AwsAdminTargetWorkerDeleteFailed
+  TargetWorkerCoordinatorAbsenceUnobservable _ -> AwsAdminTargetWorkerAbsenceUnobservable
+  TargetWorkerCoordinatorStillPresent -> AwsAdminTargetWorkerStillPresent
+  TargetWorkerCoordinatorUnhandledException -> AwsAdminTargetWorkerUnhandledException
+
+renderTargetWorkerCoordinatorDiagnostic :: TargetWorkerCoordinatorError -> Text
+renderTargetWorkerCoordinatorDiagnostic err = case err of
+  TargetWorkerCoordinatorAttestationFailed attestationError ->
+    "attestation-failed/" <> renderTargetWorkerAttestationError attestationError
+  TargetWorkerCoordinatorAttachFailed detail ->
+    "attach-failed/" <> classifyTargetWorkerAttachFailure detail
+  TargetWorkerCoordinatorMaterializationRefused detail ->
+    classifyTargetWorkerMaterializationRefusal detail
+  _ -> renderAwsAdminTargetWorkerCause (classifyTargetWorkerError err)
+
+-- | Refine only the three closed production attach failures. Arbitrary
+-- injected detail collapses before it reaches the protected diagnostic.
+classifyTargetWorkerAttachFailure :: Text -> Text
+classifyTargetWorkerAttachFailure detail = case detail of
+  "Target worker attach transport failed" -> "transport-unavailable"
+  "Target worker cleanup acknowledgement is invalid" -> "cleanup-ack-invalid"
+  "Target worker terminal status is inconsistent" -> "terminal-status-inconsistent"
+  _ -> "other"
+
+-- | Admit only runtime-owned closed TLS-retain refusal tokens. The existing
+-- generic rollout token retains its prior diagnostic, and arbitrary text is
+-- collapsed before it reaches the protected Target log.
+classifyTargetWorkerMaterializationRefusal :: Text -> Text
+classifyTargetWorkerMaterializationRefusal detail
+  | detail == genericRefusal = "materialization-refused"
+  | detail `elem` tlsRetainRefusals = "materialization-refused/" <> detail
+  | otherwise = "materialization-refused/other"
+ where
+  genericRefusal =
+    renderTargetSecretWorkerRuntimeRefusal TargetSecretWorkerOperationRefused
+  tlsRetainRefusals =
+    [ renderTargetSecretWorkerRuntimeRefusal
+        TargetSecretWorkerTlsRetainProductionBoundaryUnavailable
+    , renderTargetSecretWorkerRuntimeRefusal TargetSecretWorkerTlsRetainBadRequest
+    , "tls-retain/secret-unavailable"
+    , "tls-retain/secret-invalid"
+    , "tls-retain/secret-readback-mismatch"
+    , "tls-retain/secret-apply-failed"
+    , "tls-retain/dek-exchange-failed"
+    , "tls-retain/cipher-failed"
+    , "tls-retain/certificate-ciphertext-invalid"
+    , "tls-retain/certificate-ciphertext-too-large"
+    , "tls-retain/reference-mismatch"
+    ]

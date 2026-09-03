@@ -21,6 +21,9 @@ module Prodbox.Capacity.Config
   , defaultCapacitySection
   , defaultRuntimeMemoryProfiles
   , defaultResourcePlan
+  , guaranteedControlPlaneProfileIds
+  , oneShotSecretWorkerEnvelope
+  , oneShotSecretWorkerWindow
   , fitsWithin
   , mkResourceEnvelope
   , plusResourceVector
@@ -32,6 +35,7 @@ module Prodbox.Capacity.Config
   , storageFitsWithin
   , plusBudget
   , validateCapacitySection
+  , validateOneShotSecretWorkerCapacity
   , validateRawResourcePlanShape
   )
 where
@@ -56,6 +60,7 @@ import Prodbox.Capacity.Derivation
   ( deriveResourceEnvelope
   , derivedResourceEnvelope
   )
+import Prodbox.Capacity.ProviderWorkerBudget qualified as ProviderWorkerBudget
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 import Prodbox.Capacity.Types
 
@@ -173,6 +178,30 @@ defaultRuntimeMemoryProfiles =
       , kernel_cgroup_reserve_bytes = mebibytes 32
       , safety_margin_bytes = mebibytes 64
       }
+  , -- The Provider Worker retains four request workers plus its independent
+    -- readiness observer, but every subprocess crosses one process-wide permit
+    -- before launch. The single 80 MiB slot is the 74,052 KiB packaged-AWS-CLI
+    -- peak observed on 2026-08-31, rounded upward rather than fitted to the
+    -- sample. Serialization keeps that measured child inside the existing
+    -- single-node standing-workload budget instead of overcommitting the host.
+    RuntimeMemoryProfile
+      { runtime_profile_id = "provider-worker"
+      , bounded_application_state_bytes = mebibytes 24
+      , bounded_pending_persistence_state_bytes = mebibytes 8
+      , bounded_in_heap_transport_decode_bytes = mebibytes 4
+      , other_heap_reserve_bytes = mebibytes 20
+      , heap_cap_bytes = mebibytes 64
+      , native_non_heap_reserve_bytes = mebibytes 16
+      , child_process_budget =
+          ChildProcessBudgetConfig
+            { permit_capacity = Just 1
+            , action_deadline_milliseconds =
+                Just ProviderWorkerBudget.providerWorkerMaximumChildDeadlineMilliseconds
+            , simultaneous_peak_bytes = [mebibytes 80]
+            }
+      , kernel_cgroup_reserve_bytes = mebibytes 8
+      , safety_margin_bytes = mebibytes 8
+      }
   ]
  where
   mebibytes value = value * 1024 * 1024
@@ -181,7 +210,10 @@ defaultResourcePlan :: ResourcePlan
 defaultResourcePlan =
   ResourcePlan
     { host_capacity = ResourceVector 8000 15872 100000 180000
-    , rke2_reserved = ResourceVector 1000 2048 10240 1024
+    , -- The scheduled RKE2 system Pods already account for their CPU through
+      -- requests. Keep the host-only kubelet reservation distinct so those
+      -- requests are not charged twice in the single-node envelope.
+      rke2_reserved = ResourceVector 500 1536 9728 1024
     , eviction_floor = ResourceVector 500 1024 10240 1024
     , workload_profiles =
         [ workload "keycloak" "keycloak" 1 (ResourceVector 500 1024 1024 1) (ResourceVector 600 1280 2048 1)
@@ -271,6 +303,21 @@ defaultResourcePlan =
             1
             (ResourceVector 100 128 256 1)
             (ResourceVector 100 128 256 1)
+        , workload
+            "bootstrap-secret-worker"
+            "bootstrap-broker"
+            1
+            (request oneShotSecretWorkerEnvelope)
+            (limit oneShotSecretWorkerEnvelope)
+        , -- One external credential worker and its target materializer may be
+          -- co-resident. Their phase is mutually exclusive with the bootstrap
+          -- worker phase, so the placement compiler takes the larger peak.
+          workload
+            "credential-provisioner-secret-workers"
+            "credential-provisioner"
+            2
+            (request oneShotSecretWorkerEnvelope)
+            (limit oneShotSecretWorkerEnvelope)
         , -- Sprint 3.26: the five standing control-plane roles run the union
           -- runtime image with Guaranteed-QoS (request == limit) envelopes in
           -- their own namespaces (Phase 4 binds the production interpreters). The
@@ -285,8 +332,8 @@ defaultResourcePlan =
             "provider-worker"
             "provider-worker"
             1
-            (ResourceVector 100 112 256 1)
-            (ResourceVector 100 112 256 1)
+            (ResourceVector 100 176 256 1)
+            (ResourceVector 100 176 256 1)
         , workload
             "authority-backup"
             "authority-backup"
@@ -311,24 +358,16 @@ defaultResourcePlan =
       , workload_concurrency = concurrencyFor profile
       , surge = 0
       , workload_qos =
-          if profile `elem` guaranteedControlPlaneProfiles
+          if profile `elem` guaranteedControlPlaneProfileIds
             then Guaranteed
             else Burstable
       , workload_demand =
           demandFromEnvelope
             profile
-            (if profile `elem` guaranteedControlPlaneProfiles then Guaranteed else Burstable)
+            (if profile `elem` guaranteedControlPlaneProfileIds then Guaranteed else Burstable)
             (withDurable (durableSizeFor profile) req)
             (withDurable (durableSizeFor profile) lim)
       }
-  guaranteedControlPlaneProfiles =
-    [ "bootstrap-broker"
-    , "lifecycle-authority"
-    , "provider-worker"
-    , "authority-backup"
-    , "tls-retention"
-    , "target-secret-agent"
-    ]
   concurrencyFor profile =
     case profile of
       -- Kubernetes schedules an init container and the regular containers in a
@@ -341,6 +380,8 @@ defaultResourcePlan =
       "keycloak-postgres-secret-materializer" -> ExclusiveWindow "keycloak-postgres-materializer-job"
       "vscode-vault-secrets" -> ExclusiveWindow "vscode-materializer-job"
       "vscode-secret-materializer" -> ExclusiveWindow "vscode-materializer-job"
+      "bootstrap-secret-worker" -> ExclusiveWindow oneShotSecretWorkerWindow
+      "credential-provisioner-secret-workers" -> ExclusiveWindow oneShotSecretWorkerWindow
       _ -> Steady
   durableSizeFor profile =
     case profile of
@@ -376,6 +417,34 @@ defaultResourcePlan =
       , demanded_durable_storage_mib = durable_storage_mib lim
       , demand_qos = qos
       }
+
+-- | The exact Guaranteed-QoS envelope shared by every one-shot process that
+-- transports secret material through an attested Pod or Job.
+oneShotSecretWorkerEnvelope :: ResourceEnvelope
+oneShotSecretWorkerEnvelope =
+  ResourceEnvelope
+    { request = ResourceVector 250 256 256 0
+    , limit = ResourceVector 250 256 256 0
+    }
+
+-- | Bootstrap recovery and credential-to-target delivery cannot execute at
+-- the same time. Placement therefore admits their maximum, never their sum.
+oneShotSecretWorkerWindow :: Text
+oneShotSecretWorkerWindow = "one-shot-secret-workers"
+
+-- | Profiles whose safety boundary requires request == limit. This inventory
+-- is shared by default construction and proof compilation so neither can drift.
+guaranteedControlPlaneProfileIds :: [Text]
+guaranteedControlPlaneProfileIds =
+  [ "bootstrap-broker"
+  , "bootstrap-secret-worker"
+  , "credential-provisioner-secret-workers"
+  , "lifecycle-authority"
+  , "provider-worker"
+  , "authority-backup"
+  , "tls-retention"
+  , "target-secret-agent"
+  ]
 
 resources :: WorkloadResourceProfile -> ResourceEnvelope
 resources profile =
@@ -475,7 +544,24 @@ validateCapacitySection section = do
     (region_quota section)
   validateRawResourcePlanShape (resource_plan section)
   _ <- validateRuntimeMemoryProfiles section
+  validateProviderWorkerTransportBudget section
   Right ()
+
+validateProviderWorkerTransportBudget :: CapacitySection -> Either String ()
+validateProviderWorkerTransportBudget section =
+  case find ((== "provider-worker") . runtime_profile_id) (runtime_memory_profiles section) of
+    Nothing -> Right ()
+    Just profile ->
+      case action_deadline_milliseconds (child_process_budget profile) of
+        Nothing -> Right ()
+        Just deadline ->
+          case ProviderWorkerBudget.validateProviderWorkerChildDeadlineMilliseconds deadline of
+            Left err ->
+              Left
+                ( "capacity.runtime_memory_profiles[provider-worker].child_process_budget: "
+                    ++ show err
+                )
+            Right () -> Right ()
 
 -- | Resolve one opaque runtime plan by the existing workload-profile id. The
 -- matching Kubernetes memory limit is converted from MiB to exact bytes here,
@@ -623,6 +709,32 @@ validateRawResourcePlanShape plan = do
     (not (null (workload_profiles plan)))
     (Left "capacity.resource_plan.workload_profiles must not be empty")
   forM_ (workload_profiles plan) validateWorkloadProfile
+
+-- | Production one-shot manifests consume the compiled envelope below rather
+-- than an arbitrary chart value. A decoded deployment plan must therefore
+-- carry the exact matching profiles before it can become ValidatedSettings.
+validateOneShotSecretWorkerCapacity :: ResourcePlan -> Either String ()
+validateOneShotSecretWorkerCapacity plan = do
+  requireProfile "bootstrap-secret-worker" "bootstrap-broker" 1
+  requireProfile "credential-provisioner-secret-workers" "credential-provisioner" 2
+ where
+  requireProfile expectedId expectedNamespace expectedReplicas =
+    case filter ((== expectedId) . profile_id) (workload_profiles plan) of
+      [profile]
+        | profile_namespace profile == expectedNamespace
+            && replicas profile == expectedReplicas
+            && surge profile == 0
+            && workload_concurrency profile == ExclusiveWindow oneShotSecretWorkerWindow
+            && workload_qos profile == Guaranteed
+            && (derivedResourceEnvelope <$> deriveResourceEnvelope (workload_demand profile))
+              == Right oneShotSecretWorkerEnvelope ->
+            Right ()
+        | otherwise -> Left (invalidProfileMessage expectedId)
+      _ -> Left (invalidProfileMessage expectedId)
+  invalidProfileMessage profileId =
+    "capacity.resource_plan must carry the exact one-shot worker profile `"
+      ++ Text.unpack profileId
+      ++ "`"
 
 unlessFits :: String -> CapacityBudget -> CapacityBudget -> Either String ()
 unlessFits message inner outer =

@@ -43,12 +43,16 @@ module Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
   , externalMaterialTargetReceiptPermitId
   , externalMaterialTargetReceiptRequestDigest
   , externalMaterialTargetReceiptGeneration
+  , externalMaterialTargetReceiptSourceReceipt
   , externalMaterialTargetReceiptCommitment
   , externalMaterialTargetReceiptCiphertextDigest
   , externalMaterialTargetReceiptReadBackVersion
   , externalMaterialTargetReceiptDigest
   , encodeExternalMaterialTargetReceipt
   , decodeExternalMaterialTargetReceipt
+  , ExternalMaterialTargetReceiptEnvelopeError (..)
+  , encodeExternalMaterialTargetReceiptTextEnvelope
+  , decodeExternalMaterialTargetReceiptTextEnvelope
   , ExternalMaterialIngressPhase (..)
   , ExternalMaterialIngressState
   , initialExternalMaterialIngressState
@@ -58,6 +62,8 @@ module Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
   , externalMaterialIngressCurrentReceipt
   , ExternalMaterialIngressTransitionError (..)
   , commitExternalMaterialIngressIntent
+  , commitExternalMaterialIngressIntentRenewal
+  , recoverExternalMaterialIngressAbsentEffect
   , commitExternalMaterialJobBinding
   , commitExternalMaterialSignedPermit
   , commitExternalMaterialTargetReceipt
@@ -73,6 +79,7 @@ import Crypto.Hash.SHA256 qualified as SHA256
 import Crypto.PubKey.Ed25519 qualified as Ed25519
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
+import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -535,6 +542,7 @@ data ExternalMaterialTargetReceipt = ExternalMaterialTargetReceipt
   { internalExternalReceiptPermitId :: !Text
   , internalExternalReceiptRequestDigest :: !Text
   , internalExternalReceiptGeneration :: !Natural
+  , internalExternalReceiptSourceReceipt :: !Text
   , internalExternalReceiptCommitment :: !Text
   , internalExternalReceiptCiphertextDigest :: !Text
   , internalExternalReceiptReadBackVersion :: !Natural
@@ -546,6 +554,7 @@ data ExternalMaterialTargetReceiptError
   = ExternalMaterialTargetReceiptPermitMismatch
   | ExternalMaterialTargetReceiptDigestMismatch
   | ExternalMaterialTargetReceiptGenerationMismatch
+  | ExternalMaterialTargetReceiptSourceReceiptInvalid
   | ExternalMaterialTargetReceiptCommitmentInvalid
   | ExternalMaterialTargetReceiptCiphertextDigestInvalid
   | ExternalMaterialTargetReceiptVersionInvalid
@@ -554,13 +563,26 @@ data ExternalMaterialTargetReceiptError
   | ExternalMaterialTargetReceiptNonCanonical
   deriving stock (Eq, Show)
 
+data ExternalMaterialTargetReceiptEnvelopeError
+  = ExternalMaterialTargetReceiptEnvelopeTooLarge
+  | ExternalMaterialTargetReceiptEnvelopeInvalid
+  | ExternalMaterialTargetReceiptEnvelopeNonCanonical
+  | ExternalMaterialTargetReceiptEnvelopeReceiptInvalid
+  deriving stock (Eq, Show)
+
 mkExternalMaterialTargetReceipt
   :: SignedExternalAcmeEabPermit
   -> Text
   -> Text
+  -> Text
   -> Natural
   -> Either ExternalMaterialTargetReceiptError ExternalMaterialTargetReceipt
-mkExternalMaterialTargetReceipt permit commitment ciphertextDigest readBackVersion = do
+mkExternalMaterialTargetReceipt permit sourceReceipt commitment ciphertextDigest readBackVersion = do
+  validSourceReceipt <-
+    maybe
+      (Left ExternalMaterialTargetReceiptSourceReceiptInvalid)
+      Right
+      (validatedVaultHmac sourceReceipt)
   validCommitment <-
     maybe
       (Left ExternalMaterialTargetReceiptCommitmentInvalid)
@@ -582,6 +604,7 @@ mkExternalMaterialTargetReceipt permit commitment ciphertextDigest readBackVersi
           targetValueDigestText (signedExternalMaterialRequestDigest permit)
       , internalExternalReceiptGeneration =
           credentialGenerationValue (signedExternalMaterialGeneration permit)
+      , internalExternalReceiptSourceReceipt = validSourceReceipt
       , internalExternalReceiptCommitment = validCommitment
       , internalExternalReceiptCiphertextDigest = validCiphertextDigest
       , internalExternalReceiptReadBackVersion = readBackVersion
@@ -607,6 +630,11 @@ externalMaterialTargetReceiptGeneration receipt =
   case mkCredentialGeneration (internalExternalReceiptGeneration receipt) of
     Left _ -> error "validated external material receipt generation invariant violated"
     Right generation -> generation
+
+externalMaterialTargetReceiptSourceReceipt
+  :: ExternalMaterialTargetReceipt -> Text
+externalMaterialTargetReceiptSourceReceipt =
+  internalExternalReceiptSourceReceipt
 
 externalMaterialTargetReceiptCommitment
   :: ExternalMaterialTargetReceipt -> Text
@@ -654,6 +682,11 @@ decodeExternalMaterialTargetReceipt bytes
         (Left ExternalMaterialTargetReceiptVersionInvalid)
       _ <-
         maybe
+          (Left ExternalMaterialTargetReceiptSourceReceiptInvalid)
+          Right
+          (validatedVaultHmac (internalExternalReceiptSourceReceipt receipt))
+      _ <-
+        maybe
           (Left ExternalMaterialTargetReceiptCommitmentInvalid)
           Right
           (validatedVaultHmac (internalExternalReceiptCommitment receipt))
@@ -678,8 +711,53 @@ decodeExternalMaterialTargetReceipt bytes
           Right
           (mkCredentialGeneration (internalExternalReceiptGeneration receipt))
       pure receipt
- where
-  receiptMaximumBytes = 4096
+
+-- | Source-specific ASCII armor for the record-oriented Kubernetes attach and
+-- Pod-log transports. The decoded inner value remains the sole semantic
+-- receipt and must still satisfy its canonical binary decoder.
+encodeExternalMaterialTargetReceiptTextEnvelope
+  :: ExternalMaterialTargetReceipt -> ByteString
+encodeExternalMaterialTargetReceiptTextEnvelope receipt =
+  externalMaterialTargetReceiptTextEnvelopePrefix
+    <> Base64.encode (encodeExternalMaterialTargetReceipt receipt)
+
+decodeExternalMaterialTargetReceiptTextEnvelope
+  :: ByteString
+  -> Either ExternalMaterialTargetReceiptEnvelopeError ExternalMaterialTargetReceipt
+decodeExternalMaterialTargetReceiptTextEnvelope bytes
+  | ByteString.null bytes = Left ExternalMaterialTargetReceiptEnvelopeInvalid
+  | ByteString.length bytes > externalMaterialTargetReceiptTextEnvelopeMaximumBytes =
+      Left ExternalMaterialTargetReceiptEnvelopeTooLarge
+  | otherwise = do
+      encoded <-
+        maybe
+          (Left ExternalMaterialTargetReceiptEnvelopeInvalid)
+          Right
+          (ByteString.stripPrefix externalMaterialTargetReceiptTextEnvelopePrefix bytes)
+      decoded <-
+        either
+          (const (Left ExternalMaterialTargetReceiptEnvelopeInvalid))
+          Right
+          (Base64.decode encoded)
+      unless
+        (Base64.encode decoded == encoded)
+        (Left ExternalMaterialTargetReceiptEnvelopeNonCanonical)
+      either
+        (const (Left ExternalMaterialTargetReceiptEnvelopeReceiptInvalid))
+        Right
+        (decodeExternalMaterialTargetReceipt decoded)
+
+receiptMaximumBytes :: Int
+receiptMaximumBytes = 4096
+
+externalMaterialTargetReceiptTextEnvelopeMaximumBytes :: Int
+externalMaterialTargetReceiptTextEnvelopeMaximumBytes =
+  ByteString.length externalMaterialTargetReceiptTextEnvelopePrefix
+    + 4 * ((receiptMaximumBytes + 2) `div` 3)
+
+externalMaterialTargetReceiptTextEnvelopePrefix :: ByteString
+externalMaterialTargetReceiptTextEnvelopePrefix =
+  "prodbox-external-material-target-receipt-v2:"
 
 data ExternalMaterialIngressPhase
   = ExternalMaterialIngressIdle
@@ -752,6 +830,13 @@ data ExternalMaterialIngressTransitionError
   | ExternalMaterialIngressPermitMismatch
   | ExternalMaterialIngressReceiptMismatch
   | ExternalMaterialIngressTransitionOutOfOrder
+  | ExternalMaterialIngressRenewalNotIntentCommitted
+  | ExternalMaterialIngressRenewalDeadlineInvalid
+  | ExternalMaterialIngressRenewalBindingMismatch
+  | ExternalMaterialIngressAbsentEffectNotPermitCommitted
+  | ExternalMaterialIngressAbsentEffectPermitActive
+  | ExternalMaterialIngressAbsentEffectDeadlineInvalid
+  | ExternalMaterialIngressAbsentEffectBindingMismatch
   deriving stock (Eq, Show)
 
 commitExternalMaterialIngressIntent
@@ -786,6 +871,78 @@ commitExternalMaterialIngressIntent intent state = case state of
     | otherwise -> Left ExternalMaterialIngressActiveConflict
  where
   request = externalMaterialIngressIntentRequest intent
+
+-- | Replace only an expired, intent-committed attempt. The expired deadline
+-- prevents a concurrent attestation from being admitted; the durable operator
+-- request and permit binding remain exact while the active deadline and image
+-- may advance.
+commitExternalMaterialIngressIntentRenewal
+  :: AuthorityTime
+  -> ExternalMaterialIngressIntent
+  -> ExternalMaterialIngressIntent
+  -> ExternalMaterialIngressState
+  -> Either ExternalMaterialIngressTransitionError ExternalMaterialIngressState
+commitExternalMaterialIngressIntentRenewal now retained replacement state =
+  case state of
+    ExternalIngressIntent current
+      | current == replacement -> Right state
+      | current /= retained -> Left ExternalMaterialIngressRenewalNotIntentCommitted
+      | not (renewalDeadlineValid current replacement) ->
+          Left ExternalMaterialIngressRenewalDeadlineInvalid
+      | not (renewalBindingsMatch current replacement) ->
+          Left ExternalMaterialIngressRenewalBindingMismatch
+      | otherwise -> Right (ExternalIngressIntent replacement)
+    _ -> Left ExternalMaterialIngressRenewalNotIntentCommitted
+ where
+  renewalDeadlineValid current replacementIntent =
+    authorityTimeMicros (externalMaterialIngressIntentDeadline current)
+      <= authorityTimeMicros now
+      && authorityTimeMicros now
+        < authorityTimeMicros (externalMaterialIngressIntentDeadline replacementIntent)
+      && authorityTimeMicros (externalMaterialIngressIntentDeadline current)
+        < authorityTimeMicros (externalMaterialIngressIntentDeadline replacementIntent)
+
+  renewalBindingsMatch current replacementIntent =
+    externalMaterialIngressIntentRequest current
+      == externalMaterialIngressIntentRequest replacementIntent
+      && externalMaterialIngressIntentPermitId current
+        == externalMaterialIngressIntentPermitId replacementIntent
+
+-- | Reset an expired committed permit only after the production endpoint has
+-- received authoritative positive absence from the retained target effect.
+-- The operator request and permit identity remain byte-for-byte exact; only
+-- the image and a fresh strictly later deadline may advance. The successor
+-- Job still requires its own stable Kubernetes absence proof before creation.
+recoverExternalMaterialIngressAbsentEffect
+  :: AuthorityTime
+  -> ExternalMaterialIngressIntent
+  -> ExternalMaterialIngressState
+  -> Either ExternalMaterialIngressTransitionError ExternalMaterialIngressState
+recoverExternalMaterialIngressAbsentEffect now replacement state = case state of
+  ExternalIngressPermitted retained _ permit
+    | authorityTimeMicros (signedExternalMaterialDeadline permit)
+        > authorityTimeMicros now ->
+        Left ExternalMaterialIngressAbsentEffectPermitActive
+    | not (replacementDeadlineValid retained replacement) ->
+        Left ExternalMaterialIngressAbsentEffectDeadlineInvalid
+    | not (replacementBindingsMatch retained replacement) ->
+        Left ExternalMaterialIngressAbsentEffectBindingMismatch
+    | otherwise -> Right (ExternalIngressIntent replacement)
+  _ -> Left ExternalMaterialIngressAbsentEffectNotPermitCommitted
+ where
+  replacementDeadlineValid retained replacementIntent =
+    authorityTimeMicros (externalMaterialIngressIntentDeadline retained)
+      <= authorityTimeMicros now
+      && authorityTimeMicros now
+        < authorityTimeMicros (externalMaterialIngressIntentDeadline replacementIntent)
+      && authorityTimeMicros (externalMaterialIngressIntentDeadline retained)
+        < authorityTimeMicros (externalMaterialIngressIntentDeadline replacementIntent)
+
+  replacementBindingsMatch retained replacementIntent =
+    externalMaterialIngressIntentRequest retained
+      == externalMaterialIngressIntentRequest replacementIntent
+      && externalMaterialIngressIntentPermitId retained
+        == externalMaterialIngressIntentPermitId replacementIntent
 
 commitExternalMaterialJobBinding
   :: ExternalMaterialIngressIntent
@@ -866,6 +1023,8 @@ receiptMatches permit receipt =
       == targetValueDigestText (signedExternalMaterialRequestDigest permit)
     && internalExternalReceiptGeneration receipt
       == credentialGenerationValue (signedExternalMaterialGeneration permit)
+    && validatedVaultHmac (internalExternalReceiptSourceReceipt receipt)
+      == Just (internalExternalReceiptSourceReceipt receipt)
     && validatedVaultHmac (internalExternalReceiptCommitment receipt)
       == Just (internalExternalReceiptCommitment receipt)
     && validatedOpaqueCommitment (internalExternalReceiptCiphertextDigest receipt)
@@ -897,6 +1056,32 @@ data ExternalMaterialIngressStateEnvelope = ExternalMaterialIngressStateEnvelope
   , externalStateEnvelopeBinding :: !(Maybe ExternalMaterialJobBinding)
   , externalStateEnvelopePermit :: !(Maybe SignedExternalAcmeEabPermit)
   , externalStateEnvelopeReceipt :: !(Maybe ExternalMaterialTargetReceipt)
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- | Version 2 omitted the custody HMAC receipt ref from the worker receipt.
+-- A completed v2 state is deliberately recovered as permit-committed so the
+-- retained Target observation can reconstruct the complete v3 receipt before
+-- delivery. Other v2 phases have no receipt and migrate without loss.
+data ExternalMaterialIngressStateEnvelopeV2 = ExternalMaterialIngressStateEnvelopeV2
+  { externalStateEnvelopeVersionV2 :: !Word16
+  , externalStateEnvelopePhaseV2 :: !ExternalMaterialIngressPhase
+  , externalStateEnvelopeIntentV2 :: !(Maybe WireExternalMaterialIntent)
+  , externalStateEnvelopeBindingV2 :: !(Maybe ExternalMaterialJobBinding)
+  , externalStateEnvelopePermitV2 :: !(Maybe SignedExternalAcmeEabPermit)
+  , externalStateEnvelopeReceiptV2 :: !(Maybe ExternalMaterialTargetReceiptV2)
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data ExternalMaterialTargetReceiptV2 = ExternalMaterialTargetReceiptV2
+  { internalExternalReceiptPermitIdV2 :: !Text
+  , internalExternalReceiptRequestDigestV2 :: !Text
+  , internalExternalReceiptGenerationV2 :: !Natural
+  , internalExternalReceiptCommitmentV2 :: !Text
+  , internalExternalReceiptCiphertextDigestV2 :: !Text
+  , internalExternalReceiptReadBackVersionV2 :: !Natural
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -945,24 +1130,48 @@ externalMaterialIngressStateCodec maximumBytes =
               (ByteString.length bytes)
               maximumBytes
           )
-    | otherwise = do
-        envelope <- case deserialiseOrFail (LazyByteString.fromStrict bytes) of
-          Left _ -> Left ExternalMaterialIngressCodecDecodeFailed
-          Right decoded -> Right decoded
-        when
-          (externalStateEnvelopeVersion envelope /= externalMaterialStateVersion)
-          ( Left
-              ( ExternalMaterialIngressCodecUnsupportedVersion
-                  (externalStateEnvelopeVersion envelope)
-              )
-          )
-        when
-          (LazyByteString.toStrict (serialise envelope) /= bytes)
-          (Left ExternalMaterialIngressCodecNonCanonical)
-        envelopeToState envelope
+    | otherwise =
+        case deserialiseOrFail (LazyByteString.fromStrict bytes) of
+          Right envelope -> decodeCurrentEnvelope bytes envelope
+          Left _ -> decodeVersion2Envelope bytes
 
 externalMaterialStateVersion :: Word16
-externalMaterialStateVersion = 2
+externalMaterialStateVersion = 3
+
+decodeCurrentEnvelope
+  :: ByteString
+  -> ExternalMaterialIngressStateEnvelope
+  -> Either ExternalMaterialIngressCodecError ExternalMaterialIngressState
+decodeCurrentEnvelope bytes envelope = do
+  when
+    (LazyByteString.toStrict (serialise envelope) /= bytes)
+    (Left ExternalMaterialIngressCodecNonCanonical)
+  case externalStateEnvelopeVersion envelope of
+    version
+      | version == externalMaterialStateVersion -> envelopeToState envelope
+    2 -> case externalStateEnvelopeReceipt envelope of
+      Nothing -> envelopeToState envelope
+      Just _ -> Left ExternalMaterialIngressCodecInvalidState
+    version -> Left (ExternalMaterialIngressCodecUnsupportedVersion version)
+
+decodeVersion2Envelope
+  :: ByteString
+  -> Either ExternalMaterialIngressCodecError ExternalMaterialIngressState
+decodeVersion2Envelope bytes = do
+  envelope <- case deserialiseOrFail (LazyByteString.fromStrict bytes) of
+    Left _ -> Left ExternalMaterialIngressCodecDecodeFailed
+    Right decoded -> Right decoded
+  when
+    (externalStateEnvelopeVersionV2 envelope /= 2)
+    ( Left
+        ( ExternalMaterialIngressCodecUnsupportedVersion
+            (externalStateEnvelopeVersionV2 envelope)
+        )
+    )
+  when
+    (LazyByteString.toStrict (serialise envelope) /= bytes)
+    (Left ExternalMaterialIngressCodecNonCanonical)
+  envelopeV2ToState envelope
 
 stateToEnvelope
   :: ExternalMaterialIngressState -> ExternalMaterialIngressStateEnvelope
@@ -1069,6 +1278,58 @@ envelopeToState envelope = case ( externalStateEnvelopePhase envelope
   _ -> Left ExternalMaterialIngressCodecInvalidState
  where
   mapTransition = either (const (Left ExternalMaterialIngressCodecInvalidState)) Right
+
+envelopeV2ToState
+  :: ExternalMaterialIngressStateEnvelopeV2
+  -> Either ExternalMaterialIngressCodecError ExternalMaterialIngressState
+envelopeV2ToState envelope = case ( externalStateEnvelopePhaseV2 envelope
+                                  , externalStateEnvelopeIntentV2 envelope
+                                  , externalStateEnvelopeBindingV2 envelope
+                                  , externalStateEnvelopePermitV2 envelope
+                                  , externalStateEnvelopeReceiptV2 envelope
+                                  ) of
+  (ExternalMaterialIngressIdle, Nothing, Nothing, Nothing, Nothing) ->
+    Right ExternalIngressIdle
+  (ExternalMaterialIngressIntentCommitted, Just wire, Nothing, Nothing, Nothing) ->
+    ExternalIngressIntent <$> intentFromWire wire
+  (ExternalMaterialIngressAttestationCommitted, Just wire, Just binding, Nothing, Nothing) -> do
+    intent <- intentFromWire wire
+    mapTransition (commitExternalMaterialJobBinding intent binding (ExternalIngressIntent intent))
+  (ExternalMaterialIngressPermitCommitted, Just wire, Just binding, Just permit, Nothing) -> do
+    intent <- intentFromWire wire
+    attested <-
+      mapTransition (commitExternalMaterialJobBinding intent binding (ExternalIngressIntent intent))
+    mapTransition (commitExternalMaterialSignedPermit intent binding permit attested)
+  (ExternalMaterialIngressReceiptCommitted, Just wire, Just binding, Just permit, Just receipt) -> do
+    intent <- intentFromWire wire
+    attested <-
+      mapTransition (commitExternalMaterialJobBinding intent binding (ExternalIngressIntent intent))
+    permitted <- mapTransition (commitExternalMaterialSignedPermit intent binding permit attested)
+    unless
+      (receiptV2Matches permit receipt)
+      (Left ExternalMaterialIngressCodecInvalidState)
+    -- The old receipt cannot authorize delivery because it omitted the exact
+    -- custody receipt ref. Preserve the signed permit and let the existing
+    -- positive retained-source recovery reconstruct and commit a v3 receipt.
+    Right permitted
+  _ -> Left ExternalMaterialIngressCodecInvalidState
+ where
+  mapTransition = either (const (Left ExternalMaterialIngressCodecInvalidState)) Right
+
+receiptV2Matches
+  :: SignedExternalAcmeEabPermit -> ExternalMaterialTargetReceiptV2 -> Bool
+receiptV2Matches permit receipt =
+  internalExternalReceiptPermitIdV2 receipt
+    == operatorMaterialPermitIdText (signedExternalMaterialPermitId permit)
+    && internalExternalReceiptRequestDigestV2 receipt
+      == targetValueDigestText (signedExternalMaterialRequestDigest permit)
+    && internalExternalReceiptGenerationV2 receipt
+      == credentialGenerationValue (signedExternalMaterialGeneration permit)
+    && validatedVaultHmac (internalExternalReceiptCommitmentV2 receipt)
+      == Just (internalExternalReceiptCommitmentV2 receipt)
+    && validatedOpaqueCommitment (internalExternalReceiptCiphertextDigestV2 receipt)
+      == Just (internalExternalReceiptCiphertextDigestV2 receipt)
+    && internalExternalReceiptReadBackVersionV2 receipt > 0
 
 digestBytes :: ByteString -> TargetValueDigest
 digestBytes bytes =

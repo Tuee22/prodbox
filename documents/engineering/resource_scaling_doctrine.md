@@ -210,6 +210,34 @@ and mutually-exclusive burst windows are modeled by each workload's `WorkloadCon
 (`Steady | ExclusiveWindow`), so "counted exactly once" and "burst draws its own lane" hold by
 construction rather than through an add-here/subtract-there hand fold.
 
+`rke2_reserved` is the kubelet's **host-only** reservation. Scheduled RKE2 system Pods already
+consume scheduler capacity through their own requests, so their requests must not be charged again
+inside that vector. One-shot secret transport is different: it is prodbox workload demand and must
+appear explicitly. The production plan carries one `bootstrap-secret-worker` slot and a two-slot
+`credential-provisioner-secret-workers` phase (credential worker plus Target materializer). Both
+profiles are Guaranteed QoS and share `ExclusiveWindow "one-shot-secret-workers"`; bootstrap
+recovery and credential delivery cannot overlap, so placement takes the two-slot maximum
+(`500m / 512Mi / 512Mi`) rather than summing both phases.
+
+The 2026-09-02 scheduler counterexample fixes that omission by an exact zero-growth repartition:
+the superseded host-only vector `1000m / 2048Mi / 10240Mi / 1024Mi` with no worker draw maps to
+`500m / 1536Mi / 9728Mi / 1024Mi` plus the explicit
+`500m / 512Mi / 512Mi / 0Mi` one-shot peak. Their sum is identical on every axis; host capacity,
+eviction floor, topology, background load, and the gateway's independently justified 750m envelope
+do not change. `validateOneShotSecretWorkerCapacity` requires those exact production profiles before
+`ValidatedSettings` can be minted. All Bootstrap, AWS-admin, external-material, and Target worker
+manifest renderers consume the same compiled envelope, including ephemeral storage. Harness-owned
+Tier-0 config is refreshed when that canonical capacity projection changes; a complete
+operator-owned config is never overwritten.
+
+Kubelet therefore renders the corrected reservation as equal
+`system-reserved`/`kube-reserved` halves (`250m / 768Mi / 4864Mi`). The RKE2 systemd boundary is a
+separate containment ceiling and remains byte-semantically at the established full-core/2GiB base
+and 3GiB maximum by adding the explicit two-slot peak back to the host-only vector before rendering
+`CPUQuota`, `MemoryHigh`, and `MemoryMax`. On the 8-core home node this changes Kubernetes CPU
+allocatable from 7000m to 7500m; the stricter proof-level `cluster.allocatable` remains 7000m because
+it additionally subtracts the 500m eviction floor.
+
 The rendered Kubernetes shape follows directly from these values:
 
 - kubelet args for `system-reserved`, `kube-reserved`, `eviction-hard`, `eviction-soft`,
@@ -343,18 +371,37 @@ limit. There is no independently authored runtime cgroup ceiling that can drift 
 envelope.
 
 `RuntimeMemory.runtimeMemoryRtsArguments` renders the validated heap cap as the exact argv suffix
-`+RTS -M<bytes> -RTS`. `ChartPlatform.valuesForGateway` places that suffix in generated gateway
-values, and the gateway Deployment appends it to the union runtime image's arguments. The chart
-default contains only an empty argument list; no heap value lives in Cabal, Docker, or Helm
-defaults. The heap cap remains deliberately smaller than the cgroup limit because GHC non-heap
-memory, linked libraries, thread stacks, kernel-accounted memory, and admitted subprocesses require
-explicit headroom.
+`+RTS -M<bytes> -RTS`. `ChartPlatform.valuesForGateway` and
+`ChartPlatform.valuesForProviderWorker` place that suffix in their generated values, and each
+Deployment appends it to the union runtime image's arguments. Chart defaults contain only an empty
+argument list; no heap value lives in Cabal, Docker, or Helm defaults. The heap cap remains
+deliberately smaller than the cgroup limit because GHC non-heap memory, linked libraries, thread
+stacks, kernel-accounted memory, and admitted subprocesses require explicit headroom.
 
 Every process enumerates its live state, pending intents, queue entries, decoded request scratch,
 managed-client pools, native runtime reserve, and any permitted child-process peak. The validator
 rejects an unbounded term, missing deadline, zero capacity, or concurrency declaration without a
 simultaneous-peak proof. A serialized maximum is valid only for a lane that is actually serialized;
 it cannot be reused as evidence for concurrent lanes.
+
+The fenced Provider Worker is the concrete serialized case. Its four admitted request workers and
+independent readiness observer share one process-wide subprocess permit across both AWS CLI and
+Pulumi launch sites. A 2026-08-31 disposable-container measurement of the packaged AWS CLI recorded
+a 74,052 KiB peak; the typed plan rounds that slot upward to 80 MiB. The complete Provider profile
+is `64 MiB heap + 16 MiB native + 80 MiB child + 8 MiB kernel/cgroup + 8 MiB safety = 176 MiB`, with
+the child schedule bounded to one permit and the request-wide 300-second deadline. The exact
+`100m / 176Mi` request-equals-limit envelope keeps the portable single-node standing-workload sum
+at its existing 12,800 MiB allocatable ceiling instead of converting the live OOM fix into host
+overcommit. AWS CLI calls additionally carry a narrower physical 30-second/output bound.
+The Lifecycle Authority's Provider-route HTTP response budget is derived from the same admitted
+schedule maximum: 300 seconds of child execution plus 30 seconds of bounded authenticated
+framing/projection/encoding/socket overhead yields 330 seconds. Capacity validation rejects a
+configured Provider child deadline above the 300-second maximum, so the client cannot time out
+before an admitted schedule by construction. The independently long-running retained-material
+delivery route derives the same finite 330-second bound from its five-minute persisted operation
+lifetime plus 30 seconds of response overhead; both the host EAB client and in-cluster SES worker
+client consume that one constant. Unrelated HTTP clients retain their existing budgets, including
+the generic ten-second default.
 
 Gateway state/transport bounds remain owned by
 [Distributed Gateway Architecture §3.2](./distributed_gateway_architecture.md#32-event-plane-source-of-truth).

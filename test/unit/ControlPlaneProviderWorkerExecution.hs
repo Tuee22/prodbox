@@ -5,6 +5,8 @@ module ControlPlaneProviderWorkerExecution
   )
 where
 
+import Control.Concurrent (threadDelay)
+import Control.Exception (SomeException, displayException, throwIO, try)
 import Data.Bits (xor)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
@@ -16,14 +18,28 @@ import Data.IORef
   , readIORef
   , writeIORef
   )
+import Data.List (nub)
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Numeric.Natural (Natural)
+import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
+  ( AuthenticatedRoleHandler (..)
+  )
+import Prodbox.ControlPlane.CallerPrincipal
+  ( CallerPrincipal (CallerService)
+  )
 import Prodbox.ControlPlane.Coordinate (AuthorityEpoch (..))
 import Prodbox.ControlPlane.ProviderCredentialSession
 import Prodbox.ControlPlane.ProviderNarrowSession
+import Prodbox.ControlPlane.ProviderWorkerClient
+  ( providerWorkerExecutionAuthenticatedHandler
+  , providerWorkerExecutionAuthenticatedHandlerObserved
+  )
+import Prodbox.ControlPlane.ProviderWorkerDiagnostic
 import Prodbox.ControlPlane.ProviderWorkerExecution
+import Prodbox.ControlPlane.Route (ControlPlaneRoute (ProviderWorkApply))
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
   , FencingToken
@@ -38,11 +54,90 @@ import Prodbox.Lifecycle.TargetCommitIntent
   , sha256TargetValueDigest
   , targetValueDigestText
   )
+import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
+import System.Directory (getCurrentDirectory)
+import System.FilePath ((</>))
+import System.Timeout (timeout)
 import TestSupport
 
 controlPlaneProviderWorkerExecutionSuite :: SuiteBuilder ()
 controlPlaneProviderWorkerExecutionSuite =
   describe "Sprint 4.50 isolated Provider Worker execution boundary" $ do
+    it "admits only the exact paired Provider and Authority self-Service policy lanes" $ do
+      repoRoot <- getCurrentDirectory
+      policy <-
+        Text.pack
+          <$> readFile
+            (repoRoot </> "charts" </> "provider-worker" </> "templates" </> "networkpolicy.yaml")
+      authorityPolicy <-
+        Text.pack
+          <$> readFile
+            (repoRoot </> "charts" </> "lifecycle-authority" </> "templates" </> "networkpolicy.yaml")
+      let (_, ingressAndAfter) = Text.breakOn "  ingress:\n" policy
+          (ingress, _) = Text.breakOn "  egress:\n" ingressAndAfter
+      ingress
+        `shouldBe` Text.unlines
+          [ "  ingress:"
+          , "    - from:"
+          , "        - namespaceSelector:"
+          , "            matchLabels:"
+          , "              kubernetes.io/metadata.name: {{ .Values.global.namespace }}"
+          , "        - namespaceSelector:"
+          , "            matchLabels:"
+          , "              kubernetes.io/metadata.name: lifecycle-authority"
+          , "          podSelector:"
+          , "            matchLabels:"
+          , "              app.kubernetes.io/name: prodbox-lifecycle-authority"
+          , "      ports:"
+          , "        - protocol: TCP"
+          , "          port: provider"
+          ]
+      Text.unlines
+        [ "    - to:"
+        , "        - namespaceSelector:"
+        , "            matchLabels:"
+        , "              kubernetes.io/metadata.name: provider-worker"
+        , "          podSelector:"
+        , "            matchLabels:"
+        , "              app.kubernetes.io/name: prodbox-provider-worker"
+        , "      ports:"
+        , "        - protocol: TCP"
+        , "          port: {{ .Values.ports.controlPlane }}"
+        ]
+        `Text.isInfixOf` authorityPolicy
+        `shouldBe` True
+      Text.unlines
+        [ "    - to:"
+        , "        - namespaceSelector:"
+        , "            matchLabels:"
+        , "              kubernetes.io/metadata.name: {{ .Values.global.namespace }}"
+        , "          podSelector:"
+        , "            matchLabels:"
+        , "              app.kubernetes.io/name: prodbox-lifecycle-authority"
+        , "              app.kubernetes.io/instance: {{ .Release.Name }}"
+        , "      ports:"
+        , "        - protocol: TCP"
+        , "          port: {{ .Values.ports.controlPlane }}"
+        ]
+        `Text.isInfixOf` authorityPolicy
+        `shouldBe` True
+      Text.unlines
+        [ "    - to:"
+        , "        - namespaceSelector:"
+        , "            matchLabels:"
+        , "              kubernetes.io/metadata.name: tls-retention"
+        , "          podSelector:"
+        , "            matchLabels:"
+        , "              app.kubernetes.io/name: prodbox-tls-retention"
+        , "      ports:"
+        , "        - protocol: TCP"
+        , "          port: {{ .Values.ports.controlPlane }}"
+        ]
+        `Text.isInfixOf` authorityPolicy
+        `shouldBe` True
+      Text.count "          port: {{ .Values.ports.controlPlane }}" authorityPolicy
+        `shouldBe` 5
+
     it "round-trips bounded canonical local trust with its exact resource set" $ do
       let encoded = encodeAcceptedProviderAuthority acceptedAuthority
       decodeAcceptedProviderAuthority acceptedProviderAuthorityMaximumEncodedBytes encoded
@@ -161,6 +256,170 @@ controlPlaneProviderWorkerExecutionSuite =
       providerIntentCredentialBindingRegressionVersionRotationRefused regression `shouldBe` True
       providerIntentCredentialBindingRegressionReceiptRotationRefused regression `shouldBe` True
       providerIntentCredentialBindingRegressionRotationSkipsCapability regression `shouldBe` True
+
+    it "renders one exhaustive payload-free Provider request stage/cause table" $ do
+      let stageTokens = map renderProviderWorkerRequestStage allProviderWorkerRequestStages
+          causeTokens = map renderProviderWorkerRequestCause allProviderWorkerRequestCauses
+          privateSentinel = "private-vault-credential-response"
+      length stageTokens `shouldBe` length (nub stageTokens)
+      length causeTokens `shouldBe` length (nub causeTokens)
+      all (not . Text.null) stageTokens `shouldBe` True
+      all (not . Text.null) causeTokens `shouldBe` True
+      all (not . Text.isInfixOf privateSentinel) (stageTokens <> causeTokens)
+        `shouldBe` True
+
+    it "preserves execution success, refusal, timeout, and thrown-boundary decisions" $ do
+      let readIntent = ObserveRegisteredStack (stackRef "aws-eks")
+
+      baselineFixture <- freshFixture
+      baselineVerified <- mustAdmitDefault baselineFixture readIntent
+      baselineResult <-
+        executeVerifiedProviderIntent
+          (fixtureBoundary baselineFixture)
+          baselineVerified
+
+      observedFixture <- freshFixture
+      observedVerified <- mustAdmitDefault observedFixture readIntent
+      events <- newIORef []
+      let observer = recordingObserver events
+      observedResult <-
+        fmap (fmap executedProviderIntentResult) $
+          executeVerifiedProviderIntentBoundObserved
+            observer
+            (fixtureBoundary observedFixture)
+            observedVerified
+      observedResult `shouldBe` baselineResult
+      readIORef events
+        `shouldReturn` executionSuccessEvents
+
+      baselineRefusalFixture <- freshFixture
+      writeIORef
+        (fixtureSessionFailure baselineRefusalFixture)
+        (Just "private session refusal")
+      baselineRefusalVerified <- mustAdmitDefault baselineRefusalFixture readIntent
+      baselineRefusal <-
+        executeVerifiedProviderIntent
+          (fixtureBoundary baselineRefusalFixture)
+          baselineRefusalVerified
+
+      observedRefusalFixture <- freshFixture
+      writeIORef
+        (fixtureSessionFailure observedRefusalFixture)
+        (Just "private session refusal")
+      observedRefusalVerified <- mustAdmitDefault observedRefusalFixture readIntent
+      refusalEvents <- newIORef []
+      observedRefusal <-
+        fmap (fmap executedProviderIntentResult) $
+          executeVerifiedProviderIntentBoundObserved
+            (recordingObserver refusalEvents)
+            (fixtureBoundary observedRefusalFixture)
+            observedRefusalVerified
+      observedRefusal `shouldBe` baselineRefusal
+      readIORef refusalEvents
+        `shouldReturn` executionSessionRefusalEvents
+
+      timeoutFixture <- freshFixture
+      timeoutVerified <- mustAdmitDefault timeoutFixture readIntent
+      baselineTimeout <-
+        timeout
+          1000
+          ( executeVerifiedProviderIntentBound
+              (delayedSessionBoundary timeoutFixture)
+              timeoutVerified
+          )
+      observedTimeout <-
+        timeout
+          1000
+          ( executeVerifiedProviderIntentBoundObserved
+              silentProviderWorkerRequestObserver
+              (delayedSessionBoundary timeoutFixture)
+              timeoutVerified
+          )
+      baselineTimeout `shouldSatisfy` isNothing
+      observedTimeout `shouldSatisfy` isNothing
+
+      thrownFixture <- freshFixture
+      thrownVerified <- mustAdmitDefault thrownFixture readIntent
+      baselineThrown <-
+        try
+          ( executeVerifiedProviderIntentBound
+              (throwingTrustBoundary thrownFixture)
+              thrownVerified
+          )
+          :: IO (Either SomeException (Either ProviderIntentExecutionError ExecutedProviderIntent))
+      observedThrown <-
+        try
+          ( executeVerifiedProviderIntentBoundObserved
+              (mkProviderWorkerRequestObserver (\_ _ -> throwIO (userError "diagnostic failure")))
+              (throwingTrustBoundary thrownFixture)
+              thrownVerified
+          )
+          :: IO (Either SomeException (Either ProviderIntentExecutionError ExecutedProviderIntent))
+      baselineThrown `shouldSatisfy` isLeft
+      observedThrown `shouldSatisfy` isLeft
+      fmap displayException (either Just (const Nothing) baselineThrown)
+        `shouldBe` fmap displayException (either Just (const Nothing) observedThrown)
+
+    it "preserves exact authenticated Provider responses while observing closed progress" $ do
+      let readIntent = ObserveRegisteredStack (stackRef "aws-eks")
+          body =
+            encodeSignedProviderCommittedIntent
+              (signedIntentFor signingKey (defaultSpec readIntent))
+          caller =
+            verifiedCallerSlotFixture
+              (CallerService LifecycleAuthorityRuntime)
+              1
+
+      baselineFixture <- freshFixture
+      baseline <-
+        authenticatedHandlerHandle
+          ( providerWorkerExecutionAuthenticatedHandler
+              providerCommittedIntentMaximumEncodedBytes
+              (fixtureBoundary baselineFixture)
+              emptyAuthenticatedHandler
+          )
+          caller
+          ProviderWorkApply
+          body
+
+      observedFixture <- freshFixture
+      events <- newIORef []
+      observed <-
+        authenticatedHandlerHandle
+          ( providerWorkerExecutionAuthenticatedHandlerObserved
+              providerCommittedIntentMaximumEncodedBytes
+              (recordingObserver events)
+              (fixtureBoundary observedFixture)
+              emptyAuthenticatedHandler
+          )
+          caller
+          ProviderWorkApply
+          body
+      observed `shouldBe` baseline
+      readIORef events `shouldReturn` authenticatedSuccessEvents
+
+      baselineMalformed <-
+        authenticatedHandlerHandle
+          ( providerWorkerExecutionAuthenticatedHandler
+              providerCommittedIntentMaximumEncodedBytes
+              (fixtureBoundary baselineFixture)
+              emptyAuthenticatedHandler
+          )
+          caller
+          ProviderWorkApply
+          "not-cbor"
+      observedMalformed <-
+        authenticatedHandlerHandle
+          ( providerWorkerExecutionAuthenticatedHandlerObserved
+              providerCommittedIntentMaximumEncodedBytes
+              (mkProviderWorkerRequestObserver (\_ _ -> throwIO (userError "private diagnostic failure")))
+              (fixtureBoundary observedFixture)
+              emptyAuthenticatedHandler
+          )
+          caller
+          ProviderWorkApply
+          "not-cbor"
+      observedMalformed `shouldBe` baselineMalformed
 
     it "rejects invalid intent identities, resource values, revision binding, and action bounds" $ do
       mkProviderIssuerKeyGeneration 0
@@ -577,6 +836,82 @@ controlPlaneProviderWorkerExecutionSuite =
               }
       providerCommitActionDigest first
         `shouldNotBe` providerCommitActionDigest substitute
+
+recordingObserver
+  :: IORef [(ProviderWorkerRequestStage, ProviderWorkerRequestCause)]
+  -> ProviderWorkerRequestObserver
+recordingObserver events =
+  mkProviderWorkerRequestObserver $ \stage cause ->
+    modifyIORef' events (<> [(stage, cause)])
+
+executionSuccessEvents
+  :: [(ProviderWorkerRequestStage, ProviderWorkerRequestCause)]
+executionSuccessEvents =
+  [ (ProviderWorkerTrustRevalidation, ProviderWorkerStageStarted)
+  , (ProviderWorkerTrustRevalidation, ProviderWorkerStageCompleted)
+  , (ProviderWorkerClockRevalidation, ProviderWorkerStageStarted)
+  , (ProviderWorkerClockRevalidation, ProviderWorkerStageCompleted)
+  , (ProviderWorkerNarrowSession, ProviderWorkerStageStarted)
+  , (ProviderWorkerNarrowSession, ProviderWorkerStageCompleted)
+  , (ProviderWorkerCredentialBinding, ProviderWorkerStageStarted)
+  , (ProviderWorkerCredentialBinding, ProviderWorkerStageCompleted)
+  , (ProviderWorkerCapabilityExecution, ProviderWorkerStageStarted)
+  , (ProviderWorkerCapabilityExecution, ProviderWorkerStageCompleted)
+  ]
+
+executionSessionRefusalEvents
+  :: [(ProviderWorkerRequestStage, ProviderWorkerRequestCause)]
+executionSessionRefusalEvents =
+  take 5 executionSuccessEvents
+    <> [(ProviderWorkerNarrowSession, ProviderWorkerStageRefused)]
+
+authenticatedSuccessEvents
+  :: [(ProviderWorkerRequestStage, ProviderWorkerRequestCause)]
+authenticatedSuccessEvents =
+  [ (ProviderWorkerAuthenticatedIngress, ProviderWorkerStageCompleted)
+  , (ProviderWorkerIntentAdmission, ProviderWorkerStageStarted)
+  , (ProviderWorkerIntentAdmission, ProviderWorkerStageCompleted)
+  ]
+    <> executionSuccessEvents
+    <> [ (ProviderWorkerAuthorityProjection, ProviderWorkerStageStarted)
+       , (ProviderWorkerAuthorityProjection, ProviderWorkerStageCompleted)
+       , (ProviderWorkerResponseEncoding, ProviderWorkerStageStarted)
+       , (ProviderWorkerResponseEncoding, ProviderWorkerStageCompleted)
+       ]
+
+emptyAuthenticatedHandler :: AuthenticatedRoleHandler IO
+emptyAuthenticatedHandler =
+  AuthenticatedRoleHandler
+    { authenticatedHandlerReadiness = fixtureReadyRoleReadinessSource
+    , authenticatedHandlerHandle = \_ _ _ -> pure Nothing
+    }
+
+delayedSessionBoundary
+  :: Fixture -> ProviderWorkerExecutionBoundary IO Text
+delayedSessionBoundary fixture =
+  mkProviderWorkerExecutionBoundary
+    ( ProviderWorkerTrustRepository $ do
+        modifyIORef' (fixtureTrustReads fixture) (+ 1)
+        readIORef (fixtureTrust fixture)
+    )
+    ( do
+        modifyIORef' (fixtureClockReads fixture) (+ 1)
+        readIORef (fixtureNow fixture)
+    )
+    ( ProviderNarrowSessionRunner $ \_ _ _ -> do
+        threadDelay 50000
+        pure (Left "delayed private session")
+    )
+    (fixtureCapabilities fixture)
+
+throwingTrustBoundary
+  :: Fixture -> ProviderWorkerExecutionBoundary IO Text
+throwingTrustBoundary fixture =
+  mkProviderWorkerExecutionBoundary
+    (ProviderWorkerTrustRepository (throwIO (userError "private trust failure")))
+    (readIORef (fixtureNow fixture))
+    (fixtureSessionRunner fixture)
+    (fixtureCapabilities fixture)
 
 data Fixture = Fixture
   { fixtureTrust :: !(IORef (Either Text AcceptedProviderAuthority))

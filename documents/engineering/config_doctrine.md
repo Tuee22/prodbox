@@ -649,6 +649,41 @@ import syntax (Section 5).
 | In-cluster gateway daemon | `/etc/gateway/config/config.dhall` (Tier-0 `prodbox.dhall`, the `config.dhall` file inside the directory-mounted `/etc/gateway/config`) | the long-running daemon is configured by the chart-side `gateway-config-<nodeId>` ConfigMap mount (unchanged), independent of the build-time binary-sibling default; see [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) and [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) |
 | In-cluster workload Pods (`api`, `websocket`) | `/etc/workload/config.dhall` | chart-side ConfigMap mount on the owning workload chart |
 
+Target Secret Agent startup treats the mounted file, projected ServiceAccount tokens, Vault
+responses, and handler-construction details as protected inputs. Every decode, validation,
+Vault-configuration, authentication-topology/trust/signer, and handler-construction refusal stays
+fail-closed with exit code 1. Trust lookup retains typed initial-session, relogin, and Transit-read
+provenance; the protected diagnostic closes those over forbidden/sealed/unavailable session causes
+and status/transport/decode/identity/registry read causes. Handler construction separately closes
+target-sink compilation, trusted-sink construction, tombstone boundary/binding/registry, and
+retained-custody construction over six fixed causes. The tombstone binding takes its manifest
+reference from the exact compiled sink identity; the deployment cluster ID is a separate authority
+coordinate and cannot replace it. Its Pod log receives only the corresponding
+member of that closed payload-free vocabulary; decoder text, HTTP/Vault bodies or
+details, paths, identities, tokens, and secret-bearing values are never rendered. The standing
+Vault Kubernetes-auth role binds the exact `prodbox-target-secret-agent` ServiceAccount in namespace
+`target-secret-agent`; it never inherits the historical `gateway` namespace used by other standing
+role projections.
+
+The same role's readiness stays a cached background observation and one pure request-path fold.
+The protected diagnostic classifies starting/stale plus target-material, authority-clock,
+projected-ServiceAccount-token, retained-authority-epoch, request-replay-projection, and closed
+other unavailable/identity-rejected states without rendering a dependency detail. It returns the
+computed readiness state unchanged, so `/readyz` remains exactly HTTP 200 `ready` or HTTP 503
+`not-ready`; the diagnostic neither performs boundary I/O nor changes admission. A target-material
+failure is projected further from the existing observer result as one closed `TargetSecretId` and
+one closed `metadata-read` or `metadata-validation` stage. The label decoder admits only the
+compiled target/stage inventories; it cannot retain an arbitrary token, Vault path, HTTP body, or
+validation detail.
+
+The readiness-only metadata validator has two explicit migration arms. A positive-version document
+with exactly no custom metadata is the pre-receipt legacy shape and is admitted so Lifecycle
+Authority can start and drive repair; a complete eight-field legacy receipt is admitted only when
+adding its observed current Vault version makes the strict document valid. A zero-version empty
+document, partial custom metadata, or any other invalid shape remains unavailable. Proof
+observations and Provider sessions continue to use the strict validator and admit neither migration
+arm before repair.
+
 The Bootstrap Broker store block enumerates its fixed coordinates. In addition to storage
 generation, fence, prepared envelope, encrypted response, final bundle, child custody receipt, and
 child recovery delivery, it names exactly six disjoint progress keys: `root_init_journal_key`,

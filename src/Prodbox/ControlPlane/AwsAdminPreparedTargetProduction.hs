@@ -10,6 +10,19 @@
 module Prodbox.ControlPlane.AwsAdminPreparedTargetProduction
   ( FirstReconcileContinuation (..)
   , AwsAdminPreparedTargetLifecycle (..)
+  , AwsAdminPrepareAuthorityPhase (..)
+  , renderAwsAdminPrepareAuthorityPhaseDiagnostic
+  , AwsAdminPreparedTargetOutboxDecision (..)
+  , decideAwsAdminPreparedTargetOutbox
+  , publishAwsAdminPreparedTarget
+  , renderAwsAdminPreparedTargetOutboxDiagnostic
+  , AwsAdminPreparedTargetPrepareCause (..)
+  , AwsAdminPreparedTargetPrepareError
+  , allAwsAdminPreparedTargetPrepareCauses
+  , awsAdminPreparedTargetPrepareError
+  , awsAdminPreparedTargetPrepareErrorCause
+  , renderAwsAdminPreparedTargetPrepareCause
+  , ensureGenesisFirstReconcileJournal
   , productionAwsAdminPreparedTargetLifecycle
   )
 where
@@ -20,6 +33,7 @@ import Data.List (find)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.CLI.Output (writeDiagnosticLine)
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   ( AuthorityAdmissionRepository (readAuthorityAdmission)
   , AuthorityAdmissionSnapshot (authorityAdmissionSnapshotState)
@@ -54,11 +68,16 @@ import Prodbox.Lifecycle.Authority.Genesis
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
   , ModelBCasAdapter (..)
-  , ModelBCasRequest (ModelBInitialize)
+  , ModelBCasRequest (ModelBInitialize, ModelBReplace)
   , ModelBObjectCoordinate
   , ModelBObservation (..)
   , StoreLifetime (ClusterRetained)
   , mkClusterRetainedCoordinate
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
+  ( AwsAdminAuthorizedRecoveryError
+  , AwsAdminAuthorizedRecoveryProof
+  , awsAdminPreparedRenewalBindingsMatch
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   ( AwsAdminWorkerReceipt
@@ -67,8 +86,10 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   , awsAdminWorkerReceiptTargetReadBack
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
-  ( AwsAdminPermitIntent
+  ( AwsAdminCleanupRecoveryProgram (..)
+  , AwsAdminPermitIntent
   , AwsAdminPermitKind (..)
+  , BackupRepairFrozenBinding
   , SignedAwsAdminPermit
   , awsAdminPermitIntentAction
   , awsAdminPermitIntentCredentialClass
@@ -89,7 +110,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.FirstReconcileJournal
   , firstReconcileJournalCodec
   , firstReconcileJournalCursor
   , firstReconcileJournalPlan
-  , initializeFirstReconcileJournalStore
+  , initialFirstReconcileJournal
   )
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( AwsCredentialClass (AuthorityBackupStoreCredential)
@@ -116,7 +137,21 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   )
 import Prodbox.Lifecycle.CredentialProvisioner.PreparedTarget
   ( PreparedCredentialTargetObservation
-  , preparedCredentialTargetObservationCodec
+  , preparedCredentialTargetDeadline
+  , preparedCredentialTargetFence
+  , preparedCredentialTargetGeneration
+  , preparedCredentialTargetId
+  , preparedCredentialTargetOwnerNonce
+  , preparedCredentialTargetPlanBinding
+  , preparedCredentialTargetRequestDigest
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.PreparedTargetOutbox
+  ( PreparedCredentialTargetOutbox
+  , mkPreparedCredentialTargetOutbox
+  , preparedCredentialTargetOutboxCanonicalIntent
+  , preparedCredentialTargetOutboxCodec
+  , preparedCredentialTargetOutboxIsLegacy
+  , preparedCredentialTargetOutboxObservation
   )
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
@@ -131,9 +166,19 @@ import Prodbox.Lifecycle.TargetCommitIntent
 -- prepared observation was durably read back; completion advances the exact
 -- receipt-ordered first-reconcile member when one is bound.
 data AwsAdminPreparedTargetLifecycle m = AwsAdminPreparedTargetLifecycle
-  { prepareAndReadBackAwsAdminPreparedTarget
-      :: AwsAdminPermitIntent
-      -> m (Either Text AwsAdminPermitIntent)
+  { recordAwsAdminPrepareAuthorityPhase :: AwsAdminPrepareAuthorityPhase -> m ()
+  , proveAwsAdminAuthorizedAttemptRecovery
+      :: AuthorityTime
+      -> SignedAwsAdminPermit
+      -> m
+           ( Either
+               AwsAdminAuthorizedRecoveryError
+               AwsAdminAuthorizedRecoveryProof
+           )
+  , prepareAndReadBackAwsAdminPreparedTarget
+      :: Maybe (AuthorityTime, AwsAdminPermitIntent)
+      -> AwsAdminPermitIntent
+      -> m (Either AwsAdminPreparedTargetPrepareError AwsAdminPermitIntent)
   , reobserveRetainedAwsAdminPreparedTarget
       :: AwsAdminPermitIntent
       -> m (Either Text PreparedCredentialTargetObservation)
@@ -144,6 +189,96 @@ data AwsAdminPreparedTargetLifecycle m = AwsAdminPreparedTargetLifecycle
   , observeAwsAdminFirstReconcileContinuation
       :: m (Either Text (Maybe FirstReconcileContinuation))
   }
+
+-- | Value-free retained Authority phase observed before prepared-target
+-- publication. The production logger renders only this closed constructor;
+-- no intent, binding, permit, receipt, or durable coordinate can escape.
+data AwsAdminPrepareAuthorityPhase
+  = AwsAdminPrepareAuthorityVacant
+  | AwsAdminPrepareAuthorityPrepared
+  | AwsAdminPrepareAuthorityAttested
+  | AwsAdminPrepareAuthorityAuthorized
+  | AwsAdminPrepareAuthorityCompleted
+  deriving (Bounded, Enum, Eq, Show)
+
+renderAwsAdminPrepareAuthorityPhaseDiagnostic :: AwsAdminPrepareAuthorityPhase -> Text
+renderAwsAdminPrepareAuthorityPhaseDiagnostic phase =
+  "aws-admin/prepare authority-phase=" <> case phase of
+    AwsAdminPrepareAuthorityVacant -> "vacant"
+    AwsAdminPrepareAuthorityPrepared -> "prepared"
+    AwsAdminPrepareAuthorityAttested -> "attested"
+    AwsAdminPrepareAuthorityAuthorized -> "authorized"
+    AwsAdminPrepareAuthorityCompleted -> "completed"
+
+-- | Closed, payload-free cause projected by the protected prepare endpoint.
+-- Boundary detail remains on 'AwsAdminPreparedTargetPrepareError' for private
+-- diagnosis and is never rendered into the authenticated response.
+data AwsAdminPreparedTargetPrepareCause
+  = AwsAdminPreparedTargetAuthorityTimeUnavailable
+  | AwsAdminPreparedTargetInitialAdmissionUnavailable
+  | AwsAdminPreparedTargetJournalMissing
+  | AwsAdminPreparedTargetJournalCorrupt
+  | AwsAdminPreparedTargetJournalEndpointUnready
+  | AwsAdminPreparedTargetJournalUnobservable
+  | AwsAdminPreparedTargetJournalPlanMismatch
+  | AwsAdminPreparedTargetJournalCursorRejected
+  | AwsAdminPreparedTargetJournalMemberMismatch
+  | AwsAdminPreparedTargetAdmissionStateRejected
+  | AwsAdminPreparedTargetDeadlineExpired
+  | AwsAdminPreparedTargetIntentCanonicalizationRejected
+  | AwsAdminPreparedTargetConfirmationAdmissionUnavailable
+  | AwsAdminPreparedTargetAdmissionChanged
+  | AwsAdminPreparedTargetCoordinateRejected
+  | AwsAdminPreparedTargetOutboxMissing
+  | AwsAdminPreparedTargetOutboxCorrupt
+  | AwsAdminPreparedTargetOutboxEndpointUnready
+  | AwsAdminPreparedTargetOutboxUnobservable
+  | AwsAdminPreparedTargetOutboxDivergent
+  deriving (Bounded, Enum, Eq, Show)
+
+data AwsAdminPreparedTargetPrepareError = AwsAdminPreparedTargetPrepareError
+  { awsAdminPreparedTargetPrepareErrorCause :: !AwsAdminPreparedTargetPrepareCause
+  , awsAdminPreparedTargetPrepareErrorDetail :: !Text
+  }
+  deriving (Eq, Show)
+
+allAwsAdminPreparedTargetPrepareCauses :: [AwsAdminPreparedTargetPrepareCause]
+allAwsAdminPreparedTargetPrepareCauses = [minBound .. maxBound]
+
+awsAdminPreparedTargetPrepareError
+  :: AwsAdminPreparedTargetPrepareCause
+  -> Text
+  -> AwsAdminPreparedTargetPrepareError
+awsAdminPreparedTargetPrepareError = AwsAdminPreparedTargetPrepareError
+
+prepareFailure
+  :: AwsAdminPreparedTargetPrepareCause
+  -> Text
+  -> AwsAdminPreparedTargetPrepareError
+prepareFailure = awsAdminPreparedTargetPrepareError
+
+renderAwsAdminPreparedTargetPrepareCause :: AwsAdminPreparedTargetPrepareCause -> Text
+renderAwsAdminPreparedTargetPrepareCause cause = case cause of
+  AwsAdminPreparedTargetAuthorityTimeUnavailable -> "authority-time"
+  AwsAdminPreparedTargetInitialAdmissionUnavailable -> "admission/initial"
+  AwsAdminPreparedTargetJournalMissing -> "first-reconcile-journal/missing"
+  AwsAdminPreparedTargetJournalCorrupt -> "first-reconcile-journal/corrupt"
+  AwsAdminPreparedTargetJournalEndpointUnready -> "first-reconcile-journal/endpoint-unready"
+  AwsAdminPreparedTargetJournalUnobservable -> "first-reconcile-journal/unobservable"
+  AwsAdminPreparedTargetJournalPlanMismatch -> "first-reconcile-journal/plan-mismatch"
+  AwsAdminPreparedTargetJournalCursorRejected -> "first-reconcile-journal/cursor-rejected"
+  AwsAdminPreparedTargetJournalMemberMismatch -> "first-reconcile-journal/member-mismatch"
+  AwsAdminPreparedTargetAdmissionStateRejected -> "admission/state-rejected"
+  AwsAdminPreparedTargetDeadlineExpired -> "deadline-expired"
+  AwsAdminPreparedTargetIntentCanonicalizationRejected -> "intent-canonicalization"
+  AwsAdminPreparedTargetConfirmationAdmissionUnavailable -> "admission/confirmation"
+  AwsAdminPreparedTargetAdmissionChanged -> "admission/changed"
+  AwsAdminPreparedTargetCoordinateRejected -> "outbox/coordinate-rejected"
+  AwsAdminPreparedTargetOutboxMissing -> "outbox/missing"
+  AwsAdminPreparedTargetOutboxCorrupt -> "outbox/corrupt"
+  AwsAdminPreparedTargetOutboxEndpointUnready -> "outbox/endpoint-unready"
+  AwsAdminPreparedTargetOutboxUnobservable -> "outbox/unobservable"
+  AwsAdminPreparedTargetOutboxDivergent -> "outbox/divergent"
 
 data FirstReconcileContinuation = FirstReconcileContinuation
   { firstReconcileContinuationClass :: !AwsCredentialClass
@@ -171,10 +306,21 @@ productionAwsAdminPreparedTargetLifecycle
   -> ModelBObjectCoordinate 'ClusterRetained
   -> TargetAgentIdentity
   -> IO (Either Text AuthorityTime)
+  -> ( AuthorityTime
+       -> SignedAwsAdminPermit
+       -> IO
+            ( Either
+                AwsAdminAuthorizedRecoveryError
+                AwsAdminAuthorizedRecoveryProof
+            )
+     )
   -> AwsAdminPreparedTargetLifecycle IO
-productionAwsAdminPreparedTargetLifecycle store authority admissionRepository journalCoordinate selectedAgent observeNow =
+productionAwsAdminPreparedTargetLifecycle store authority admissionRepository journalCoordinate selectedAgent observeNow proveAuthorizedRecovery =
   AwsAdminPreparedTargetLifecycle
-    { prepareAndReadBackAwsAdminPreparedTarget = prepare
+    { recordAwsAdminPrepareAuthorityPhase =
+        writeDiagnosticLine . Text.unpack . renderAwsAdminPrepareAuthorityPhaseDiagnostic
+    , proveAwsAdminAuthorizedAttemptRecovery = proveAuthorizedRecovery
+    , prepareAndReadBackAwsAdminPreparedTarget = prepare
     , reobserveRetainedAwsAdminPreparedTarget = reobservePrepared
     , commitAwsAdminFirstReconcileReceipt = commitFirstReconcile
     , observeAwsAdminFirstReconcileContinuation = observeContinuation
@@ -184,19 +330,33 @@ productionAwsAdminPreparedTargetLifecycle store authority admissionRepository jo
     inClusterAuthorityModelBCasAdapter
       store
       authority
-      preparedCredentialTargetObservationCodec
+      preparedCredentialTargetOutboxCodec
   journalAdapter =
     inClusterAuthorityModelBCasAdapter
       store
       authority
       firstReconcileJournalCodec
 
-  prepare draft = do
+  prepare renewal draft = do
     timeResult <- observeNow
     admissionResult <- readAdmissionAggregate admissionRepository
     case (timeResult, admissionResult) of
-      (Left detail, _) -> pure (Left ("Authority time is unavailable: " <> detail))
-      (_, Left detail) -> pure (Left detail)
+      (Left detail, _) ->
+        pure
+          ( Left
+              ( prepareFailure
+                  AwsAdminPreparedTargetAuthorityTimeUnavailable
+                  detail
+              )
+          )
+      (_, Left detail) ->
+        pure
+          ( Left
+              ( prepareFailure
+                  AwsAdminPreparedTargetInitialAdmissionUnavailable
+                  detail
+              )
+          )
       (Right now, Right admission) -> do
         contextResult <-
           contextForIntent journalAdapter journalCoordinate admission draft
@@ -205,7 +365,13 @@ productionAwsAdminPreparedTargetLifecycle store authority admissionRepository jo
           Right context
             | authorityTimeMicros now
                 >= authorityTimeMicros (preparedContextDeadline context) ->
-                pure (Left "AWS-admin prepared-target deadline has expired")
+                pure
+                  ( Left
+                      ( prepareFailure
+                          AwsAdminPreparedTargetDeadlineExpired
+                          "AWS-admin prepared-target deadline has expired"
+                      )
+                  )
             | otherwise -> do
                 let owner =
                       "aws-admin-"
@@ -222,14 +388,42 @@ productionAwsAdminPreparedTargetLifecycle store authority admissionRepository jo
                       selectedAgent
                       draft
                   ) of
-                  Left detail -> pure (Left ("AWS-admin intent canonicalization failed: " <> detail))
+                  Left detail ->
+                    pure
+                      ( Left
+                          ( prepareFailure
+                              AwsAdminPreparedTargetIntentCanonicalizationRejected
+                              detail
+                          )
+                      )
                   Right canonical -> do
                     confirmedAdmission <- readAdmissionAggregate admissionRepository
-                    if confirmedAdmission /= Right admission
-                      then pure (Left "Authority admission changed during prepared-target derivation")
-                      else do
-                        published <- publishPrepared authority preparedAdapter canonical
-                        pure (canonical <$ published)
+                    case confirmedAdmission of
+                      Left detail ->
+                        pure
+                          ( Left
+                              ( prepareFailure
+                                  AwsAdminPreparedTargetConfirmationAdmissionUnavailable
+                                  detail
+                              )
+                          )
+                      Right confirmed
+                        | confirmed /= admission ->
+                            pure
+                              ( Left
+                                  ( prepareFailure
+                                      AwsAdminPreparedTargetAdmissionChanged
+                                      "Authority admission changed during prepared-target derivation"
+                                  )
+                              )
+                        | otherwise -> do
+                            published <-
+                              publishAwsAdminPreparedTarget
+                                authority
+                                preparedAdapter
+                                renewal
+                                canonical
+                            pure (canonical <$ published)
 
   reobservePrepared intent =
     case preparedCoordinate authority intent of
@@ -289,118 +483,219 @@ contextForIntent
   -> ModelBObjectCoordinate 'ClusterRetained
   -> AuthorityAdmissionAggregate
   -> AwsAdminPermitIntent
-  -> IO (Either Text PreparedAuthorityContext)
+  -> IO (Either AwsAdminPreparedTargetPrepareError PreparedAuthorityContext)
 contextForIntent adapter coordinate aggregate intent =
   case (authorityAggregateAdmission aggregate, awsAdminPermitIntentKind intent) of
-    (EstablishingBackup progress, GenesisBackupKind _) -> do
-      journalResult <-
-        ensureGenesisJournal adapter coordinate (awsAdminPermitIntentDeadline intent)
-      pure $ do
-        journal <- journalResult
-        member <- currentJournalMember journal
-        unless
-          ( firstReconcilePlanMemberIndex member == 0
-              && firstReconcilePlanMemberAction member
-                == EstablishAuthorityBackupMember
-              && awsAdminPermitIntentCredentialClass intent
-                == AuthorityBackupStoreCredential
-              && awsAdminPermitIntentAction intent == InstallOperatorMaterial
-          )
-          (Left "retained first-reconcile journal is not at genesis member zero")
-        pure
-          PreparedAuthorityContext
-            { preparedContextFence = authorityEpochValue authorityEpochGenesis
-            , preparedContextPlanBinding = Just (bindingFor journal member)
-            , preparedContextDeadline =
-                firstReconcilePlanDeadline (firstReconcileJournalPlan journal)
-            , preparedContextGenesis =
-                Just (genesisProgressPlan progress, member)
-            }
-    (BackupEstablished epoch _ _, NormalOperatorMaterialKind) -> do
-      journalResult <- observeJournal adapter coordinate
-      pure $ do
-        journalMaybe <- journalResult
-        case journalMaybe of
-          Nothing ->
+    (EstablishingBackup progress, genesisKind)
+      | isGenesisBackupKind genesisKind -> do
+          journalResult <-
+            ensureGenesisFirstReconcileJournal
+              adapter
+              coordinate
+              (awsAdminPermitIntentDeadline intent)
+          pure $ do
+            journal <- journalResult
+            member <- currentJournalMember journal
+            unless
+              ( firstReconcilePlanMemberIndex member == 0
+                  && firstReconcilePlanMemberAction member
+                    == EstablishAuthorityBackupMember
+                  && awsAdminPermitIntentCredentialClass intent
+                    == AuthorityBackupStoreCredential
+                  && awsAdminPermitIntentAction intent == InstallOperatorMaterial
+              )
+              ( Left
+                  ( prepareFailure
+                      AwsAdminPreparedTargetJournalMemberMismatch
+                      "retained first-reconcile journal is not at genesis member zero"
+                  )
+              )
             pure
               PreparedAuthorityContext
-                { preparedContextFence = authorityEpochValue epoch
+                { preparedContextFence = authorityEpochValue authorityEpochGenesis
+                , preparedContextPlanBinding = Just (bindingFor journal member)
+                , preparedContextDeadline = awsAdminPermitIntentDeadline intent
+                , preparedContextGenesis =
+                    Just (genesisProgressPlan progress, member)
+                }
+    (BackupEstablished epoch _ _, normalKind)
+      | isNormalOperatorMaterialKind normalKind -> do
+          journalResult <- observeJournalForPrepare adapter coordinate
+          pure $ do
+            journalMaybe <- journalResult
+            case journalMaybe of
+              Nothing ->
+                pure
+                  PreparedAuthorityContext
+                    { preparedContextFence = authorityEpochValue epoch
+                    , preparedContextPlanBinding = Nothing
+                    , preparedContextDeadline = awsAdminPermitIntentDeadline intent
+                    , preparedContextGenesis = Nothing
+                    }
+              Just journal -> case nextFirstReconcileMember
+                (firstReconcileJournalPlan journal)
+                (firstReconcileJournalCursor journal) of
+                Left err ->
+                  Left
+                    ( prepareFailure
+                        AwsAdminPreparedTargetJournalCursorRejected
+                        (Text.pack (show err))
+                    )
+                Right Nothing ->
+                  pure
+                    PreparedAuthorityContext
+                      { preparedContextFence = authorityEpochValue epoch
+                      , preparedContextPlanBinding = Nothing
+                      , preparedContextDeadline = awsAdminPermitIntentDeadline intent
+                      , preparedContextGenesis = Nothing
+                      }
+                Right (Just member) -> case firstReconcilePlanMemberAction member of
+                  EstablishAuthorityBackupMember ->
+                    Left
+                      ( prepareFailure
+                          AwsAdminPreparedTargetJournalMemberMismatch
+                          "first-reconcile genesis receipt has not committed"
+                      )
+                  ProvisionAwsCredentialMember expectedClass -> do
+                    unless
+                      ( awsAdminPermitIntentCredentialClass intent == expectedClass
+                          && awsAdminPermitIntentAction intent == InstallOperatorMaterial
+                      )
+                      ( Left
+                          ( prepareFailure
+                              AwsAdminPreparedTargetJournalMemberMismatch
+                              "AWS-admin request is not the next first-reconcile member"
+                          )
+                      )
+                    pure
+                      PreparedAuthorityContext
+                        { preparedContextFence = authorityEpochValue epoch
+                        , preparedContextPlanBinding = Just (bindingFor journal member)
+                        , preparedContextDeadline = awsAdminPermitIntentDeadline intent
+                        , preparedContextGenesis = Nothing
+                        }
+    (BackupRepairFrozen epoch progress, repairKind)
+      | Just repair <- backupRepairBindingForKind repairKind ->
+          pure $ do
+            retainedPermit <-
+              maybe
+                ( Left
+                    ( prepareFailure
+                        AwsAdminPreparedTargetAdmissionStateRejected
+                        "backup repair is frozen without a retained repair permit"
+                    )
+                )
+                Right
+                (backupRepairPermit progress)
+            unless
+              ( backupRepairFrozenAuthorityEpoch repair == authorityEpochValue epoch
+                  && targetValueDigestText (backupRepairFrozenPlanDigest repair)
+                    == backupRepairPermitDigest retainedPermit
+              )
+              ( Left
+                  ( prepareFailure
+                      AwsAdminPreparedTargetAdmissionStateRejected
+                      "AWS-admin backup-repair binding differs from retained admission"
+                  )
+              )
+            pure
+              PreparedAuthorityContext
+                { preparedContextFence = authorityEpochValue (nextAuthorityEpoch epoch)
                 , preparedContextPlanBinding = Nothing
                 , preparedContextDeadline = awsAdminPermitIntentDeadline intent
                 , preparedContextGenesis = Nothing
                 }
-          Just journal -> case nextFirstReconcileMember
-            (firstReconcileJournalPlan journal)
-            (firstReconcileJournalCursor journal) of
-            Left err -> Left ("first-reconcile cursor is invalid: " <> Text.pack (show err))
-            Right Nothing ->
-              pure
-                PreparedAuthorityContext
-                  { preparedContextFence = authorityEpochValue epoch
-                  , preparedContextPlanBinding = Nothing
-                  , preparedContextDeadline = awsAdminPermitIntentDeadline intent
-                  , preparedContextGenesis = Nothing
-                  }
-            Right (Just member) -> case firstReconcilePlanMemberAction member of
-              EstablishAuthorityBackupMember ->
-                Left "first-reconcile genesis receipt has not committed"
-              ProvisionAwsCredentialMember expectedClass -> do
-                unless
-                  ( awsAdminPermitIntentCredentialClass intent == expectedClass
-                      && awsAdminPermitIntentAction intent == InstallOperatorMaterial
-                  )
-                  (Left "AWS-admin request is not the next first-reconcile member")
-                pure
-                  PreparedAuthorityContext
-                    { preparedContextFence = authorityEpochValue epoch
-                    , preparedContextPlanBinding = Just (bindingFor journal member)
-                    , preparedContextDeadline =
-                        firstReconcilePlanDeadline (firstReconcileJournalPlan journal)
-                    , preparedContextGenesis = Nothing
-                    }
-    (BackupRepairFrozen epoch progress, BackupRepairFrozenKind repair) ->
-      pure $ do
-        retainedPermit <-
-          maybe
-            (Left "backup repair is frozen without a retained repair permit")
-            Right
-            (backupRepairPermit progress)
-        unless
-          ( backupRepairFrozenAuthorityEpoch repair == authorityEpochValue epoch
-              && targetValueDigestText (backupRepairFrozenPlanDigest repair)
-                == backupRepairPermitDigest retainedPermit
-          )
-          (Left "AWS-admin backup-repair binding differs from retained admission")
-        pure
-          PreparedAuthorityContext
-            { preparedContextFence = authorityEpochValue (nextAuthorityEpoch epoch)
-            , preparedContextPlanBinding = Nothing
-            , preparedContextDeadline = awsAdminPermitIntentDeadline intent
-            , preparedContextGenesis = Nothing
-            }
-    _ -> pure (Left "AWS-admin request is not admitted by retained Authority state")
+    _ ->
+      pure
+        ( Left
+            ( prepareFailure
+                AwsAdminPreparedTargetAdmissionStateRejected
+                "AWS-admin request is not admitted by retained Authority state"
+            )
+        )
 
-ensureGenesisJournal
+isNormalOperatorMaterialKind :: AwsAdminPermitKind -> Bool
+isNormalOperatorMaterialKind kind = case kind of
+  NormalOperatorMaterialKind -> True
+  CleanupRecoveryKind NormalOperatorMaterialCleanupProgram _ -> True
+  _ -> False
+
+isGenesisBackupKind :: AwsAdminPermitKind -> Bool
+isGenesisBackupKind kind = case kind of
+  GenesisBackupKind _ -> True
+  CleanupRecoveryKind (GenesisBackupCleanupProgram _) _ -> True
+  _ -> False
+
+backupRepairBindingForKind
+  :: AwsAdminPermitKind -> Maybe BackupRepairFrozenBinding
+backupRepairBindingForKind kind = case kind of
+  BackupRepairFrozenKind repair -> Just repair
+  _ -> Nothing
+
+-- | Initialize the genesis journal only after definitive absence.  Once a
+-- journal exists, its deadline is Authority-owned: validate the compiled plan
+-- against that retained deadline and adopt the journal byte-for-byte.
+ensureGenesisFirstReconcileJournal
   :: ModelBCasAdapter 'ClusterRetained IO FirstReconcileJournal
   -> ModelBObjectCoordinate 'ClusterRetained
   -> AuthorityTime
-  -> IO (Either Text FirstReconcileJournal)
-ensureGenesisJournal adapter coordinate deadline = do
-  let expectedPlan = defaultFirstReconcileProvisioningPlan deadline
-  _ <- initializeFirstReconcileJournalStore adapter coordinate expectedPlan
+  -> IO (Either AwsAdminPreparedTargetPrepareError FirstReconcileJournal)
+ensureGenesisFirstReconcileJournal adapter coordinate deadline = do
   observed <- modelBObserve adapter coordinate
-  pure $ case observed of
-    ModelBObserved _ journal
-      | firstReconcilePlanDigest (firstReconcileJournalPlan journal)
-          == firstReconcilePlanDigest expectedPlan ->
-          Right journal
-      | otherwise -> Left "retained first-reconcile plan differs from genesis request"
-    ModelBMissing -> Left "first-reconcile journal initialization was not read back"
-    ModelBCorrupt detail -> Left ("first-reconcile journal is corrupt: " <> detail)
-    ModelBEndpointUnready detail ->
-      Left ("first-reconcile journal is not ready: " <> detail)
-    ModelBUnobservable detail ->
-      Left ("first-reconcile journal is unobservable: " <> detail)
+  case observed of
+    ModelBMissing -> do
+      let journal =
+            initialFirstReconcileJournal
+              (defaultFirstReconcileProvisioningPlan deadline)
+      _ <- modelBCompareAndSwap adapter (ModelBInitialize coordinate journal)
+      confirmed <- modelBObserve adapter coordinate
+      pure (classifyGenesisJournalObservation confirmed)
+    _ -> pure (classifyGenesisJournalObservation observed)
+
+classifyGenesisJournalObservation
+  :: ModelBObservation FirstReconcileJournal
+  -> Either AwsAdminPreparedTargetPrepareError FirstReconcileJournal
+classifyGenesisJournalObservation observed = case observed of
+  ModelBObserved _ journal
+    | retainedPlanIsCompiled journal -> Right journal
+    | otherwise ->
+        Left
+          ( prepareFailure
+              AwsAdminPreparedTargetJournalPlanMismatch
+              "retained first-reconcile plan differs from the compiled topology"
+          )
+  ModelBMissing ->
+    Left
+      ( prepareFailure
+          AwsAdminPreparedTargetJournalMissing
+          "first-reconcile journal initialization was not read back"
+      )
+  ModelBCorrupt detail ->
+    Left
+      ( prepareFailure
+          AwsAdminPreparedTargetJournalCorrupt
+          detail
+      )
+  ModelBEndpointUnready detail ->
+    Left
+      ( prepareFailure
+          AwsAdminPreparedTargetJournalEndpointUnready
+          detail
+      )
+  ModelBUnobservable detail ->
+    Left
+      ( prepareFailure
+          AwsAdminPreparedTargetJournalUnobservable
+          detail
+      )
+
+retainedPlanIsCompiled :: FirstReconcileJournal -> Bool
+retainedPlanIsCompiled journal =
+  firstReconcilePlanDigest retainedPlan
+    == firstReconcilePlanDigest
+      (defaultFirstReconcileProvisioningPlan (firstReconcilePlanDeadline retainedPlan))
+ where
+  retainedPlan = firstReconcileJournalPlan journal
 
 observeJournal
   :: ModelBCasAdapter 'ClusterRetained IO FirstReconcileJournal
@@ -416,6 +711,22 @@ observeJournal adapter coordinate = do
       Left ("first-reconcile journal is not ready: " <> detail)
     ModelBUnobservable detail ->
       Left ("first-reconcile journal is unobservable: " <> detail)
+
+observeJournalForPrepare
+  :: ModelBCasAdapter 'ClusterRetained IO FirstReconcileJournal
+  -> ModelBObjectCoordinate 'ClusterRetained
+  -> IO (Either AwsAdminPreparedTargetPrepareError (Maybe FirstReconcileJournal))
+observeJournalForPrepare adapter coordinate = do
+  observed <- modelBObserve adapter coordinate
+  pure $ case observed of
+    ModelBMissing -> Right Nothing
+    ModelBObserved _ journal -> Right (Just journal)
+    ModelBCorrupt detail ->
+      Left (prepareFailure AwsAdminPreparedTargetJournalCorrupt detail)
+    ModelBEndpointUnready detail ->
+      Left (prepareFailure AwsAdminPreparedTargetJournalEndpointUnready detail)
+    ModelBUnobservable detail ->
+      Left (prepareFailure AwsAdminPreparedTargetJournalUnobservable detail)
 
 continuationFromJournal
   :: Maybe FirstReconcileJournal
@@ -447,16 +758,28 @@ continuationFromJournal (Just journal) = do
           }
 
 currentJournalMember
-  :: FirstReconcileJournal -> Either Text FirstReconcilePlanMember
+  :: FirstReconcileJournal
+  -> Either AwsAdminPreparedTargetPrepareError FirstReconcilePlanMember
 currentJournalMember journal = do
   next <-
     first
-      (Text.pack . show)
+      ( prepareFailure AwsAdminPreparedTargetJournalCursorRejected
+          . Text.pack
+          . show
+      )
       ( nextFirstReconcileMember
           (firstReconcileJournalPlan journal)
           (firstReconcileJournalCursor journal)
       )
-  maybe (Left "first-reconcile journal is already complete") Right next
+  maybe
+    ( Left
+        ( prepareFailure
+            AwsAdminPreparedTargetJournalMemberMismatch
+            "first-reconcile journal is already complete"
+        )
+    )
+    Right
+    next
 
 bindingFor
   :: FirstReconcileJournal
@@ -484,49 +807,233 @@ preparedCoordinate authority intent =
         )
     )
 
-publishPrepared
+publishAwsAdminPreparedTarget
   :: LongLivedCheckpointAuthority
-  -> ModelBCasAdapter 'ClusterRetained IO PreparedCredentialTargetObservation
+  -> ModelBCasAdapter 'ClusterRetained IO PreparedCredentialTargetOutbox
+  -> Maybe (AuthorityTime, AwsAdminPermitIntent)
   -> AwsAdminPermitIntent
-  -> IO (Either Text PreparedCredentialTargetObservation)
-publishPrepared authority adapter intent =
-  case preparedCoordinate authority intent of
-    Left detail -> pure (Left detail)
-    Right coordinate -> do
-      observed <- modelBObserve adapter coordinate
-      case observed of
-        ModelBMissing -> do
-          _ <-
-            modelBCompareAndSwap
-              adapter
-              (ModelBInitialize coordinate expected)
-          confirmed <- modelBObserve adapter coordinate
-          pure (confirmExact confirmed)
-        ModelBObserved _ existing
-          | existing == expected -> pure (Right existing)
-          | otherwise ->
-              pure (Left "AWS-admin prepared-target operation already has a divergent outbox")
-        ModelBCorrupt detail ->
-          pure (Left ("AWS-admin prepared-target outbox is corrupt: " <> detail))
-        ModelBEndpointUnready detail ->
-          pure (Left ("AWS-admin prepared-target outbox is not ready: " <> detail))
-        ModelBUnobservable detail ->
-          pure (Left ("AWS-admin prepared-target outbox is unobservable: " <> detail))
+  -> IO (Either AwsAdminPreparedTargetPrepareError PreparedCredentialTargetObservation)
+publishAwsAdminPreparedTarget authority adapter renewal intent =
+  case mkPreparedCredentialTargetOutbox intent of
+    Left detail ->
+      pure
+        ( Left
+            ( prepareFailure
+                AwsAdminPreparedTargetIntentCanonicalizationRejected
+                (Text.pack (show detail))
+            )
+        )
+    Right expected ->
+      case preparedCoordinate authority intent of
+        Left detail ->
+          pure
+            ( Left
+                ( prepareFailure
+                    AwsAdminPreparedTargetCoordinateRejected
+                    detail
+                )
+            )
+        Right coordinate -> do
+          observed <- modelBObserve adapter coordinate
+          case observed of
+            ModelBMissing -> case renewal of
+              Just _ ->
+                pure
+                  ( Left
+                      ( prepareFailure
+                          AwsAdminPreparedTargetOutboxMissing
+                          "expired prepared-target renewal outbox is missing"
+                      )
+                  )
+              Nothing -> do
+                _ <-
+                  modelBCompareAndSwap
+                    adapter
+                    (ModelBInitialize coordinate expected)
+                confirmed <- modelBObserve adapter coordinate
+                pure (confirmExact expected confirmed)
+            ModelBObserved version existing ->
+              case decideAwsAdminPreparedTargetOutbox renewal intent existing of
+                AwsAdminPreparedTargetOutboxExact ->
+                  pure (Right (preparedCredentialTargetOutboxObservation existing))
+                AwsAdminPreparedTargetOutboxReplace -> do
+                  _ <-
+                    modelBCompareAndSwap
+                      adapter
+                      (ModelBReplace coordinate version expected)
+                  confirmed <- modelBObserve adapter coordinate
+                  pure (confirmExact expected confirmed)
+                AwsAdminPreparedTargetOutboxReject ->
+                  do
+                    writeDiagnosticLine
+                      (Text.unpack (renderAwsAdminPreparedTargetOutboxDiagnostic renewal existing))
+                    pure
+                      ( Left
+                          ( prepareFailure
+                              AwsAdminPreparedTargetOutboxDivergent
+                              "AWS-admin prepared-target operation already has a divergent outbox"
+                          )
+                      )
+            ModelBCorrupt detail ->
+              pure (Left (prepareFailure AwsAdminPreparedTargetOutboxCorrupt detail))
+            ModelBEndpointUnready detail ->
+              pure (Left (prepareFailure AwsAdminPreparedTargetOutboxEndpointUnready detail))
+            ModelBUnobservable detail ->
+              pure (Left (prepareFailure AwsAdminPreparedTargetOutboxUnobservable detail))
  where
-  expected = awsAdminPermitIntentPreparedTarget intent
-  confirmExact confirmed = case confirmed of
+  confirmExact expected confirmed = case confirmed of
     ModelBObserved _ retained
-      | retained == expected -> Right retained
+      | retained == expected ->
+          Right (preparedCredentialTargetOutboxObservation retained)
+      | preparedCredentialTargetOutboxCanonicalIntent retained == Just intent ->
+          Right (preparedCredentialTargetOutboxObservation retained)
       | otherwise ->
-          Left "AWS-admin prepared-target CAS read back a divergent outbox"
-    other -> preparedFromObservation other
+          Left
+            ( prepareFailure
+                AwsAdminPreparedTargetOutboxDivergent
+                "AWS-admin prepared-target CAS read back a divergent outbox"
+            )
+    ModelBMissing ->
+      Left
+        ( prepareFailure
+            AwsAdminPreparedTargetOutboxMissing
+            "AWS-admin prepared-target outbox is missing"
+        )
+    ModelBCorrupt detail ->
+      Left (prepareFailure AwsAdminPreparedTargetOutboxCorrupt detail)
+    ModelBEndpointUnready detail ->
+      Left (prepareFailure AwsAdminPreparedTargetOutboxEndpointUnready detail)
+    ModelBUnobservable detail ->
+      Left (prepareFailure AwsAdminPreparedTargetOutboxUnobservable detail)
+
+data AwsAdminPreparedTargetOutboxDecision
+  = AwsAdminPreparedTargetOutboxExact
+  | AwsAdminPreparedTargetOutboxReplace
+  | AwsAdminPreparedTargetOutboxReject
+  deriving (Eq, Show)
+
+decideAwsAdminPreparedTargetOutbox
+  :: Maybe (AuthorityTime, AwsAdminPermitIntent)
+  -> AwsAdminPermitIntent
+  -> PreparedCredentialTargetOutbox
+  -> AwsAdminPreparedTargetOutboxDecision
+decideAwsAdminPreparedTargetOutbox renewal expected observed
+  | preparedCredentialTargetOutboxCanonicalIntent observed == Just expected =
+      AwsAdminPreparedTargetOutboxExact
+  | preparedCredentialTargetOutboxIsLegacy observed
+  , preparedCredentialTargetOutboxObservation observed
+      == awsAdminPermitIntentPreparedTarget expected =
+      AwsAdminPreparedTargetOutboxReplace
+  | Just (_, retained) <- renewal
+  , observedIsRetained retained observed =
+      AwsAdminPreparedTargetOutboxReplace
+  | Just (now, retained) <- renewal
+  , expiredOutboxAhead now retained expected observed =
+      AwsAdminPreparedTargetOutboxReplace
+  | otherwise = AwsAdminPreparedTargetOutboxReject
+
+observedIsRetained
+  :: AwsAdminPermitIntent -> PreparedCredentialTargetOutbox -> Bool
+observedIsRetained retained observed =
+  case preparedCredentialTargetOutboxCanonicalIntent observed of
+    Just canonical -> canonical == retained
+    Nothing ->
+      preparedCredentialTargetOutboxObservation observed
+        == awsAdminPermitIntentPreparedTarget retained
+
+expiredOutboxAhead
+  :: AuthorityTime
+  -> AwsAdminPermitIntent
+  -> AwsAdminPermitIntent
+  -> PreparedCredentialTargetOutbox
+  -> Bool
+expiredOutboxAhead now retainedIntent expectedIntent observedOutbox =
+  preparedCredentialTargetOwnerNonce retained == preparedCredentialTargetOwnerNonce observed
+    && preparedCredentialTargetFence retained == preparedCredentialTargetFence observed
+    && preparedCredentialTargetId retained == preparedCredentialTargetId observed
+    && preparedCredentialTargetGeneration retained == preparedCredentialTargetGeneration observed
+    && preparedCredentialTargetRequestDigest retained == preparedCredentialTargetRequestDigest observed
+    && preparedCredentialTargetPlanBinding retained == preparedCredentialTargetPlanBinding observed
+    && authorityTimeMicros (preparedCredentialTargetDeadline retained)
+      < authorityTimeMicros (preparedCredentialTargetDeadline observed)
+    && authorityTimeMicros (preparedCredentialTargetDeadline observed) <= authorityTimeMicros now
+    && canonicalBindingsMatch
+ where
+  retained = awsAdminPermitIntentPreparedTarget retainedIntent
+  observed = preparedCredentialTargetOutboxObservation observedOutbox
+  canonicalBindingsMatch =
+    case preparedCredentialTargetOutboxCanonicalIntent observedOutbox of
+      Nothing -> True
+      Just canonical ->
+        awsAdminPreparedRenewalBindingsMatch retainedIntent canonical
+          || awsAdminPreparedRenewalBindingsMatch expectedIntent canonical
+
+renderAwsAdminPreparedTargetOutboxDiagnostic
+  :: Maybe (AuthorityTime, AwsAdminPermitIntent)
+  -> PreparedCredentialTargetOutbox
+  -> Text
+renderAwsAdminPreparedTargetOutboxDiagnostic renewal observedOutbox =
+  Text.intercalate
+    " "
+    ( [ "prepared-target/outbox/divergent"
+      , "schema=" <> if preparedCredentialTargetOutboxIsLegacy observedOutbox then "legacy" else "current"
+      ]
+        <> renewalProjection
+    )
+ where
+  observed = preparedCredentialTargetOutboxObservation observedOutbox
+  renewalProjection = case renewal of
+    Nothing -> ["renewal=absent"]
+    Just (now, retainedIntent) ->
+      let retained = awsAdminPermitIntentPreparedTarget retainedIntent
+       in [ fieldMatch
+              "owner"
+              preparedCredentialTargetOwnerNonce
+              retained
+              observed
+          , fieldMatch "fence" preparedCredentialTargetFence retained observed
+          , fieldMatch "target" preparedCredentialTargetId retained observed
+          , fieldMatch
+              "generation"
+              preparedCredentialTargetGeneration
+              retained
+              observed
+          , fieldMatch
+              "request"
+              preparedCredentialTargetRequestDigest
+              retained
+              observed
+          , fieldMatch
+              "plan"
+              preparedCredentialTargetPlanBinding
+              retained
+              observed
+          , "deadline=" <> deadlineRelation now retained observed
+          , "canonical-bindings=" <> canonicalBindingRelation retainedIntent observedOutbox
+          ]
+  fieldMatch label project retainedValue observedValue =
+    label <> "=" <> matchText (project retainedValue == project observedValue)
+  matchText matches = if matches then "match" else "mismatch"
+  deadlineRelation now retainedValue observedValue
+    | authorityTimeMicros (preparedCredentialTargetDeadline observedValue)
+        <= authorityTimeMicros (preparedCredentialTargetDeadline retainedValue) =
+        "not-forward"
+    | authorityTimeMicros (preparedCredentialTargetDeadline observedValue)
+        > authorityTimeMicros now =
+        "forward-active"
+    | otherwise = "forward-expired"
+  canonicalBindingRelation retainedIntent candidateOutbox =
+    case preparedCredentialTargetOutboxCanonicalIntent candidateOutbox of
+      Nothing -> "legacy-unavailable"
+      Just canonical ->
+        matchText (awsAdminPreparedRenewalBindingsMatch retainedIntent canonical)
 
 preparedFromObservation
-  :: ModelBObservation PreparedCredentialTargetObservation
+  :: ModelBObservation PreparedCredentialTargetOutbox
   -> Either Text PreparedCredentialTargetObservation
 preparedFromObservation observation = case observation of
   ModelBMissing -> Left "AWS-admin prepared-target outbox is missing"
-  ModelBObserved _ prepared -> Right prepared
+  ModelBObserved _ outbox -> Right (preparedCredentialTargetOutboxObservation outbox)
   ModelBCorrupt detail -> Left ("AWS-admin prepared-target outbox is corrupt: " <> detail)
   ModelBEndpointUnready detail ->
     Left ("AWS-admin prepared-target outbox is not ready: " <> detail)

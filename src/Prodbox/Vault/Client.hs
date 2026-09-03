@@ -45,6 +45,7 @@ module Prodbox.Vault.Client
   , EnableMountRequest (..)
   , EnableAuthMethodRequest (..)
   , WritePolicyRequest (..)
+  , PolicyReadback (..)
   , TransitKeyInfo (..)
   , TransitSigningKeyInfo (..)
   , TransitSignature (..)
@@ -96,6 +97,7 @@ module Prodbox.Vault.Client
   , vaultListAuthMethods
   , vaultEnableAuthMethod
   , vaultWritePolicy
+  , vaultReadPolicy
   , vaultReadTransitKey
   , vaultCreateTransitKey
   , vaultRotateTransitKey
@@ -1186,6 +1188,17 @@ instance ToJSON WritePolicyRequest where
   toJSON req =
     object ["policy" .= writePolicyPolicy req]
 
+-- | Exact document returned by @GET /v1/sys/policies/acl/<name>@.
+newtype PolicyReadback = PolicyReadback
+  { policyReadbackDocument :: Text
+  }
+  deriving (Eq, Show)
+
+instance FromJSON PolicyReadback where
+  parseJSON = withObject "PolicyReadbackResponse" $ \response -> do
+    body <- response .: "data"
+    PolicyReadback <$> body .: "policy"
+
 -- | Decoded @GET \/v1\/transit\/keys\/\<name\>@ response.
 data TransitKeyInfo = TransitKeyInfo
   { transitKeyName :: Text
@@ -1424,6 +1437,15 @@ vaultWritePolicy address token policyName policy =
     [vaultTokenHeader token]
     (vaultUrl address ("/v1/sys/policies/acl/" ++ Text.unpack policyName))
     (WritePolicyRequest policy)
+
+-- | @GET /v1/sys/policies/acl/<name>@ — read one exact ACL policy document.
+vaultReadPolicy
+  :: VaultAddress -> VaultToken -> Text -> IO (Either HttpError PolicyReadback)
+vaultReadPolicy address token policyName =
+  httpGetJsonWithHeaders
+    defaultHttpConfig
+    [vaultTokenHeader token]
+    (vaultUrl address ("/v1/sys/policies/acl/" ++ Text.unpack policyName))
 
 -- | @GET \/v1\/transit\/keys\/\<name\>@ — read Transit key metadata.
 vaultReadTransitKey

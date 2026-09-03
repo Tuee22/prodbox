@@ -9,13 +9,19 @@ module Prodbox.ControlPlane.ConfigBackupClient
   , ConfigBackupClientError (..)
   , ConfigBackupObservation (..)
   , configBackupClient
+  , decodeConfigBackupResponse
   )
 where
 
+import Codec.Serialise (Serialise)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Text (Text)
+import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
+  ( AuthenticatedRolePlainResponseObservation
+  , classifyAuthenticatedRolePlainResponse
+  )
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError
   , AuthenticatedClientProviders
@@ -69,7 +75,9 @@ data ConfigBackupClientError
   | ConfigBackupDigestInvalid !Text
   | ConfigBackupTransportFailed !AuthenticatedClientError
   | ConfigBackupHttpStatus !Int
-  | ConfigBackupResponseInvalid !ControlPlaneResponseCodecError
+  | ConfigBackupResponseInvalid
+      !ControlPlaneResponseCodecError
+      !AuthenticatedRolePlainResponseObservation
   | ConfigBackupReceiptMismatch
   deriving stock (Eq, Show)
 
@@ -102,12 +110,12 @@ configBackupClient bounds providers client =
               )
           )
       pure $ do
-        ControlPlaneResponse status body <-
+        response@(ControlPlaneResponse status _) <-
           first ConfigBackupTransportFailed attempted
         if status /= 200
           then Left (ConfigBackupHttpStatus status)
           else do
-            receipt <- decodeResponse body
+            receipt <- decodeConfigBackupResponse response
             validateReceipt ciphertext receipt
             Right receipt
 
@@ -129,9 +137,9 @@ configBackupClient bounds providers client =
               )
           )
       pure $ do
-        ControlPlaneResponse status body <-
+        response@(ControlPlaneResponse status _) <-
           first ConfigBackupTransportFailed attempted
-        observation <- decodeResponse body
+        observation <- decodeConfigBackupResponse response
         case observation of
           AuthorityBackupBlobMissing
             | status == 404 -> Right ConfigBackupMissing
@@ -149,13 +157,21 @@ configBackupClient bounds providers client =
                 Left ConfigBackupReceiptMismatch
             | otherwise -> Right (ConfigBackupCurrent ciphertext receipt)
 
-  decodeResponse body =
-    first
-      ConfigBackupResponseInvalid
-      ( decodeControlPlaneResponse
-          (8 * 1024 * 1024)
-          (LazyByteString.fromStrict body)
-      )
+decodeConfigBackupResponse
+  :: (Serialise response)
+  => ControlPlaneResponse
+  -> Either ConfigBackupClientError response
+decodeConfigBackupResponse (ControlPlaneResponse status body) =
+  first
+    ( \err ->
+        ConfigBackupResponseInvalid
+          err
+          (classifyAuthenticatedRolePlainResponse status body)
+    )
+    ( decodeControlPlaneResponse
+        (8 * 1024 * 1024)
+        (LazyByteString.fromStrict body)
+    )
 
 validateReceipt
   :: AuthorityBackupCiphertext

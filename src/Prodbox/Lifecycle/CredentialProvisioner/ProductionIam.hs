@@ -26,6 +26,21 @@ module Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
   , mkSesSmtpIamProgram
   , ProductionIamSession
   , ProductionIamError (..)
+  , ProductionIamAwsOperationCause (..)
+  , ProductionIamAwsClientCause (..)
+  , ProductionIamRoleReadBackCause (..)
+  , ProductionIamTrustPolicyMismatchCause (..)
+  , ProductionIamErrorCause (..)
+  , allProductionIamErrorCauses
+  , allProductionIamRoleReadBackCauses
+  , classifyProductionIamTrustPolicyMismatch
+  , trustPoliciesEqual
+  , classifyProductionIamError
+  , renderProductionIamAwsOperationCause
+  , renderProductionIamAwsClientCause
+  , renderProductionIamRoleReadBackCause
+  , renderProductionIamTrustPolicyMismatchCause
+  , renderProductionIamErrorCause
   , openProductionIamSession
   , openProductionIamSessionWithSender
   , ensureProductionIamPrerequisites
@@ -42,12 +57,13 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Monad (unless, void)
 import Data.Aeson
-  ( Value
+  ( Value (Array, Object, String)
   , eitherDecodeStrict'
   , encode
   , object
   , (.=)
   )
+import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Bifunctor (first)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
@@ -55,6 +71,7 @@ import Data.List (sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding (decodeUtf8, decodeUtf8', encodeUtf8)
+import Data.Vector qualified as Vector
 import Prodbox.Aws.CredentialHandle
   ( CredentialError
   , baseCredentialHandleFromSettings
@@ -79,8 +96,9 @@ import Prodbox.Aws.Native.S3
   , newS3Client
   )
 import Prodbox.Aws.Native.Wire
-  ( AwsClientError (..)
-  , AwsServiceFault (awsFaultCode)
+  ( AmbiguityCause (..)
+  , AwsClientError (..)
+  , AwsServiceFault (awsFaultCode, awsFaultHttpStatus)
   , NativeAwsSender
   , httpSend
   )
@@ -90,6 +108,7 @@ import Prodbox.Infra.DedicatedAdapterIam
   )
 import Prodbox.Lifecycle.CredentialProvisioner.Execution
   ( AccessKeyInventoryObservation (..)
+  , AwsAccessKeyCreateAmbiguityCause (..)
   , AwsAccessKeyCreateResult (..)
   , ProvisionedAccessKeyId
   , mkProvisionedAccessKeyId
@@ -327,7 +346,7 @@ data ProductionIamError
   | ProductionIamPolicyReadBackMismatch
   | ProductionIamTagReadBackMismatch ![IamTag]
   | ProductionIamBucketReadBackMismatch
-  | ProductionIamRoleReadBackMismatch !Text
+  | ProductionIamRoleReadBackMismatch !ProductionIamRoleReadBackCause
   | ProductionIamRolePolicyReadBackMismatch
   | ProductionIamAccessKeyInvalid !Text
   | ProductionIamMaterialInvalid !TargetMaterialValueError
@@ -338,6 +357,285 @@ data ProductionIamError
   | -- | The authorization does not name the family this session's program owns.
     ProductionIamJointAuthorizationMismatch !Text
   deriving (Eq, Show)
+
+-- | Closed, payload-free diagnostic stage for a native AWS prerequisite
+-- request. The production error retains its bounded private label; only this
+-- finite projection may reach the worker's terminal line.
+data ProductionIamAwsOperationCause
+  = ProductionIamObserveLifecycleRole
+  | ProductionIamCreateLifecycleRole
+  | ProductionIamUpdateLifecycleRoleTrust
+  | ProductionIamReadBackLifecycleRole
+  | ProductionIamInstallLifecycleRolePolicy
+  | ProductionIamReadBackLifecycleRolePolicy
+  | ProductionIamObserveRequiredBucket
+  | ProductionIamObserveBucket
+  | ProductionIamCreateBucket
+  | ProductionIamReadBackCreatedBucket
+  | ProductionIamHardenBucket
+  | ProductionIamReadBackBucketHardening
+  | ProductionIamTagUser
+  | ProductionIamReadBackUserTags
+  | ProductionIamObserveUser
+  | ProductionIamObserveRacedUser
+  | ProductionIamCreateUser
+  | ProductionIamInstallUserPolicy
+  | ProductionIamReadBackUserPolicy
+  | ProductionIamAwsOperationUnknown
+  deriving (Bounded, Enum, Eq, Show)
+
+data ProductionIamAwsClientCause
+  = ProductionIamAwsSigningFailure
+  | ProductionIamAwsTransportFailure
+  | ProductionIamAwsServiceAccessDenied
+  | ProductionIamAwsServiceInvalidClientToken
+  | ProductionIamAwsServiceSignatureMismatch
+  | ProductionIamAwsServiceExpiredToken
+  | ProductionIamAwsServiceInvalidToken
+  | ProductionIamAwsServiceNoSuchEntity
+  | ProductionIamAwsServiceEntityAlreadyExists
+  | ProductionIamAwsServiceConcurrentModification
+  | ProductionIamAwsServiceInvalidInput
+  | ProductionIamAwsServiceLimitExceeded
+  | ProductionIamAwsServiceMalformedPolicyDocument
+  | ProductionIamAwsServiceThrottled
+  | ProductionIamAwsServiceOtherClient
+  | ProductionIamAwsServiceServer
+  | ProductionIamAwsServiceUnexpectedStatus
+  | ProductionIamAwsResponseParseFailure
+  | ProductionIamAwsAmbiguousDispatch
+  | ProductionIamAwsAmbiguousLostResult
+  deriving (Bounded, Enum, Eq, Show)
+
+data ProductionIamRoleReadBackCause
+  = ProductionIamRoleReadBackAbsent
+  | ProductionIamRoleReadBackNameMismatch
+  | ProductionIamRoleReadBackArnMismatch
+  | ProductionIamRoleReadBackTrustPolicyMismatch !ProductionIamTrustPolicyMismatchCause
+  deriving (Eq, Show)
+
+data ProductionIamTrustPolicyMismatchCause
+  = ProductionIamTrustPolicyInvalid
+  | ProductionIamTrustPolicyIamSingletonEquivalent
+  | ProductionIamTrustPolicyOther
+  deriving (Bounded, Enum, Eq, Show)
+
+allProductionIamRoleReadBackCauses :: [ProductionIamRoleReadBackCause]
+allProductionIamRoleReadBackCauses =
+  [ ProductionIamRoleReadBackAbsent
+  , ProductionIamRoleReadBackNameMismatch
+  , ProductionIamRoleReadBackArnMismatch
+  ]
+    <> ( ProductionIamRoleReadBackTrustPolicyMismatch
+           <$> ([minBound .. maxBound] :: [ProductionIamTrustPolicyMismatchCause])
+       )
+
+data ProductionIamErrorCause
+  = ProductionIamErrorUnclassified
+  | ProductionIamErrorFieldInvalid
+  | ProductionIamErrorCredentialInvalid
+  | ProductionIamErrorCredentialRegionMismatch
+  | ProductionIamErrorAwsFailed
+      !ProductionIamAwsOperationCause
+      !ProductionIamAwsClientCause
+  | ProductionIamErrorUserReadBackMismatch
+  | ProductionIamErrorPolicyReadBackMismatch
+  | ProductionIamErrorTagReadBackMismatch
+  | ProductionIamErrorBucketReadBackMismatch
+  | ProductionIamErrorRoleReadBackMismatch !ProductionIamRoleReadBackCause
+  | ProductionIamErrorRolePolicyReadBackMismatch
+  | ProductionIamErrorAccessKeyInvalid
+  | ProductionIamErrorMaterialInvalid
+  | ProductionIamErrorJointDispositionRefused
+  | ProductionIamErrorJointAuthorizationMismatch
+  deriving (Eq, Show)
+
+allProductionIamErrorCauses :: [ProductionIamErrorCause]
+allProductionIamErrorCauses =
+  [ ProductionIamErrorUnclassified
+  , ProductionIamErrorFieldInvalid
+  , ProductionIamErrorCredentialInvalid
+  , ProductionIamErrorCredentialRegionMismatch
+  ]
+    <> [ ProductionIamErrorAwsFailed operation client
+       | operation <- [minBound .. maxBound]
+       , client <- [minBound .. maxBound]
+       ]
+    <> [ ProductionIamErrorUserReadBackMismatch
+       , ProductionIamErrorPolicyReadBackMismatch
+       , ProductionIamErrorTagReadBackMismatch
+       , ProductionIamErrorBucketReadBackMismatch
+       ]
+    <> fmap
+      ProductionIamErrorRoleReadBackMismatch
+      allProductionIamRoleReadBackCauses
+    <> [ ProductionIamErrorRolePolicyReadBackMismatch
+       , ProductionIamErrorAccessKeyInvalid
+       , ProductionIamErrorMaterialInvalid
+       , ProductionIamErrorJointDispositionRefused
+       , ProductionIamErrorJointAuthorizationMismatch
+       ]
+
+classifyProductionIamError :: ProductionIamError -> ProductionIamErrorCause
+classifyProductionIamError productionError = case productionError of
+  ProductionIamFieldInvalid _ -> ProductionIamErrorFieldInvalid
+  ProductionIamCredentialInvalid _ -> ProductionIamErrorCredentialInvalid
+  ProductionIamCredentialRegionMismatch _ _ -> ProductionIamErrorCredentialRegionMismatch
+  ProductionIamAwsFailed operation clientError ->
+    ProductionIamErrorAwsFailed
+      (classifyProductionIamAwsOperation operation)
+      (classifyProductionIamAwsClientError clientError)
+  ProductionIamUserReadBackMismatch _ -> ProductionIamErrorUserReadBackMismatch
+  ProductionIamPolicyReadBackMismatch -> ProductionIamErrorPolicyReadBackMismatch
+  ProductionIamTagReadBackMismatch _ -> ProductionIamErrorTagReadBackMismatch
+  ProductionIamBucketReadBackMismatch -> ProductionIamErrorBucketReadBackMismatch
+  ProductionIamRoleReadBackMismatch cause -> ProductionIamErrorRoleReadBackMismatch cause
+  ProductionIamRolePolicyReadBackMismatch -> ProductionIamErrorRolePolicyReadBackMismatch
+  ProductionIamAccessKeyInvalid _ -> ProductionIamErrorAccessKeyInvalid
+  ProductionIamMaterialInvalid _ -> ProductionIamErrorMaterialInvalid
+  ProductionIamJointDispositionRefused _ -> ProductionIamErrorJointDispositionRefused
+  ProductionIamJointAuthorizationMismatch _ -> ProductionIamErrorJointAuthorizationMismatch
+
+classifyProductionIamAwsOperation :: Text -> ProductionIamAwsOperationCause
+classifyProductionIamAwsOperation operation = case operation of
+  "observe Lifecycle-provider role" -> ProductionIamObserveLifecycleRole
+  "create Lifecycle-provider role" -> ProductionIamCreateLifecycleRole
+  "update Lifecycle-provider trust policy" -> ProductionIamUpdateLifecycleRoleTrust
+  "read back Lifecycle-provider role" -> ProductionIamReadBackLifecycleRole
+  "install Lifecycle-provider role policy" -> ProductionIamInstallLifecycleRolePolicy
+  "read back Lifecycle-provider role policy" -> ProductionIamReadBackLifecycleRolePolicy
+  "observe required long-lived bucket" -> ProductionIamObserveRequiredBucket
+  "observe long-lived bucket" -> ProductionIamObserveBucket
+  "create long-lived bucket" -> ProductionIamCreateBucket
+  "read back created long-lived bucket" -> ProductionIamReadBackCreatedBucket
+  "harden long-lived bucket" -> ProductionIamHardenBucket
+  "read back long-lived bucket hardening" -> ProductionIamReadBackBucketHardening
+  "tag IAM user" -> ProductionIamTagUser
+  "read back IAM user tags" -> ProductionIamReadBackUserTags
+  "observe IAM user" -> ProductionIamObserveUser
+  "observe raced IAM user" -> ProductionIamObserveRacedUser
+  "create IAM user" -> ProductionIamCreateUser
+  "install IAM inline policy" -> ProductionIamInstallUserPolicy
+  "read back IAM inline policy" -> ProductionIamReadBackUserPolicy
+  _ -> ProductionIamAwsOperationUnknown
+
+classifyProductionIamAwsClientError :: AwsClientError -> ProductionIamAwsClientCause
+classifyProductionIamAwsClientError clientError = case clientError of
+  AwsSigningError _ -> ProductionIamAwsSigningFailure
+  AwsTransportError _ -> ProductionIamAwsTransportFailure
+  AwsServiceError fault -> classifyProductionIamAwsServiceFault fault
+  AwsResponseParseFailure _ -> ProductionIamAwsResponseParseFailure
+  AwsAmbiguousOutcome ambiguity -> case ambiguity of
+    AmbiguousDispatchFailure {} -> ProductionIamAwsAmbiguousDispatch
+    AmbiguousLostResult {} -> ProductionIamAwsAmbiguousLostResult
+
+classifyProductionIamAwsServiceFault :: AwsServiceFault -> ProductionIamAwsClientCause
+classifyProductionIamAwsServiceFault fault = case awsFaultCode fault of
+  "AccessDenied" -> ProductionIamAwsServiceAccessDenied
+  "AccessDeniedException" -> ProductionIamAwsServiceAccessDenied
+  "InvalidClientTokenId" -> ProductionIamAwsServiceInvalidClientToken
+  "SignatureDoesNotMatch" -> ProductionIamAwsServiceSignatureMismatch
+  "ExpiredToken" -> ProductionIamAwsServiceExpiredToken
+  "ExpiredTokenException" -> ProductionIamAwsServiceExpiredToken
+  "InvalidToken" -> ProductionIamAwsServiceInvalidToken
+  "NoSuchEntity" -> ProductionIamAwsServiceNoSuchEntity
+  "EntityAlreadyExists" -> ProductionIamAwsServiceEntityAlreadyExists
+  "ConcurrentModification" -> ProductionIamAwsServiceConcurrentModification
+  "InvalidInput" -> ProductionIamAwsServiceInvalidInput
+  "LimitExceeded" -> ProductionIamAwsServiceLimitExceeded
+  "MalformedPolicyDocument" -> ProductionIamAwsServiceMalformedPolicyDocument
+  "Throttling" -> ProductionIamAwsServiceThrottled
+  "ThrottlingException" -> ProductionIamAwsServiceThrottled
+  "TooManyRequestsException" -> ProductionIamAwsServiceThrottled
+  _
+    | awsFaultHttpStatus fault >= 400 && awsFaultHttpStatus fault < 500 ->
+        ProductionIamAwsServiceOtherClient
+    | awsFaultHttpStatus fault >= 500 && awsFaultHttpStatus fault < 600 ->
+        ProductionIamAwsServiceServer
+    | otherwise -> ProductionIamAwsServiceUnexpectedStatus
+
+renderProductionIamErrorCause :: ProductionIamErrorCause -> Text
+renderProductionIamErrorCause cause = case cause of
+  ProductionIamErrorUnclassified -> "unclassified"
+  ProductionIamErrorFieldInvalid -> "field-invalid"
+  ProductionIamErrorCredentialInvalid -> "credential-invalid"
+  ProductionIamErrorCredentialRegionMismatch -> "credential-region-mismatch"
+  ProductionIamErrorAwsFailed operation client ->
+    "aws/"
+      <> renderProductionIamAwsOperationCause operation
+      <> "/"
+      <> renderProductionIamAwsClientCause client
+  ProductionIamErrorUserReadBackMismatch -> "user-read-back-mismatch"
+  ProductionIamErrorPolicyReadBackMismatch -> "policy-read-back-mismatch"
+  ProductionIamErrorTagReadBackMismatch -> "tag-read-back-mismatch"
+  ProductionIamErrorBucketReadBackMismatch -> "bucket-read-back-mismatch"
+  ProductionIamErrorRoleReadBackMismatch mismatch ->
+    "role-read-back-mismatch/" <> renderProductionIamRoleReadBackCause mismatch
+  ProductionIamErrorRolePolicyReadBackMismatch -> "role-policy-read-back-mismatch"
+  ProductionIamErrorAccessKeyInvalid -> "access-key-invalid"
+  ProductionIamErrorMaterialInvalid -> "material-invalid"
+  ProductionIamErrorJointDispositionRefused -> "joint-disposition-refused"
+  ProductionIamErrorJointAuthorizationMismatch -> "joint-authorization-mismatch"
+
+renderProductionIamAwsOperationCause :: ProductionIamAwsOperationCause -> Text
+renderProductionIamAwsOperationCause operation = case operation of
+  ProductionIamObserveLifecycleRole -> "observe-lifecycle-role"
+  ProductionIamCreateLifecycleRole -> "create-lifecycle-role"
+  ProductionIamUpdateLifecycleRoleTrust -> "update-lifecycle-role-trust"
+  ProductionIamReadBackLifecycleRole -> "read-back-lifecycle-role"
+  ProductionIamInstallLifecycleRolePolicy -> "install-lifecycle-role-policy"
+  ProductionIamReadBackLifecycleRolePolicy -> "read-back-lifecycle-role-policy"
+  ProductionIamObserveRequiredBucket -> "observe-required-bucket"
+  ProductionIamObserveBucket -> "observe-bucket"
+  ProductionIamCreateBucket -> "create-long-lived-bucket"
+  ProductionIamReadBackCreatedBucket -> "read-back-created-bucket"
+  ProductionIamHardenBucket -> "harden-bucket"
+  ProductionIamReadBackBucketHardening -> "read-back-bucket-hardening"
+  ProductionIamTagUser -> "tag-user"
+  ProductionIamReadBackUserTags -> "read-back-user-tags"
+  ProductionIamObserveUser -> "observe-user"
+  ProductionIamObserveRacedUser -> "observe-raced-user"
+  ProductionIamCreateUser -> "create-iam-user"
+  ProductionIamInstallUserPolicy -> "install-user-policy"
+  ProductionIamReadBackUserPolicy -> "read-back-user-policy"
+  ProductionIamAwsOperationUnknown -> "unknown"
+
+renderProductionIamAwsClientCause :: ProductionIamAwsClientCause -> Text
+renderProductionIamAwsClientCause cause = case cause of
+  ProductionIamAwsSigningFailure -> "signing-failure"
+  ProductionIamAwsTransportFailure -> "transport-failure"
+  ProductionIamAwsServiceAccessDenied -> "service/access-denied"
+  ProductionIamAwsServiceInvalidClientToken -> "service/invalid-client-token"
+  ProductionIamAwsServiceSignatureMismatch -> "service/signature-mismatch"
+  ProductionIamAwsServiceExpiredToken -> "service/expired-token"
+  ProductionIamAwsServiceInvalidToken -> "service/invalid-token"
+  ProductionIamAwsServiceNoSuchEntity -> "service/no-such-entity"
+  ProductionIamAwsServiceEntityAlreadyExists -> "service/entity-already-exists"
+  ProductionIamAwsServiceConcurrentModification -> "service/concurrent-modification"
+  ProductionIamAwsServiceInvalidInput -> "service/invalid-input"
+  ProductionIamAwsServiceLimitExceeded -> "service/limit-exceeded"
+  ProductionIamAwsServiceMalformedPolicyDocument -> "service/malformed-policy-document"
+  ProductionIamAwsServiceThrottled -> "service/throttled"
+  ProductionIamAwsServiceOtherClient -> "service/other-client"
+  ProductionIamAwsServiceServer -> "service/server"
+  ProductionIamAwsServiceUnexpectedStatus -> "service/unexpected-status"
+  ProductionIamAwsResponseParseFailure -> "response-parse-failure"
+  ProductionIamAwsAmbiguousDispatch -> "ambiguous/dispatch"
+  ProductionIamAwsAmbiguousLostResult -> "ambiguous/lost-result"
+
+renderProductionIamRoleReadBackCause :: ProductionIamRoleReadBackCause -> Text
+renderProductionIamRoleReadBackCause cause = case cause of
+  ProductionIamRoleReadBackAbsent -> "absent"
+  ProductionIamRoleReadBackNameMismatch -> "name-mismatch"
+  ProductionIamRoleReadBackArnMismatch -> "arn-mismatch"
+  ProductionIamRoleReadBackTrustPolicyMismatch mismatch ->
+    "trust-policy-mismatch/" <> renderProductionIamTrustPolicyMismatchCause mismatch
+
+renderProductionIamTrustPolicyMismatchCause :: ProductionIamTrustPolicyMismatchCause -> Text
+renderProductionIamTrustPolicyMismatchCause cause = case cause of
+  ProductionIamTrustPolicyInvalid -> "invalid"
+  ProductionIamTrustPolicyIamSingletonEquivalent -> "iam-singleton-equivalent"
+  ProductionIamTrustPolicyOther -> "other"
 
 openProductionIamSession
   :: CredentialIamProgram
@@ -420,18 +718,26 @@ ensureProgramRole session = case internalCredentialIamRole (productionIamProgram
         pure $ case observed of
           Left err -> Left (awsFailure "read back Lifecycle-provider role" err)
           Right IamRoleAbsent ->
-            Left (ProductionIamRoleReadBackMismatch "role remained absent")
+            Left (ProductionIamRoleReadBackMismatch ProductionIamRoleReadBackAbsent)
           Right present@IamRolePresent {}
             | iamRoleName present /= programRoleName role ->
-                Left (ProductionIamRoleReadBackMismatch "role name mismatched")
+                Left (ProductionIamRoleReadBackMismatch ProductionIamRoleReadBackNameMismatch)
             | iamRoleArn present /= programRoleArn role ->
-                Left (ProductionIamRoleReadBackMismatch "role ARN mismatched")
+                Left (ProductionIamRoleReadBackMismatch ProductionIamRoleReadBackArnMismatch)
             | not
-                ( policiesEqual
+                ( trustPoliciesEqual
                     (iamRoleAssumePolicyDocument present)
                     (programRoleTrustPolicy role)
                 ) ->
-                Left (ProductionIamRoleReadBackMismatch "trust policy mismatched")
+                Left
+                  ( ProductionIamRoleReadBackMismatch
+                      ( ProductionIamRoleReadBackTrustPolicyMismatch
+                          ( classifyProductionIamTrustPolicyMismatch
+                              (iamRoleAssumePolicyDocument present)
+                              (programRoleTrustPolicy role)
+                          )
+                      )
+                  )
             | otherwise -> Right ()
   ensureRolePolicy role = do
     installed <-
@@ -495,7 +801,10 @@ createProductionAccessKey session = do
       (productionIamClient session)
       (credentialIamProgramPrincipal (productionIamProgram session))
   pure $ case result of
-    Left (AwsAmbiguousOutcome _) -> AwsAccessKeyCreateResponseLost
+    Left (AwsAmbiguousOutcome ambiguity) ->
+      AwsAccessKeyCreateResponseLost $ case ambiguity of
+        AmbiguousDispatchFailure {} -> AwsAccessKeyCreateDispatchAmbiguous
+        AmbiguousLostResult {} -> AwsAccessKeyCreateLostResult
     Left err -> AwsAccessKeyCreateFailed (renderAwsError err)
     Right created
       | createdAccessKeyUser created
@@ -833,6 +1142,59 @@ policiesEqual left right =
   case (decodePolicy left, decodePolicy right) of
     (Right leftValue, Right rightValue) -> leftValue == rightValue
     _ -> False
+
+trustPoliciesEqual :: Text -> Text -> Bool
+trustPoliciesEqual observed authored =
+  policiesEqual observed authored
+    || classifyProductionIamTrustPolicyMismatch observed authored
+      == ProductionIamTrustPolicyIamSingletonEquivalent
+
+classifyProductionIamTrustPolicyMismatch
+  :: Text -> Text -> ProductionIamTrustPolicyMismatchCause
+classifyProductionIamTrustPolicyMismatch observed authored =
+  case (decodePolicy observed, decodePolicy authored) of
+    (Right observedValue, Right authoredValue)
+      | normalizeIamPolicySingletons observedValue
+          == normalizeIamPolicySingletons authoredValue ->
+          ProductionIamTrustPolicyIamSingletonEquivalent
+      | otherwise -> ProductionIamTrustPolicyOther
+    _ -> ProductionIamTrustPolicyInvalid
+
+normalizeIamPolicySingletons :: Value -> Value
+normalizeIamPolicySingletons value = case value of
+  Object policy ->
+    Object
+      ( adjustKey
+          normalizeStatements
+          "Statement"
+          policy
+      )
+  other -> other
+ where
+  normalizeStatements statements =
+    Array (normalizeStatement <$> asArray statements)
+  normalizeStatement statementValue = case statementValue of
+    Object statementObject ->
+      Object
+        ( adjustKey
+            normalizePrincipal
+            "Principal"
+            (adjustKey normalizeStringSet "Action" statementObject)
+        )
+    other -> other
+  normalizePrincipal principalValue = case principalValue of
+    Object principalObject ->
+      Object (adjustKey normalizeStringSet "AWS" principalObject)
+    other -> other
+  normalizeStringSet stringSet = case stringSet of
+    String item -> Array (Vector.singleton (String item))
+    other -> other
+  asArray singleton = case singleton of
+    Array entries -> entries
+    other -> Vector.singleton other
+  adjustKey transform key keyMap = case AesonKeyMap.lookup key keyMap of
+    Nothing -> keyMap
+    Just current -> AesonKeyMap.insert key (transform current) keyMap
 
 decodePolicy :: Text -> Either String Value
 decodePolicy = eitherDecodeStrict' . encodeUtf8

@@ -14,6 +14,11 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
+  ( AuthenticatedRolePlainResponseCause (AuthenticatedRoleReplayCapacityExhausted)
+  , AuthenticatedRolePlainResponseObservation (AuthenticatedRolePlainResponseKnown)
+  , authenticatedRolePlainResponse
+  )
 import Prodbox.ControlPlane.Codec
   ( ControlPlaneRequestCodecError (ControlPlaneRequestInvalid, ControlPlaneRequestTooLarge)
   , decodeControlPlaneResponse
@@ -34,10 +39,25 @@ import Prodbox.ControlPlane.DedicatedAdapterStore
   , tlsRetentionStoreScopeKey
   , tlsRetentionStoreSubstrate
   )
+import Prodbox.ControlPlane.Runtime qualified as ControlPlaneRuntime
+import Prodbox.ControlPlane.TargetIntentAuthorityClient
+  ( TargetIntentAuthorityClientError (..)
+  , classifyTargetIntentAuthorityResponseDecodeFailure
+  )
+import Prodbox.ControlPlane.TargetMaterializationProduction
+  ( classifyTargetIntentIssueError
+  )
 import Prodbox.ControlPlane.TlsRetentionAdapter
   ( tlsRetentionRepositoryWithTransport
   )
 import Prodbox.ControlPlane.TlsRetentionEndpoint
+import Prodbox.ControlPlane.TlsRetentionWorkflow
+  ( TlsRetentionWorkflowError (TlsWorkflowHomeAgentFailed, TlsWorkflowSelectedAgentFailed)
+  )
+import Prodbox.ControlPlane.TlsRetentionWorkflowAuthorityEndpoint
+import Prodbox.ControlPlane.TlsTargetAgentClient
+  ( classifyTlsTargetAgentHttpStatus
+  )
 import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   ( TlsPublicEdgeSecret
   , TlsSecretObservation (..)
@@ -47,13 +67,19 @@ import Prodbox.ControlPlane.TlsTargetAgentProduction
   ( TlsSecretApplyDecision (..)
   , decideTlsSecretApply
   )
-import Prodbox.Http.ReplyStatus (ReplyStatus (..))
+import Prodbox.Http.ReplyStatus (ReplyStatus (..), replyStatusCode)
 import Prodbox.Lifecycle.Authority.TlsRetention
   ( CertIdentity (..)
+  , KeyRotationApproval (KeyRotationNotApproved)
   , RetainedTlsRef (..)
   , RetentionVersion (..)
   , SourceSecretRef (..)
   )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
+  ( AwsAdminTargetIntentIssueCause (AwsAdminTargetIntentAuthenticatedResponseInvalid)
+  )
+import System.Directory (getCurrentDirectory)
+import System.FilePath ((</>))
 import TestSupport
 
 controlPlaneTlsRetentionEndpointSuite :: SuiteBuilder ()
@@ -108,6 +134,30 @@ controlPlaneTlsRetentionEndpointSuite =
         "other"
         "test.example"
         "public-edge-tls/other/test.example"
+        `shouldSatisfy` isLeft
+    it "accepts cert-manager's empty optional adoption annotations" $ do
+      let build annotations =
+            mkTlsPublicEdgeSecret
+              (SourceSecretRef "source-a" "1")
+              (CertIdentity "serial" "spki" 1)
+              "kubernetes.io/tls"
+              ( Map.fromList
+                  [ ("tls.crt", encodeBase64Text "certificate")
+                  , ("tls.key", encodeBase64Text "private-key")
+                  ]
+              )
+              annotations
+      build
+        ( Map.fromList
+            [ ("cert-manager.io/ip-sans", "")
+            , ("cert-manager.io/issuer-group", "")
+            , ("cert-manager.io/uri-sans", "")
+            ]
+        )
+        `shouldSatisfy` isRight
+      build (Map.singleton "cert-manager.io/ip-sans" "line\nbreak")
+        `shouldSatisfy` isLeft
+      build (Map.singleton "cert-manager.io/ip-sans" (Text.replicate 4097 "x"))
         `shouldSatisfy` isLeft
     it "stores a sealed envelope and returns a canonical binary receipt" $ do
       (transport, _, _) <- freshMemoryTransport False
@@ -213,6 +263,147 @@ controlPlaneTlsRetentionEndpointSuite =
       let envelope = sampleEnvelope "do-not-log-certificate" "do-not-log-dek"
       show envelope `shouldNotContain` "do-not-log-certificate"
       show envelope `shouldNotContain` "do-not-log-dek"
+    it "admits the exact retained Authority workload to the isolated adapter" $ do
+      repoRoot <- getCurrentDirectory
+      policy <-
+        readFile
+          (repoRoot </> "charts" </> "tls-retention" </> "templates" </> "networkpolicy.yaml")
+      policy `shouldContain` "kubernetes.io/metadata.name: lifecycle-authority"
+      policy `shouldContain` "app.kubernetes.io/name: prodbox-lifecycle-authority"
+    it "dispatches only decoded closed Authority workflow requests" $ do
+      observed <- newIORef []
+      let request =
+            TlsRetentionWorkflowAuthorityRetain
+              "home-local"
+              "%2A.example.com%2Ctest.example.com"
+              KeyRotationNotApproved
+          boundary =
+            TlsRetentionWorkflowAuthorityBoundary $ \decoded -> do
+              modifyIORef' observed (decoded :)
+              pure TlsRetentionWorkflowAuthorityRetained
+      refused <-
+        serveTlsRetentionWorkflowAuthorityRequest
+          tlsRetentionWorkflowAuthorityMaximumBytes
+          boundary
+          "not-canonical-cbor"
+      refused `shouldBe` TlsRetentionWorkflowAuthorityRequestRefused
+      readIORef observed `shouldReturn` []
+      accepted <-
+        serveTlsRetentionWorkflowAuthorityRequest
+          tlsRetentionWorkflowAuthorityMaximumBytes
+          boundary
+          (encodeControlPlaneRequest request)
+      accepted `shouldBe` TlsRetentionWorkflowAuthorityRetained
+      readIORef observed `shouldReturn` [request]
+    it "projects closed Authority workflow outcomes to exact HTTP statuses" $ do
+      tlsRetentionWorkflowAuthorityResponseHttpStatus
+        TlsRetentionWorkflowAuthorityNothingToRetain
+        `shouldBe` ReplyOk
+      tlsRetentionWorkflowAuthorityResponseHttpStatus
+        TlsRetentionWorkflowAuthorityIssuancePermitted
+        `shouldBe` ReplyOk
+      tlsRetentionWorkflowAuthorityResponseHttpStatus
+        ( TlsRetentionWorkflowAuthorityRefused
+            TlsRetentionWorkflowAuthoritySelectedAgentUnavailable
+        )
+        `shouldBe` ReplyServiceUnavailable
+      tlsRetentionWorkflowAuthorityResponseHttpStatus
+        TlsRetentionWorkflowAuthorityRequestRefused
+        `shouldBe` ReplyBadRequest
+    it "classifies only the exact Target replay-capacity response without retaining its body" $ do
+      let (status, body) =
+            authenticatedRolePlainResponse AuthenticatedRoleReplayCapacityExhausted
+          exact = classifyTlsTargetAgentHttpStatus (replyStatusCode status) body
+          arbitrary = classifyTlsTargetAgentHttpStatus (replyStatusCode status) "private-response"
+      ControlPlaneRuntime.classifyTlsRetentionWorkflowFailure
+        (TlsWorkflowHomeAgentFailed exact)
+        `shouldBe` TlsRetentionWorkflowAuthorityHomeAgentReplayCapacityExhausted
+      ControlPlaneRuntime.classifyTlsRetentionWorkflowFailure
+        (TlsWorkflowSelectedAgentFailed exact)
+        `shouldBe` TlsRetentionWorkflowAuthoritySelectedAgentReplayCapacityExhausted
+      ControlPlaneRuntime.classifyTlsRetentionWorkflowFailure
+        (TlsWorkflowHomeAgentFailed arbitrary)
+        `shouldBe` TlsRetentionWorkflowAuthorityHomeAgentUnavailable
+      show exact `shouldNotContain` "private-response"
+    it "classifies an exact nested Authority replay response without retaining its body" $ do
+      let (status, body) =
+            authenticatedRolePlainResponse AuthenticatedRoleReplayCapacityExhausted
+          known =
+            AuthenticatedRolePlainResponseKnown
+              AuthenticatedRoleReplayCapacityExhausted
+          exact =
+            classifyTargetIntentAuthorityResponseDecodeFailure
+              (replyStatusCode status)
+              body
+              ControlPlaneRequestInvalid
+          arbitrary =
+            classifyTargetIntentAuthorityResponseDecodeFailure
+              (replyStatusCode status)
+              "private-response"
+              ControlPlaneRequestInvalid
+      exact
+        `shouldBe` TargetIntentAuthorityAuthenticatedResponseInvalid
+          known
+          ControlPlaneRequestInvalid
+      classifyTargetIntentIssueError exact
+        `shouldBe` AwsAdminTargetIntentAuthenticatedResponseInvalid known
+      arbitrary
+        `shouldBe` TargetIntentAuthorityResponseInvalid ControlPlaneRequestInvalid
+      show exact `shouldNotContain` "private-response"
+    it "requires both least-privilege halves of the Target-intent NetworkPolicy route" $ do
+      repoRoot <- getCurrentDirectory
+      targetPolicy <-
+        Text.pack
+          <$> readFile
+            (repoRoot </> "charts" </> "target-secret-agent" </> "templates" </> "networkpolicy.yaml")
+      authorityPolicy <-
+        Text.pack
+          <$> readFile
+            (repoRoot </> "charts" </> "lifecycle-authority" </> "templates" </> "networkpolicy.yaml")
+      targetIntentNetworkPolicyRouteIsClosed targetPolicy authorityPolicy `shouldBe` True
+      targetIntentNetworkPolicyRouteIsClosed
+        (Text.replace targetIntentAuthorityEgressArm "" targetPolicy)
+        authorityPolicy
+        `shouldBe` False
+      targetIntentNetworkPolicyRouteIsClosed
+        targetPolicy
+        (Text.replace targetIntentAuthorityIngressArm "" authorityPolicy)
+        `shouldBe` False
+
+targetIntentNetworkPolicyRouteIsClosed :: Text -> Text -> Bool
+targetIntentNetworkPolicyRouteIsClosed targetPolicy authorityPolicy =
+  targetIntentAuthorityEgressArm `Text.isInfixOf` targetPolicy
+    && targetIntentAuthorityIngressArm `Text.isInfixOf` authorityPolicy
+
+targetIntentAuthorityEgressArm :: Text
+targetIntentAuthorityEgressArm =
+  Text.unlines
+    [ "    - to:"
+    , "        - namespaceSelector:"
+    , "            matchLabels:"
+    , "              kubernetes.io/metadata.name: lifecycle-authority"
+    , "          podSelector:"
+    , "            matchLabels:"
+    , "              app.kubernetes.io/name: prodbox-lifecycle-authority"
+    , "      ports:"
+    , "        - protocol: TCP"
+    , "          port: {{ .Values.ports.controlPlane }}"
+    ]
+
+targetIntentAuthorityIngressArm :: Text
+targetIntentAuthorityIngressArm =
+  Text.unlines
+    [ "    - from:"
+    , "        - namespaceSelector:"
+    , "            matchLabels:"
+    , "              kubernetes.io/metadata.name: target-secret-agent"
+    , "          podSelector:"
+    , "            matchLabels:"
+    , "              app.kubernetes.io/name: prodbox-target-secret-agent"
+    , "      ports:"
+    , "        - protocol: TCP"
+    , "          port: lifecycle"
+    ]
 
 sampleEnvelope :: ByteString -> ByteString -> TlsSealedEnvelope
 sampleEnvelope certificate wrapped = mustRight (mkTlsSealedEnvelope certificate wrapped)
@@ -231,8 +422,9 @@ samplePublicEdgeSecret uid resourceVersion certificate =
         )
         (Map.singleton "cert-manager.io/certificate-name" "public-edge-tls")
     )
- where
-  encodeBase64Text = TextEncoding.decodeUtf8 . Base64.encode . TextEncoding.encodeUtf8
+
+encodeBase64Text :: Text -> Text
+encodeBase64Text = TextEncoding.decodeUtf8 . Base64.encode . TextEncoding.encodeUtf8
 
 referenceFor :: Integer -> TlsSealedEnvelope -> RetainedTlsRef
 referenceFor version envelope =

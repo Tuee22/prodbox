@@ -1,3 +1,6 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -10,6 +13,7 @@ module BootstrapBrokerCustody
   )
 where
 
+import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Control.Monad (foldM, forM_)
 import Data.Bifunctor (first)
 import Data.ByteString.Char8 qualified as ByteString
@@ -21,11 +25,16 @@ import Data.IORef
   , writeIORef
   )
 import Data.Text qualified as Text
+import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Bootstrap.Broker.Custody
 import Prodbox.Bootstrap.Broker.Fence
 import Prodbox.Bootstrap.Broker.Model
 import Prodbox.Bootstrap.Broker.PgpBoundary qualified as Pgp
+import Prodbox.Bootstrap.Broker.ProductionEngine
+  ( BaselineSessionIdentityPlan (..)
+  , planBaselineSessionIdentity
+  )
 import Prodbox.Bootstrap.Broker.Request
   ( RequestDigest
   , mkRequestDigest
@@ -48,6 +57,228 @@ import Prodbox.Lifecycle.Lease
   , mkOwnerNonce
   )
 import TestSupport
+
+-- The pre-Sprint-2.77 constructor order. This is deliberately test-local so
+-- adding a production compatibility constructor cannot make the proof pass.
+data LegacyBaselineTarget
+  = LegacyBaselineKvV2Mount
+  | LegacyBaselineTransitMount
+  | LegacyBaselinePkiMount
+  | LegacyBaselineKubernetesAuthMethod
+  | LegacyBaselineBootstrapProvisionerPolicy
+  | LegacyBaselineBootstrapProvisionerRole
+  | LegacyBaselineBootstrapPkiOperatorPolicy
+  | LegacyBaselineBootstrapPkiOperatorRole
+  | LegacyBaselineTokenAccessorAuditorPolicy
+  | LegacyBaselineTokenAccessorAuditorRole
+  | LegacyBaselineAuthorityGenesisSigningKey
+  | LegacyBaselinePkiTestRole
+  deriving stock (Eq, Show, Enum, Bounded, Generic)
+  deriving anyclass (Serialise)
+
+data LegacyBaselineReadBackReceipt
+  = LegacyBaselineReadBackReceipt
+      !RootSessionId
+      !VaultStorageGeneration
+      ![LegacyBaselineTarget]
+      !ArtifactDigest
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- The pre-Target-Secret-Agent append-only target order. This type is
+-- deliberately test-local so the older migration proof cannot manufacture
+-- the receipt through a current production constructor.
+data PreviousBaselineTarget
+  = PreviousBaselineKvV2Mount
+  | PreviousBaselineTransitMount
+  | PreviousBaselinePkiMount
+  | PreviousBaselineKubernetesAuthMethod
+  | PreviousBaselineBootstrapProvisionerPolicy
+  | PreviousBaselineBootstrapProvisionerRole
+  | PreviousBaselineBootstrapPkiOperatorPolicy
+  | PreviousBaselineBootstrapPkiOperatorRole
+  | PreviousBaselineTokenAccessorAuditorPolicy
+  | PreviousBaselineTokenAccessorAuditorRole
+  | PreviousBaselineAuthorityGenesisSigningKey
+  | PreviousBaselinePkiTestRole
+  | PreviousBaselineBootstrapPolicyRepairPolicy
+  | PreviousBaselineBootstrapPolicyRepairRole
+  deriving stock (Eq, Show, Enum, Bounded, Generic)
+  deriving anyclass (Serialise)
+
+data PreviousBaselineReadBackReceipt
+  = PreviousBaselineReadBackReceipt
+      !RootSessionId
+      !VaultStorageGeneration
+      ![PreviousBaselineTarget]
+      !ArtifactDigest
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- The immediately preceding append-only target order. This remains
+-- test-local so the Sprint 2.89 proof cannot manufacture the old receipt
+-- through a current production constructor.
+data PreLifecycleAuthorityBaselineTarget
+  = PreLifecycleAuthorityBaselineKvV2Mount
+  | PreLifecycleAuthorityBaselineTransitMount
+  | PreLifecycleAuthorityBaselinePkiMount
+  | PreLifecycleAuthorityBaselineKubernetesAuthMethod
+  | PreLifecycleAuthorityBaselineBootstrapProvisionerPolicy
+  | PreLifecycleAuthorityBaselineBootstrapProvisionerRole
+  | PreLifecycleAuthorityBaselineBootstrapPkiOperatorPolicy
+  | PreLifecycleAuthorityBaselineBootstrapPkiOperatorRole
+  | PreLifecycleAuthorityBaselineTokenAccessorAuditorPolicy
+  | PreLifecycleAuthorityBaselineTokenAccessorAuditorRole
+  | PreLifecycleAuthorityBaselineAuthorityGenesisSigningKey
+  | PreLifecycleAuthorityBaselinePkiTestRole
+  | PreLifecycleAuthorityBaselineBootstrapPolicyRepairPolicy
+  | PreLifecycleAuthorityBaselineBootstrapPolicyRepairRole
+  | PreLifecycleAuthorityBaselineTargetSecretAgentStandingRole
+  deriving stock (Eq, Show, Enum, Bounded, Generic)
+  deriving anyclass (Serialise)
+
+data PreLifecycleAuthorityBaselineReadBackReceipt
+  = PreLifecycleAuthorityBaselineReadBackReceipt
+      !RootSessionId
+      !VaultStorageGeneration
+      ![PreLifecycleAuthorityBaselineTarget]
+      !ArtifactDigest
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- The pre-Sprint-2.98 append-only target order. This exact test-local wire
+-- type proves that changing the meaning of an existing target cannot silently
+-- reuse its closed receipt.
+data PreStandingRoleNamespaceBaselineTarget
+  = PreStandingRoleNamespaceBaselineKvV2Mount
+  | PreStandingRoleNamespaceBaselineTransitMount
+  | PreStandingRoleNamespaceBaselinePkiMount
+  | PreStandingRoleNamespaceBaselineKubernetesAuthMethod
+  | PreStandingRoleNamespaceBaselineBootstrapProvisionerPolicy
+  | PreStandingRoleNamespaceBaselineBootstrapProvisionerRole
+  | PreStandingRoleNamespaceBaselineBootstrapPkiOperatorPolicy
+  | PreStandingRoleNamespaceBaselineBootstrapPkiOperatorRole
+  | PreStandingRoleNamespaceBaselineTokenAccessorAuditorPolicy
+  | PreStandingRoleNamespaceBaselineTokenAccessorAuditorRole
+  | PreStandingRoleNamespaceBaselineAuthorityGenesisSigningKey
+  | PreStandingRoleNamespaceBaselinePkiTestRole
+  | PreStandingRoleNamespaceBaselineBootstrapPolicyRepairPolicy
+  | PreStandingRoleNamespaceBaselineBootstrapPolicyRepairRole
+  | PreStandingRoleNamespaceBaselineTargetSecretAgentStandingRole
+  | PreStandingRoleNamespaceBaselineLifecycleAuthorityStandingRole
+  deriving stock (Eq, Show, Enum, Bounded, Generic)
+  deriving anyclass (Serialise)
+
+data PreStandingRoleNamespaceBaselineReadBackReceipt
+  = PreStandingRoleNamespaceBaselineReadBackReceipt
+      !RootSessionId
+      !VaultStorageGeneration
+      ![PreStandingRoleNamespaceBaselineTarget]
+      !ArtifactDigest
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- The pre-Sprint-2.115 append-only target order. This exact test-local wire
+-- type proves the journal-observer policy widening cannot reuse a receipt that
+-- never reconciled it.
+data PreAwsAdminJournalObserverBaselineTarget
+  = PreAwsAdminJournalObserverBaselineKvV2Mount
+  | PreAwsAdminJournalObserverBaselineTransitMount
+  | PreAwsAdminJournalObserverBaselinePkiMount
+  | PreAwsAdminJournalObserverBaselineKubernetesAuthMethod
+  | PreAwsAdminJournalObserverBaselineBootstrapProvisionerPolicy
+  | PreAwsAdminJournalObserverBaselineBootstrapProvisionerRole
+  | PreAwsAdminJournalObserverBaselineBootstrapPkiOperatorPolicy
+  | PreAwsAdminJournalObserverBaselineBootstrapPkiOperatorRole
+  | PreAwsAdminJournalObserverBaselineTokenAccessorAuditorPolicy
+  | PreAwsAdminJournalObserverBaselineTokenAccessorAuditorRole
+  | PreAwsAdminJournalObserverBaselineAuthorityGenesisSigningKey
+  | PreAwsAdminJournalObserverBaselinePkiTestRole
+  | PreAwsAdminJournalObserverBaselineBootstrapPolicyRepairPolicy
+  | PreAwsAdminJournalObserverBaselineBootstrapPolicyRepairRole
+  | PreAwsAdminJournalObserverBaselineTargetSecretAgentStandingRole
+  | PreAwsAdminJournalObserverBaselineLifecycleAuthorityStandingRole
+  | PreAwsAdminJournalObserverBaselineStandingRoleNamespaceBindings
+  deriving stock (Eq, Show, Enum, Bounded, Generic)
+  deriving anyclass (Serialise)
+
+data PreAwsAdminJournalObserverBaselineReadBackReceipt
+  = PreAwsAdminJournalObserverBaselineReadBackReceipt
+      !RootSessionId
+      !VaultStorageGeneration
+      ![PreAwsAdminJournalObserverBaselineTarget]
+      !ArtifactDigest
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- The pre-Sprint-2.116 completion-principal target order. Keeping this wire
+-- type test-local proves the retained 18-target receipt can trigger restart
+-- but cannot be manufactured as a current production receipt.
+data PreCredentialProvisionerCompletionBaselineTarget
+  = PreCredentialProvisionerCompletionBaselineKvV2Mount
+  | PreCredentialProvisionerCompletionBaselineTransitMount
+  | PreCredentialProvisionerCompletionBaselinePkiMount
+  | PreCredentialProvisionerCompletionBaselineKubernetesAuthMethod
+  | PreCredentialProvisionerCompletionBaselineBootstrapProvisionerPolicy
+  | PreCredentialProvisionerCompletionBaselineBootstrapProvisionerRole
+  | PreCredentialProvisionerCompletionBaselineBootstrapPkiOperatorPolicy
+  | PreCredentialProvisionerCompletionBaselineBootstrapPkiOperatorRole
+  | PreCredentialProvisionerCompletionBaselineTokenAccessorAuditorPolicy
+  | PreCredentialProvisionerCompletionBaselineTokenAccessorAuditorRole
+  | PreCredentialProvisionerCompletionBaselineAuthorityGenesisSigningKey
+  | PreCredentialProvisionerCompletionBaselinePkiTestRole
+  | PreCredentialProvisionerCompletionBaselineBootstrapPolicyRepairPolicy
+  | PreCredentialProvisionerCompletionBaselineBootstrapPolicyRepairRole
+  | PreCredentialProvisionerCompletionBaselineTargetSecretAgentStandingRole
+  | PreCredentialProvisionerCompletionBaselineLifecycleAuthorityStandingRole
+  | PreCredentialProvisionerCompletionBaselineStandingRoleNamespaceBindings
+  | PreCredentialProvisionerCompletionBaselineLifecycleAuthorityAwsAdminJournalObserver
+  deriving stock (Eq, Show, Enum, Bounded, Generic)
+  deriving anyclass (Serialise)
+
+data PreCredentialProvisionerCompletionBaselineReadBackReceipt
+  = PreCredentialProvisionerCompletionBaselineReadBackReceipt
+      !RootSessionId
+      !VaultStorageGeneration
+      ![PreCredentialProvisionerCompletionBaselineTarget]
+      !ArtifactDigest
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- The Generation-122 receipt carries the pre-lease-containment target set.
+-- This exact test-local wire type proves the append preserves decoding while
+-- making that completed root session non-current.
+data PreCredentialProvisionerAuditorLeaseBaselineTarget
+  = PreCredentialProvisionerAuditorLeaseBaselineKvV2Mount
+  | PreCredentialProvisionerAuditorLeaseBaselineTransitMount
+  | PreCredentialProvisionerAuditorLeaseBaselinePkiMount
+  | PreCredentialProvisionerAuditorLeaseBaselineKubernetesAuthMethod
+  | PreCredentialProvisionerAuditorLeaseBaselineBootstrapProvisionerPolicy
+  | PreCredentialProvisionerAuditorLeaseBaselineBootstrapProvisionerRole
+  | PreCredentialProvisionerAuditorLeaseBaselineBootstrapPkiOperatorPolicy
+  | PreCredentialProvisionerAuditorLeaseBaselineBootstrapPkiOperatorRole
+  | PreCredentialProvisionerAuditorLeaseBaselineTokenAccessorAuditorPolicy
+  | PreCredentialProvisionerAuditorLeaseBaselineTokenAccessorAuditorRole
+  | PreCredentialProvisionerAuditorLeaseBaselineAuthorityGenesisSigningKey
+  | PreCredentialProvisionerAuditorLeaseBaselinePkiTestRole
+  | PreCredentialProvisionerAuditorLeaseBaselineBootstrapPolicyRepairPolicy
+  | PreCredentialProvisionerAuditorLeaseBaselineBootstrapPolicyRepairRole
+  | PreCredentialProvisionerAuditorLeaseBaselineTargetSecretAgentStandingRole
+  | PreCredentialProvisionerAuditorLeaseBaselineLifecycleAuthorityStandingRole
+  | PreCredentialProvisionerAuditorLeaseBaselineStandingRoleNamespaceBindings
+  | PreCredentialProvisionerAuditorLeaseBaselineLifecycleAuthorityAwsAdminJournalObserver
+  | PreCredentialProvisionerAuditorLeaseBaselineCredentialProvisionerCompletionPrincipal
+  deriving stock (Eq, Show, Enum, Bounded, Generic)
+  deriving anyclass (Serialise)
+
+data PreCredentialProvisionerAuditorLeaseBaselineReadBackReceipt
+  = PreCredentialProvisionerAuditorLeaseBaselineReadBackReceipt
+      !RootSessionId
+      !VaultStorageGeneration
+      ![PreCredentialProvisionerAuditorLeaseBaselineTarget]
+      !ArtifactDigest
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 bootstrapBrokerCustodySuite :: SuiteBuilder ()
 bootstrapBrokerCustodySuite = do
@@ -854,6 +1085,22 @@ rootSessionSuite =
             `shouldSatisfy` (elem BaselineTokenAccessorAuditorPolicy)
           requiredRootBaselineTargets
             `shouldSatisfy` (elem BaselineTokenAccessorAuditorRole)
+          requiredRootBaselineTargets
+            `shouldSatisfy` (elem BaselineBootstrapPolicyRepairPolicy)
+          requiredRootBaselineTargets
+            `shouldSatisfy` (elem BaselineBootstrapPolicyRepairRole)
+          requiredRootBaselineTargets
+            `shouldSatisfy` (elem BaselineTargetSecretAgentStandingRole)
+          requiredRootBaselineTargets
+            `shouldSatisfy` (elem BaselineLifecycleAuthorityStandingRole)
+          requiredRootBaselineTargets
+            `shouldSatisfy` (elem BaselineLifecycleAuthorityAwsAdminJournalObserver)
+          requiredRootBaselineTargets
+            `shouldSatisfy` (elem BaselineCredentialProvisionerCompletionPrincipal)
+          requiredRootBaselineTargets
+            `shouldSatisfy` (elem BaselineCredentialProvisionerAuditorLeaseContainment)
+          baselineTargetsAreCurrent requiredRootBaselineTargets `shouldBe` True
+          baselineTargetsAreCurrent (drop 1 requiredRootBaselineTargets) `shouldBe` False
           mkBaselineReadBackReceipt
             (baselineReadBackSessionId baseline)
             generation
@@ -885,6 +1132,402 @@ rootSessionSuite =
                     (states !! 10)
                     (ConfirmCurrentRootAccessorAbsent (fixtureStaleAbsence fixture))
                     `shouldBe` Left RootSessionCurrentAccessorAbsenceMismatch
+
+    it "decodes the pre-repair baseline-target CBOR after append-only extension" $ do
+      let legacy = [minBound .. maxBound] :: [LegacyBaselineTarget]
+          decoded = deserialiseOrFail (serialise legacy)
+      decoded
+        `shouldBe` Right
+          [ BaselineKvV2Mount
+          , BaselineTransitMount
+          , BaselinePkiMount
+          , BaselineKubernetesAuthMethod
+          , BaselineBootstrapProvisionerPolicy
+          , BaselineBootstrapProvisionerRole
+          , BaselineBootstrapPkiOperatorPolicy
+          , BaselineBootstrapPkiOperatorRole
+          , BaselineTokenAccessorAuditorPolicy
+          , BaselineTokenAccessorAuditorRole
+          , BaselineAuthorityGenesisSigningKey
+          , BaselinePkiTestRole
+          ]
+
+    it "admits only the exact older closed receipt as native restart input" $
+      withFixture $ \fixture ->
+        expectRight (rootSessionPrefixes fixture) $ \states -> do
+          let legacyTargets = [minBound .. maxBound] :: [LegacyBaselineTarget]
+              decodeReceipt targets =
+                deserialiseOrFail
+                  ( serialise
+                      ( LegacyBaselineReadBackReceipt
+                          (fixtureSessionId fixture)
+                          ( rootInitStorageGeneration
+                              (recoveryCustodyBinding (fixtureRecoveryCustody fixture))
+                          )
+                          targets
+                          (fixtureDigestA fixture)
+                      )
+                  )
+          expectRight (decodeReceipt legacyTargets) $ \legacyReceipt -> do
+            let completed = last states
+                legacyClosed =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionClosed legacyReceipt (fixtureStaleAbsence fixture)
+                    }
+                legacyInProgress =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionBaselineReadBack
+                          (fixtureCurrentAccessor fixture)
+                          legacyReceipt
+                    }
+            rootSessionInvariantViolations legacyClosed `shouldBe` []
+            rootSessionBaselineIsCurrent legacyClosed `shouldBe` False
+            planBaselineSessionIdentity legacyClosed `shouldBe` MintFreshRootSessionId
+            rootSessionInvariantViolations legacyInProgress
+              `shouldBe` [RootSessionBaselineTargetsDiffer (baselineReadBackTargets legacyReceipt)]
+            expectRight
+              (restartRootSession (fixtureReplacementSessionId fixture) legacyClosed)
+              $ \restarted -> do
+                rootSessionStatePhase restarted
+                  `shouldBe` RootSessionCancelIncompleteGenerateRoot
+                rootSessionInvariantViolations restarted `shouldBe` []
+          expectRight (decodeReceipt (drop 1 legacyTargets)) $ \partialReceipt -> do
+            let partialClosed =
+                  (last states)
+                    { rootSessionStatePhase =
+                        RootSessionClosed partialReceipt (fixtureStaleAbsence fixture)
+                    }
+            rootSessionInvariantViolations partialClosed
+              `shouldBe` [RootSessionBaselineTargetsDiffer (baselineReadBackTargets partialReceipt)]
+
+    it "restarts the immediately preceding closed target set under a fresh session identity" $
+      withFixture $ \fixture ->
+        expectRight (rootSessionPrefixes fixture) $ \states -> do
+          let previousTargets = [minBound .. maxBound] :: [PreviousBaselineTarget]
+              decoded =
+                deserialiseOrFail
+                  ( serialise
+                      ( PreviousBaselineReadBackReceipt
+                          (fixtureSessionId fixture)
+                          ( rootInitStorageGeneration
+                              (recoveryCustodyBinding (fixtureRecoveryCustody fixture))
+                          )
+                          previousTargets
+                          (fixtureDigestA fixture)
+                      )
+                  )
+          expectRight decoded $ \previousReceipt -> do
+            let previousClosed =
+                  (last states)
+                    { rootSessionStatePhase =
+                        RootSessionClosed previousReceipt (fixtureStaleAbsence fixture)
+                    }
+            rootSessionInvariantViolations previousClosed `shouldBe` []
+            rootSessionBaselineIsCurrent previousClosed `shouldBe` False
+            planBaselineSessionIdentity previousClosed `shouldBe` MintFreshRootSessionId
+            expectRight
+              (restartRootSession (fixtureReplacementSessionId fixture) previousClosed)
+              $ \restarted -> do
+                rootSessionBindingId (rootSessionStateBinding restarted)
+                  `shouldBe` fixtureReplacementSessionId fixture
+                rootSessionStatePhase restarted
+                  `shouldBe` RootSessionCancelIncompleteGenerateRoot
+                rootSessionInvariantViolations restarted `shouldBe` []
+
+    it "Sprint 2.89 restarts the pre-Authority-role closed target set only" $
+      withFixture $ \fixture ->
+        expectRight (rootSessionPrefixes fixture) $ \states -> do
+          let previousTargets =
+                [minBound .. maxBound] :: [PreLifecycleAuthorityBaselineTarget]
+              decodeReceipt targets =
+                deserialiseOrFail
+                  ( serialise
+                      ( PreLifecycleAuthorityBaselineReadBackReceipt
+                          (fixtureSessionId fixture)
+                          ( rootInitStorageGeneration
+                              (recoveryCustodyBinding (fixtureRecoveryCustody fixture))
+                          )
+                          targets
+                          (fixtureDigestA fixture)
+                      )
+                  )
+          expectRight (decodeReceipt previousTargets) $ \previousReceipt -> do
+            baselineReadBackTargets previousReceipt
+              `shouldBe` take (length previousTargets) requiredRootBaselineTargets
+            let completed = last states
+                previousClosed =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionClosed previousReceipt (fixtureStaleAbsence fixture)
+                    }
+                previousInProgress =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionBaselineReadBack
+                          (fixtureCurrentAccessor fixture)
+                          previousReceipt
+                    }
+            rootSessionInvariantViolations previousClosed `shouldBe` []
+            rootSessionBaselineIsCurrent previousClosed `shouldBe` False
+            planBaselineSessionIdentity previousClosed `shouldBe` MintFreshRootSessionId
+            rootSessionInvariantViolations previousInProgress
+              `shouldBe` [RootSessionBaselineTargetsDiffer (baselineReadBackTargets previousReceipt)]
+            expectRight
+              (restartRootSession (fixtureReplacementSessionId fixture) previousClosed)
+              $ \restarted -> do
+                rootSessionBindingId (rootSessionStateBinding restarted)
+                  `shouldBe` fixtureReplacementSessionId fixture
+                rootSessionStatePhase restarted
+                  `shouldBe` RootSessionCancelIncompleteGenerateRoot
+                rootSessionInvariantViolations restarted `shouldBe` []
+          expectRight (decodeReceipt (drop 1 previousTargets)) $ \partialReceipt -> do
+            let partialClosed =
+                  (last states)
+                    { rootSessionStatePhase =
+                        RootSessionClosed partialReceipt (fixtureStaleAbsence fixture)
+                    }
+            rootSessionInvariantViolations partialClosed
+              `shouldBe` [RootSessionBaselineTargetsDiffer (baselineReadBackTargets partialReceipt)]
+
+    it "Sprint 2.98 restarts the pre-namespace-semantics closed target set only" $
+      withFixture $ \fixture ->
+        expectRight (rootSessionPrefixes fixture) $ \states -> do
+          let previousTargets =
+                [minBound .. maxBound] :: [PreStandingRoleNamespaceBaselineTarget]
+              decodeReceipt targets =
+                deserialiseOrFail
+                  ( serialise
+                      ( PreStandingRoleNamespaceBaselineReadBackReceipt
+                          (fixtureSessionId fixture)
+                          ( rootInitStorageGeneration
+                              (recoveryCustodyBinding (fixtureRecoveryCustody fixture))
+                          )
+                          targets
+                          (fixtureDigestA fixture)
+                      )
+                  )
+          expectRight (decodeReceipt previousTargets) $ \previousReceipt -> do
+            baselineReadBackTargets previousReceipt
+              `shouldBe` take (length previousTargets) requiredRootBaselineTargets
+            let completed = last states
+                previousClosed =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionClosed previousReceipt (fixtureStaleAbsence fixture)
+                    }
+                previousInProgress =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionBaselineReadBack
+                          (fixtureCurrentAccessor fixture)
+                          previousReceipt
+                    }
+            rootSessionInvariantViolations previousClosed `shouldBe` []
+            rootSessionBaselineIsCurrent previousClosed `shouldBe` False
+            planBaselineSessionIdentity previousClosed `shouldBe` MintFreshRootSessionId
+            rootSessionInvariantViolations previousInProgress
+              `shouldBe` [RootSessionBaselineTargetsDiffer (baselineReadBackTargets previousReceipt)]
+            expectRight
+              (restartRootSession (fixtureReplacementSessionId fixture) previousClosed)
+              $ \restarted -> do
+                rootSessionBindingId (rootSessionStateBinding restarted)
+                  `shouldBe` fixtureReplacementSessionId fixture
+                rootSessionStatePhase restarted
+                  `shouldBe` RootSessionCancelIncompleteGenerateRoot
+                rootSessionInvariantViolations restarted `shouldBe` []
+          expectRight (decodeReceipt (drop 1 previousTargets)) $ \partialReceipt -> do
+            let partialClosed =
+                  (last states)
+                    { rootSessionStatePhase =
+                        RootSessionClosed partialReceipt (fixtureStaleAbsence fixture)
+                    }
+            rootSessionInvariantViolations partialClosed
+              `shouldBe` [RootSessionBaselineTargetsDiffer (baselineReadBackTargets partialReceipt)]
+
+    it "Sprint 2.115 restarts the pre-journal-observer closed target set only" $
+      withFixture $ \fixture ->
+        expectRight (rootSessionPrefixes fixture) $ \states -> do
+          let previousTargets =
+                [minBound .. maxBound] :: [PreAwsAdminJournalObserverBaselineTarget]
+              decodeReceipt targets =
+                deserialiseOrFail
+                  ( serialise
+                      ( PreAwsAdminJournalObserverBaselineReadBackReceipt
+                          (fixtureSessionId fixture)
+                          ( rootInitStorageGeneration
+                              (recoveryCustodyBinding (fixtureRecoveryCustody fixture))
+                          )
+                          targets
+                          (fixtureDigestA fixture)
+                      )
+                  )
+          expectRight (decodeReceipt previousTargets) $ \previousReceipt -> do
+            baselineReadBackTargets previousReceipt
+              `shouldBe` take (length previousTargets) requiredRootBaselineTargets
+            let completed = last states
+                previousClosed =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionClosed previousReceipt (fixtureStaleAbsence fixture)
+                    }
+                previousInProgress =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionBaselineReadBack
+                          (fixtureCurrentAccessor fixture)
+                          previousReceipt
+                    }
+            rootSessionInvariantViolations previousClosed `shouldBe` []
+            rootSessionBaselineIsCurrent previousClosed `shouldBe` False
+            planBaselineSessionIdentity previousClosed `shouldBe` MintFreshRootSessionId
+            rootSessionInvariantViolations previousInProgress
+              `shouldBe` [RootSessionBaselineTargetsDiffer (baselineReadBackTargets previousReceipt)]
+            expectRight
+              (restartRootSession (fixtureReplacementSessionId fixture) previousClosed)
+              $ \restarted -> do
+                rootSessionBindingId (rootSessionStateBinding restarted)
+                  `shouldBe` fixtureReplacementSessionId fixture
+                rootSessionStatePhase restarted
+                  `shouldBe` RootSessionCancelIncompleteGenerateRoot
+                rootSessionInvariantViolations restarted `shouldBe` []
+          expectRight (decodeReceipt (drop 1 previousTargets)) $ \partialReceipt -> do
+            let partialClosed =
+                  (last states)
+                    { rootSessionStatePhase =
+                        RootSessionClosed partialReceipt (fixtureStaleAbsence fixture)
+                    }
+            rootSessionInvariantViolations partialClosed
+              `shouldBe` [RootSessionBaselineTargetsDiffer (baselineReadBackTargets partialReceipt)]
+
+    it "Sprint 2.116 restarts only the pre-completion-principal closed target set" $
+      withFixture $ \fixture ->
+        expectRight (rootSessionPrefixes fixture) $ \states -> do
+          let previousTargets =
+                [minBound .. maxBound] :: [PreCredentialProvisionerCompletionBaselineTarget]
+              decodeReceipt targets =
+                deserialiseOrFail
+                  ( serialise
+                      ( PreCredentialProvisionerCompletionBaselineReadBackReceipt
+                          (fixtureSessionId fixture)
+                          ( rootInitStorageGeneration
+                              (recoveryCustodyBinding (fixtureRecoveryCustody fixture))
+                          )
+                          targets
+                          (fixtureDigestA fixture)
+                      )
+                  )
+          expectRight (decodeReceipt previousTargets) $ \previousReceipt -> do
+            baselineReadBackTargets previousReceipt
+              `shouldBe` take (length previousTargets) requiredRootBaselineTargets
+            let completed = last states
+                previousClosed =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionClosed previousReceipt (fixtureStaleAbsence fixture)
+                    }
+                previousInProgress =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionBaselineReadBack
+                          (fixtureCurrentAccessor fixture)
+                          previousReceipt
+                    }
+            rootSessionInvariantViolations previousClosed `shouldBe` []
+            rootSessionBaselineIsCurrent previousClosed `shouldBe` False
+            planBaselineSessionIdentity previousClosed `shouldBe` MintFreshRootSessionId
+            rootSessionInvariantViolations previousInProgress
+              `shouldBe` [RootSessionBaselineTargetsDiffer (baselineReadBackTargets previousReceipt)]
+            expectRight
+              (restartRootSession (fixtureReplacementSessionId fixture) previousClosed)
+              $ \restarted -> do
+                rootSessionBindingId (rootSessionStateBinding restarted)
+                  `shouldBe` fixtureReplacementSessionId fixture
+                rootSessionStatePhase restarted
+                  `shouldBe` RootSessionCancelIncompleteGenerateRoot
+                rootSessionInvariantViolations restarted `shouldBe` []
+          expectRight (decodeReceipt (drop 1 previousTargets)) $ \partialReceipt -> do
+            let partialClosed =
+                  (last states)
+                    { rootSessionStatePhase =
+                        RootSessionClosed partialReceipt (fixtureStaleAbsence fixture)
+                    }
+            rootSessionInvariantViolations partialClosed
+              `shouldBe` [RootSessionBaselineTargetsDiffer (baselineReadBackTargets partialReceipt)]
+
+    it "Sprint 2.116 restarts the pre-auditor-lease-containment target set" $
+      withFixture $ \fixture ->
+        expectRight (rootSessionPrefixes fixture) $ \states -> do
+          let previousTargets =
+                [minBound .. maxBound] :: [PreCredentialProvisionerAuditorLeaseBaselineTarget]
+              decodeReceipt targets =
+                deserialiseOrFail
+                  ( serialise
+                      ( PreCredentialProvisionerAuditorLeaseBaselineReadBackReceipt
+                          (fixtureSessionId fixture)
+                          ( rootInitStorageGeneration
+                              (recoveryCustodyBinding (fixtureRecoveryCustody fixture))
+                          )
+                          targets
+                          (fixtureDigestA fixture)
+                      )
+                  )
+          expectRight (decodeReceipt previousTargets) $ \previousReceipt -> do
+            baselineReadBackTargets previousReceipt
+              `shouldBe` init requiredRootBaselineTargets
+            let completed = last states
+                previousClosed =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionClosed previousReceipt (fixtureStaleAbsence fixture)
+                    }
+                previousInProgress =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionBaselineReadBack
+                          (fixtureCurrentAccessor fixture)
+                          previousReceipt
+                    }
+            rootSessionInvariantViolations previousClosed `shouldBe` []
+            rootSessionBaselineIsCurrent previousClosed `shouldBe` False
+            planBaselineSessionIdentity previousClosed `shouldBe` MintFreshRootSessionId
+            rootSessionInvariantViolations previousInProgress
+              `shouldBe` [RootSessionBaselineTargetsDiffer (baselineReadBackTargets previousReceipt)]
+            expectRight
+              (restartRootSession (fixtureReplacementSessionId fixture) previousClosed)
+              $ \restarted -> do
+                rootSessionBindingId (rootSessionStateBinding restarted)
+                  `shouldBe` fixtureReplacementSessionId fixture
+                rootSessionStatePhase restarted
+                  `shouldBe` RootSessionCancelIncompleteGenerateRoot
+                rootSessionInvariantViolations restarted `shouldBe` []
+          expectRight (decodeReceipt (drop 1 previousTargets)) $ \partialReceipt -> do
+            let partialClosed =
+                  (last states)
+                    { rootSessionStatePhase =
+                        RootSessionClosed partialReceipt (fixtureStaleAbsence fixture)
+                    }
+            rootSessionInvariantViolations partialClosed
+              `shouldBe` [RootSessionBaselineTargetsDiffer (baselineReadBackTargets partialReceipt)]
+
+    it "reuses only current-complete and cancelled-clean terminal session identities" $
+      withFixture $ \fixture ->
+        expectRight (rootSessionPrefixes fixture) $ \states -> do
+          let completed = last states
+              cancelled =
+                completed
+                  { rootSessionStatePhase =
+                      RootSessionCancelledClean (fixtureStaleAbsence fixture)
+                  }
+              expectedReuse = ReuseRetainedRootSessionId (fixtureSessionId fixture)
+          rootSessionBaselineIsCurrent completed `shouldBe` True
+          planBaselineSessionIdentity completed `shouldBe` expectedReuse
+          planBaselineSessionIdentity cancelled `shouldBe` expectedReuse
+          case states of
+            firstState : _ ->
+              planBaselineSessionIdentity firstState `shouldBe` MintFreshRootSessionId
+            [] -> expectationFailure "root-session prefix list is empty"
 
     it "restarts every unfinished prefix with a new identity through orphan cleanup" $
       withFixture $ \fixture ->

@@ -11,6 +11,7 @@
 -- configuration.
 module Prodbox.ControlPlane.TargetIntentAuthorityProduction
   ( productionTargetIntentIssuerBoundary
+  , selectRetainedAcmeEabDeliveryIntent
   )
 where
 
@@ -26,13 +27,21 @@ import Data.Text qualified as Text
 import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Capacity.TargetWorkerBudget qualified as TargetWorkerBudget
 import Prodbox.ControlPlane.Coordinate (AuthorityEpoch)
 import Prodbox.ControlPlane.InClusterAuthorityStore
   ( InClusterAuthorityStore
   , inClusterAuthorityModelBCasAdapter
   )
+import Prodbox.ControlPlane.RetainedMaterialRepository
+  ( retainedMaterialModelBCodec
+  )
+import Prodbox.ControlPlane.TargetAuthorityTrust
+  ( renderTargetAuthorityTrustBoundaryCause
+  )
 import Prodbox.ControlPlane.TargetAuthorityTrustClient
   ( TargetAuthorityTrustClient
+  , classifyTargetAuthorityTrustClientError
   , installAcceptedTargetAuthority
   )
 import Prodbox.ControlPlane.TargetIntentAuthority
@@ -48,7 +57,26 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
 import Prodbox.ControlPlane.TargetSecretAgentExecution
   ( TargetAgentIdentity
   , mkTargetAgentIdentity
+  , targetAgentClusterIdentity
   , targetAgentIdentityText
+  )
+import Prodbox.Lifecycle.Authority.RetainedMaterial
+  ( RetainedDeliveryIntent
+  , RetainedMaterialAggregate
+  , RetainedMaterialRef
+  , RetainedMaterialSchema (RetainedAcmeEabMaterial)
+  , SRetainedMaterialSchema (SRetainedAcmeEabMaterial)
+  , mkRetainedMaterialRef
+  , retainedDeliveryAttestationRef
+  , retainedDeliveryDeadline
+  , retainedDeliveryOperationId
+  , retainedDeliverySourceReceipt
+  , retainedDeliveryTarget
+  , retainedDeliveryTargetGeneration
+  , retainedMaterialPendingDeliveries
+  , retainedMaterialRefText
+  , retainedMaterialSchemaToken
+  , retainedMaterialTargetText
   )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
@@ -60,29 +88,33 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBObservation (..)
   , StoreLifetime (ClusterRetained)
   , mkClusterRetainedCoordinate
+  , mkCrossClusterDurableCoordinate
   )
 import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
-  ( externalMaterialIngressCurrentIntent
+  ( ExternalMaterialIngressState
   , externalMaterialIngressCurrentReceipt
-  , externalMaterialIngressIntentDeadline
   , externalMaterialIngressStateCodec
   , externalMaterialTargetReceiptDigest
   , externalMaterialTargetReceiptGeneration
   , externalMaterialTargetReceiptPermitId
+  , externalMaterialTargetReceiptSourceReceipt
   )
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( operatorMaterialPermitIdText
   )
 import Prodbox.Lifecycle.CredentialProvisioner.PreparedTarget
-  ( PreparedCredentialTargetObservation
-  , preparedCredentialTargetDeadline
+  ( preparedCredentialTargetDeadline
   , preparedCredentialTargetFence
   , preparedCredentialTargetGeneration
   , preparedCredentialTargetId
-  , preparedCredentialTargetObservationCodec
   , preparedCredentialTargetOwnerNonce
   , preparedCredentialTargetReceiptDigest
   , preparedCredentialTargetSelectedAgent
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.PreparedTargetOutbox
+  ( PreparedCredentialTargetOutbox
+  , preparedCredentialTargetOutboxCodec
+  , preparedCredentialTargetOutboxObservation
   )
 import Prodbox.Lifecycle.Decommission.AuthorityExport
   ( AuthorityManifestSigner
@@ -135,13 +167,19 @@ productionTargetIntentIssuerBoundary store authority registeredAgentIdentity rea
     , installIssuedTargetAuthority =
         \_ accepted ->
           fmap
-            (either (Left . Text.pack . show) Right)
+            ( either
+                ( Left
+                    . renderTargetAuthorityTrustBoundaryCause
+                    . classifyTargetAuthorityTrustClientError
+                )
+                Right
+            )
             (installAcceptedTargetAuthority trustClient accepted)
     }
  where
   readPreparedIntent request = case targetIntentIssueTarget request of
     TargetSesSmtp -> observeAwsAdminPrepared request
-    TargetAcmeEab -> observeExternalAcmeEab
+    TargetAcmeEab -> observeExternalAcmeEab request
     TargetAwsCredential _ -> observeAwsAdminPrepared request
     TargetPublicEdgeTls -> observeOrCommitOperationAuthorization request
     TargetFederationCustody -> observeOrCommitOperationAuthorization request
@@ -156,7 +194,7 @@ productionTargetIntentIssuerBoundary store authority registeredAgentIdentity rea
             ( inClusterAuthorityModelBCasAdapter
                 store
                 authority
-                preparedCredentialTargetObservationCodec
+                preparedCredentialTargetOutboxCodec
             )
             coordinate
         pure (awsAdminPreparedFromObservation request observed)
@@ -217,57 +255,145 @@ productionTargetIntentIssuerBoundary store authority registeredAgentIdentity rea
       ModelBUnobservable detail ->
         Left ("target operation authorization is unobservable: " <> detail)
 
-  observeExternalAcmeEab =
+  observeExternalAcmeEab request =
     case mkClusterRetainedCoordinate authority "authority/external-material-ingress" of
-      Left err -> pure (Left ("external EAB ingress coordinate invalid: " <> Text.pack (show err)))
-      Right coordinate -> do
-        observed <-
-          modelBObserve
-            ( inClusterAuthorityModelBCasAdapter
-                store
-                authority
-                (externalMaterialIngressStateCodec externalIngressMaximumBytes)
-            )
-            coordinate
-        pure $ case observed of
-          ModelBMissing -> Left "external EAB ingress outbox is absent"
-          ModelBCorrupt detail -> Left ("external EAB ingress outbox is corrupt: " <> detail)
-          ModelBEndpointUnready detail -> Left ("external EAB ingress outbox endpoint is not ready: " <> detail)
-          ModelBUnobservable detail -> Left ("external EAB ingress outbox is unobservable: " <> detail)
-          ModelBObserved _ state -> do
-            intent <-
-              maybe
-                (Left "external EAB ingress intent is absent")
-                Right
-                (externalMaterialIngressCurrentIntent state)
-            receipt <-
-              maybe
-                (Left "external EAB custody receipt is not committed")
-                Right
-                (externalMaterialIngressCurrentReceipt state)
-            owner <-
-              mapLeftShow
-                ( mkOwnerNonce
-                    ( "external-"
-                        <> operatorMaterialPermitIdText
-                          (externalMaterialTargetReceiptPermitId receipt)
-                    )
+      Left err ->
+        pure (Left ("external EAB ingress coordinate invalid: " <> Text.pack (show err)))
+      Right ingressCoordinate ->
+        case mkCrossClusterDurableCoordinate
+          authority
+          ( "retained-material/delivery/"
+              <> retainedMaterialSchemaToken SRetainedAcmeEabMaterial
+              <> "/"
+              <> targetAgentClusterIdentity registeredAgentIdentity
+          ) of
+          Left err ->
+            pure (Left ("retained EAB delivery coordinate invalid: " <> Text.pack (show err)))
+          Right deliveryCoordinate -> do
+            ingressObserved <-
+              modelBObserve
+                ( inClusterAuthorityModelBCasAdapter
+                    store
+                    authority
+                    (externalMaterialIngressStateCodec externalIngressMaximumBytes)
                 )
-            fence <-
-              mapLeftShow
-                ( mkFencingToken
-                    ( credentialGenerationValue
-                        (externalMaterialTargetReceiptGeneration receipt)
-                    )
+                ingressCoordinate
+            deliveryObserved <-
+              modelBObserve
+                ( inClusterAuthorityModelBCasAdapter
+                    store
+                    authority
+                    (retainedMaterialModelBCodec SRetainedAcmeEabMaterial)
                 )
-            mkAuthorizedPreparedTargetIntent
-              owner
-              fence
-              registeredAgentIdentity
-              TargetAcmeEab
+                deliveryCoordinate
+            pure
+              ( externalAcmeEabPreparedFromObservations
+                  registeredAgentIdentity
+                  request
+                  ingressObserved
+                  deliveryObserved
+              )
+
+externalAcmeEabPreparedFromObservations
+  :: TargetAgentIdentity
+  -> TargetIntentIssueRequest
+  -> ModelBObservation ExternalMaterialIngressState
+  -> ModelBObservation (RetainedMaterialAggregate 'RetainedAcmeEabMaterial)
+  -> Either Text AuthorizedPreparedTargetIntent
+externalAcmeEabPreparedFromObservations registeredAgentIdentity request ingressObservation deliveryObservation = do
+  state <- case ingressObservation of
+    ModelBMissing -> Left "external EAB ingress outbox is absent"
+    ModelBCorrupt detail -> Left ("external EAB ingress outbox is corrupt: " <> detail)
+    ModelBEndpointUnready detail ->
+      Left ("external EAB ingress outbox endpoint is not ready: " <> detail)
+    ModelBUnobservable detail -> Left ("external EAB ingress outbox is unobservable: " <> detail)
+    ModelBObserved _ value -> Right value
+  receipt <-
+    maybe
+      (Left "external EAB custody receipt is not committed")
+      Right
+      (externalMaterialIngressCurrentReceipt state)
+  aggregate <- case deliveryObservation of
+    ModelBMissing -> Left "retained EAB delivery outbox is absent"
+    ModelBCorrupt detail -> Left ("retained EAB delivery outbox is corrupt: " <> detail)
+    ModelBEndpointUnready detail ->
+      Left ("retained EAB delivery outbox endpoint is not ready: " <> detail)
+    ModelBUnobservable detail -> Left ("retained EAB delivery outbox is unobservable: " <> detail)
+    ModelBObserved _ value -> Right value
+  unless
+    ( externalMaterialTargetReceiptGeneration receipt
+        == targetIntentIssueExpectedGeneration request
+        && externalMaterialTargetReceiptDigest receipt
+          == targetIntentIssueExpectedReceiptDigest request
+    )
+    (Left "external EAB Target-intent request differs from custody receipt")
+  sourceReceipt <-
+    mapLeftShow
+      (mkRetainedMaterialRef (externalMaterialTargetReceiptSourceReceipt receipt))
+  delivery <-
+    selectRetainedAcmeEabDeliveryIntent
+      registeredAgentIdentity
+      request
+      sourceReceipt
+      (retainedMaterialPendingDeliveries aggregate)
+  owner <-
+    mapLeftShow
+      ( mkOwnerNonce
+          ( "external-"
+              <> operatorMaterialPermitIdText
+                (externalMaterialTargetReceiptPermitId receipt)
+          )
+      )
+  fence <-
+    mapLeftShow
+      ( mkFencingToken
+          ( credentialGenerationValue
               (externalMaterialTargetReceiptGeneration receipt)
-              (externalMaterialTargetReceiptDigest receipt)
-              (externalMaterialIngressIntentDeadline intent)
+          )
+      )
+  mkAuthorizedPreparedTargetIntent
+    owner
+    fence
+    registeredAgentIdentity
+    TargetAcmeEab
+    (externalMaterialTargetReceiptGeneration receipt)
+    (externalMaterialTargetReceiptDigest receipt)
+    (retainedDeliveryDeadline delivery)
+
+-- | Select the sole pending delivery that authorizes an ACME EAB Target
+-- intent. The request names no deadline: the Authority recovers that value
+-- from the exact durable retained-delivery outbox successor.
+selectRetainedAcmeEabDeliveryIntent
+  :: TargetAgentIdentity
+  -> TargetIntentIssueRequest
+  -> RetainedMaterialRef
+  -> [RetainedDeliveryIntent 'RetainedAcmeEabMaterial]
+  -> Either Text (RetainedDeliveryIntent 'RetainedAcmeEabMaterial)
+selectRetainedAcmeEabDeliveryIntent registeredAgentIdentity request sourceReceipt pending = do
+  unless
+    ( targetIntentIssueTarget request == TargetAcmeEab
+        && targetIntentIssueExpectedAgentIdentity request == registeredAgentIdentity
+    )
+    (Left "retained EAB Target-intent request differs from registered Target Agent")
+  delivery <- case filter operationMatches pending of
+    [] -> Left "retained EAB Target-intent delivery is not pending"
+    [exact] -> Right exact
+    _ -> Left "retained EAB Target-intent delivery operation is ambiguous"
+  unless
+    ( retainedDeliverySourceReceipt delivery == sourceReceipt
+        && retainedMaterialTargetText (retainedDeliveryTarget delivery)
+          == targetAgentClusterIdentity registeredAgentIdentity
+        && retainedDeliveryTargetGeneration delivery
+          == targetIntentIssueExpectedGeneration request
+        && retainedMaterialRefText (retainedDeliveryAttestationRef delivery)
+          == targetValueDigestText (targetIntentIssueExpectedReceiptDigest request)
+    )
+    (Left "retained EAB Target-intent request differs from delivery outbox")
+  pure delivery
+ where
+  operationMatches delivery =
+    retainedMaterialRefText (retainedDeliveryOperationId delivery)
+      == targetIntentIssueOperationId request
 
 awsAdminPreparedCoordinate
   :: LongLivedCheckpointAuthority
@@ -286,7 +412,7 @@ awsAdminPreparedCoordinate authority request = do
 
 awsAdminPreparedFromObservation
   :: TargetIntentIssueRequest
-  -> ModelBObservation PreparedCredentialTargetObservation
+  -> ModelBObservation PreparedCredentialTargetOutbox
   -> Either Text AuthorizedPreparedTargetIntent
 awsAdminPreparedFromObservation request observation = do
   prepared <- case observation of
@@ -296,7 +422,7 @@ awsAdminPreparedFromObservation request observation = do
       Left ("AWS-admin prepared-target outbox is not ready: " <> detail)
     ModelBUnobservable detail ->
       Left ("AWS-admin prepared-target outbox is unobservable: " <> detail)
-    ModelBObserved _ value -> Right value
+    ModelBObserved _ value -> Right (preparedCredentialTargetOutboxObservation value)
   unless
     ( preparedCredentialTargetId prepared == targetIntentIssueTarget request
         && preparedCredentialTargetSelectedAgent prepared
@@ -363,7 +489,8 @@ targetOperationAuthorizationMaximumBytes :: Int
 targetOperationAuthorizationMaximumBytes = 64 * 1024
 
 targetOperationAuthorizationLifetimeMicros :: Natural
-targetOperationAuthorizationLifetimeMicros = 15 * 60 * 1000000
+targetOperationAuthorizationLifetimeMicros =
+  TargetWorkerBudget.targetOneShotAuthorizationLifetimeMicros
 
 targetOperationAuthorizationCodec :: ModelBCodec TargetOperationAuthorization
 targetOperationAuthorizationCodec =

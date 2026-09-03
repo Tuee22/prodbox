@@ -36,6 +36,7 @@ import Prodbox.ControlPlane.TargetRetainedMaterialRewrapEndpoint
   ( TargetRetainedMaterialRewrapBoundary (..)
   , TargetRetainedMaterialRewrapRequest (..)
   , TargetRetainedMaterialRewrapResponse (..)
+  , TargetRetainedMaterialSourceObservation (..)
   )
 import Prodbox.Lifecycle.Authority.RetainedMaterial
   ( RetainedCustodyObservation (..)
@@ -47,7 +48,9 @@ import Prodbox.Lifecycle.Authority.RetainedMaterial
   , mkRetainedMaterialTarget
   , retainedMaterialRefText
   , retainedSourceCiphertextDigest
+  , retainedSourceCommitmentRef
   , retainedSourceGeneration
+  , retainedSourceOperationId
   , retainedSourceReceiptRef
   , retainedSourceVaultVersion
   )
@@ -70,10 +73,61 @@ productionTargetRetainedMaterialRewrapBoundary
 productionTargetRetainedMaterialRewrapBoundary session targetIdentity =
   TargetRetainedMaterialRewrapBoundary dispatch
  where
-  dispatch now request = case targetRetainedRewrapTarget request of
-    TargetSesSmtp -> runFor SRetainedSesSmtpMaterial now request
-    TargetAcmeEab -> runFor SRetainedAcmeEabMaterial now request
-    _ -> pure (refused "target is not a retained-material schema")
+  dispatch now request = case request of
+    TargetRetainedMaterialRewrapRequest {} ->
+      case targetRetainedRewrapTarget request of
+        TargetSesSmtp -> runFor SRetainedSesSmtpMaterial now request
+        TargetAcmeEab -> runFor SRetainedAcmeEabMaterial now request
+        _ -> pure (refused "target is not a retained-material schema")
+    ObserveTargetRetainedMaterialSource {} ->
+      case targetRetainedRewrapTarget request of
+        TargetSesSmtp -> observeFor SRetainedSesSmtpMaterial now request
+        TargetAcmeEab -> observeFor SRetainedAcmeEabMaterial now request
+        _ -> pure (refused "target is not a retained-material schema")
+
+  observeFor
+    :: forall schema
+     . SRetainedMaterialSchema schema
+    -> AuthorityTime
+    -> TargetRetainedMaterialRewrapRequest
+    -> IO TargetRetainedMaterialRewrapResponse
+  observeFor schema now request
+    | authorityTimeFromMicros (targetRetainedSourceObservationDeadlineMicros request) <= now =
+        pure (refused "retained-material observation deadline elapsed")
+    | otherwise = do
+        observed <- observeRetainedCustody schema now (retainedCustodyVaultBoundary session schema)
+        pure $ case observed of
+          RetainedCustodyPresent source
+            | retainedMaterialRefText (retainedSourceOperationId source)
+                /= targetRetainedSourceExpectedOperationId request ->
+                refused "retained source operation mismatch"
+            | credentialGenerationValue (retainedSourceGeneration source)
+                /= targetRetainedSourceExpectedGeneration request ->
+                refused "retained source generation mismatch"
+            | otherwise ->
+                TargetRetainedMaterialSourceObserved
+                  TargetRetainedMaterialSourceObservation
+                    { targetRetainedSourceObservedTarget =
+                        targetRetainedRewrapTarget request
+                    , targetRetainedSourceObservedOperationId =
+                        retainedMaterialRefText (retainedSourceOperationId source)
+                    , targetRetainedSourceObservedReceiptRef =
+                        retainedMaterialRefText (retainedSourceReceiptRef source)
+                    , targetRetainedSourceObservedGeneration =
+                        credentialGenerationValue (retainedSourceGeneration source)
+                    , targetRetainedSourceObservedCommitment =
+                        retainedMaterialRefText (retainedSourceCommitmentRef source)
+                    , targetRetainedSourceObservedCiphertextDigest =
+                        targetValueDigestText (retainedSourceCiphertextDigest source)
+                    , targetRetainedSourceObservedVaultVersion =
+                        retainedSourceVaultVersion source
+                    }
+          RetainedCustodyPositivelyAbsent _ ->
+            TargetRetainedMaterialSourceAbsent (targetRetainedRewrapTarget request)
+          RetainedCustodyDigestMismatch _ _ ->
+            unavailable "retained source digest mismatches metadata"
+          RetainedCustodyCorrupt _ -> unavailable "retained source is corrupt"
+          RetainedCustodyUnobservable _ -> unavailable "retained source is unobservable"
 
   runFor
     :: forall schema

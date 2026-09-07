@@ -12,8 +12,10 @@
 -- @Binary@\/@Serialise@\/@Generic@ instance — the handle cannot be serialized,
 -- and its
 -- 'Show' redacts every secret, so it cannot round-trip through a log line. The
--- secret bytes exist only as call-stack arguments until 'toSigV4Credentials'
--- feeds the SigV4 signer. There is no exported @CredentialHandle o ->
+-- Native-client secret bytes leave a handle only when 'toSigV4Credentials'
+-- feeds the SigV4 signer. Native STS additionally creates the subprocess
+-- credential projection directly from its temporary response; it is never
+-- reconstructed from a handle. There is no exported @CredentialHandle o ->
 -- SessionCredentialHandle@ and no @unsafeCoerce@ widening: a base handle becomes
 -- a session handle ONLY through a real (or fake) STS round trip
 -- (@Prodbox.Aws.Native.Sts@), so base→session is non-convertible by construction.

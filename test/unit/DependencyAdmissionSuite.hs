@@ -124,6 +124,46 @@ dependencyAdmissionSuite =
           admissionBound `shouldBe` bound
         Left other -> expectationFailure ("unexpected refusal: " <> show other)
 
+    it
+      "MINIO-REGISTRY-ADMISSION-FRESHNESS-EXHAUSTED-CLEAN-INSTALL-2026-09-06 refreshes every distinct expired registry dependency"
+      $ do
+        -- The clean-install counterexample crosses the sequential Vault phase
+        -- after observing cluster-base and MinIO.  Both registry dependencies can
+        -- therefore expire before the registry mutation is reached.  Refreshing
+        -- only the first refusal merely exposes the second stale admission.
+        let registryDependencies =
+              [ dependency
+              | (consumer, dependency) <- componentDagEdges dag
+              , consumer == ComponentRegistry
+              ]
+            staleAdmissions =
+              foldr
+                (recordAdmission . admissionAt (now - requiredBound - 1))
+                noAdmissions
+                registryDependencies
+        registryDependencies `shouldBe` [ComponentClusterBase, ComponentMinio]
+        observed <- newIORef ([] :: [ComponentId])
+        mutationStarted <- newIORef False
+        let readinessFor dependency = do
+              seen <- readIORef observed
+              writeIORef observed (seen ++ [dependency])
+              pure (Right (admissionAt now dependency))
+        outcome <-
+          runAnchoredStepOrder
+            dag
+            (pure now)
+            (const (ComponentMutation ComponentRegistry))
+            (\_ _ -> writeIORef mutationStarted True >> pure ExitSuccess)
+            (const (pure ExitSuccess))
+            readinessFor
+            staleAdmissions
+            [()]
+        case outcome of
+          Left refusal -> expectationFailure ("registry mutation refused: " <> show refusal)
+          Right (exitCode, _) -> exitCode `shouldBe` ExitSuccess
+        readIORef mutationStarted `shouldReturn` True
+        readIORef observed `shouldReturn` registryDependencies
+
     it "admits a mutation once every declared dependency is fresh enough" $ do
       let admissions =
             foldr (recordAdmission . admissionAt now) noAdmissions dependencies

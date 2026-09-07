@@ -32,6 +32,22 @@ module Prodbox.Gateway.Peer
   , signedAssertionKind
   , signedAssertionResultDigest
 
+    -- * Signed bounded liveness
+  , SignedLivenessFrame
+  , signLivenessFrame
+  , encodeSignedLivenessFrame
+  , decodeSignedLivenessFrame
+  , verifySignedLivenessFrame
+  , admitSignedLivenessFrame
+  , signedLivenessEmitter
+  , signedLivenessTimestamp
+  , signedLivenessSequence
+
+    -- * Signed replay retention
+  , SignedEmitterRetention (..)
+  , reconcileSignedEmitterRetention
+  , retainSignedEmitterAssertion
+
     -- * Bounded delta and cursor wire values
   , SignedDeltaFrame
   , mkSignedDeltaFrame
@@ -71,6 +87,7 @@ module Prodbox.Gateway.Peer
   , signedSemanticSnapshotEvidence
   , boundedSignedAssertionsToList
   , peerRequestSemanticSnapshot
+  , peerRequestLivenessFrame
   , peerRequestOrdersVersion
   , validatePeerRequestHeartbeatSkew
   , PeerTransportResponse
@@ -92,6 +109,7 @@ module Prodbox.Gateway.Peer
   , renderPeerHttpResponse
   , renderPeerDeltaRequest
   , renderPeerRepairRequest
+  , renderPeerLivenessRequest
   , renderPeerCursorRequest
 
     -- * Structured failures
@@ -162,6 +180,10 @@ import Prodbox.Gateway.State
   , ValidatedOrders
   , applyDelta
   , applyEmitterRepair
+  , assertionEmitter
+  , assertionIncarnation
+  , assertionKind
+  , assertionResultCursor
   , cursorVectorLookup
   , emitterCheckpointCursor
   , emitterCheckpointEmitter
@@ -180,6 +202,7 @@ import Prodbox.Gateway.State
   , gatewayStateActiveOrders
   , gatewayStateCursorVector
   , gatewayStateEmitterIncarnation
+  , gatewayStateLatestHeartbeat
   , gatewayStateRejectionSummary
   , mkCursorVector
   , mkDeltaFrame
@@ -206,6 +229,9 @@ import Prodbox.Gateway.State
 
 protocolVersion :: Word16
 protocolVersion = 4
+
+livenessProtocolVersion :: Word16
+livenessProtocolVersion = 2
 
 signatureBytes :: Int
 signatureBytes = 32
@@ -505,6 +531,501 @@ signedAssertionKind (SignedAssertion wire) =
 
 signedAssertionResultDigest :: SignedAssertion -> ByteString
 signedAssertionResultDigest = SHA256.hash . signedAssertionBytes
+
+-- | Exact durable heartbeat coordinate that fences one process-local liveness
+-- sequence.  The digest is the semantic result digest derived from the
+-- canonical signed heartbeat bytes; a sender cannot choose it independently.
+data WireLivenessFence = WireLivenessFence
+  { wireLivenessFenceIncarnation :: Word64
+  , wireLivenessFenceEpoch :: Word64
+  , wireLivenessFenceSequence :: Word64
+  , wireLivenessFenceDigest :: ByteString
+  }
+  deriving (Eq, Generic, Ord, Show)
+
+instance Serialise WireLivenessFence
+
+-- | A bounded liveness observation is deliberately not a semantic assertion.
+-- It changes no durable cursor and cannot express ownership.  Its signature
+-- binds the exact active Orders, the latest durable heartbeat boot fence, and
+-- the complete signed boot heartbeat.  The latter lets a checkpoint-restored
+-- peer authenticate the fence even when its compacted semantic projection no
+-- longer carries the corresponding latest-heartbeat value.
+data WireUnsignedLivenessFrame = WireUnsignedLivenessFrame
+  { wireLivenessProtocol :: Word16
+  , wireLivenessOrders :: WireOrdersAnchor
+  , wireLivenessEmitter :: Text
+  , wireLivenessFence :: WireLivenessFence
+  , wireLivenessBoot :: WireSignedAssertion
+  , wireLivenessSequence :: Word64
+  , wireLivenessObservedAt :: Word64
+  }
+  deriving (Eq, Generic, Show)
+
+instance Serialise WireUnsignedLivenessFrame
+
+data WireSignedLivenessFrame = WireSignedLivenessFrame
+  { wireSignedLivenessUnsigned :: WireUnsignedLivenessFrame
+  , wireSignedLivenessHmac :: ByteString
+  }
+  deriving (Eq, Generic)
+
+instance Serialise WireSignedLivenessFrame
+
+instance Show WireSignedLivenessFrame where
+  show wire =
+    "WireSignedLivenessFrame { frame = "
+      ++ show (wireSignedLivenessUnsigned wire)
+      ++ ", hmac = <redacted:"
+      ++ show (BS.length (wireSignedLivenessHmac wire))
+      ++ " bytes> }"
+
+-- | Opaque signed latest-only liveness frame.  Daemon state retains at most
+-- one admitted frame per configured member.
+newtype SignedLivenessFrame = SignedLivenessFrame WireSignedLivenessFrame
+  deriving (Eq)
+
+instance Show SignedLivenessFrame where
+  show (SignedLivenessFrame wire) = show wire
+
+signLivenessFrame
+  :: GatewayBounds
+  -> ValidatedOrders
+  -> NodeId
+  -> SignedAssertion
+  -> Word64
+  -> Word64
+  -> EventKey
+  -> Either PeerError SignedLivenessFrame
+signLivenessFrame bounds orders emitter boot sequenceNumber observedAt key@(EventKey keyBytes) = do
+  when
+    (sequenceNumber == 0)
+    (Left (PeerLivenessSequenceMustBePositive (nodeIdText emitter)))
+  semanticBoot <-
+    verifySignedAssertion
+      bounds
+      orders
+      (\candidate -> if candidate == emitter then Just key else Nothing)
+      boot
+  unless
+    (assertionEmitter semanticBoot == emitter)
+    ( Left
+        ( PeerLivenessBootEmitterMismatch
+            (nodeIdText emitter)
+            (nodeIdText (assertionEmitter semanticBoot))
+        )
+    )
+  case assertionKind semanticBoot of
+    HeartbeatAssertion _ -> Right ()
+    _ -> Left (PeerLivenessBootMustBeHeartbeat emitter)
+  let unsigned =
+        WireUnsignedLivenessFrame
+          { wireLivenessProtocol = livenessProtocolVersion
+          , wireLivenessOrders = anchorToWire (validatedOrdersAnchor orders)
+          , wireLivenessEmitter = nodeIdText emitter
+          , wireLivenessFence = livenessFenceFromAssertion boot
+          , wireLivenessBoot = case boot of SignedAssertion bootWire -> bootWire
+          , wireLivenessSequence = sequenceNumber
+          , wireLivenessObservedAt = observedAt
+          }
+      wire =
+        WireSignedLivenessFrame
+          { wireSignedLivenessUnsigned = unsigned
+          , wireSignedLivenessHmac = SHA256.hmac keyBytes (canonicalBytes unsigned)
+          }
+  validateSignedLivenessShape bounds wire
+  Right (SignedLivenessFrame wire)
+
+encodeSignedLivenessFrame :: SignedLivenessFrame -> ByteString
+encodeSignedLivenessFrame (SignedLivenessFrame wire) = canonicalBytes wire
+
+decodeSignedLivenessFrame
+  :: GatewayBounds
+  -> ByteString
+  -> Either PeerError SignedLivenessFrame
+decodeSignedLivenessFrame bounds bytes = do
+  validateEncodedFrameBytes bounds bytes
+  wire <- decodeCanonical "signed liveness frame" bytes
+  validateSignedLivenessShape bounds wire
+  Right (SignedLivenessFrame wire)
+
+verifySignedLivenessFrame
+  :: GatewayBounds
+  -> ValidatedOrders
+  -> EventKeyLookup
+  -> GatewayState
+  -> SignedLivenessFrame
+  -> Either PeerError ()
+verifySignedLivenessFrame bounds orders lookupKey state (SignedLivenessFrame wire) = do
+  validateSignedLivenessShape bounds wire
+  let unsigned = wireSignedLivenessUnsigned wire
+  validateWireAnchor orders (wireLivenessOrders unsigned)
+  emitter <- resolveEmitter orders (wireLivenessEmitter unsigned)
+  key <-
+    case lookupKey emitter of
+      Nothing -> Left (PeerEventKeyUnavailable emitter)
+      Just present -> Right present
+  let EventKey keyBytes = key
+      expected = SHA256.hmac keyBytes (canonicalBytes unsigned)
+      supplied = wireSignedLivenessHmac wire
+  unless
+    (ByteArray.constEq expected supplied)
+    (Left (PeerLivenessSignatureMismatch emitter))
+  let boot = SignedAssertion (wireLivenessBoot unsigned)
+  semanticBoot <- verifySignedAssertion bounds orders lookupKey boot
+  unless
+    (assertionEmitter semanticBoot == emitter)
+    ( Left
+        ( PeerLivenessBootEmitterMismatch
+            (nodeIdText emitter)
+            (nodeIdText (assertionEmitter semanticBoot))
+        )
+    )
+  case assertionKind semanticBoot of
+    HeartbeatAssertion _ -> Right ()
+    _ -> Left (PeerLivenessBootMustBeHeartbeat emitter)
+  unless
+    (wireLivenessFence unsigned == livenessFenceFromGatewayAssertion semanticBoot)
+    (Left (PeerLivenessBootFenceMismatch (nodeIdText emitter)))
+  verifyLivenessBootObserved state emitter semanticBoot
+
+-- | A full semantic projection proves the exact latest heartbeat directly. A
+-- compacted checkpoint may instead retain only the emitter incarnation and
+-- cursor.  In that case the authenticated boot is admissible at the exact
+-- cursor/digest, or below a later cursor in the same incarnation and epoch; a
+-- receiver behind the boot has not observed it, and a receiver in a later
+-- incarnation/epoch must reject it as stale.
+verifyLivenessBootObserved
+  :: GatewayState
+  -> NodeId
+  -> GatewayAssertion
+  -> Either PeerError ()
+verifyLivenessBootObserved state emitter semanticBoot =
+  case gatewayStateLatestHeartbeat emitter state of
+    Just durableHeartbeat ->
+      unless
+        (livenessFenceFromGatewayAssertion semanticBoot == livenessFenceFromGatewayAssertion durableHeartbeat)
+        (Left (PeerLivenessBootFenceMismatch emitterName))
+    Nothing -> do
+      currentIncarnation <-
+        maybe unavailable Right (gatewayStateEmitterIncarnation emitter state)
+      currentCursor <-
+        maybe
+          unavailable
+          Right
+          (cursorVectorLookup emitter (gatewayStateCursorVector state))
+      let bootIncarnation = assertionIncarnation semanticBoot
+          bootCursor = assertionResultCursor semanticBoot
+      case compare currentIncarnation bootIncarnation of
+        LT -> unavailable
+        GT -> stale
+        EQ ->
+          case compare (emitterCursorEpoch currentCursor) (emitterCursorEpoch bootCursor) of
+            LT -> unavailable
+            GT -> stale
+            EQ ->
+              case compare
+                (emitterCursorSequence currentCursor)
+                (emitterCursorSequence bootCursor) of
+                LT -> unavailable
+                GT -> Right ()
+                EQ ->
+                  unless
+                    (emitterCursorHash currentCursor == emitterCursorHash bootCursor)
+                    (Left (PeerLivenessBootFenceMismatch emitterName))
+ where
+  emitterName = nodeIdText emitter
+  unavailable = Left (PeerLivenessBootFenceUnavailable emitterName)
+  stale = Left (PeerLivenessBootFenceStale emitterName)
+
+-- | Retain only the newest frame for one emitter.  Exact duplicate delivery
+-- is idempotent; stale or same-coordinate divergent delivery refuses.
+admitSignedLivenessFrame
+  :: Maybe SignedLivenessFrame
+  -> SignedLivenessFrame
+  -> Either PeerError SignedLivenessFrame
+admitSignedLivenessFrame existing candidate@(SignedLivenessFrame candidateWire) =
+  case existing of
+    Nothing -> Right candidate
+    Just current@(SignedLivenessFrame currentWire) ->
+      let candidateUnsigned = wireSignedLivenessUnsigned candidateWire
+          currentUnsigned = wireSignedLivenessUnsigned currentWire
+          emitter = wireLivenessEmitter candidateUnsigned
+          candidateFence = wireLivenessFence candidateUnsigned
+          currentFence = wireLivenessFence currentUnsigned
+          candidateSequence = wireLivenessSequence candidateUnsigned
+          currentSequence = wireLivenessSequence currentUnsigned
+       in case compare (livenessFenceCoordinate candidateFence) (livenessFenceCoordinate currentFence) of
+            LT -> Left (PeerLivenessBootFenceStale emitter)
+            GT -> Right candidate
+            EQ
+              | wireLivenessFenceDigest candidateFence
+                  /= wireLivenessFenceDigest currentFence ->
+                  Left (PeerLivenessBootFenceMismatch emitter)
+              | otherwise ->
+                  case compare candidateSequence currentSequence of
+                    LT ->
+                      Left
+                        ( PeerLivenessReplayStale
+                            emitter
+                            candidateSequence
+                            currentSequence
+                        )
+                    GT
+                      | wireLivenessObservedAt candidateUnsigned
+                          < wireLivenessObservedAt currentUnsigned ->
+                          Left
+                            ( PeerLivenessTimestampRegressed
+                                emitter
+                                (wireLivenessObservedAt candidateUnsigned)
+                                (wireLivenessObservedAt currentUnsigned)
+                            )
+                      | otherwise -> Right candidate
+                    EQ
+                      | candidate == current -> Right current
+                      | otherwise ->
+                          Left (PeerLivenessReplayConflict emitter candidateSequence)
+
+signedLivenessEmitter :: SignedLivenessFrame -> Text
+signedLivenessEmitter (SignedLivenessFrame wire) =
+  wireLivenessEmitter (wireSignedLivenessUnsigned wire)
+
+signedLivenessTimestamp :: SignedLivenessFrame -> Word64
+signedLivenessTimestamp (SignedLivenessFrame wire) =
+  wireLivenessObservedAt (wireSignedLivenessUnsigned wire)
+
+signedLivenessSequence :: SignedLivenessFrame -> Word64
+signedLivenessSequence (SignedLivenessFrame wire) =
+  wireLivenessSequence (wireSignedLivenessUnsigned wire)
+
+livenessFenceFromAssertion :: SignedAssertion -> WireLivenessFence
+livenessFenceFromAssertion signed =
+  WireLivenessFence
+    { wireLivenessFenceIncarnation = signedAssertionIncarnation signed
+    , wireLivenessFenceEpoch = signedAssertionEpoch signed
+    , wireLivenessFenceSequence = signedAssertionSequence signed
+    , wireLivenessFenceDigest = signedAssertionResultDigest signed
+    }
+
+livenessFenceFromGatewayAssertion :: GatewayAssertion -> WireLivenessFence
+livenessFenceFromGatewayAssertion assertion =
+  let cursor = assertionResultCursor assertion
+   in WireLivenessFence
+        { wireLivenessFenceIncarnation =
+            emitterIncarnationValue (assertionIncarnation assertion)
+        , wireLivenessFenceEpoch = emitterEpochValue (emitterCursorEpoch cursor)
+        , wireLivenessFenceSequence = emitterSequenceValue (emitterCursorSequence cursor)
+        , wireLivenessFenceDigest = eventHashBytes (emitterCursorHash cursor)
+        }
+
+livenessFenceCoordinate :: WireLivenessFence -> (Word64, Word64, Word64)
+livenessFenceCoordinate fence =
+  ( wireLivenessFenceIncarnation fence
+  , wireLivenessFenceEpoch fence
+  , wireLivenessFenceSequence fence
+  )
+
+validateSignedLivenessShape
+  :: GatewayBounds
+  -> WireSignedLivenessFrame
+  -> Either PeerError ()
+validateSignedLivenessShape bounds wire = do
+  let unsigned = wireSignedLivenessUnsigned wire
+      fence = wireLivenessFence unsigned
+      bootWire = wireLivenessBoot unsigned
+      bootUnsigned = wireSignedUnsigned bootWire
+  unless
+    (wireLivenessProtocol unsigned == livenessProtocolVersion)
+    ( Left
+        ( PeerProtocolVersionMismatch
+            livenessProtocolVersion
+            (wireLivenessProtocol unsigned)
+        )
+    )
+  validateAnchorShape (wireLivenessOrders unsigned)
+  validateEmitterBytes bounds (wireLivenessEmitter unsigned)
+  validateSignedAssertionShape bounds bootWire
+  unless
+    (wireAssertionEmitter bootUnsigned == wireLivenessEmitter unsigned)
+    ( Left
+        ( PeerLivenessBootEmitterMismatch
+            (wireLivenessEmitter unsigned)
+            (wireAssertionEmitter bootUnsigned)
+        )
+    )
+  validateHashWidth (wireLivenessFenceDigest fence)
+  unless
+    ( fence
+        == WireLivenessFence
+          { wireLivenessFenceIncarnation = wireAssertionIncarnation bootUnsigned
+          , wireLivenessFenceEpoch = wireAssertionEpoch bootUnsigned
+          , wireLivenessFenceSequence = wireAssertionSequence bootUnsigned
+          , wireLivenessFenceDigest = SHA256.hash (canonicalBytes bootWire)
+          }
+    )
+    (Left (PeerLivenessBootFenceMismatch (wireLivenessEmitter unsigned)))
+  when
+    (wireLivenessFenceSequence fence == 0)
+    (Left (PeerLivenessBootFenceInvalid (wireLivenessEmitter unsigned)))
+  when
+    (wireLivenessSequence unsigned == 0)
+    (Left (PeerLivenessSequenceMustBePositive (wireLivenessEmitter unsigned)))
+  when
+    (BS.length (wireSignedLivenessHmac wire) /= signatureBytes)
+    ( Left
+        ( PeerLivenessSignatureWidthInvalid
+            signatureBytes
+            (BS.length (wireSignedLivenessHmac wire))
+        )
+    )
+  let actual = byteLength (canonicalBytes wire)
+      allowed = gatewayMaxFrameBytes bounds
+  when (actual > allowed) (Left (PeerEncodedFrameTooLarge actual allowed))
+
+-- | Exact signed companions for one emitter's semantic checkpoint and its
+-- strictly later bounded replay. The semantic checkpoint remains the
+-- authority; these bytes exist only so a peer repair can authenticate it.
+data SignedEmitterRetention = SignedEmitterRetention
+  { signedEmitterReplay :: [SignedAssertion]
+  , signedEmitterCheckpointHeartbeat :: Maybe SignedAssertion
+  , signedEmitterCheckpointOwnership :: Maybe SignedAssertion
+  }
+  deriving (Eq, Show)
+
+-- | Reconcile volatile signed evidence to an already-installed semantic
+-- checkpoint. This is deliberately safe to run both before and after an
+-- insertion: restart recovery installs the final semantic state first, so a
+-- newly replayed assertion may already belong at or below its checkpoint.
+reconcileSignedEmitterRetention
+  :: EmitterCheckpoint
+  -> SignedEmitterRetention
+  -> SignedEmitterRetention
+reconcileSignedEmitterRetention checkpoint retention =
+  normalizeCheckpointEvidence checkpoint advanced
+ where
+  checkpointCoordinate = emitterCheckpointCoordinate checkpoint
+  ordered = sortOn signedRetentionCoordinate (signedEmitterReplay retention)
+  (compacted, replay) = span ((<= checkpointCoordinate) . signedRetentionCoordinate) ordered
+  advanced =
+    foldl'
+      (flip advanceSignedCheckpointEvidence)
+      retention {signedEmitterReplay = replay}
+      compacted
+
+-- | Insert one signed assertion under the bounded replay budget, then
+-- reconcile again to the semantic checkpoint. The second reconciliation is
+-- essential after retained-journal recovery, where State is already at the
+-- terminal restored checkpoint before its signed suffix is replayed.
+retainSignedEmitterAssertion
+  :: GatewayBounds
+  -> EmitterCheckpoint
+  -> SignedAssertion
+  -> SignedEmitterRetention
+  -> SignedEmitterRetention
+retainSignedEmitterAssertion bounds checkpoint signed retention =
+  reconcileSignedEmitterRetention checkpoint withBoundedReplay
+ where
+  reconciled = reconcileSignedEmitterRetention checkpoint retention
+  existing = signedEmitterReplay reconciled
+  coordinate = signedRetentionCoordinate signed
+  withBoundedReplay
+    | any ((== coordinate) . signedRetentionCoordinate) existing = reconciled
+    | otherwise =
+        let ordered = sortOn signedRetentionCoordinate (signed : existing)
+            evictedCount = max 0 (length ordered - gatewayReplayPerEmitter bounds)
+            (evicted, replay) = splitAt evictedCount ordered
+         in foldl'
+              (flip advanceSignedCheckpointEvidence)
+              reconciled {signedEmitterReplay = replay}
+              evicted
+
+advanceSignedCheckpointEvidence
+  :: SignedAssertion
+  -> SignedEmitterRetention
+  -> SignedEmitterRetention
+advanceSignedCheckpointEvidence signed retention =
+  case signedAssertionKind signed of
+    HeartbeatAssertion _ ->
+      retention
+        { signedEmitterCheckpointHeartbeat =
+            Just (newerSignedAssertion signed (signedEmitterCheckpointHeartbeat retention))
+        }
+    OwnershipAssertion _ ->
+      retention
+        { signedEmitterCheckpointOwnership =
+            Just (newerSignedAssertion signed (signedEmitterCheckpointOwnership retention))
+        }
+    EpochRotationAssertion -> retention
+    OrdersMigrationAssertion _ ->
+      retention
+        { signedEmitterCheckpointHeartbeat = Nothing
+        , signedEmitterCheckpointOwnership = Nothing
+        }
+
+newerSignedAssertion :: SignedAssertion -> Maybe SignedAssertion -> SignedAssertion
+newerSignedAssertion candidate existing =
+  case existing of
+    Nothing -> candidate
+    Just current
+      | signedRetentionCoordinate candidate >= signedRetentionCoordinate current -> candidate
+      | otherwise -> current
+
+normalizeCheckpointEvidence
+  :: EmitterCheckpoint
+  -> SignedEmitterRetention
+  -> SignedEmitterRetention
+normalizeCheckpointEvidence checkpoint retention =
+  retention
+    { signedEmitterCheckpointHeartbeat =
+        matchingSignedEvidence
+          (emitterCheckpointHeartbeat checkpoint)
+          (signedEmitterCheckpointHeartbeat retention)
+    , signedEmitterCheckpointOwnership =
+        matchingSignedEvidence
+          (emitterCheckpointOwnership checkpoint)
+          (signedEmitterCheckpointOwnership retention)
+    }
+
+matchingSignedEvidence
+  :: Maybe GatewayAssertion
+  -> Maybe SignedAssertion
+  -> Maybe SignedAssertion
+matchingSignedEvidence expected supplied =
+  case (expected, supplied) of
+    (Just semantic, Just signed)
+      | signedMatchesSemantic signed semantic -> Just signed
+    _ -> Nothing
+
+signedMatchesSemantic :: SignedAssertion -> GatewayAssertion -> Bool
+signedMatchesSemantic signed semantic =
+  signedAssertionEmitter signed == nodeIdText (assertionEmitter semantic)
+    && signedAssertionIncarnation signed
+      == emitterIncarnationValue (assertionIncarnation semantic)
+    && signedAssertionEpoch signed
+      == emitterEpochValue (emitterCursorEpoch resultCursor)
+    && signedAssertionSequence signed
+      == emitterSequenceValue (emitterCursorSequence resultCursor)
+    && signedAssertionKind signed == assertionKind semantic
+    && signedAssertionResultDigest signed
+      == eventHashBytes (emitterCursorHash resultCursor)
+ where
+  resultCursor = assertionResultCursor semantic
+
+signedRetentionCoordinate :: SignedAssertion -> (Word64, Word64, Word64)
+signedRetentionCoordinate signed =
+  ( signedAssertionIncarnation signed
+  , signedAssertionEpoch signed
+  , signedAssertionSequence signed
+  )
+
+emitterCheckpointCoordinate :: EmitterCheckpoint -> (Word64, Word64, Word64)
+emitterCheckpointCoordinate checkpoint =
+  ( emitterIncarnationValue (emitterCheckpointIncarnation checkpoint)
+  , emitterEpochValue (emitterCursorEpoch cursor)
+  , emitterSequenceValue (emitterCursorSequence cursor)
+  )
+ where
+  cursor = emitterCheckpointCursor checkpoint
 
 verifySignedAssertion
   :: GatewayBounds
@@ -1852,6 +2373,7 @@ canonicalBytes = BL.toStrict . serialise
 data PeerTransportRequest
   = PeerPushDelta SignedDeltaFrame
   | PeerPushRepair SignedRepairFrame
+  | PeerPushLiveness SignedLivenessFrame
   | PeerPullCursor
   deriving (Eq, Show)
 
@@ -1870,6 +2392,7 @@ peerRequestReplayAssertions request =
       map SignedAssertion (wireDeltaAssertions frame)
     PeerPushRepair (SignedRepairFrame frame) ->
       map SignedAssertion (wireRepairAssertions frame)
+    PeerPushLiveness _ -> []
     PeerPullCursor -> []
 
 peerRequestSnapshotEvidence
@@ -1907,6 +2430,17 @@ peerRequestSemanticSnapshot request =
     PeerPushRepair (SignedRepairFrame frame) ->
       Just (SignedSemanticSnapshot (wireRepairSnapshot frame))
     PeerPushDelta _ -> Nothing
+    PeerPushLiveness _ -> Nothing
+    PeerPullCursor -> Nothing
+
+peerRequestLivenessFrame
+  :: PeerTransportRequest
+  -> Maybe SignedLivenessFrame
+peerRequestLivenessFrame request =
+  case request of
+    PeerPushLiveness frame -> Just frame
+    PeerPushDelta _ -> Nothing
+    PeerPushRepair _ -> Nothing
     PeerPullCursor -> Nothing
 
 -- | Observe the bounded wire Orders version before exact active-anchor
@@ -1919,6 +2453,11 @@ peerRequestOrdersVersion request =
       Just (wireOrdersVersion (wireDeltaOrders frame))
     PeerPushRepair (SignedRepairFrame frame) ->
       Just (wireOrdersVersion (wireRepairOrders frame))
+    PeerPushLiveness (SignedLivenessFrame frame) ->
+      Just
+        ( wireOrdersVersion
+            (wireLivenessOrders (wireSignedLivenessUnsigned frame))
+        )
     PeerPullCursor -> Nothing
 
 -- | Validate only newly replayed heartbeat assertions.  Checkpoint heartbeat
@@ -1929,8 +2468,14 @@ validatePeerRequestHeartbeatSkew
   -> Word64
   -> PeerTransportRequest
   -> Either PeerError ()
-validatePeerRequestHeartbeatSkew now maximumSkew request =
+validatePeerRequestHeartbeatSkew now maximumSkew request = do
   traverse_ validateOne replayed
+  case request of
+    PeerPushLiveness frame ->
+      validateTimestamp (signedLivenessEmitter frame) (signedLivenessTimestamp frame)
+    PeerPushDelta _ -> Right ()
+    PeerPushRepair _ -> Right ()
+    PeerPullCursor -> Right ()
  where
   replayed =
     boundedSignedAssertionsToList (peerRequestReplayAssertions request)
@@ -1938,23 +2483,26 @@ validatePeerRequestHeartbeatSkew now maximumSkew request =
   validateOne assertion =
     case signedAssertionKind assertion of
       HeartbeatAssertion timestamp ->
-        let observedSkew =
-              if timestamp <= now
-                then now - timestamp
-                else timestamp - now
-         in when
-              (observedSkew > maximumSkew)
-              ( Left
-                  ( PeerHeartbeatSkewExceeded
-                      (signedAssertionEmitter assertion)
-                      timestamp
-                      now
-                      maximumSkew
-                  )
-              )
+        validateTimestamp (signedAssertionEmitter assertion) timestamp
       OwnershipAssertion _ -> Right ()
       EpochRotationAssertion -> Right ()
       OrdersMigrationAssertion _ -> Right ()
+
+  validateTimestamp emitter timestamp =
+    let observedSkew =
+          if timestamp <= now
+            then now - timestamp
+            else timestamp - now
+     in when
+          (observedSkew > maximumSkew)
+          ( Left
+              ( PeerHeartbeatSkewExceeded
+                  emitter
+                  timestamp
+                  now
+                  maximumSkew
+              )
+          )
 
 data PeerRejectionCode
   = PeerRejectMalformedHttp
@@ -2046,6 +2594,10 @@ handlePeerRequest bounds lookupKey request state =
             RepairDuplicate unchanged -> accepted unchanged
             RepairRejected diagnosed _err ->
               rejectedWithState PeerRejectSemanticState diagnosed
+    PeerPushLiveness signed ->
+      case verifySignedLivenessFrame bounds (gatewayStateActiveOrders state) lookupKey state signed of
+        Left err -> rejected err state
+        Right () -> accepted state
  where
   accepted advanced = do
     cursor <- cursorFromState advanced
@@ -2220,6 +2772,18 @@ peerErrorEmitter err =
     PeerRepairSuffixContainsStale emitter -> Just (nodeIdText emitter)
     PeerRepairSuffixDiscontinuous emitter _ _ -> Just emitter
     PeerHeartbeatSkewExceeded emitter _ _ _ -> Just emitter
+    PeerLivenessBootMustBeHeartbeat emitter -> Just (nodeIdText emitter)
+    PeerLivenessBootEmitterMismatch expected _ -> Just expected
+    PeerLivenessBootFenceInvalid emitter -> Just emitter
+    PeerLivenessBootFenceUnavailable emitter -> Just emitter
+    PeerLivenessBootFenceMismatch emitter -> Just emitter
+    PeerLivenessBootFenceStale emitter -> Just emitter
+    PeerLivenessSequenceMustBePositive emitter -> Just emitter
+    PeerLivenessReplayStale emitter _ _ -> Just emitter
+    PeerLivenessReplayConflict emitter _ -> Just emitter
+    PeerLivenessTimestampRegressed emitter _ _ -> Just emitter
+    PeerLivenessSelfDeliveryForbidden emitter -> Just emitter
+    PeerLivenessSignatureMismatch emitter -> Just (nodeIdText emitter)
     PeerUnknownEmitter emitter -> Just emitter
     PeerCursorMissingEmitter emitter -> Just (nodeIdText emitter)
     _ -> Nothing
@@ -2229,7 +2793,12 @@ peerErrorEmitter err =
 peerHttpHeaderLimitBytes :: Int
 peerHttpHeaderLimitBytes = 8192
 
-data PeerHttpRoute = HttpPostDelta | HttpPostRepair | HttpGetCursor | HttpResponse
+data PeerHttpRoute
+  = HttpPostDelta
+  | HttpPostRepair
+  | HttpPostLiveness
+  | HttpGetCursor
+  | HttpResponse
   deriving (Eq, Show)
 
 data PeerHttpPreflight = PeerHttpPreflight
@@ -2294,6 +2863,7 @@ parsePeerHttpRequest bounds raw = do
   case internalHttpRoute preflight of
     HttpPostDelta -> PeerPushDelta <$> decodeSignedDeltaFrame bounds body
     HttpPostRepair -> PeerPushRepair <$> decodeSignedRepairFrame bounds body
+    HttpPostLiveness -> PeerPushLiveness <$> decodeSignedLivenessFrame bounds body
     HttpGetCursor -> Right PeerPullCursor
     HttpResponse -> Left PeerHttpMalformedRequestLine
 
@@ -2351,6 +2921,22 @@ renderPeerRepairRequest bounds host frame = do
   Right
     ( renderHttpMessage
         "POST /v1/peer/repair HTTP/1.1"
+        [("Host", host), ("Content-Type", "application/cbor")]
+        body
+    )
+
+renderPeerLivenessRequest
+  :: GatewayBounds
+  -> Text
+  -> SignedLivenessFrame
+  -> Either PeerError ByteString
+renderPeerLivenessRequest bounds host frame = do
+  validateHttpHost host
+  let body = encodeSignedLivenessFrame frame
+  validateEncodedFrameBytes bounds body
+  Right
+    ( renderHttpMessage
+        "POST /v1/peer/liveness HTTP/1.1"
         [("Host", host), ("Content-Type", "application/cbor")]
         body
     )
@@ -2436,6 +3022,7 @@ parseRequestLine line =
   case BS8.words line of
     ["POST", "/v1/peer/delta", "HTTP/1.1"] -> Right HttpPostDelta
     ["POST", "/v1/peer/repair", "HTTP/1.1"] -> Right HttpPostRepair
+    ["POST", "/v1/peer/liveness", "HTTP/1.1"] -> Right HttpPostLiveness
     ["GET", "/v1/peer/cursor", "HTTP/1.1"] -> Right HttpGetCursor
     [method, path, "HTTP/1.1"] ->
       Left
@@ -2504,6 +3091,7 @@ validateRouteBodyLength route bodyLength =
       when (bodyLength /= 0) (Left (PeerHttpCursorBodyMustBeEmpty bodyLength))
     HttpPostDelta -> Right ()
     HttpPostRepair -> Right ()
+    HttpPostLiveness -> Right ()
     HttpResponse -> Right ()
 
 validateHttpBodyBound :: GatewayBounds -> Natural -> Either PeerError ()
@@ -2611,6 +3199,8 @@ peerErrorCode err =
     PeerEventKeyUnavailable {} -> PeerRejectSignature
     PeerAssertionSignatureWidthInvalid {} -> PeerRejectSignature
     PeerAssertionSignatureMismatch {} -> PeerRejectSignature
+    PeerLivenessSignatureWidthInvalid {} -> PeerRejectSignature
+    PeerLivenessSignatureMismatch {} -> PeerRejectSignature
     PeerSnapshotSignatureWidthInvalid {} -> PeerRejectSignature
     PeerSnapshotSignatureMismatch {} -> PeerRejectSignature
     PeerSnapshotEvidenceMissing {} -> PeerRejectSignature
@@ -2633,6 +3223,17 @@ peerErrorCode err =
     PeerRepairSuffixContainsStale {} -> PeerRejectContinuity
     PeerRepairSuffixDiscontinuous {} -> PeerRejectContinuity
     PeerHeartbeatSkewExceeded {} -> PeerRejectContinuity
+    PeerLivenessBootMustBeHeartbeat {} -> PeerRejectContinuity
+    PeerLivenessBootEmitterMismatch {} -> PeerRejectContinuity
+    PeerLivenessBootFenceInvalid {} -> PeerRejectContinuity
+    PeerLivenessBootFenceUnavailable {} -> PeerRejectContinuity
+    PeerLivenessBootFenceMismatch {} -> PeerRejectContinuity
+    PeerLivenessBootFenceStale {} -> PeerRejectContinuity
+    PeerLivenessSequenceMustBePositive {} -> PeerRejectProtocol
+    PeerLivenessReplayStale {} -> PeerRejectContinuity
+    PeerLivenessReplayConflict {} -> PeerRejectContinuity
+    PeerLivenessTimestampRegressed {} -> PeerRejectContinuity
+    PeerLivenessSelfDeliveryForbidden {} -> PeerRejectContinuity
     PeerCursorDuplicateEmitter -> PeerRejectCursor
     PeerCursorEntriesNotCanonical -> PeerRejectCursor
     PeerCursorIncarnationShapeMismatch -> PeerRejectCursor
@@ -2664,6 +3265,19 @@ data PeerError
   | PeerDigestWidthInvalid Int Int
   | PeerAssertionSignatureWidthInvalid Int Int
   | PeerAssertionSignatureMismatch NodeId
+  | PeerLivenessSignatureWidthInvalid Int Int
+  | PeerLivenessSignatureMismatch NodeId
+  | PeerLivenessBootMustBeHeartbeat NodeId
+  | PeerLivenessBootEmitterMismatch Text Text
+  | PeerLivenessBootFenceInvalid Text
+  | PeerLivenessBootFenceUnavailable Text
+  | PeerLivenessBootFenceMismatch Text
+  | PeerLivenessBootFenceStale Text
+  | PeerLivenessSequenceMustBePositive Text
+  | PeerLivenessReplayStale Text Word64 Word64
+  | PeerLivenessReplayConflict Text Word64
+  | PeerLivenessTimestampRegressed Text Word64 Word64
+  | PeerLivenessSelfDeliveryForbidden Text
   | PeerAssertionTooLarge Natural Natural
   | PeerEpochInvalidationBeforeExhaustion NodeId Word64
   | PeerEmitterCountersExhausted NodeId

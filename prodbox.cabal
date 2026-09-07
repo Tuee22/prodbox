@@ -69,6 +69,7 @@ library
         Prodbox.Capacity.HostProbe
         Prodbox.Capacity.Render
         Prodbox.Capacity.MeasuredProfile
+        Prodbox.Capacity.OneShotWorkerSchedulerBudget
         Prodbox.Capacity.ObservedHost
         Prodbox.Capacity.Placement
         Prodbox.Capacity.ProviderWorkerBudget
@@ -246,10 +247,12 @@ library
         Prodbox.ControlPlane.LifecycleAuthorityRestoreProduction
         Prodbox.ControlPlane.MigrationEndpoint
         Prodbox.ControlPlane.OperationEndpoint
+        Prodbox.ControlPlane.ProviderAssumedRoleSession
         Prodbox.ControlPlane.ProviderAwsScopeReceipt
         Prodbox.ControlPlane.ProviderCredentialSession
         Prodbox.ControlPlane.ProviderWorkEndpoint
         Prodbox.ControlPlane.ProviderNarrowSession
+        Prodbox.ControlPlane.ProviderPulumiConfigProjection
         Prodbox.ControlPlane.ProviderProduction
         Prodbox.ControlPlane.ProviderCaller
         Prodbox.ControlPlane.ProviderWorkerAdapter
@@ -443,6 +446,8 @@ library
         Prodbox.Lifecycle.CredentialProvisioner.Substrate
         Prodbox.Lifecycle.CredentialProvisioner.RuntimeSecurity
         Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
+        Prodbox.Lifecycle.CredentialProvisioner.ProviderRoute53Policy
+        Prodbox.Lifecycle.CredentialProvisioner.ProviderRolePolicyOperationScope
         Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
         Prodbox.Lifecycle.CredentialProvisioner.TargetMaterial
         Prodbox.Lifecycle.TargetSecretAgent.ChartStatics
@@ -624,6 +629,7 @@ library
         Prodbox.Readiness.ObservationSchedule
         Prodbox.Runtime.Role
         Prodbox.Retry
+        Prodbox.Registry.Retention
         Prodbox.Result
         Prodbox.Secret.VaultInventory
         Prodbox.Service
@@ -748,6 +754,7 @@ library
         network ^>=3.1.4,
         optparse-applicative ^>=0.18.1.0,
         pem ^>=0.2,
+        process ^>=1.6.19.0,
         scientific ^>=0.3.7,
         serialise ^>=0.2.6.1,
         stm ^>=2.5,

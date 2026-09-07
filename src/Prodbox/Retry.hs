@@ -59,6 +59,7 @@ module Prodbox.Retry
   , deploymentRevisionObservationRetryPolicy
   , helmTransientRetryPolicy
   , customImagePushRetryPolicy
+  , registryReferenceObservationRetryPolicy
   , daemonRestartBridgeRetryPolicy
   , perconaPatroniClaimRetryPolicy
   , patroniClusterReadyRetryPolicy
@@ -299,6 +300,15 @@ customImagePushRetryPolicy :: RetryPolicy
 customImagePushRetryPolicy =
   RetryPolicy 3 5_000_000 1 5_000_000 defaultJitterFraction
 
+-- | Residual host-to-NodePort settling after a successful Registry rollout.
+-- The fresh-cluster counterexample became reachable 57 seconds after the
+-- first connection refusal, so fifteen jittered five-second delays retain a
+-- minimum sixty-second observation window without widening any HTTP or
+-- semantic acceptance rule.
+registryReferenceObservationRetryPolicy :: RetryPolicy
+registryReferenceObservationRetryPolicy =
+  RetryPolicy 16 5_000_000 1 5_000_000 defaultJitterFraction
+
 -- | Backoff for bridging a gateway-daemon restart window on the host side:
 -- ~1+2+4+8+8s across five retries — enough to ride out a Deployment rollout
 -- (widened by host memory pressure) without hanging forever on a genuinely-down
@@ -331,6 +341,7 @@ compiledRetryPolicies =
   , deploymentRevisionObservationRetryPolicy
   , helmTransientRetryPolicy
   , customImagePushRetryPolicy
+  , registryReferenceObservationRetryPolicy
   , daemonRestartBridgeRetryPolicy
   , perconaPatroniClaimRetryPolicy
   , patroniClusterReadyRetryPolicy

@@ -476,7 +476,10 @@ discovery but cannot mutate or persist a credential. First `cluster reconcile` p
 `GenesisFrozen -> EstablishAuthorityBackup -> BackupEstablished` action, then uses normal durable
 Authority operations for Operational Lifecycle-provider/AWS-DNS01 and LongLived
 TLS-retention/home Gateway-DNS/home-DNS01 identities. Generated identity keys are sealed/read back
-only at their exact consumer. Cross-substrate SMTP and ACME EAB use retained-home payload-specific
+only at their exact consumer. The Lifecycle-provider operation scope includes the canonical
+secret-free role-policy digest: unchanged policy recovers the same completion, while policy drift
+schedules a successor operation and ordinary next Target generation after exact IAM read-back;
+completed receipts are never rewritten. Cross-substrate SMTP and ACME EAB use retained-home payload-specific
 Transit custody plus attested one-shot target rewrap. EAB arrives only through its own
 schema-indexed external linear ingress under `OperatorMaterialPermit`; `config setup` never prompts
 for or writes it, and the AWS admin prompt cannot substitute. No shared AWS key or secret payload is
@@ -774,9 +777,11 @@ The command binds one operation-indexed Lifecycle Authority `CapabilityRef` and 
 for observation, admission, durable submission, and result observation. It prints the durable
 operation ID; if a response is lost or the caller's absolute deadline expires, retry/recovery
 observes that same ID rather than inferring rollback or starting a second mutation. The committed
-Lifecycle-provider generation assumes `prodbox-ses-lease-session` only for the corresponding
-narrow non-credential provider fence; there is no shared operational `aws.*` identity and no
-provider credential-mutation fence. Provider propagation holds no broad lease. In bounded memory,
+Lifecycle-provider generation is a base identity that may assume only the account-bound
+`prodbox-lifecycle-provider` role. Every closed Provider intent deterministically selects that role,
+and the rank-2 session boundary verifies both caller ARNs before the corresponding narrow
+non-credential provider fence; there is no shared operational `aws.*` identity and no provider
+credential-mutation fence. Provider propagation holds no broad lease. In bounded memory,
 Credential Provisioner derives the region-bound closed `SesSmtpSource` from the one-time IAM secret,
 discards the raw AWS secret-access-key bytes, and sends only `SesSmtpSource` over authenticated
 linear ingress to a one-shot retained-home Agent worker. That worker Transit-seals it and returns a
@@ -1010,7 +1015,10 @@ Named suite commands:
   pending Sprint `6.5`, and runs only when the lifecycle-owned exact node decision permits it
 - waits for `prodbox edge status` to report `CLASSIFICATION=ready-for-external-proof` before
   external `charts-vscode`, `charts-api`, `charts-websocket`, or `admin-routes` proof continues
-  on the supported-runtime path
+  on the supported-runtime path. One shared closed classifier spends the existing bounded retry
+  budget on a successful non-ready report or the exact fixed home Gateway-DNS write-authority
+  convergence diagnostic; every other nonzero status result remains terminal, so malformed config,
+  wrong record binding, and observation failure still fail fast
 - proves the public HTTP-to-HTTPS redirect on port `80` as part of the public-host validation
   surface, while preserving the HTTPS auth, route, certificate, and RBAC proofs on port `443`
 - dispatches named real-world validations through `src/Prodbox/TestValidation.hs`

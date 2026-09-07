@@ -1,3 +1,5 @@
 name: prodbox-aws-eks-subzone
 runtime: yaml
 description: Pulumi-managed per-substrate Route 53 hosted subzone for AWS-substrate canonical-suite validation
+packages:
+  aws: aws@7.44.0

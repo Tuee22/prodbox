@@ -37,6 +37,7 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , renderLifecycleAuthorityAuthenticationError
   , withHostLifecycleAuthorityAuthentication
   , withLifecycleAuthorityAuthenticatedTransport
+  , withLifecycleAuthorityProviderAuthenticatedTransport
   )
 import Prodbox.Lifecycle.Authority.Admission
   ( ProviderOperationCleanupOwner (ProviderOperationUnownedByCleanupRun)
@@ -95,7 +96,7 @@ dispatchHostProviderIntentOwnedBy caller repoRoot rawSubmissionKey intent owner 
     Right submissionKey -> do
       authenticated <-
         withHostLifecycleAuthorityAuthentication caller repoRoot $ \authentication ->
-          withLifecycleAuthorityAuthenticatedTransport authentication $ \transport ->
+          withLifecycleAuthorityProviderAuthenticatedTransport authentication $ \transport ->
             fmap snd
               <$> dispatchAuthorityProviderIntentOwnedBy
                 transport
@@ -118,7 +119,7 @@ dispatchAuthenticatedProviderIntent authentication rawSubmissionKey intent =
     Left err -> pure (Left (ProviderCallerSubmissionKeyInvalid err))
     Right submissionKey -> do
       dispatched <-
-        withLifecycleAuthorityAuthenticatedTransport authentication $ \transport ->
+        withLifecycleAuthorityProviderAuthenticatedTransport authentication $ \transport ->
           dispatchAuthorityProviderIntent transport submissionKey intent
       pure $ case dispatched of
         Left err -> Left (ProviderCallerAuthenticationFailed err)
@@ -167,7 +168,7 @@ dispatchAuthenticatedProviderIntentFreshWithOperation authentication prefix inte
     Left err -> pure (Left (ProviderCallerSubmissionKeyInvalid err))
     Right validated -> do
       dispatched <-
-        withLifecycleAuthorityAuthenticatedTransport authentication $ \transport ->
+        withLifecycleAuthorityProviderAuthenticatedTransport authentication $ \transport ->
           dispatchAuthorityProviderIntentWithOperation transport validated intent
       pure $ case dispatched of
         Left err -> Left (ProviderCallerAuthenticationFailed err)
@@ -217,7 +218,7 @@ executeAdmittedProviderIntentAt authentication rawSubmissionKey intent =
     Left err -> pure (Left (ProviderCallerSubmissionKeyInvalid err))
     Right submissionKey -> do
       dispatched <-
-        withLifecycleAuthorityAuthenticatedTransport authentication $ \transport ->
+        withLifecycleAuthorityProviderAuthenticatedTransport authentication $ \transport ->
           dispatchAuthorityProviderIntentWithOperation transport submissionKey intent
       pure $ case dispatched of
         Left err -> Left (ProviderCallerAuthenticationFailed err)

@@ -180,10 +180,11 @@ defaultRuntimeMemoryProfiles =
       }
   , -- The Provider Worker retains four request workers plus its independent
     -- readiness observer, but every subprocess crosses one process-wide permit
-    -- before launch. The single 80 MiB slot is the 74,052 KiB packaged-AWS-CLI
-    -- peak observed on 2026-08-31, rounded upward rather than fitted to the
-    -- sample. Serialization keeps that measured child inside the existing
-    -- single-node standing-workload budget instead of overcommitting the host.
+    -- before launch. The single 1024 MiB slot rounds upward from the exact
+    -- 1,024,434,176-byte packaged AWS-provider schema/preview peak observed on
+    -- 2026-09-05. The 944 MiB increase is transferred from the compiled plan's
+    -- existing idle memory headroom; host capacity, every other workload, and
+    -- the process-wide serialization topology remain unchanged.
     RuntimeMemoryProfile
       { runtime_profile_id = "provider-worker"
       , bounded_application_state_bytes = mebibytes 24
@@ -197,7 +198,8 @@ defaultRuntimeMemoryProfiles =
             { permit_capacity = Just 1
             , action_deadline_milliseconds =
                 Just ProviderWorkerBudget.providerWorkerMaximumChildDeadlineMilliseconds
-            , simultaneous_peak_bytes = [mebibytes 80]
+            , simultaneous_peak_bytes =
+                [ProviderWorkerBudget.providerWorkerProductionChildReserveBytes]
             }
       , kernel_cgroup_reserve_bytes = mebibytes 8
       , safety_margin_bytes = mebibytes 8
@@ -213,8 +215,8 @@ defaultResourcePlan =
     , -- The scheduled RKE2 system Pods already account for their CPU through
       -- requests. Keep the host-only kubelet reservation distinct so those
       -- requests are not charged twice in the single-node envelope.
-      rke2_reserved = ResourceVector 500 1536 9728 1024
-    , eviction_floor = ResourceVector 500 1024 10240 1024
+      rke2_reserved = ResourceVector 250 1536 9728 1024
+    , eviction_floor = ResourceVector 750 1024 10240 1024
     , workload_profiles =
         [ workload "keycloak" "keycloak" 1 (ResourceVector 500 1024 1024 1) (ResourceVector 600 1280 2048 1)
         , workload
@@ -332,8 +334,8 @@ defaultResourcePlan =
             "provider-worker"
             "provider-worker"
             1
-            (ResourceVector 100 176 256 1)
-            (ResourceVector 100 176 256 1)
+            (ResourceVector 100 ProviderWorkerBudget.providerWorkerProductionMemoryMebibytes 256 1)
+            (ResourceVector 100 ProviderWorkerBudget.providerWorkerProductionMemoryMebibytes 256 1)
         , workload
             "authority-backup"
             "authority-backup"

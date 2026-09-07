@@ -5,8 +5,8 @@
 -- ('Prodbox.ControlPlane.Server').
 --
 -- Each per-role endpoint module ('MigrationEndpoint', 'OperationEndpoint',
--- 'TlsRetentionEndpoint', …) fronts one route's pure algebra over an injected
--- repository and projects the outcome onto @(status, summary)@. 'Server' owns the
+-- 'TlsRetentionEndpoint', …) fronts one or more routes' pure algebras over an
+-- injected repository and projects the outcome onto @(status, summary)@. 'Server' owns the
 -- request/dispatch/response seam but, until a role binds handlers, installs
 -- 'Prodbox.ControlPlane.Server.failClosedInterpreter' (every owned route @503@).
 -- This module is the missing composition between the two: it builds a role's
@@ -267,6 +267,7 @@ import Prodbox.ControlPlane.Route
       , LifecycleRetainedSesLease
       , LifecycleTlsRetentionObserve
       , LifecycleTlsRetentionPromote
+      , LifecycleTlsRetentionStage
       , LifecycleTlsRetentionWorkflow
       , ProviderWorkApply
       , ProviderWorkObserve
@@ -281,6 +282,7 @@ import Prodbox.ControlPlane.Route
       , TargetTlsRestore
       , TargetTlsRetain
       , TargetTlsVerifySource
+      , TlsRetentionObserveVersion
       , TlsRetentionRestore
       , TlsRetentionStore
       )
@@ -296,13 +298,17 @@ import Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
   ( TlsAuthorityRepositoryResolver
   , serveTlsAuthorityObserveRequest
   , serveTlsAuthorityPromoteRequest
+  , serveTlsAuthorityStageRequest
   , tlsAuthorityResponseBody
   , tlsAuthorityResponseHttpStatus
   )
 import Prodbox.ControlPlane.TlsRetentionEndpoint
   ( TlsRetentionRepository
+  , serveTlsObserveVersionRequest
   , serveTlsRestoreRequest
   , serveTlsStoreRequest
+  , tlsObserveVersionHttpStatus
+  , tlsObserveVersionResponseBody
   , tlsRestoreHttpStatus
   , tlsRestoreResponseBody
   , tlsStoreHttpStatus
@@ -943,8 +949,8 @@ lifecycleAuthorityDecommissionAuthenticatedHandler maximumBytes inputs inner =
           )
     _ -> authenticatedHandlerHandle inner callerSlot route body
 
--- | Add the Authority-owned TLS current-reference fold to an authenticated
--- Lifecycle Authority handler.  The resolver fixes the retained coordinate
+-- | Add the Authority-owned TLS pending/current fold to an authenticated
+-- Lifecycle Authority handler. The resolver fixes the retained coordinate
 -- from the validated substrate/scope slot; no object key or CAS revision is
 -- accepted over the wire.
 lifecycleAuthorityTlsRetentionAuthenticatedHandler
@@ -963,6 +969,13 @@ lifecycleAuthorityTlsRetentionAuthenticatedHandler maximumBytes resolve inner =
     LifecycleTlsRetentionObserve -> do
       response <-
         serveTlsAuthorityObserveRequest
+          maximumBytes
+          resolve
+          (LazyByteString.fromStrict body)
+      pure (Just (tlsAuthorityResponseHttpStatus response, tlsAuthorityResponseBody response))
+    LifecycleTlsRetentionStage -> do
+      response <-
+        serveTlsAuthorityStageRequest
           maximumBytes
           resolve
           (LazyByteString.fromStrict body)
@@ -1135,6 +1148,18 @@ tlsRetentionInterpreter maximumBytes readiness repository =
     TlsRetentionRestore -> do
       result <- serveTlsRestoreRequest maximumBytes repository (LazyByteString.fromStrict body)
       pure (Just (tlsRestoreHttpStatus result, tlsRestoreResponseBody result))
+    TlsRetentionObserveVersion -> do
+      result <-
+        serveTlsObserveVersionRequest
+          maximumBytes
+          repository
+          (LazyByteString.fromStrict body)
+      pure
+        ( Just
+            ( tlsObserveVersionHttpStatus result
+            , tlsObserveVersionResponseBody result
+            )
+        )
     _ -> pure Nothing
 
 -- | Build the Authority Backup role's interpreter, binding both owned routes to

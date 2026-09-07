@@ -5,9 +5,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Exact-revision retained repository for the Lifecycle Authority's TLS
--- current-reference fold.  The TLS Retention Adapter owns immutable envelope
--- bytes; this repository owns only the monotone, per-substrate/scope current
--- reference which selects one of those versions.
+-- retention fold. The TLS Retention Adapter owns immutable envelope objects;
+-- this repository owns the monotone, per-substrate/scope current reference or
+-- the exact ciphertext-only pending outbox that must precede the object write.
 module Prodbox.ControlPlane.TlsRetentionAuthority
   ( TlsRetentionSlot
   , TlsRetentionSlotError (..)
@@ -18,11 +18,13 @@ module Prodbox.ControlPlane.TlsRetentionAuthority
   , TlsRetentionAuthorityRepository (..)
   , StoredTlsRetentionState (..)
   , TlsRetentionAuthorityError (..)
+  , TlsRetentionStagingResult (..)
   , TlsRetentionPromotionResult (..)
   , tlsRetentionStateMaximumBytes
   , tlsRetentionStateCodec
   , modelBTlsRetentionAuthorityRepository
   , observeTlsRetentionAuthority
+  , stageTlsRetentionAuthority
   , promoteTlsRetentionAuthority
   )
 where
@@ -42,9 +44,14 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   , RetainedTlsRef
   , TlsPromotionDecision (TlsPromoted)
   , TlsRetentionState
+  , TlsSealedEnvelope
+  , TlsStagingDecision (TlsStaged)
   , applyTlsPromotion
+  , applyTlsStaging
   , decideTlsPromotion
+  , decideTlsStaging
   , initialTlsRetentionState
+  , validateTlsRetentionState
   )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
@@ -146,13 +153,20 @@ data TlsRetentionPromotionResult = TlsRetentionPromotionResult
   }
   deriving stock (Eq, Show)
 
+data TlsRetentionStagingResult = TlsRetentionStagingResult
+  { tlsRetentionStagingState :: !TlsRetentionState
+  , tlsRetentionStagingDecision :: !TlsStagingDecision
+  }
+  deriving stock (Eq, Show)
+
 tlsRetentionStateMaximumBytes :: Int
-tlsRetentionStateMaximumBytes = 64 * 1024
+tlsRetentionStateMaximumBytes = 960 * 1024
 
 tlsRetentionStateCodec :: ModelBCodec TlsRetentionState
 tlsRetentionStateCodec =
   ModelBCodec
     { encodeModelBValue = \state -> do
+        mapLeft Text.unpack (validateTlsRetentionState state)
         let encoded = LazyByteString.toStrict (serialise state)
         if ByteString.length encoded > tlsRetentionStateMaximumBytes
           then Left "TLS retention state exceeds the compiled bound"
@@ -166,7 +180,7 @@ tlsRetentionStateCodec =
                 (const "TLS retention state is not canonical CBOR")
                 (deserialiseOrFail (LazyByteString.fromStrict bytes))
             if LazyByteString.toStrict (serialise state) == bytes
-              then Right state
+              then mapLeft Text.unpack (validateTlsRetentionState state) >> Right state
               else Left "TLS retention state is not canonical CBOR"
     }
 
@@ -209,6 +223,32 @@ observeTlsRetentionAuthority repository = do
     Left detail -> Left (TlsRetentionAuthorityReadFailed detail)
     Right Nothing -> Right initialTlsRetentionState
     Right (Just stored) -> Right (storedTlsRetentionState stored)
+
+stageTlsRetentionAuthority
+  :: (Monad m)
+  => TlsRetentionAuthorityRepository m revision
+  -> KeyRotationApproval
+  -> RetainedTlsRef
+  -> TlsSealedEnvelope
+  -> m (Either TlsRetentionAuthorityError TlsRetentionStagingResult)
+stageTlsRetentionAuthority repository approval candidate envelope = do
+  observed <- readTlsRetentionState repository
+  case observed of
+    Left detail -> pure (Left (TlsRetentionAuthorityReadFailed detail))
+    Right maybeStored -> do
+      let current = maybe initialTlsRetentionState storedTlsRetentionState maybeStored
+          expected = storedTlsRetentionRevision <$> maybeStored
+          decision = decideTlsStaging approval current candidate envelope
+          next = applyTlsStaging decision current
+          result = TlsRetentionStagingResult next decision
+      case decision of
+        TlsStaged _ -> do
+          written <- compareAndSwapTlsRetentionState repository expected next
+          pure $ case written of
+            Left detail -> Left (TlsRetentionAuthorityWriteFailed detail)
+            Right False -> Left TlsRetentionAuthorityConcurrentWrite
+            Right True -> Right result
+        _ -> pure (Right result)
 
 promoteTlsRetentionAuthority
   :: (Monad m)

@@ -19,6 +19,11 @@ spec:
       {{- include "vault.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        # A ConfigMap update does not restart an existing Vault process by
+        # itself. Bind the effective server configuration to the Pod template
+        # so Helm's StatefulSet rollout applies every listener/seal change.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
         {{- include "vault.labels" . | nindent 8 }}
     spec:

@@ -1,3 +1,5 @@
 name: prodbox-aws-eks-test
 runtime: yaml
 description: Pulumi-managed AWS test stack for EKS-backed validation
+packages:
+  aws: aws@7.44.0

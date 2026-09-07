@@ -1,6 +1,8 @@
 name: prodbox-aws-ses
 runtime: yaml
 description: Pulumi-managed cross-substrate AWS SES sending identity, receive subdomain, receipt rules, and S3 capture bucket
+packages:
+  aws: aws@7.44.0
 backend:
   # Long-lived cross-substrate state lives on the dedicated operator-account
   # S3 bucket named by `pulumi_state_backend` in prodbox-config.dhall, so the

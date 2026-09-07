@@ -11,6 +11,8 @@ module Prodbox.K8s.InCluster
   , secretApiBaseUrl
   , secretManifestJson
   , secretManifestStringData
+  , K8sSecretApplyError (..)
+  , classifyK8sSecretApplyStatus
   , K8sSecretOps (..)
   , inClusterK8sSecretOps
   )
@@ -198,14 +200,51 @@ secretManifestStringData stringData =
 -- * 'secretOpsGet' returns @Right Nothing@ for an absent Secret
 --   (HTTP 404), @Right (Just value)@ for an existing one, and @Left@
 --   for any other error (network, auth, malformed body).
--- * 'secretOpsPut' is non-forcing exact-name server-side apply: PATCH names
---   the object in the request URL, so Kubernetes RBAC @resourceNames@
---   constrains first creation without a namespace-wide @create@ grant. The
---   caller must observe and reject mismatched existing content before apply.
+-- * 'secretOpsPut' is an existing-object exact-name JSON merge PATCH. The
+--   caller must first observe an exact graph-owned slot or matching content;
+--   an absent object returns HTTP 404 and cannot become an implicit create.
+--   Kubernetes RBAC @resourceNames@ therefore constrains every permitted
+--   request without a namespace-wide @create@ grant.
 data K8sSecretOps = K8sSecretOps
   { secretOpsGet :: Text -> Text -> IO (Either String (Maybe Value))
-  , secretOpsPut :: Text -> Text -> Value -> IO (Either String ())
+  , secretOpsPut :: Text -> Text -> Value -> IO (Either K8sSecretApplyError ())
   }
+
+-- | Closed, value-free failure from the exact-name Kubernetes Secret apply.
+-- API response bodies and exception text are intentionally discarded at the
+-- HTTP boundary.
+data K8sSecretApplyError
+  = K8sSecretApplyRequestInvalid
+  | K8sSecretApplyTransportUnavailable
+  | K8sSecretApplyBadRequest
+  | K8sSecretApplyUnauthorized
+  | K8sSecretApplyForbidden
+  | K8sSecretApplyNotFound
+  | K8sSecretApplyMethodNotAllowed
+  | K8sSecretApplyConflict
+  | K8sSecretApplyUnsupportedMediaType
+  | K8sSecretApplyUnprocessable
+  | K8sSecretApplyThrottled
+  | K8sSecretApplyServerUnavailable
+  | K8sSecretApplyUnexpectedStatus
+  deriving (Bounded, Enum, Eq, Show)
+
+classifyK8sSecretApplyStatus :: Int -> Either K8sSecretApplyError ()
+classifyK8sSecretApplyStatus status = case status of
+  200 -> Right ()
+  201 -> Right ()
+  400 -> Left K8sSecretApplyBadRequest
+  401 -> Left K8sSecretApplyUnauthorized
+  403 -> Left K8sSecretApplyForbidden
+  404 -> Left K8sSecretApplyNotFound
+  405 -> Left K8sSecretApplyMethodNotAllowed
+  409 -> Left K8sSecretApplyConflict
+  415 -> Left K8sSecretApplyUnsupportedMediaType
+  422 -> Left K8sSecretApplyUnprocessable
+  429 -> Left K8sSecretApplyThrottled
+  code
+    | code >= 500 && code <= 599 -> Left K8sSecretApplyServerUnavailable
+    | otherwise -> Left K8sSecretApplyUnexpectedStatus
 
 -- | Sprint 3.13 fourth chunk: TLS-backed 'K8sSecretOps' for the
 --   in-pod gateway daemon. Builds an HTTP 'Manager' configured against
@@ -278,35 +317,26 @@ httpGetSecret manager token namespace name = do
                     ("K8s API GET returned " ++ show code ++ ": " ++ truncateBody (responseBody resp))
                 )
 
--- | Exact-name create via non-forcing Kubernetes server-side apply. A PATCH
--- request always carries the Secret name in its URL, including on first
--- creation, which permits an exact @resourceNames@ RBAC rule.  The body is
--- JSON (valid YAML) with the apply-patch content type.
+-- | Exact-name update via JSON merge PATCH. The object name is carried in the
+-- request URL and an absent object is never created. The caller separately
+-- proves that the existing object is either the graph-owned restore slot or
+-- already contains the exact desired content; a slot replacement carries its
+-- observed @metadata.resourceVersion@ as the optimistic-CAS precondition.
 httpPutSecret
-  :: Manager -> Text -> Text -> Text -> Value -> IO (Either String ())
+  :: Manager -> Text -> Text -> Text -> Value -> IO (Either K8sSecretApplyError ())
 httpPutSecret manager token namespace name manifest = do
-  applied <-
-    httpRequestSecret
-      manager
-      token
-      "PATCH"
-      "application/apply-patch+yaml"
-      objectUrl
-      manifest
-  pure $ case applied of
-    Right () -> Right ()
-    Left (code, body) ->
-      Left
-        ( "K8s API exact Secret apply returned "
-            ++ show code
-            ++ ": "
-            ++ truncateBody body
-        )
+  httpRequestSecret
+    manager
+    token
+    "PATCH"
+    "application/merge-patch+json"
+    objectUrl
+    manifest
  where
   objectUrl =
     secretApiBaseUrl
       ++ secretApiPath namespace name
-      ++ "?fieldManager=prodbox-target-secret-agent&force=false&fieldValidation=Strict"
+      ++ "?fieldValidation=Strict"
 
 -- | Submit a bounded JSON/YAML-compatible request to the Kubernetes API.
 -- Returns @Right ()@ on 200/201 and the status/body otherwise.
@@ -317,12 +347,12 @@ httpRequestSecret
   -> BS.ByteString
   -> String
   -> Value
-  -> IO (Either (Int, BL.ByteString) ())
+  -> IO (Either K8sSecretApplyError ())
 httpRequestSecret manager token verb contentType url manifest = do
   reqResult <-
     try (parseRequest url) :: IO (Either SomeException Request)
   case reqResult of
-    Left exc -> pure (Left (0, BL8.pack ("parseRequest failed: " ++ show exc)))
+    Left _ -> pure (Left K8sSecretApplyRequestInvalid)
     Right baseReq -> do
       let req =
             baseReq
@@ -337,18 +367,8 @@ httpRequestSecret manager token verb contentType url manifest = do
       respResult <-
         try (httpLbs req manager) :: IO (Either SomeException (Response BL.ByteString))
       case respResult of
-        Left exc ->
-          pure
-            ( Left
-                ( 0
-                , BL8.pack ("HTTP " ++ show verb ++ " failed: " ++ show exc)
-                )
-            )
-        Right resp ->
-          case statusCode (responseStatus resp) of
-            200 -> pure (Right ())
-            201 -> pure (Right ())
-            code -> pure (Left (code, responseBody resp))
+        Left _ -> pure (Left K8sSecretApplyTransportUnavailable)
+        Right resp -> pure (classifyK8sSecretApplyStatus (statusCode (responseStatus resp)))
 
 -- | Truncate the response body for inclusion in error strings so log
 -- lines stay readable when the API server returns a large HTML error page.

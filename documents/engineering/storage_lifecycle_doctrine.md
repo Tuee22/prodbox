@@ -145,6 +145,10 @@ This doctrine governs:
 12. EKS VPC ownership visibility: the AWS substrate's dedicated, non-default VPC plus its IGW,
     route table, and public subnets carry `prodbox.io/managed-by=prodbox` so the postflight tag
     sweep can surface escaped VPC-scoped residue after failed teardown (Sprint `7.29`)
+13. retained-home registry content reachability: all current repository/tag/concrete-manifest
+    references and their reachable blobs remain, while untagged revisions are collected only by
+    the registry binary under an observed read-only fence and exact read-write/reference read-back;
+    raw MinIO-object deletion is not a lifecycle operation
 
 In-cluster registry (registry:2) details remain in
 [Local Registry Pipeline](./local_registry_pipeline.md).
@@ -177,14 +181,19 @@ The retained-storage effect must reconcile:
 4. post-install Percona PostgreSQL PVC discovery plus staged retained-cluster restore so
    deterministic PVs bind to the operator-created claim names, the preserved ordinal
    `0` anchor comes up first, and follower ordinals `1` and `2` rejoin only after their
-   retained roots are reset
+   retained roots are reset; an exact live-primary observation classifies an in-place
+   reconcile and suppresses every root reset so active Pods never keep mounts to removed
+   hostPath inodes
 5. host storage directories rooted at `storage.manual_pv_host_root`
 6. registry publication admission through the exact operation-indexed capability used for image
    writes, including storage-edge mutation/read-back and the front-door `GET /v2/` diagnostic;
    the diagnostic alone cannot authorize publication
-7. deleted MinIO export-mount detection and a bounded recreate-plus-restart repair before
+7. retained-home registry manifest retention through a complete current-reference snapshot,
+   read-only registry rollout, Distribution-owned untagged collection, exact read-write/reference
+   read-back, and a new storage-edge proof; no raw backend object becomes a deletion target
+8. deleted MinIO export-mount detection and a bounded recreate-plus-restart repair before
    MinIO-backed Pulumi validation continues
-8. MinIO IAM bootstrap (the single generically-named object-store bucket and separate
+9. MinIO IAM bootstrap (the single generically-named object-store bucket and separate
    least-privilege principals, including the Lifecycle Authority principal) per
    [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) §7 so supported object-store
    access uses the same `prodbox-state` bucket without a gateway-owned generic proxy. The authority

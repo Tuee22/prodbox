@@ -4,6 +4,7 @@ import CliSuite
   ( integrationCliSuite
   , runRke2AdmissionRefusalFixture
   , runRunbookFailureFixture
+  , runStreamingCancellationFixture
   )
 import EnvSuite (integrationEnvSuite)
 import FixtureServer (runAuthorityFixtureServer, runBrokerFixtureServer, runVaultFixtureServer)
@@ -22,6 +23,8 @@ main = do
       runRke2AdmissionRefusalFixture repoRoot >>= exitWith
     ["--fixture-runbook-failure", repoRoot] ->
       runRunbookFailureFixture repoRoot >>= exitWith
+    ["--fixture-streaming-cancellation", markerPath] ->
+      runStreamingCancellationFixture markerPath >>= exitWith
     _ ->
       withArgs ("--num-threads=1" : arguments) $
         mainWithSuite "prodbox-integration" $ do

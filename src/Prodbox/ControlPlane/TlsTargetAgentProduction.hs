@@ -14,6 +14,8 @@ module Prodbox.ControlPlane.TlsTargetAgentProduction
   , TlsSecretApplyDecision (..)
   , decideTlsSecretApply
   , tlsDekVaultBoundary
+  , tlsPublicEdgeSecretRestoreSlotManifest
+  , isTlsPublicEdgeSecretRestoreSlot
   , parseTlsPublicEdgeSecret
   )
 where
@@ -47,6 +49,7 @@ import Prodbox.ControlPlane.TlsDekExchange
   )
 import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   ( TlsPublicEdgeSecret
+  , TlsSecretApplyFailure (..)
   , TlsSecretBoundary (..)
   , TlsSecretObservation (..)
   , mkTlsPublicEdgeSecret
@@ -57,7 +60,8 @@ import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   )
 import Prodbox.Http.Client (HttpError)
 import Prodbox.K8s.InCluster
-  ( K8sSecretOps (..)
+  ( K8sSecretApplyError (..)
+  , K8sSecretOps (..)
   , inClusterK8sSecretOps
   , loadInClusterCredentials
   )
@@ -81,6 +85,12 @@ publicEdgeTlsSecretNamespace = "vscode"
 
 publicEdgeTlsSecretName :: Text
 publicEdgeTlsSecretName = "public-edge-tls"
+
+publicEdgeTlsSecretRestoreSlotLabel :: Text
+publicEdgeTlsSecretRestoreSlotLabel = "prodbox.io/tls-restore-slot"
+
+publicEdgeTlsSecretRestoreSlotVersion :: Text
+publicEdgeTlsSecretRestoreSlotVersion = "v1"
 
 tlsRetentionDekTransitKey :: Text
 tlsRetentionDekTransitKey = "prodbox-tls-retention-dek"
@@ -113,39 +123,42 @@ tlsPublicEdgeSecretBoundary operations =
     pure $ case result of
       Left detail -> Left (Text.pack detail)
       Right Nothing -> Right TlsSecretMissing
-      Right (Just value) -> case parseTlsPublicEdgeSecret value of
-        Left detail -> Right (TlsSecretCorrupt detail)
-        Right secret -> Right (TlsSecretPresent secret)
+      Right (Just value) -> case parseTlsPublicEdgeSecretRestoreSlot value of
+        Right (Just resourceVersion) -> Right (TlsSecretRestoreSlot resourceVersion)
+        Right Nothing -> Right (TlsSecretCorrupt "public-edge TLS restore slot has no resourceVersion")
+        Left _ -> case parseTlsPublicEdgeSecret value of
+          Left detail -> Right (TlsSecretCorrupt detail)
+          Right secret -> Right (TlsSecretPresent secret)
 
   applyExact secret = do
     existing <- readExact
     case decideTlsSecretApply secret existing of
-      TlsSecretApplyFailed detail -> pure (Left detail)
+      TlsSecretApplyFailed failure -> pure (Left failure)
       TlsSecretApplyIdempotent observed -> pure (Right observed)
-      TlsSecretApplyCreate -> do
+      TlsSecretApplyRestoreSlot resourceVersion -> do
         applied <-
           secretOpsPut
             operations
             publicEdgeTlsSecretNamespace
             publicEdgeTlsSecretName
-            (tlsPublicEdgeSecretManifest secret)
+            (tlsPublicEdgeSecretManifest resourceVersion secret)
         case applied of
-          Left detail -> pure (Left (Text.pack detail))
+          Left failure -> pure (Left (tlsSecretApplyRequestFailure failure))
           Right () -> do
             readBack <- readExact
             pure $ case readBack of
-              Left detail -> Left detail
+              Left _ -> Left TlsSecretApplyReadBackUnavailable
               Right (TlsSecretPresent observed)
                 | tlsSecretContent observed == tlsSecretContent secret -> Right observed
-                | otherwise -> Left "restored public-edge TLS Secret differs on read-back"
-              Right TlsSecretMissing -> Left "restored public-edge TLS Secret is absent on read-back"
-              Right (TlsSecretCorrupt detail) ->
-                Left ("restored public-edge TLS Secret is corrupt: " <> detail)
+                | otherwise -> Left TlsSecretApplyReadBackContentMismatch
+              Right TlsSecretMissing -> Left TlsSecretApplyReadBackMissing
+              Right (TlsSecretRestoreSlot _) -> Left TlsSecretApplyReadBackRestoreSlot
+              Right (TlsSecretCorrupt _) -> Left TlsSecretApplyReadBackCorrupt
 
 data TlsSecretApplyDecision
-  = TlsSecretApplyCreate
+  = TlsSecretApplyRestoreSlot !Text
   | TlsSecretApplyIdempotent !TlsPublicEdgeSecret
-  | TlsSecretApplyFailed !Text
+  | TlsSecretApplyFailed !TlsSecretApplyFailure
   deriving stock (Eq, Show)
 
 decideTlsSecretApply
@@ -153,15 +166,32 @@ decideTlsSecretApply
   -> Either Text TlsSecretObservation
   -> TlsSecretApplyDecision
 decideTlsSecretApply desired observed = case observed of
-  Left detail -> TlsSecretApplyFailed detail
-  Right TlsSecretMissing -> TlsSecretApplyCreate
-  Right (TlsSecretCorrupt detail) ->
-    TlsSecretApplyFailed ("public-edge TLS Secret already exists but is corrupt: " <> detail)
+  Left _ -> TlsSecretApplyFailed TlsSecretApplyInitialObservationUnavailable
+  Right TlsSecretMissing -> TlsSecretApplyFailed TlsSecretApplyRestoreSlotMissing
+  Right (TlsSecretRestoreSlot resourceVersion) -> TlsSecretApplyRestoreSlot resourceVersion
+  Right (TlsSecretCorrupt _) ->
+    TlsSecretApplyFailed TlsSecretApplyExistingCorrupt
   Right (TlsSecretPresent existing)
     | tlsSecretContent existing == tlsSecretContent desired ->
         TlsSecretApplyIdempotent existing
     | otherwise ->
-        TlsSecretApplyFailed "public-edge TLS Secret already exists with different retained content"
+        TlsSecretApplyFailed TlsSecretApplyExistingContentMismatch
+
+tlsSecretApplyRequestFailure :: K8sSecretApplyError -> TlsSecretApplyFailure
+tlsSecretApplyRequestFailure failure = case failure of
+  K8sSecretApplyRequestInvalid -> TlsSecretApplyRequestInvalid
+  K8sSecretApplyTransportUnavailable -> TlsSecretApplyTransportUnavailable
+  K8sSecretApplyBadRequest -> TlsSecretApplyBadRequest
+  K8sSecretApplyUnauthorized -> TlsSecretApplyUnauthorized
+  K8sSecretApplyForbidden -> TlsSecretApplyForbidden
+  K8sSecretApplyNotFound -> TlsSecretApplyNotFound
+  K8sSecretApplyMethodNotAllowed -> TlsSecretApplyMethodNotAllowed
+  K8sSecretApplyConflict -> TlsSecretApplyConflict
+  K8sSecretApplyUnsupportedMediaType -> TlsSecretApplyUnsupportedMediaType
+  K8sSecretApplyUnprocessable -> TlsSecretApplyUnprocessable
+  K8sSecretApplyThrottled -> TlsSecretApplyThrottled
+  K8sSecretApplyServerUnavailable -> TlsSecretApplyServerUnavailable
+  K8sSecretApplyUnexpectedStatus -> TlsSecretApplyUnexpectedStatus
 
 tlsSecretContent
   :: TlsPublicEdgeSecret
@@ -201,6 +231,86 @@ parseTlsPublicEdgeSecret value = do
     (wireTlsData wire)
     (wireTlsAnnotations wire)
 
+-- | Non-secret graph-owned object reserved before retained TLS restoration.
+-- Kubernetes requires both data keys for @kubernetes.io/tls@ and makes the
+-- Secret type immutable, so the reserved representation carries exactly the
+-- two required keys with empty byte strings. The selected one-shot worker is
+-- still the only process that supplies certificate or private-key bytes.
+tlsPublicEdgeSecretRestoreSlotManifest :: Value
+tlsPublicEdgeSecretRestoreSlotManifest =
+  object
+    [ "apiVersion" .= ("v1" :: Text)
+    , "kind" .= ("Secret" :: Text)
+    , "metadata"
+        .= object
+          [ "name" .= publicEdgeTlsSecretName
+          , "namespace" .= publicEdgeTlsSecretNamespace
+          , "labels"
+              .= object
+                [ "prodbox.io/retained-secret" .= publicEdgeTlsSecretName
+                , Key.fromText publicEdgeTlsSecretRestoreSlotLabel
+                    .= publicEdgeTlsSecretRestoreSlotVersion
+                ]
+          ]
+    , "type" .= ("kubernetes.io/tls" :: Text)
+    , "data"
+        .= textMapObject
+          ( Map.fromList
+              [ ("tls.crt", "")
+              , ("tls.key", "")
+              ]
+          )
+    ]
+
+-- | Recognize only the exact graph-owned, still-empty restore slot. Ordinary
+-- API metadata and unrelated labels may be present, but coordinates, marker,
+-- type, mutability, and the complete empty data map are all closed.
+isTlsPublicEdgeSecretRestoreSlot :: Value -> Bool
+isTlsPublicEdgeSecretRestoreSlot value =
+  either (const False) (const True) (parseTlsPublicEdgeSecretRestoreSlot value)
+
+parseTlsPublicEdgeSecretRestoreSlot :: Value -> Either String (Maybe Text)
+parseTlsPublicEdgeSecretRestoreSlot = parseEither parseRestoreSlot
+ where
+  parseRestoreSlot = withObject "public-edge TLS restore slot" $ \secret -> do
+    apiVersion <- secret .: "apiVersion"
+    kind <- secret .: "kind"
+    secretType <- secret .: "type"
+    secretData <-
+      fromMaybe Map.empty
+        <$> (secret .:? "data" :: Parser (Maybe (Map Text Text)))
+    immutable <- fromMaybe False <$> secret .:? "immutable"
+    metadata <- secret .: "metadata"
+    withObject
+      "public-edge TLS restore slot metadata"
+      ( \meta -> do
+          name <- meta .: "name"
+          namespace <- meta .: "namespace"
+          resourceVersion <- meta .:? "resourceVersion"
+          labels <-
+            fromMaybe Map.empty
+              <$> (meta .:? "labels" :: Parser (Maybe (Map Text Text)))
+          if apiVersion == ("v1" :: Text)
+            && kind == ("Secret" :: Text)
+            && name == publicEdgeTlsSecretName
+            && namespace == publicEdgeTlsSecretNamespace
+            && secretType == ("kubernetes.io/tls" :: Text)
+            && not immutable
+            && maybe True (not . Text.null) resourceVersion
+            && secretData
+              == Map.fromList
+                [ ("tls.crt", "")
+                , ("tls.key", "")
+                ]
+            && Map.lookup "prodbox.io/retained-secret" labels
+              == Just publicEdgeTlsSecretName
+            && Map.lookup publicEdgeTlsSecretRestoreSlotLabel labels
+              == Just publicEdgeTlsSecretRestoreSlotVersion
+            then pure resourceVersion
+            else fail "not the exact public-edge TLS restore slot"
+      )
+      metadata
+
 data WireTlsSecret = WireTlsSecret
   { wireTlsUid :: !Text
   , wireTlsResourceVersion :: !Text
@@ -236,8 +346,8 @@ parseWire = withObject "public-edge TLS Secret" $ \secret -> do
     )
     metadata
 
-tlsPublicEdgeSecretManifest :: TlsPublicEdgeSecret -> Value
-tlsPublicEdgeSecretManifest secret =
+tlsPublicEdgeSecretManifest :: Text -> TlsPublicEdgeSecret -> Value
+tlsPublicEdgeSecretManifest resourceVersion secret =
   object
     [ "apiVersion" .= ("v1" :: Text)
     , "kind" .= ("Secret" :: Text)
@@ -245,9 +355,12 @@ tlsPublicEdgeSecretManifest secret =
         .= object
           [ "name" .= publicEdgeTlsSecretName
           , "namespace" .= publicEdgeTlsSecretNamespace
+          , "resourceVersion" .= resourceVersion
           , "labels"
               .= object
                 [ "prodbox.io/retained-secret" .= publicEdgeTlsSecretName
+                , Key.fromText publicEdgeTlsSecretRestoreSlotLabel
+                    .= publicEdgeTlsSecretRestoreSlotVersion
                 ]
           , "annotations" .= textMapObject (tlsPublicEdgeSecretAnnotations secret)
           ]

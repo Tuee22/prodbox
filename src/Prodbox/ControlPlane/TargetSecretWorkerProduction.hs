@@ -13,6 +13,7 @@ module Prodbox.ControlPlane.TargetSecretWorkerProduction
   , targetWorkerCreateSubprocess
   , targetWorkerObserveSubprocess
   , targetWorkerAttachSubprocess
+  , targetWorkerAttachTransportFailureDetail
   , targetWorkerKubernetesBoundary
   , recoverTargetWorkerCreateWith
   , terminalTargetWorkerObservation
@@ -21,6 +22,7 @@ module Prodbox.ControlPlane.TargetSecretWorkerProduction
   , parseTargetWorkerServiceAccountObservation
   , classifyTargetWorkerServiceAccountObservation
   , runtimeImageIdentityMatches
+  , classifyTargetWorkerSessionPrepareError
   , targetWorkerRetainedExecutionBoundary
   , vaultTargetWorkerRetainedExecutionBoundary
   , targetWorkerControllerAuditOps
@@ -62,7 +64,8 @@ import Prodbox.ControlPlane.ServiceSessionJournal
   ( ServiceSessionJournalRepository
   )
 import Prodbox.ControlPlane.ServiceSessionLifecycle
-  ( activateFencedServiceSessionDispatch
+  ( ServiceSessionLifecycleError (..)
+  , activateFencedServiceSessionDispatch
   , allocateNextServiceSessionBinding
   , closeFencedServiceSessionDispatch
   , prepareFencedServiceSessionDispatch
@@ -105,6 +108,7 @@ import Prodbox.ControlPlane.TargetSecretWorkerCoordinator
   , TargetWorkerExecutionBoundary (..)
   , TargetWorkerKubernetesBoundary (..)
   , TargetWorkerProvisionalOutcome (..)
+  , TargetWorkerSessionPrepareCause (..)
   )
 import Prodbox.ControlPlane.TargetSecretWorkerKubernetes
   ( renderTargetSecretWorkerJob
@@ -120,7 +124,8 @@ import Prodbox.ControlPlane.TargetWorkerExecutionPermit
   , targetWorkerSessionOperationId
   )
 import Prodbox.ControlPlane.VaultAccessorAudit
-  ( VaultAccessorAuditOps (..)
+  ( VaultAccessorAuditError (..)
+  , VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
   )
 import Prodbox.ControlPlane.VaultServiceSessionJournal
@@ -137,6 +142,7 @@ import Prodbox.Observation.AbsenceMarker
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , FramedSubprocessExchangeError (..)
+  , FramedSubprocessExchangeTransportStage (..)
   , ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessBounded
@@ -194,6 +200,23 @@ targetWorkerAttachSubprocess connection attestation =
     , "--container"
     , Text.unpack targetWorkerContainerName
     ]
+
+-- | Collapse a generic bounded-exchange stage into the closed, value-free
+-- Target-worker vocabulary.  The underlying exception, kubectl response,
+-- payload, and frame bytes never cross the production boundary.
+targetWorkerAttachTransportFailureDetail
+  :: FramedSubprocessExchangeTransportStage -> Text
+targetWorkerAttachTransportFailureDetail stage = case stage of
+  FramedExchangeLimitsValidation -> "Target worker attach limits validation failed"
+  FramedExchangeInitialPayloadValidation ->
+    "Target worker attach initial payload validation failed"
+  FramedExchangeProcessStart -> "Target worker attach process start failed"
+  FramedExchangeInitialPayloadWrite -> "Target worker attach initial payload write failed"
+  FramedExchangeProvisionalRead -> "Target worker attach provisional read failed"
+  FramedExchangeDecisionContinuationWrite ->
+    "Target worker attach decision continuation write failed"
+  FramedExchangeCompletionCollect -> "Target worker attach completion collection failed"
+  FramedExchangeWallClockTimeout -> "Target worker attach wall-clock timeout"
 
 targetWorkerKubernetesBoundary
   :: TargetWorkerJobConnection -> TargetWorkerKubernetesBoundary IO
@@ -321,8 +344,11 @@ targetWorkerKubernetesBoundary connection =
         )
         (targetWorkerAttachSubprocess connection attestation)
     pure $ case attempted of
-      Left (FramedSubprocessExchangeTransportError _) ->
-        Left (TargetWorkerCoordinatorAttachFailed "Target worker attach transport failed")
+      Left (FramedSubprocessExchangeTransportError stage _) ->
+        Left
+          ( TargetWorkerCoordinatorAttachFailed
+              (targetWorkerAttachTransportFailureDetail stage)
+          )
       Left (FramedSubprocessExchangeDecisionError err output)
         | cleanupCompletionObserved output
             && targetWorkerAttachProcessSucceeded (processExitCode output) ->
@@ -772,7 +798,7 @@ targetWorkerRetainedExecutionBoundary repository auditOps authorityClient =
             )
             (targetWorkerSessionAttemptId rollout attestation)
         case allocated of
-          Left err -> pure (Left (boundedShow err))
+          Left err -> pure (Left (classifyTargetWorkerSessionPrepareError err))
           Right binding -> do
             prepared <-
               prepareFencedServiceSessionDispatch
@@ -781,7 +807,7 @@ targetWorkerRetainedExecutionBoundary repository auditOps authorityClient =
                 targetWorkerRoleWideAccessorSubject
                 binding
             pure $ case prepared of
-              Left err -> Left (boundedShow err)
+              Left err -> Left (classifyTargetWorkerSessionPrepareError err)
               Right () -> Right binding
     , authorizeTargetWorkerExecution = \_ rollout attestation binding ->
         fmap
@@ -812,6 +838,60 @@ targetWorkerRetainedExecutionBoundary repository auditOps authorityClient =
               binding
           )
     }
+
+-- | Erase interpreter detail at the production boundary while retaining the
+-- exact closed stage needed to diagnose a retained one-shot session refusal.
+classifyTargetWorkerSessionPrepareError
+  :: ServiceSessionLifecycleError -> TargetWorkerSessionPrepareCause
+classifyTargetWorkerSessionPrepareError err = case err of
+  ServiceSessionLifecycleJournalFailed _ ->
+    TargetWorkerSessionPrepareJournalWriteFailed
+  ServiceSessionLifecycleJournalUnavailable _ ->
+    TargetWorkerSessionPrepareJournalUnavailable
+  ServiceSessionLifecycleBindingRoleMismatch ->
+    TargetWorkerSessionPrepareBindingRoleMismatch
+  ServiceSessionLifecycleRoleOccupied ->
+    TargetWorkerSessionPrepareRoleOccupied
+  ServiceSessionLifecycleBindingInvalid _ ->
+    TargetWorkerSessionPrepareBindingInvalid
+  ServiceSessionLifecyclePrecleanFailed auditError ->
+    case auditError of
+      VaultAccessorAuditIdentityInvalid ->
+        TargetWorkerSessionPreparePrecleanIdentityInvalid
+      VaultAccessorAuditorLoginFailed ->
+        TargetWorkerSessionPreparePrecleanAuditorLoginFailed
+      VaultAccessorAuditorEvidenceInvalid ->
+        TargetWorkerSessionPreparePrecleanAuditorEvidenceInvalid
+      VaultAccessorObservationFailed ->
+        TargetWorkerSessionPreparePrecleanObservationFailed
+      VaultAccessorClassificationFailed ->
+        TargetWorkerSessionPreparePrecleanClassificationFailed
+      VaultAccessorKnownIdentityMismatch ->
+        TargetWorkerSessionPreparePrecleanKnownIdentityMismatch
+      VaultAccessorRevocationFailed ->
+        TargetWorkerSessionPreparePrecleanRevocationFailed
+      VaultAccessorVisibilityWaitFailed ->
+        TargetWorkerSessionPreparePrecleanVisibilityWaitFailed
+      VaultAccessorStableAbsenceFailed ->
+        TargetWorkerSessionPreparePrecleanStableAbsenceFailed
+  ServiceSessionLifecycleLoginFailedCleaned _ ->
+    TargetWorkerSessionPrepareLoginFailedCleaned
+  ServiceSessionLifecycleLoginAmbiguityCleaned ->
+    TargetWorkerSessionPrepareLoginAmbiguityCleaned
+  ServiceSessionLifecycleAccessorInvalid ->
+    TargetWorkerSessionPrepareAccessorInvalid
+  ServiceSessionLifecycleAccessorIdentityMismatch ->
+    TargetWorkerSessionPrepareAccessorIdentityMismatch
+  ServiceSessionLifecycleCleanupFailed _ ->
+    TargetWorkerSessionPrepareCleanupFailed
+  ServiceSessionLifecycleCleanupThrew ->
+    TargetWorkerSessionPrepareCleanupThrew
+  ServiceSessionLifecycleCleanupJournalFailed _ ->
+    TargetWorkerSessionPrepareCleanupJournalFailed
+  ServiceSessionLifecycleActionFailed _ ->
+    TargetWorkerSessionPrepareActionFailed
+  ServiceSessionLifecycleUnhandledException ->
+    TargetWorkerSessionPrepareUnhandledException
 
 -- | Production retained-Vault specialization.  The repository key is fixed
 -- to the one Target-worker role lane; callers cannot substitute an arbitrary

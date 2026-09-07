@@ -4,6 +4,7 @@ module Prodbox.Subprocess
   ( BackgroundProcess (..)
   , BoundedSubprocessLimits (..)
   , FramedSubprocessExchangeError (..)
+  , FramedSubprocessExchangeTransportStage (..)
   , ProcessOutput (..)
   , Subprocess (..)
   , capture
@@ -58,6 +59,7 @@ import System.Posix.Signals
   , sigTERM
   , signalProcess
   )
+import System.Process qualified as Process
 import System.Process.Typed qualified as Typed
 import System.Timeout (timeout)
 
@@ -96,8 +98,21 @@ data BoundedSubprocessLimits = BoundedSubprocessLimits
 -- | Failure from a bounded two-stage exchange.  A decision refusal carries
 -- the completed child output so the domain interpreter can require its exact
 -- cleanup acknowledgement before preserving the typed refusal.
+data FramedSubprocessExchangeTransportStage
+  = FramedExchangeLimitsValidation
+  | FramedExchangeInitialPayloadValidation
+  | FramedExchangeProcessStart
+  | FramedExchangeInitialPayloadWrite
+  | FramedExchangeProvisionalRead
+  | FramedExchangeDecisionContinuationWrite
+  | FramedExchangeCompletionCollect
+  | FramedExchangeWallClockTimeout
+  deriving (Bounded, Enum, Eq, Show)
+
 data FramedSubprocessExchangeError errorValue
-  = FramedSubprocessExchangeTransportError !AppError
+  = FramedSubprocessExchangeTransportError
+      !FramedSubprocessExchangeTransportStage
+      !AppError
   | FramedSubprocessExchangeDecisionError !errorValue !ProcessOutput
 
 data BackgroundProcess = BackgroundProcess
@@ -117,7 +132,17 @@ commandDisplay = Text.unpack . renderSubprocess
 runStreaming :: Subprocess -> IO (Either AppError ExitCode)
 runStreaming spec = do
   processResult <-
-    try (Typed.runProcess (typedProcessConfig True spec))
+    -- `process` specifies that delegated Ctrl-C is rethrown synchronously by
+    -- the thread calling `waitForProcess`. `typed-process` instead performs
+    -- that wait on a private reaper; the reaper can receive `UserInterrupt`
+    -- before filling its exit-code TMVar and strand the caller forever. The
+    -- streaming path therefore waits in this command thread while the process
+    -- bracket remains the sole child-lifetime owner.
+    try
+      ( Process.withCreateProcess
+          (streamingProcessConfig spec)
+          (\_ _ _ -> Process.waitForProcess)
+      )
       :: IO (Either IOException ExitCode)
   case processResult of
     Left err ->
@@ -224,9 +249,14 @@ captureSubprocessFramedExchangeBounded
            (value, ProcessOutput)
        )
 captureSubprocessFramedExchangeBounded limits initialPayload decide spec
-  | invalidLimits = transportOnly "bounded subprocess limits must be positive"
+  | invalidLimits =
+      transportOnly
+        FramedExchangeLimitsValidation
+        "bounded subprocess limits must be positive"
   | framedLength initialPayload > boundedSubprocessMaximumInputBytes limits =
-      transportOnly "bounded subprocess input exceeds its configured ceiling"
+      transportOnly
+        FramedExchangeInitialPayloadValidation
+        "bounded subprocess input exceeds its configured ceiling"
   | otherwise = do
       started <-
         try
@@ -242,7 +272,13 @@ captureSubprocessFramedExchangeBounded limits initialPayload decide spec
           :: IO (Either IOException (Typed.Process Handle Handle Handle))
       case started of
         Left err ->
-          pure (Left (FramedSubprocessExchangeTransportError (subprocessIOException err)))
+          pure
+            ( Left
+                ( FramedSubprocessExchangeTransportError
+                    FramedExchangeProcessStart
+                    (subprocessIOException err)
+                )
+            )
         Right process -> do
           result <-
             ( withAsync
@@ -258,6 +294,7 @@ captureSubprocessFramedExchangeBounded limits initialPayload decide spec
             Nothing ->
               Left
                 ( FramedSubprocessExchangeTransportError
+                    FramedExchangeWallClockTimeout
                     (boundedSubprocessError "bounded subprocess exceeded its wall-clock timeout")
                 )
             Just exchangeResult -> exchangeResult
@@ -268,23 +305,40 @@ captureSubprocessFramedExchangeBounded limits initialPayload decide spec
       || boundedSubprocessMaximumStderrBytes limits <= 0
       || boundedSubprocessTimeoutMicros limits <= 0
 
-  transportOnly detail =
+  transportOnly stage detail =
     pure
       ( Left
-          (FramedSubprocessExchangeTransportError (boundedSubprocessError detail))
+          ( FramedSubprocessExchangeTransportError
+              stage
+              (boundedSubprocessError detail)
+          )
       )
 
   exchange process stderrReader = do
     sent <- writeFramedHandle (Typed.getStdin process) initialPayload
     case sent of
-      Left err -> pure (Left (FramedSubprocessExchangeTransportError err))
+      Left err ->
+        pure
+          ( Left
+              ( FramedSubprocessExchangeTransportError
+                  FramedExchangeInitialPayloadWrite
+                  err
+              )
+          )
       Right () -> do
         provisional <-
           readFramedHandle
             (boundedSubprocessMaximumStdoutBytes limits)
             (Typed.getStdout process)
         case provisional of
-          Left err -> pure (Left (FramedSubprocessExchangeTransportError err))
+          Left err ->
+            pure
+              ( Left
+                  ( FramedSubprocessExchangeTransportError
+                      FramedExchangeProvisionalRead
+                      err
+                  )
+              )
           Right (provisionalBytes, consumedBytes) -> do
             decision <- decide provisionalBytes
             continueAfterDecision
@@ -309,7 +363,14 @@ captureSubprocessFramedExchangeBounded limits initialPayload decide spec
             closeHandleQuietly (Typed.getStdin process)
             pure written
     case releaseResult of
-      Left err -> pure (Left (FramedSubprocessExchangeTransportError err))
+      Left err ->
+        pure
+          ( Left
+              ( FramedSubprocessExchangeTransportError
+                  FramedExchangeDecisionContinuationWrite
+                  err
+              )
+          )
       Right () -> do
         completed <-
           collectFramedExchangeProcess
@@ -317,7 +378,12 @@ captureSubprocessFramedExchangeBounded limits initialPayload decide spec
             stderrReader
             (boundedSubprocessMaximumStdoutBytes limits - consumedBytes)
         pure $ case completed of
-          Left err -> Left (FramedSubprocessExchangeTransportError err)
+          Left err ->
+            Left
+              ( FramedSubprocessExchangeTransportError
+                  FramedExchangeCompletionCollect
+                  err
+              )
           Right output -> case decision of
             Left err -> Left (FramedSubprocessExchangeDecisionError err output)
             Right (_, value) -> Right (value, output)
@@ -584,3 +650,11 @@ typedProcessConfig delegateCtlc spec =
     case subprocessEnvironment spec of
       Nothing -> config
       Just environment -> Typed.setEnv environment config
+
+streamingProcessConfig :: Subprocess -> Process.CreateProcess
+streamingProcessConfig spec =
+  (Process.proc (subprocessPath spec) (subprocessArguments spec))
+    { Process.cwd = subprocessWorkingDirectory spec
+    , Process.env = subprocessEnvironment spec
+    , Process.delegate_ctlc = True
+    }

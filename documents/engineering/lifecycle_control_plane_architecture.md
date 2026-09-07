@@ -30,7 +30,7 @@ workload.
 | Fenced Provider Worker | Closed normal provider intents, including registered stack-owned non-credential IAM roles, bounded scratch checkpoint execution, native SES/DNS convergence, authoritative observation/read-back, and an account/region/cluster-bound encrypted short-lived EKS client-auth projection under one narrow session | Credential IAM identity/access-key create/delete/remint, raw provider-credential export, any prompt/credential permit, Authority state writes, backup/TLS identity, target secrets, Gateway/DNS election |
 | Authority Backup Adapter | Closed prepare/blob/commit-receipt/restore/GC protocol for the independently backed Authority namespace | Provider/AWS-resource mutation, generic S3, Authority decisions, config projection, target secrets, Gateway/DNS |
 | TLS Retention Adapter | Closed ciphertext-byte retain/read-back and restore-envelope-byte protocol for exact `public-edge-tls/<substrate>/<canonical-scope-key>` objects | Plaintext certificate/key material, backup/provider credentials, generic S3, Authority decisions, target mutation, Gateway routing |
-| Target Secret Agent | Allowlisted payload sealing plus generation-checked Vault KV observe/CAS/read-back for one substrate; retained home Agent also owns physically bound, schema-closed SMTP/EAB custody rewrap to an ephemeral destination public key | Global lease, provider mutation, checkpoints, gateway mesh, arbitrary KV or generic secret export |
+| Target Secret Agent | Allowlisted payload sealing plus generation-checked Vault KV observe/CAS/read-back for one substrate and an exact-name Kubernetes TLS Secret observe/resource-version-CAS-patch/read-back lane; retained home Agent also owns physically bound, schema-closed SMTP/EAB custody rewrap to an ephemeral destination public key | Global lease, provider mutation, checkpoints, gateway mesh, arbitrary KV, namespace-wide Secret creation, or generic secret export |
 
 Deployment cardinality is explicit: there is exactly one logical Lifecycle Authority in the
 retained home/control-plane substrate for an authority epoch, with one separately deployed Authority
@@ -227,7 +227,7 @@ AWS power is split into separately minted identities and Vault coordinates:
 
 | Identity | Sole consumer | Scope |
 |----------|---------------|-------|
-| Lifecycle provider bootstrap | Fenced provider worker only | Assume only the operation-specific Pulumi, non-credential SES/S3, or AWS-edge role named by a committed provider intent |
+| Lifecycle provider bootstrap | Fenced provider worker only | Assume only the sole account-bound registered role deterministically selected by every constructor of the committed provider-intent vocabulary; base credentials authorize no Provider effect |
 | Authority backup-store bootstrap admin | Ephemeral Credential Provisioner Job only | One signed `GenesisBackupPermit`'s deterministic bucket/prefix/IAM create/observe/delete/remint set; raw material is memory-only and cannot authorize normal provider work |
 | Authority backup store | Credential Provisioner only until direct Agent sealing, then the separately deployed Authority Backup Adapter only through the `LongLived` generation at `secret/aws/authority-backup-store` | Get/put/version/read-back and fenced GC only under the exact long-lived backup bucket/prefix; no provider, DNS, IAM, or arbitrary target-Vault power |
 | TLS retention store | Separately deployed TLS Retention Adapter only, using the `LongLived` generation at `secret/aws/tls-retention-store` | Ciphertext get/put/version/read-back only under exact `public-edge-tls/<substrate>/<canonical-scope-key>` prefixes; no Authority-backup, provider, DNS, IAM, or target-Vault power |
@@ -1420,14 +1420,16 @@ make three aggregate repair calls and six config-backup calls, so it retains
 `2 * (3 + 6) = 18`. The Target Secret Agent's complete qualification envelope is five requests for
 provider-credential/source recovery and retained delivery, eight for TLS retention's four one-shot
 calls plus their four Authority trust installations, six for restore's three one-shot calls plus
-trust installations, and eight for the retain-on-ready capture. It therefore retains
-`2 * (5 + 8 + 6 + 8) = 54`, with a distinct 112 MiB encoded ceiling for 54 accepted 2 MiB responses
-plus replay metadata. The Vault listener's finite 160 MiB request ceiling covers the projection's
-at-most 149.34 MiB Base64 expansion plus its bounded KV JSON envelope. TLS Retention and Provider
+trust installations, eight for the retain-on-ready capture, and two additional calls when the
+one-time pre-outbox adoption replaces ordinary home wrap with selected prepare, home rewrap, and
+selected restore. It therefore retains `2 * (5 + 8 + 6 + 8 + 2) = 58`, with a distinct 118 MiB
+encoded ceiling for 58 accepted 2 MiB responses plus replay metadata. The Vault listener's finite
+160 MiB request ceiling covers the projection's
+at-most 157.34 MiB Base64 expansion plus its bounded KV JSON envelope. TLS Retention and Provider
 Worker remain at generic capacity four and the 12 MiB encoded ceiling. A capacity increase is a
-retained codec migration: only canonical v2/v3/v4/v5/v6/v7 bytes with identical response-size and
+retained codec migration: only canonical v2/v3/v4/v5/v6/v7/v8 bytes with identical response-size and
 clock-skew limits and a capacity no greater than the role's compiled target are admitted; all
-entries survive and the next successful CAS writes v8 with the current target capacity. The
+entries survive and the next successful CAS writes v9 with the current target capacity. The
 encoded and Vault-request ceilings may widen only to the new compiled finite bounds. Capacity
 shrink, response/skew drift, corruption, or deleting replay evidence to make room fails closed. An
 outer authentication/replay HTTP refusal is classified before an endpoint response
@@ -1476,6 +1478,9 @@ deadline must be fresh, and response-loss replay accepts only the exact replacem
 predecessor digest. The Credential Provisioner substrate grants the Authority a separate GET-only
 Job/Pod Role, and its Vault policy grants read-only journal observation; neither grants mutation or
 credential access. The replacement preserves outbox-CAS/read-back before Authority CAS/read-back.
+Its immutable plan-member binding is optional but exact: first-reconcile and Genesis operations
+retain `Just`/`Just`; normal post-first-reconcile operations retain `Nothing`/`Nothing`; every
+asymmetric or unequal binding refuses. Recovery therefore neither invents nor drops plan membership.
 Attested and Completed states, deadline or binding drift, and every corrupt/unready/unobservable
 observation refuse closed.
 
@@ -2082,6 +2087,29 @@ The Credential Provisioner creates that generation only after native IAM has con
 authoritatively read back the deterministic Lifecycle-provider role name and account-bound ARN,
 the exact trust document naming its distinct assuming user, and the role's closed provider policy.
 The assuming user policy can only assume that exact role; it carries no provider effects itself.
+The signed intent does not carry a caller-authored role string. Instead, the closed
+`ProviderIntent` vocabulary is exhaustively mapped to the sole `LifecycleProviderRole`; adding a
+constructor without a role assignment is an incomplete match. At the production rank-2 session
+boundary, native STS first observes and validates the 12-digit account plus exact
+`prodbox-lifecycle-provider` base-user ARN, assumes the account-bound role with fixed session name
+`prodbox-provider-worker` and AWS-minimum 900-second credential duration, then verifies the exact
+assumed-role ARN. The opaque session handle supplies native clients and a temporary credential
+projection created from that same STS response supplies AWS/Pulumi subprocesses. Neither projection
+can escape the callback, so callback scope and the operation deadline remain the authorization
+lifetime even though the remote credentials have AWS's longer minimum duration. Deep readiness
+executes this same complete path; a base-user STS success alone is not readiness.
+The role's Route 53 actions are one closed projection consumed by the IAM renderer: exact
+record/change read-back plus `{ChangeTagsForResource, CreateHostedZone, DeleteHostedZone,
+ListHostedZones, ListTagsForResource}` for the registered `aws-eks-subzone` hosted-zone lifecycle.
+It never grants `route53:*`. The frozen policy counterexample binds that action projection to the
+same one-Worker/one-serialized-child/no-fault causal profile and unchanged Provider envelope, so an
+omitted required action, an added wildcard, or a resource-budget change fails independently of IAM.
+The qualification harness binds the canonical role-policy SHA-256 revision into its durable normal
+credential-operation scope. A completed receipt remains immutable under its old scope; policy drift
+therefore schedules a successor operation and the ordinary next Target generation. That successor
+must traverse the existing native IAM trust update, inline-policy put, and exact read-back before
+creating credential material. “Current generation” on an older completed operation is receipt
+recovery, not evidence that a later executable's policy document ran.
 If creation applies but its one-time secret response is lost before target sealing, that key is
 unrecoverable: recovery observes its key ID, deletes it under the same identity fence, waits for
 stable absence, and only then commits a new create attempt. A successful response is sealed by the
@@ -2165,6 +2193,14 @@ For retention after issuance or renewal:
    receives those exact bounded envelope bytes from Authority, writes that exact object/version,
    reads back bytes and digest, and returns a typed receipt before Authority closes the transition.
 
+The chart-delete graph reaches this protocol through a closed source-container precondition. It
+observes the exact non-secret Namespace first. Only exit-zero empty `--ignore-not-found` proves the
+Namespace absent and, consequently, proves that no namespaced source Secret or Certificate exists.
+Exact Namespace presence causes the graph to reconcile the existing exact-name worker Role,
+RoleBinding, and Kubernetes-API egress policy before step 1. Failed, malformed, or name-mismatched
+observation and any access failure refuse; selected-Agent Secret unavailability is not absence. The
+host does not read Secret data and cannot bypass the Authority-routed workflow.
+
 Sprint [`2.35`](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md) makes that coordinate a path-safe
 encoding of the canonical (deduped, ordered) scope-set serialization. The exact-prefix
 TLS-retention IAM contract and per-`(substrate, scope-key)` serialization therefore stay a total
@@ -2188,6 +2224,40 @@ response-lost put is recovered by exact object version/digest observation under 
 it is never uploaded again under a new operation. Restore names the receipt-committed current ref
 and exact immutable version—not S3 `latest`, list order, or a caller-selected key.
 
+The concrete durable pending value is ciphertext-only and contains the previous committed
+reference, the stored key-rotation approval, the exact candidate reference, and the exact sealed
+envelope. A retry that observes pending ignores a newly supplied approval and performs no fresh
+Target encryption: it resubmits only the byte-identical pending envelope through the immutable
+put-if-absent/read-back boundary, re-observes the exact source, and promotes with the stored
+approval. Exact staging replay is a no-op; a different candidate, envelope, predecessor, or
+approval is a concurrent-pending refusal. The state codec bounds both envelope components and the
+complete encoded state, validates every semantic reference field and pending relationship on read
+and write, and preserves the canonical encodings of the earlier Empty and Current constructors.
+
+Only the migration from a pre-outbox deployment may inspect an occupied next version without a
+pending record. That recovery route accepts one `RetentionVersion` and performs one exact-key GET
+of `versions/<n>.envelope`; it has no list, prefix, latest, delete, overwrite, or caller-selected-key
+operation. A missing version takes the ordinary generate-then-stage path. A present legacy envelope
+is eligible for adoption only when the selected Agent decrypts it using AAD derived from that exact
+version plus the currently observed certificate and Secret UID/resourceVersion, validates the
+embedded certificate/source equality, and proves an idempotent exact-content apply/read-back with
+the same source witness. Authority then stages those already-existing bytes, confirms them through
+the normal immutable store boundary, re-observes the source, and promotes. Corrupt or unobservable
+bytes, a missing or changed source, failed AAD/identity validation, or a non-idempotent read-back
+refuses without staging the candidate.
+
+TLS Adapter credential binding is eager and has its own payload-free startup projection over
+coordinate/configuration refusal, credential read, and missing or empty access-key, secret-key,
+region, or other required fields. A Ready Adapter has therefore crossed credential loading before
+it accepts a store request. Request-time storage has a separate closed result: envelope/digest/key/
+size preconditions, then one immutable-PUT disposition (`unobservable`, `applied`, or `conflict`),
+then the mandatory confirmation result (unobservable, missing, byte mismatch, invalid envelope,
+envelope mismatch, or digest mismatch). The PUT disposition remains attached when confirmation
+fails, so response-lost-but-applied is distinguishable without claiming the write absent. Vault
+paths and fields, S3 bodies, object bytes, decoder text, and transport details cannot inhabit
+either diagnostic. These classifications change no request, permission, retry, object name,
+storage action, response status, or Authority admission decision.
+
 For restore before issuance, Authority commits an exact restore intent and
 `RestoreTlsCiphertext` returns one flat Adapter observation: exact present bytes/read-back,
 authoritative positive absence, corrupt bytes, digest mismatch, or unobservability. The Adapter does
@@ -2195,8 +2265,14 @@ not classify certificate time. A newly attested selected Agent worker supplies a
 public key; only after the pure Authority-time decision selects materialization does the home Agent
 Transit-unwrap the DEK and re-encrypt it to that key. Authority passes the exact bounded envelope
 bytes and encrypted DEK to the selected Agent's TLS-materialize capability. The selected worker
-decrypts/validates the retained certificate locally, generation-CAS applies the exact TLS Secret,
-and reads back resource version plus opaque Agent commitment before cert-manager may issue. Every
+decrypts/validates the retained certificate locally, then replaces only a graph-owned exact-name
+empty TLS restore slot through a JSON merge PATCH carrying the slot's observed opaque Kubernetes
+`resourceVersion` as an optimistic CAS. The chart graph creates that marked slot after namespace
+and exact RBAC reconciliation and before the Authority request; the host accepts only create success
+or an API-server `AlreadyExists` refusal and never reads the Secret. The worker has exact-name
+`get`/`patch` but no namespace-wide create, validates the complete still-empty slot shape before
+patching, and reads back resource version plus opaque Agent commitment before cert-manager may
+issue. Missing, immutable, corrupt, different, raced, or unobservable slot state refuses. Every
 restore outcome follows the total decision below; none becomes an ambient fallback:
 
 ```haskell
@@ -2405,6 +2481,24 @@ sealing/materialization; no `CapabilityProgram` contains that payload. The worke
 credential to call its provider, return plaintext after sealing, or read any path outside the
 registered schema. A stale or forged authority cannot advance target generation merely by
 possessing transport access.
+
+The bounded attach exchange classifies transport failure at exactly eight value-free stages:
+limits validation, initial-payload validation, process start, initial-payload write, provisional
+read, decision-continuation write, completion collection, and wall-clock timeout. The Target Agent
+may project those constructors to fixed `attach-failed/...` diagnostics, but it never retains or
+emits the underlying exception, `kubectl` response, payload, or frame bytes. A stage is observation,
+not retry authority: once initial ingress may have reached the worker, the controller preserves the
+existing exact cleanup and refusal semantics rather than replaying an ambiguous secret-bearing
+exchange.
+
+The retained service-session preparation immediately before permit issuance has its own closed
+diagnostic boundary. Allocation and preparation errors are converted from the exhaustive
+`ServiceSessionLifecycleError` algebra to a value-free cause ADT before they enter the coordinator;
+only fixed `session-prepare-failed/...` tokens may be emitted. A preclean refusal retains its exact
+closed accessor-audit stage under `preclean/...`—identity, auditor login/evidence, inventory
+observation, accessor classification, known identity, revocation, visibility wait, or stable
+absence—without carrying provider detail. Embedded Vault, audit, journal, and action details never
+cross that boundary, and the projection grants no additional retry or cleanup authority.
 
 Sealing itself is response-loss safe. A receipt-committed `TargetSealMutation` authorizes one
 secret-free `TargetSealMetadata` value carrying only the operation/action ID, schema, and bound; it
@@ -2740,10 +2834,25 @@ owns the entire transaction and reaches it through a native client; after journa
 adapter is removed. AWS CLI subprocesses are absent from heartbeat and lifecycle Model-B hot paths.
 
 If measured persistence demand cannot satisfy the authored heartbeat rate with required headroom,
-the protocol must change rather than hiding the failure with longer timeouts. A permitted future
-design durably fences a boot epoch once, uses signed bounded liveness frames inside that epoch, and
-persists ownership-changing transitions. Such a change requires updated peer ADTs, restart/replay
-rules, doctrine, and TLA correspondence before implementation.
+the protocol must change rather than hiding the failure with longer timeouts. The admitted design
+durably fences process-local liveness, uses signed bounded frames inside that fence, and persists
+ownership-changing transitions. The legacy pre-cutover adapter implements that bounded bridge: an
+ordinary signed Model-B heartbeat commits the initial process fence; recurring protocol-versioned
+frames bind exact Orders, emitter, the complete signed heartbeat plus its derived fence,
+monotonic per-fence sequence, and wall-clock observation without entering the shared persistence
+child lane. Receiver admission authenticates the nested heartbeat and requires either its exact
+latest-heartbeat projection or an exact/later compacted cursor in the same incarnation and epoch.
+
+A separately supervised worker renews backend-readiness evidence by committing another normal
+semantic heartbeat on a 60-second post-attempt cadence, one fifth of the readiness observer's
+300-second freshness window, then replaces the process-local liveness session. Claims, yields,
+epoch rotation, initial boot, and these periodic proof heartbeats keep the existing
+persistence-first transaction. A new durable heartbeat invalidates the predecessor frame, a
+restarted local process needs its own process-local session before ownership, and peers cannot
+deliver a node's frame back to itself. `gateway_legacy_liveness.tla` owns the finite
+crash/restart/rotation/delayed-frame and compacted-cursor correspondence. The target journal/Lease
+actor remains the durable local protocol above; this bridge neither relabels retained Orders nor
+authorizes an unqualified topology cutover.
 
 ## 9. Interpreter and Runtime Boundaries
 
@@ -2778,25 +2887,60 @@ fenced Provider Worker Deployment/ServiceAccount/queue. It receives a typed `Pro
 bounded credential/session permit from the Lifecycle Authority. It cannot write authority state
 directly, accept a `GenesisBackupPermit`, `RepairPermit`, `OperatorMaterialPermit`, or
 `AdminActionPermit`, receive an admin prompt, or bypass the public `prodbox` harness ownership
-rules. The ephemeral Credential Provisioner has the inverse narrow surface: it accepts only an
-indexed credential permit and owns no normal provider or admin-action endpoint. The Admin Action
+  rules. Its YAML programs execute with the pinned Pulumi CLI and matching YAML language host
+  installed from one union-runtime release archive. The exact AWS provider version is declared by
+  every project and installed with its architecture-specific release SHA-256 into the immutable
+  image layer; runtime discovery writes neither a provider archive nor provider binary and never
+  consumes an ambient host installation. Observe-first preview projects every value from the typed
+  stack configuration as its own direct Pulumi `--config key=value` argument. It therefore computes
+  desired state from the signed intent after any Worker rollout; an image-local
+  `Pulumi.<stack>.yaml` file is neither a configuration authority nor a prerequisite for observing
+  an Authority-retained checkpoint. The apply arm projects the same typed values through
+  `pulumi config set` before mutation. Neither path consults ambient configuration. The Worker's
+  assumed role likewise receives the closed registered Route 53 action projection needed
+  by that stack: record/change read-back plus the five hosted-zone lifecycle actions, never a Route
+  53 service wildcard. The projection is the same value frozen by the stable policy counterexample
+  and rendered into the exact read-back IAM policy by Credential Provisioner. The ephemeral
+  Credential Provisioner has the inverse narrow surface: it accepts only an indexed credential
+  permit and owns no normal provider or admin-action endpoint. The Admin Action
 Runner accepts only `AdminActionPermit`; neither Job role shares a ServiceAccount or program
 constructor with the other.
 
 The Worker retains four bounded request workers and one independent readiness observer, but those
 five callers do not create five simultaneous heavy children. Every AWS CLI and Pulumi launch crosses
 one process-wide, non-reentrant permit. The typed runtime-memory plan therefore reserves one measured
-80 MiB child slot inside a `176Mi` Guaranteed-QoS envelope and projects a 64 MiB GHC heap cap into
-the chart. AWS CLI actions additionally use a physical 30-second wall-clock bound with finite stdout
-and stderr ceilings; queue wait and child execution remain inside the caller's existing absolute
-request deadline. The permit changes neither intent admission, authentication, Vault binding,
-Provider evidence, nor the four-worker request admission plan.
+1,024 MiB child slot inside a `1120Mi` Guaranteed-QoS envelope and projects a 64 MiB GHC heap cap
+into the chart. The slot rounds the exact 1,024,434,176-byte uncapped packaged-provider
+schema/preview peak upward; the remaining 96 MiB retains the existing heap/native/kernel/safety
+decomposition. AWS CLI actions additionally use a physical 30-second wall-clock bound with finite
+stdout and stderr ceilings; queue wait and child execution remain inside the caller's existing
+absolute request deadline. The permit changes neither intent admission, authentication, Vault
+binding, Provider evidence, nor the four-worker request admission plan.
+
+The Provider's ephemeral-storage counterexample holds that complete topology, child permit, and
+`100m / 176Mi / 256Mi / 0 durable` envelope constant. The superseded runtime download reaches a
+337,674,240-byte kubelet peak while a 200,792 KiB archive overlaps a 231,216 KiB extracted provider
+binary. Packaging those exact compiled bytes in the image closes only that mechanism; the rendered
+production envelope remains independently subject to live qualification.
+
+The distinct packaged-schema memory counterexample freezes the live 176 MiB cgroup at an exact
+184,549,376-byte peak, six child OOM kills, and zero daemon restarts. Its production mapping moves
+944 MiB from declared idle plan headroom to the Provider envelope: old Provider `100m / 176Mi /
+256Mi / 0` plus idle `790m / 4,272Mi / 64,576Mi / 22,304Mi` maps to new Provider `100m / 1,120Mi /
+256Mi / 0` plus idle `790m / 3,328Mi / 64,576Mi / 22,304Mi`. The normalized mapped total and full
+allocatable host budget remain constant; all background workloads, topology, concurrency,
+capabilities, deadlines, and fault schedule are unchanged. The sizing probes independently justify
+the rendered production envelope; current live replacement-pass status remains solely in the
+development-plan resume ledger.
 
 Two disjoint long-running Lifecycle Authority routes have response budgets derived from the
-operations they contain. The Provider client admits at most a 300-second child deadline and adds
+operations they contain. The Provider route admits at most a 300-second child deadline and adds
 30 seconds for authenticated framing, authority projection, response encoding, and socket
-completion, producing a finite 330-second HTTP response budget; capacity validation rejects any
-Provider profile above that admitted maximum. The retained-material delivery route likewise owns
+completion, producing a finite 330-second HTTP response budget; both the host-to-Authority client
+and Authority-to-Provider client consume that same typed bound for execute and
+admit-and-execute. Admission-only stays on the generic Authority budget because it starts no
+Provider effect. Capacity validation rejects any Provider profile above that admitted maximum. The
+retained-material delivery route likewise owns
 one five-minute persisted operation lifetime plus 30 seconds of response overhead, and both its
 host EAB client and in-cluster SES worker client project that same 330-second bound. The generic
 ten-second HTTP default and every other client remain unchanged.
@@ -2891,6 +3035,18 @@ only that canonical value-free cause, and the worker terminal nests it below
 `intent/unavailable/trust-install`. Unknown refusal or unavailable detail collapses to an explicit
 `other` arm. This diagnostic does not change trust installation, CAS, read-back, response status,
 retry, or delivery behavior.
+
+The Authority-to-TLS-Retention client applies exact-pair classification at its failed HTTP
+boundary. The endpoint owns one total plaintext-response projection over every closed nested store
+repository outcome, every restore repository-read outcome, each store/restore request-codec
+refusal, invalid store envelope, and store digest mismatch. The authenticated-role projection
+remains the separate outer producer. The client retains only one closed endpoint or
+authenticated-role observation; arbitrary Adapter response bytes and the raw numeric status are
+discarded, and an exact pair authored by neither producer becomes `other`. A successfully decoded
+`404` missing observation and `500` corrupt observation keep their protocol meanings. The
+Authority diagnostic renders the closed client cause below
+`tls-retention/workflow failure=adapter/`, while the workflow's public response, retry, retention,
+and storage decisions remain unchanged.
 
 Trust-record observation is nested once more at its Vault source. It distinguishes session
 acquisition from the single forbidden-triggered relogin, sealed/forbidden/unavailable session
@@ -3152,6 +3308,14 @@ resource whose owner cannot be derived projects as a casualty, because an unattr
 exactly the defect the projection exists to catch. The Vault Kubernetes role registry independently
 agrees: the operator control-plane role binds only the bootstrap-core namespace, while the
 Gateway-owned test-harness caller remains inside the deletion scope by design.
+
+Cluster-backed automated recovery therefore uses the surviving operator caller for the
+pre-Gateway Lifecycle-provider credential repair. The harness retains its stable cycle scope,
+revisions it with the canonical role-policy digest, and supplies the simulated prompt. An unchanged
+revision recovers the same operation; drift schedules a successor IAM reconcile without reopening
+the prior completion. Its removable Gateway-owned ServiceAccount cannot be a recovery prerequisite.
+Both callers remain independently authenticated under the existing route trust; no credential or
+caller identity is substituted after Gateway has been restored.
 
 The external-caller registry also fixes a validated Kubernetes TokenRequest lifetime beside each
 identity. Its hidden constructor admits no value below the API's 600-second floor: the operator uses

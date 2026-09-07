@@ -19,6 +19,11 @@ module Prodbox.ControlPlane.Runtime
   , TlsRetentionStoreWire (..)
   , ValidatedRoleStore (..)
   , ControlPlaneConfigError (..)
+  , TlsRetentionStartupCause (..)
+  , allTlsRetentionStartupCauses
+  , renderTlsRetentionStartupCause
+  , tlsRetentionStartupCauseFromStoreError
+  , tlsRetentionStartupRefusalDisposition
   , TargetSecretAgentStartupCause (..)
   , allTargetSecretAgentStartupCauses
   , renderTargetSecretAgentStartupCause
@@ -317,7 +322,7 @@ import Prodbox.ControlPlane.DedicatedAdapterStore
   ( AuthorityBackupStoreConfig
   , DedicatedAdapterBinding
   , DedicatedAdapterKind (AuthorityBackupAdapter, TlsRetentionAdapter)
-  , DedicatedAdapterStoreError
+  , DedicatedAdapterStoreError (..)
   , TlsRetentionStoreConfig
   , mkAuthorityBackupStoreConfig
   , mkTlsRetentionStoreConfig
@@ -664,7 +669,8 @@ import Prodbox.ControlPlane.TlsRetentionAuthorityClient
   ( mkTlsRetentionAuthorityClient
   )
 import Prodbox.ControlPlane.TlsRetentionClient
-  ( tlsRetentionClientWithTransport
+  ( renderTlsRetentionClientCause
+  , tlsRetentionClientWithTransport
   , tlsRetentionMaximumResponseBytes
   )
 import Prodbox.ControlPlane.TlsRetentionWorkflow
@@ -988,6 +994,80 @@ data ControlPlaneConfigError
   | ControlPlaneConfigAuthorityStoreInvalid !InClusterAuthorityStoreConfigError
   | ControlPlaneConfigDedicatedStoreInvalid !DedicatedAdapterStoreError
   deriving (Eq, Show)
+
+-- | Payload-free TLS Retention startup diagnosis.  The eager binding phase is
+-- deliberately separate from request-time PUT/read-back diagnosis: a Ready
+-- Adapter has already crossed this credential-loading boundary.
+data TlsRetentionStartupCause
+  = TlsRetentionStartupStoreCoordinateInvalid
+  | TlsRetentionStartupStoreConfigInvalid
+  | TlsRetentionStartupStoreCredentialRead
+  | TlsRetentionStartupStoreAccessKeyMissing
+  | TlsRetentionStartupStoreSecretKeyMissing
+  | TlsRetentionStartupStoreRegionMissing
+  | TlsRetentionStartupStoreOtherFieldMissing
+  | TlsRetentionStartupStoreAccessKeyEmpty
+  | TlsRetentionStartupStoreSecretKeyEmpty
+  | TlsRetentionStartupStoreRegionEmpty
+  | TlsRetentionStartupStoreOtherFieldEmpty
+  deriving (Bounded, Enum, Eq, Show)
+
+allTlsRetentionStartupCauses :: [TlsRetentionStartupCause]
+allTlsRetentionStartupCauses = [minBound .. maxBound]
+
+renderTlsRetentionStartupCause :: TlsRetentionStartupCause -> Text
+renderTlsRetentionStartupCause cause = case cause of
+  TlsRetentionStartupStoreCoordinateInvalid -> "store/coordinate-invalid"
+  TlsRetentionStartupStoreConfigInvalid -> "store/config-invalid"
+  TlsRetentionStartupStoreCredentialRead -> "store/credential-read"
+  TlsRetentionStartupStoreAccessKeyMissing -> "store/field-missing/access-key"
+  TlsRetentionStartupStoreSecretKeyMissing -> "store/field-missing/secret-key"
+  TlsRetentionStartupStoreRegionMissing -> "store/field-missing/region"
+  TlsRetentionStartupStoreOtherFieldMissing -> "store/field-missing/other"
+  TlsRetentionStartupStoreAccessKeyEmpty -> "store/field-empty/access-key"
+  TlsRetentionStartupStoreSecretKeyEmpty -> "store/field-empty/secret-key"
+  TlsRetentionStartupStoreRegionEmpty -> "store/field-empty/region"
+  TlsRetentionStartupStoreOtherFieldEmpty -> "store/field-empty/other"
+
+tlsRetentionStartupCauseFromStoreError
+  :: DedicatedAdapterStoreError
+  -> TlsRetentionStartupCause
+tlsRetentionStartupCauseFromStoreError storeError = case storeError of
+  DedicatedAdapterCoordinateInvalid _ ->
+    TlsRetentionStartupStoreCoordinateInvalid
+  DedicatedAdapterConfigInvalid _ -> TlsRetentionStartupStoreConfigInvalid
+  DedicatedAdapterVaultReadFailed _ _ -> TlsRetentionStartupStoreCredentialRead
+  DedicatedAdapterVaultFieldMissing _ fieldName ->
+    classifyField
+      TlsRetentionStartupStoreAccessKeyMissing
+      TlsRetentionStartupStoreSecretKeyMissing
+      TlsRetentionStartupStoreRegionMissing
+      TlsRetentionStartupStoreOtherFieldMissing
+      fieldName
+  DedicatedAdapterVaultFieldEmpty _ fieldName ->
+    classifyField
+      TlsRetentionStartupStoreAccessKeyEmpty
+      TlsRetentionStartupStoreSecretKeyEmpty
+      TlsRetentionStartupStoreRegionEmpty
+      TlsRetentionStartupStoreOtherFieldEmpty
+      fieldName
+ where
+  classifyField accessKey secretKey region other fieldName
+    | fieldName == "access_key_id" = accessKey
+    | fieldName == "secret_access_key" = secretKey
+    | fieldName == "region" = region
+    | otherwise = other
+
+tlsRetentionStartupRefusalDisposition
+  :: RuntimeRole
+  -> TlsRetentionStartupCause
+  -> (Maybe Text, ExitCode)
+tlsRetentionStartupRefusalDisposition role cause =
+  ( if role == TlsRetentionRuntime
+      then Just (renderTlsRetentionStartupCause cause)
+      else Nothing
+  , ExitFailure 1
+  )
 
 -- | Payload-free startup refusal for the Target Secret Agent. The runtime's
 -- mounted Dhall, projected JWTs, Vault replies, and handler-construction
@@ -1769,6 +1849,20 @@ refuseLifecycleAuthorityStartup cause = do
       logError
         "lifecycle_authority_startup_refused"
         [ field "role" (runtimeRoleName LifecycleAuthorityRuntime)
+        , field "cause" renderedCause
+        ]
+  pure exitCode
+
+refuseTlsRetentionStartup :: TlsRetentionStartupCause -> IO ExitCode
+refuseTlsRetentionStartup cause = do
+  let (maybeCause, exitCode) =
+        tlsRetentionStartupRefusalDisposition TlsRetentionRuntime cause
+  case maybeCause of
+    Nothing -> pure ()
+    Just renderedCause ->
+      logError
+        "tls_retention_startup_refused"
+        [ field "role" (runtimeRoleName TlsRetentionRuntime)
         , field "cause" renderedCause
         ]
   pure exitCode
@@ -3523,6 +3617,9 @@ authorityBackupReplayCapacity =
 -- recreation, and captures the ready Secret again. Every TLS one-shot request
 -- also causes the Authority to install/read back its exact Target trust before
 -- the worker can run, so both calls reach this same retained replay coordinate.
+-- The one-time pre-outbox adoption path replaces the ordinary home-wrap call
+-- with selected prepare, home rewrap, and selected restore, adding two calls to
+-- the largest complete attempt.
 targetSecretAgentReconcileAttemptRequestMaximum :: Natural
 targetSecretAgentReconcileAttemptRequestMaximum =
   providerCredentialTargetObservationRequests
@@ -3531,6 +3628,7 @@ targetSecretAgentReconcileAttemptRequestMaximum =
     + tlsRetainRequests
     + tlsRestoreRequests
     + tlsRetainOnReadyRequests
+    + legacyTlsAdoptionAdditionalRequests
  where
   providerCredentialTargetObservationRequests = 1
   committedExternalMaterialRecoveryObservationRequests = 1
@@ -3538,6 +3636,7 @@ targetSecretAgentReconcileAttemptRequestMaximum =
   tlsRetainRequests = 2 * 4
   tlsRestoreRequests = 2 * 3
   tlsRetainOnReadyRequests = 2 * 4
+  legacyTlsAdoptionAdditionalRequests = 2
 
 targetSecretAgentReplayCapacity :: Natural
 targetSecretAgentReplayCapacity =
@@ -3545,12 +3644,12 @@ targetSecretAgentReplayCapacity =
  where
   immediateSupportedAttemptCount = 2
 
--- Fifty-four maximum-size responses plus their retained replay metadata must
--- fit in the encoded projection. The corresponding Vault listener request
+-- Fifty-eight maximum-size responses plus their retained replay metadata fit
+-- below fifty-nine response-widths. The corresponding Vault listener request
 -- ceiling includes the Base64/JSON expansion of this finite bound.
 targetSecretAgentReplayMaximumEncodedBytes :: Int
 targetSecretAgentReplayMaximumEncodedBytes =
-  56 * standardAuthenticatedResponseMaximumBytes
+  59 * standardAuthenticatedResponseMaximumBytes
 
 -- Replay stores the bounded response, not the potentially large checkpoint
 -- request.  Keeping this limit independent from the request frame prevents a
@@ -3624,15 +3723,26 @@ classifyTlsRetentionWorkflowFailure failure = case failure of
     TlsRetentionWorkflowAuthorityAdapterReadBackMismatch
   TlsWorkflowSourceReadBackMismatch ->
     TlsRetentionWorkflowAuthoritySourceReadBackMismatch
+  TlsWorkflowStagingStateMismatch ->
+    TlsRetentionWorkflowAuthorityPromotionStateMismatch
   TlsWorkflowPromotionStateMismatch ->
     TlsRetentionWorkflowAuthorityPromotionStateMismatch
+  TlsWorkflowLegacyEnvelopeCorrupt ->
+    TlsRetentionWorkflowAuthorityRestoreRefused
+  TlsWorkflowLegacySourceMissing ->
+    TlsRetentionWorkflowAuthoritySourceReadBackMismatch
+  TlsWorkflowLegacyAdoptionNotIdempotent ->
+    TlsRetentionWorkflowAuthoritySourceReadBackMismatch
+  TlsWorkflowPendingWithoutCurrent ->
+    TlsRetentionWorkflowAuthorityRestoreRefused
   TlsWorkflowRestoreRefused _ -> TlsRetentionWorkflowAuthorityRestoreRefused
   TlsWorkflowWrappedDekInvalid -> TlsRetentionWorkflowAuthorityWrappedDekInvalid
 
 renderTlsWorkflowFailureCause :: TlsRetentionWorkflowError -> Text
 renderTlsWorkflowFailureCause failure = case failure of
   TlsWorkflowAuthorityFailed _ -> "authority-state-unavailable"
-  TlsWorkflowAdapterFailed _ -> "adapter-unavailable"
+  TlsWorkflowAdapterFailed clientError ->
+    "adapter/" <> renderTlsRetentionClientCause clientError
   TlsWorkflowHomeAgentFailed clientError ->
     "home-agent/" <> renderTlsTargetAgentClientCause clientError
   TlsWorkflowSelectedAgentFailed clientError ->
@@ -3640,7 +3750,13 @@ renderTlsWorkflowFailureCause failure = case failure of
   TlsWorkflowEnvelopeInvalid _ -> "envelope-invalid"
   TlsWorkflowAdapterReadBackMismatch -> "adapter-read-back-mismatch"
   TlsWorkflowSourceReadBackMismatch -> "source-read-back-mismatch"
+  TlsWorkflowStagingStateMismatch -> "staging-state-mismatch"
   TlsWorkflowPromotionStateMismatch -> "promotion-state-mismatch"
+  TlsWorkflowLegacyEnvelopeCorrupt -> "legacy-envelope-corrupt"
+  TlsWorkflowLegacySourceMissing -> "legacy-source-missing"
+  TlsWorkflowLegacyAdoptionNotIdempotent ->
+    "legacy-adoption-not-idempotent"
+  TlsWorkflowPendingWithoutCurrent -> "pending-without-current"
   TlsWorkflowRestoreRefused _ -> "restore-refused"
   TlsWorkflowWrappedDekInvalid -> "wrapped-dek-invalid"
 
@@ -4054,7 +4170,9 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
     (TlsRetentionRuntime, ValidatedTlsRetentionStore storeConfig) -> do
       bindingResult <- newTlsRetentionAdapterBinding vaultSession storeConfig
       case bindingResult of
-        Left _ -> pure (ExitFailure 1)
+        Left storeError ->
+          refuseTlsRetentionStartup
+            (tlsRetentionStartupCauseFromStoreError storeError)
         Right binding -> do
           (interpreter, readinessObserver) <- tlsRetentionRuntimeInterpreter binding
           runAuthenticatedContextFreeObserving

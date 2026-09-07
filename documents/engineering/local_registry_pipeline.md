@@ -83,15 +83,21 @@ The target native Haskell lifecycle reconciles registry state in this order:
 7. Stable registry external-endpoint wait.
 8. Required public-image mirror into the registry (anonymous push — see below). Repositories
    auto-create on first push, so there is **no** projects REST API reconcile.
-9. Host-native custom-image build, push, and import for the single Haskell union runtime image
-   (`prodbox-runtime`, shared by the gateway daemon and the `api`/`websocket` workloads).
-10. `registries.yaml` reconcile and conditional RKE2 restart.
-11. Registry-backed platform-runtime install for MetalLB, Envoy Gateway, cert-manager, and the
+9. On retained home, reconcile untagged registry-manifest retention before the custom-image build:
+   snapshot every complete repository/tag/concrete-manifest tuple, roll the single registry onto
+   explicit read-only mode, exact-grammar dry-run and then execute Distribution's own
+   `garbage-collect --delete-untagged` against its mounted S3 config, restore read-write mode,
+   require exact collection-evidence and snapshot equality, and prove the S3 write edge. AWS test
+   registry storage is already `PerRun` and does not enter this retained-home program.
+10. Host-native custom-image build, push, and import for the single Haskell union runtime image
+    (`prodbox-runtime`, shared by the gateway daemon and the `api`/`websocket` workloads).
+11. `registries.yaml` reconcile and conditional RKE2 restart.
+12. Registry-backed platform-runtime install for MetalLB, Envoy Gateway, cert-manager, and the
     Percona PostgreSQL operator.
-12. On home only, exact registered Gateway-DNS A-record reconcile through its bounded capability.
+13. On home only, exact registered Gateway-DNS A-record reconcile through its bounded capability.
     The current optional direct Route 53 bootstrap call is pre-cutover residue removed by Sprint
     `4.50`; AWS-substrate A records are Lifecycle Authority provider intents owned by Sprint `7.33`.
-13. MinIO steady-state re-reconcile, kept on the **public** `quay.io/minio/minio` image (never
+14. MinIO steady-state re-reconcile, kept on the **public** `quay.io/minio/minio` image (never
     the registry mirror): MinIO is the registry's own storage backend, so it cannot source its
     image from the registry — a circular dependency a non-surging single-replica StatefulSet
     cannot break (a registry-sourced MinIO image would deadlock: MinIO down → registry 5xx → MinIO
@@ -191,6 +197,56 @@ cleanup semantics and cannot satisfy deployment qualification.
    `ensureRegistryStorageBackendEdgeReady` gate before the EKS image-mirror Job and crane pushes, and
    `applyEksImageMirrorJob` re-applies the Job on an `isRetryableEksImageMirrorFailure`-matched
    transient failure.
+
+### 2.2 Retained-Home Manifest Retention
+
+The machine tag and `latest` are moving references. Registry `delete.enabled` makes deletion
+available but does not collect an old manifest or its layers when a later push re-points those tags.
+The retained-home bucket therefore needs its own bounded reconcile; host-Docker dangling-image
+retention cannot affect this separate S3 store.
+
+`Prodbox.Registry.Retention` owns the closed observation algebra. Catalog and tag pages are capped
+at 1,000 and a page reaching that cap refuses as incomplete. Repository names, tags, canonical
+manifest digests, and response shapes are validated; every tag must resolve to a concrete Docker-v2
+or OCI-v1 image manifest. Index/list media types refuse on this pinned single-native-architecture
+surface rather than entering a collector version whose recursive marking has not been established.
+The before-snapshot contains every repository, including a repository with no tags, so an external
+writer or disappearing tag cannot be hidden by comparing only the runtime repository.
+
+The production sequence is:
+
+1. read the complete current-reference snapshot from the registry API;
+2. apply the same ConfigMap/Deployment/Service with typed `RegistryReadOnly` and a Pod-template
+   access-mode annotation, then observe that exact Deployment rollout and stable front door;
+3. execute a bounded `/usr/bin/env REGISTRY_LOG_LEVEL=error /bin/registry garbage-collect
+   --dry-run --delete-untagged /etc/docker/registry/config.yml` inside that sole registry container,
+   using the same mounted config and `envFrom` credential projection as the serving process. Parse
+   every stdout line against v2.8.3's closed repository, manifest/blob mark, eligibility, and
+   summary grammar; require internally exact counts, empty stderr despite this CLI's exit-zero
+   usage errors, and an exact current repository/manifest set match to the pre-fence snapshot;
+4. repeat that bounded command without `--dry-run`, require process success and empty stderr, and
+   require its normalized complete evidence to equal the dry-run evidence before accepting the
+   deletion. The command-local error log level suppresses v2.8.3 `Vacuum`'s ordinary per-deletion
+   info records on stderr; it does not suppress Cobra usage text or explicit collection failures.
+   Proving the dry-run fits the same physical stdout ceiling before mutation prevents output-size
+   refusal from killing a valid progressive delete;
+5. apply typed `RegistryReadWrite`, observe its exact rollout and stable front door, compare the
+   complete snapshot byte-for-value, and prove a fresh registry→MinIO write edge before build.
+
+Each catalog, tag, or manifest request retries only a subprocess result classified by the shared
+transient transport classifier. `registryReferenceObservationRetryPolicy` permits sixteen attempts
+separated by jittered five-second delays, preserving at least the measured sixty-second residual
+NodePort-settling window after a fresh-cluster rollout. A process-start failure, an unclassified
+HTTP failure, a successful response with malformed Registry evidence, page-bound exhaustion, or a
+snapshot mismatch is terminal on its first observation; exhausting the transport budget also
+refuses. The retry never repeats garbage collection or changes the exact snapshot comparison.
+
+The restoration handler runs on ordinary failure and asynchronous interruption. If a process is
+killed before it can restore, the next supported reconcile applies the read-write-annotated normal
+manifest first and observes that revision before reaching retention or publication. Current tagged
+manifests are the collector mark set; only untagged revisions and blobs unreachable from that set
+are eligible. Docker images/build cache, RKE2 containerd, raw MinIO objects, Kubernetes Secrets, and
+the retained host root are not target types in this program.
 
 ## 3. Runtime Outputs
 
@@ -324,6 +380,11 @@ Container build requirements:
     Cabal's build state before the same build `RUN` commits; retain the pinned in-image toolchain,
     repository source, YAML Provider programs, and installed binary, and do not substitute global
     Docker build-cache deletion
+12. before each retained-home custom-image build, snapshot every current concrete registry tag,
+    enter the typed read-only mode, run Distribution's own untagged-manifest collector, restore and
+    observe read-write service, and require the exact snapshot plus S3 write edge to read back;
+    never substitute raw MinIO-object, Docker/build-cache, containerd, Secret, or retained-root
+    deletion
 
 ### 6.1 Host `docker` CLI auth isolation (registry push vs the operator's Docker Hub login)
 

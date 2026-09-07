@@ -3,6 +3,7 @@ FROM ubuntu:24.04
 ARG GHC_VERSION=9.12.4
 ARG CABAL_VERSION=3.16.1.0
 ARG PULUMI_VERSION=3.228.0
+ARG PULUMI_AWS_PROVIDER_VERSION=7.44.0
 ARG KUBECTL_VERSION=v1.35.5
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/root/.ghcup/bin:/root/.cabal/bin:$PATH
@@ -52,18 +53,33 @@ RUN arch_name="$(dpkg --print-architecture)" \
     && /tmp/aws/install \
     && rm -rf /tmp/aws /tmp/awscliv2.zip
 
-# Provider Worker runs only the checked-in, typed Pulumi programs below. Pin
-# the CLI in the image so execution never depends on a mutable host binary.
+# Provider Worker runs only the checked-in, typed Pulumi YAML programs below.
+# Pin the CLI and its matching YAML language host from the same archive, then
+# install the exact checksum-verified AWS provider into the immutable image
+# layer. Runtime discovery must not download or extract the provider.
 RUN arch_name="$(dpkg --print-architecture)" \
     && case "${arch_name}" in \
-        amd64) pulumi_arch=x64 ;; \
-        arm64) pulumi_arch=arm64 ;; \
+        amd64) \
+          pulumi_arch=x64; \
+          aws_provider_checksum=7aacb02491864f126b9bb2bc8d308c8781817169a90a12c0b3855fa5e79c7115 \
+          ;; \
+        arm64) \
+          pulumi_arch=arm64; \
+          aws_provider_checksum=48f6800eb6922b23a3acb65f65b945f25cdd0e607fc442f6ff4675a75bbf7c6b \
+          ;; \
         *) echo "Unsupported Debian architecture: ${arch_name}" >&2; exit 1 ;; \
     esac \
     && curl -fsSL "https://get.pulumi.com/releases/sdk/pulumi-v${PULUMI_VERSION}-linux-${pulumi_arch}.tar.gz" -o /tmp/pulumi.tar.gz \
     && tar -xzf /tmp/pulumi.tar.gz -C /tmp \
     && install -m 0755 /tmp/pulumi/pulumi /usr/local/bin/pulumi \
-    && rm -rf /tmp/pulumi /tmp/pulumi.tar.gz
+    && install -m 0755 /tmp/pulumi/pulumi-language-yaml /usr/local/bin/pulumi-language-yaml \
+    && rm -rf /tmp/pulumi /tmp/pulumi.tar.gz \
+    && /usr/local/bin/pulumi plugin install \
+         resource aws "${PULUMI_AWS_PROVIDER_VERSION}" \
+         --exact \
+         --checksum "${aws_provider_checksum}" \
+         --non-interactive \
+    && test -x "/root/.pulumi/plugins/resource-aws-v${PULUMI_AWS_PROVIDER_VERSION}/pulumi-resource-aws"
 
 # The Target Secret Agent coordinates exact one-shot Jobs through its
 # namespaced RBAC. Pin kubectl to the proven RKE2 Kubernetes minor and verify

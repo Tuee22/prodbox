@@ -56,7 +56,7 @@ data ControlPlaneRequestCodecError
   | -- | The envelope decodes at the supported version but is not its own canonical
     -- serialization (a non-canonical re-encoding of the same value is refused).
     ControlPlaneRequestNonCanonical
-  deriving stock (Eq, Show)
+  deriving stock (Bounded, Enum, Eq, Show)
 
 -- | Responses use the same stable wire-error taxonomy as requests.  The alias
 -- is deliberate: one canonical envelope and one error algebra prevent a client

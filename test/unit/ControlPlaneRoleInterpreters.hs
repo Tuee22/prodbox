@@ -86,11 +86,16 @@ import Prodbox.ControlPlane.RoleInterpreters
 import Prodbox.ControlPlane.Server (RoleInterpreter, serveControlPlaneRequest)
 import Prodbox.ControlPlane.TlsRetentionEndpoint
   ( TlsEnvelopeObservation (TlsEnvelopeMissing, TlsEnvelopePresent)
+  , TlsObserveVersionPayload (TlsObserveVersionPayload)
   , TlsRestorePayload (TlsRestorePayload)
   , TlsRetentionReceipt (..)
   , TlsRetentionRepository (..)
   , TlsSealedEnvelope
   , TlsStorePayload (TlsStorePayload)
+  , TlsVersionEnvelopeObservation
+    ( TlsVersionEnvelopeMissing
+    , TlsVersionEnvelopePresent
+    )
   , mkTlsSealedEnvelope
   , tlsSealedEnvelopeDigest
   )
@@ -131,7 +136,7 @@ import Prodbox.Lifecycle.Authority.ProjectionImport
   )
 import Prodbox.Lifecycle.Authority.TlsRetention
   ( CertIdentity (CertIdentity)
-  , RetainedTlsRef (RetainedTlsRef)
+  , RetainedTlsRef (..)
   , RetentionVersion (RetentionVersion)
   , SourceSecretRef (SourceSecretRef)
   )
@@ -266,7 +271,7 @@ controlPlaneRoleInterpretersSuite =
           )
           `shouldReturn` (ReplyServiceUnavailable, "interpreter-unavailable\n")
         readIORef revisionRef `shouldReturn` 0
-    describe "TLS Retention interpreter (store + restore through the seam)" $ do
+    describe "TLS Retention interpreter (store + restore + exact observe through the seam)" $ do
       it "dispatches a well-formed envelope store and preserves the binary receipt" $ do
         interpreter <- freshTlsInterpreter Nothing True
         (status, body) <-
@@ -286,6 +291,18 @@ controlPlaneRoleInterpretersSuite =
         case decodeStrictResponse body of
           Right (TlsEnvelopePresent envelope _) -> envelope `shouldBe` tlsEnvelope
           other -> expectationFailure ("expected TLS envelope observation, got " <> show other)
+      it "dispatches exact-version observation without listing or selecting latest" $ do
+        interpreter <- freshTlsInterpreter (Just (ref1, tlsEnvelope)) True
+        (status, body) <-
+          serveTls
+            interpreter
+            ( post
+                "/v1/tls-retention/observe-version"
+                (encoded (TlsObserveVersionPayload (RetentionVersion 1)))
+            )
+        status `shouldBe` ReplyOk
+        decodeStrictResponse body
+          `shouldBe` Right (TlsVersionEnvelopePresent tlsEnvelope "fixture-etag")
       it "maps a malformed store body to a 400 bad request through the seam" $ do
         interpreter <- freshTlsInterpreter Nothing True
         serveTls interpreter (post "/v1/tls-retention/store" "not-a-cbor-envelope")
@@ -556,6 +573,17 @@ freshTlsInterpreter initial ready = do
                               }
                         )
                 _ -> Right TlsEnvelopeMissing
+          , observeTlsEnvelopeVersion = \version -> do
+              observed <- readIORef stateRef
+              pure $ case observed of
+                Just (storedReference, envelope)
+                  | retainedVersion storedReference == version ->
+                      Right
+                        ( TlsVersionEnvelopePresent
+                            envelope
+                            "fixture-etag"
+                        )
+                _ -> Right TlsVersionEnvelopeMissing
           }
   pure
     ( tlsRetentionInterpreter

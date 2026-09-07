@@ -3,8 +3,9 @@
 {-# LANGUAGE RankNTypes #-}
 
 -- | Production binding for the closed Provider Worker vocabulary.  The only
--- credential read is the Provider role's exact Vault KV object, scoped inside
--- the rank-2 session callback.  Pulumi execution selects from three compiled
+-- credential read is the Provider assuming user's exact Vault KV object. It is
+-- exchanged for the intent-selected registered role inside the rank-2 session
+-- callback. Pulumi execution selects from three compiled
 -- non-SES programs rooted at @/opt/build/pulumi@ and accepts only their typed
 -- configuration constructors.
 module Prodbox.ControlPlane.ProviderProduction
@@ -52,8 +53,12 @@ import Data.Time.Format (defaultTimeLocale, parseTimeM)
 import Data.Vector qualified as Vector
 import Numeric (showHex)
 import Numeric.Natural (Natural)
-import Prodbox.Aws.CredentialHandle (baseCredentialHandleFromSettings)
+import Prodbox.Aws.CredentialHandle
+  ( SessionCredentialHandle
+  , baseCredentialHandleFromSettings
+  )
 import Prodbox.Aws.Native.Route53 qualified as NativeRoute53
+import Prodbox.Aws.Native.Sts qualified as NativeSts
 import Prodbox.Aws.Native.Wire (AwsClientError, httpSend)
 import Prodbox.Aws.Region (awsGlobalServiceRegion)
 import Prodbox.AwsEnvironment (awsCliSubprocessEnvironment)
@@ -69,6 +74,12 @@ import Prodbox.ControlPlane.EksClientAuthProjection.Internal
   , mkEksClientAuthPublicKey
   , sealEksClientAuthProjection
   )
+import Prodbox.ControlPlane.ProviderAssumedRoleSession
+  ( expectedLifecycleProviderAssumedRoleArn
+  , expectedLifecycleProviderBaseUserArn
+  , lifecycleProviderAssumeRoleRequest
+  , providerAssumeRoleRequest
+  )
 import Prodbox.ControlPlane.ProviderCredentialSession.Internal
   ( ValidatedProviderCredentialSession
   , validateProviderCredentialSessionInternal
@@ -81,6 +92,9 @@ import Prodbox.ControlPlane.ProviderNarrowSession
   , ProviderMutation (..)
   , ProviderNarrowSessionRunner (..)
   , ProviderReadOnly (..)
+  )
+import Prodbox.ControlPlane.ProviderPulumiConfigProjection
+  ( providerPulumiPreviewArguments
   )
 import Prodbox.Error (errorMsg)
 import Prodbox.Http.Client (renderHttpError)
@@ -231,6 +245,7 @@ import System.Timeout (timeout)
 
 data ProviderProductionSession = ProviderProductionSession
   { productionSessionCredentials :: !Credentials
+  , productionSessionCredentialHandle :: !SessionCredentialHandle
   , productionSessionAuthorityTransport
       :: !(AuthenticatedClientTransport 'LifecycleAuthorityRuntime)
   , productionSessionAuthorityEpoch :: !(IO (Either Text AuthorityEpoch))
@@ -247,19 +262,28 @@ providerProductionNarrowSession
   -> ProviderNarrowSessionRunner IO ProviderProductionSession
 providerProductionNarrowSession vaultSession authorityTransport readAuthorityEpoch =
   ProviderNarrowSessionRunner
-    { withProviderNarrowSession = \_intent _deadline action -> do
+    { withProviderNarrowSession = \intent _deadline action -> do
         credentialSession <- readProviderCredentialSession vaultSession
         case credentialSession of
           Left detail -> pure (Left detail)
-          Right resolved ->
-            action
-              (Just (validatedProviderCredentialSessionBindingInternal resolved))
-              ProviderProductionSession
-                { productionSessionCredentials =
-                    validatedProviderCredentialSessionCredentialsInternal resolved
-                , productionSessionAuthorityTransport = authorityTransport
-                , productionSessionAuthorityEpoch = readAuthorityEpoch
-                }
+          Right resolved -> do
+            assumed <-
+              assumeProviderRoleSession
+                (providerAssumeRoleRequest intent)
+                (validatedProviderCredentialSessionCredentialsInternal resolved)
+            case assumed of
+              Left detail -> pure (Left detail)
+              Right roleSession ->
+                action
+                  (Just (validatedProviderCredentialSessionBindingInternal resolved))
+                  ProviderProductionSession
+                    { productionSessionCredentials =
+                        NativeSts.assumedRoleSessionCredentials roleSession
+                    , productionSessionCredentialHandle =
+                        NativeSts.assumedRoleSessionHandle roleSession
+                    , productionSessionAuthorityTransport = authorityTransport
+                    , productionSessionAuthorityEpoch = readAuthorityEpoch
+                    }
     }
 
 providerProductionCapabilities
@@ -307,21 +331,65 @@ providerProductionCapabilities =
     }
 
 -- | Deep readiness for the production worker: the exact Provider Vault KV
--- object must be readable and those credentials must complete an STS identity
--- round trip. No ambient AWS source participates.
+-- object must be readable, its base identity must assume the deterministic
+-- registered role, and that temporary session must identify as the expected
+-- assumed-role caller. No ambient AWS source participates.
 providerProductionReady :: VaultSession -> IO Bool
 providerProductionReady vaultSession = do
   credentialSession <- readProviderCredentialSession vaultSession
   case credentialSession of
     Left _ -> pure False
     Right resolved -> do
-      environment <-
-        awsCliSubprocessEnvironment
+      assumed <-
+        assumeProviderRoleSession
+          lifecycleProviderAssumeRoleRequest
           (validatedProviderCredentialSessionCredentialsInternal resolved)
-      output <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
-      pure $ case commandSuccess output of
+      pure $ case assumed of
         Left _ -> False
         Right _ -> True
+
+assumeProviderRoleSession
+  :: (AwsAccountId -> NativeSts.AssumeRoleRequest)
+  -> Credentials
+  -> IO (Either Text NativeSts.AssumedRoleSession)
+assumeProviderRoleSession requestForAccount credentials =
+  case baseCredentialHandleFromSettings credentials of
+    Left err -> pure (Left ("Provider AWS base credential is invalid: " <> Text.pack (show err)))
+    Right baseHandle -> do
+      let stsClient = NativeSts.newStsClient baseHandle httpSend
+      baseIdentity <- NativeSts.getCallerIdentity stsClient
+      case baseIdentity of
+        Left err -> pure (Left (providerStsFailure "base identity" err))
+        Right identity ->
+          case coordinateError (mkAwsAccountId (NativeSts.callerIdentityAccount identity)) of
+            Left detail -> pure (Left ("Provider STS returned an invalid account: " <> detail))
+            Right account
+              | NativeSts.callerIdentityArn identity
+                  /= expectedLifecycleProviderBaseUserArn account ->
+                  pure (Left "Provider Vault credential names an unexpected base caller")
+              | otherwise -> do
+                  assumed <- NativeSts.assumeRole stsClient (requestForAccount account)
+                  case assumed of
+                    Left err -> pure (Left (providerStsFailure "role assumption" err))
+                    Right roleSession -> do
+                      roleIdentity <-
+                        NativeSts.getCallerIdentityForSession
+                          (NativeSts.assumedRoleSessionHandle roleSession)
+                          httpSend
+                      pure $ case roleIdentity of
+                        Left err -> Left (providerStsFailure "assumed-role identity" err)
+                        Right observed
+                          | NativeSts.callerIdentityAccount observed
+                              /= NativeSts.callerIdentityAccount identity ->
+                              Left "Provider assumed-role session changed AWS account"
+                          | NativeSts.callerIdentityArn observed
+                              /= expectedLifecycleProviderAssumedRoleArn account ->
+                              Left "Provider assumed-role session names an unexpected caller"
+                          | otherwise -> Right roleSession
+
+providerStsFailure :: Text -> AwsClientError -> Text
+providerStsFailure stage err =
+  "Provider STS " <> stage <> " failed: " <> Text.pack (show err)
 
 data DesiredState = DesiredPresent | DesiredAbsent
   deriving (Eq)
@@ -490,14 +558,10 @@ observePulumiStack desired compiled environment = do
               runPulumi
                 compiled
                 environment
-                [ "preview"
-                , "--stack"
-                , stackName compiled
-                , "--expect-no-changes"
-                , "--non-interactive"
-                , "--color"
-                , "never"
-                ]
+                ( providerPulumiPreviewArguments
+                    (stackName compiled)
+                    (compiledStackConfiguration compiled)
+                )
             pure $ case processExitCode preview of
               ExitSuccess -> Right (ProviderEffectSatisfied (stackEvidence selected))
               ExitFailure _
@@ -2895,9 +2959,11 @@ route53ClientForSession
   :: ProviderProductionSession
   -> Either Text NativeRoute53.Route53Client
 route53ClientForSession session =
-  case baseCredentialHandleFromSettings (productionSessionCredentials session) of
-    Left err -> Left ("Provider AWS credential is invalid: " <> Text.pack (show err))
-    Right handle -> Right (NativeRoute53.newRoute53Client handle httpSend)
+  Right
+    ( NativeRoute53.newRoute53Client
+        (productionSessionCredentialHandle session)
+        httpSend
+    )
 
 awaitRoute53Change
   :: NativeRoute53.Route53Client

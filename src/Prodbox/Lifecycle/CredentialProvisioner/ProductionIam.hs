@@ -17,6 +17,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
   , credentialIamProgramRoleName
   , credentialIamProgramRoleTrustPolicy
   , credentialIamProgramRolePolicyDocument
+  , lifecycleProviderRolePolicyDocument
   , mkLifecycleProviderIamProgram
   , mkAuthorityBackupIamProgram
   , mkTlsRetentionIamProgram
@@ -132,6 +133,9 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   , AwsCredentialDescriptor (..)
   , awsCredentialDescriptor
   )
+import Prodbox.Lifecycle.CredentialProvisioner.ProviderRoute53Policy
+  ( providerRoute53Actions
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.TargetMaterial
   ( CreatedAwsAccessKey
   , TargetMaterialValueError
@@ -189,6 +193,13 @@ credentialIamProgramRoleTrustPolicy = fmap programRoleTrustPolicy . internalCred
 credentialIamProgramRolePolicyDocument :: CredentialIamProgram -> Maybe Text
 credentialIamProgramRolePolicyDocument = fmap programRolePermissionsPolicy . internalCredentialIamRole
 
+-- | Canonical, secret-free desired policy for the sole Provider role. Its
+-- digest is part of the qualification harness's durable operation namespace,
+-- so a policy change schedules a new reconcile rather than replaying an older
+-- completed credential receipt.
+lifecycleProviderRolePolicyDocument :: Text
+lifecycleProviderRolePolicyDocument = renderPolicy lifecycleProviderRolePolicy
+
 mkLifecycleProviderIamProgram
   :: Text -> Text -> Text -> Either ProductionIamError CredentialIamProgram
 mkLifecycleProviderIamProgram rawRegion rawAccountId rawRoleName = do
@@ -230,7 +241,7 @@ mkLifecycleProviderIamProgram rawRegion rawAccountId rawRoleName = do
               , programRoleArn = "arn:aws:iam::" <> accountId <> ":role/" <> roleName
               , programRolePolicyName = "prodbox-lifecycle-provider-runtime"
               , programRoleTrustPolicy = renderPolicy trustPolicy
-              , programRolePermissionsPolicy = renderPolicy lifecycleProviderRolePolicy
+              , programRolePermissionsPolicy = lifecycleProviderRolePolicyDocument
               }
       }
 
@@ -1268,25 +1279,22 @@ lifecycleProviderRolePolicy =
         ["*"]
     , statement
         "RegisteredDnsSesAndObjectStoreEffects"
-        ( [ "route53:ChangeResourceRecordSets"
-          , "route53:GetChange"
-          , "route53:GetHostedZone"
-          , "route53:ListResourceRecordSets"
-          , "s3:CreateBucket"
-          , "s3:DeleteBucket"
-          , "s3:GetBucketLocation"
-          , "s3:GetBucketPolicy"
-          , "s3:GetBucketVersioning"
-          , "s3:ListBucket"
-          , "s3:ListBucketVersions"
-          , "s3:PutBucketPolicy"
-          , "s3:PutBucketVersioning"
-          , "s3:GetObject"
-          , "s3:GetObjectVersion"
-          , "s3:PutObject"
-          , "s3:DeleteObject"
-          , "s3:DeleteObjectVersion"
-          ]
+        ( providerRoute53Actions
+            <> [ "s3:CreateBucket"
+               , "s3:DeleteBucket"
+               , "s3:GetBucketLocation"
+               , "s3:GetBucketPolicy"
+               , "s3:GetBucketVersioning"
+               , "s3:ListBucket"
+               , "s3:ListBucketVersions"
+               , "s3:PutBucketPolicy"
+               , "s3:PutBucketVersioning"
+               , "s3:GetObject"
+               , "s3:GetObjectVersion"
+               , "s3:PutObject"
+               , "s3:DeleteObject"
+               , "s3:DeleteObjectVersion"
+               ]
             <> fmap
               ("ses:" <>)
               [ "GetIdentityVerificationAttributes"

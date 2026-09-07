@@ -33,6 +33,14 @@ constructor carrying a stronger label. The interpreter resolves one `CapabilityR
 it for all three. This is observation of that requested operation's service/session/queue
 capability; a separate read-only domain observation never authorizes a mutation kind.
 
+At the mutating seam, every graph-declared dependency must have a still-fresh admission. A phase
+crossing can age out more than one dependency in the same set, so the executor re-observes each
+distinct expired dependency exposed by complete-set revalidation, at most once, before admitting
+the mutation. This does not extend the edge's latency budget: a failed re-observation, a dependency
+that expires again while its siblings are refreshed, or a dependency that was never observed in
+the run still refuses. Refreshing the first stale dependency and treating the next stale sibling as
+terminal is not complete-set revalidation.
+
 **Sprint `1.76` closes the gap between that statement and the implementation.** The declaration side
 was enforced — the component graph's pure depth check refuses a shallow probe declared against a
 `BackendWriteEdge` — but the *adapter* side was not: the deep slot of `ComponentReadinessTarget`

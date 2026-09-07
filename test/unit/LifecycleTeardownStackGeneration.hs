@@ -40,6 +40,9 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
 import Prodbox.ControlPlane.AwsStackCreationBindingRepository
   ( AwsStackCreationCommitResult (AwsStackCreationCommitCreated)
   , ObservedAwsStackCreationOperation
+  , awsStackCreationAuthorityAwsScope
+  , committedAwsStackCreationIdentity
+  , independentlyReadBackCommittedAwsStackCreationBinding
   , modelBAwsStackCreationBindingRepository
   , observeAuthorityAwsStackCreationOperation
   , observedAwsStackCreationKey
@@ -741,6 +744,38 @@ lifecycleTeardownStackGenerationSuite =
         selectedStackGenerationSelectingRunScope selected
           `shouldBe` laterCleanupRunScope
         selectedStackGenerationSelectingSurface selected `shouldBe` Cascade
+
+      it "derives the binding AWS scope from the committed Provider proof" $ do
+        durable <- newDurableGenerationStore False
+        create <- fixtureObservedCreationAttempt "proof-bound-scope" "7"
+        producer <- creationBoundary durable create
+        let callerScope =
+              mkObservationEvidenceScope
+                ExplicitPerRun
+                lifecycleRegistryRevision
+                creatingRunScope
+                fixtureFoundation
+                Nothing
+                ReconcileDesiredPresent
+        created <-
+          mustRightIO
+            =<< commitRegisteredStackCreation
+              producer
+              (observedAwsStackCreationOperationId create)
+              (observedAwsStackCreationOperationId create)
+              fixtureRevision
+              callerScope
+        registeredStackCreationBinding created
+          `shouldBe` AwsStackCreationCommitCreated
+        binding <-
+          mustRightIO
+            =<< independentlyReadBackCommittedAwsStackCreationBinding
+              (registeredStackCreationBindings producer)
+              AwsTestKey
+              (creationEvidenceScope ReconcileDesiredAbsent ExplicitPerRun creatingRunScope)
+        awsStackCreationAuthorityAwsScope
+          (committedAwsStackCreationIdentity binding)
+          `shouldBe` fixtureAwsScope
 
       it "refuses a create whose AWS scope no Provider proof covers" $ do
         durable <- newDurableGenerationStore False

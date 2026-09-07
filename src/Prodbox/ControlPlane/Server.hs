@@ -220,6 +220,7 @@ controlPlaneRouteMaximumBodyBytes route = case route of
   AuthorityBackupObserve -> controlPlaneMaximumBodyBytes
   TlsRetentionStore -> controlPlaneMaximumBodyBytes
   TlsRetentionRestore -> controlPlaneMaximumBodyBytes
+  TlsRetentionObserveVersion -> controlPlaneMaximumBodyBytes
   TargetMaterialObserve -> controlPlaneMaximumBodyBytes
   TargetSecretDecommissionInventory -> controlPlaneMaximumBodyBytes
   TargetSecretDecommissionTombstone -> controlPlaneMaximumBodyBytes
@@ -230,6 +231,7 @@ controlPlaneRouteMaximumBodyBytes route = case route of
   TargetTlsHomeRewrap -> controlPlaneMaximumBodyBytes
   TargetTlsVerifySource -> controlPlaneMaximumBodyBytes
   LifecycleTlsRetentionObserve -> controlPlaneMaximumBodyBytes
+  LifecycleTlsRetentionStage -> controlPlaneMaximumBodyBytes
   LifecycleTlsRetentionPromote -> controlPlaneMaximumBodyBytes
   LifecycleTlsRetentionWorkflow -> controlPlaneMaximumBodyBytes
   LifecycleAdminActionExecution -> controlPlaneMaximumBodyBytes

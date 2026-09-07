@@ -160,6 +160,7 @@ import Prodbox.ControlPlane.TlsDekExchange
 import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   ( TlsTargetRestoreReceipt
   , TlsTargetRetainReceipt
+  , TlsTargetVerifyMismatchCause
   , TlsTargetVerifyReceipt
   )
 import Prodbox.Lifecycle.Lease
@@ -874,7 +875,7 @@ data TargetWorkerOperationResult
   | TargetWorkerTlsRestoredResult !TlsTargetRestoreReceipt
   | TargetWorkerTlsVerifiedResult !TlsTargetVerifyReceipt
   | TargetWorkerTlsVerifyMissingResult
-  | TargetWorkerTlsVerifyMismatchResult
+  | TargetWorkerTlsVerifyMismatchResult !TlsTargetVerifyMismatchCause
   | TargetWorkerFederationCustodyCommittedResult !ParentCustodyAcknowledgement
   | TargetWorkerFederationRecoveryPreparedResult !ChildRecoveryDelivery
   | TargetWorkerFederationRecoveryObservedResult !ChildRecoveryConsumptionObservation
@@ -893,7 +894,7 @@ instance Show TargetWorkerOperationResult where
     TargetWorkerTlsRestoredResult {} -> "TargetWorkerTlsRestoredResult"
     TargetWorkerTlsVerifiedResult {} -> "TargetWorkerTlsVerifiedResult"
     TargetWorkerTlsVerifyMissingResult -> "TargetWorkerTlsVerifyMissingResult"
-    TargetWorkerTlsVerifyMismatchResult -> "TargetWorkerTlsVerifyMismatchResult"
+    TargetWorkerTlsVerifyMismatchResult {} -> "TargetWorkerTlsVerifyMismatchResult"
     TargetWorkerFederationCustodyCommittedResult {} ->
       "TargetWorkerFederationCustodyCommittedResult"
     TargetWorkerFederationRecoveryPreparedResult {} ->
@@ -917,7 +918,7 @@ targetWorkerOperationResultMatchesSchema schema result = case (schema, result) o
   (TargetWorkerTlsRestore, TargetWorkerTlsRestoredResult {}) -> True
   (TargetWorkerTlsVerify, TargetWorkerTlsVerifiedResult {}) -> True
   (TargetWorkerTlsVerify, TargetWorkerTlsVerifyMissingResult) -> True
-  (TargetWorkerTlsVerify, TargetWorkerTlsVerifyMismatchResult) -> True
+  (TargetWorkerTlsVerify, TargetWorkerTlsVerifyMismatchResult {}) -> True
   ( TargetWorkerFederationCustodyCommit
     , TargetWorkerFederationCustodyCommittedResult {}
     ) -> True
@@ -942,7 +943,7 @@ data WireTargetWorkerOperationResult
   | WireTargetWorkerTlsRestoredResult !TlsTargetRestoreReceipt
   | WireTargetWorkerTlsVerifiedResult !TlsTargetVerifyReceipt
   | WireTargetWorkerTlsVerifyMissingResult
-  | WireTargetWorkerTlsVerifyMismatchResult
+  | WireTargetWorkerTlsVerifyMismatchResult !TlsTargetVerifyMismatchCause
   | WireTargetWorkerFederationCustodyCommittedResult !ParentCustodyAcknowledgement
   | WireTargetWorkerFederationRecoveryPreparedResult !ChildRecoveryDelivery
   | WireTargetWorkerFederationRecoveryObservedResult !ChildRecoveryConsumptionObservation
@@ -1030,7 +1031,7 @@ operationResultWire result = case result of
   TargetWorkerTlsRestoredResult receipt -> WireTargetWorkerTlsRestoredResult receipt
   TargetWorkerTlsVerifiedResult receipt -> WireTargetWorkerTlsVerifiedResult receipt
   TargetWorkerTlsVerifyMissingResult -> WireTargetWorkerTlsVerifyMissingResult
-  TargetWorkerTlsVerifyMismatchResult -> WireTargetWorkerTlsVerifyMismatchResult
+  TargetWorkerTlsVerifyMismatchResult cause -> WireTargetWorkerTlsVerifyMismatchResult cause
   TargetWorkerFederationCustodyCommittedResult acknowledgement ->
     WireTargetWorkerFederationCustodyCommittedResult acknowledgement
   TargetWorkerFederationRecoveryPreparedResult delivery ->
@@ -1063,8 +1064,8 @@ operationResultFromWire wire = case wire of
     Right (TargetWorkerTlsVerifiedResult receipt)
   WireTargetWorkerTlsVerifyMissingResult ->
     Right TargetWorkerTlsVerifyMissingResult
-  WireTargetWorkerTlsVerifyMismatchResult ->
-    Right TargetWorkerTlsVerifyMismatchResult
+  WireTargetWorkerTlsVerifyMismatchResult cause ->
+    Right (TargetWorkerTlsVerifyMismatchResult cause)
   WireTargetWorkerFederationCustodyCommittedResult acknowledgement ->
     Right (TargetWorkerFederationCustodyCommittedResult acknowledgement)
   WireTargetWorkerFederationRecoveryPreparedResult delivery ->

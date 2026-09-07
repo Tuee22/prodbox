@@ -1599,6 +1599,2227 @@ The synchronized executable is exact at
 `sha256:793445b5ac2fcc2119266ef56fefbf787f314888adb3649a0d6f0babc0d8c9d1`. Rerun live
 `pre-1` unchanged. No qualification artifact or activation witness exists, no preactivation cycle
 has passed, and the legacy public writer remains sole.
+The pre-rerun deployment audit finds that closure incomplete at one chart-convergence edge:
+`helm upgrade --install` updates `vault-config`, but the Vault StatefulSet Pod template does not
+bind that ConfigMap identity. An existing Vault process can therefore keep its prior listener
+ceiling while `kubectl rollout status` reports the unchanged StatefulSet complete. The same
+`TLS-VERIFY-TRUST-INSTALL-REPLAY-CAPACITY-EXHAUSTED-2026-09-03` counterexample remains open; bind
+the rendered Vault configuration digest into the Pod template, prove unchanged renders stable and
+changed effective configuration rolls the StatefulSet, then repeat the local gates and live
+`pre-1`. No qualification state changes on source inspection alone.
+Code-local closure now binds `vault-config` to the Vault StatefulSet Pod template through Helm's
+SHA-256 of the rendered ConfigMap. Two identical root-mode renders produce exact digest
+`f18c40f0b4c7aa4f280a09990c9eaf65c70fcac76dcfd2583c49d65c8616a415`; changing the effective
+listener port produces distinct digest
+`75b77114435f962708ea4fe0872537f617e405888d43d7f42df2d9b27a645bac`, so unchanged reconcile is
+stable and any effective Vault configuration change rolls the process. Helm lint passes, the
+focused replay/config regression passes **1/1**, the complete primary suite passes **4802/4802**,
+and auxiliaries pass **27/34/36**. Canonical `prodbox dev check` passes with repository-pinned
+Fourmolu, HLint `No hints`, conformance, generated/documentation policy, and warning-clean
+all-target compilation. The synchronized executable remains exact at
+`sha256:793445b5ac2fcc2119266ef56fefbf787f314888adb3649a0d6f0babc0d8c9d1`. Rerun live `pre-1`
+unchanged to apply the listener ceiling and prove the same retained replay state migrates without
+clearing evidence. No qualification artifact or activation witness exists, no preactivation cycle
+has passed, and the legacy public writer remains sole.
+The unchanged live `pre-1` applies the Vault closure first: release revision 264 rolls from zero of
+one updated Pods to complete, StatefulSet generation 12 carries exact checksum
+`f18c40f0b4c7aa4f280a09990c9eaf65c70fcac76dcfd2583c49d65c8616a415`, current/update revision
+`vault-bb86fbfd9`, and replacement Pod UID `c0d04160-a42d-482c-ba15-b8f71e76a38d` is Ready with
+zero restarts and the live ConfigMap contains `max_request_size = 167772160`. It then builds local
+runtime image `sha256:c05eab187b217e05ddb493544420cce21178910d85e55ac9364a74f3ef6bd76b` in
+1,015.2 seconds, publishes registry manifest
+`sha256:4278da7a2ffd1c3b4a2cf997bedceb8cce8c01ed0b3ff718c0871caa68c3cc63`, and imports OCI
+manifest `sha256:43a01f39072deed70d74953deedf33df18688778c92b72e374c7e1708696fc99` in 98.5
+seconds while deleting only the superseded runtime image. Before candidate execution, the
+Lifecycle Authority Helm upgrade finds its pre-existing Pod in `CrashLoopBackOff` with 48 restarts
+and fails revision 124 because zero of one replicas is Ready; the supported terminal-failure path
+uninstalls the release and proves the StatefulSet/Pod/release absent while its exact retained
+`authority-journal-lifecycle-authority-0` PVC remains Bound. Stable counterexample
+`LIFECYCLE-AUTHORITY-STARTUP-CRASHLOOP-2026-09-03` owns this new prerequisite barrier. The
+terminal cleanup removes the failed Pod before its startup diagnostic is retained in command
+output, so no behavior change is licensed: repeat the same supported command and capture only the
+exact value-free Lifecycle Authority startup log while the Pod exists. The Target replay migration
+has not yet executed, no qualification artifact or activation witness exists, no preactivation
+cycle has passed, and the legacy public writer remains sole.
+The unchanged diagnostic `pre-1` reuses local image
+`sha256:c05eab187b217e05ddb493544420cce21178910d85e55ac9364a74f3ef6bd76b`, registry manifest
+`sha256:4278da7a2ffd1c3b4a2cf997bedceb8cce8c01ed0b3ff718c0871caa68c3cc63`, and the current
+containerd import. It recreates Lifecycle Authority Pod UID
+`84f72796-81e5-49fb-a3f3-aafee6ef64db` on that manifest, proves Ready with zero restarts, and
+crosses the startup edge twice in the supported prerequisite/runbook sequence; this live-closes
+`LIFECYCLE-AUTHORITY-STARTUP-CRASHLOOP-2026-09-03` as a terminal rollout-transition failure
+recovered by the already-supported failed-release uninstall, exact absence read-back, and unchanged
+reconcile. The run also crosses
+`TLS-VERIFY-TRUST-INSTALL-REPLAY-CAPACITY-EXHAUSTED-2026-09-03` and enters Phase 1.6, proving the
+retained Target replay projection migrated to v8 without evidence clearing. The next restore
+transaction returns `TlsRetentionWorkflowAuthorityAdapterUnavailable`; after terminal one-shot
+absence, the Authority log selects exact `tls-retention/workflow failure=adapter-unavailable`,
+while the Target Agent and TLS Retention logs are empty. The TLS Retention deployment is Ready,
+zero-restart, exact-image, and backed by endpoint `10.42.0.79:8600`; both directional NetworkPolicy
+arms exactly admit Authority-to-adapter port 8600. Stable counterexample
+`TLS-RESTORE-AUTHORITY-ADAPTER-UNAVAILABLE-2026-09-03` owns the still-coarse client failure. Add a
+closed, payload-free diagnostic over every `TlsRetentionClientError`, including exact outer
+authenticated-role status classification, without changing the host response, request, adapter,
+retry, or storage behavior; rerun `pre-1` to select the exact arm. The aggregate then repeats only
+the known VS Code stale claims `…-2drb`, `…-g7rp`, `…-rzmk` and Gateway-DNS write-authority
+readiness; all other restore nodes succeed, exact terminal cleanup is not proved, and operational
+credentials remain preserved. No qualification artifact or activation witness exists, no
+preactivation cycle has passed, and the legacy public writer remains sole.
+The licensed diagnostic boundary is now code-local closed. The TLS Retention client maps a failed
+store response and a non-decodable failed restore response through the shared total
+authenticated-role static-response classifier, retains only its closed observation, and renders
+every client error to a payload-free cause. Only the authored status/body pair renders
+`http-status/replay-capacity-exhausted`; arbitrary response bytes render `http-status/other` and do
+not survive the error. Decoded `404` missing and `500` corrupt observations retain their existing
+semantics; the workflow's public response and coarse terminal classification remain unchanged,
+while the value-free Authority log now nests the client cause below `adapter/`. The focused
+regression passes **1/1**, the complete primary suite passes **4803/4803**, and auxiliaries pass
+**27/34/36**. Canonical `prodbox dev check` passes with repository-pinned Fourmolu, HLint `No
+hints`, generated/documentation policy, and warning-clean all-target compilation. The synchronized
+executable is exact at
+`sha256:23b4f3bab1e782f89ab4a72ae4f9b3f258e74842f870405d34e4d760e01debd1`. Repeat live
+`pre-1` unchanged to select the exact cause. No qualification artifact or activation witness
+exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+The diagnostic live `pre-1` builds local image
+`sha256:2b96e1745697c2e12b6cc79d740ccabaf288564522a2ddbd08edce5a0fc3ec2c` in 1,147.7
+seconds, publishes registry manifest
+`sha256:2d3054360a96a8741d03122fc6c53bfddeaf77d3299f5a4da709d9d015bbb1c6`, and imports OCI
+manifest `sha256:d8989c80dd765cc12f0ed6e4ec046ab80e7d3d9050594d570a378935a9f27de2` in 98.6
+seconds while deleting only the superseded `sha256:c05eab187b...` image. The supported
+prerequisite and runbook passes reuse those exact identities, cross the control-plane and platform
+rollouts, and enter Phase 1.6. Restore again returns the deliberately unchanged public result
+`TlsRetentionWorkflowAuthorityAdapterUnavailable`, but the new Authority diagnostic selects exact
+`tls-retention/workflow failure=adapter/http-status/other`, disproving the replay-capacity
+hypothesis. After the terminal aggregate, the Target, Authority, and TLS Retention namespaces each
+contain only their long-lived zero-restart Pod (UIDs `989acc87-495a-483e-85b6-36998929fcea`,
+`9c0d82bf-b3dc-4c91-a0b2-738ff77c03f8`, and
+`252595e7-a461-4bba-b564-ed1aee24f195` respectively); the Target log is empty. The same three VS
+Code claims and Gateway-DNS write-authority readiness remain the only aggregate companions, exact
+terminal cleanup is not proved, and operational credentials remain preserved. Stable
+counterexample `TLS-RESTORE-ADAPTER-HTTP-STATUS-OTHER-2026-09-03` owns the still-collapsed failed
+HTTP response: enumerate the finite server and TLS endpoint response producers that can reach this
+client, then add only a closed payload-free distinction if source evidence leaves more than one
+candidate. No qualification artifact or activation witness exists, no preactivation cycle has
+passed, and the legacy public writer remains sole.
+Source enumeration now closes that diagnostic boundary code-locally without changing the wire.
+The TLS endpoint owns one total plaintext-response projection over repository failure, the four
+closed request-codec refusals on each route, invalid store envelope, store digest mismatch, and
+restore read failure; the existing authenticated-role projection remains the separate outer
+producer. The client matches exact status/body pairs from those two producers, discards arbitrary
+bytes and the raw numeric status, and renders endpoint causes below `http-status/store/...` or
+`http-status/restore/...`; every unmatched server response remains `http-status/other`. Successful
+store/restore responses and decoded `404` missing / `500` corrupt observations retain their
+canonical-CBOR semantics, and request, replay, retry, repository, public response, and workflow
+behavior are unchanged. The warning-clean unit target builds and the focused exhaustive regression
+passes **1/1**; the complete primary suite passes **4803/4803**, and auxiliaries pass
+**27/34/36**. Canonical `prodbox dev check` passes with repository-pinned Fourmolu, HLint `No
+hints`, generated/documentation policy, and warning-clean all-target compilation. The synchronized
+executable is exact at
+`sha256:a3dbc8b11a8df478384a8702f09bca7712d2dfdc871e3a565a13d2a1ce6b89c4`.
+Unchanged live `pre-1` is next. No qualification artifact or activation witness exists, no
+preactivation cycle has passed, and the legacy public writer remains sole.
+The unchanged diagnostic `pre-1` builds local image
+`sha256:3dac3492463a402e3015042c34cbc21cb5ad5fb3ab5a5e8a1c46efb3f08e22f1` in
+1,141.4 seconds, publishes registry manifest
+`sha256:2eacce935e832d69567637b728a500c72e80c078cee57f9f76ff4bc4b296b1b8`, and imports
+OCI manifest `sha256:5e69beababcb2a65703b630b7e6b73739e8f405510d946deacc209c93361751a`
+in 96.4 seconds while deleting only the superseded local image and registry manifest. The
+prerequisite and runbook passes reuse those exact identities, cross the control-plane/platform
+rollouts, and enter Phase 1.6. The public result remains
+`TlsRetentionWorkflowAuthorityAdapterUnavailable`, while the exact Authority diagnostic selects
+`tls-retention/workflow failure=adapter/http-status/store/repository-failed`, live-closing the
+collapsed-HTTP counterexample and proving the failure occurs inside the Adapter's immutable store
+repository rather than replay, request decoding, or restore. Post-terminal read-back finds only
+the Ready, zero-restart exact-image Target Agent, Lifecycle Authority, and TLS Retention Pods (UIDs
+`e8fc2edf-3a0f-478e-9c90-65547e54c30c`, `7c4f0de5-3523-4ff3-9aae-9221a7b86401`, and
+`d3530f67-b252-45b9-8df1-7d55b01b5fb3`) and no one-shot Jobs in those namespaces. The same three
+VS Code claims and Gateway-DNS readiness remain the only aggregate companions; exact terminal
+cleanup is not proved and operational credentials remain preserved. Stable counterexample
+`TLS-STORE-REPOSITORY-FAILED-2026-09-04` owns the remaining collapsed repository failure. Add a
+closed, value-free diagnostic across credential loading, immutable PUT, and confirmation read-back
+before changing S3 requests, permissions, retry, object naming, or storage behavior. That
+diagnostic is now landed without changing those storage semantics: eager TLS Adapter binding
+classifies credential read and required-field failures through one role-local payload-free startup
+vocabulary, while the repository response carries the exact immutable-PUT disposition
+(`unobservable`, `applied`, or `conflict`) crossed with the exact confirmation failure
+(unobservable, missing, byte mismatch, invalid envelope, envelope mismatch, or digest mismatch).
+Transport bodies, paths, fields, object bytes, and decoder details cannot enter the endpoint or
+Authority token. Focused endpoint/adapter **21/21**, protected-startup **15/15**, primary
+**4806/4806**, and auxiliaries **27/34/36** pass. Canonical `prodbox dev check` passes with the
+repository-pinned formatter, HLint (`No hints`), generated/documentation policy, and warning-clean
+all-target compilation; the synchronized executable is exact at
+`sha256:c3a44376bb84a4f6f389f84189aea1add3a0c407ae7356a6c1bb353de65f73f4`. Unchanged live
+`pre-1` is next. No qualification artifact or activation witness exists, no preactivation cycle
+has passed, and the legacy public writer remains sole.
+The unchanged diagnostic `pre-1` builds local image
+`sha256:77635d7c0146aff13f1d0be7f7bb4945984b2c5e66d2177234f67902d2aa5b0e` in
+1,153.2 seconds, publishes registry manifest
+`sha256:8bec822dbb5ce8a21a1adf9b7c4c7fee469a9da10c950ec4db745e4fffbb6540`, and imports OCI
+manifest `sha256:74b27fded376e523152336594f6b7700b639d3efa566dc4e648ebd078a87517d` in 98.3
+seconds while deleting only the superseded local image and registry manifest. Prerequisite and
+runbook passes reuse those exact identities and cross the platform/control-plane rollouts. The
+public result remains `TlsRetentionWorkflowAuthorityAdapterUnavailable`; the exact Authority token
+is now
+`tls-retention/workflow failure=adapter/http-status/store/repository-failed/put/conflict/confirmation/bytes-mismatch`.
+This proves the immutable object version already exists and its authoritative read-back differs
+from the candidate bytes; credential loading, PUT unobservability, missing read-back, and transport
+failure are excluded. Post-terminal read-back finds no one-shot Jobs in the Target Agent,
+Lifecycle Authority, or TLS Retention namespaces and finds their exact-image Pods Ready with zero
+restarts (UIDs `0909ef08-19d6-4120-a58e-33453d3f1f7e`,
+`9330920d-cf5f-4317-84c1-b5f29b530b74`, and `b1e40171-0284-43ea-a988-4de4c4f4847a`).
+The same three stale VS Code claims and Gateway-DNS readiness remain the aggregate companions;
+exact terminal cleanup is not proved and operational credentials remain preserved. Stable
+counterexample `TLS-RETENTION-IMMUTABLE-VERSION-CONFLICT-BYTES-MISMATCH-2026-09-04` owns the
+collision. Prove whether the retained Authority pending/current reference reused or reassigned the
+version and whether the conflicting object belongs to that exact candidate before changing version
+allocation, object naming, replay, deletion, or overwrite behavior. No qualification artifact or
+activation witness exists, no preactivation cycle has passed, and the legacy public writer remains
+sole.
+Source inspection proves the mechanism: the durable state is only `TlsRetentionEmpty` or
+`TlsRetentionCurrent`; the workflow derives `current + 1`, asks the Target Agent for randomized
+ciphertext, and reaches `versions/<n>.envelope` before any pending-intent CAS exists. A prior
+post-PUT interruption can therefore leave the exact next immutable key occupied while the retained
+state still allocates that version, and retry necessarily supplies different bytes. Close it with
+the doctrine's missing durable pending outbox: stage the exact reference, opaque envelope, and
+approval before PUT; resume that byte-identical candidate after interruption; and, for the existing
+pre-outbox orphan, observe the exact allocated version and adopt it only after its envelope
+decrypts under the candidate's version/certificate/source AAD and the selected Agent proves exact
+idempotent apply/read-back. Corrupt, changed-source, or unobservable legacy occupation must refuse.
+This recovery neither overwrites nor deletes an immutable object and does not scan or select S3
+`latest`.
+The code-local durable-outbox closure is now landed. The retained TLS aggregate appends
+`TlsRetentionPendingState` without shifting the two existing canonical-CBOR constructors and
+stores the exact predecessor, approval, reference, and bounded opaque envelope before any Adapter
+PUT. Exact pending replays reuse those bytes and stored approval; divergent pending intent,
+unstaged promotion, semantically invalid durable state, invalid reference fields, digest/version
+mismatch, validity regression, and unapproved key rotation all refuse before mutation. Authority
+stage and Adapter exact-version-observe routes are appended to the authenticated route/code
+registries, with prior route codes and prior Authority-response CBOR tags preserved. The normal
+missing-version path stages before immutable storage; a pending retry performs no fresh Target
+encryption; and the bounded pre-outbox recovery performs one exact-version GET, adopts only after
+the stored envelope decrypts under candidate version/certificate/source AAD and the selected Agent
+proves an idempotent exact-content read-back, then stages, confirms the existing bytes, re-observes
+the exact source, and promotes. Missing source, corrupt/unobservable bytes, changed AAD/source, or
+non-idempotent Agent read-back refuse; there is no overwrite, delete, list, or `latest` surface.
+The legacy adoption branch adds exactly two Target-Agent transactions to the prior complete
+qualification-attempt envelope (selected prepare + home rewrap + selected restore replace the
+ordinary home wrap). The derived per-attempt maximum is therefore **29**, retained replay capacity
+is **58** for that complete attempt and its immediately unchanged retry, and the encoded ceiling is
+**118 MiB** for 58 maximum-size responses plus metadata. Its at-most 157.34 MiB Base64 expansion
+plus the bounded KV JSON envelope remains contained by the already-rendered finite 160 MiB Vault
+listener request ceiling; no authentication lifetime, skew, or other role bound changes.
+Because the deployed Target replay projection is already canonical v8 at capacity 54, this widening
+advances the codec to **v9** and admits canonical v2–v8 projections only when response-size/skew
+match and prior capacity does not exceed 58. Every retained entry survives the migration; capacity
+shrink, limit drift, corruption, or evidence clearing still refuses.
+The state codec rejects oversized or semantically forged current/pending values while preserving
+the exact legacy Empty/Current encodings; a byte-compat regression also pins all pre-stage
+Authority response tags and the pre-move immutable-envelope encoding. The warning-as-error
+all-target build passes; the TLS Authority fold passes **21/21**, the Adapter/workflow endpoint
+group passes **25/25**, the refreshed primary suite passes **4823/4823**, and auxiliaries pass
+**27/35/36**. The workflow group directly proves corrupt occupation, unobservable exact-version
+observation, missing source, and non-idempotent Agent read-back all refuse before Authority
+staging. Canonical `prodbox dev check` exits 0 with repository policy, pinned formatting, HLint
+(`No hints`), documentation/generated-artifact checks, and warning-clean all-target compilation;
+`git diff --check` also passes. The gate-built executable and synchronized `.build/prodbox` are
+byte-identical at
+`sha256:ec0c2a14f08661e8c217a571c3728acbdfc33f250afcf163ffbf62f8d9e55e4c`. Live `pre-1`
+remains to be completed on this revision. Therefore
+`TLS-RETENTION-IMMUTABLE-VERSION-CONFLICT-BYTES-MISMATCH-2026-09-04` remains registered: no
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+The corrected live `pre-1` candidate builds local runtime image
+`sha256:ce38381469f33164439ff3f4f88b8f20677bb1046139e921c1093d5f4f9211f4` in 1,148.0
+seconds, publishes registry manifest
+`sha256:b0c70934432986277c73e25b05da694adc3a5346303469efef16edd9823969fd`, imports OCI
+manifest `sha256:553ba7f68b8b2b3eec51296f1085677c599ff87e816ba395dd6059b8d8c5caca` in
+107.2 seconds, and removes only the superseded local image/manifest. Both prerequisite/runbook
+passes cross TLS Retention without the immutable-version collision, and the destructive restore
+positively reports that the public-edge certificate was retained through the Authority and TLS
+Retention Adapter. After Gateway namespace recreation, `RestoreChartVscode` nevertheless fails
+with the exact public diagnostic `TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`; the
+total restore executor still attempts API and WebSocket, while public-edge readiness separately
+reports the already-known Gateway-DNS write-authority refusal. Exact terminal cleanup is not
+proved, so operational credentials are preserved. Stable counterexample
+`TLS-RETENTION-RESTORE-SELECTED-AGENT-UNAVAILABLE-2026-09-04` owns this next boundary before any
+client, authentication, replay, trust, timeout, or restore behavior changes. No qualification
+artifact or activation witness exists, no preactivation cycle has passed, and the legacy public
+writer remains sole.
+The licensed behavior-neutral discriminator is now code-local complete. The one-shot Target
+worker preserves a TLS-restore production-boundary refusal or the exact closed
+`TlsTargetAgentError` constructor through its authenticated provisional completion instead of
+collapsing both to the generic materialization refusal. Rendering maps all nine Target error arms
+to finite value-free `tls-restore/*` tokens; parameterized DEK, cipher, and ciphertext-size values
+cannot reach the token. The standing Target Agent admits only that explicit token set (plus the
+existing TLS-retain set), while arbitrary worker detail still collapses to
+`materialization-refused/other`. Restore execution, request/response transport, authentication,
+replay, trust, timeout, and Secret comparison/apply behavior are unchanged. The focused exhaustive
+diagnostic regression passes **1/1**, the warning-as-error all-target build passes, and the full
+primary suite remains **4823/4823**. Repository policy, pinned formatting, HLint (`No hints`),
+documentation/generated-artifact checks, and warning-clean all-target compilation pass through
+canonical `prodbox dev check`; the gate-built executable and `.build/prodbox` are byte-identical at
+`sha256:dab7bd25283ae4bb55b9d3146c8fa65337a285536d954db5eab0c3fe03c643b6`. Rerun the exact
+live `pre-1` operation unchanged and inspect only the closed standing Target-Agent/Authority
+diagnostic tokens to select the proven restore cause before changing behavior. The counterexample
+and all qualification/activation/legacy-writer status remain unchanged until that live evidence.
+The unchanged diagnostic `pre-1` live run builds local image
+`sha256:cc9795386f9e629249f0d5c2a8019b9230c31fd5c48e688453c55452eeb7a7a7` in 1,152.3
+seconds, publishes registry manifest
+`sha256:05474538d1b196faced00cc6d8f60af31b339c8cab0268cbe184c6df0cf2e137`, and imports OCI
+manifest `sha256:608b706047db71983f56799cf66c3add5ebd67b0220dd873624c61b9bfec5758` in 101.6
+seconds. It removes only the immediately superseded local image and registry manifest. Both
+prerequisite/runbook passes cross TLS Retention and all retained roles on the exact candidate.
+Because the prior failed restore left no public-edge Secret or Certificate, the destructive delete
+has no new source to retain; after Gateway recreation the retained restore nevertheless reaches the
+selected Agent and again surfaces public
+`TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`. The new closed standing Target-Agent
+diagnostic is exactly
+`coordinator/materialization-refused/tls-restore/secret-apply-failed`; the Authority diagnostic
+remains the expected `selected-agent/http-status/other`. This live-proves decrypt, ciphertext
+decode, retained-reference equality, and entry into exact Secret apply, while ruling out DEK,
+cipher, ciphertext, reference, and read-back arms. API and WebSocket continue through the total
+executor; public-edge readiness separately retains the already-known Gateway-DNS write-authority
+failure. Exact terminal cleanup is not proved, so operational credentials are preserved. Register
+stable counterexample `TLS-RETENTION-RESTORE-SECRET-APPLY-FAILED-2026-09-04` before changing Secret
+apply, restore, or namespace lifecycle behavior. No qualification artifact or activation witness
+exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+The licensed apply discriminator is now code-local complete without changing restore semantics.
+`K8sSecretApplyError` classifies request construction, transport, the finite relevant HTTP status
+classes, 5xx, and unexpected status once at the in-cluster HTTP boundary; API bodies, integer
+statuses, and exception text are discarded there. `TlsSecretApplyFailure` separately names initial
+observation failure, corrupt/different existing content, every closed apply-request class, and
+unavailable/missing/corrupt/different post-apply read-back. The Target error and authenticated
+worker refusal carry only that closed constructor, and the standing Agent derives its exact
+allowlist from the complete bounded enumeration; arbitrary text still maps to `other`. Exact
+Secret GET, non-forcing server-side apply, content comparison, RBAC, and restore control flow are
+unchanged. Read-only authorization observation confirms the one-shot ServiceAccount can `get` and
+`patch` exact `secret/public-edge-tls` but cannot namespace-wide `create`, matching the intended
+exact-name capability. Three focused regressions pass **1/1** each, the full primary suite passes
+**4824/4824**, the warning-as-error all-target build passes, and canonical `prodbox dev check`
+passes with repository policy, pinned formatting, HLint (`No hints`), documentation/generated
+artifacts, and warning-clean compilation. The gate-built executable and `.build/prodbox` are
+byte-identical at
+`sha256:5b3762e2193993254552df5bd19be4f498dba9471361d8f7711640cb4d491a1f`. Rerun live
+`pre-1` unchanged and inspect only the closed standing Target-Agent/Authority tokens to select the
+exact apply subcause before changing behavior. The stable counterexample and all
+qualification/activation/legacy-writer status remain unchanged until that live proof.
+The exact unchanged `pre-1` rerun builds local image
+`sha256:95d95b361f53262596d5fc9f0be3c2e7856fbe550a1e72eadfcd30ca140eb0ca` in 1,144.7
+seconds, publishes registry manifest
+`sha256:f694a95b264da33c2537d6152995027984e157fe0beb35f0727b2cf0e90b79fd`, and imports OCI
+manifest `sha256:3f7ee036d8750d7476179c543d6053a9264c7c4ac1ae679e957b532c0f14098c` in 93.4
+seconds. It removes only the immediately superseded local image and registry manifest, and both
+prerequisite/runbook passes cross TLS Retention and every retained role on the exact candidate.
+The public-edge Secret and Certificate remain absent before deletion; after Gateway recreation the
+retained restore again surfaces public `TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`.
+The only licensed standing diagnostics are now exact Target-Agent
+`coordinator/materialization-refused/tls-restore/secret-apply-failed/http-forbidden` and Authority
+`selected-agent/http-status/other`. Together with the read-only authorization observation that the
+one-shot ServiceAccount can patch exact `secret/public-edge-tls`, cannot create Secrets, and the
+Secret is absent, this live-proves that the non-forcing absent-object server-side apply is rejected
+with HTTP 403 before post-apply read-back. Register stable successor counterexample
+`TLS-RETENTION-RESTORE-SECRET-APPLY-HTTP-FORBIDDEN-2026-09-04` before changing namespace
+lifecycle, Secret establishment, apply behavior, or capability scope. API and WebSocket complete
+through the total executor; VS Code fails only at retained TLS restore, while public-edge readiness
+separately retains the known Gateway-DNS write-authority failure. Exact terminal cleanup is not
+proved, so operational credentials remain preserved. No qualification artifact or activation
+witness exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+The registered
+`TLS-RETENTION-RESTORE-SECRET-APPLY-HTTP-FORBIDDEN-2026-09-04` counterexample is now closed
+code-locally by an exact graph-owned restore slot rather than by widening the Target worker's
+capability. After namespace and exact access reconciliation and before the Authority restore, the
+chart graph performs one `kubectl create` of `vscode/public-edge-tls` as a marked,
+non-secret-bearing `kubernetes.io/tls` object whose required `tls.crt` and `tls.key` values are
+empty. Only command success or an API-server `AlreadyExists` refusal found in stderr is accepted;
+the host does not read the Secret. The selected one-shot ServiceAccount remains limited to
+exact-name `get` and `patch`, accepts only that complete still-empty slot shape, carries its
+observed opaque Kubernetes `resourceVersion` into an exact-name JSON merge PATCH as an optimistic
+CAS, and independently reads back the restored content. Missing, corrupt, different, immutable,
+or unobservable slots, a concurrent replacement, every closed HTTP failure, and an unchanged slot
+after patch all fail closed through the bounded worker diagnostic vocabulary. The warning-as-error
+all-target build passes, focused restore-slot behavior passes **4/4**, strict `AlreadyExists`
+classification passes **1/1**, the closed diagnostic vocabulary passes **1/1**, and the full
+primary suite passes **4828/4828** in 90.97 seconds. The governed global inventory, lifecycle,
+ChartPlatform, and public-edge doctrines agree with that boundary; documentation and diff checks
+pass. Canonical `prodbox dev check` exits 0 with repository policy, pinned formatting, HLint (`No
+hints`), generated artifacts/documentation, and warning-clean all-target compilation. The
+gate-built executable and `.build/prodbox` are byte-identical at
+`sha256:eca40a9a82448295b6cdb0a865dd63e7eef562f36dccde5bbc01767ef589648b`. The next action
+is the exact unchanged live `pre-1` rerun. Deployment qualification remains `pending`: no
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+The exact unchanged live `pre-1` rerun builds local image
+`sha256:07638eb36a2976ea14d61c5f4c82181e220baf647da2471c68f9b3bd0d7d010f` in 1,137.5
+seconds, publishes registry manifest
+`sha256:ebe3f4fe32be0c4635b0b32abd3fe1db7c976ae122f344465a2b45f658c4ae03`, and imports OCI
+manifest `sha256:63dda611a2bb0e8f897e7b67b303f70c9eace5a68b74b2fc274d8d9a5ef640d3` in 85.6
+seconds. It removes only the immediately superseded registry manifest
+`sha256:f694a95b264da33c2537d6152995027984e157fe0beb35f0727b2cf0e90b79fd` and local image
+`sha256:95d95b361f53262596d5fc9f0be3c2e7856fbe550a1e72eadfcd30ca140eb0ca`. The retained
+runbook passes cross Bootstrap Broker, Target Agent, Lifecycle Authority, Authority Backup,
+Provider Worker, Gateway, TLS Retention, and the shared platform barriers on the exact candidate.
+The total restore executor proves all four chart deletions, Gateway/API/WebSocket reconstruction,
+and storage preservation; VS Code alone fails with public
+`TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`, while public-edge readiness separately
+retains the known Gateway-DNS write-authority failure. The only licensed standing diagnostics are
+Target-Agent `target-one-shot/tls-prepare failure=coordinator/attach-failed/transport-unavailable`
+and Authority `tls-retention/workflow failure=selected-agent/http-status/other`. This run therefore
+does not reach exact Secret apply and cannot live-close the restore-slot correction. Register stable
+successor counterexample
+`TLS-RETENTION-PREPARE-ATTACH-TRANSPORT-UNAVAILABLE-2026-09-04` before changing Target-worker
+creation, attachment, transport, deadlines, cleanup, or TLS prepare behavior. Exact terminal
+cleanup is not proved, so operational credentials remain preserved. No qualification artifact or
+activation witness exists, no preactivation cycle has passed, and the legacy public writer remains
+sole. Resume by diagnosing the exact bounded one-shot attach path from source and non-secret
+Kubernetes object/status observations, without widening the licensed log surface.
+That diagnosis is now source- and status-local. Read-only events show the exact TLS-prepare Pod
+was scheduled, pulled, created, and started at 08:24:07--08 EDT, while the standing Target Agent
+recorded the attach refusal at 08:24:16 EDT; the ten-minute exchange wall clock therefore did not
+fire, and no worker object remains. The bounded exchange currently collapses limits validation,
+initial-frame bounds, process start, initial write, provisional read, continuation write,
+completion collection, and wall-clock timeout into the same `transport-unavailable` token. A
+worker that exits before its first provisional frame is indistinguishable from a failed
+`kubectl attach`. The next correction is behavior-neutral: carry only that closed transport stage
+to a value-free Target-Agent token, retain the existing secret/payload erasure and exact cleanup,
+validate locally, then rerun the same `pre-1` counterexample before changing transport behavior.
+That behavior-neutral diagnostic is now closed code-locally. The generic bounded framed exchange
+retains an exhaustive eight-constructor transport stage for limits validation, initial-payload
+validation, process start, initial-payload write, provisional read, decision-continuation write,
+completion collection, and wall-clock timeout. The Target boundary projects those constructors to
+eight fixed value-free details and then to eight closed `attach-failed/...` tokens; the underlying
+exception, `kubectl` response, payload, and frame bytes remain erased, and no deadline, retry,
+attachment, cleanup, or TLS-prepare behavior changes. The exact vocabulary regression passes
+**1/1**, a real child that consumes its initial frame and exits before a provisional frame is
+classified at `provisional-read` in **1/1**, warning-as-error all-target compilation passes, and
+the canonical unit command passes the complete **4829/4829** primary cases plus authenticated
+control-plane auxiliaries **35/35** and **36/36**. Governed documentation, documentation lint, and
+diff checks pass; canonical `prodbox dev check` exits 0 with repository policy, pinned Fourmolu,
+HLint (`No hints`), generated artifacts/documentation, and warning-clean all-target compilation.
+The gate-built executable and `.build/prodbox` are byte-identical at
+`sha256:225ceb56b4877ff4b8836da10bff7741cf5ae1c667f1ffd4bfdfbc3561f2f3c1`. Rerun the same
+live `pre-1` counterexample on this diagnostic-only revision and use its exact value-free stage
+before licensing any transport behavior change. Deployment qualification remains `pending`: no
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+The diagnostic-only live `pre-1` rerun builds local runtime image
+`sha256:9d2a79b5b142f04271ee8a9477b24082d982d5f777e693e0368d477538eedb5a` in 1,165.1
+seconds, publishes registry manifest
+`sha256:e571c53f8e7b00453efbd76d5027d20adbb2170f187f921d246b48edc05ba230`, and imports OCI
+manifest `sha256:f1b7911b3ec419dac6d6de024c3f644931ee9d75c8a74a7ac5f0f3ffcd8ba8fa` in 87.4
+seconds. It removes only the prior registry manifest `sha256:ebe3f4fe...` and local image
+`sha256:07638eb3...`, then crosses the retained-home, platform, Provider, Gateway, TLS Retention,
+and runbook barriers on the exact candidate. The total restore executor again proves all four chart
+deletions plus Gateway, API, and WebSocket reconstruction. VS Code restoration stops first after
+its 1,800-second Patroni convergence budget with exact non-secret status
+`status=initializing,postgres.ready=2,expected.postgres.ready=3`; public-edge readiness separately
+retains the known Gateway-DNS write-authority refusal. Neither licensed standing log contains a new
+TLS operation: Target Agent emits nothing and Authority emits only the retained
+`aws-admin/prepare authority-phase=completed`, so the one-shot attach is not entered and
+`TLS-RETENTION-PREPARE-ATTACH-TRANSPORT-UNAVAILABLE-2026-09-04` remains not live-closed. Register
+the distinct stable counterexample
+`VSCODE-RESTORE-PATRONI-THREE-REPLICA-READINESS-TIMEOUT-2026-09-04` before changing Percona,
+storage, restore ordering, readiness budgets, or TLS behavior. Exact terminal cleanup is not
+proved, so operational credentials remain preserved. No qualification artifact or activation
+witness exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+Resume with exact non-secret Percona object/status, Pod/PVC/PV ownership, node placement, and event
+observations; do not widen the licensed log surface.
+That read-only diagnosis closes the ambiguity. Percona 2.9 publishes the selectorless primary
+Service and its Endpoints/EndpointSlice as a ready IP with no `targetRef`; the current
+endpoint-to-Pod observer therefore returns no anchor even though the exact `hh5k` Pod carries the
+closed `postgres-operator.crunchydata.com/role=primary` label and its `postgres-data` volume names
+the bound PVC. Full expansion consequently takes the no-anchor sorted fallback: its applied
+manifests assign retained PV0 to the new lexically first `5krm` claim, retained PV1 to already-bound
+`hh5k`, and retained PV2 to `rwr7`. The PV controller preserves PV0's actual `hh5k` binding, PV1
+stays Available but prebound to that same claim, and `5krm` stays Pending; 122 PVC
+`WaitForPodScheduled` observations and 16 Pod `FailedScheduling` events report no available PV.
+The source also validates but discards the ordinal-stripped Pod prefix when deriving a claim name.
+Close the registered counterexample by observing the exact single role-labelled primary Pod and its
+`postgres-data` PVC (rather than requiring an absent Endpoint target reference), deriving the
+ordinal-free claim name, and retaining that bound PV as the anchor while assigning only follower
+claims. Multiple, missing, malformed, unbound, or non-owned primary observations must retain the
+existing no-live-anchor fallback/refusal rules; do not change data roots, reset storage, widen the
+readiness deadline, or mutate live PVs outside the next supported reconcile.
+That correction is now closed code-locally. ChartPlatform lists Pods by the exact Percona cluster
+and `role=primary` labels, accepts exactly one Pod with exactly one `postgres-data` PVC, verifies
+that the claim matches the Pod identity with its terminal ordinal removed, and follows the claim to
+its bound PV. Empty, multiple, malformed, identity-mismatched, unbound, or non-owned observations
+still take the existing no-live-anchor fallback/refusal path. The anchor-aware binding regression
+uses the observed random suffixes and proves retained PV0 remains on `hh5k`, retained PV1 moves to
+the new `5krm` follower, and retained PV2 remains on `rwr7`; data roots, storage reset policy,
+readiness budgets, and mutation ownership are unchanged. Parser/fallback cases pass **3/3**, the
+random-suffix binding case passes **1/1**, and the installed staged-restore boundary passes **1/1**
+while proving no Endpoint `targetRef` query remains. The shared installed fixture now models exact
+Secret `create -f` and decodes retain versus restore on the authenticated Authority workflow route;
+its Gateway OOM case deterministically proves installed fail-fast behavior while the pure suite
+retains the absorbing-across-later-healthy proof. The complete primary suite passes **4833/4833**
+in 91.21 seconds, auxiliaries pass **27/27**, **35/35**, and **36/36**, and both installed
+integration entrypoints pass **63/63** (`cli` in 441.88 seconds and `env` in 437.41 seconds).
+Warning-as-error all-target compilation, documentation/diff checks, and canonical `prodbox dev
+check` pass with pinned Fourmolu and HLint `No hints`. The gate-built executable and
+`.build/prodbox` are byte-identical at
+`sha256:1e8a5182230c2b67f1fb14da71955eb702b778d24a4d562511674f1a493e55cb`. Rerun the exact
+unchanged live `pre-1` cycle to repair the retained PV binding through the supported reconcile and
+close this counterexample before returning to the TLS attach counterexample. Deployment
+qualification remains `pending`: no qualification artifact or activation witness exists, no
+preactivation cycle has passed, and the legacy public writer remains sole.
+The exact corrective live `pre-1` rerun builds local runtime image
+`sha256:29ac372d3a008fedf205b5fdb59bfbf1f63b424eed1d64bbaaf470299af0e584` in
+1,386.2 seconds, publishes registry manifest
+`sha256:b447c3dceffb721bd8d2698f11c12156c109be8d9a7b98309ee146348b876eb3`, and
+imports OCI manifest `sha256:40a15569bcbcaace92fe18dba5ed8684f90193b922612ca804032da97dcbdb13`
+in 116.1 seconds. It removes only the superseded registry manifest `sha256:e571c53f...` and local
+image `sha256:9d2a79b5...`, then passes the retained Bootstrap Broker, Target Agent, Lifecycle
+Authority, Authority Backup, Provider Worker, Gateway, TLS Retention, and shared-platform barriers.
+The total restore executor proves every chart deletion with storage preservation plus Gateway,
+API, and WebSocket reconstruction, but VS Code fails before its release apply at the public-edge
+TLS restore preamble with `TlsRetentionWorkflowAuthorityHomeAgentUnavailable`; public-edge
+readiness independently retains the known Gateway-DNS write-authority refusal. The only licensed
+standing diagnostics select Target Agent
+`target-one-shot/tls-home-rewrap failure=coordinator/session-prepare-failed` and Authority
+`tls-retention/workflow failure=home-agent/http-status/other`. Register stable counterexample
+`TLS-RETENTION-HOME-REWRAP-SESSION-PREPARE-FAILED-2026-09-04` before changing worker-session
+preparation, home rewrap, transport, deadlines, cleanup, or TLS workflow behavior. Because
+`ensureChartStorage` precedes this TLS preamble while Helm apply and staged Patroni readiness follow
+it, the run exercises the corrected storage preparation but does not yet live-close
+`VSCODE-RESTORE-PATRONI-THREE-REPLICA-READINESS-TIMEOUT-2026-09-04`; the earlier
+`TLS-RETENTION-PREPARE-ATTACH-TRANSPORT-UNAVAILABLE-2026-09-04` also remains not live-closed.
+Exact terminal cleanup is not proved, so operational credentials remain preserved. No
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole. Resume with source-local session-preparation diagnosis and exact
+non-secret worker object/status/event observations; do not widen the licensed log surface.
+The permitted read-only diagnosis now fixes that boundary without guessing at behavior. Kubernetes
+events prove the exact home-rewrap one-shot Job and Pod were created, scheduled, pulled, started,
+and then UID-cleaned; no one-shot Job or worker Pod remains. The VS Code namespace contains only
+its restored editor PVC and no PostgreSQL CR/PVC/PV because the TLS preamble refused before the
+staged Patroni release apply, confirming that the Patroni counterexample remains live-open. Source
+inspection shows the post-attestation coordinator calls retained service-session allocation and
+preparation before permit issuance or stdin attach, but its production interpreter converts every
+closed `ServiceSessionLifecycleError` to bounded `Text` and the diagnostic collapses every such
+value to `session-prepare-failed`. Add only a behavior-neutral, exhaustive, value-free
+session-preparation cause projection across that boundary, retain payload/detail erasure and all
+journal, cleanup, permit, attach, and TLS behavior unchanged, validate locally, and rerun the same
+`pre-1` to select the exact retained-journal/preclean/CAS/ambiguity arm.
+That diagnostic refinement is now closed code-locally. The coordinator initially carries a fifteen-member
+`TargetWorkerSessionPrepareCause` ADT instead of arbitrary detail; the production interpreter maps
+every `ServiceSessionLifecycleError` constructor to it exhaustively, and the protected renderer
+emits only fixed `session-prepare-failed/...` tokens. Journal/Vault/audit/action detail is erased
+before the coordinator while allocation, fencing, preclean, cleanup, permit, attach, deadlines,
+and TLS behavior remain unchanged. The exact closed-vocabulary and detail-erasure regression passes
+**1/1**. Warning-as-error all-target compilation passes; the canonical unit command passes primary
+**4834/4834** plus auxiliaries **27/27**, **35/35**, and **36/36**. Both installed integration
+entrypoints pass **63/63** (`cli` in 447.84 seconds and `env` in 438.57 seconds), and canonical
+`prodbox dev check` passes with pinned formatting, HLint `No hints`, governed documentation, and
+warning-clean all-target compilation. Documentation lint and diff checks pass; the gate-built
+executable and `.build/prodbox` are byte-identical at
+`sha256:d87676ec2a6de0befd5665dac151c06f9897d76e61eda46f25320d4ce985a892`. Rerun live
+`pre-1` unchanged on this diagnostic-only revision and use its exact value-free
+session-preparation arm before changing behavior; all three live counterexamples and deployment
+qualification remain pending, and the legacy public writer remains sole.
+The unchanged diagnostic `pre-1` rerun uses local runtime image
+`sha256:fdb7573fb63699ab9c80349bf14e2ae844579f818e061a88176ab4f06ba99200`, publishes
+registry manifest `sha256:7c3294916ac932ed55700b9468206e0839190260e3915aa63a6f4f41d62bb91f`,
+and imports OCI manifest
+`sha256:178e6bfe3633546f3ace234491f6987309a9fa4ae6ce7b7275b21e78590652b6` in
+108.9 seconds. It removes only the preceding registry manifest `sha256:b447c3d...` and local
+runtime image `sha256:29ac372d...`, passes the retained control-plane and shared-platform
+barriers, and again proves all four chart deletions plus Gateway, API, and WebSocket restoration.
+VS Code refuses before release apply at `TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`;
+the licensed standing diagnostics select Target Agent
+`target-one-shot/tls-restore failure=coordinator/session-prepare-failed/preclean-failed` and
+Authority `tls-retention/workflow failure=selected-agent/http-status/other`. Register stable
+counterexample `TLS-RETENTION-SELECTED-RESTORE-SESSION-PRECLEAN-FAILED-2026-09-04` before changing
+session preclean, retained-session recovery, Target Agent selection, TLS restore, transport,
+deadlines, or cleanup. This different selected-agent arm does not live-close
+`TLS-RETENTION-HOME-REWRAP-SESSION-PREPARE-FAILED-2026-09-04`,
+`TLS-RETENTION-PREPARE-ATTACH-TRANSPORT-UNAVAILABLE-2026-09-04`, or
+`VSCODE-RESTORE-PATRONI-THREE-REPLICA-READINESS-TIMEOUT-2026-09-04`. Exact terminal cleanup is not
+proved, operational credentials remain preserved, no qualification artifact or activation
+witness exists, and the legacy public writer remains sole. Resume with source-local preclean and
+retained-session diagnosis plus exact non-secret worker object/status/event observations; do not
+widen the licensed log surface.
+That permitted diagnosis isolates the next ambiguity without changing behavior. The exact
+`tls-restore` worker was created, scheduled, pulled, and started at 18:10:09--10 UTC, then
+UID-cleaned at 18:10:15; no one-shot Job or worker Pod remains, and the exact-image standing Target
+Agent remains Ready. For each operation the agent obtains a fresh accessor-free batch auditor with
+a maximum 300-second lease, uses that same capability to allocate and begin the retained role lane,
+and only then reaches `ServiceSessionAcquiring` preclean. Preclean lists the global accessor
+inventory, classifies each accessor against the role-wide Target-worker subject, provisionally
+revokes matches, and requires two fresh zero-member observations. The lifecycle error retains a
+closed `VaultAccessorAuditError`, but the production projection collapses all of its identity,
+auditor-evidence, inventory-observation, accessor-classification, known-identity, revocation,
+visibility-wait, and stable-absence arms to `preclean-failed`. Add only an exhaustive, value-free
+preclean-cause projection and fixed Target-Agent token, preserving private provider detail and all
+policy, login, lease, journal, retry, revoke, cleanup, permit, attach, deadline, and TLS behavior;
+validate locally, then rerun the same `pre-1` before licensing any behavior correction for
+`TLS-RETENTION-SELECTED-RESTORE-SESSION-PRECLEAN-FAILED-2026-09-04`.
+The nested preclean diagnostic is now code-local. The former undifferentiated preclean constructor
+is replaced by nine fixed constructors covering every `VaultAccessorAuditError`; production maps
+that closed algebra exhaustively, and the renderer emits only `preclean/...` tokens with no
+provider, accessor, journal, or payload detail. The accessor auditor, role-wide subject, policy,
+lease, inventory/classification/revoke algorithm, visibility budget, session journal, permit,
+attach, cleanup, deadlines, and TLS workflow are unchanged. Warning-as-error all-target compilation
+passes, and the focused exhaustive vocabulary/mapping/detail-erasure regression passes **1/1**. The
+canonical unit command passes primary **4834/4834** plus auxiliaries **27/27**, **35/35**, and
+**36/36**. Both installed integration entrypoints pass **63/63** (`cli` in 441.57 seconds and `env`
+in 439.14 seconds); canonical `prodbox dev check` passes with pinned formatting, HLint `No hints`,
+governed documentation, and warning-clean all-target compilation, and diff checks pass. The
+gate-built executable and `.build/prodbox` are byte-identical at
+`sha256:358a50564a02e314fa97a0b8db38e20328962059b516872f59ddd616311fb35b`. Rerun the same
+live `pre-1` on this diagnostic-only revision to select the exact preclean stage before changing
+behavior.
+The exact diagnostic `pre-1` rerun builds local runtime image
+`sha256:afb6b65b41a96df2892f72bb3fdc17dab3592a5673e9833154c1c76abcbd1938` in 1,157.1
+seconds, publishes registry manifest
+`sha256:632e33170147cdcff3be0362d93077ff3aae2aebbf8f77470b4da968476798c7`, and imports OCI
+manifest `sha256:24124eeae71681a4b131da087daa323023bd9ee97182067732ffacd944f1185d` in 85.3
+seconds. It removes only the preceding registry manifest `sha256:7c329491...` and local image
+`sha256:fdb7573f...`, crosses every retained control-plane, shared-platform, Provider, Gateway, TLS
+Retention, and runbook barrier, and proves all four chart deletions plus every Gateway, VS Code,
+API, and WebSocket restore node. The Percona cluster is `ready`: exact Pods `r6p5` primary plus
+`8lw2` and `xnr2` replicas are Running with both containers Ready and zero restarts; retained PV0
+is bound to the primary claim while PV1/PV2 bind the two follower claims. This live-closes
+`VSCODE-RESTORE-PATRONI-THREE-REPLICA-READINESS-TIMEOUT-2026-09-04`. The licensed Target Agent log
+is empty and the Authority log contains only `aws-admin/prepare authority-phase=completed`, so the
+run selects no TLS failure and does not close the intermittent selected-restore preclean,
+home-rewrap session-prepare, or prepare-attach counterexamples. The sole aggregate failure is now
+public-edge readiness:
+`Gateway-DNS observation is bound to the requested record but its write authority is not ready`.
+Register stable counterexample `HOME-PUBLIC-EDGE-GATEWAY-DNS-WRITE-AUTHORITY-NOT-READY-2026-09-04`
+before changing Gateway credentials, DNS authority construction, status projection, record
+reconciliation, readiness, or public-edge behavior. Exact terminal cleanup remains unproved,
+operational credentials remain preserved, no qualification artifact or activation witness exists,
+and the legacy public writer remains sole. Resume with source-local Gateway-DNS authority diagnosis
+and exact non-secret Gateway object/status observations; do not widen the licensed log surface.
+That diagnosis selects the nested stable counterexample
+`GATEWAY-RESTORE-PEER-SNAPSHOT-HEARTBEAT-EVIDENCE-UNEXPECTED-2026-09-04`. The restored
+`gateway-node-a` and `gateway-node-b` StatefulSets are generation 1, fully observed, Ready with zero
+container restarts, and run registry manifest `sha256:632e3317...`; the public-edge Gateway is
+Accepted/Programmed at observed generation 1 with address `192.168.2.240`. Repeated exact
+`/v1/state` observations reach both daemon members and show `gateway_owner=null`,
+`node_disposition=unknown`, `can_write_dns=false`, no last DNS write, and Ready retained continuity.
+Node A observes fresh inbound Node-B events but its outbound peer repair stops at exact
+`PeerSnapshotEvidenceUnexpected (NodeId "node-a") SnapshotHeartbeatEvidence`; Node B's peer socket
+is reachable while it has no fresh inbound Node-A event. Source establishes the inconsistency:
+`retainSignedAssertion` prunes signed replay only before inserting the supplied assertion, while
+restart restoration installs the already-final semantic `GatewayState` checkpoint before folding
+its retained signed suffix. An assertion already at or below that final checkpoint can therefore
+remain in `stateSignedReplay`, and its checkpoint projection can retain heartbeat evidence that an
+Orders-migration checkpoint has semantically cleared. Repair signing correctly rejects that
+evidence mismatch, so no owner can converge and DNS authority remains closed. Reconcile signed
+retention after insertion against the already-installed semantic checkpoint, preserving only the
+strictly post-checkpoint replay and applying heartbeat/ownership/migration evidence in order; add a
+focused restart/repair regression, keep signature and peer rejection behavior unchanged, validate
+locally, then rerun the exact `pre-1`. The broader Gateway-DNS counterexample, all intermittent TLS
+counterexamples, exact cleanup, qualification artifact, activation witness, and single-writer
+cutover remain open.
+The signed-retention correction is now code-local. `SignedEmitterRetention` gives each emitter one
+exact heartbeat slot, one exact ownership slot, and one bounded signed suffix; every insertion is
+reconciled both before and after capacity handling against the installed semantic checkpoint using
+the full incarnation/epoch/sequence coordinate. Exact semantic comparison drops mismatched or
+semantically absent checkpoint evidence, and an Orders-migration assertion clears both slots before
+repair signing. Daemon recovery folds the checkpoint evidence and retained suffix through that one
+projection; peer and ordinary publication paths use the same invariant. Signature verification,
+checkpoint construction, peer rejection, durable journal, ownership election, and DNS behavior are
+otherwise unchanged. Warning-as-error all-target compilation passes. The focused restored-migration
+counterexample passes **1/1**, and the complete bounded-Gateway group passes **44/44**. Complete
+unit validation passes primary **4835/4835** plus auxiliaries **27/27**, **35/35**, and **36/36**.
+Both installed integration entrypoints pass **63/63** (`cli` in 446.16 seconds and `env` in 446.07
+seconds). Canonical `prodbox dev check` passes with the pinned formatter, HLint `No hints`, policy
+and generated-document checks, and warning-clean all-target compilation; the final
+ledger-inclusive rerun also passes. Documentation lint and diff checks pass. The gate-built and
+installed executables are byte-identical at
+`sha256:6a15f363b8ad723245f07d7ea7d29ac180774f374a8a8d3168478fbab5755afd`. Live `pre-1`
+validation remains next; no live counterexample is closed yet.
+The exact corrected `pre-1` rerun builds local runtime image
+`sha256:8df0881503a61cee043b2095edad36eddb38c01a7f6c68928566cf5386278ff7`, publishes
+registry manifest `sha256:52da546accedd42b046c5d4f03db47dfe4039e2c13e2b775604afea29e134082`,
+and imports OCI manifest
+`sha256:c0613c089779c56a6123eb9de580f636c785aa50d16c9ec96e3a968dd1c77dd2` in 113.8
+seconds. It removes only the preceding registry manifest `sha256:632e3317...` and local image
+`sha256:afb6b65b...`, crosses the retained control-plane and platform prerequisites, and proves the
+four chart deletions, Gateway MinIO bootstrap, and all four chart restores. Only
+`RestoreNodeWaitForPublicEdge` fails, with exact refusal `Gateway-DNS observation is bound to the
+requested record but its write authority is not ready`; exact terminal cleanup is therefore not
+proved and operational credentials remain preserved. Both Gateway StatefulSets are Ready with
+zero restarts on the exact corrected registry manifest. Their continuity, connected-peer, inbound
+event, and cursor observations are healthy, and the former
+`PeerSnapshotEvidenceUnexpected ... SnapshotHeartbeatEvidence` refusal is absent, live-closing
+`GATEWAY-RESTORE-PEER-SNAPSHOT-HEARTBEAT-EVIDENCE-UNEXPECTED-2026-09-04`. The licensed Target
+Agent log is empty and the Authority log contains only
+`aws-admin/prepare authority-phase=completed`, so this run selects no TLS failure and leaves all
+three intermittent TLS counterexamples open. Repeated exact member observations instead select
+stable counterexample
+`GATEWAY-RESTORE-LEGACY-HEARTBEAT-CADENCE-EXCEEDS-FRESHNESS-WINDOW-2026-09-04` before changing
+Gateway timing. Production still selects `LegacyModelBEmitter`: it timestamps a heartbeat before
+the full persistence-first remote Model-B emission, waits for that emission, and only then sleeps
+the configured 0.5-second interval. A 20-second two-member sample shows accepted heartbeats first
+visible about 4.9–6.1 seconds old, recurring about every 10 seconds and reaching 15.96 seconds old,
+while the explicit Orders heartbeat timeout is only 5 seconds. Owner projections appear only
+briefly at 4.898- and 4.984-second peer ages, never form an active claim, and return to null as the
+evidence expires; DNS write authority consequently remains closed. Raise the explicit rendered
+pre-cutover Orders heartbeat timeout to 30 seconds, within the canonical timing bounds and with
+measured legacy-path margin, rather than hiding a topology-specific runtime override. Preserve the
+0.5-second heartbeat/reconnect intervals, one-second sync interval, signatures, claims, DNS gates,
+and target local-journal semantics; add exact render/config regressions and document why the
+mutually exclusive legacy topology needs this temporary timing accommodation. Validate locally,
+then rerun exact `pre-1`. The broader Gateway-DNS counterexample, intermittent TLS
+counterexamples, exact cleanup, qualification artifact, activation witness, and single-writer
+cutover remain open; the legacy public writer remains sole.
+The explicit pre-cutover timing correction is now code-local. Both the bare Gateway chart and the
+production `ChartPlatform` projection render a 30-second Orders heartbeat timeout; the
+0.5-second heartbeat/reconnect intervals and one-second sync interval are unchanged. Distributed
+Gateway doctrine records the measured legacy persistence-path reason, forbids a hidden
+topology-selected override, and keeps any later target-journal reduction behind its own registered
+and qualified change. Warning-as-error all-target compilation passes. The exact production-plan
+timing regression and exact bare-chart-default regression each pass **1/1**, and the complete
+canonical unit command passes primary **4836/4836** plus auxiliaries **27/27**, **35/35**, and
+**36/36**. Both installed integration entrypoints pass **63/63** (`env` in 444.63 seconds and
+the uncontended `cli` rerun in 451.26 seconds); an earlier concurrent `cli` invocation is excluded
+because Cabal lost its shared suite log while `env` owned it, before any test result. Canonical
+`prodbox dev check` passes with repository-pinned Fourmolu 0.19.0.1, HLint `No hints`, policy,
+generated-document, and warning-clean all-target compilation. The gate-built and installed
+executables are byte-identical at
+`sha256:504ccbd7070f67aba8b94a3ee0ebef1f5c02b6a7a24ca941ff5a200f85ceb0a4`, and diff checks
+pass. The ledger-inclusive canonical rerun, governed-document lint, and diff checks also pass.
+Live `pre-1` is next; no live Gateway timing counterexample is closed yet.
+The exact live `pre-1` rerun on that revision builds local runtime image
+`sha256:184d8c2e53b21bdfb637e66df0ddd772e7e0f1628bcd823704e20c652612e846` in
+1160.5 seconds, publishes registry manifest
+`sha256:fe3784d054981137bce4d6fc0230e827805ac7cbf03af55ea47c742c9fd3c8fb`, and
+imports OCI manifest
+`sha256:85c54ee8024f975e862924c7d4a4f74bd08e40aa373f173c097fce79899f2215` in
+107.4 seconds. It removes only the superseded registry manifest
+`sha256:52da546accedd42b046c5d4f03db47dfe4039e2c13e2b775604afea29e134082` and
+local image `sha256:8df0881503a61cee043b2095edad36eddb38c01a7f6c68928566cf5386278ff7`,
+crosses Bootstrap Broker, Target Agent, Gateway MinIO bootstrap, Lifecycle Authority, Authority
+Backup, MetalLB, Envoy Gateway, cert-manager, the Percona operator, and Provider Worker, and keeps
+retained root session `root-session-9c54db6ad0a352d81a4313f7f2613735c056a2b635618cc095bba021a6b21a5b`
+plus digest `a57561193057a71d62986c9dcc39ca5d59274bd464a413ef445ed3a3b9f77df6`
+exact. Gateway reconcile then observes `HTTP 503: starting`, performs the supported sequential
+restart of both daemon StatefulSets, and terminates at `gateway daemon remained not-ready after its
+continuity restart: HTTP 503: starting`; candidate execution is never entered. Exact terminal
+cleanup is not proved, operational credentials remain preserved, and no qualification artifact or
+activation witness exists. The licensed Target Agent log is empty and the Authority log again
+contains only `aws-admin/prepare authority-phase=completed`, so this run selects no TLS failure and
+leaves the three intermittent TLS counterexamples open.
+
+Stable counterexample
+`GATEWAY-LEGACY-ORDERS-HASH-CHANGE-STRANDS-CONTINUITY-2026-09-04` is registered before another
+behavior change. Both Gateway StatefulSets are subsequently Ready with zero restarts on the exact
+new image, and the deployed Orders read-back proves version 1 plus the new 30-second timeout; yet
+both exact member endpoints remain `HTTP 503: starting` more than 400 seconds after restart. Their
+state projections agree on `continuity_authority.status = unavailable`,
+`last_backend_round_trip = null`, no active claim, and connected peer transports with no accepted
+inbound event. This is not a short verifier budget: the verifier already allows 60 attempts at two
+seconds, and the refusal persists far beyond it. The bounded Orders compiler hashes canonical CBOR
+including `heartbeat_timeout_seconds`; legacy continuity binds and validates the retained record to
+the exact Orders version-plus-hash, while the durable admission marker is keyed only by node.
+Changing 5 to 30 under unchanged version 1 therefore makes each existing admitted node reject its
+retained record at startup, and the rollback `LegacyModelBEmitter` has no journal Orders-migration
+bridge. This live counterexample invalidates the 30-second rendering change as a deployable
+correction and leaves
+`GATEWAY-RESTORE-LEGACY-HEARTBEAT-CADENCE-EXCEEDS-FRESHNESS-WINDOW-2026-09-04` open. Restore the
+retained Orders identity and correct the measured persistence/cadence defect without relabelling or
+discarding continuity, weakening readiness, or bypassing the exact Orders-migration contract; keep
+the legacy public writer sole until Standard-P activation. Then validate locally and rerun exact
+`pre-1`. The broader Gateway-DNS counterexample, intermittent TLS counterexamples, exact cleanup,
+qualification artifact, activation witness, and single-writer cutover remain open.
+
+The retained Orders identity is restored: both chart sources again render version 1 with the exact
+five-second heartbeat timeout. The cadence correction changes the protocol instead of that
+identity. `LegacyModelBEmitter` now commits one ordinary signed heartbeat through its existing
+persistence-first Model-B transaction as a per-process boot fence, then emits HMAC-signed,
+canonical-CBOR, latest-only liveness frames bound to exact Orders, emitter, boot
+incarnation/epoch/sequence/digest, monotonic per-boot sequence, and timestamp. The recurring path
+never enters the capacity-one child lane; claims, yields, rotation, and the boot fence remain
+persisted semantic assertions. Each daemon retains at most one verified frame per bounded member,
+clears it when a newer durable heartbeat is observed, refuses stale/conflicting/regressing/skewed
+frames, and sends liveness only after bounded delta/repair. Stable model counterexample
+`GATEWAY-LEGACY-LIVENESS-SELF-REPLAY-AFTER-CRASH-2026-09-04` found that an initial draft permitted a
+crashed node to accept its own delayed frame. The runtime and model now refuse inbound self-delivery
+and require the local legacy Authority, process-local durable-boot session, and matching local frame
+before ownership. Focused bounded-Gateway validation passes **47/47**. The complete unit command
+now passes primary **4839/4839** plus auxiliaries **27/27**, **35/35**, and **36/36**. The canonical
+formal entrypoint runs both models: the unchanged journal/Lease model passes all 16 invariants at
+**7,139,920 generated / 781,710 distinct** states, and the new legacy bridge passes all six
+invariants at **2,092,755 / 441,423** states. Library, executable, and unit-target builds complete
+without warnings. Both installed integration entrypoints pass **63/63** (`cli` in 452.62 seconds
+and `env` in 451.57 seconds). Canonical `dev check` passes with repository policy, pinned Fourmolu,
+HLint (`No hints`), and warning-clean all-target compilation. Its gate-built and installed
+executables are byte-identical at
+`sha256:3b265dbc56c2649ba84b658e901a6605993773675880d8bc009d5308170cddbc`. The
+ledger-inclusive canonical rerun, governed-document lint, and diff checks also pass. Exact live
+`pre-1` is next; neither live Gateway counterexample is closed, and the legacy public writer remains
+sole.
+
+The exact live `pre-1` rerun on that locally green revision builds runtime image
+`sha256:04cd977535aab6bcb1b7e5e10b3bfba4e92977c4330d6f0477d36a07ce17f2ba` in 1129.9
+seconds, publishes registry manifest
+`sha256:276d25ef3d1eb8ff3fbfba67320b9b8265a20a5bc9773f9d3ece68dbd5367b6b`, and imports OCI
+manifest `sha256:17736dcefeee94ed8081e6b1e928c43495b8955340a284a0794fbabed4d34a62` in 106.8
+seconds. It preserves the exact retained Vault root session and digest, crosses Bootstrap Broker,
+Target Agent, Lifecycle Authority, Authority Backup, MetalLB, Envoy Gateway, cert-manager, Percona,
+Provider Worker, and a first full-mode Gateway reconcile without the former continuity restart or
+`HTTP 503: starting`. The runbook's repeated Gateway gate then fails closed at
+`ProbeBackendRoundTrip ComponentMinio`: the observation is stale beyond its freshness window.
+Stable counterexample `GATEWAY-LEGACY-LIVENESS-NO-BACKEND-FRESHNESS-2026-09-04` records that
+bounded liveness ages remain below 1.3 seconds while the sole boot-fence backend round-trip ages
+from roughly 455 to 498 seconds; recurring liveness therefore cannot satisfy the independent
+backend-readiness obligation. The same state trace registers distinct counterexample
+`GATEWAY-LEGACY-LIVENESS-ASYMMETRIC-REJECTION-SPLIT-OWNER-2026-09-04`: node A accepts node B's
+frame, node B rejects node A's bounded liveness, and both report an active self-owned claim. The
+exact receiver refusal arm must be diagnosed before changing admission or clock-skew behavior. No
+qualification artifact or activation witness exists, exact cleanup is unproved, operational
+credentials remain preserved, and the legacy public writer remains sole.
+
+Both registered Gateway counterexamples now have a local correction, without changing retained
+Orders, the five-second freshness rule, or the legacy public writer. Liveness protocol version 2
+outer-signs the complete signed semantic boot heartbeat as well as its derived fence. A receiver
+with no latest-heartbeat projection may admit it only when its compacted cursor is at the exact
+boot/digest or later in the same incarnation and epoch; behind, conflicting, later-incarnation, and
+later-epoch states remain closed. A separate supervised `backend_round_trip` worker commits a normal
+persistence-first heartbeat on a 60-second post-attempt cadence, refreshes the write-shaped MinIO
+receipt inside the unchanged 300-second readiness window, and replaces the process-local liveness
+session at sequence one. The hot liveness worker remains outside the capacity-one child lane. The
+warning-clean executable/unit build succeeds and the focused signed-liveness group passes **3/3**,
+including exact, later compacted-cursor, conflicting-digest, stale-fence, self-delivery, and forged
+frame cases. The extended canonical TLA run keeps the target journal model exact at **7,139,920
+generated / 781,710 distinct** states and passes all six legacy invariants at **14,683,109 /
+2,233,608** states, covering in-process proof rotation, compacted-cursor admission, and delayed
+predecessor rejection. The full local gate set now passes: primary unit
+**4839/4839** plus auxiliaries **27/27**, **35/35**, and **36/36**; installed `cli` integration
+**63/63** in 444.26 seconds; installed `env` integration **63/63** in 446.32 seconds; and canonical
+`dev check` with repository policy, pinned Fourmolu, HLint (`No hints`), generated-document checks,
+and warning-clean all-target compilation. The gate-built and installed executables are byte-identical
+at `sha256:cb16c900d6d221e2aedc7d4fe7499f817e6b7a4d320b66ab7fa7d2b381d275a4`. Exact live
+`pre-1` is next; neither live counterexample is claimed closed yet.
+
+The exact corrected live `pre-1` advances beyond both registered Gateway counterexamples on local
+runtime image `sha256:6f812f21e43391f4d551d73c323bcd2158b7dccb8aa1bb1b487d915b4031d277`,
+registry manifest `sha256:483099997ab1f45168348dae3a15677f55c17ee5e91e08beeb9837466f296827`,
+and OCI import manifest
+`sha256:51fabc0a2e04a55af4e27bf14594c4938f300e661a3d2d3b84c0b6fa2521111f`.
+The repeated Gateway gate crosses backend-round-trip readiness and bidirectional liveness, the
+total-restore program proves all four chart deletions and reconstructions, and the restored home
+edge reaches `CLASSIFICATION=ready-for-external-proof` with Route 53 in sync, accepted Gateway,
+listeners and routes, a current certificate, and private-edge readiness. This live-closes
+`GATEWAY-LEGACY-LIVENESS-NO-BACKEND-FRESHNESS-2026-09-04` and
+`GATEWAY-LEGACY-LIVENESS-ASYMMETRIC-REJECTION-SPLIT-OWNER-2026-09-04`. Candidate preparation then
+reaches registered stack creation, which is admitted but not executed because Lifecycle Authority
+refuses its lifecycle generation at
+`AwsStackCreationFieldInvalid "AwsStackCreationWireCommitPayloadInvalid \"AwsStackCreationFieldInvalid \\\"AWS scope is missing\\\"\""`.
+Stable counterexample `AWS-QUALIFICATION-REGISTERED-STACK-GENERATION-SCOPE-MISSING-2026-09-04`
+owns this exact commit-payload/generation boundary. Exact terminal cleanup is not proved,
+operational credentials are preserved for recovery, no qualification artifact or activation
+witness exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+Diagnose the registered generation's admitted Provider-scope producer and retained read-back before
+changing execution, fallback, or cleanup behavior.
+
+The missing-scope counterexample is now closed code-locally at its exact producer boundary. The
+Authority no longer reuses the caller's deliberately scope-less creation envelope for the legacy
+run-scoped binding. After committing and independently reading back the durable generation, it
+derives that binding's registry revision, foundation, run scope, surface, AWS account, and AWS
+region from the committed generation itself; the account and region therefore still enter only
+through the retained Provider proof, and the two records cannot diverge. The focused production
+producer/consumer group passes **4/4**, including a production-shaped `AWS = Nothing` caller and an
+exact read-back under the Provider-proven scope. The full unit matrix passes primary **4840/4840**
+plus auxiliaries **27/27**, **35/35**, and **36/36**. Installed `clean-room-handoff` passes the
+complete qualification-only plan and success/failure/cancellation/response-loss/restart fake
+matrix. Canonical `prodbox dev check` passes repository policy, pinned Fourmolu, HLint (`No hints`),
+generated-document checks, and warning-clean all-target compilation. The gate-built and installed
+executables are byte-identical at
+`sha256:9f2857d24dae42ef9c08c71778f4cc77f9b78724895f8ca89531a58a5cdd5e69`. Rerun exact live
+`pre-1`; `AWS-QUALIFICATION-REGISTERED-STACK-GENERATION-SCOPE-MISSING-2026-09-04` is not
+live-closed by local evidence, no qualification artifact or activation witness exists, no
+preactivation cycle has passed, and the legacy public writer remains sole.
+
+The 2026-09-05 exact live `pre-1` retry publishes local runtime image
+`sha256:add730adb2c07793f3962da7f8391acc13cd5c69fe85db1380607bcb93494563`, registry
+manifest `sha256:64a8521c29616daf72318228e9e2c39dcfd767a4c6d2204cd2195c6e15e79837`, and OCI import
+manifest `sha256:8aa692ec2bcb875d4128fee4ba16c2f896f86700771533d98df5e00f72449835` while preserving
+the exact retained Vault root and storage generation. It crosses the first home reconcile, the
+repeated Phase-1.5 Gateway barrier, and begins Phase 1.6 total restore. An operator-requested
+Ctrl-C during the Gateway restore, after the Gateway MinIO bootstrap Job completed and was
+deleted, terminates the command at exit 1 with uncaught
+`GHC.Internal.IO.Exception.BlockedIndefinitelyOnSTM` instead of a durable cancellation result.
+Stable counterexample `CASCADE-QUALIFICATION-CTRL-C-BLOCKED-INDEFINITELY-ON-STM-2026-09-05`
+owns this subprocess/cancellation boundary. The run never reaches registered stack creation, so it
+does not live-close
+`AWS-QUALIFICATION-REGISTERED-STACK-GENERATION-SCOPE-MISSING-2026-09-04`; exact terminal cleanup
+is unproved, the previously preserved operational-credential state is unresolved, no
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole. Reproduce the cancellation at a non-mutating streamed-child
+boundary and diagnose the exact parent/child lifetime owner before rerunning live qualification.
+
+The cancellation counterexample is now closed at the production streaming boundary. The exact
+non-mutating reproduction first emitted the same uncaught `BlockedIndefinitelyOnSTM`: with
+delegated Ctrl-C, `process` throws `UserInterrupt` synchronously in the thread calling
+`waitForProcess`, while `typed-process` had placed that wait in a private reaper which could exit
+before filling its exit-code `TMVar`. `runStreaming` now keeps `delegate_ctlc = True` but uses the
+`process` bracket and waits in the calling command thread, leaving captured, bounded, and
+background subprocess ownership unchanged. The process-group regression is red-before and
+green-after at **1/1**, observes exact `ExitFailure (-2)`, and emits no stdout or stderr; manually
+interrupting the installed `prodbox test unit` streaming path now terminates with only `^C` and no
+uncaught exception. The complete unit matrix passes primary **4840/4840** plus auxiliaries
+**27/27**, **35/35**, and **36/36**; installed `cli` passes **64/64**; canonical `prodbox dev check`
+passes repository policy, pinned Fourmolu, HLint (`No hints`), generated/documentation checks, and
+warning-clean all-target compilation. The installed `clean-room-handoff` validation also
+revalidates the complete qualification-only plan and success/failure/cancellation/response-loss/
+restart fake matrix. The gate-built and installed executables are byte-identical at
+`sha256:a861a2eb6190a33fcf9174623c3ed52cdc3c6f99bf76997fe07d84b16f344897`. Rerun exact live
+`pre-1`; the missing-scope counterexample remains unproved live, no qualification artifact or
+activation witness exists, no preactivation cycle has passed, and the legacy public writer remains
+sole.
+
+The exact 2026-09-05 `pre-1` rerun builds local runtime image
+`sha256:4fbe30aec62dcf80259a09c46cfc12e5ee04a0f32b6b36b24564870682311762` in 1,010.1
+seconds, publishes registry manifest
+`sha256:0916f16bc5da7a609e2d81a1797ebb2460135ace803e40c3a38aaf8b096431ac`, and imports OCI
+manifest `sha256:7a0bacd62ef3e04d6566a72a6fd20f3127b01480f61f622f48da89580a1eb6b5` in 84.1
+seconds while deleting only the superseded runtime identity. It preserves exact retained root
+session `root-session-9c54db6a...`, Vault storage generation `vault-a290544e...`, and read-back
+digest `a5756119...`, then reaches Bootstrap Broker, Target Agent, Lifecycle Authority, and
+Authority Backup reconciliation. Before candidate execution, harness in-force config sync refuses
+because its caller-bound Transit signer cannot resolve absent ServiceAccount
+`gateway/prodbox-control-plane-test-harness`. Stable counterexample
+`CASCADE-QUALIFICATION-HARNESS-CALLER-SERVICEACCOUNT-ABSENT-2026-09-05` owns this recovery
+prerequisite ordering after the prior interrupted Gateway restore. Diagnose the caller identity's
+exact chart/lifetime owner and establish it through that owner before sync; do not bypass
+caller-bound authentication or widen credentials. The run does not reach registered stack
+creation, so the missing-scope counterexample remains unproved live. Exact terminal cleanup is
+unproved, the prior preserved operational-credential state remains unresolved, no qualification
+artifact or activation witness exists, no preactivation cycle has passed, and the legacy public
+writer remains sole.
+
+That caller-lifetime counterexample is now closed code-locally without moving or recreating the
+Gateway-owned identity. The successful cluster-backed bootstrap floor already includes
+`StepReconcileInForceConfig` and submits/read-backs the exact generated proposal through the
+retained bootstrap-core operator identity; `TestRunner` now recognizes that proof and does not
+immediately duplicate the proposal through a Gateway-lifetime caller. Harness-only suites, which
+establish no runtime floor, retain their authenticated standalone harness sync. The two exact pure
+branch regressions pass **1/1** each, the complete unit matrix passes primary **4840/4840** plus
+auxiliaries **27/27**, **35/35**, and **36/36**, and installed `clean-room-handoff` revalidates the
+complete qualification-only fake matrix. Canonical `prodbox dev check` passes repository policy,
+pinned Fourmolu, HLint (`No hints`), generated/documentation checks, and warning-clean all-target
+compilation. The gate-built and installed executables are byte-identical at
+`sha256:c911247fd022cbc1d7522f93115db528eef9e9bc314102d0127b4e6779059e67`. Rerun exact
+live `pre-1`; neither this counterexample nor the registered-generation missing-scope
+counterexample is live-closed by local evidence, no qualification artifact or activation witness
+exists, no preactivation cycle has passed, and the legacy public writer remains sole.
+
+The exact live rerun of that correction disproves closure and keeps
+`CASCADE-QUALIFICATION-HARNESS-CALLER-SERVICEACCOUNT-ABSENT-2026-09-05` open. It builds local
+runtime image `sha256:4fa4bb878aecd393c1fc7b815ee5f07de32fffa79816bb3d1876506722f3950e`,
+publishes registry manifest
+`sha256:84f083ba7e46e7d3cc05460e778058abf4ca327af266361586188612ea53befe`, and imports OCI
+manifest `sha256:43f434e59608497f358106148cc26d9c7cedecf38e3d035c995b217d6ee1ec5e`, deleting only
+the superseded preceding runtime image. It again preserves root session `root-session-9c54db6a...`,
+Vault storage generation `vault-a290544e...`, and read-back digest `a5756119...`; it reconciles
+Bootstrap Broker, Target Agent, Lifecycle Authority, post-unseal handoff, and Authority Backup.
+After the now-skipped duplicate config sync, a later pre-Gateway operation still attempts to resolve
+the absent `gateway/prodbox-control-plane-test-harness` caller-bound Transit signer and terminates
+non-zero before candidate execution. Trace that remaining caller and correct its owner/lifetime
+ordering without recreating the Gateway-owned identity, bypassing caller-bound authentication, or
+widening credentials. Exact terminal cleanup is unproved and operational credentials remain
+preserved; the registered-generation missing-scope counterexample remains unproved live, no
+qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+
+The remaining caller-lifetime defect is now closed code-locally at the credential-repair trigger.
+`reconcileHarnessLifecycleProviderCredential` was the later pre-Gateway operation and had hard-coded
+the removable test-harness caller even though the authentication registry already admits both
+external callers to the exact Credential Provisioner route. It now consumes the named invariant
+`harnessLifecycleProviderCredentialCaller = LifecycleAuthorityOperator`, whose bootstrap-core
+ServiceAccount survives the recovery deletion scope. The harness's stable operation scope,
+simulated prompt, signed permit, downstream worker identities, route trust, and credential
+boundaries are unchanged; no identity is recreated and no trust or credential is widened. The
+exact cascade planning/caller regression passes **1/1**, the complete unit matrix passes primary
+**4840/4840** plus auxiliaries **27/27**, **35/35**, and **36/36**, installed
+`clean-room-handoff` passes its complete qualification-only fake matrix, and canonical `prodbox dev
+check` passes repository policy, pinned Fourmolu, HLint (`No hints`), generated/documentation
+checks, and warning-clean all-target compilation. The gate-built and installed executables are
+byte-identical at
+`sha256:4349faad5d88134b11684abc86cd5e832b9bd75ea76122f202023152456b16a8`. Rerun exact
+live `pre-1`; `CASCADE-QUALIFICATION-HARNESS-CALLER-SERVICEACCOUNT-ABSENT-2026-09-05` and the
+registered-generation missing-scope counterexample both remain open until live evidence crosses
+their boundaries, no qualification artifact or activation witness exists, no preactivation cycle
+has passed, and the legacy public writer remains sole.
+
+The exact live rerun closes
+`CASCADE-QUALIFICATION-HARNESS-CALLER-SERVICEACCOUNT-ABSENT-2026-09-05` on local runtime image
+`sha256:2504aa26300088848657e4b658215ce52ab96e44349d2212afb8e7a5bbb1557a`, registry manifest
+`sha256:187da2dff0008447618f1c964d86f825cbb5bda127bd74dc108dfd92f48a3213`, and OCI import
+manifest `sha256:a9b1b85c4b8f7722c5f859b8b40ec67aff898f1e3a0e1f3b06ecb81774bdc3a0` after a
+1,008.1-second build and 98.9-second import. It removes only the superseded preceding runtime,
+preserves the exact root session, Vault storage generation, and read-back digest, authenticates
+through the retained caller, confirms Lifecycle-provider generation 2, restores the proper
+Gateway-owned caller through Gateway reconciliation, and crosses both complete home/runbook
+reconciles. Phase 1.6 then reselects existing umbrella counterexample
+`TLS-RETENTION-RESTORE-SELECTED-AGENT-UNAVAILABLE-2026-09-04`: VS Code deletion refuses at
+`TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`. The total executor still proves the other
+three chart deletions and all four chart reconciles, after which public-edge readiness reselects
+`HOME-PUBLIC-EDGE-GATEWAY-DNS-WRITE-AUTHORITY-NOT-READY-2026-09-04`. Use only the licensed
+Target-Agent and Authority logs to select the exact TLS nested arm before changing behavior; treat
+the public-edge refusal as an independent aggregate result until its source-local state is
+re-observed. Candidate execution and registered stack creation are not reached, so
+`AWS-QUALIFICATION-REGISTERED-STACK-GENERATION-SCOPE-MISSING-2026-09-04` remains unproved live.
+Exact terminal cleanup is unproved and operational credentials remain preserved; no qualification
+artifact or activation witness exists, no preactivation cycle has passed, and the legacy public
+writer remains sole.
+
+The licensed post-terminal diagnostics select a new exact nested branch. Target Secret Agent emits
+only `target-one-shot/tls-retain failure=coordinator/materialization-refused/tls-retain/
+secret-unavailable`, while Lifecycle Authority emits the expected closed outer
+`tls-retention/workflow failure=selected-agent/http-status/other` plus the unrelated completed
+AWS-admin replay. Stable counterexample
+`TLS-RETAIN-PUBLIC-EDGE-SECRET-UNAVAILABLE-2026-09-05` owns the retain-before-delete source
+observation boundary. Diagnose the exact non-secret `vscode/public-edge-tls` Secret/Certificate
+presence, metadata/status, chart ownership, and the closed production observer before changing TLS
+retention, source selection, restore ordering, absence handling, or cleanup. The independent
+Gateway-DNS readiness refusal and every previously open intermittent TLS branch remain open; exact
+cleanup, candidate execution, registered-stack scope proof, qualification artifact, activation
+witness, preactivation cycle, and writer cutover remain unproved.
+
+The exact non-secret diagnosis licenses one ordering correction and no absence inference from an
+Agent error. The Target worker's Kubernetes-API egress policy has survived since 2026-09-02 and its
+current effective authorization is `yes`, but the exact-name `vscode` Role and RoleBinding were
+created only at `08:07:27Z` by the later restore; the restored Secret follows at `08:07:28Z`, is
+`kubernetes.io/tls`, and its same-name Certificate is generation/observed-generation 1 and
+`Ready=True`. Source confirms the asymmetry: deploy creates the namespace, converges the exact
+GET/PATCH capability, reserves the restore slot, and calls the selected Agent, while delete calls
+the Authority immediately without first observing the namespace or converging that capability.
+An interrupted prior cleanup can therefore leave the source namespace absent, in which state the
+in-cluster API authorizes no namespaced Secret read and the selected Agent correctly reports
+`secret-unavailable` rather than inventing absence. Correct only this graph edge: make delete read
+the exact non-secret namespace with a closed JSON observation; exact namespace absence proves that
+neither the source Secret nor Certificate can exist and yields the existing explicit
+`PreserveNothingToRetain`, while exact presence first converges the already-declared exact-name
+Role, RoleBinding, and API-egress policy before Authority retention. A failed, malformed, or
+mismatched namespace observation and any capability failure remain terminal. Do not translate
+`TlsTargetSecretUnavailable` into absence, broaden RBAC, inspect Secret data, or bypass the
+Authority/selected-Agent workflow. The counterexample remains open until the corrected live `pre-1`
+crosses this boundary.
+
+That exact correction is code-local complete. `PublicEdgeTlsNamespaceObservation` has only absent
+and present constructors; its classifier accepts only exit-zero empty output or an exact
+`apiVersion: v1`, `kind: Namespace`, requested-name JSON object, and refuses process failure,
+malformed JSON, wrong kind/version, or name mismatch. The absent arm emits the existing explicit
+nothing-to-retain outcome without applying access or calling the selected Agent. The present arm
+idempotently applies only the pre-existing exact-name Role, RoleBinding, and API-egress policy
+before the unchanged Authority request; Target `secret-unavailable` remains terminal. The pure
+classifier regression passes **1/1**, and the installed CLI regression passes **1/1**, proving a
+present delete adds exactly those three access objects while an absent retry adds none. The full
+unit matrix passes primary **4841/4841** plus auxiliaries **27/27**, **35/35**, and **36/36**;
+installed `clean-room-handoff`, canonical `prodbox dev check`, documentation lint, and diff check all
+pass. The gate-built and installed executables are byte-identical at
+`sha256:b12bacc4809f404855ccf388b19325131eee0f098d6c3189670dda4a3b2f3e35`. Rerun exact live
+`pre-1` unchanged. `TLS-RETAIN-PUBLIC-EDGE-SECRET-UNAVAILABLE-2026-09-05` remains open until that
+run crosses retain-before-delete; the independent Gateway-DNS refusal and later qualification
+proofs remain open, and the legacy public writer remains sole.
+
+The corrected live `pre-1` crosses and live-closes both
+`TLS-RETAIN-PUBLIC-EDGE-SECRET-UNAVAILABLE-2026-09-05` and the code-locally corrected
+`AWS-QUALIFICATION-REGISTERED-STACK-GENERATION-SCOPE-MISSING-2026-09-04`. On runtime image
+`sha256:d328b1a6d5d4a3fe1fa4252ad9fe3ae50b00b530a964eab0a66db2a80fe0a51a`, registry
+manifest `sha256:03593f2aa9662215b873f2799e894c44060f5096b6c0599c5c25028349ab1c4d`, and OCI
+import manifest `sha256:5baf6285ead64322c7455f78e04b3eab7b6da360a4899f2ba357b49753c3f244`,
+Phase 1.6 emits the exact VS Code receipt `public-edge cert: retained through the Authority and TLS
+Retention Adapter`, completes every delete/reconcile, and restores a ready external-proof edge with
+Route 53 in sync, accepted Gateway/listeners/routes, current certificate, and private-edge
+readiness. Retain-on-ready repeats the exact Authority/Adapter receipt. Registered stack creation
+then commits the durable lifecycle generation (`AwsStackCreationCommitCreated`) and reaches
+execution under the committed Provider scope, proving the missing-scope correction. The admitted
+create terminates at a new exact boundary:
+`AuthorityProviderTransportFailed (AuthenticatedClientTransportFailed
+(ControlPlaneTransportFailed (HttpTimeout "response timeout")))`. Register stable counterexample
+`AWS-QUALIFICATION-REGISTERED-STACK-CREATE-PROVIDER-DISPATCH-TIMEOUT-2026-09-05` at this
+Authority-to-Provider execution/response boundary. Do not infer whether the create effect occurred
+from the timeout or start a successor cycle: the command reports that a stack may exist under the
+committed cycle, does not prove exact terminal cleanup, and preserves operational credentials for
+recovery. Read only the licensed Provider/Authority evidence and exact non-secret registered
+generation/resource observations before changing timeout, replay, recovery, or cleanup behavior.
+No qualification artifact or activation witness exists, no preactivation cycle has passed, and the
+legacy public writer remains sole.
+
+The licensed post-terminal log read adds no hidden worker failure: Target Agent contains only the
+unrelated completed AWS-admin preparation and Lifecycle Authority emits no additional diagnostic
+line. Source then makes the timeout boundary exact. The in-cluster Authority-to-Provider client
+already consumes the typed Provider budget of 300 seconds maximum child execution plus 30 seconds
+of framing/projection/encoding/socket overhead, but every host `ProviderCaller` execution opens the
+outer Authority connection through the generic 30-second `lifecycleAuthorityHttpConfig`. Thus the
+outer caller can abandon a committed create ten times sooner than the inner authenticated Provider
+route is licensed to complete, and the timeout is no evidence about the Provider effect. Correct
+only that response-budget composition: add a Provider-route host Authority transport consuming the
+same typed 330-second constant and use it for Provider execute/admit-and-execute calls; retain the
+generic budget for admission-only and every unrelated Authority route. Preserve the same submission
+key, operation, digest, intent, authentication, Provider child deadline, and durable-generation
+replay semantics. The counterexample remains open until code-local validation and the same live
+cycle cross this boundary.
+
+That end-to-end response-budget correction is code-local complete. `LocalClient` now exposes a
+Provider-route Lifecycle Authority client whose timeout is the existing typed 330-second Provider
+budget; `LifecycleAuthorityAuthentication` preserves the same caller-bound authenticated transport;
+and `ProviderCaller` uses it at exactly the four execute/admit-and-execute call sites while its sole
+admission-only call remains on the generic 30-second client. A mutation-sensitive source-shape
+assertion and exact timeout assertion pass together **1/1**. The full unit matrix remains primary
+**4841/4841** plus auxiliaries **27/27**, **35/35**, and **36/36**; installed
+`clean-room-handoff` passes the full success/effect-failure/cancellation/response-loss/restart fake
+matrix, and canonical `prodbox dev check` passes repository policy, pinned Fourmolu, HLint (`No
+hints`), generated/documentation checks, and warning-clean all-target compilation. The gate-built
+and installed executables are byte-identical at
+`sha256:2001b22c13f5d280632cb4773bdf77e5f4ab26e1b204960144412bd6fe76929d`. Rerun the exact
+live `pre-1`: it must recover or settle the already committed registered generation rather than
+invent effect absence or a successor. The Provider-dispatch-timeout counterexample remains open
+until that run crosses it; exact cleanup, qualification artifact, activation witness,
+preactivation cycles, and writer cutover remain unproved.
+
+The exact live retry on local runtime image
+`sha256:c7769241be5ee65274d91be72375feffe0678f07ed6245817fd8a359227ab988`, registry
+manifest `sha256:7d9eba2b5145e9bf928e54ebbacb2c3c5ae2b17005f609cbc8f9f0cb8ebab98a`, and OCI
+import manifest `sha256:10cd8dcab6e9d33c66946a2f771895ada22f2cc3b2d4bdc4283431e89f1b8255`
+does not reach registered stack execution. It again crosses VS Code retention with the exact
+Authority/TLS Retention Adapter receipt; the total restore executor reports all four deletes,
+Gateway MinIO bootstrap, and all four reconciles succeeded. Its final public-edge wait reselects
+the independent existing counterexample
+`HOME-PUBLIC-EDGE-GATEWAY-DNS-WRITE-AUTHORITY-NOT-READY-2026-09-04`: `edge status` observes
+the requested record binding but refuses because its write authority is not ready. Exact terminal
+cleanup remains unproved and operational credentials remain preserved. The Provider outer-budget
+correction remains code-locally green but cannot be live-closed by a run that stopped before its
+route. Use only the licensed Target-Agent/Authority logs and non-secret Gateway-DNS ownership/status
+observations to diagnose the reselected authority readiness; do not change Provider behavior or
+start a qualification successor. No artifact, activation witness, or preactivation cycle exists,
+and the legacy public writer remains sole.
+
+The source-local and live-status diagnosis selects nested stable counterexample
+`PUBLIC-EDGE-WAIT-TRANSIENT-GATEWAY-DNS-EXIT-2026-09-05`. Without any intervening mutation or
+restart, the same exact home Gateway endpoint later reports `gateway_owner=node-a`,
+`node_disposition=owner`, `has_active_claim=true`, ready continuity at epoch 1 / sequence 26250,
+`can_write_dns=true`, and a last DNS write of `70.54.80.113`; the unchanged installed `edge status`
+then reports `CLASSIFICATION=ready-for-external-proof`. The failure was therefore a transient
+post-restore authority-convergence observation, not a persistent credential, claim, continuity,
+or record defect. Source establishes the orchestration error: both public-edge waiters own 60
+attempts at ten-second intervals, but immediately fail on every nonzero `edge status`; the exact
+observed not-ready Gateway-DNS state is rendered as that nonzero result, so none of the remaining
+convergence budget is used. Add one typed subprocess-observation classifier shared by both waiters:
+the exact fixed Gateway-DNS authority-not-ready diagnostic is retryable, a ready classification is
+complete, a successful non-ready classification continues to retry, and every other nonzero result
+remains terminal. The stable reproducer holds the command, topology, attempt budget, and output
+constant while proving transient-failure-then-ready succeeds and an unrelated nonzero still fails
+closed. Do not change Gateway credentials, election, continuity, DNS mutation/read-back, Provider
+behavior, or the attempt/deadline envelope; validate locally before rerunning the same `pre-1`.
+Exact cleanup, the Provider live crossing, qualification evidence, activation, preactivation
+cycles, and writer cutover remain unproved.
+
+The transient public-edge wait correction is code-local complete. `Prodbox.PublicEdge` now owns
+one closed `PublicEdgeReadinessObservation` classifier and the two exact output tokens. Both the
+canonical `TestRunner` prerequisite and the direct `TestValidation` wait consume it: only an exact
+diagnostic line for home Gateway-DNS authority convergence turns a nonzero result into pending;
+ready completes, successful non-ready remains pending, and every unrelated nonzero remains
+terminal. The attempt count, ten-second delay, certificate repair budget, Gateway election/claim/
+continuity/credential logic, DNS effect/read-back, and Provider path are unchanged. The focused
+transient-failure-then-ready plus unrelated-failure reproducer passes **1/1**. The full unit matrix
+passes primary **4842/4842** plus auxiliaries **27/27**, **35/35**, and **36/36**; installed
+`clean-room-handoff` passes its complete success/effect-failure/cancellation/response-loss/restart
+fake matrix. Documentation lint and diff hygiene pass, and canonical `prodbox dev check` passes
+repository policy, pinned Fourmolu, HLint (`No hints`), generated/documentation checks, and
+warning-clean all-target compilation. Gate-built and installed executables are byte-identical at
+`sha256:d9704bec92880a13da5c32ec4b18c21f35fb30fe560c157df94f49f9c9044e37`. Rerun the same exact
+live `pre-1` to prove the restored Gateway can spend this bounded convergence budget and then
+recover or settle the already committed registered stack generation. The broader Gateway-DNS and
+Provider-dispatch counterexamples remain open until that live crossing; exact cleanup,
+qualification evidence, activation, preactivation cycles, and writer cutover remain unproved.
+
+The exact live `pre-1` on local runtime image
+`sha256:b6389d8bdd375f88effbe5d167fe901ccaa976bdb20dca6bc4e8882964d9947a`, registry manifest
+`sha256:61f8943c0cc77e980b1f84310aee2cf71fbf8fbb09696ea8a9d5f0d2078bc0d5`, and OCI import
+manifest `sha256:c9856ab84e1f76c4cdcac7bb85b8f6ea9a07227f151ea574073ef56097c1f6eb`
+live-closes both `HOME-PUBLIC-EDGE-GATEWAY-DNS-WRITE-AUTHORITY-NOT-READY-2026-09-04` and
+`AWS-QUALIFICATION-REGISTERED-STACK-CREATE-PROVIDER-DISPATCH-TIMEOUT-2026-09-05`. It preserves the
+exact Vault root/session/storage identity, observes the Authority/TLS Retention Adapter receipt,
+completes all four deletes and restores, and reaches `CLASSIFICATION=ready-for-external-proof`
+with the home DNS record in sync. The registered stack generation remains the committed
+`AwsStackCreationCommitCreated` generation, and its execution now returns through the corrected
+Provider outer budget rather than timing out. That response selects stable counterexample
+`PROVIDER-WORKER-PULUMI-YAML-LANGUAGE-PLUGIN-MISSING-2026-09-05`: the Provider returns exact typed
+503 `ProviderIntentExecutionObservationUnavailable` because Pulumi cannot load language plugin
+`pulumi-language-yaml` from its workspace or `PATH` while previewing `aws-eks-subzone`. A stack may
+exist under the cycle, exact terminal cleanup is unproved, and operational credentials remain
+preserved. Read only the licensed Target-Agent/Authority logs, then diagnose the Provider image,
+workspace, and Pulumi plugin discovery from source and non-secret runtime packaging observations
+before changing packaging or execution behavior. Do not invent effect absence or a successor
+generation. No qualification artifact, activation witness, or preactivation cycle exists, and the
+legacy public writer remains sole.
+
+The licensed logs add no hidden worker failure: Target Agent contains only the unrelated completed
+AWS-admin preparation and Lifecycle Authority emits no diagnostic line. Source and non-secret
+packaging observations make the failure exact. Provider execution uses checked-in YAML program
+`/opt/build/pulumi/aws-eks-subzone`, exact executable `/usr/local/bin/pulumi`, and the image's
+inherited `PATH`. The pinned Pulumi `3.228.0` archive for the native architecture contains both
+`pulumi` and `pulumi-language-yaml`, but `docker/prodbox.Dockerfile` installs only the former and
+deletes the extracted archive; read-back of the exact failed image likewise finds only
+`/usr/local/bin/pulumi`. The missing YAML language host is therefore a union-runtime packaging
+defect, not a workspace, program, Provider dispatch, or ambient-host-plugin defect. Install only
+the exact bundled `pulumi-language-yaml` beside the CLI from the same pinned archive and add the
+image-source packaging contract; do not widen plugin discovery, copy an ambient host binary, alter
+the Pulumi version/program/Provider request, invent effect absence, or allocate a successor
+generation. The counterexample remains open until code-local validation and the same live `pre-1`
+recover or settle the already committed generation. Exact cleanup, qualification evidence,
+activation, preactivation cycles, and writer cutover remain unproved.
+
+That packaging correction is code-local complete. The union runtime installs exactly
+`/tmp/pulumi/pulumi` and `/tmp/pulumi/pulumi-language-yaml` to matching `/usr/local/bin` names from
+the one pinned release extraction before removing it; no plugin-install command or ambient host
+path is admitted. The mutation-sensitive Dockerfile contract passes **1/1**, the warning-clean unit
+target builds, and the full unit matrix passes primary **4842/4842** plus auxiliaries **27/27**,
+**35/35**, and **36/36**. Installed `clean-room-handoff` passes its complete success,
+effect-failure, cancellation, response-loss, and restart fake matrix. Canonical `prodbox dev check`
+passes repository policy, pinned Fourmolu, HLint (`No hints`), generated/documentation checks, and
+warning-clean all-target compilation; diff hygiene passes. The gate-built and installed binary
+remain byte-identical at
+`sha256:d9704bec92880a13da5c32ec4b18c21f35fb30fe560c157df94f49f9c9044e37`, as expected for a
+container-packaging-only runtime correction. Rerun the same exact live `pre-1`; its image build must
+contain the matching YAML host and recover or settle the existing committed generation. The
+counterexample, exact cleanup, qualification evidence, activation, preactivation cycles, and writer
+cutover remain open until that live crossing.
+
+The same live `pre-1` builds corrected local runtime image
+`sha256:9240b03160b232e2533b536a9ee11cda9de026a4124579b4e8fda7ffdedb91ce` in 1,140.7 seconds;
+its emitted Pulumi layer installs both exact pinned binaries. It publishes registry manifest
+`sha256:1bcb5c6f5d5d6506baeb2cd798dadad1f92293431e681c4aa0b071673021967f`, imports OCI manifest
+`sha256:03148c82acb648d66b5abf096e04497e541d4eeda55480424bcdd9c099582d69` in 198.6 seconds, and
+deletes only superseded local image `sha256:b6389d8bdd375f88effbe5d167fe901ccaa976bdb20dca6bc4e8882964d9947a`.
+Before candidate or Provider execution, retained-control-plane prerequisite reconciliation exits at
+exact `Vault bootstrap failed: wait for Bootstrap Broker Deployment rollout: kubectl rollout status
+exited 1: error: timed out waiting for the condition`. Stable counterexample
+`BOOTSTRAP-BROKER-ROLLOUT-TIMEOUT-AFTER-RUNTIME-IMAGE-2026-09-05` owns this rollout boundary. The
+image build proves packaging, but it does not live-close the Pulumi-language-host counterexample.
+Read only the licensed Target-Agent/Authority logs and non-secret Bootstrap Broker object/status/
+event observations; do not change Bootstrap, Pulumi, Provider, generation, or timeout behavior
+until the cause is selected. The already committed registered generation remains the only licensed
+generation. Exact cleanup remains unproved and the previously preserved operational credentials
+remain required for recovery. No qualification artifact, activation witness, or preactivation
+cycle exists, and the legacy public writer remains sole.
+
+The licensed logs add no related worker failure: Target Agent contains only the already completed
+AWS-admin preparation and Lifecycle Authority is silent. Non-secret Kubernetes evidence selects
+the rollout cause exactly. Bootstrap Broker revision 206 created Pod
+`bootstrap-broker-b6c946cff-l26n4` at 13:43:56Z on the corrected image, but the sole Ready node
+carried `node.kubernetes.io/disk-pressure:NoSchedule`; scheduling therefore refused with only the
+untolerated-taint reason. The kubelet cleared `DiskPressure` and the taint at 13:48:56Z, scheduled
+that same Pod at the same instant, and made it Ready at 13:49:03Z with zero restarts and image ID
+`sha256:9240b03160b232e2533b536a9ee11cda9de026a4124579b4e8fda7ffdedb91ce`. The one-minute
+Broker transport barrier had already terminated the command, so this is neither a Bootstrap crash
+nor a reason to widen that barrier. Stable nested counterexample
+`REGISTRY-RUNTIME-UNTAGGED-MANIFEST-RETENTION-DISK-PRESSURE-2026-09-05` selects the storage cause:
+the MinIO-backed runtime repository retains 177 manifest revisions behind only `latest` and the
+machine tag, both currently resolving to manifest
+`sha256:1bcb5c6f5d5d6506baeb2cd798dadad1f92293431e681c4aa0b071673021967f`. A read-only
+registry-API/revision fold measures 929 unique runtime descriptors / 53,016,418,359 bytes across
+that history, but only 14 / 942,074,855 bytes in the current manifest; the historical-only set is
+915 descriptors / 52,074,343,504 bytes and accounts for the measured 52 GiB registry blob store.
+Source has exact host-Docker dangling-image retention but no registry garbage-collection owner, so
+moving tags have accumulated every old runtime manifest and unique layer in the retained bucket.
+Add a narrow, typed registry-retention reconcile through the supported `prodbox` surface: put the
+registry into observed read-only mode, run its own `garbage-collect --delete-untagged` against the
+same mounted typed S3 config/credential projection, restore and observe read-write service, and
+prove every current tag/digest unchanged. It must fail closed and recover on interruption, retain
+all currently tagged manifests across every repository, and never broaden into Docker/build-cache,
+containerd, MinIO-object, Secret, or retained-root deletion. A repository-owned fake reproducer
+must freeze the 177-revision/two-current-tag shape before the first live cleanup. No direct cleanup
+or behavior change has run yet; the Pulumi-language-host counterexample, existing generation,
+exact cleanup, qualification evidence, activation, preactivation cycles, and writer cutover all
+remain open.
+
+That narrow correction is code-local complete. `Prodbox.Registry.Retention` owns the closed
+catalog/tag/concrete-manifest observation and exact reference read-back; the retained-home RKE2
+reconcile applies one access-mode-indexed Registry ConfigMap/Deployment/Service, observes the exact
+read-only rollout, invokes only Distribution's mounted-config collector, restores and observes the
+read-write rollout on ordinary failure or interruption, then proves the unchanged complete
+reference snapshot and a fresh Registry-to-MinIO write edge before the custom-image build. The
+repository fake freezes 177 revisions behind two tags and observes **177 -> 1** without admitting
+any raw storage, Docker/build-cache, containerd, Secret, or retained-root deletion. Focused
+retention tests pass **4/4**; the installed RKE2 reconcile/delete fake passes **1/1**; the full unit
+matrix passes primary **4846/4846** plus auxiliaries **27/27**, **35/35**, and **36/36**; installed
+`clean-room-handoff` passes; installed `cli` and `env` each pass **64/64**; documentation lint,
+diff hygiene, warning-clean unit/integration builds, and canonical `prodbox dev check` all pass.
+The gate-built and installed executable are byte-identical at
+`sha256:d82973f86e3fd6e4aaba6c040f4bdf3dd48a015b968741aacb97ee52680e4b8d`. Rerun the
+same exact live `pre-1`; its supported retained-home reconcile must reclaim only untagged history,
+read back the existing current tags unchanged and restored read-write service, recover the
+Bootstrap Broker scheduling boundary with sufficient disk headroom, and then cross the still-open
+Pulumi-language-host counterexample against the already committed generation. No direct cleanup
+has run, and exact cleanup, qualification evidence, activation, preactivation cycles, and writer
+cutover remain open.
+
+That unchanged live `pre-1` runs from 11:36:54 to 12:28:36 EDT and exposes stable counterexample
+`REGISTRY-GC-UNKNOWN-QUIET-FALSE-SUCCESS-2026-09-05` before the first live collection. On each of
+three retained-home reconcile passes the deployed `registry:2` CLI prints exact `Error: unknown
+flag: --quiet` / `Run 'registry help' for usage.`, but `kubectl exec` is accepted as success; the
+program restores and observes the read-write rollout, emits the false `untagged collection
+completed` narration, and continues into image publication. Exact postflight contradicts that
+narration: the retained Registry store remains **52 GiB** and the runtime revision inventory grows
+from **177 to 178**, while both current tags correctly advance to registry manifest
+`sha256:70eb7c9b8d91067693d9f4f6f2a264abc2787f32d577f542e4332bb671e9baca`; Registry generation
+9 is Available in explicit `read-write` mode and the Ready node remains pressure/taint-free. The
+current interpreter trusts process exit plus unchanged tagged references, neither of which proves
+the collector ran. Correct only this boundary: remove the unsupported `--quiet`, capture the exact
+collector result, refuse an exit-zero nonempty stderr/usage rejection, preserve ordinary and
+asynchronous read-write restoration, and make the installed fake reproduce exit-zero stderr plus
+no collection/no build before accepting the corrected command. Do not delete registry objects
+directly or widen the already-typed target set. The run nevertheless builds local image
+`sha256:d6672a7150f8b9b3e35b1c235cf72bf8e49b4048f320386e33790e5ce747201a`, publishes the exact
+registry manifest above, imports OCI manifest
+`sha256:4ca3113c2d2191119b9270428e884c377a8b2ad2cf5994a1bde0d19f7306e4ce`, crosses the former
+Bootstrap scheduling boundary, and reaches the already committed stack generation; Provider
+dispatch then ends at exact `HttpConnectionFailure "NoResponseDataReceived"`. Exact cleanup is
+not proved, operational credentials are preserved, and no qualification artifact, activation
+witness, preactivation cycle, or writer cutover exists. No direct registry cleanup has run.
+
+That collector-result counterexample is now code-local closed without broadening the cleanup
+target. The sole command is the pinned Distribution CLI's supported
+`garbage-collect --delete-untagged <mounted-config>` form; its subprocess is bounded to 16 MiB
+stdout, 64 KiB stderr, and 30 minutes. Success requires process success, exactly empty stderr, and
+an exact set match between parsed `repository: marking manifest <canonical-digest>` records and
+the distinct current repository/digest pairs observed before the read-only fence. The installed
+counterexample reproduces exit-zero usage stderr, proves no collection audit and no custom-image
+build, and observes a later read-write manifest after the read-only manifest; its paired success
+case proves the supported command and exact **177 -> 1** audit. The focused pure classifier passes
+**1/1**; the installed refusal and success crossings pass **1/1** each in **96.48 s** and **90.33
+s**; the warning-clean operator/unit/integration build passes; the full unit matrix passes primary
+**4846/4846** plus auxiliaries **27/27**, **35/35**, and **36/36**; installed
+`clean-room-handoff` and canonical `prodbox dev check` pass; installed `cli` and `env` each pass
+**65/65** in **834.24 s** and **837.61 s**. The gate-built and installed executable are
+byte-identical at
+`sha256:380733901d37416eab91ff0fccf1fcacc0f7207a9331349d1d37dafc1e2edd74`. Rerun the
+same exact live `pre-1`; only that supported crossing may perform the now-validated collection,
+and it must prove current-reference preservation, restored read-write service, and reclaimed
+retained-registry headroom before Provider-capacity diagnosis continues. Exact cleanup,
+qualification evidence, activation, preactivation cycles, and writer cutover remain open.
+
+The exact corrected live `pre-1` then registers stable counterexample
+`REGISTRY-GC-DELETE-PROGRESS-EXCEEDS-STDERR-64K-2026-09-05`. The supported command reaches the
+real deletion phase, but its ordinary deletion stream exceeds the authored 64 KiB stderr ceiling;
+the bounded subprocess kills/refuses it as `bounded subprocess stderr exceeds its configured
+ceiling`, restores and observes Registry generation 11 in explicit `read-write` mode, and stops
+before custom-image build. Exact postflight proves that this was neither a usage rejection nor a
+pre-effect refusal: the runtime revision inventory fell from **178 to 30** before termination,
+while both current tags still resolve to
+`sha256:70eb7c9b8d91067693d9f4f6f2a264abc2787f32d577f542e4332bb671e9baca`; the retained MinIO
+root still reports **52 GiB**, the host has **42 GiB** free, and the node is Ready with no disk
+pressure or taint. The empty-stderr/64-KiB assumption therefore cannot represent the pinned
+collector's valid progressive deletion protocol, and killing at that observation bound converts
+a valid in-progress mutation into an unclassifiable partial run. Before another live crossing,
+derive the collector's exact stdout/stderr grammar and finite output bound from the installed
+version and the registered reference/revision limits, preserve exit-zero usage rejection as a
+distinct refusal, freeze this **178 -> 30** partial-progress case locally, and prove a complete
+collector result plus unchanged current references without unbounded capture or a direct cleanup.
+No Provider-capacity correction, qualification artifact, activation witness, preactivation cycle,
+or writer cutover has begun.
+
+That progressive-deletion counterexample is code-local closed by an exact two-pass protocol. A
+read-only probe of the installed Distribution 2.8.3 collector exits 0 with **148,372 bytes** on
+stdout, empty stderr, **23** repository records, **23** current-manifest marks, **269** scoped blob
+marks, **29** eligible manifests, and **1,099** eligible blobs; every one of its **1,445** lines
+matches the now-authored grammar. The retained-home reconcile first runs that command with
+`--dry-run --delete-untagged` under the read-only fence, parses the complete finite evidence, and
+only then runs the deletion form with the same bounds. A command-local
+`REGISTRY_LOG_LEVEL=error` suppresses ordinary deletion telemetry without suppressing stdout
+evidence or accepting usage/error stderr; the delete evidence must exactly replay the dry-run
+evidence before unchanged current references and restored read-write service can be accepted. The
+repository fake freezes both the **178 -> 30** over-ceiling partial mutation caused by the old
+command and the exact two-pass **177 -> 1** result. Focused parser/argument tests pass **1/1** each;
+the fast partial-mutation reproducer passes **1/1** in **0.02 s**; installed usage-refusal and
+two-pass-success crossings pass **1/1** each in **97.07 s** and **90.24 s**; the full unit matrix
+passes primary **4846/4846** plus auxiliaries **27/27**, **35/35**, and **36/36**; installed
+`clean-room-handoff`, canonical `prodbox dev check`, and warning-clean compilation pass; installed
+`cli` and `env` pass **66/66** in **851.97 s** and **833.11 s**. A final description-only accuracy
+correction is warning-clean and its complete plan-renderer group passes **39/39**. The gate-built
+and installed executable are byte-identical at
+`sha256:b14f0d6ee2c9ffb88fca61788b0582835c0296a7d422cb51c691fdc5de36cc45`. Rerun the exact
+supported live `pre-1`; it must prove the collection's exact replay, current-reference preservation,
+restored read-write service, and physical retained-registry headroom before Provider-capacity
+diagnosis continues. Exact cleanup, qualification evidence, activation, preactivation cycles, and
+writer cutover remain open.
+
+The only permitted post-terminal logs add no Provider detail: Target Agent is empty and Lifecycle
+Authority contains only the earlier completed AWS-admin preparation. Non-secret Kubernetes
+status/events select the Provider terminal exactly and register stable counterexample
+`PROVIDER-WORKER-PULUMI-EPHEMERAL-STORAGE-EVICTION-256MI-2026-09-05`. Pod
+`provider-worker-5b8665b65-z7hqd` starts at 16:07:33Z on registry manifest
+`sha256:70eb7c9b8d91067693d9f4f6f2a264abc2787f32d577f542e4332bb671e9baca`, runs the admitted
+request for 21 minutes, reports readiness 503 at 16:28:29Z, and is killed/evicted at 16:28:36Z with
+exit 143 because `Pod ephemeral local storage usage exceeds the total limit of containers 256Mi`.
+The replacement Pod is zero-restart Ready on the same image. This proves the packaged YAML host
+crossing and selects Provider Pulumi workspace/output storage capacity—not transport, memory,
+Registry pressure, generation allocation, or AWS-stack semantics—as the cause of
+`NoResponseDataReceived`. Before changing the typed Provider resource envelope, measure the exact
+workspace/output paths and a production-run peak, freeze the 256 Mi eviction in the constant-total
+resource counterexample, and justify/repartition the replacement envelope without widening CPU,
+memory, persistence, request concurrency, Provider capability, or the registered generation.
+Both registered Registry-collector counterexamples are code-local closed; the unchanged live rerun
+below proves actual retained-registry headroom before this Provider correction begins. The stack
+may exist, exact cleanup remains unproved, and the legacy public writer remains sole.
+
+That exact supported live `pre-1` runs from 14:43:02 to 15:34:21 EDT and live-closes both Registry
+counterexamples. Its first two-pass collection takes the retained MinIO store from **52 GiB** to
+**2.9 GiB**, runtime revisions from **30 to 1**, and host free space from **43 GiB** to **89 GiB**;
+it restores explicit read-write service and reads both current tags back unchanged at
+`sha256:70eb7c9b8d91067693d9f4f6f2a264abc2787f32d577f542e4332bb671e9baca` before image
+publication. Both later retained-home passes accept the same exact two-pass protocol. The run
+builds local image `sha256:ea0187255bc28b1a04229c0b6055b68335036939226a7539eead98aff6bd144d`
+in **1,159.8 s**, publishes Registry manifest
+`sha256:3e11d971c440f04291e346e07dbe355f034ad911f8be4718586b53568f4cb157`, imports OCI
+manifest `sha256:1585369769188dcd671e84c27243405a3d43e5c11f83a538bccfce99a0ed6b25` in
+**122.7 s**, and deletes only superseded local image
+`sha256:d6672a7150f8b9b3e35b1c235cf72bf8e49b4048f320386e33790e5ce747201a`. Exact
+postflight retains one runtime revision in a **3.0 GiB** store, **90 GiB** host headroom, Registry
+generation 17 in read-write mode, and both tags on the new manifest. Candidate Provider Pod
+`provider-worker-8455b76c5-7dmmn` is created on that exact manifest, starts at 19:13:59Z, reports
+readiness 503 at 19:34:15Z, and is evicted at 19:34:21Z with exit 143 because total container
+ephemeral use exceeds the unchanged **256 MiB** limit; its replacement is exact-image, zero-restart
+Ready. This independently reproduces
+`PROVIDER-WORKER-PULUMI-EPHEMERAL-STORAGE-EVICTION-256MI-2026-09-05` after eliminating Registry
+pressure: the baseline writable layer is **69,632 bytes**, `/root/.pulumi` is initially absent,
+`/dev/shm` is empty, and the immutable `/opt/build/pulumi` programs occupy **84 KiB**. CRI removes
+the failed snapshot before postflight, so the exact production peak/path remains unobserved. Make
+no capacity or execution change yet: rerun the same supported command with continuous read-only
+sampling of `/root/.pulumi`, `/dev/shm`, `/tmp`, and kubelet rootfs/log usage, then freeze that
+measured peak and the constant-total **256 MiB** counterexample before the correction. The stack may
+exist, operational credentials remain preserved, exact cleanup is unproved, and no qualification,
+activation, preactivation, or writer-cutover evidence exists.
+
+The unchanged measurement `pre-1` runs from 15:37:56 to 16:03:52 EDT with a one-second read-only
+Provider sampler and closes the missing production path/peak evidence for the same counterexample.
+The replacement Pod begins at **69,632 bytes** of writable rootfs with no `/root/.pulumi`, empty
+`/dev/shm`, and **12 KiB** under `/tmp`. At 16:03:35 kubelet first reports **79,736,832 bytes** while
+`/tmp` already measures **117,344 KiB**. At 16:03:45 kubelet reports the observed peak of
+**337,674,240 bytes**; an exact path fold at 16:03:50 finds **200,804 KiB** under `/tmp`, of which
+**200,792 KiB** is the single `/tmp/pulumi-plugin-tar384574685` download, plus **231,264 KiB** under
+`/root/.pulumi`, of which **231,244 KiB** is the simultaneously extracted
+`plugins/resource-aws-v7.44.0` and **231,216 KiB** is its provider binary. Authority checkpoint
+scratch remains **12 KiB** in `/dev/shm`, including a **4 KiB** stack JSON; application logs are
+only **24,576 bytes**. The Pod reports readiness 503 at 20:03:48Z and is killed/evicted at 20:03:52Z
+under the unchanged 256 MiB limit; its exact-image replacement is zero-restart Ready. Thus the
+production cause is the Pulumi AWS-provider download/archive plus extracted-plugin transitional
+overlap, not checkpoint/output state, project content, logs, Registry pressure, or application
+memory. Freeze those exact old-path figures in the repository counterexample. Correct packaging so
+the exact compiled AWS provider is immutable image content and runtime discovery writes neither the
+archive nor provider binary; keep the Provider request/limit at **256 MiB** and keep total CPU,
+memory, ephemeral, persistence, topology, concurrency, capability, deadlines, and the registered
+generation unchanged. The stack may exist, operational credentials remain preserved, exact cleanup
+is unproved, and no qualification, activation, preactivation, or writer-cutover evidence exists.
+
+That Provider-capacity counterexample is now code-local closed without changing an envelope.
+`Prodbox.Capacity.ProviderWorkerBudget` freezes the exact counterexample identity, one fenced Worker
+with one serialized child, one registered-stack reconcile, no injected fault, the measured path
+facts, and an exact old-to-new mapping of `100m / 176Mi / 256Mi / 0 durable` to itself. Its
+superseded disposition is the observed **337,674,240-byte** peak exceeding the
+**268,435,456-byte** limit; its replacement disposition requires both runtime provider-archive and
+provider-binary writes to be zero. Mutation cases refuse a non-failing old peak, envelope drift,
+and either returning runtime write. The union image pins Pulumi AWS provider **7.44.0**, verifies
+the official release SHA-256 for each supported architecture, installs the provider into the
+immutable `/root/.pulumi/plugins/resource-aws-v7.44.0` image path, and confirms its executable.
+All four Pulumi projects declare `aws@7.44.0`, so the runtime cannot select another provider
+version. An isolated exact-checksum installation probe reports resource provider `aws` version
+`7.44.0`; all four project files parse under pinned Pulumi `3.228.0`; Docker's static build check
+reports no warnings. The focused frozen-profile, mutation, and image/package-contract cases pass
+**1/1** each. The full unit matrix passes primary **4848/4848** plus auxiliaries **27/27**,
+**35/35**, and **36/36**; installed `clean-room-handoff` passes; installed `cli` and `env` each pass
+**66/66** in **836.97 s** and **828.93 s**. Repository Haskell/docs lint, docs check, diff check,
+warning-clean all-target compilation, and canonical `prodbox dev check` pass with HLint `No hints`.
+The gate-built and installed executable are byte-identical at
+`sha256:af56a7d532e7fb2c594a54210b89d72afca9d4e6312af89d9e4f2b20bac4c00d`. Rerun exact supported
+live `pre-1` with the same read-only Provider sampler; it must prove no runtime provider archive or
+binary write, no Provider eviction/restart, the unchanged rendered envelope, and successful exact
+Provider completion before qualification work continues. The stack may exist, operational
+credentials remain preserved, exact cleanup is unproved, and no qualification, activation,
+preactivation, or writer-cutover evidence exists.
+
+The corrected exact `pre-1` rerun closes the ephemeral-storage barrier and exposes a distinct
+runtime-memory counterexample. It builds local image
+`sha256:a3157208125f70547bc4a47f7a733ec421afda2c1989726902992b3d457721a3` in **1169.8 s**, publishes
+registry manifest `sha256:2dc12d0bc7f39fc78ba17c1b67bd987d48aa8578336365af66e1668db0bcd07a`,
+imports OCI manifest `sha256:63e43f8bef0147cca95776f006254ee057d178720035666c38edf85ece032b53`
+in **214.2 s**, and removes only the superseded local runtime image. Provider Worker generation 37
+runs that exact image at the unchanged `100m / 176Mi / 256Mi / 0 durable` envelope, remains Ready
+with zero restarts, and exposes the exact **989,311,138-byte** AWS provider from immutable image
+content. Across **3,214** read-only samples its writable-root peak is only **167,936 bytes**, logs
+peak at **24,576 bytes**, `/tmp` remains **12 KiB**, checkpoint scratch peaks at **12 KiB**, and the
+runtime provider archive remains exactly zero. Pulumi therefore reaches schema loading without the
+former download/extraction overlap, but the provider subprocess exits and three resource-type
+resolutions report `rpc error: code = Unavailable ... EOF`; the Provider returns
+`ProviderIntentExecutionObservationUnavailable` and the Authority returns 503. The still-running
+zero-restart daemon's cgroup supplies the cause: `memory.peak` equals `memory.max` at exactly
+**184,549,376 bytes** with `oom_kill 6` and `max 83`. Stable counterexample
+`PROVIDER-WORKER-PACKAGED-AWS-SCHEMA-OOM-176MIB-2026-09-05` freezes this one-fenced-worker,
+one-serialized-child, one-registered-stack reconcile with no injected fault before any memory or
+execution change. An isolated, non-mutating preview of the same project and exact image against a
+fresh local file backend and deliberately invalid AWS credentials loads the packaged schema and
+reaches only `Invalid credentials configured`: uncapped `memory.peak` is exactly **1,024,434,176
+bytes** (**976.9765625 MiB**) with zero OOM events. The derived production envelope reserves that
+measured child as **1,024 MiB** plus the existing **96 MiB** daemon/kernel/safety decomposition,
+for **1,120 MiB** total. Repeating the probe at a hard **1,120 MiB** cgroup limit again reaches only
+the invalid-credential boundary with `memory.peak` **966,365,184 bytes** and zero OOM events. The
+compiled plan is **7,000m / 13,312Mi / 80,032Mi / 177,952Mi** allocatable versus **6,210m /
+9,040Mi / 15,456Mi / 155,648Mi** currently drawn, leaving exact idle headroom **790m / 4,272Mi /
+64,576Mi / 22,304Mi**. Close the counterexample through the typed capacity owner by transferring
+**944 MiB** of that already-declared memory headroom to Provider Worker: the exact mapping is old
+Provider `100m / 176Mi / 256Mi / 0` plus idle `790m / 4,272Mi / 64,576Mi / 22,304Mi` to new
+Provider `100m / 1,120Mi / 256Mi / 0` plus idle `790m / 3,328Mi / 64,576Mi / 22,304Mi`. It holds
+the topology-normalized **890m / 4,448Mi / 64,832Mi / 22,304Mi** mapped total and the complete
+host allocatable total constant; every non-Provider workload, background load, topology,
+concurrency, capability, deadline, fault schedule, and registered generation remains unchanged.
+Do not reopen the now-proven immutable-provider packaging behavior. The stack may exist,
+operational credentials remain preserved, exact cleanup is unproved, and no qualification,
+activation, preactivation, or writer-cutover evidence exists.
+
+The schema-memory correction is code-local complete while its live replacement observation remains
+explicitly pending. `ProviderWorkerBudget` owns the stable frozen failure, exact non-mutating sizing
+observations, unchanged causal profile, full allocatable/background vectors, and the old Provider
+plus idle-headroom → new Provider plus idle-headroom mapping. Its validator reports
+`ProviderWorkerSchemaMemoryPendingLiveReplacement`; it cannot report closure without an exact live
+Provider completion at the new envelope with zero OOM and daemon restarts. The capacity plan now
+uses one **1,024 MiB** serialized child slot and derives the exact **1,120 MiB** request-equals-limit
+Provider envelope while retaining its **64 MiB** GHC heap cap, 300-second child deadline, physical
+one-child permit, unchanged CPU/ephemeral/durable resources, all other workload envelopes, and host
+capacity. The compiled replacement draw is exactly **6,210m / 9,984Mi / 15,456Mi / 155,648Mi**
+inside unchanged allocatable **7,000m / 13,312Mi / 80,032Mi / 177,952Mi**. Focused frozen-mapping,
+runtime-memory, and chart-render cases pass **1/1** each; the full unit matrix passes primary
+**4849/4849** plus auxiliaries **27/27**, **35/35**, and **36/36**. Warning-clean all-target
+compilation, canonical `prodbox dev check` with HLint `No hints`, installed `clean-room-handoff`,
+installed `cli` **66/66** in **836.54 s**, installed `env` **66/66** in **826.02 s**, documentation,
+and diff gates pass. The gate-built and installed executable are byte-identical at
+`sha256:6eb91fa7bfe368e1abe534af8c61a4bf2614318224052a06117340148ce08c31`. Rerun the exact
+supported live `pre-1` with the same read-only Provider sampler. It must read back the exact
+`100m / 1120Mi / 256Mi / 0 durable` envelope, zero runtime provider writes, zero OOM/restarts, and
+successful exact Provider completion before the typed live observation or qualification state can
+close. The stack may exist, operational credentials remain preserved, exact cleanup is unproved,
+and no qualification, activation, preactivation, or writer-cutover evidence exists.
+
+The exact corrected live `pre-1` advances through retained-home reconciliation and the candidate
+body, then exposes stable counterexample
+`PROVIDER-WORKER-PULUMI-STACK-CONFIG-ABSENT-2026-09-05` at the first admitted
+`aws-eks-subzone` create. The run builds local image
+`sha256:a75c142a8ee326951104d5c081d56533ed918bd48a00e04dce432cf1d886cd7e` in **1,148.6 s**,
+publishes Registry manifest
+`sha256:6524677526cc282c4313b1f859bf7b9884e55d260e96c1a385d09f71316ad93b`, imports OCI
+manifest `sha256:af8c04be12992de5f22f1e3ac6d9e0564720c0438c94665815143eaed166aaf3b`, and removes
+only the superseded Registry/local runtime revision. Provider Worker generation 38 runs that exact
+image at `100m / 1,120Mi / 256Mi / 0 durable`, remains Ready with zero restarts, and across **484**
+read-only samples (**482** complete filesystem/cgroup observations) peaks at exactly
+**933,298,176 bytes** below `memory.max` **1,174,405,120 bytes**, with cgroup `max 0`, `oom 0`, and
+`oom_kill 0`. Writable rootfs peaks at **51,101,696 bytes**, logs at **24,576 bytes**, `/tmp` and
+checkpoint scratch at **12 KiB** each, and the runtime provider archive remains zero; the immutable
+AWS provider remains exact at **989,311,138 bytes**. This proves the replacement crosses packaged
+schema loading without the prior OOM, but it does not satisfy the typed memory counterexample's
+successful-completion condition. The committed stack lifecycle generation reaches its fenced
+Provider execution and returns `ProviderIntentExecutionObservationUnavailable`: Pulumi reports
+missing required configuration variables `parentZoneId` and `subzoneName`, followed by config and
+`awsProvider` registration failures. The source trace locates the loss after typed intent decoding:
+`compiledStackFor` retains both inputs, but `observePulumiStack` invokes the mandatory read-only
+preview without `compiledStackConfiguration`; only the later apply arm calls
+`setPulumiConfiguration`, and observe-first refusal prevents that arm from running. A fresh Worker
+image therefore cannot observe an Authority-retained checkpoint whose image-local Pulumi stack
+config file is absent. Freeze the superseded empty preview projection and the exact replacement
+arguments under the unchanged topology/resource profile, make the production preview consume that
+projection, and prove mutations of either key fail the reproducer before another live rerun. The
+stack may exist, operational credentials remain preserved because exact cleanup was not proved, and
+no qualification, activation, preactivation, or writer-cutover evidence exists.
+
+The missing-stack-config counterexample is code-local closed under the unchanged production
+profile. `Prodbox.ControlPlane.ProviderPulumiConfigProjection` freezes its stable identity, the
+one-fenced-worker/one-serialized-child/one-registered-stack/no-fault causal profile, exact
+`100m / 1,120Mi / 256Mi / 0 durable` old-to-new envelope, both observed missing keys, the
+superseded config-free preview argv, and the replacement's two direct `--config key=value`
+arguments. Production `observePulumiStack` consumes that same pure argument projection, while the
+apply arm and every other Provider boundary remain unchanged. Removing either key, restoring the
+superseded preview, or changing the resource mapping fails the reproducer. Focused regressions pass
+**2/2**; the complete unit matrix passes primary **4,851/4,851** plus auxiliaries **27/27**,
+**35/35**, and **36/36**. Warning-clean all-target compilation, canonical `prodbox dev check` with
+HLint `No hints`, installed `clean-room-handoff`, installed `cli` **66/66** in **843.59 s**,
+installed `env` **66/66** in **830.41 s**, documentation, and diff gates pass. The gate-built and
+installed executable is exact at
+`sha256:27c686aa7a0fede6c5179b0da2b2596d5d4953278b8fde240e3d88628681a420`. Rerun exact live
+`pre-1` with the Provider sampler. Crossing configured observe-first preview into the exact AWS
+action closes this config-specific replacement result even if a later independent boundary fails;
+the typed schema-memory replacement observation separately requires successful Provider completion
+with zero OOM/restarts. Exact cleanup, qualification, activation, preactivation, and writer cutover
+remain unproved.
+
+That exact live `pre-1` closes the missing-stack-config counterexample and exposes distinct stable
+counterexample `LIFECYCLE-PROVIDER-ROUTE53-HOSTED-ZONE-CREATE-DENIED-2026-09-05`. The run starts
+sampling at 22:33:59 EDT, builds local image
+`sha256:e132d4825c5adf98a7250c02156b8cc174c2a3648f75767f2d0a0e112aec245a` in **1,155.4 s**,
+publishes Registry manifest
+`sha256:43df78272eade476fead42dcd67ae86543dbffe3b6d3c23544d4cbd8afcaf9b9`, imports OCI
+manifest `sha256:7bdaff97f1ca1e731cdd266d6263bd624e6c8d39aba3a2f366a05a392f08ac4d` in
+**135.0 s**, and removes only the superseded Registry/local runtime revision. Provider Worker
+generation 39 Pod `provider-worker-796668c5bd-9p7j7`, UID
+`202232df-6803-4a10-99a5-bc3af1884237`, runs that exact local image at
+`100m / 1,120Mi / 256Mi / 0 durable` and remains Ready with zero restarts. Across **496** samples
+(**493** complete filesystem/cgroup observations), its exact `memory.peak` is **1,127,190,528
+bytes** below `memory.max` **1,174,405,120 bytes**, with cgroup `max 0`, `oom 0`, and `oom_kill 0`;
+writable rootfs peaks at **51,101,696 bytes**, logs at **24,576 bytes**, working set at
+**778,256,384 bytes**, `/tmp` at **12 KiB**, checkpoint scratch at **84 KiB**, and the runtime
+provider archive at zero. The immutable AWS provider remains exact at **989,311,138 bytes**. Pulumi
+successfully consumes both projected config values, advances from configured preview into
+`Updating (aws-eks-subzone)`, and creates its `awsProvider`; `route53:CreateHostedZone` then returns
+AWS 403 because the `prodbox-lifecycle-provider` identity has no policy allowing that action.
+Pulumi reports `+ 2 created`, `2 errored`, and update failure; the Provider returns
+`ProviderIntentExecutionMutationNotConfirmed`. Freeze the exact generated lifecycle-provider policy
+and the registered subzone program's required Route 53 action set, then locate their mismatch before
+changing policy, Provider, Pulumi, or harness behavior. The committed stack generation may exist,
+operational credentials remain preserved because exact cleanup was not proved, and the typed
+schema-memory live replacement, qualification, activation, preactivation, and writer cutover remain
+open. Source inspection locates the mismatch in
+`Prodbox.Lifecycle.CredentialProvisioner.ProductionIam.lifecycleProviderRolePolicy`: its DNS
+statement grants the registered record-management/read-back actions but omits the already-defined
+five-action hosted-zone lifecycle set `{ChangeTagsForResource, CreateHostedZone, DeleteHostedZone,
+ListHostedZones, ListTagsForResource}` required by the registered `aws-eks-subzone` zone resource.
+The parent NS record already fits the granted record-management set. Freeze the superseded and
+replacement policy/action projections under the same causal profile and exact
+`100m / 1,120Mi / 256Mi / 0 durable` envelope, then add only that five-action set to the fenced role;
+do not widen the role to `route53:*` or change Provider, Pulumi, harness, or capacity behavior.
+
+The hosted-zone authorization counterexample is code-local closed under that unchanged production
+profile. `Prodbox.Lifecycle.CredentialProvisioner.ProviderRoute53Policy` freezes the stable
+identity, one-fenced-worker/one-serialized-child/one-registered-stack/no-fault causal profile,
+exact `100m / 1,120Mi / 256Mi / 0 durable` old-to-new envelope, registered nine-action Route 53
+set, superseded four-action record/read-back projection, denied-create disposition, and replacement
+projection. `lifecycleProviderRolePolicy` consumes the replacement value directly. Removing any
+registered action, changing the superseded set, adding `route53:*`, or changing the envelope fails
+the reproducer; the rendered role document contains every exact action and no wildcard. The two new
+reproducer cases pass **2/2** and the Route 53-focused selection passes **24/24**. The complete unit
+matrix passes primary **4,853/4,853** plus auxiliaries **27/27**, **35/35**, and **36/36**.
+Warning-clean all-target compilation, canonical `prodbox dev check` with HLint `No hints`, installed
+`clean-room-handoff`, installed `cli` **66/66** in **836.92 s**, installed `env` **66/66** in
+**831.92 s**, documentation, and diff gates pass. The exact installed executable is
+`sha256:4e786221750be31d434c351f23d27563360ac15880ee7ee4d6c825635722f503`. Rerun exact live
+`pre-1` with the Provider sampler. The policy-specific replacement closes live only when the
+registered hosted-zone create crosses this authorization boundary; the typed schema-memory
+replacement still separately requires successful exact Provider completion with zero OOM/restarts.
+Exact cleanup, qualification, activation, preactivation, and writer cutover remain unproved.
+
+The exact live rerun leaves the role-policy replacement open and exposes distinct stable
+counterexample `LIFECYCLE-PROVIDER-ASSUME-ROLE-SESSION-NOT-BOUND-2026-09-06`. Sampling starts at
+00:33:10 EDT; the run builds local image
+`sha256:2948ac52a60586f2679ce6ab7b1a20c2a5e4787f81e916d6a088317f569de3e9` in **1,155.6 s**,
+publishes Registry manifest
+`sha256:eb3cda8461eadf7d321d4386d1fb997e5aafc217d8da7d64ae992e0dd2d83929`, imports OCI
+manifest `sha256:1f7d74f704f7587d999aa96a12e8d94394aca047fe247e565458594cc7b3878f` in
+**132.9 s**, and removes only superseded Registry manifest `43df…` and local image `e132…`.
+Provider Worker generation 40 Pod `provider-worker-585ffc9bb4-4bh5n`, UID
+`d29ee41a-59f5-41d8-a4c8-657d454df1fb`, runs the exact new local image at
+`100m / 1,120Mi / 256Mi / 0 durable`, remains Ready, and has zero restarts. Its **517** samples
+contain **514** complete filesystem/cgroup observations: exact `memory.peak` is **1,069,260,800
+bytes** below `memory.max` **1,174,405,120 bytes**, every event count is zero, writable rootfs peaks
+at **51,142,656 bytes**, logs at **24,576 bytes**, working set at **961,261,568 bytes**, Pulumi home
+at **1,015,960 KiB**, `/tmp` at **12 KiB**, checkpoint scratch at **84 KiB**, runtime provider
+archive at zero, and the immutable provider remains **989,311,138 bytes**. The authenticated
+Credential Provisioner reports Lifecycle-provider generation 2 current after exact role-policy
+read-back, yet Pulumi's repeated `route53:CreateHostedZone` 403 names
+`arn:aws:iam::751103452346:user/prodbox-lifecycle-provider`, not an assumed-role session. It reports
+two unchanged resources, two errored resources, and update failure; Provider again returns
+`ProviderIntentExecutionMutationNotConfirmed`. Freeze the exact base-identity-to-assumed-role
+session projection under the same one-fenced-worker/one-serialized-child/one-registered-stack/
+no-fault causal profile and unchanged resource envelope, then locate where the deterministic role
+binding is lost before changing credential, session, Provider, Pulumi, harness, or capacity
+behavior. The registered stack lifecycle generation is committed and may exist, operational
+credentials remain preserved because exact cleanup was not proved, and the hosted-zone policy
+replacement, typed schema-memory replacement, qualification, activation, preactivation, and
+writer cutover remain open.
+
+Source inspection locates that lost binding at the production narrow-session boundary.
+`ProviderProduction.providerProductionNarrowSession` ignores both its closed `ProviderIntent` and
+absolute deadline, validates the exact Vault generation, then copies the assuming user's base
+`Settings.Credentials` directly into `ProviderProductionSession`. Every AWS CLI and Pulumi
+environment consumes that field, while `route53ClientForSession` reconstructs another base handle
+from it; the module contains no `AssumeRole` call. The provisioned user is intentionally incapable
+of provider effects and owns only `sts:AssumeRole` on the exact account-bound
+`prodbox-lifecycle-provider` role, and native `Prodbox.Aws.Native.Sts` already provides the only
+base-to-session constructor. Close the defect at the rank-2 boundary: derive the sole typed role
+from every constructor of the closed intent vocabulary, observe and validate the caller account,
+assume that exact role once, project the same temporary credentials to subprocesses and the opaque
+session handle to native clients, and discard both when the callback returns. The readiness probe
+must prove the same assumed-role path. Do not add a caller-controlled role string or alter the
+intent coordinate, deadline, Provider capability set, Pulumi program, harness, or resource
+envelope.
+
+The assumed-role session counterexample is code-local closed under that unchanged production
+profile. `Prodbox.ControlPlane.ProviderAssumedRoleSession` freezes its stable live identity,
+one-fenced-worker/one-serialized-child/one-registered-stack/no-fault causal profile, exact
+`100m / 1,120Mi / 256Mi / 0 durable` old-to-new envelope, base-user ARN, account-bound role ARN,
+fixed `prodbox-provider-worker` session name, AWS-minimum 900-second credential duration, and exact
+replacement assumed-role ARN. Every closed `ProviderIntent` constructor maps exhaustively to the
+sole typed role; first reconcile consumes the same role-name constant. Native STS now returns one
+constructor-hidden session containing both its opaque origin-indexed handle and the subprocess
+credential projection made directly from the same temporary response. Production observes and
+validates the base account/user, assumes the intent-selected role once, proves the exact assumed
+caller, supplies only that session to all capabilities, and makes Route 53 consume the session
+handle. Deep readiness traverses the same full path. The base credential never reaches a Provider
+effect; neither session projection can escape the rank-2 callback. The focused role/STS/production
+guards pass **8/8**. Warning-clean all-target compilation, the complete primary unit matrix
+**4,857/4,857**, installed auxiliaries **27/27**, **35/35**, and **36/36**, canonical `prodbox dev
+check` with HLint `No hints`, installed `clean-room-handoff`, installed `cli` **66/66** in
+**849.38 s**, installed `env` **66/66** in **846.24 s**, documentation, and diff gates pass. The
+exact installed executable is
+`sha256:c3d203fbeb3b17b7c20391ed9bae4739d445d95e2a775704b8a1fd171757c13a`. Rerun exact live
+`pre-1` with the Provider sampler. This session replacement, the Route 53 role-policy replacement,
+and the typed schema-memory replacement close live only after the registered stack crosses the
+verified assumed-role boundary and completes with zero OOM/restarts. Exact cleanup, qualification,
+activation, preactivation, and writer cutover remain unproved.
+
+The exact corrected live `pre-1` rerun crosses and live-closes
+`LIFECYCLE-PROVIDER-ASSUME-ROLE-SESSION-NOT-BOUND-2026-09-06`, then exposes distinct stable
+counterexample `LIFECYCLE-PROVIDER-ASSUMED-ROLE-ROUTE53-CREATE-DENIED-2026-09-06`. The run builds
+local image `sha256:5113218aea2205c83b50f6595f90a0830884209b94085854eff7fcd8a612eedd`
+in **1,163.2 s**, publishes Registry manifest
+`sha256:d36777713fb04a1500911dd32dc435a42eae0c9471aa60c1a92a40c384b1566e`, imports OCI manifest
+`sha256:de5d61e0d7f5a4fc756cce8a03578362dbd362d49f0cd5efddf6a5d8030447c0` in **129.5 s**, and
+removes only superseded Registry manifest `eb3c…` and local image `2948…`. Credential Provisioner
+generation 2 remains current. Provider Worker generation `7849c68fd7` Pod
+`provider-worker-7849c68fd7-rzjfl`, UID `357e5e85-ef78-4c85-8754-f737f23df6a6`, runs that exact
+image at the unchanged `100m / 1,120Mi / 256Mi / 0 durable` envelope, remains Ready, and has zero
+restarts. Across **534** samples (**530** complete filesystem/cgroup observations), writable rootfs
+peaks at **51,101,696 bytes**, logs at **24,576 bytes**, working set at **985,931,776 bytes**,
+Pulumi home at **1,015,964 KiB**, `/tmp` at **12 KiB**, checkpoint scratch at **84 KiB**, runtime
+provider archive at zero, and exact `memory.peak` at **1,053,286,400 bytes** below `memory.max`
+**1,174,405,120 bytes**; every cgroup memory event remains zero. AWS identifies the Provider caller
+as the exact replacement
+`arn:aws:sts::751103452346:assumed-role/prodbox-lifecycle-provider/prodbox-provider-worker`, proving
+the rank-2 assumed-role session reached the effect. The same registered `aws-eks-subzone` action
+still returns 403 `AccessDenied` for `route53:CreateHostedZone` because no identity-based policy on
+that assumed role allows the action; Pulumi reports two unchanged resources, two errored resources,
+and update failure, and Provider returns `ProviderIntentExecutionMutationNotConfirmed`. Freeze this
+assumed-caller denial under the same one-fenced-worker/one-serialized-child/one-registered-stack/
+no-fault causal profile and unchanged resource envelope, then locate why the already-authored exact
+nine-action policy is not effective on the live role before changing IAM reconciliation, policy,
+Provider, Pulumi, harness, or capacity behavior. The earlier hosted-zone policy replacement and
+typed schema-memory replacement remain live-open because hosted-zone creation did not cross and the
+Provider did not complete. The registered stack generation is committed and may exist; operational
+credentials remain preserved because exact cleanup was not proved, and qualification, activation,
+preactivation, and writer cutover remain unproved.
+
+Source inspection locates the live-policy mismatch in the durable operation coordinate rather than
+the IAM interpreter. `ensureProgramRole` unconditionally updates and reads back the exact trust,
+puts the exact inline role policy, and requires policy-equivalent read-back before key creation.
+The qualification cycle instead finds the already-completed Generation-2 operation under the
+scope/class/generation-only `normalAwsAdminOperationIdForScope`; `coordinateAwsAdminProvisioning`
+returns its retained receipt without creating a worker, so the newly authored policy program never
+executes. The live line “credential is current” therefore proves only retained receipt recovery,
+not current IAM-program reconciliation. Close the counterexample without rewriting completed state:
+derive a secret-free semantic revision from the canonical Lifecycle-provider role-policy document,
+bind it into both lookup and compilation scopes, and let policy change select a fresh durable
+operation plus the ordinary next Target generation. That operation must traverse the existing exact
+put/read-back prerequisite before key creation. Freeze the superseded unversioned completed-replay
+scope and replacement revision-bound scope under the unchanged causal/resource profile, and prove
+policy-document mutation changes the operation coordinate. Do not rerun prerequisites inside an old
+completed replay, mutate its retained intent/receipt, weaken exact policy read-back, or change the
+Provider, Pulumi, capacity, deadline, or harness cleanup behavior.
+
+The assumed-role Route 53 denial is code-local closed without changing that causal or resource
+profile. `Prodbox.Lifecycle.CredentialProvisioner.ProductionIam` now exports the canonical
+Lifecycle-provider role-policy document consumed by the existing exact put/read-back program, and
+`Prodbox.Lifecycle.CredentialProvisioner.ProviderRolePolicyOperationScope` derives semantic
+revision `bacc2854e31887da758e66bf3d8574e8399086511289ea57d59f75bd8e55394a` as SHA-256 over the
+domain-separated canonical document. The harness binds
+`role-policy-sha256-bacc2854e31887da758e66bf3d8574e8399086511289ea57d59f75bd8e55394a` into both
+durable lookup and intent-compilation scope. The immutable unversioned Generation-2 completion
+therefore cannot mask the changed policy: replay remains exact within one revision, while this
+revision selects a successor operation and the ordinary next Target generation whose existing IAM
+program must put and independently read back the exact policy before access-key creation. The
+frozen counterexample validator fixes the stable identity, unchanged
+one-fenced-worker/one-serialized-child/one-registered-stack/no-fault profile, unchanged
+`100m / 1,120Mi / 256Mi / 0 durable` envelope, superseded and replacement scopes, exact revision,
+and a mutation that removes `route53:CreateHostedZone`; that mutation changes the operation ID.
+Focused new/existing revision, drift, Route 53 policy, and role read-back regressions pass **4/4**.
+The complete primary suite passes **4,859/4,859** in **89.15 s**, installed auxiliaries pass
+**27/27**, **35/35**, and **36/36**, canonical `prodbox dev check` passes with pinned formatting,
+HLint `No hints`, and warning-clean all-target compilation, installed `clean-room-handoff` passes,
+installed `cli` passes **66/66** in **842.27 s**, installed `env` passes **66/66** in **837.50 s**,
+and the documentation and diff gates pass. The exact installed executable is
+`sha256:6b93c9a84f878dd345ea4b42f1e23948f89e0fff6cb88eb2927dc09117f348d3`. Rerun exact live
+`pre-1` with the Provider sampler. This policy-operation replacement, the earlier exact Route 53
+policy replacement, and the typed schema-memory replacement close live only after the successor
+credential generation is observed, the registered stack crosses hosted-zone creation, and the
+Provider completes with zero OOM/restarts. Exact cleanup, qualification, activation,
+preactivation, and writer cutover remain unproved.
+
+The exact revision-bound live `pre-1` rerun crosses the immutable-completion replay boundary but
+exposes stable counterexample
+`AWS-ADMIN-REVISIONED-TARGET-WORKER-INSUFFICIENT-CPU-2026-09-06` before Provider execution. It
+builds local image `sha256:067589ea66c01f86861f89fcc9204bc1eb70b1b95d60b446328dca4289997698`
+in **1,142.0 s**, publishes Registry manifest
+`sha256:eb8d5a2ca1fd0e3249342acf99e0efef9c38e099d061ac846d67abb1f57af911`, imports OCI manifest
+`sha256:d5f8fe4455126786d9b685b83aec66d716c813bde871ff35638d9e4af6b1d428` in **130.0 s**, and
+removes only superseded Registry manifest `d367…` and local image `5113218…`. Semantic policy
+revision `bacc2854…` selects fresh operation `normal-a4769763c0e4571ff78713abb1c27c0e0fa08777f777845b`, proving the
+replacement scope no longer replays the unversioned Generation-2 completion. That parent Job and
+each Target materializer use the unchanged Guaranteed `250m / 256Mi / 256Mi / 0 durable`
+one-shot envelope. The Ready, pressure-free, untainted 8-core node exposes **7,500m** allocatable
+CPU but already carries **7,245m** of requests; with the parent scheduled, only **5m** remains.
+Kubernetes therefore creates Target Job `target-secret-e4aa1a01ab2a6eb71ed5566417fe40663de06ac5`
+twice and refuses both Pods with `Insufficient cpu`. The exact protected terminal is
+`execution-failed/recovery-remint-ambiguous/target-delivery-failed/worker/observation-failed/container-status-missing`;
+the public coordinator result remains `AwsAdminWorkerReceiptDecodeFailed` and the supported command
+exits 1. Postflight proves both one-shot namespaces contain no Job or worker Pod; the standing
+Target Agent is Ready with zero restarts. The single permitted Target Agent log is empty and the
+single permitted Authority log reports `aws-admin/prepare authority-phase=vacant`. The Provider is
+never rolled or invoked: across **787** samples (**784** complete), old Pod
+`provider-worker-7849c68fd7-rzjfl`/UID `357e5e85-ef78-4c85-8754-f737f23df6a6` remains Ready with
+zero restarts on old manifest `d367…`; its sampled cgroup event vector stays all-zero, while rootfs
+peaks at **51,101,696 bytes**, logs at **24,576 bytes**, working set at **32,337,920 bytes**, and
+Pulumi home at **1,015,964 KiB**. Freeze this no-fault retained-home topology, exact two overlapping
+one-shot envelopes, 8-core host, **7,500m** kubelet allocatable, **7,245m** standing request draw,
+and the complete topology-normalized capacity total before changing resource allocation,
+scheduling, delivery observation, retry, receipt, IAM, or Provider behavior. The earlier assumed-role
+Route 53 denial and schema-memory counterexamples remain live-open because hosted-zone creation and
+Provider completion are not reached. Operational credentials remain preserved because exact
+terminal cleanup is not proved; qualification, activation, preactivation, and writer cutover remain
+unproved.
+
+The scheduler counterexample is now code-local closed by the repository-owned no-fault reproducer
+in `Prodbox.Capacity.OneShotWorkerSchedulerBudget`. It freezes the exact retained-home topology,
+**7,245m** standing request draw, parent-plus-Target overlap, and the common Guaranteed
+`250m / 256Mi / 256Mi / 0 durable` envelope. The superseded plan fails at **7,745m required**
+against **7,500m allocatable** (**245m deficit**); the replacement transfers exactly **250m** CPU
+from `rke2_reserved` to `eviction_floor`, so it admits the same schedule at **7,745m required**
+against **7,750m allocatable** (**5m headroom**). Host capacity, every workload profile, all
+non-CPU axes, and the topology-normalized total remain unchanged: workload draw is
+`6210m / 9984Mi / 15456Mi / 155648Mi`, while reservation + eviction + draw remains
+`7210m / 12544Mi / 35424Mi / 157696Mi`. `renderRke2SystemdResourceGuardrail` now derives its CPU
+budget from reservation plus eviction, preserving the exact **1,000m** systemd containment while
+kubelet receives the new `125m + 125m` CPU reservation halves and unchanged memory/storage
+halves. The committed Dhall schema and both RKE2 plan goldens are regenerated. Focused scheduler,
+drift, kubelet-render, and systemd-render regressions pass **4/4**; the complete primary suite
+passes **4,861/4,861** in **87.64 s**, and the installed run passes **4,861/4,861** in **88.61 s**
+plus auxiliaries **27/27**, **35/35**, and **36/36**. Warning-clean all-target compilation and
+canonical `prodbox dev check` pass; installed `clean-room-handoff` passes, installed `cli` passes
+**66/66** in **846.21 s**, and installed `env` passes **66/66** in **846.17 s**. The synchronized
+executable is exact at
+`sha256:8a710eb2f5108c316cd5a60627562da8ebea752acf566f43a8732fc6f7409e93`. Post-ledger
+documentation, repository-file, and diff gates pass. Rerun exact live
+`pre-1` with the Provider sampler. This scheduler replacement, the earlier exact Route 53 policy
+and revision-bound operation replacements, and the typed schema-memory replacement close live only
+after the successor credential generation is observed, hosted-zone creation is crossed, and the
+Provider completes with zero OOM/restarts. Exact cleanup, qualification, activation,
+preactivation, and writer cutover remain unproved.
+
+The exact scheduler-corrected live `pre-1` replay reaches stable counterexample
+`AWS-ADMIN-AUTHORIZED-CLEANUP-PROVEN-STATE-TRANSITION-REJECTED-2026-09-06` before creating a
+Credential Provisioner Job. It writes the new kubelet guardrail and read-back exposes exactly
+**7,750m** allocatable CPU on the Ready, pressure-free, untainted 8-core node, proving the
+replacement allocation reached production but not yet exercising the two-worker schedule. The run
+builds local image `sha256:f1cab908cf206fef1b1cd40986eb4c73f829265a7a1b8471dc3a018e436f46af`
+in **1,156.0 s**, publishes Registry manifest
+`sha256:de569449fbb73943e23801fcf322b507ec66820be17d2e10f611061f67e40ed1`, imports OCI manifest
+`sha256:346ab5b210e6b3a50ca19e33d4a919e27ffedd15fae9ed3a2ba5278b877c3d9a` in **124.9 s**, and
+removes only superseded Registry manifest `eb8d…` and local image `067589…`. The retained
+revision-bound operation is `authorized`; its exact execution journal is
+`present/cleanup-proven/remint-used`. Job/Pod absence and that cleanup proof admit the typed
+authorized-recovery path, but the Authority returns `state-transition-rejected`; the public
+terminal is `AwsAdminCoordinatorPrepareFailed (AwsAdminProvisionerClientRefused
+"state-transition-rejected")`. No Credential Provisioner or Target worker remains or was created,
+the standing Target Agent is Ready with zero restarts, and its single permitted log is empty. The
+single permitted Authority log records exactly `aws-admin/prepare authority-phase=authorized` and
+`aws-admin/recovery journal-observation=present/cleanup-proven/remint-used`.
+
+Source inspection locates the rejection in `renewalCoreBindingsMatch`: all immutable normal-
+operation bindings agree, including `awsAdminPermitIntentPlanBinding retained ==
+awsAdminPermitIntentPlanBinding replacement == Nothing`, but the predicate additionally requires
+the retained plan binding to be non-empty. That requirement describes first-reconcile members and
+incorrectly rejects an exact post-first-reconcile normal credential recovery. Freeze the same
+operation, expired Authorized permit, exact absent Job/Pod observations, cleanup-proven/remint-used
+journal, normal credential/action/generation/request/IAM/scope/endpoint bindings, `Nothing`/`Nothing`
+plan binding, and outbox-before-state ordering. Close only the false non-empty restriction while
+retaining exact equality; a missing binding must remain invalid for first-reconcile/Genesis state,
+and any `Just`/`Nothing`, unequal `Just`, request, operation, generation, prepared-target, cleanup-
+predecessor, or deadline drift must still refuse. Across **671/671** complete Provider samples, only
+old Pod `provider-worker-7849c68fd7-rzjfl`/UID
+`357e5e85-ef78-4c85-8754-f737f23df6a6` appears on old manifest `d367…`; it is never Ready, has
+zero restarts and zero cgroup events, and the new Provider image is never rolled or invoked. Its
+sampled rootfs peaks at **51,101,696 bytes**, logs at **24,576 bytes**, working set at
+**35,127,296 bytes**, Pulumi home at **1,015,964 KiB**, and cgroup memory peak at
+**1,053,286,400 bytes** under the unchanged **1,174,405,120-byte** maximum. The scheduler, Route 53
+denial, and schema-memory counterexamples remain live-open because the parent/Target overlap,
+hosted-zone creation, and Provider completion are not reached. Operational credentials remain
+preserved because exact terminal cleanup is not proved; qualification, activation, preactivation,
+and writer cutover remain unproved.
+
+The code-local correction for
+`AWS-ADMIN-AUTHORIZED-CLEANUP-PROVEN-STATE-TRANSITION-REJECTED-2026-09-06` is complete and the
+counterexample remains **live-open** pending an exact `pre-1` replay. `renewalCoreBindingsMatch`
+now requires exact plan-binding equality without separately requiring a non-empty retained
+binding: first-reconcile/Genesis renewal remains `Just`/`Just`, normal post-first-reconcile
+renewal admits only `Nothing`/`Nothing`, and asymmetric or unequal bindings still refuse. The
+frozen regression proves the cleanup-proven/remint-used post-first-reconcile path commits only
+after `outbox-readback` then `state-cas`, while the paired first-reconcile missing-binding case
+continues to return `AwsAdminAuthorityRenewalBindingMismatch`. The exact regression passes
+**1/1** in **0.04 s**, the complete AWS-admin Credential Provisioner Authority group passes
+**53/53** in **0.08 s**, the source-tree primary suite passes **4,862/4,862** in **89.04 s**, and
+the installed primary suite passes **4,862/4,862** in **88.75 s** with auxiliary suites
+**27/27**, **35/35**, and **36/36**. Warning-clean all-target compilation, canonical `prodbox dev
+check`, installed `clean-room-handoff`, CLI **66/66** in **843.73 s**, environment **66/66** in
+**846.16 s**, documentation consistency/lint, repository-file lint, and `git diff --check` all
+pass. The synchronized executable is
+`sha256:0a472f6f635b0f5b13dc8a4855102da2f727a4d69c2f73c14c85f3d213bfc3c0`. Rerun exact live
+`pre-1` with the Provider sampler; the scheduler, Route 53 denial, and schema-memory replacements
+remain live-open until that replay reaches their respective proof boundaries, and no
+qualification, activation, preactivation, writer-cutover, or exact-cleanup claim is yet licensed.
+
+The exact corrected live `pre-1` replay closes
+`AWS-ADMIN-AUTHORIZED-CLEANUP-PROVEN-STATE-TRANSITION-REJECTED-2026-09-06`, the one-shot scheduler
+capacity counterexample, the exact Route 53 create permission denial, and the Provider
+schema-memory/OOM counterexample, then reaches stable counterexample
+`AUTHORITY-PROVIDER-DISPATCH-RESPONSE-INVALID-2026-09-06`. It builds local image
+`sha256:eb4354dd63ea637d5b863a5988442ea4afb6b71188daa8cacef23805e4777fde` in **1,154.4 s**,
+publishes Registry manifest
+`sha256:766cf54d9c6475a5d6f4897073bd6f520ed54c6803743a96e49a81b00e178c1e`, imports OCI manifest
+`sha256:104d60b7c4732a0735b4d790ceff119adc0e690e2a130e0a313271258399c30f` in **128.3 s**, and
+removes only superseded Registry manifest `de569449…` and local image `f1cab908…`. Exact events
+show the Credential Provisioner started at `12:27:42Z` and its Target worker started eleven
+seconds later at `12:27:53Z`; both schedule on the corrected 7,750m allocatable node, all one-shot
+resources are absent afterward, and the authenticated lifecycle-provider credential reaches
+generation **3**. The AWS EKS subzone create returns a settled Provider receipt, crossing the
+previous CreateHostedZone denial. The replacement Provider Pod
+`provider-worker-6dcff4f4b6-29jdm`/UID `4badf3fb-afe7-47b7-8c6c-22627ae139dc` runs the exact new
+manifest for **706** complete samples, **701** Ready, with zero restarts and every observed cgroup
+counter zero. Its sampled rootfs peaks at **51,113,984 bytes**, logs at **36,864 bytes**, working
+set at **753,901,568 bytes**, Pulumi home at **1,015,968 KiB**, `/tmp` at **12 KiB**, `/dev/shm`
+at **296 KiB**, plugin archive residue at **0 bytes**, and cgroup memory peak at
+**1,117,913,088 bytes** under the unchanged **1,174,405,120-byte** maximum.
+
+The later registered stack lifecycle generation is durably committed as
+`AwsStackCreationCommitCreated`, but execution of its admitted create fails at the host client
+with `AuthorityProviderResponseInvalid ControlPlaneRequestInvalid`; a stack may therefore exist
+under that cycle. The Authority endpoint is specified to return canonical
+`ProviderDispatchResponse` CBOR and the client decodes that exact type, so freeze the exact
+authenticated route, HTTP status class, response-size/emptiness/codec shape, known bounded
+plaintext classification, admitted operation, committed generation, and outbox/state ordering in
+a value-free diagnostic before changing endpoint encoding, authentication, dispatch, settlement,
+or Provider execution. The single permitted Target Agent log records
+`target-one-shot/tls-verify failure=coordinator/attach-failed/provisional-read-unavailable`; the
+single permitted Authority log records the successful authorized
+`present/cleanup-proven/remint-used` recovery plus non-terminal TLS-retention selected-Agent HTTP
+failure. No other Kubernetes logs were read. Exact cleanup is unproved, operational credentials
+remain preserved, and qualification, activation, preactivation, and writer cutover remain
+unproved.
+
+The behavior-neutral diagnostic for
+`AUTHORITY-PROVIDER-DISPATCH-RESPONSE-INVALID-2026-09-06` is code-locally complete and the
+counterexample remains **live-open**. `AuthorityProviderResponseInvalid` now retains only a closed
+observation of HTTP status class, empty/within-bound/over-bound size, and direct canonical,
+endpoint-success wrapper, endpoint-failure wrapper, exact known authenticated-role plaintext,
+empty, or other response shape. It neither retains response bytes nor accepts any newly
+recognized shape. Distinct private direct, wrapper-success, wrapper-failure, and arbitrary values
+collapse to the same respective observations; the client continues to fail closed on every
+decode error. The exact diagnostic regression passes **1/1** in **0.05 s**, its Provider-dispatch
+selection passes **17/17** in **0.07 s**, the source-tree primary suite passes **4,863/4,863** in
+**88.84 s**, and the installed primary suite passes **4,863/4,863** in **88.14 s** with auxiliary
+suites **27/27**, **35/35**, and **36/36**. Warning-clean all-target compilation, canonical
+`prodbox dev check`, installed `clean-room-handoff`, CLI **66/66** in **848.63 s**, environment
+**66/66** in **838.24 s**, documentation consistency/lint, repository-file lint, and `git diff
+--check` all pass. The synchronized executable is
+`sha256:d61c1b837ec2e2635f8bd2daf9d86a16ed43570ab69ac675f0ab7693e95298a9`. Rerun exact live
+`pre-1` with the Provider sampler to expose the value-free response shape before changing the
+Provider endpoint; exact cleanup, qualification, activation, preactivation, and writer cutover
+remain unproved.
+
+The exact diagnostic live `pre-1` replay is blocked before the AWS Provider-response boundary by
+stable counterexample
+`HOME-PATRONI-RETAINED-THREE-ORDINAL-RESTORE-NONCONVERGENCE-2026-09-06`. It builds local image
+`sha256:45b8e3081542051c8aa29c831b17c1f85d62db929a86bb7802f4a39c559df1a9` in **1,146.7 s**,
+publishes Registry manifest
+`sha256:c4865aa54f2dd3742a22f5e2c2936d30bea859beebbc743363953f69f1f86460`, imports OCI manifest
+`sha256:ef5438758b83e2169d10d5764a077e33ecf7ffa7f5face082a39284493ffa5ae` in **113.9 s**, and
+removes only superseded Registry manifest `766cf54d…` and local image `eb4354dd…`. The authenticated
+lifecycle-provider credential remains current at generation **3**. During the clean-room restore,
+the retained ordinal-0 Patroni member `prodbox-vscode-pg-instance1-rpj4-0` becomes database- and
+replication-ready with zero restarts, but retained follower members
+`prodbox-vscode-pg-instance1-v945-0` and `prodbox-vscode-pg-instance1-w668-0` remain
+database-unready/replication-ready with zero restarts for the complete **1,800-second** convergence
+budget. The Percona CR has generation **2** observed at **2**, state `initializing`, Patroni
+**4.1.0**, a present system identifier, `ProxyAvailable=True`, and `ReadyForBackup=False`; all three
+Pods remain Running and all three PVCs remain Bound to the exact retained PV inventory. The restore
+graph therefore records Delete websocket/API/gateway, Ensure Gateway MinIO, Reconcile
+gateway/API/websocket, and Wait public edge as successful, while Delete Vscode and Reconcile Vscode
+return `ExitFailure 1`; its terminal observation is
+`status=initializing,postgres.ready=1,expected.postgres.ready=3`. Public edge remains ready and
+Vault remains initialized and unsealed. Across **1,802** Provider samples, the superseded Provider
+Pod has **726/726** complete Ready observations and the diagnostic Provider Pod
+`provider-worker-57dd68b54f-25wnk`/UID `aa2bd236-fd0e-4a27-8859-9f4fe30f96d5` has **1,075**
+samples, **1,070** Ready, zero restarts, a **72,429,568-byte** working-set peak, **966,172 KiB**
+Pulumi-home peak, and **90,976,256-byte** cgroup memory peak under the unchanged
+**1,174,405,120-byte** maximum; it is not invoked for AWS. All **1,789** complete cgroup event
+observations are zero. The single permitted Target Agent log is empty; the single permitted
+Authority log records completed AWS-admin preparation and the existing non-terminal TLS-retention
+selected-Agent HTTP failure. No other Kubernetes logs were read. Freeze the retained-anchor
+selection, exact pre-reconcile follower-root reset effects, new random-suffix follower claims,
+ordinal/PV assignment, one-member readiness, three-member expansion, and terminal CR/member
+observations before changing storage reset or staged-restore ordering. The Provider-response
+diagnostic remains **live-open** because this replay never reaches AWS; exact cleanup is unproved,
+operational credentials remain preserved, and qualification, activation, preactivation, and
+writer cutover remain unproved.
+
+The code-local correction for
+`HOME-PATRONI-RETAINED-THREE-ORDINAL-RESTORE-NONCONVERGENCE-2026-09-06` is complete and the
+counterexample remains **live-open**. The retained-root reset now treats an exact live-primary
+observation as an in-place reconcile and preserves all three active roots; only the no-live-primary
+retained-restore branch preserves ordinal `0` while resetting existing follower roots `1` and `2`.
+This closes the measured causal sequence: the affected Pods were created at `12:46Z`, the second
+reconcile recreated the follower host directories at `14:32Z`, both host paths remained empty, and
+the unchanged Helm apply left the running follower Patroni processes mounted across that removal.
+The stable installed-boundary regression preserves sentinels in all three roots under an exact live
+primary and passes in **3.50 s**; temporarily restoring the superseded live-primary reset deletes a
+follower sentinel and fails that same regression in **19.90 s**, after which the corrected source is
+restored byte-exactly at
+`sha256:ccee598c035b7065e36b49e7b191f78d237f93522e81c09612926dbf3e1ec57d` before canonical
+formatting. Its paired no-live-primary case proves the ordinal-0 sentinel survives while both
+follower sentinels are removed and passes in **3.49 s**. Canonical `prodbox dev check`, HLint (`No
+hints`), and warning-clean all-target compilation pass. The primary suite passes **4,863/4,863** in
+**88.46 s**; the installed unit entrypoint passes in **123.62 s** with auxiliary suites **27/27**,
+**35/35**, and **36/36**; installed `clean-room-handoff` passes; CLI passes **67/67** in **849.62
+s**; environment passes **67/67** in **838.58 s**; documentation consistency/lint,
+repository-file lint, and `git diff --check` all pass. The synchronized executable is
+`sha256:8a809f6d4a7f3455b9e6a4e0e7e1ff8173b19b9c04f5cb26f271f7f6311d4b3a`. Repair the
+already-affected retained deployment through a supported `prodbox` chart lifecycle, then rerun
+exact live `pre-1` with the Provider sampler. The Provider-response diagnostic remains live-open;
+exact cleanup, qualification, activation, preactivation, and writer cutover remain unproved.
+
+The supported clean-room repair first proves local `cluster delete --yes`: RKE2, its managed
+kubeconfig, and the local firewall residue are removed while exact retained root
+`.test-data/legacy-aggregate` and its Vault PV remain preserved, and no AWS absence is claimed. A
+targeted `charts delete vscode --yes` attempt had correctly refused before chart mutation at the
+already-registered `TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`; its one permitted
+Target Agent log was empty and its one permitted Authority log selected the existing
+`selected-agent/http-status/other` arm. The following exact corrected `pre-1` replay reaches new
+stable counterexample
+`MINIO-REGISTRY-ADMISSION-FRESHNESS-EXHAUSTED-CLEAN-INSTALL-2026-09-06` before Patroni restore,
+image build, Provider deployment, or AWS. On synchronized executable
+`sha256:8a809f6d4a7f3455b9e6a4e0e7e1ff8173b19b9c04f5cb26f271f7f6311d4b3a`, it installs RKE2
+`v1.36.4+rke2r1`, observes the exact 8,000m/15,930 MiB/238,221 MiB host against the admitted
+8,000m/15,930 MiB/44,280 MiB ephemeral/182,030 MiB durable plan, reaches a Ready node, installs
+fresh MinIO release revision **1** at `12:25:33`, and installs fresh Vault release revision **1** at
+`12:25:52`. Registry admission then refuses because the MinIO observation is **31,305,921 us** old,
+past the edge's **30,000,000 us** bound. The **90-sample** Provider trace from `16:23:23.403Z`
+through `16:26:28.943Z` is uniformly absent, as expected before that deployment. No Kubernetes
+logs were read for this replay. Freeze the MinIO observation timestamp, its exact
+MinIO-to-Registry edge freshness derivation, the sequential Vault work charged between observation
+and consumption, and the clean-install topology/load before changing freshness, observation
+placement, graph ordering, or retry behavior. The retained-Patroni and Provider-response
+counterexamples remain **live-open** because neither boundary is reached; exact cleanup,
+qualification, activation, preactivation, and writer cutover remain unproved.
+
+The code-local correction for
+`MINIO-REGISTRY-ADMISSION-FRESHNESS-EXHAUSTED-CLEAN-INSTALL-2026-09-06` is complete and the
+counterexample remains **live-open**. Registry has exactly two graph-declared dependencies in
+order, `cluster_base` and MinIO; the former was already refreshed by the executor's single-expiry
+retry, and complete-set revalidation then exposed the latter as the terminal 30,000,001-us-old
+admission. `runAnchoredStepOrder` now re-observes each distinct expired dependency revealed by
+complete-set revalidation at most once. It does not widen the graph-derived **30,000,000 us**
+bound: a failed re-observation, a dependency that expires again while its siblings are refreshed,
+or a never-observed dependency still refuses. The stable regression fixes the exact Registry
+dependency order and supplies both admissions one microsecond past the bound. Against the
+superseded executor it fails in **0.05 s** with
+`AdmissionExpired ComponentRegistry ComponentMinio 30000001 30000000`; against the correction it
+passes **1/1** in **0.03 s** and proves both dependencies are re-observed before mutation.
+Bootstrap Readiness Doctrine now states that complete-set rule. Canonical `prodbox dev check`,
+HLint (`No hints`), and warning-clean all-target compilation pass. The installed unit entrypoint
+passes its primary **4,864/4,864** inventory in **87.34 s** plus auxiliary suites **27/27**,
+**35/35**, and **36/36**; installed `clean-room-handoff` passes; CLI passes **67/67** in **846.06
+s**; environment passes **67/67** in **836.34 s**; and documentation consistency/lint,
+repository-file lint, and `git diff --check` all pass. The synchronized executable is
+`sha256:70f26f59ae3052ed44e3faa372ae86e99566a7634446a84f74670597e0e2959e`. Rerun exact live
+`pre-1` with the Provider sampler. Retained-Patroni convergence, the Provider-response diagnostic,
+exact cleanup, qualification, activation, preactivation, and writer cutover remain unproved.
+
+The corrected retained-cluster `pre-1` replay live-closes
+`HOME-PATRONI-RETAINED-THREE-ORDINAL-RESTORE-NONCONVERGENCE-2026-09-06` but deliberately does
+**not** close the exact clean-install MinIO freshness counterexample. The run starts at `13:30:49`
+EDT with the RKE2/MinIO/Vault installation retained from the preceding failed clean install,
+crosses Registry admission and rollout in three reconcile cycles, builds local image
+`sha256:0d2766d27d977395a372f3fc32b6c16960aab9d2eeb09955ad64bf79de84f23c` in **992.3 s**,
+publishes Registry manifest
+`sha256:d8c31a0e89359583b98211d7f357bd90a6547bd9983095830b2e031920c56f4d`, and imports OCI
+manifest `sha256:11bec7eb21f5aa5d393085511ce118abb7f833d9dd49f25c2920e99ac9aff253` in **211.5 s**.
+It removes only superseded Registry manifest `c4865aa5…` and local image `45b8e308…`. The retained
+Percona resource reaches generation **2** observed at **2**, `state=ready`, Patroni **4.1.0** with
+the same system identifier, and PostgreSQL **3/3**. All three newly suffixed members are database-
+and replication-ready with zero restarts and their claims bind the exact retained PVs `0`, `1`,
+and `2`; VS Code, Keycloak, API, WebSocket, and public edge then reconcile, and the edge classifies
+`ready-for-external-proof`. This is exact live closure of the follower-root correction.
+
+The run terminates at `14:19:36` EDT because the already-registered
+`TlsRetentionWorkflowAuthoritySelectedAgentUnavailable` makes only RestoreNode Delete Vscode fail;
+the total restore graph subsequently reconciles Vscode successfully and every other node succeeds.
+The single permitted Target Agent log is empty; the single permitted Authority log records
+completed AWS-admin preparation and two `selected-agent/http-status/other` TLS failures. No other
+Kubernetes logs were read. Provider Worker remains one Ready zero-restart Pod on the exact image
+and unchanged 1,120-MiB envelope. Of **1,355** sampler rows, **419** name that Pod and **414** are
+Ready; all **417** complete cgroup-event observations are zero. Sampled peaks are **69,632 bytes**
+rootfs, **16,384 bytes** logs, **34,881,536 bytes** working set, **966,172 KiB** Pulumi home,
+**12 KiB** `/tmp`, zero `/dev/shm` and plugin archive residue, and **82,227,200 bytes** cgroup
+memory under the unchanged **1,174,405,120-byte** maximum. No AWS Provider request is reached and
+the authenticated lifecycle-provider credential remains generation **3**. Because MinIO and Vault
+were upgrades rather than the frozen fresh installations whose sequential latency produced the
+31,305,921-us admission, `MINIO-REGISTRY-ADMISSION-FRESHNESS-EXHAUSTED-CLEAN-INSTALL-2026-09-06`
+remains **live-open**. Supported local `cluster delete --yes` then succeeds: local RKE2 and its
+managed kubeconfig are removed, the Gateway firewall rule is not present, exact retained root
+`.test-data/legacy-aggregate` and its Vault PV remain preserved, and no AWS absence is claimed.
+Run exact fresh live `pre-1` with the Provider sampler. The Provider-response diagnostic, exact
+cleanup, qualification, activation, preactivation, and writer cutover remain unproved.
+
+The exact fresh-install replay live-closes
+`MINIO-REGISTRY-ADMISSION-FRESHNESS-EXHAUSTED-CLEAN-INSTALL-2026-09-06` and reaches new stable
+counterexample
+`REGISTRY-NODEPORT-READBACK-CONNECTION-REFUSED-AFTER-READY-CLEAN-INSTALL-2026-09-06`. From
+`14:22:45` through `14:27:04` EDT it installs RKE2 `v1.36.4+rke2r1`, admits the exact observed
+8,000m/15,930 MiB/238,221 MiB host against the 8,000m/15,930 MiB/44,280 MiB
+ephemeral/182,030 MiB durable plan, installs fresh MinIO revision **1** at `14:24:31`, and installs
+fresh Vault revision **1** at `14:24:49`. The same clean-install sequential work that previously
+made MinIO **31,305,921 us** old now crosses Registry admission with the unchanged
+**30,000,000-us** graph bound; bucket initialization completes and all three Registry rollout
+generations report success. That is exact live closure of the bounded multi-dependency refresh.
+
+The immediately following Registry-manifest retention read-back fails with `curl: (7) Failed to
+connect to 127.0.0.1 port 30080 after 0 ms`; no image build, Provider deployment, or AWS request is
+reached, and all **130** Provider samples are uniformly absent. At terminal time the final Registry
+Deployment is generation **3** observed at **3**, `1/1` Ready/Available/Updated. Its zero-restart
+Pod/UID `registry-6c595f8955-5mqmd`/`20d09af4-3230-48cd-a26e-92763aae8d3a` was created at
+`18:26:35Z`, started and became Ready at `18:26:36Z`, with Pod IP `10.42.0.15`. The `harbor`
+Service and EndpointSlice were created at `18:25:31Z`; the exact endpoint is Ready and serving on
+target port `5000`, and the Service projects NodePort `30080`. Kube-proxy and the node are Ready,
+zero-restart, and pressure-free. At `14:28:01` EDT, only **57 seconds** after terminal failure,
+read-only GETs through both `127.0.0.1:30080/v2/` and `192.168.2.46:30080/v2/` return `{}`. No
+Kubernetes logs were read for this run. Freeze the exact fresh Service/EndpointSlice creation,
+three rollouts, final ready Pod, kube-proxy/node state, immediate host read-back refusal, and later
+positive loopback/node-IP reads before changing Registry readiness, read-back retry, kube-proxy
+settling, or retention behavior.
+
+The correction for
+`REGISTRY-NODEPORT-READBACK-CONNECTION-REFUSED-AFTER-READY-CLEAN-INSTALL-2026-09-06` is
+**code-local, mutation-proven, and live-closed**. `captureRegistryApi` now repeats only
+a started `curl` whose non-zero result the shared transient-transport classifier recognizes. Its
+named `registryReferenceObservationRetryPolicy` permits sixteen attempts separated by jittered
+five-second delays, retaining at least the measured sixty-second residual NodePort-settling
+window. Process-start failure, unclassified HTTP failure, every successful-but-malformed Registry
+response, page-bound exhaustion, and snapshot disagreement remain immediately terminal; the
+retry never repeats garbage collection. The installed-boundary regression bearing the exact
+counterexample name injects one connection refusal on only the second catalog request. With the
+old executor it fails in **96.04 s** at the exact read-back error; with the correction it passes
+**1/1 in 104.44 s**, records exactly three catalog requests, and completes the same reconcile and
+delete path. Focused policy and shared-classifier checks pass **6/6**. The synchronized executable
+is `sha256:72a404417c8ef1b8b679eab85559883b969b206c6d3b6d420e99a120da4b0f79`. Full local
+validation is green: canonical `prodbox dev check` exits zero with no HLint hints and a
+warning-clean build; installed unit passes **4,864/4,864** plus **27/27**, **35/35**, and
+**36/36** auxiliary cases; installed `clean-room-handoff` passes; CLI integration passes
+**67/67 in 839.42 s** and environment integration passes **67/67 in 830.88 s**; documentation
+check/lint, file lint, and `git diff --check` all exit zero. The supported pre-replay
+`cluster delete --yes` then exits zero, positively removes RKE2 and the managed kubeconfig,
+observes the Gateway firewall rule absent, preserves the retained manual-PV/Vault root, and makes
+no AWS-absence claim.
+
+The exact fresh-cluster replay from **15:37:04 through 16:28:55 EDT** installs RKE2
+`v1.36.4+rke2r1`, reaches the same immediate `curl (7) Failed to connect … Couldn't connect`
+failure after the first Registry rollout, emits exactly `Retrying Registry reference observation
+after transient transport failure (1/16)`, then crosses all three rollout/retention rounds. The
+run prints exact Registry snapshot-preservation success three times, enters the custom-image build,
+builds local image
+`sha256:fa365bd7edf8bfc7ea2696c43d6a91763bb693ef14031fd0eeea7a5a67acca7a` in **1,010.5 s**,
+reads registry manifest
+`sha256:f80d387f670c8f979e511ca828329b277d229e94bf98b4ac0177ac523daf5eb2`, and imports OCI
+manifest `sha256:71f4f3571492d237ad5c11ee6b62b3581bc17ac5da1550d8eee4cd9d166967cd` in
+**228.8 s**. Retention removes only superseded Registry manifest `d8c31a0e…` and local image
+`0d2766d2…`. Final Registry generation **8** is observed at 8 and `1/1` Ready/Available/Updated,
+zero restart. This is exact live closure of the fresh NodePort read-back counterexample.
+
+The corrected Provider sampler discards its initial wrong-kubeconfig/wrong-selector rows and
+restarts at `20:16:58Z`; all **295/295** retained rows observe the one Provider Pod/UID/image/limit
+identity Ready with zero restart. Peaks are **69,632 bytes** rootfs, **16,384 bytes** logs,
+**109,666,304 bytes** working set, **966,172 KiB** Pulumi home, **12 KiB** `/tmp`, zero
+`/dev/shm` and archive residue, and **114,364,416 bytes** cgroup memory under
+**1,174,405,120 bytes**; every memory-event counter remains zero. Percona generation **2** is
+`ready`, PostgreSQL `3/3`; all three newly suffixed member Pods are Ready/zero-restart and their
+claims bind exact retained ordinal PVs 0/1/2. The run terminates only on the already-registered
+`TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`: Restore Delete Vscode fails, all four
+reconcile nodes and every other restore node succeed, Vault is initialized/unsealed, and the edge
+is `ready-for-external-proof`. The single permitted Target Agent log is empty; the single permitted
+Authority log records completed AWS-admin preparation and two
+`selected-agent/http-status/other` TLS failures. No other Kubernetes logs were read. No AWS
+Provider request or exact cleanup proof is reached. The Provider-response diagnostic,
+qualification, activation, preactivation, and writer cutover remain unproved.
+
+The repeated empty Target-Agent diagnostic plus Authority
+`selected-agent/http-status/other` result selects stable diagnostic counterexample
+`TLS-SELECTED-AGENT-ENDPOINT-RESPONSE-COLLAPSED-TO-HTTP-OTHER-2026-09-06` before any further TLS
+behavior change. Source enumeration proves the Target TLS endpoint itself authors a finite set of
+exact non-200 status/body pairs for prepare, retain, home-wrap, home-rewrap, restore, and verify,
+while `TlsTargetAgentClient` recognizes only the separate authenticated-role plaintext producer.
+Every exact endpoint semantic failure therefore collapses to `http-status/other`, indistinguishable
+from an arbitrary response; a successfully coordinated one-shot result such as verify missing or
+mismatch emits no standing coordinator-failure line. Add only a route-indexed, closed,
+payload-free classification of the endpoint-authored response pairs, preserve every public
+failure, request, authentication, replay, one-shot, Secret, and TLS behavior, validate locally,
+then rerun the exact targeted VS Code delete or `pre-1` to select the live branch. Exact cleanup,
+the Provider-response diagnostic, qualification, activation, preactivation, and writer cutover
+remain unproved.
+
+That behavior-neutral diagnostic is code-locally complete. The standing Target TLS handler now
+owns one finite source-of-truth algebra for every exact plaintext request-refusal,
+missing/mismatch, and one-shot-unavailable response across its six routes, and uses that same
+projection when emitting those responses. `TlsTargetAgentClient` classifies that endpoint
+projection before the separate authenticated-role projection, retains no body bytes, and renders
+only fixed `http-status/target/<route>/<cause>` tokens; arbitrary responses still collapse to
+`http-status/other`. Numeric status, public Authority failure, HTTP response, request,
+authentication, replay, worker, Secret, and TLS behavior are unchanged. The exact exhaustive
+regression passes **1/1 in 0.04 s**; restoring the collapsed arm makes it fail at the first
+endpoint response, after which the corrected source is restored byte-exactly. Complete local
+validation is green: canonical `prodbox dev check` passes with HLint `No hints` and warning-clean
+all-target compilation; installed unit passes **4,865/4,865** plus auxiliaries **27/27**,
+**35/35**, and **36/36**; installed `clean-room-handoff` passes; CLI integration passes **67/67
+in 851.85 s** and environment integration passes **67/67 in 842.73 s**; `git diff --check`
+passes. The gate-built and synchronized executable is exact at
+`sha256:96f7285aac773cac00880a5e7aed2cffcfb328daaea07d4a7aba863327d3f93e`. Unchanged live
+selection is next; no deployment-qualification state changes yet.
+
+The unchanged diagnostic live `pre-1` replay runs from **17:51:40 through 18:36:08 EDT** with the
+corrected explicit Provider sampler using `/home/matthewnowak/.kube/config`; its command and
+evidence files are `PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE=pre-1 ./.build/prodbox test
+integration cascade-qualification --substrate aws`,
+`/tmp/prodbox-sprint-6.5-target-tls-response-diagnostic-live-pre-1.log`, and
+`/tmp/prodbox-sprint-6.5-target-tls-response-diagnostic-live-sampler.log`. It builds local image
+`sha256:ecca04f17d91930c4d32548a92f737309520921236458e629b92b5e52cbd4efc`, publishes Registry
+manifest `sha256:96bd9629b120f375818c63c249c7fa8c7498939ba109d8b7e25ea2acda6b9dc3`, and imports OCI
+manifest `sha256:d3730939c42403817a163cf8286cd03027337997add924ee0f75c65af559cb2a`. Both retained-home
+passes reuse exact root session `root-session-9c54db6a...`, baseline digest `a5756119...`, storage
+generation `vault-a290544e...`, and Lifecycle-provider credential generation **3**, and cross the
+control-plane, Gateway, TLS Retention, ZeroSSL, and shared-platform barriers.
+
+This live-closes
+`TLS-SELECTED-AGENT-ENDPOINT-RESPONSE-COLLAPSED-TO-HTTP-OTHER-2026-09-06`: the first VS Code
+delete failure remains public `TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`, while the
+single permitted Authority log now selects exact
+`tls-retention/workflow failure=selected-agent/http-status/target/verify/mismatch`. Stable
+counterexample `TLS-RETENTION-VERIFY-MISMATCH-BEFORE-VSCODE-DELETE-2026-09-06` owns that first
+behavioral boundary. Prove which retained reference and current exact Secret observation diverge,
+and why, before changing verification, retention, version selection, certificate issuance, Secret
+lifecycle, or delete ordering. Because that refusal leaves VS Code undeleted, its later reconcile
+also fails publicly at selected-Agent unavailability; the permitted Target Agent log records exact
+`target-one-shot/tls-restore failure=coordinator/materialization-refused/tls-restore/secret-apply-failed/existing-content-mismatch`,
+and Authority records exact `selected-agent/http-status/target/restore/one-shot-operation-unavailable`
+followed by `adapter/http-status/replay-capacity-exhausted`. Those downstream results do not license
+a restore, replay-capacity, or Adapter change before the first verify mismatch is resolved.
+
+The total restore executor succeeds for both Gateway nodes, API, WebSocket, the Gateway MinIO
+bootstrap, and public-edge readiness, which finishes `ready-for-external-proof`; only VS Code
+delete and reconcile fail. The command exits **1**, exact cleanup is unproved, and operational
+credentials remain preserved. All **341** samples of the replacement Provider Pod name its exact
+image, **337** observe it Ready with zero restarts, and every complete cgroup-event observation is
+zero; its sampled cgroup memory peaks at **87,887,872 bytes** under the unchanged
+**1,174,405,120-byte** maximum. No Kubernetes logs other than the single permitted Target Agent
+and Lifecycle Authority reads were taken. The Provider-response diagnostic, qualification,
+activation, preactivation, and writer cutover remain unproved.
+
 Generation
 141 live-proves Sprint `2.126` and identifies exact
 `AuthenticatedRoleReplayCapacityExhausted` at the in-force-config response. Generation 126 had live-proved Sprint `2.116` and

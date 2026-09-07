@@ -127,6 +127,21 @@ controlPlaneRouteSuite =
       source
         `shouldContain` "55 -> Just LifecycleOwnershipManifest"
 
+    it "owns TLS staging and exact-version observation at their separate roles" $ do
+      controlPlaneRoutePath LifecycleTlsRetentionStage
+        `shouldBe` "/v1/authority/tls-retention/stage"
+      controlPlaneRouteRole LifecycleTlsRetentionStage
+        `shouldBe` LifecycleAuthorityRuntime
+      controlPlaneRoutePath TlsRetentionObserveVersion
+        `shouldBe` "/v1/tls-retention/observe-version"
+      controlPlaneRouteRole TlsRetentionObserveVersion
+        `shouldBe` TlsRetentionRuntime
+      source <- readFile "src/Prodbox/ControlPlane/RequestAuthentication.hs"
+      source `shouldContain` "LifecycleTlsRetentionStage -> 61"
+      source `shouldContain` "TlsRetentionObserveVersion -> 62"
+      source `shouldContain` "61 -> Just LifecycleTlsRetentionStage"
+      source `shouldContain` "62 -> Just TlsRetentionObserveVersion"
+
     it "contains no generic object-store or Vault route" $
       mapM_
         ( \route -> do

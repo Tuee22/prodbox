@@ -190,10 +190,13 @@ validation environments.
   separately generated, accessor-audited session that is revoked and observed absent.
 - Lifecycle Authority, not a host or Gateway object proxy, owns the generation/digest references
   selecting immutable Transit-enveloped config and Pulumi checkpoint blobs. Pulumi decrypts only
-  into bounded scratch storage for one operation. Gateway continuity instead lives in an encrypted,
-  identity-bound local retained journal and is never a shared Model-B object. Bootstrap Broker and
-  Lifecycle Authority have separate least-privilege object-store capabilities; Gateway Runtime has
-  none. Sealed-state listings and logs reveal no logical object, stack, or child identity.
+  into bounded scratch storage for one operation. Target Gateway continuity instead lives in an
+  encrypted, identity-bound local retained journal and is never a shared Model-B object. The
+  mutually exclusive pre-cutover rollback adapter retains shared Model-B boot-fence and periodic
+  backend-proof heartbeats, then uses bounded signed latest-only liveness carrying the authenticated
+  boot witness; it exposes no generic object-store authority.
+  Bootstrap Broker and Lifecycle Authority have separate least-privilege object-store capabilities.
+  Sealed-state listings and logs reveal no logical object, stack, or child identity.
 - Cluster federation forms a Vault transit-seal trust tree. A parent holds only encrypted child
   recovery material and revocation attestations, releases it through an attested one-time recovery
   protocol, and never persists or transports a reusable child initial root token. The doctrine
@@ -306,7 +309,10 @@ topology diagram and dependency order live only in
   long-lived controllers receive ciphertext and typed receipts, never plaintext or a generic export.
 - The Gateway Runtime owns mesh, ownership projection, its encrypted identity-bound local emitter
   journal and, on home only, the registered Gateway-DNS effect. One actor holds the whole
-  stage/fsync/publish/commit/fsync transition; EKS Gateway DNS mutation is disabled.
+  stage/fsync/publish/commit/fsync transition; EKS Gateway DNS mutation is disabled. Before target
+  activation, the rollback topology instead persists one signed boot heartbeat and every
+  ownership-changing transition through its legacy adapter while recurring signed liveness stays
+  latest-only, member-bounded, and outside the remote persistence hot path.
 - On EKS, Broker, Gateway diagnostics, and Target Secret Agent have distinct Service transports;
   Lifecycle Authority and the fenced Provider Worker remain in retained home RKE2. AWS provider
   work reaches that home-only worker only through registered Authority/Provider intents; no
@@ -835,7 +841,10 @@ projection over drain phase, emitter authority, and workers. The rollback topolo
 continuity startup. The public `gateway start` command still selects that mutually exclusive
 `LegacyModelBEmitter` rollback topology; there is no operator switch or dual-write path. Target
 Gateway registry/client/actor dispatch contains no bootstrap handlers; the rollback reaches only
-the separately registered `LegacyAdapter`. The code-local `JournalLeaseEmitter` target requires its
+the separately registered `LegacyAdapter`. That adapter durably fences each process with one signed
+heartbeat, then exchanges at most one signed liveness frame per Orders member; exact boot-fence
+mismatch, replay, self-delivery, timestamp regression, and clock skew all fail closed. Claims and
+yields remain persistence-first. The code-local `JournalLeaseEmitter` target requires its
 current journal lock, matching Lease witness, and exact recovery for readiness, and returns to
 `starting` on Lease loss until recovery succeeds. Physical workload consumption and public cutover
 remain governed by the deployment-qualification record in

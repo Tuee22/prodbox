@@ -34,7 +34,9 @@ Partition semantics for gateway leadership and DNS write gating must be formally
 
 For this Byzantine-generals-class failure mode, TLA+ model checking is the primary completeness tool; runtime tests validate model-to-code fidelity but are not exhaustive proofs.
 
-Gateway timing contract is explicit: heartbeat_timeout_seconds in [3, 60], isolation_timeout_seconds = heartbeat_timeout_seconds, heartbeat_interval_seconds <= timeout/2, reconnect_interval_seconds <= timeout, and sync_interval_seconds <= timeout*2.
+Gateway timing contract is explicit: `heartbeat_timeout_seconds` is in `[3, 60]`,
+`isolation_timeout_seconds = heartbeat_timeout_seconds`, `heartbeat_interval_seconds <= timeout/2`,
+`reconnect_interval_seconds <= timeout`, and `sync_interval_seconds <= timeout*2`.
 
 Gateway runtime state is bounded by construction. Heartbeats retain only the newest accepted value
 per Orders member, and ownership retains only the newest accepted claim/yield evidence per member.
@@ -58,8 +60,9 @@ admission/incarnation, active Orders anchor, committed epoch/sequence/previous-e
 anchor, at most one exact staged assertion, a bounded contiguous retained committed suffix, and a
 bounded peer-ack/authenticated-checkpoint-floor projection. Before publishing any assertion, that actor
 performs `stage -> fsync -> publish -> commit -> fsync`; epoch rotation uses the same serialized
-protocol with a signed invalidation. Heartbeats never perform a shared remote Model-B transaction,
-call Vault, or call MinIO. A renewable Vault session supplies the journal key at startup, and
+protocol with a signed invalidation. In the target topology, heartbeats never perform a shared
+remote Model-B transaction, call Vault, or call MinIO. A renewable Vault session supplies the
+journal key at startup, and
 plaintext exists only in bounded memory. Remote Model-B continuity is a migration adapter only.
 Local emitter recovery reads only the authenticated journal floor, contiguous suffix, and retained
 in-flight projection for that same emitter. Peer checkpoint/suffix repair updates a lagging remote
@@ -82,6 +85,28 @@ local-journal cutover. Its boot endpoint is an absent-or-validated `GatewayMinio
 from mounted config. Missing configuration refuses at the consumer, malformed HTTP(S) coordinates
 refuse at decode, and the runtime has no compiled MinIO address or environment fallback. This
 narrow pre-cutover client does not add an object-store route or generic Gateway authority.
+That mutually exclusive rollback topology persists an ordinary signed heartbeat at process boot as
+its exact durable fence. Its recurring heartbeat worker then emits protocol-versioned signed
+latest-only liveness frames bound to the exact Orders anchor, emitter, complete signed boot
+heartbeat, derived incarnation/epoch/sequence/digest fence, monotonic frame sequence, and
+observation time. The outer frame HMAC covers that complete witness. A receiver verifies both
+signatures and admits the fence only when its semantic projection has the exact latest heartbeat,
+or when its compacted cursor is at that heartbeat (with the exact digest) or later in the same
+incarnation and epoch. A receiver behind the boot refuses it; a later incarnation/epoch makes it
+stale. This prevents checkpoint compaction from creating asymmetric liveness rejection without
+turning the liveness frame into a semantic event.
+
+The rollback topology also has a separately supervised backend-proof worker. Sixty seconds after
+each completed attempt it commits a normal persistence-first semantic heartbeat, refreshing the
+write-shaped MinIO receipt well inside the independent 300-second lifecycle-readiness window, and
+replaces the process-local liveness session at sequence one. The hot liveness path retains at most
+one frame per admitted member and performs no Model-B, Vault, or MinIO operation. Claims, yields,
+epoch rotations, initial boot, and periodic backend-proof heartbeats remain persistence-first
+semantic assertions. Observing any newer heartbeat clears the old liveness slot before election. A
+restarted local process cannot self-elect from its recovered predecessor heartbeat: it must
+establish its own process-local boot session and frame, and inbound self-delivery is refused. This
+is a bounded pre-cutover bridge, not a second transition owner or a weakening of the five-second
+Orders freshness rule.
 
 DNS mutation is credential-gated as well as ownership-gated: the interpreter may construct a Route
 53 effect only from an authorized plan containing current ownership evidence and an observed,
@@ -197,6 +222,11 @@ Peers exchange signed, hash-identified assertions:
   with a contiguous bounded replay suffix.
 - Every assertion is HMAC-signed by its emitter. Heartbeat assertions carry the heartbeat timestamp;
   ownership and epoch-invalidation assertions do not invent an unrelated event timestamp.
+- `POST /v1/peer/liveness` carries a separate HMAC-signed, canonical CBOR liveness frame. It is not
+  a semantic assertion, advances no durable cursor, expresses no ownership transition, and is
+  admitted only after the embedded signed heartbeat is authenticated and its derived fence is
+  matched by the receiver's exact latest heartbeat or by an at-or-after compacted cursor in the
+  same incarnation and epoch.
 
 Assertion classes:
 
@@ -211,6 +241,7 @@ The accepted runtime projection is finite:
 | Semantic component | Retention rule |
 |---|---|
 | Heartbeat view | Latest valid heartbeat per Orders member, with member count bounded by validated Orders |
+| Liveness view | Latest admitted signed liveness frame per Orders member; exact durable boot-fence match, monotonic per-boot sequence/timestamp, and no history |
 | Ownership view | Latest valid claim/yield evidence per bounded Orders member for the active Orders version, plus at most one bounded promotion slot; older-version evidence is evicted after checkpointed promotion |
 | Orders view | Active version plus at most one highest-observed/staged version needed by the restart gate |
 | Replay window | Bounded original signed assertions per emitter; the default capacity is eight |
@@ -405,6 +436,11 @@ drop rather than a `Fatal` worker error, including during `Draining`.
   floor cursor and projection plus a contiguous bounded suffix. After repair it
   retries delta selection once. Repair size is bounded by the same assertion-count and frame-byte
   limits, not by daemon uptime.
+- After semantic delta/repair exchange, the rollback topology sends at most one current local frame
+  through `POST /v1/peer/liveness`. The receiver verifies signature, Orders, skew, exact latest
+  durable heartbeat fence, per-boot sequence, and non-regressing timestamp before overwriting its
+  one member slot. The response never advances a journal peer acknowledgement, because liveness is
+  deliberately outside the durable semantic cursor.
 - Acceptance is idempotent: the receiver's pure fold advances only monotonic semantic keys and
   cursors. Repeated frames are acknowledged without changing retained cardinality.
 - Local publication is persistence-first and single-owner: prepare and sign the next assertion,
@@ -413,15 +449,17 @@ drop rather than a `Fatal` worker error, including during `Draining`.
   Peer acknowledgments update the durable ack projection and republish selection; only checkpoint
   installation may clear a committed prefix. A journal conflict, unavailable observation,
   or durability failure emits nothing. No independent continuity loop may stage or commit another
-  transition, and the heartbeat path does not call a remote Model-B authority.
+  transition. The target heartbeat path and the rollback topology's recurring liveness path do not
+  call a remote Model-B authority; only the rollback process's initial boot and separately
+  supervised periodic backend-proof heartbeats do.
 - Restart/overflow never resets a sequence in place. The emitter either resumes the recovered
   current epoch at `sequence + 1`, or conditionally persists a signed epoch-invalidation assertion
   to a fresh epoch before emitting. Frames from an invalidated epoch are rejected even if delayed past
   compaction.
-- The receiver updates its view of every other node's last heartbeat from
-  the newest accepted inbound heartbeat rather than from the local heartbeat loop
-  alone, closing the documented gap between the runtime and the TLA+
-  model's peer-communication assumptions.
+- The receiver updates its view of every other node's last heartbeat from the newest accepted
+  inbound target-topology heartbeat assertion or rollback-topology bounded liveness frame rather
+  than from the local heartbeat loop alone. A semantic boot change first invalidates the previous
+  liveness frame, so a delayed predecessor frame cannot refresh the new process.
 - The receiver also tracks per-peer health and exposes it on `/v1/state` as
   two **separate** top-level fields — `peer_inbound_health` and
   `peer_outbound_health` — so a one-directional partition is observable rather
@@ -429,7 +467,7 @@ drop rather than a `Fatal` worker error, including during `Draining`.
   meaning and must not be conflated:
   - **Inbound health** (`peer_inbound_health.<peer>.last_inbound_event_age_seconds`)
     — age of the last *inbound* event from that peer. It is written only when
-    this daemon actually receives and accepts a signed assertion from the peer, and
+    this daemon actually receives and accepts a signed assertion or bounded liveness frame from the peer, and
     it is the freshness signal that feeds heartbeat and isolation judgements
     (§4.2).
   - **Outbound health** (`peer_outbound_health.<peer>.{connected,last_error}`)
@@ -518,6 +556,14 @@ rewinds to the durable-stage boundary and republishes the same signed migration 
 pending, in-flight, suffix, latest, or checkpoint evidence fails closed instead of relabelling the
 journal.
 
+Volatile signed retention is reconciled to the already-installed semantic checkpoint after every
+recovered or peer-supplied assertion is inserted. Its checkpoint heartbeat and ownership slots
+match the semantic checkpoint exactly, including absence after an Orders-migration assertion, and
+its bounded replay contains only assertions strictly after that checkpoint. Restart recovery can
+install the terminal semantic repair before replaying its signed suffix, so pruning only before an
+insertion is insufficient and must never leave pre-migration evidence eligible for a peer repair
+signature.
+
 - Each peer push includes the sender's current `orders_version_utc`, and the
   receiver returns `409 Conflict` when the sender's view is older than the
   receiver's. This prevents a stale peer from pushing events that predate the
@@ -539,7 +585,7 @@ journal.
 
 ## 8. TLA+ Scope
 
-The finite TLA+ safety model covers the representative two-node protocol's bounded types, complete
+The finite journal/Lease TLA+ safety model covers the representative two-node protocol's bounded types, complete
 journal phase shape, exact admission identity and expiry, stale-completion fencing, monotone durable
 incarnation, OS-lock/Lease binding, Orders-scoped semantics, durable bounded pending/ack/checkpoint
 slots, and the complete DNS authority gate. It does not claim liveness, real-time clock behavior, or
@@ -548,11 +594,19 @@ the production three-member cardinality. This actor-local refinement deliberatel
 native-test obligations, composed with the earlier Orders/ranked-owner/partition proof axis. The
 exact 16-invariant catalog, action correspondence, canonical exhaustive-run counts, and proof boundary are owned by
 [TLA+ Modelling Assumptions](./tla_modelling_assumptions.md).
+The separate legacy-liveness model explores two durable fence generations, latest and delayed
+frames, full-heartbeat and compacted-cursor observations, crash/restart, in-process backend-proof
+rotation, a finite clock/timeout, and per-fence sequence replacement. It checks that an accepted
+fresh frame is bound to authenticated receiver evidence for the durable fence, and that local
+freshness requires a live process holding its own durable fence. It deliberately does not turn the
+temporary rollback protocol into part of the target journal model.
 
 Model files:
 
 - `documents/engineering/tla/gateway_orders_rule.tla`
 - `documents/engineering/tla/gateway_orders_rule.cfg`
+- `documents/engineering/tla/gateway_legacy_liveness.tla`
+- `documents/engineering/tla/gateway_legacy_liveness.cfg`
 
 Execution requirement:
 
@@ -795,6 +849,14 @@ a Gateway default.
 
 Used by integration tests for observability and by `prodbox gateway status` CLI.
 
+`can_write_dns` is a point-in-time authority observation. During a supported restore it can be
+false while ownership, the current claim, the credential generation, and the continuity fence are
+still converging, then become true without a mutation by the observing caller. The public-edge
+prerequisite therefore treats only the exact fixed Gateway-DNS authority-not-ready diagnostic as a
+retryable subprocess observation within its existing bounded wait. A different hosted zone/FQDN,
+an unreadable state response, or any other nonzero `edge status` remains terminal. The waiter does
+not weaken `authorizeDnsWrite`, synthesize a record value, or extend the attempt/deadline envelope.
+
 `retained_assertion_count` is bounded by `retained_assertion_capacity`; it is not total assertions
 since process start. In the single-writer `JournalLeaseEmitter` kernel this bound is structural, not
 merely reported: the retained unacknowledged suffix is a hidden-constructor `BoundedUnackedSuffix`
@@ -965,9 +1027,11 @@ Containerization is first-class for integration/runtime image publishing:
   substitute the Lifecycle-provider or cert-manager identity
 - the publish path runs an ordinary host-native `docker build`, then pushes the resulting registry
   tags from the repo-owned single-stage `ubuntu:24.04` Dockerfile with in-image `ghcup` and
-  pinned GHC `9.12.4`; after installing the binary, the same build step removes only its ephemeral
-  `.build` and Cabal cache/state roots so compilation output cannot become unique retained bytes in
-  every runtime generation
+  pinned GHC `9.12.4`; the Provider tooling layer installs Pulumi CLI `3.228.0` and its matching
+  `pulumi-language-yaml` host from the same pinned native-architecture archive, never from an
+  ambient host plugin; after installing the binary, the same build step removes only its
+  ephemeral `.build` and Cabal cache/state roots so compilation output cannot become unique
+  retained bytes in every runtime generation
 - before cluster readiness and again after the publication/import attempt, the host-Docker cache
   reconciles only canonical dangling image IDs from the exact managed union-runtime repository to
   empty read-back; tagged/foreign images, broad prune, and build-cache deletion are not admitted
@@ -1211,8 +1275,8 @@ Gateway verification lives in five canonical places:
 4. `prodbox test integration gateway-pods` for pod-backed mesh validation and the Sprint `5.16`
    run-wide restart/OOM/high-water recorder, structured continuous monitor, and final stability
    gate.
-5. `prodbox dev tla-check` plus `documents/engineering/tla/gateway_orders_rule.tla`
-   for formal safety checks.
+5. `prodbox dev tla-check` plus `documents/engineering/tla/gateway_orders_rule.tla` and
+   `documents/engineering/tla/gateway_legacy_liveness.tla` for formal safety checks.
 
 Property coverage proves that duplicate or reordered bounded deltas do not increase retained
 cardinality, snapshot repair is semantically equivalent to applying the retained delta sequence,

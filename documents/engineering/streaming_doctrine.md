@@ -252,6 +252,27 @@ signed per-emitter semantic checkpoint plus bounded contiguous suffix when a cur
 the replay window. Duplicate frames are absorbed by an idempotent semantic fold, but the gateway
 does not retain a durable work history or carry the `processed_at` delivery guarantee.
 
+The gateway's signed retention is a byte-level companion to its semantic checkpoint, not an
+independent state authority. After each recovered or peer-supplied signed assertion is inserted,
+the runtime reconciles the signed heartbeat/ownership slots to the already-installed semantic
+checkpoint and retains only the strictly post-checkpoint suffix. This post-insert reconciliation
+is required on restart because semantic restoration can install the terminal checkpoint before
+the signed suffix is replayed; an Orders-migration checkpoint therefore clears pre-migration
+signed evidence before any repair can be emitted.
+
+The pre-cutover legacy liveness frame is a third, narrower class: an HMAC-authenticated latest-only
+observation bound to an exact durable boot-heartbeat coordinate and digest. Its HMAC-covered payload
+also carries the complete signed boot heartbeat, so a receiver whose compacted cursor is at that
+boot or later in the same incarnation/epoch can authenticate the fence without fabricating a
+semantic heartbeat projection. It is neither an event nor signed replay, advances no semantic
+cursor, carries no ownership transition, and has no processing acknowledgement. Each daemon
+retains at most one admitted frame per bounded Orders member. Duplicate delivery is idempotent;
+increasing sequence replaces the slot; a stale, conflicting, timestamp-regressing, wrong-Orders,
+wrong-fence, behind-cursor, or self-delivered frame is refused. Observing a new durable heartbeat
+clears the predecessor slot before it can feed freshness. Initial boot, 60-second periodic
+backend-proof heartbeats, and persistence-first claim/yield transitions remain in the signed
+semantic protocol; only recurring liveness is non-durable.
+
 Do not conflate the two. Durable consumers retain immutable records according to their topic/store
 retention policy and use explicit processing acknowledgements. The gateway retains only bounded hot
 coordination state and bounded replay/diagnostic windows; sending or retaining the complete

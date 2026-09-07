@@ -64,7 +64,9 @@ The build must not pretend to enforce guidance that it cannot actually prove.
 The current supported worktree has started converging on a small shared foundation layer:
 
 - `src/Prodbox/Subprocess.hs` owns structured subprocess construction and the `runStreaming` /
-  `capture` interpreter boundary, backed by `typed-process` inside that boundary only.
+  `capture` interpreter boundary. Captured, bounded, and background paths use `typed-process`
+  inside that boundary; interactive streaming uses `process` there so its calling thread owns the
+  delegated Ctrl-C exit observation.
 - `src/Prodbox/Gateway/Logging.hs` owns structured daemon JSON logging through `co-log`; daemon
   log sites use typed `field` values and threshold-aware emission instead of direct terminal
   writes.
@@ -212,6 +214,28 @@ runStreaming :: Subprocess -> IO (Either AppError ExitCode)
 capture      :: Subprocess -> IO (Either AppError ProcessOutput)
 ```
 
+`runStreaming` preserves process-group Ctrl-C as cancellation and waits for the delegated child
+exit in the calling command thread. Do not move that wait behind a private reaper and an
+exit-observation `TMVar`: `process` delivers delegated `UserInterrupt` synchronously to the thread
+calling `waitForProcess`, so a private waiter can terminate before publishing the observation and
+strand its caller. Captured and bounded paths, which do not delegate Ctrl-C, retain their
+`typed-process` ownership.
+
+A bounded framed exchange that has more than one transport step reports transport failure through
+an exhaustive stage ADT, not one undifferentiated error string. The stage may distinguish only
+value-free interpreter boundaries such as limits validation, input admission, process start,
+framed writes/reads, completion collection, and wall-clock timeout. Domain projection may map those
+constructors to fixed public tokens, but it must not expose the underlying exception, child output,
+payload, or frame bytes. Adding stage evidence is diagnostic only: it does not authorize retrying
+an ambiguous exchange or changing its deadline, cleanup, or protocol semantics.
+
+The same rule applies before a subprocess exchange: retained session allocation/preparation maps
+its structured interpreter error to an exhaustive value-free domain cause before the coordinator
+can log or render it. Do not carry bounded arbitrary `Text` merely because its length is limited;
+bounded private detail is still private detail. When a retained preparation stage contains another
+closed error algebra—such as accessor-audit preclean—the projection preserves that nested stage as
+fixed constructors/tokens rather than collapsing it or exporting its provider detail.
+
 Why this matters:
 
 - Subprocess sequences become deterministic golden-test targets.
@@ -242,11 +266,12 @@ Why this matters:
 
 ### Subprocess environments must be PATH-preserving
 
-`Subprocess.subprocessEnvironment` is `Maybe [(Text, Text)]`, and the interpreter applies it
-with `typed-process`'s `setEnv`, which **replaces** the child environment wholesale — it does
-not merge with the parent's. So a `Just []` (or any list that simply omits `PATH`/`HOME`) hands
-the child process an environment with *no* `PATH`: the vendor CLI cannot resolve its own helper
-binaries, find a credentials file under `$HOME`, or locate anything off the search path.
+`Subprocess.subprocessEnvironment` is `Maybe [(Text, Text)]`. Captured and bounded interpreters
+apply it with `typed-process`'s `setEnv`, while streaming assigns it to `CreateProcess.env`; both
+**replace** the child environment wholesale rather than merging with the parent's. So a `Just []`
+(or any list that simply omits `PATH`/`HOME`) hands the child process an environment with *no*
+`PATH`: the vendor CLI cannot resolve its own helper binaries, find a credentials file under
+`$HOME`, or locate anything off the search path.
 
 Any subprocess that needs auth or path-sensitive state must therefore build its environment by
 *overlaying* the desired keys onto the inherited parent environment, never by handing the child a
@@ -622,6 +647,7 @@ mkRetryPolicy
 **The constructor is hidden (Sprint `1.77`).** A schedule is either one of the named compiled
 values in `Prodbox.Retry` — `componentReadinessRetryPolicy`, `helmTransientRetryPolicy`,
 `customImagePushRetryPolicy`, `daemonRestartBridgeRetryPolicy`,
+`registryReferenceObservationRetryPolicy`,
 `perconaPatroniClaimRetryPolicy`, `patroniClusterReadyRetryPolicy`, `daemonWorkerRetryPolicy` —
 or the result of `mkRetryPolicy`, which rejects a non-positive attempt budget, a negative delay, a
 multiplier below one, a ceiling below the base, and a jitter fraction outside `(0, 1]`. That is
@@ -753,6 +779,17 @@ child-permit enforcement through `Prodbox.Gateway.Bounds`, `Prodbox.Gateway.Chil
 daemon interpreters. Sprint `5.16` owns restart/OOM/high-water observation and the non-blocking live
 soak. Profiling calibrates authored values; it never replaces either nested validation or external
 observation.
+
+The pre-cutover legacy Gateway liveness worker is intentionally outside the subprocess/child
+scheduler: it consumes a committed signed semantic heartbeat as its process-local fence, then
+overwrites one verified `SignedLivenessFrame` per bounded member in STM and peer transport. The
+frame type cannot express a claim or yield; its outer HMAC covers the complete signed boot
+heartbeat, and receiver verification re-enters exact Orders, both event-key checks, the derived
+boot fence, compacted-cursor position, sequence, timestamp, and skew constructors. A recurring
+liveness tick must not call the legacy Model-B interpreter, spawn a child, or loosen the Orders
+timeout. The distinct supervised backend-proof worker may cross the existing Model-B transaction
+on its 60-second cadence, commit a normal semantic heartbeat, and replace the local liveness
+session; it is not part of the recurring liveness tick.
 
 ## Application Environment
 

@@ -11,6 +11,7 @@
 module Prodbox.ControlPlane.TargetSecretWorkerCoordinator
   ( TargetWorkerCreateRecovery (..)
   , TargetWorkerProvisionalOutcome (..)
+  , TargetWorkerSessionPrepareCause (..)
   , TargetWorkerKubernetesBoundary (..)
   , TargetWorkerExecutionBoundary (..)
   , TargetWorkerCoordinatorError (..)
@@ -103,6 +104,36 @@ data TargetWorkerProvisionalOutcome
   | TargetWorkerProvisionalRefused !Text
   deriving stock (Eq, Show)
 
+-- | Closed, value-free projection of retained session allocation/preparation
+-- failures. Production maps interpreter errors into this vocabulary before
+-- they cross the coordinator boundary; Vault, journal, and audit details are
+-- never retained in the diagnostic-bearing error.
+data TargetWorkerSessionPrepareCause
+  = TargetWorkerSessionPrepareJournalWriteFailed
+  | TargetWorkerSessionPrepareJournalUnavailable
+  | TargetWorkerSessionPrepareBindingRoleMismatch
+  | TargetWorkerSessionPrepareRoleOccupied
+  | TargetWorkerSessionPrepareBindingInvalid
+  | TargetWorkerSessionPreparePrecleanIdentityInvalid
+  | TargetWorkerSessionPreparePrecleanAuditorLoginFailed
+  | TargetWorkerSessionPreparePrecleanAuditorEvidenceInvalid
+  | TargetWorkerSessionPreparePrecleanObservationFailed
+  | TargetWorkerSessionPreparePrecleanClassificationFailed
+  | TargetWorkerSessionPreparePrecleanKnownIdentityMismatch
+  | TargetWorkerSessionPreparePrecleanRevocationFailed
+  | TargetWorkerSessionPreparePrecleanVisibilityWaitFailed
+  | TargetWorkerSessionPreparePrecleanStableAbsenceFailed
+  | TargetWorkerSessionPrepareLoginFailedCleaned
+  | TargetWorkerSessionPrepareLoginAmbiguityCleaned
+  | TargetWorkerSessionPrepareAccessorInvalid
+  | TargetWorkerSessionPrepareAccessorIdentityMismatch
+  | TargetWorkerSessionPrepareCleanupFailed
+  | TargetWorkerSessionPrepareCleanupThrew
+  | TargetWorkerSessionPrepareCleanupJournalFailed
+  | TargetWorkerSessionPrepareActionFailed
+  | TargetWorkerSessionPrepareUnhandledException
+  deriving stock (Bounded, Enum, Eq, Show)
+
 data TargetWorkerKubernetesBoundary m = TargetWorkerKubernetesBoundary
   { observeSelectedTargetAgentRollout
       :: m (Either TargetAgentRolloutObservationCause TargetAgentRolloutEvidence)
@@ -150,7 +181,7 @@ data TargetWorkerExecutionBoundary m = TargetWorkerExecutionBoundary
   { prepareTargetWorkerSessionAttempt
       :: TargetAgentRolloutEvidence
       -> TargetWorkerAttestation
-      -> m (Either Text ServiceSessionBinding)
+      -> m (Either TargetWorkerSessionPrepareCause ServiceSessionBinding)
   , authorizeTargetWorkerExecution
       :: AcceptedTargetAuthority
       -> TargetAgentRolloutEvidence
@@ -176,7 +207,7 @@ data TargetWorkerCoordinatorError
   | TargetWorkerCoordinatorWorkloadAbsent
   | TargetWorkerCoordinatorCleanupBindingInvalid
   | TargetWorkerCoordinatorAttestationFailed !TargetWorkerAttestationError
-  | TargetWorkerCoordinatorSessionPrepareFailed !Text
+  | TargetWorkerCoordinatorSessionPrepareFailed !TargetWorkerSessionPrepareCause
   | TargetWorkerCoordinatorPermitUnavailable !Text
   | TargetWorkerCoordinatorPermitRejected !TargetWorkerExecutionPermitError
   | TargetWorkerCoordinatorPermitBindingMismatch
@@ -426,13 +457,13 @@ coordinate boundary execution accepted now agentIdentity target schema image sig
           if isAsyncException exception
             then throwIO exception
             else pure (Left TargetWorkerCoordinatorUnhandledException)
-        Right (Left detail) ->
+        Right (Left cause) ->
           finishWithCleanup
             boundary
             intent
             jobUid
             (Just (podName, podUid))
-            (Left (TargetWorkerCoordinatorSessionPrepareFailed (Text.take 256 detail)))
+            (Left (TargetWorkerCoordinatorSessionPrepareFailed cause))
         Right (Right sessionBinding) -> do
           attempted <- tryAny (restore (dispatch rollout attestation sessionBinding))
           closed <- tryAny (closeTargetWorkerSessionAttempt execution sessionBinding)

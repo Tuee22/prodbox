@@ -14,6 +14,7 @@ module Prodbox.ControlPlane.TargetSecretWorkerRuntime
   , retainedTargetWorkerRewrapBoundary
   , TargetSecretWorkerRuntimeError (..)
   , renderTargetSecretWorkerRuntimeRefusal
+  , targetSecretWorkerTlsApplyRefusalTokens
   , targetSecretWorkerCommitmentKey
   , targetSecretWorkerTrustPath
   , targetWorkerServiceLoginAccepted
@@ -167,6 +168,7 @@ import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   , TlsHomeRewrapResult (..)
   , TlsHomeWrapRequest (..)
   , TlsHomeWrapResult (..)
+  , TlsSecretApplyFailure (..)
   , TlsTargetAgentError (..)
   , TlsTargetPrepareResult (..)
   , TlsTargetRestoreRequest (..)
@@ -324,12 +326,15 @@ data TargetSecretWorkerRuntimeError
   | TargetSecretWorkerTlsRetainProductionBoundaryUnavailable
   | TargetSecretWorkerTlsRetainFailed !TlsTargetAgentError
   | TargetSecretWorkerTlsRetainBadRequest
+  | TargetSecretWorkerTlsRestoreProductionBoundaryUnavailable
+  | TargetSecretWorkerTlsRestoreFailed !TlsTargetAgentError
+  | TargetSecretWorkerTlsRestoreBadRequest
   | TargetSecretWorkerUnhandledException
   deriving stock (Eq, Show)
 
 -- | Closed, value-free refusal carried by the authenticated provisional
--- frame. Existing non-TLS failures retain their rollout token; TLS retain is
--- refined only far enough to select its exact typed failure family.
+-- frame. Existing non-TLS failures retain their rollout token; TLS operations
+-- are refined only far enough to select their exact typed failure family.
 renderTargetSecretWorkerRuntimeRefusal :: TargetSecretWorkerRuntimeError -> Text
 renderTargetSecretWorkerRuntimeRefusal runtimeError = case runtimeError of
   TargetSecretWorkerTlsRetainProductionBoundaryUnavailable ->
@@ -337,6 +342,11 @@ renderTargetSecretWorkerRuntimeRefusal runtimeError = case runtimeError of
   TargetSecretWorkerTlsRetainFailed targetError ->
     "tls-retain/" <> renderTlsTargetAgentError targetError
   TargetSecretWorkerTlsRetainBadRequest -> "tls-retain/bad-request"
+  TargetSecretWorkerTlsRestoreProductionBoundaryUnavailable ->
+    "tls-restore/production-boundary-unavailable"
+  TargetSecretWorkerTlsRestoreFailed targetError ->
+    "tls-restore/" <> renderTlsTargetAgentError targetError
+  TargetSecretWorkerTlsRestoreBadRequest -> "tls-restore/bad-request"
   _ -> "target-worker-materialization-refused"
 
 renderTlsTargetAgentError :: TlsTargetAgentError -> Text
@@ -344,12 +354,49 @@ renderTlsTargetAgentError targetError = case targetError of
   TlsTargetSecretUnavailable -> "secret-unavailable"
   TlsTargetSecretInvalid -> "secret-invalid"
   TlsTargetSecretReadBackMismatch -> "secret-readback-mismatch"
-  TlsTargetSecretApplyFailed -> "secret-apply-failed"
+  TlsTargetSecretApplyFailed failure ->
+    "secret-apply-failed/" <> renderTlsSecretApplyFailure failure
   TlsTargetDekExchangeFailed _ -> "dek-exchange-failed"
   TlsTargetCipherFailed _ -> "cipher-failed"
   TlsTargetCertificateCiphertextInvalid -> "certificate-ciphertext-invalid"
   TlsTargetCertificateCiphertextTooLarge _ _ -> "certificate-ciphertext-too-large"
   TlsTargetReferenceMismatch -> "reference-mismatch"
+
+renderTlsSecretApplyFailure :: TlsSecretApplyFailure -> Text
+renderTlsSecretApplyFailure failure = case failure of
+  TlsSecretApplyInitialObservationUnavailable -> "initial-observation-unavailable"
+  TlsSecretApplyRestoreSlotMissing -> "restore-slot-missing"
+  TlsSecretApplyExistingCorrupt -> "existing-corrupt"
+  TlsSecretApplyExistingContentMismatch -> "existing-content-mismatch"
+  TlsSecretApplyRequestInvalid -> "request-invalid"
+  TlsSecretApplyTransportUnavailable -> "transport-unavailable"
+  TlsSecretApplyBadRequest -> "http-bad-request"
+  TlsSecretApplyUnauthorized -> "http-unauthorized"
+  TlsSecretApplyForbidden -> "http-forbidden"
+  TlsSecretApplyNotFound -> "http-not-found"
+  TlsSecretApplyMethodNotAllowed -> "http-method-not-allowed"
+  TlsSecretApplyConflict -> "http-conflict"
+  TlsSecretApplyUnsupportedMediaType -> "http-unsupported-media-type"
+  TlsSecretApplyUnprocessable -> "http-unprocessable"
+  TlsSecretApplyThrottled -> "http-throttled"
+  TlsSecretApplyServerUnavailable -> "http-server-unavailable"
+  TlsSecretApplyUnexpectedStatus -> "http-unexpected-status"
+  TlsSecretApplyReadBackUnavailable -> "read-back-unavailable"
+  TlsSecretApplyReadBackMissing -> "read-back-missing"
+  TlsSecretApplyReadBackRestoreSlot -> "read-back-restore-slot"
+  TlsSecretApplyReadBackCorrupt -> "read-back-corrupt"
+  TlsSecretApplyReadBackContentMismatch -> "read-back-content-mismatch"
+
+-- | Exact TLS apply tokens which a standing Target Agent may admit from an
+-- authenticated one-shot worker refusal.
+targetSecretWorkerTlsApplyRefusalTokens :: [Text]
+targetSecretWorkerTlsApplyRefusalTokens =
+  [ operation
+      <> "/secret-apply-failed/"
+      <> renderTlsSecretApplyFailure failure
+  | operation <- ["tls-retain", "tls-restore"]
+  , failure <- [minBound .. maxBound]
+  ]
 
 targetSecretWorkerCommitmentKey :: Text
 targetSecretWorkerCommitmentKey = "prodbox-target-secret-commitment"
@@ -585,7 +632,7 @@ executeOperation session rewrap attestation operation = case operation of
   TargetWorkerTlsRestoreInput request -> do
     boundaries <- tlsTargetAgentProductionBoundaries session
     case boundaries of
-      Left _ -> operationRefused
+      Left _ -> pure (Left TargetSecretWorkerTlsRestoreProductionBoundaryUnavailable)
       Right (secretBoundary, _) -> do
         result <-
           restoreTlsAtSelectedAgent
@@ -597,7 +644,8 @@ executeOperation session rewrap attestation operation = case operation of
             (tlsTargetRestoreCertificateCiphertext request)
         pure $ case result of
           TlsTargetRestored receipt -> Right (TargetWorkerTlsRestoredResult receipt)
-          _ -> Left TargetSecretWorkerOperationRefused
+          TlsTargetRestoreFailed err -> Left (TargetSecretWorkerTlsRestoreFailed err)
+          TlsTargetRestoreBadRequest _ -> Left TargetSecretWorkerTlsRestoreBadRequest
   TargetWorkerTlsVerifyInput request -> do
     boundaries <- tlsTargetAgentProductionBoundaries session
     case boundaries of
@@ -610,7 +658,7 @@ executeOperation session rewrap attestation operation = case operation of
         pure $ case result of
           TlsTargetSourceVerified receipt -> Right (TargetWorkerTlsVerifiedResult receipt)
           TlsTargetVerifyMissing -> Right TargetWorkerTlsVerifyMissingResult
-          TlsTargetVerifyMismatch -> Right TargetWorkerTlsVerifyMismatchResult
+          TlsTargetVerifyMismatch cause -> Right (TargetWorkerTlsVerifyMismatchResult cause)
           _ -> Left TargetSecretWorkerOperationRefused
   TargetWorkerFederationCustodyCommitInput supplied ->
     case (validateFederationRegistrationIntent supplied, federationRegistrationTargetAgent supplied) of

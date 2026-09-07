@@ -43,6 +43,9 @@ import Prodbox.ControlPlane.ServiceSessionJournal
   , serviceSessionBindingFence
   , serviceSessionJournalPhase
   )
+import Prodbox.ControlPlane.ServiceSessionLifecycle
+  ( ServiceSessionLifecycleError (..)
+  )
 import Prodbox.ControlPlane.TargetAuthorityTrust
   ( TargetAuthorityTrustInstallError (..)
   , TargetAuthorityTrustInstallResult (..)
@@ -78,11 +81,13 @@ import Prodbox.ControlPlane.TargetSecretWorkerKubernetes
 import Prodbox.ControlPlane.TargetSecretWorkerProduction
   ( classifyTargetAgentRolloutExit
   , classifyTargetWorkerServiceAccountObservation
+  , classifyTargetWorkerSessionPrepareError
   , parseTargetAgentRolloutObservation
   , parseTargetWorkerServiceAccountObservation
   , recoverTargetWorkerCreateWith
   , runtimeImageIdentityMatches
   , targetWorkerActiveAccessorSubject
+  , targetWorkerAttachTransportFailureDetail
   , targetWorkerOutcomeExitMatches
   , targetWorkerRetainedExecutionBoundary
   , targetWorkerRoleWideAccessorSubject
@@ -108,17 +113,21 @@ import Prodbox.ControlPlane.TargetWorkerExecutionPermit
   , verifyTargetWorkerExecutionPermit
   )
 import Prodbox.ControlPlane.TlsDekExchange
-  ( TlsDekTransitBoundary (..)
+  ( TlsDekExchangeError (TlsDekPrivateTokenUnavailable)
+  , TlsDekTransitBoundary (..)
   , prepareTlsDekExchange
   )
 import Prodbox.ControlPlane.TlsTargetAgentEndpoint
-  ( TlsTargetAgentError (..)
+  ( TlsSecretApplyFailure (..)
+  , TlsTargetAgentError (..)
   )
 import Prodbox.ControlPlane.VaultAccessorAudit
-  ( VaultAccessorAuditOps (..)
+  ( VaultAccessorAuditError (..)
+  , VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
   , isBoundedBatchAuditorLogin
   )
+import Prodbox.Crypto.Aead (AeadError (AeadAuthenticationFailed))
 import Prodbox.Lifecycle.CheckpointAuthority (TargetClusterSecretSink)
 import Prodbox.Lifecycle.Decommission.AuthorityExport
   ( AuthorityManifestSigner (..)
@@ -136,7 +145,14 @@ import Prodbox.Lifecycle.TargetCommitIntent
   , sha256TargetValueDigest
   , targetValueDigestText
   )
-import Prodbox.Subprocess (ProcessOutput (..))
+import Prodbox.Subprocess
+  ( BoundedSubprocessLimits (..)
+  , FramedSubprocessExchangeError (..)
+  , FramedSubprocessExchangeTransportStage (..)
+  , ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessFramedExchangeBounded
+  )
 import Prodbox.Vault.Client
   ( TokenAccessorInfo (..)
   , VaultKubernetesLoginResult (..)
@@ -200,8 +216,18 @@ controlPlaneTargetSecretWorkerSuite =
       let diagnostic detail =
             renderTargetWorkerCoordinatorDiagnostic
               (TargetWorkerCoordinatorAttachFailed detail)
-      diagnostic "Target worker attach transport failed"
-        `shouldBe` "attach-failed/transport-unavailable"
+      map
+        (diagnostic . targetWorkerAttachTransportFailureDetail)
+        ([minBound .. maxBound] :: [FramedSubprocessExchangeTransportStage])
+        `shouldBe` [ "attach-failed/limits-invalid"
+                   , "attach-failed/initial-payload-invalid"
+                   , "attach-failed/process-start-unavailable"
+                   , "attach-failed/initial-payload-write-unavailable"
+                   , "attach-failed/provisional-read-unavailable"
+                   , "attach-failed/decision-continuation-write-unavailable"
+                   , "attach-failed/completion-collection-unavailable"
+                   , "attach-failed/wall-clock-timeout"
+                   ]
       diagnostic "Target worker cleanup acknowledgement is invalid"
         `shouldBe` "attach-failed/cleanup-ack-invalid"
       diagnostic "Target worker terminal status is inconsistent"
@@ -209,11 +235,140 @@ controlPlaneTargetSecretWorkerSuite =
       diagnostic "private-detail-a" `shouldBe` "attach-failed/other"
       diagnostic "private-detail-b" `shouldBe` "attach-failed/other"
 
-    it "refines only closed value-free TLS-retain worker refusals" $ do
+    it "refines retained session preparation to one closed value-free stage" $ do
+      let causes = [minBound .. maxBound] :: [TargetWorkerSessionPrepareCause]
+          diagnostic =
+            renderTargetWorkerCoordinatorDiagnostic
+              . TargetWorkerCoordinatorSessionPrepareFailed
+      map diagnostic causes
+        `shouldBe` [ "session-prepare-failed/journal-write-failed"
+                   , "session-prepare-failed/journal-unavailable"
+                   , "session-prepare-failed/binding-role-mismatch"
+                   , "session-prepare-failed/role-occupied"
+                   , "session-prepare-failed/binding-invalid"
+                   , "session-prepare-failed/preclean/identity-invalid"
+                   , "session-prepare-failed/preclean/auditor-login-failed"
+                   , "session-prepare-failed/preclean/auditor-evidence-invalid"
+                   , "session-prepare-failed/preclean/observation-failed"
+                   , "session-prepare-failed/preclean/classification-failed"
+                   , "session-prepare-failed/preclean/known-identity-mismatch"
+                   , "session-prepare-failed/preclean/revocation-failed"
+                   , "session-prepare-failed/preclean/visibility-wait-failed"
+                   , "session-prepare-failed/preclean/stable-absence-failed"
+                   , "session-prepare-failed/login-failed-cleaned"
+                   , "session-prepare-failed/login-ambiguity-cleaned"
+                   , "session-prepare-failed/accessor-invalid"
+                   , "session-prepare-failed/accessor-identity-mismatch"
+                   , "session-prepare-failed/cleanup-failed"
+                   , "session-prepare-failed/cleanup-threw"
+                   , "session-prepare-failed/cleanup-journal-failed"
+                   , "session-prepare-failed/action-failed"
+                   , "session-prepare-failed/unhandled-exception"
+                   ]
+      classifyTargetWorkerSessionPrepareError
+        (ServiceSessionLifecycleJournalUnavailable "private-detail-a")
+        `shouldBe` TargetWorkerSessionPrepareJournalUnavailable
+      classifyTargetWorkerSessionPrepareError
+        (ServiceSessionLifecycleJournalUnavailable "private-detail-b")
+        `shouldBe` TargetWorkerSessionPrepareJournalUnavailable
+      classifyTargetWorkerSessionPrepareError
+        (ServiceSessionLifecycleActionFailed "private-detail")
+        `shouldBe` TargetWorkerSessionPrepareActionFailed
+      map
+        ( classifyTargetWorkerSessionPrepareError
+            . ServiceSessionLifecyclePrecleanFailed
+        )
+        [ VaultAccessorAuditIdentityInvalid
+        , VaultAccessorAuditorLoginFailed
+        , VaultAccessorAuditorEvidenceInvalid
+        , VaultAccessorObservationFailed
+        , VaultAccessorClassificationFailed
+        , VaultAccessorKnownIdentityMismatch
+        , VaultAccessorRevocationFailed
+        , VaultAccessorVisibilityWaitFailed
+        , VaultAccessorStableAbsenceFailed
+        ]
+        `shouldBe` [ TargetWorkerSessionPreparePrecleanIdentityInvalid
+                   , TargetWorkerSessionPreparePrecleanAuditorLoginFailed
+                   , TargetWorkerSessionPreparePrecleanAuditorEvidenceInvalid
+                   , TargetWorkerSessionPreparePrecleanObservationFailed
+                   , TargetWorkerSessionPreparePrecleanClassificationFailed
+                   , TargetWorkerSessionPreparePrecleanKnownIdentityMismatch
+                   , TargetWorkerSessionPreparePrecleanRevocationFailed
+                   , TargetWorkerSessionPreparePrecleanVisibilityWaitFailed
+                   , TargetWorkerSessionPreparePrecleanStableAbsenceFailed
+                   ]
+
+    it "classifies a worker exit before its provisional frame at the closed read stage" $ do
+      result <-
+        captureSubprocessFramedExchangeBounded
+          (BoundedSubprocessLimits 64 64 64 1000000)
+          "frame"
+          (\_ -> pure (Right (ByteString.empty, ())))
+          (Subprocess "/bin/sh" ["-c", "head -c 9 >/dev/null"] Nothing Nothing)
+          :: IO
+               ( Either
+                   (FramedSubprocessExchangeError ())
+                   ((), ProcessOutput)
+               )
+      case result of
+        Left (FramedSubprocessExchangeTransportError FramedExchangeProvisionalRead _) ->
+          pure ()
+        _ -> expectationFailure "expected closed provisional-read transport stage"
+
+    it "refines only closed value-free TLS worker refusals" $ do
       let runtimeToken = renderTargetSecretWorkerRuntimeRefusal
           diagnostic detail =
             renderTargetWorkerCoordinatorDiagnostic
               (TargetWorkerCoordinatorMaterializationRefused detail)
+          restoreCases =
+            [ (TlsTargetSecretUnavailable, "secret-unavailable")
+            , (TlsTargetSecretInvalid, "secret-invalid")
+            , (TlsTargetSecretReadBackMismatch, "secret-readback-mismatch")
+            ,
+              ( TlsTargetDekExchangeFailed TlsDekPrivateTokenUnavailable
+              , "dek-exchange-failed"
+              )
+            ,
+              ( TlsTargetCipherFailed AeadAuthenticationFailed
+              , "cipher-failed"
+              )
+            ,
+              ( TlsTargetCertificateCiphertextInvalid
+              , "certificate-ciphertext-invalid"
+              )
+            ,
+              ( TlsTargetCertificateCiphertextTooLarge 1 2
+              , "certificate-ciphertext-too-large"
+              )
+            , (TlsTargetReferenceMismatch, "reference-mismatch")
+            ]
+          applyFailureTokens =
+            [ "initial-observation-unavailable"
+            , "restore-slot-missing"
+            , "existing-corrupt"
+            , "existing-content-mismatch"
+            , "request-invalid"
+            , "transport-unavailable"
+            , "http-bad-request"
+            , "http-unauthorized"
+            , "http-forbidden"
+            , "http-not-found"
+            , "http-method-not-allowed"
+            , "http-conflict"
+            , "http-unsupported-media-type"
+            , "http-unprocessable"
+            , "http-throttled"
+            , "http-server-unavailable"
+            , "http-unexpected-status"
+            , "read-back-unavailable"
+            , "read-back-missing"
+            , "read-back-restore-slot"
+            , "read-back-corrupt"
+            , "read-back-content-mismatch"
+            ]
+          applyFailures = [minBound .. maxBound] :: [TlsSecretApplyFailure]
+          applyCases = zip applyFailures applyFailureTokens
       runtimeToken TargetSecretWorkerTlsRetainProductionBoundaryUnavailable
         `shouldBe` "tls-retain/production-boundary-unavailable"
       runtimeToken (TargetSecretWorkerTlsRetainFailed TlsTargetSecretUnavailable)
@@ -227,6 +382,22 @@ controlPlaneTargetSecretWorkerSuite =
         `shouldBe` "tls-retain/bad-request"
       diagnostic "tls-retain/secret-unavailable"
         `shouldBe` "materialization-refused/tls-retain/secret-unavailable"
+      runtimeToken TargetSecretWorkerTlsRestoreProductionBoundaryUnavailable
+        `shouldBe` "tls-restore/production-boundary-unavailable"
+      runtimeToken TargetSecretWorkerTlsRestoreBadRequest
+        `shouldBe` "tls-restore/bad-request"
+      forM_ restoreCases $ \(targetError, expected) -> do
+        let refusal = "tls-restore/" <> expected
+        runtimeToken (TargetSecretWorkerTlsRestoreFailed targetError)
+          `shouldBe` refusal
+        diagnostic refusal `shouldBe` ("materialization-refused/" <> refusal)
+      length applyFailures `shouldBe` length applyFailureTokens
+      forM_ applyCases $ \(failure, expected) -> do
+        let refusal = "tls-restore/secret-apply-failed/" <> expected
+        runtimeToken
+          (TargetSecretWorkerTlsRestoreFailed (TlsTargetSecretApplyFailed failure))
+          `shouldBe` refusal
+        diagnostic refusal `shouldBe` ("materialization-refused/" <> refusal)
       diagnostic "target-worker-materialization-refused"
         `shouldBe` "materialization-refused"
       diagnostic "private-detail-a" `shouldBe` "materialization-refused/other"
@@ -872,7 +1043,7 @@ controlPlaneTargetSecretWorkerSuite =
           workerAgentRollout
           attestation
       binding <- case prepared of
-        Left detail -> expectationFailure (Text.unpack detail) >> pure (workerSessionBinding attestation)
+        Left cause -> expectationFailure (show cause) >> pure (workerSessionBinding attestation)
         Right value -> pure value
       readIORef events
         `shouldReturn` [ "journal:acquiring"

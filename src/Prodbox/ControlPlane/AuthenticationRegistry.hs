@@ -206,6 +206,7 @@ controlPlaneRouteCallerTopology =
   , row AuthorityBackupObserve [authority]
   , row TlsRetentionStore [authority, targetAgent]
   , row TlsRetentionRestore [authority, targetAgent]
+  , (TlsRetentionObserveVersion, [authority])
   , row TargetMaterialObserve [authority, CallerCredentialProvisioner]
   , row TargetSecretDecommissionInventory [authority]
   , row TargetSecretDecommissionTombstone [authority]
@@ -222,6 +223,7 @@ controlPlaneRouteCallerTopology =
   , (TargetTlsRestore, [authority])
   , (TargetTlsVerifySource, [authority])
   , row LifecycleTlsRetentionObserve [authority]
+  , row LifecycleTlsRetentionStage [authority]
   , row LifecycleTlsRetentionPromote [authority]
   , row LifecycleTlsRetentionWorkflow []
   , row LifecyclePulumiCheckpoint [providerWorker]

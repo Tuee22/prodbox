@@ -171,6 +171,8 @@ constructor. Required control-plane tables include:
   pending/current/per-target/superseded/tombstone transition;
 - target generation duplicate/regression/digest conflict;
 - retry classification and remaining-deadline refusal;
+- public-edge subprocess readiness classification: ready, successful pending, exact transient
+  home Gateway-DNS authority convergence, and unrelated terminal failure;
 - stability warning/failure/absorbing transitions; and
 - cleanup `RequiresAttempt`/`RequiresSuccess` scheduling and aggregation.
 
@@ -467,6 +469,13 @@ Authority before descriptor submission. Tests therefore place the pre-mutation a
 first operation capable of creating a selected per-run AWS resource: registration and claim are
 independently re-observable before IAM setup or later AWS mutation. A test must not demand the
 cascade-only host-uninstall record on the `ExplicitPerRun` surface.
+
+The Provider Worker ephemeral-storage regression is a typed frozen causal profile, not a raised
+limit. It records the exact production rootfs/path observations, the unchanged old-to-new resource
+envelope, one serialized registered-stack reconcile, and no injected fault. Mutation cases must
+fail when the old peak no longer exceeds 256 MiB, either envelope changes, or runtime provider
+archive/binary writes return. Separate source assertions bind the image's exact version/checksums
+to all four Pulumi project package declarations; live qualification still proves the complete Pod.
 
 For destructive lifecycle commands, dry-run goldens derive their resource steps from the managed
 resource registry and use the same closed program as apply. Their oracle keeps exact provider

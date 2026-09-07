@@ -36,8 +36,8 @@ The `aws_admin_for_test_simulation` fixture exists for:
 6. genesis/rotation/decommission coverage for LongLived Authority-backup, home Gateway-DNS/home
    DNS01, and TLS-retention identities; ordinary setup/teardown for Operational Lifecycle-provider
    and AWS DNS01; deterministic LongLived SMTP IAM identity/policy/key-family provisioning and
-   repair plus retained-home SMTP source custody/rewrap; and operation-specific non-credential roles such as
-   `prodbox-ses-lease-session`
+   repair plus retained-home SMTP source custody/rewrap; and the sole registered non-credential
+   Provider role `prodbox-lifecycle-provider`
 
 Normal runtime commands resolve the distinct identity generation for their exact operation (see
 §"AWS credentials under Vault"). Canonical `aws-ses reconcile` uses the Lifecycle-provider identity
@@ -141,8 +141,8 @@ When `prodbox test integration aws-iam`, targeted
    Provisioner, explicit Admin Action Runner, or post-export Decommission Runner selected by the
    committed permit; it is never a discovery fallback, Provider Worker input, or runtime identity
 3. observes/retains LongLived backup/home identities, the SMTP IAM family, and its source custody;
-   reconciles only required Operational Lifecycle-provider/AWS-DNS01 identities plus exact roles
-   such as `prodbox-ses-lease-session`; and invokes SMTP material mutation only under its distinct
+   reconciles only required Operational Lifecycle-provider/AWS-DNS01 identities plus the exact
+   account-bound `prodbox-lifecycle-provider` role; and invokes SMTP material mutation only under its distinct
    `OperatorMaterialPermit`
 4. commits each access-key create intent first; only Credential Provisioner may create/rotate/remint
    or repair-delete. If AWS applies create but the one-time secret response is lost, it deletes the
@@ -295,13 +295,25 @@ ordered lifecycle.
    or IAM-key rotation. Closed `AcmeEabSource` follows the same retained-home custody/rewrap shape
    under its own schema-indexed `OperatorMaterialPermit`, but its values arrive through a separate
    externally supplied linear ingress—not the AWS admin prompt and not `config setup`. `prodbox.dhall` carries
-   only non-secret coordinates.
+   only non-secret coordinates. In a cluster-backed automated recovery, the pre-Gateway
+   Lifecycle-provider repair is triggered through the retained bootstrap-core operator caller while
+   preserving the harness's stable cycle scope and simulated prompt. The canonical, secret-free
+   Lifecycle-provider role-policy digest revisions that scope before durable operation lookup. An
+   unchanged policy replays the same receipt; a changed policy selects a successor operation and
+   ordinary next Target generation, which must put and exactly read back the new role policy before
+   key creation. A completed operation is never reinterpreted or mutated under new policy code. The
+   Gateway-owned harness caller remains removable with Gateway and is not a prerequisite for
+   restoring the credential needed by the ordinary reconcile graph.
 4. **Validate.** The harness binds one operation-indexed Lifecycle Authority `CapabilityRef` and
    uses it unchanged for observation, admission, and execution. Canonical `aws-ses reconcile`
    submits a durable operation ID; a lost response is recovered by observing that ID. The base
-   Lifecycle-provider identity is used only to assume `prodbox-ses-lease-session` for a narrow
-   non-credential provider fence over registered SES/S3/DNS resources, with a session bounded by
-   the operation's absolute deadline and the role's 3,600-second maximum. SMTP IAM/key work uses
+   Lifecycle-provider identity is used only to assume the account-bound
+   `prodbox-lifecycle-provider` role deterministically selected by the closed intent for a narrow
+   non-credential provider fence over registered SES/S3/DNS resources. Native STS validates both
+   the base-user and assumed-role ARNs before any capability runs. Its fixed 900-second remote
+   credential duration does not widen the operation: the opaque handle and temporary subprocess
+   projection cannot escape the rank-2 callback, and effect work remains bounded by the absolute
+   deadline. SMTP IAM/key work uses
    only the Credential Provisioner path in step 3. Propagation waiting and Target Secret Agent
    outbox delivery hold no mutation session. The base identity is not passed to Pulumi/AWS mutation
    children.
@@ -365,7 +377,7 @@ property of the operation:
 
 | Operation | Identity |
 |-----------|----------|
-| Pulumi, SES, EBS, or explicit AWS-edge provider intent | `Operational` Lifecycle-provider identity, narrowed through the exact role committed in the intent |
+| Pulumi, SES, EBS, or explicit AWS-edge provider intent | `Operational` Lifecycle-provider base identity, narrowed through native STS to the sole account-bound registered role deterministically selected by the closed intent |
 | Home public A-record observe/ensure/delete/read-back | `LongLived` Gateway-DNS identity scoped to the registered account/zone/name/type |
 | DNS01 TXT work on one substrate | That substrate's cert-manager-DNS01 identity: `LongLived` on home, `Operational` on AWS |
 | Authority backup S3 copies | LongLived Authority-backup-store identity, consumed only by Backup Adapter |
@@ -383,8 +395,8 @@ same prompt, reconciles run-scoped identities, and observes retained identities 
 them through ordinary cleanup.
 
 The long-lived `aws-ses` reconcile submits a durable operation to the retained Lifecycle Authority
-and uses the Lifecycle-provider identity only to assume the exact
-`prodbox-ses-lease-session` role for a narrow non-credential SES/S3/DNS mutation fence. A separate
+and uses the Lifecycle-provider identity only to assume the exact account-bound
+`prodbox-lifecycle-provider` role for a narrow non-credential SES/S3/DNS mutation fence. A separate
 `OperatorMaterialPermit` sends deterministic SMTP IAM identity/policy/key-family work only to
 Credential Provisioner. That Provisioner commits the generation only after it has derived the
 region-bound closed `SesSmtpSource`, discarded raw AWS secret-access-key bytes, and obtained its
@@ -405,7 +417,7 @@ distinguish *who answers the prompt*, not separate credential stores:
 |----------------|-----------------|-------------|
 | Standalone substrate provisioning | **Public prompt path**: with retained local RKE2 and Lifecycle Authority already serving, submit mode-indexed permits to the attested Credential Provisioner, seal/read back ordinary keys at their exact consumer and SMTP `SesSmtpSource` at retained-home custody, then discard admin material. Ordinary teardown removes only Operational identities. | `prodbox cluster reconcile` first; `prodbox aws setup` starts the AWS window; `prodbox aws teardown` ends it |
 | Suite-driven runs | **Test-harness simulation path**: feed `aws_admin_for_test_simulation.*` from `test-secrets.dhall` to the same permit-bound Jobs, register cleanup before mutation, revoke Operational identities only after their dependants are absent, and retain the LongLived set. | `prodbox test integration aws-iam`, `prodbox test integration keycloak-invite`, `prodbox test integration <name> --substrate aws`, `prodbox test integration all`, `prodbox test all` |
-| Canonical retained desired-present operation | **Split provider/material path**: submit one durable operation ID; Provider Worker assumes only `prodbox-ses-lease-session` for non-credential SES/S3/DNS, while Credential Provisioner receives separate `OperatorMaterialPermit`s for the deterministic SMTP IAM family and commits only after retained-home source custody. One absolute deadline bounds queue and effect work; propagation and attested Agent-to-Agent target materialization hold no AWS session and expose no generic export. | `prodbox aws stack aws-ses reconcile` |
+| Canonical retained desired-present operation | **Split provider/material path**: submit one durable operation ID; Provider Worker assumes only the account-bound `prodbox-lifecycle-provider` role for non-credential SES/S3/DNS, while Credential Provisioner receives separate `OperatorMaterialPermit`s for the deterministic SMTP IAM family and commits only after retained-home source custody. One absolute deadline bounds queue and effect work; propagation and attested Agent-to-Agent target materialization hold no AWS session and expose no generic export. | `prodbox aws stack aws-ses reconcile` |
 | Long-lived destructive/compatibility operations | **Admin Action Runner prompt path**: after consumers quiesce, `DestroyAwsSes` deletes/read-backs the exact registered SMTP IAM family and composes it with non-credential stack absence; while Agents remain live, every owned target/retained-home custody KV-v2 version is then physically destroyed and its metadata deleted/read back. `migrate-backend`, retained-store compatibility, and quota request/status read-back use their own exact `AdminActionPermit`. `prodbox nuke` uses the same external-first/Agent-physical-deletion ordering through its standalone Decommission Runner only after signed external-receipt export; neither path is a generic secret export. | `prodbox aws stack aws-ses destroy --yes`, `prodbox aws stack aws-ses migrate-backend`, `prodbox aws quotas request`, `prodbox nuke` |
 
 These paths remain distinct even when one suite uses all of them. A standalone substrate run first

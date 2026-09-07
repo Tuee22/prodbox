@@ -22,6 +22,7 @@ import Prodbox.Capacity.Config qualified as C
 import Prodbox.Capacity.Derivation qualified as D
 import Prodbox.Capacity.MeasuredProfile qualified as M
 import Prodbox.Capacity.ObservedHost qualified as Observed
+import Prodbox.Capacity.OneShotWorkerSchedulerBudget qualified as Scheduler
 import Prodbox.Capacity.Placement qualified as Placement
 import Prodbox.Capacity.Render qualified as Render
 import Prodbox.Substrate (Substrate (..))
@@ -295,6 +296,7 @@ allocationSuite =
             supersededPlan =
               C.defaultResourcePlan
                 { C.rke2_reserved = C.ResourceVector 1000 2048 10240 1024
+                , C.eviction_floor = C.ResourceVector 500 1024 10240 1024
                 , C.workload_profiles =
                     filter
                       ((`notElem` workerProfileIds) . C.profile_id)
@@ -333,6 +335,46 @@ allocationSuite =
           )
           `shouldSatisfy` (<= correctedNodeAllocatableMilliCpu)
         compileResourcePlanUncertified C.defaultResourcePlan `shouldSatisfy` isRightOutcome
+
+      it "AWS-ADMIN-REVISIONED-TARGET-WORKER-INSUFFICIENT-CPU-2026-09-06" $ do
+        let counterexample = Scheduler.frozenOneShotWorkerSchedulerCounterexample
+            closure =
+              either
+                (error . show)
+                id
+                (Scheduler.validateOneShotWorkerSchedulerCounterexample counterexample)
+        Scheduler.oneShotWorkerSchedulerOldToNewTotal closure
+          `shouldBe` ( C.ResourceVector 7210 12544 35424 157696
+                     , C.ResourceVector 7210 12544 35424 157696
+                     )
+        Scheduler.oneShotWorkerSchedulerSupersededDisposition closure
+          `shouldBe` Scheduler.OneShotWorkerSchedulerInsufficientCpu 7745 7500 245
+        Scheduler.oneShotWorkerSchedulerReplacementDisposition closure
+          `shouldBe` Scheduler.OneShotWorkerSchedulerAdmitted 7745 7750 5
+        Scheduler.oneShotWorkerSchedulerOldToNewSystemdCpuBudget closure
+          `shouldBe` (1000, 1000)
+        C.rke2_reserved C.defaultResourcePlan `shouldBe` C.ResourceVector 250 1536 9728 1024
+        C.eviction_floor C.defaultResourcePlan `shouldBe` C.ResourceVector 750 1024 10240 1024
+
+      it "rejects one-shot scheduler counterexample drift" $ do
+        let counterexample = Scheduler.frozenOneShotWorkerSchedulerCounterexample
+            replacementPlan = Scheduler.oneShotWorkerSchedulerReplacementPlan counterexample
+            mutations =
+              [ counterexample {Scheduler.oneShotWorkerSchedulerIdentity = "drift"}
+              , counterexample {Scheduler.oneShotWorkerSchedulerStandingRequestMilliCpu = 7244}
+              , counterexample {Scheduler.oneShotWorkerSchedulerOverlappingWorkers = 1}
+              , counterexample
+                  { Scheduler.oneShotWorkerSchedulerReplacementPlan =
+                      replacementPlan
+                        { C.rke2_reserved = C.ResourceVector 500 1536 9728 1024
+                        }
+                  }
+              ]
+        mapM_
+          ( (`shouldSatisfy` isLeftOutcome)
+              . Scheduler.validateOneShotWorkerSchedulerCounterexample
+          )
+          mutations
 
       it "makes a non-Guaranteed envelope unrepresentable for a Guaranteed demand" $ do
         let badPlan =

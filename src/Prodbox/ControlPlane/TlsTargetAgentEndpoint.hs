@@ -12,6 +12,7 @@
 module Prodbox.ControlPlane.TlsTargetAgentEndpoint
   ( TlsPublicEdgeSecret
   , TlsSecretObservation (..)
+  , TlsSecretApplyFailure (..)
   , TlsSecretBoundary (..)
   , TlsTargetPrepareResult (..)
   , TlsTargetRetainRequest (..)
@@ -26,6 +27,7 @@ module Prodbox.ControlPlane.TlsTargetAgentEndpoint
   , TlsTargetRestoreResult (..)
   , TlsTargetVerifyRequest (..)
   , TlsTargetVerifyReceipt (..)
+  , TlsTargetVerifyMismatchCause (..)
   , TlsTargetVerifyResult (..)
   , TlsTargetAgentError (..)
   , tlsTargetMaximumRequestBytes
@@ -59,6 +61,7 @@ module Prodbox.ControlPlane.TlsTargetAgentEndpoint
   , tlsTargetRestoreResponseBody
   , tlsTargetVerifyHttpStatus
   , tlsTargetVerifyResponseBody
+  , renderTlsTargetVerifyMismatchCause
   )
 where
 
@@ -131,15 +134,44 @@ instance Show TlsPublicEdgeSecret where
 
 data TlsSecretObservation
   = TlsSecretMissing
+  | TlsSecretRestoreSlot !Text
   | TlsSecretPresent !TlsPublicEdgeSecret
   | TlsSecretCorrupt !Text
   deriving stock (Eq, Show)
+
+-- | Closed, value-free stage of an exact public-edge Secret apply failure.
+-- Kubernetes bodies, exception text, object values, and response codes cannot
+-- enter the durable or protected diagnostic path.
+data TlsSecretApplyFailure
+  = TlsSecretApplyInitialObservationUnavailable
+  | TlsSecretApplyRestoreSlotMissing
+  | TlsSecretApplyExistingCorrupt
+  | TlsSecretApplyExistingContentMismatch
+  | TlsSecretApplyRequestInvalid
+  | TlsSecretApplyTransportUnavailable
+  | TlsSecretApplyBadRequest
+  | TlsSecretApplyUnauthorized
+  | TlsSecretApplyForbidden
+  | TlsSecretApplyNotFound
+  | TlsSecretApplyMethodNotAllowed
+  | TlsSecretApplyConflict
+  | TlsSecretApplyUnsupportedMediaType
+  | TlsSecretApplyUnprocessable
+  | TlsSecretApplyThrottled
+  | TlsSecretApplyServerUnavailable
+  | TlsSecretApplyUnexpectedStatus
+  | TlsSecretApplyReadBackUnavailable
+  | TlsSecretApplyReadBackMissing
+  | TlsSecretApplyReadBackRestoreSlot
+  | TlsSecretApplyReadBackCorrupt
+  | TlsSecretApplyReadBackContentMismatch
+  deriving stock (Bounded, Enum, Eq, Show)
 
 data TlsSecretBoundary m = TlsSecretBoundary
   { readExactPublicEdgeTlsSecret :: m (Either Text TlsSecretObservation)
   , applyExactPublicEdgeTlsSecret
       :: TlsPublicEdgeSecret
-      -> m (Either Text TlsPublicEdgeSecret)
+      -> m (Either TlsSecretApplyFailure TlsPublicEdgeSecret)
   }
 
 data TlsTargetPrepareResult
@@ -239,10 +271,19 @@ data TlsTargetVerifyReceipt = TlsTargetVerifyReceipt
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- | The exact value-free dimension that changed between the retained
+-- candidate and its required pre-promotion source re-observation.
+data TlsTargetVerifyMismatchCause
+  = TlsTargetVerifySourceMismatch
+  | TlsTargetVerifyCertificateMismatch
+  | TlsTargetVerifySourceAndCertificateMismatch
+  deriving stock (Bounded, Enum, Eq, Generic, Show)
+  deriving anyclass (Serialise)
+
 data TlsTargetVerifyResult
   = TlsTargetSourceVerified !TlsTargetVerifyReceipt
   | TlsTargetVerifyMissing
-  | TlsTargetVerifyMismatch
+  | TlsTargetVerifyMismatch !TlsTargetVerifyMismatchCause
   | TlsTargetVerifyFailed !TlsTargetAgentError
   | TlsTargetVerifyBadRequest !ControlPlaneRequestCodecError
   deriving stock (Eq, Show)
@@ -251,7 +292,7 @@ data TlsTargetAgentError
   = TlsTargetSecretUnavailable
   | TlsTargetSecretInvalid
   | TlsTargetSecretReadBackMismatch
-  | TlsTargetSecretApplyFailed
+  | TlsTargetSecretApplyFailed !TlsSecretApplyFailure
   | TlsTargetDekExchangeFailed !TlsDekExchangeError
   | TlsTargetCipherFailed !AeadError
   | TlsTargetCertificateCiphertextInvalid
@@ -340,6 +381,7 @@ retainTlsAtSelectedAgent secretBoundary version homePublicKey = do
   case observed of
     Left _ -> pure (TlsTargetRetainFailed TlsTargetSecretUnavailable)
     Right TlsSecretMissing -> pure TlsTargetRetainMissing
+    Right (TlsSecretRestoreSlot _) -> pure TlsTargetRetainMissing
     Right (TlsSecretCorrupt _) -> pure (TlsTargetRetainFailed TlsTargetSecretInvalid)
     Right (TlsSecretPresent secret) -> do
       dek <- getRandomBytes 32
@@ -429,7 +471,8 @@ restoreTlsAtSelectedAgent secretBoundary transit reference prepared dekEnvelope 
               | otherwise -> do
                   applied <- applyExactPublicEdgeTlsSecret secretBoundary secret
                   pure $ case applied of
-                    Left _ -> TlsTargetRestoreFailed TlsTargetSecretApplyFailed
+                    Left failure ->
+                      TlsTargetRestoreFailed (TlsTargetSecretApplyFailed failure)
                     Right readBack
                       | secretContent readBack /= secretContent secret ->
                           TlsTargetRestoreFailed TlsTargetSecretReadBackMismatch
@@ -453,12 +496,17 @@ verifyTlsSourceAtSelectedAgent secretBoundary reference = do
   pure $ case observed of
     Left _ -> TlsTargetVerifyFailed TlsTargetSecretUnavailable
     Right TlsSecretMissing -> TlsTargetVerifyMissing
+    Right (TlsSecretRestoreSlot _) -> TlsTargetVerifyMissing
     Right (TlsSecretCorrupt _) -> TlsTargetVerifyFailed TlsTargetSecretInvalid
-    Right (TlsSecretPresent secret)
-      | tlsPublicEdgeSecretSource secret /= retainedSourceSecret reference
-          || tlsPublicEdgeSecretCertificate secret /= retainedCert reference ->
-          TlsTargetVerifyMismatch
-      | otherwise ->
+    Right (TlsSecretPresent secret) ->
+      case ( tlsPublicEdgeSecretSource secret == retainedSourceSecret reference
+           , tlsPublicEdgeSecretCertificate secret == retainedCert reference
+           ) of
+        (False, True) -> TlsTargetVerifyMismatch TlsTargetVerifySourceMismatch
+        (True, False) -> TlsTargetVerifyMismatch TlsTargetVerifyCertificateMismatch
+        (False, False) ->
+          TlsTargetVerifyMismatch TlsTargetVerifySourceAndCertificateMismatch
+        (True, True) ->
           TlsTargetSourceVerified
             TlsTargetVerifyReceipt
               { tlsTargetVerifiedCertificate = tlsPublicEdgeSecretCertificate secret
@@ -603,7 +651,7 @@ tlsHomeRewrapResponseBody result = case result of
 tlsTargetRestoreHttpStatus :: TlsTargetRestoreResult -> ReplyStatus
 tlsTargetRestoreHttpStatus result = case result of
   TlsTargetRestored _ -> ReplyOk
-  TlsTargetRestoreFailed TlsTargetSecretApplyFailed -> ReplyServiceUnavailable
+  TlsTargetRestoreFailed (TlsTargetSecretApplyFailed _) -> ReplyServiceUnavailable
   TlsTargetRestoreFailed TlsTargetSecretUnavailable -> ReplyServiceUnavailable
   TlsTargetRestoreFailed _ -> ReplyConflict
   TlsTargetRestoreBadRequest _ -> ReplyBadRequest
@@ -619,7 +667,7 @@ tlsTargetVerifyHttpStatus :: TlsTargetVerifyResult -> ReplyStatus
 tlsTargetVerifyHttpStatus result = case result of
   TlsTargetSourceVerified _ -> ReplyOk
   TlsTargetVerifyMissing -> ReplyNotFound
-  TlsTargetVerifyMismatch -> ReplyConflict
+  TlsTargetVerifyMismatch _ -> ReplyConflict
   TlsTargetVerifyFailed TlsTargetSecretUnavailable -> ReplyServiceUnavailable
   TlsTargetVerifyFailed _ -> ReplyConflict
   TlsTargetVerifyBadRequest _ -> ReplyBadRequest
@@ -628,10 +676,18 @@ tlsTargetVerifyResponseBody :: TlsTargetVerifyResult -> ByteString
 tlsTargetVerifyResponseBody result = case result of
   TlsTargetSourceVerified receipt -> strictResponse receipt
   TlsTargetVerifyMissing -> "tls-target-verify:missing"
-  TlsTargetVerifyMismatch -> "tls-target-verify:mismatch"
+  TlsTargetVerifyMismatch cause ->
+    TextEncoding.encodeUtf8
+      ("tls-target-verify:mismatch/" <> renderTlsTargetVerifyMismatchCause cause)
   TlsTargetVerifyFailed _ -> "tls-target-verify:failed"
   TlsTargetVerifyBadRequest err ->
     TextEncoding.encodeUtf8 ("tls-target-verify:bad-request:" <> controlPlaneRequestCodecToken err)
+
+renderTlsTargetVerifyMismatchCause :: TlsTargetVerifyMismatchCause -> Text
+renderTlsTargetVerifyMismatchCause cause = case cause of
+  TlsTargetVerifySourceMismatch -> "source"
+  TlsTargetVerifyCertificateMismatch -> "certificate"
+  TlsTargetVerifySourceAndCertificateMismatch -> "source-and-certificate"
 
 strictResponse :: (Serialise value) => value -> ByteString
 strictResponse = LazyByteString.toStrict . encodeControlPlaneResponse

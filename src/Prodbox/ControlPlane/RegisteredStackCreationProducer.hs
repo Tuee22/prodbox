@@ -68,21 +68,30 @@ import Prodbox.ControlPlane.RegisteredStackGenerationRepository
   , ReservedStackGeneration (..)
   , StackGenerationCursorRepository
   , commitRegisteredStackGenerationWithRepair
+  , committedRegisteredStackGeneration
   , renderRegisteredStackGenerationError
   , reserveNextStackGeneration
   )
 import Prodbox.Lifecycle.Authority.Submission (OperationId)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork (ProviderRevision)
 import Prodbox.Lifecycle.Teardown.Model
-  ( ObservationEvidenceScope
+  ( LifecycleOperation (ReconcileDesiredPresent)
+  , ObservationEvidenceScope
   , evidenceCleanupSurface
   , evidenceDurableRunScope
   , evidenceLinuxRke2Foundation
+  , mkObservationEvidenceScope
   )
 import Prodbox.Lifecycle.Teardown.StackGeneration
   ( ProvenProviderAwsSession
   , establishRegisteredStackGeneration
   , providerAwsSessionFromAuthorityProof
+  , registeredStackGenerationCreatingRunScope
+  , registeredStackGenerationCreatingSurface
+  , registeredStackGenerationKey
+  , stackGenerationKeyAwsScope
+  , stackGenerationKeyFoundation
+  , stackGenerationKeyRegistryRevision
   )
 
 -- | Everything the producer is allowed to touch.  Assembled by
@@ -265,8 +274,27 @@ commitRegisteredStackCreation
                     commitAwsStackCreationBindingAttempt
                       (registeredStackCreationBindings boundary)
                       observed
-                      creationScope
+                      (bindingScopeFromCommittedGeneration durable)
                   pure (bindingOutcome durable reservation binding)
+
+    -- The caller's creation scope deliberately carries no AWS coordinates:
+    -- only the independently read-back Provider receipt may introduce them.
+    -- Derive the older run-scoped binding from the generation after its
+    -- durable read-back, so both records are forced to carry the same proven
+    -- account, region, foundation, revision, run scope, and surface.  Reusing
+    -- the caller scope here used to make the repository correctly refuse the
+    -- binding as "AWS scope is missing" after the generation had committed.
+    bindingScopeFromCommittedGeneration durable =
+      mkObservationEvidenceScope
+        (registeredStackGenerationCreatingSurface generation)
+        (stackGenerationKeyRegistryRevision key)
+        (registeredStackGenerationCreatingRunScope generation)
+        (stackGenerationKeyFoundation key)
+        (Just (stackGenerationKeyAwsScope key))
+        ReconcileDesiredPresent
+     where
+      generation = committedRegisteredStackGeneration durable
+      key = registeredStackGenerationKey generation
 
     bindingOutcome durable reservation binding = case binding of
       Left err -> Left (RegisteredStackCreationOperationUnobservable err)

@@ -316,6 +316,225 @@ gatewayBoundedSuite =
       State.initializeGatewayState gatewayBounds orders (Map.delete nodeA seeds)
         `shouldSatisfy` isCursorSeedMembershipFailure
 
+    describe "signed bounded liveness" $ do
+      it "binds each latest-only frame to the exact durable boot heartbeat" $ do
+        let orders = validatedOrders 1 ["node-a", "node-b"]
+            nodeA = memberId orders "node-a"
+            key = eventKey gatewayBounds 7
+            initial = gatewayStateFor gatewayBounds orders
+            (boot, bootSemantic) =
+              case Peer.signAndConvertAssertion
+                gatewayBounds
+                orders
+                nodeA
+                (cursorFromState nodeA initial)
+                (State.HeartbeatAssertion 90)
+                key of
+                Left err -> error (show err)
+                Right value -> value
+            booted = appliedAssertion bootSemantic initial
+            bootCursor = State.assertionResultCursor bootSemantic
+            checkpointAtBoot =
+              gatewayStateWithSeeds
+                orders
+                (Map.insert nodeA bootCursor (cursorSeeds orders))
+            (_, ownershipSemantic) =
+              signedAssertion
+                gatewayBounds
+                orders
+                nodeA
+                bootCursor
+                (State.OwnershipAssertion State.OwnershipClaim)
+                key
+            checkpointAfterBoot =
+              gatewayStateWithSeeds
+                orders
+                ( Map.insert
+                    nodeA
+                    (State.assertionResultCursor ownershipSemantic)
+                    (cursorSeeds orders)
+                )
+            conflictingCheckpoint =
+              gatewayStateWithSeeds
+                orders
+                ( Map.insert
+                    nodeA
+                    ( State.restoredEmitterCursor
+                        (State.emitterEpochValue (State.emitterCursorEpoch bootCursor))
+                        (State.emitterSequenceValue (State.emitterCursorSequence bootCursor))
+                        (eventHash 99)
+                    )
+                    (cursorSeeds orders)
+                )
+            frame1 = signedLiveness gatewayBounds orders nodeA boot 1 100 key
+            frame2 = signedLiveness gatewayBounds orders nodeA boot 2 101 key
+            encoded = Peer.encodeSignedLivenessFrame frame1
+            decoded =
+              case Peer.decodeSignedLivenessFrame gatewayBounds encoded of
+                Left err -> error (show err)
+                Right value -> value
+            request = Peer.PeerPushLiveness decoded
+        decoded `shouldBe` frame1
+        show frame1 `shouldContain` "hmac = <redacted:32 bytes>"
+        Peer.verifySignedLivenessFrame
+          gatewayBounds
+          orders
+          (eventKeyLookup nodeA key)
+          initial
+          frame1
+          `shouldBe` Left (Peer.PeerLivenessBootFenceUnavailable "node-a")
+        State.gatewayStateLatestHeartbeat nodeA checkpointAtBoot `shouldBe` Nothing
+        Peer.verifySignedLivenessFrame
+          gatewayBounds
+          orders
+          (eventKeyLookup nodeA key)
+          checkpointAtBoot
+          frame1
+          `shouldBe` Right ()
+        State.gatewayStateLatestHeartbeat nodeA checkpointAfterBoot `shouldBe` Nothing
+        Peer.verifySignedLivenessFrame
+          gatewayBounds
+          orders
+          (eventKeyLookup nodeA key)
+          checkpointAfterBoot
+          frame1
+          `shouldBe` Right ()
+        Peer.verifySignedLivenessFrame
+          gatewayBounds
+          orders
+          (eventKeyLookup nodeA key)
+          conflictingCheckpoint
+          frame1
+          `shouldBe` Left (Peer.PeerLivenessBootFenceMismatch "node-a")
+        Peer.verifySignedLivenessFrame
+          gatewayBounds
+          orders
+          (eventKeyLookup nodeA key)
+          booted
+          frame1
+          `shouldBe` Right ()
+        Peer.admitSignedLivenessFrame Nothing frame1 `shouldBe` Right frame1
+        Peer.admitSignedLivenessFrame (Just frame1) frame1 `shouldBe` Right frame1
+        Peer.admitSignedLivenessFrame (Just frame2) frame1
+          `shouldBe` Left (Peer.PeerLivenessReplayStale "node-a" 1 2)
+        Peer.admitSignedLivenessFrame (Just frame1) frame2 `shouldBe` Right frame2
+        Peer.peerRequestReplayAssertions request
+          `shouldSatisfy` (null . Peer.boundedSignedAssertionsToList)
+        Peer.peerRequestSemanticSnapshot request `shouldBe` Nothing
+        Peer.peerRequestLivenessFrame request `shouldBe` Just frame1
+        Peer.peerRequestOrdersVersion request `shouldBe` Just 1
+        let rendered =
+              case Peer.renderPeerLivenessRequest
+                gatewayBounds
+                "node-b.internal:8444"
+                frame1 of
+                Left err -> error (show err)
+                Right value -> value
+        Peer.parsePeerHttpRequest gatewayBounds rendered `shouldBe` Right request
+        case Peer.handlePeerRequest
+          gatewayBounds
+          (eventKeyLookup nodeA key)
+          request
+          booted of
+          Left err -> expectationFailure (show err)
+          Right (unchanged, response) -> do
+            State.gatewayStateCursorVector unchanged
+              `shouldBe` State.gatewayStateCursorVector booted
+            Peer.peerResponseAccepted response `shouldBe` True
+
+      it "rejects stale fences, regressed timestamps, conflicts, and forged frames" $ do
+        let orders = validatedOrders 1 ["node-a", "node-b"]
+            nodeA = memberId orders "node-a"
+            key = eventKey gatewayBounds 7
+            wrongKey = eventKey gatewayBounds 8
+            initial = gatewayStateFor gatewayBounds orders
+            (boot1, semantic1) =
+              signedAssertion
+                gatewayBounds
+                orders
+                nodeA
+                (cursorFromState nodeA initial)
+                (State.HeartbeatAssertion 90)
+                key
+            afterBoot1 = appliedAssertion semantic1 initial
+            frame1 = signedLiveness gatewayBounds orders nodeA boot1 1 100 key
+            frame2 = signedLiveness gatewayBounds orders nodeA boot1 2 101 key
+            regressed = signedLiveness gatewayBounds orders nodeA boot1 2 99 key
+            conflict = signedLiveness gatewayBounds orders nodeA boot1 2 102 key
+            (boot2, semantic2) =
+              signedAssertion
+                gatewayBounds
+                orders
+                nodeA
+                (State.assertionResultCursor semantic1)
+                (State.HeartbeatAssertion 102)
+                key
+            afterBoot2 = appliedAssertion semantic2 afterBoot1
+            nextBootFrame = signedLiveness gatewayBounds orders nodeA boot2 1 103 key
+        Peer.admitSignedLivenessFrame (Just frame1) regressed
+          `shouldBe` Left (Peer.PeerLivenessTimestampRegressed "node-a" 99 100)
+        Peer.admitSignedLivenessFrame (Just frame2) conflict
+          `shouldBe` Left (Peer.PeerLivenessReplayConflict "node-a" 2)
+        Peer.verifySignedLivenessFrame
+          gatewayBounds
+          orders
+          (eventKeyLookup nodeA key)
+          afterBoot2
+          frame2
+          `shouldBe` Left (Peer.PeerLivenessBootFenceMismatch "node-a")
+        Peer.verifySignedLivenessFrame
+          gatewayBounds
+          orders
+          (eventKeyLookup nodeA key)
+          afterBoot2
+          nextBootFrame
+          `shouldBe` Right ()
+        Peer.admitSignedLivenessFrame (Just frame2) nextBootFrame
+          `shouldBe` Right nextBootFrame
+        Peer.admitSignedLivenessFrame (Just nextBootFrame) frame2
+          `shouldBe` Left (Peer.PeerLivenessBootFenceStale "node-a")
+        Peer.verifySignedLivenessFrame
+          gatewayBounds
+          orders
+          (eventKeyLookup nodeA wrongKey)
+          afterBoot1
+          frame1
+          `shouldBe` Left (Peer.PeerLivenessSignatureMismatch nodeA)
+        Peer.validatePeerRequestHeartbeatSkew
+          111
+          10
+          (Peer.PeerPushLiveness frame1)
+          `shouldSatisfy` isHeartbeatSkewFailure
+        Peer.signLivenessFrame gatewayBounds orders nodeA boot1 0 100 key
+          `shouldBe` Left (Peer.PeerLivenessSequenceMustBePositive "node-a")
+
+      it "keeps legacy liveness off the persistence child lane and latest-only" $ do
+        repoRoot <- getCurrentDirectory
+        daemonSource <-
+          readFile (repoRoot </> "src" </> "Prodbox" </> "Gateway" </> "Daemon.hs")
+        let livenessSurface =
+              sourceBetween
+                "emitLegacyBoundedLiveness :: DaemonEnv -> IO (Either String ())"
+                "currentHeartbeatTimestamp :: IO Word64"
+                daemonSource
+        livenessSurface `shouldContain` "emitLegacyLocalSemanticAssertion"
+        livenessSurface `shouldContain` "signLivenessFrame"
+        livenessSurface `shouldContain` "stateLivenessFrames"
+        livenessSurface `shouldNotContain` "withGatewayChild"
+        daemonSource `shouldContain` "\"backend_round_trip\""
+        daemonSource
+          `shouldContain` "legacyBackendRoundTripIntervalMicros = 60 * 1000 * 1000"
+        daemonSource
+          `shouldContain` "emitLegacyLocalSemanticAssertion\n      env\n      (BoundedState.HeartbeatAssertion timestamp)"
+        daemonSource
+          `shouldContain` "\"bounded_liveness_frame_capacity\""
+        daemonSource
+          `shouldContain` "Map.delete emitterName (stateLivenessFrames withInbound)"
+        daemonSource
+          `shouldContain` "PeerLivenessSelfDeliveryForbidden (Text.pack emitter)"
+        daemonSource
+          `shouldContain` "maybe False (const True) legacySession"
+
     describe "emitter incarnation fencing" $ do
       it "binds the incarnation into signed bytes and recovers it through verification" $ do
         let orders = validatedOrders 1 ["node-a", "node-b"]
@@ -521,6 +740,73 @@ gatewayBoundedSuite =
             err
               `shouldBe` State.RepairResultStaleIncarnation nodeA incarnation5 incarnation6
           outcome -> expectationFailure ("expected stale repair rejection, got " ++ show outcome)
+
+      it "reconciles a restored migration assertion after insertion into signed retention" $ do
+        let bounds = gatewayBounds
+            orders = validatedOrders 1 ["node-a", "node-b"]
+            nodeA = memberId orders "node-a"
+            key = eventKey bounds 7
+            cursor0 = cursorFromState nodeA (gatewayStateFor bounds orders)
+            incarnation1 = State.mkEmitterIncarnation 1
+            incarnation2 = State.mkEmitterIncarnation 2
+            (staleHeartbeat, _) =
+              signedAssertionAtIncarnation
+                bounds
+                orders
+                nodeA
+                incarnation1
+                cursor0
+                (State.HeartbeatAssertion 10)
+                key
+            (migration, migrationSemantic) =
+              either
+                (error . show)
+                id
+                ( Peer.signAndConvertOrdersMigrationForIncarnation
+                    bounds
+                    orders
+                    nodeA
+                    incarnation2
+                    cursor0
+                    (BS.replicate 32 9)
+                    key
+                )
+            checkpoint =
+              either
+                (error . show)
+                id
+                ( State.mkEmitterCheckpointForIncarnation
+                    bounds
+                    orders
+                    nodeA
+                    incarnation2
+                    (State.assertionResultCursor migrationSemantic)
+                    Nothing
+                    Nothing
+                )
+            staleRetention =
+              Peer.SignedEmitterRetention
+                { Peer.signedEmitterReplay = []
+                , Peer.signedEmitterCheckpointHeartbeat = Just staleHeartbeat
+                , Peer.signedEmitterCheckpointOwnership = Nothing
+                }
+            reconciled =
+              Peer.retainSignedEmitterAssertion
+                bounds
+                checkpoint
+                migration
+                staleRetention
+        Peer.signSemanticSnapshot
+          bounds
+          orders
+          checkpoint
+          (Just staleHeartbeat)
+          Nothing
+          key
+          `shouldBe` Left (Peer.PeerSnapshotEvidenceUnexpected nodeA Peer.SnapshotHeartbeatEvidence)
+        Peer.signedEmitterReplay reconciled `shouldBe` []
+        Peer.signedEmitterCheckpointHeartbeat reconciled `shouldBe` Nothing
+        Peer.signedEmitterCheckpointOwnership reconciled `shouldBe` Nothing
 
     it "retains one semantic value, bounded replay, and exactly 64 diagnostic hashes" $ do
       let orders = validatedOrders 1 ["node-a", "node-b"]
@@ -1726,6 +2012,40 @@ signedAssertionAtIncarnation bounds orders emitter incarnation cursor kind key =
     incarnation
     cursor
     kind
+    key of
+    Left err -> error (show err)
+    Right value -> value
+
+signedAssertion
+  :: Bounds.GatewayBounds
+  -> State.ValidatedOrders
+  -> State.NodeId
+  -> State.EmitterCursor
+  -> State.AssertionKind
+  -> Peer.EventKey
+  -> (Peer.SignedAssertion, State.GatewayAssertion)
+signedAssertion bounds orders emitter cursor kind key =
+  case Peer.signAndConvertAssertion bounds orders emitter cursor kind key of
+    Left err -> error (show err)
+    Right value -> value
+
+signedLiveness
+  :: Bounds.GatewayBounds
+  -> State.ValidatedOrders
+  -> State.NodeId
+  -> Peer.SignedAssertion
+  -> Word64
+  -> Word64
+  -> Peer.EventKey
+  -> Peer.SignedLivenessFrame
+signedLiveness bounds orders emitter boot sequenceNumber timestamp key =
+  case Peer.signLivenessFrame
+    bounds
+    orders
+    emitter
+    boot
+    sequenceNumber
+    timestamp
     key of
     Left err -> error (show err)
     Right value -> value

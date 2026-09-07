@@ -168,6 +168,8 @@ data ControlPlaneRouteFor (r :: RuntimeRole) where
     :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
   LifecycleTlsRetentionPromoteRoute
     :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
+  LifecycleTlsRetentionStageRoute
+    :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
   LifecycleTlsRetentionWorkflowRoute
     :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
   LifecycleAdminActionExecutionRoute
@@ -211,6 +213,8 @@ data ControlPlaneRouteFor (r :: RuntimeRole) where
   TlsRetentionStoreRoute
     :: ControlPlaneRouteFor 'TlsRetentionRuntime
   TlsRetentionRestoreRoute
+    :: ControlPlaneRouteFor 'TlsRetentionRuntime
+  TlsRetentionObserveVersionRoute
     :: ControlPlaneRouteFor 'TlsRetentionRuntime
   TargetMaterialObserveRoute
     :: ControlPlaneRouteFor 'TargetSecretAgentRuntime
@@ -272,6 +276,7 @@ controlPlaneRouteForValue route = case route of
   LifecycleProviderDispatchRoute -> LifecycleProviderDispatch
   LifecycleTlsRetentionObserveRoute -> LifecycleTlsRetentionObserve
   LifecycleTlsRetentionPromoteRoute -> LifecycleTlsRetentionPromote
+  LifecycleTlsRetentionStageRoute -> LifecycleTlsRetentionStage
   LifecycleTlsRetentionWorkflowRoute -> LifecycleTlsRetentionWorkflow
   LifecycleAdminActionExecutionRoute -> LifecycleAdminActionExecution
   LifecycleBootstrapHandoffAcceptRoute -> LifecycleBootstrapHandoffAccept
@@ -294,6 +299,7 @@ controlPlaneRouteForValue route = case route of
   AuthorityBackupObserveRoute -> AuthorityBackupObserve
   TlsRetentionStoreRoute -> TlsRetentionStore
   TlsRetentionRestoreRoute -> TlsRetentionRestore
+  TlsRetentionObserveVersionRoute -> TlsRetentionObserveVersion
   TargetMaterialObserveRoute -> TargetMaterialObserve
   TargetSecretDecommissionInventoryRoute -> TargetSecretDecommissionInventory
   TargetSecretDecommissionTombstoneRoute -> TargetSecretDecommissionTombstone

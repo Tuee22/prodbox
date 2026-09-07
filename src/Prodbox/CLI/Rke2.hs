@@ -91,6 +91,8 @@ module Prodbox.CLI.Rke2
   , retainedStorageInventoryEntries
   , harborRegistryStorageBackend
   , registryConfigYaml
+  , RegistryGarbageCollectionMode (..)
+  , registryGarbageCollectArguments
   , rke2InstallPresent
   , Rke2InstallPresence (..)
   , DeleteTerminalArm (..)
@@ -102,6 +104,7 @@ module Prodbox.CLI.Rke2
   , runAnchoredReconcileSteps
   , runEdgeCommand
   , runNativeHarnessBootstrapFloor
+  , harnessLifecycleProviderCredentialCaller
   , reconcileHarnessLifecycleProviderCredential
   , runNativeDeleteCascade
   , runCascadeDrainResult
@@ -274,7 +277,7 @@ import Prodbox.ControlPlane.ExternalMaterialIngressWorkflow
   , runExternalMaterialIngressWorkflowWithDelivery
   )
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
-  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator, LifecycleAuthorityTestHarness)
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
   , externalCallerKubernetesSubject
   , renderLifecycleAuthorityAuthenticationError
   , withAuthorityBackupAuthenticatedTransport
@@ -284,6 +287,9 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , withTargetSecretAgentAuthenticatedTransport
   )
 import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
+import Prodbox.ControlPlane.ProviderAssumedRoleSession
+  ( lifecycleProviderRoleName
+  )
 import Prodbox.ControlPlane.ProviderCaller
   ( dispatchHostProviderIntentFresh
   , renderProviderCallerError
@@ -306,7 +312,7 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
   , TargetSecretId (TargetAwsCredential)
   )
 import Prodbox.DockerConfig (withEphemeralDockerConfig)
-import Prodbox.Error (fatalError)
+import Prodbox.Error (errorMsg, fatalError)
 import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Gateway.Types (PeerEndpoint)
 import Prodbox.Host
@@ -400,6 +406,9 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( AwsCredentialClass (..)
   , OperatorMaterialAction (InstallOperatorMaterial, RevokeOperatorMaterial, RotateOperatorMaterial)
   )
+import Prodbox.Lifecycle.CredentialProvisioner.ProviderRolePolicyOperationScope
+  ( providerRolePolicyOperationScope
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.Substrate
   ( productionCredentialProvisionerSubstrateBoundary
   , reconcileCredentialProvisionerSubstrate
@@ -474,6 +483,7 @@ import Prodbox.PublicEdge
   , substrateIdentityIssuerUrl
   , substratePublicRouteUrl
   )
+import Prodbox.Registry.Retention qualified as RegistryRetention
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
   ( RetryPolicy
@@ -481,6 +491,7 @@ import Prodbox.Retry
   , deploymentRevisionObservationRetryPolicy
   , drawRetryDelayMicros
   , helmTransientRetryPolicy
+  , registryReferenceObservationRetryPolicy
   , retryPolicyMaxAttempts
   )
 import Prodbox.Service (isRetryableTransientFailure)
@@ -534,8 +545,10 @@ import Prodbox.Settings.SecretRef
   ( SecretRef (..)
   )
 import Prodbox.Subprocess
-  ( ProcessOutput (..)
+  ( BoundedSubprocessLimits (..)
+  , ProcessOutput (..)
   , Subprocess (..)
+  , captureSubprocessBounded
   , captureSubprocessResult
   , runSubprocessStreaming
   )
@@ -2924,9 +2937,11 @@ observeGatewayBackendRoundTripOnce = do
 -- that is draining or still starting has nothing to say about the backend edge —
 -- and the EVIDENCE now comes from the receipt the daemon recorded when its own
 -- conditional continuity write was accepted by the shared object store. The
--- daemon performs that write on every heartbeat publication, so a healthy daemon
--- refreshes the receipt continuously and a wedged one stops, which is exactly
--- the distinction the freshness window is there to make.
+-- target journal topology performs that write on every semantic heartbeat; the
+-- rollback topology renews it through a separate periodic persistence-first
+-- backend-proof worker while its hot heartbeat path remains latest-only. A
+-- healthy daemon therefore refreshes the receipt continuously and a wedged one
+-- stops, which is exactly the distinction the freshness window is there to make.
 observeGatewayBackendRoundTripOnceAt
   :: PeerEndpoint -> IO (Either Text.Text BackendRoundTripResult)
 observeGatewayBackendRoundTripOnceAt endpoint = do
@@ -3127,6 +3142,9 @@ currentAwsAdminJobHeartbeat = do
 -- stable for a qualification cycle. If a response is lost after Target
 -- material advances, the matching retained Authority operation is recovered
 -- byte-for-byte instead of allocating another generation.
+harnessLifecycleProviderCredentialCaller :: ExternalLifecycleAuthorityCaller
+harnessLifecycleProviderCredentialCaller = LifecycleAuthorityOperator
+
 reconcileHarnessLifecycleProviderCredential
   :: FilePath
   -> Text.Text
@@ -3157,9 +3175,11 @@ reconcileHarnessLifecycleProviderCredential repoRoot operationScope = do
           case iamResult of
             Left detail -> failWith (Text.unpack detail)
             Right iamParameters -> do
+              let revisionedOperationScope =
+                    providerRolePolicyOperationScope operationScope
               reconciled <-
                 withHostLifecycleAuthorityAuthentication
-                  LifecycleAuthorityTestHarness
+                  harnessLifecycleProviderCredentialCaller
                   repoRoot
                   ( \authentication -> do
                       targetResult <-
@@ -3180,7 +3200,7 @@ reconcileHarnessLifecycleProviderCredential repoRoot operationScope = do
                                 resolveHarnessLifecycleProviderIntent
                                   client
                                   parameters
-                                  operationScope
+                                  revisionedOperationScope
                                   iamParameters
                                   observedTarget
                               case intentResult of
@@ -3298,7 +3318,7 @@ firstReconcileIamParameters _basics settings credentials credentialClass =
           ( mkLifecycleProviderIamParameters
               backendRegion
               accountId
-              "prodbox-lifecycle-provider"
+              lifecycleProviderRoleName
           )
     AuthorityBackupStoreCredential ->
       pure (Left "authority-backup install is valid only as first-reconcile member zero")
@@ -5522,26 +5542,17 @@ ensureHarborRegistryRuntime repoRoot _substrate = do
     ExitFailure _ -> pure cleanupExit
     ExitSuccess -> do
       installExit <-
-        withTemporaryJsonManifest
-          "prodbox-registry-runtime"
-          registryRuntimeManifestItems
-          ( \manifestPath ->
-              runCommand
-                Subprocess
-                  { subprocessPath = "kubectl"
-                  , subprocessArguments = ["apply", "-f", manifestPath]
-                  , subprocessEnvironment = Nothing
-                  , subprocessWorkingDirectory = Just repoRoot
-                  }
-          )
+        applyRegistryRuntimeManifest
+          repoRoot
+          harborRegistryStorageBackend
       case installExit of
         ExitFailure _ -> pure installExit
         ExitSuccess ->
-          -- Wait for the Deployment to become Available (the pod's first,
-          -- unauthenticated registry:2 pull can be slow), then confirm the NodePort
-          -- serves GET /v2/ and holds stable before the mirror loop pushes.
+          -- Observe the exact applied Deployment revision rather than accepting
+          -- an older Available Pod. This also recovers a process interrupted
+          -- while registry retention had the previous Pod in read-only mode.
           runSequentially
-            [ waitForDeployment repoRoot harborNamespace registryDeploymentName
+            [ rolloutStatus repoRoot harborNamespace ("deployment/" ++ registryDeploymentName)
             , waitForHarborRegistryEndpoint repoRoot
             , waitForHarborStableEndpoints repoRoot
             ]
@@ -5562,8 +5573,8 @@ reconcileLegacyHarborReleaseAbsent repoRoot =
 -- so no credential is written into the ConfigMap. The Service keeps the
 -- @harbor@ name/port 80 so the EKS-side in-cluster DNS
 -- @harbor.harbor.svc.cluster.local@ is unchanged.
-registryRuntimeManifestItems :: [Value]
-registryRuntimeManifestItems =
+registryRuntimeManifestItemsFor :: RegistryStorageBackend -> [Value]
+registryRuntimeManifestItemsFor backend =
   [ object
       [ "apiVersion" .= ("v1" :: String)
       , "kind" .= ("Namespace" :: String)
@@ -5577,7 +5588,7 @@ registryRuntimeManifestItems =
             [ "name" .= registryConfigMapName
             , "namespace" .= harborNamespace
             ]
-      , "data" .= object ["config.yml" .= registryConfigYaml harborRegistryStorageBackend]
+      , "data" .= object ["config.yml" .= registryConfigYaml backend]
       ]
   , object
       [ "apiVersion" .= ("apps/v1" :: String)
@@ -5594,7 +5605,16 @@ registryRuntimeManifestItems =
             , "selector" .= object ["matchLabels" .= object ["app" .= registryDeploymentName]]
             , "template"
                 .= object
-                  [ "metadata" .= object ["labels" .= object ["app" .= registryDeploymentName]]
+                  [ "metadata"
+                      .= object
+                        [ "labels" .= object ["app" .= registryDeploymentName]
+                        , "annotations"
+                            .= object
+                              [ "prodbox.io/registry-access-mode"
+                                  .= RegistryRetention.renderRegistryAccessMode
+                                    (registryStorageBackendAccessMode backend)
+                              ]
+                        ]
                   , "spec"
                       .= object
                         [ "containers"
@@ -5671,6 +5691,14 @@ registryRuntimeManifestItems =
       ]
   ]
 
+applyRegistryRuntimeManifest
+  :: FilePath -> RegistryStorageBackend -> IO ExitCode
+applyRegistryRuntimeManifest repoRoot backend =
+  kubectlApplyJsonManifest
+    repoRoot
+    "prodbox-registry-runtime"
+    (registryRuntimeManifestItemsFor backend)
+
 -- | Blob redirect behavior for the registry storage driver. This is a required
 -- field of 'RegistryStorageBackend': callers cannot silently inherit the
 -- registry driver's redirect default.
@@ -5690,6 +5718,7 @@ data RegistryStorageBackend = RegistryStorageBackend
   , registryStorageBackendRootDirectory :: String
   , registryStorageBackendRedirect :: RedirectPolicy
   , registryStorageBackendDeleteEnabled :: Bool
+  , registryStorageBackendAccessMode :: RegistryRetention.RegistryAccessMode
   }
   deriving (Eq, Show)
 
@@ -5707,6 +5736,7 @@ harborRegistryStorageBackend =
     , registryStorageBackendRootDirectory = "/"
     , registryStorageBackendRedirect = RedirectDisabled
     , registryStorageBackendDeleteEnabled = True
+    , registryStorageBackendAccessMode = RegistryRetention.RegistryReadWrite
     }
 
 -- | Render the @registry:2@ @config.yml@ from its typed storage record. The
@@ -5733,6 +5763,11 @@ registryConfigYaml backend =
     , "    rootdirectory: " ++ registryStorageBackendRootDirectory backend
     , "  delete:"
     , "    enabled: " ++ renderYamlBool (registryStorageBackendDeleteEnabled backend)
+    , "maintenance:"
+    , "  readonly:"
+    , "    enabled: "
+        ++ renderYamlBool
+          (registryStorageBackendAccessMode backend == RegistryRetention.RegistryReadOnly)
     , "http:"
     , "  addr: :" ++ show registryContainerPort
     , "health:"
@@ -5855,6 +5890,290 @@ probeHarborHttpStatus repoRoot path = do
         case processExitCode output of
           ExitSuccess -> Right (trimWhitespace (processStdout output))
           ExitFailure _ -> Left (outputDetail output)
+
+-- | The complete current repository/tag projection that Distribution's
+-- stop-the-world collector must preserve. A page that reaches the explicit
+-- bound is refused rather than silently treated as complete, and every tag is
+-- resolved to its canonical concrete manifest before the registry enters
+-- read-only mode.
+observeRegistryReferenceSnapshot
+  :: FilePath
+  -> IO (Either String RegistryRetention.RegistryReferenceSnapshot)
+observeRegistryReferenceSnapshot repoRoot = do
+  catalogResult <-
+    captureRegistryApi
+      repoRoot
+      [registryApiUrl ("_catalog?n=" ++ show RegistryRetention.registryReferencePageLimit)]
+  case catalogResult >>= mapRegistryObservation . RegistryRetention.decodeRegistryCatalogPage of
+    Left err -> pure (Left err)
+    Right repositories -> do
+      observed <- mapM (observeRegistryRepositoryReferences repoRoot) repositories
+      pure $ do
+        references <- sequence observed
+        mapRegistryObservation (RegistryRetention.mkRegistryReferenceSnapshot references)
+
+observeRegistryRepositoryReferences
+  :: FilePath
+  -> String
+  -> IO (Either String RegistryRetention.RegistryRepositoryReferences)
+observeRegistryRepositoryReferences repoRoot repository = do
+  tagsResult <-
+    captureRegistryApi
+      repoRoot
+      [ registryApiUrl
+          ( repository
+              ++ "/tags/list?n="
+              ++ show RegistryRetention.registryReferencePageLimit
+          )
+      ]
+  case tagsResult >>= mapRegistryObservation . RegistryRetention.decodeRegistryTagsPage repository of
+    Left err -> pure (Left err)
+    Right tags -> do
+      observed <- mapM (observeRegistryTagReference repoRoot repository) tags
+      pure $ do
+        references <- sequence observed
+        Right
+          RegistryRetention.RegistryRepositoryReferences
+            { RegistryRetention.registryReferenceRepository = repository
+            , RegistryRetention.registryReferenceTags = references
+            }
+
+observeRegistryTagReference
+  :: FilePath
+  -> String
+  -> String
+  -> IO (Either String RegistryRetention.RegistryTagReference)
+observeRegistryTagReference repoRoot repository tag = do
+  headersResult <-
+    captureRegistryApi
+      repoRoot
+      [ "--head"
+      , "--header"
+      , "Accept: " ++ RegistryRetention.registryManifestAcceptHeader
+      , registryApiUrl (repository ++ "/manifests/" ++ tag)
+      ]
+  pure $ do
+    headers <- headersResult
+    (digest, mediaType) <-
+      mapRegistryObservation (RegistryRetention.decodeRegistryManifestHeaders headers)
+    Right
+      RegistryRetention.RegistryTagReference
+        { RegistryRetention.registryTagReferenceName = tag
+        , RegistryRetention.registryTagReferenceDigest = digest
+        , RegistryRetention.registryTagReferenceMediaType = mediaType
+        }
+
+captureRegistryApi :: FilePath -> [String] -> IO (Either String String)
+captureRegistryApi repoRoot arguments = go 0
+ where
+  go attemptIndex = do
+    outputResult <-
+      captureToolOutput
+        repoRoot
+        "curl"
+        (["--fail", "--silent", "--show-error", "--max-time", "30"] ++ arguments)
+    case outputResult of
+      Left err -> pure (Left err)
+      Right output ->
+        case processExitCode output of
+          ExitSuccess -> pure (Right (processStdout output))
+          ExitFailure _
+            | isRetryableTransientFailure [] detail
+                && attemptIndex + 1
+                  < retryPolicyMaxAttempts registryReferenceObservationRetryPolicy -> do
+                writeDiagnosticLine
+                  ( "Retrying Registry reference observation after transient transport failure ("
+                      ++ show (attemptIndex + 1)
+                      ++ "/"
+                      ++ show (retryPolicyMaxAttempts registryReferenceObservationRetryPolicy)
+                      ++ "): "
+                      ++ detail
+                  )
+                threadDelay
+                  =<< drawRetryDelayMicros
+                    registryReferenceObservationRetryPolicy
+                    attemptIndex
+                go (attemptIndex + 1)
+            | otherwise ->
+                pure (Left ("registry reference observation failed: " ++ detail))
+       where
+        detail = outputDetail output
+
+registryApiUrl :: String -> String
+registryApiUrl suffix = "http://" ++ harborRegistryEndpoint ++ "/v2/" ++ suffix
+
+mapRegistryObservation
+  :: Either RegistryRetention.RegistryReferenceObservationError value
+  -> Either String value
+mapRegistryObservation =
+  Bifunctor.first RegistryRetention.renderRegistryReferenceObservationError
+
+setRegistryAccessMode
+  :: FilePath -> RegistryRetention.RegistryAccessMode -> IO ExitCode
+setRegistryAccessMode repoRoot accessMode = do
+  applyExit <-
+    applyRegistryRuntimeManifest
+      repoRoot
+      (harborRegistryStorageBackend {registryStorageBackendAccessMode = accessMode})
+  case applyExit of
+    ExitFailure _ -> pure applyExit
+    ExitSuccess ->
+      runSequentially
+        [ rolloutStatus repoRoot harborNamespace ("deployment/" ++ registryDeploymentName)
+        , waitForHarborRegistryEndpoint repoRoot
+        , waitForHarborStableEndpoints repoRoot
+        ]
+
+data RegistryGarbageCollectionMode
+  = RegistryGarbageCollectionDryRun
+  | RegistryGarbageCollectionDelete
+  deriving (Eq, Show)
+
+registryGarbageCollectArguments :: RegistryGarbageCollectionMode -> [String]
+registryGarbageCollectArguments mode =
+  [ "exec"
+  , "--namespace"
+  , harborNamespace
+  , "deployment/" ++ registryDeploymentName
+  , "--container"
+  , registryDeploymentName
+  , "--"
+  , "/usr/bin/env"
+  , "REGISTRY_LOG_LEVEL=error"
+  , "/bin/registry"
+  , "garbage-collect"
+  ]
+    ++ modeArguments mode
+    ++ ["--delete-untagged", "/etc/docker/registry/config.yml"]
+ where
+  modeArguments selectedMode = case selectedMode of
+    RegistryGarbageCollectionDryRun -> ["--dry-run"]
+    RegistryGarbageCollectionDelete -> []
+
+registryGarbageCollectionLimits :: BoundedSubprocessLimits
+registryGarbageCollectionLimits =
+  BoundedSubprocessLimits
+    { boundedSubprocessMaximumInputBytes = 1
+    , boundedSubprocessMaximumStdoutBytes = 16 * 1024 * 1024
+    , boundedSubprocessMaximumStderrBytes = 64 * 1024
+    , boundedSubprocessTimeoutMicros = 30 * 60 * 1000 * 1000
+    }
+
+runRegistryGarbageCollectionPhase
+  :: FilePath
+  -> RegistryRetention.RegistryReferenceSnapshot
+  -> RegistryGarbageCollectionMode
+  -> IO (Either String RegistryRetention.RegistryGarbageCollectionEvidence)
+runRegistryGarbageCollectionPhase repoRoot before mode = do
+  outputResult <-
+    captureSubprocessBounded
+      registryGarbageCollectionLimits
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments = registryGarbageCollectArguments mode
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  case outputResult of
+    Left err ->
+      pure
+        ( Left
+            ( "Registry manifest retention collector failed within its "
+                ++ renderRegistryGarbageCollectionMode mode
+                ++ " physical bounds: "
+                ++ Text.unpack (errorMsg err)
+            )
+        )
+    Right output ->
+      pure $ case RegistryRetention.validateRegistryGarbageCollectionResult
+        before
+        (processExitCode output)
+        (processStdout output)
+        (processStderr output) of
+        Left err ->
+          Left
+            ( "Registry manifest retention collector refused its result: "
+                ++ RegistryRetention.renderRegistryGarbageCollectionError err
+                ++ " ("
+                ++ renderRegistryGarbageCollectionMode mode
+                ++ ")"
+            )
+        Right evidence -> Right evidence
+
+renderRegistryGarbageCollectionMode :: RegistryGarbageCollectionMode -> String
+renderRegistryGarbageCollectionMode mode = case mode of
+  RegistryGarbageCollectionDryRun -> "read-only dry-run"
+  RegistryGarbageCollectionDelete -> "delete"
+
+runRegistryGarbageCollection
+  :: FilePath -> RegistryRetention.RegistryReferenceSnapshot -> IO ExitCode
+runRegistryGarbageCollection repoRoot before = do
+  dryRunResult <-
+    runRegistryGarbageCollectionPhase repoRoot before RegistryGarbageCollectionDryRun
+  case dryRunResult of
+    Left err -> failWith err
+    Right dryRunEvidence -> do
+      deleteResult <-
+        runRegistryGarbageCollectionPhase repoRoot before RegistryGarbageCollectionDelete
+      case deleteResult of
+        Left err -> failWith err
+        Right deleteEvidence ->
+          case RegistryRetention.validateRegistryGarbageCollectionReplay
+            dryRunEvidence
+            deleteEvidence of
+            Left err ->
+              failWith
+                ( "Registry manifest retention collector refused its result: "
+                    ++ RegistryRetention.renderRegistryGarbageCollectionError err
+                )
+            Right () -> pure ExitSuccess
+
+-- | Bound the retained home registry without ever selecting a backend object
+-- directly. Distribution owns mark/sweep under its mounted typed S3
+-- configuration; prodbox owns the read-only fence, current-reference snapshot,
+-- read-write restoration, and exact read-back.
+reconcileRegistryManifestRetention :: FilePath -> IO ExitCode
+reconcileRegistryManifestRetention repoRoot = do
+  beforeResult <- observeRegistryReferenceSnapshot repoRoot
+  case beforeResult of
+    Left err -> failWith ("Registry manifest retention pre-observation failed: " ++ err)
+    Right before -> do
+      readOnlyExit <- setRegistryAccessMode repoRoot RegistryRetention.RegistryReadOnly
+      case readOnlyExit of
+        ExitFailure _ -> do
+          restoreExit <- setRegistryAccessMode repoRoot RegistryRetention.RegistryReadWrite
+          pure (firstNonSuccess [readOnlyExit, restoreExit])
+        ExitSuccess -> do
+          collectExit <-
+            runRegistryGarbageCollection repoRoot before
+              `onException` restoreRegistryReadWriteAfterException repoRoot
+          restoreExit <- setRegistryAccessMode repoRoot RegistryRetention.RegistryReadWrite
+          case firstNonSuccess [collectExit, restoreExit] of
+            failure@(ExitFailure _) -> pure failure
+            ExitSuccess -> do
+              afterResult <- observeRegistryReferenceSnapshot repoRoot
+              case afterResult of
+                Left err -> failWith ("Registry manifest retention read-back failed: " ++ err)
+                Right after ->
+                  case RegistryRetention.validateRegistryReferenceReadBack before after of
+                    Left err ->
+                      failWith
+                        ( "Registry manifest retention refused its read-back: "
+                            ++ RegistryRetention.renderRegistryReferenceObservationError err
+                        )
+                    Right () -> do
+                      writeOutputLine
+                        "Registry manifest retention: untagged collection completed and every current tag/digest read back unchanged."
+                      ensureRegistryStorageBackendEdgeReady repoRoot
+
+restoreRegistryReadWriteAfterException :: FilePath -> IO ()
+restoreRegistryReadWriteAfterException repoRoot = do
+  restoreExit <- setRegistryAccessMode repoRoot RegistryRetention.RegistryReadWrite
+  case restoreExit of
+    ExitSuccess -> pure ()
+    ExitFailure _ ->
+      writeDiagnosticLine
+        "Registry manifest retention interruption recovery could not observe restored read-write service; the next supported reconcile will reapply it before publication."
 
 -- | Sprint 4.43: the deep registry→MinIO S3 storage-backend readiness gate
 -- (bootstrap_readiness_doctrine.md M3). A @GET /v2/@ front-door probe is served
@@ -8550,14 +8869,18 @@ ensureCustomImageVariantsHomeLocal repoRoot imageBuildPlan taggedRefs importRef 
   -- credential, the base-image build pull uses the host docker.io login),
   -- scrubbed on exit.
   withEphemeralDockerConfig $ do
-    buildExit <- buildAndPushCustomImageVariants repoRoot imageBuildPlan taggedRefs
-    case buildExit of
-      ExitFailure _ -> pure buildExit
+    retentionExit <- reconcileRegistryManifestRetention repoRoot
+    case retentionExit of
+      ExitFailure _ -> pure retentionExit
       ExitSuccess -> do
-        pullExit <- runCommand =<< dockerSubprocessFor repoRoot ["pull", importRef]
-        case pullExit of
-          ExitFailure _ -> pure pullExit
-          ExitSuccess -> importImageIntoRke2Containerd repoRoot importRef
+        buildExit <- buildAndPushCustomImageVariants repoRoot imageBuildPlan taggedRefs
+        case buildExit of
+          ExitFailure _ -> pure buildExit
+          ExitSuccess -> do
+            pullExit <- runCommand =<< dockerSubprocessFor repoRoot ["pull", importRef]
+            case pullExit of
+              ExitFailure _ -> pure pullExit
+              ExitSuccess -> importImageIntoRke2Containerd repoRoot importRef
 
 -- | AWS-substrate custom-image publication path. Builds the image on
 -- the operator host via @docker build@ (which is available locally),
@@ -9211,10 +9534,12 @@ renderRke2SystemdResourceDropIn plan =
         2
         (Capacity.limit Capacity.oneShotSecretWorkerEnvelope)
   systemdMax = systemdBase `Capacity.plusResourceVector` Capacity.eviction_floor plan
-  -- The systemd boundary contains the complete RKE2 process tree. Preserve its
-  -- established full-core/2GiB containment while kubelet's host-only
-  -- reservation excludes the explicit one-shot workload peak.
-  systemdCpuBudget = Capacity.milli_cpu systemdBase
+  -- The systemd boundary contains the complete RKE2 process tree. Its CPU
+  -- containment follows the unchanged host-reservation-plus-proof-floor sum,
+  -- while kubelet allocatable follows only the narrower host reservation.
+  systemdCpuBudget =
+    Capacity.milli_cpu (Capacity.rke2_reserved plan)
+      + Capacity.milli_cpu (Capacity.eviction_floor plan)
 
 renderKubeletReservation :: Capacity.ResourceVector -> String
 renderKubeletReservation vector =

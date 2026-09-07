@@ -100,6 +100,18 @@ import Prodbox.ControlPlane.TlsDekExchange
 import Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
   ( TlsAuthorityResponse (TlsAuthorityObserved)
   )
+import Prodbox.ControlPlane.TlsRetentionWorkflowAuthorityEndpoint
+  ( TlsRetentionWorkflowAuthorityRequest
+      ( TlsRetentionWorkflowAuthorityRestore
+      , TlsRetentionWorkflowAuthorityRetain
+      )
+  , TlsRetentionWorkflowAuthorityResponse
+    ( TlsRetentionWorkflowAuthorityIssuancePermitted
+    , TlsRetentionWorkflowAuthorityNothingToRetain
+    , TlsRetentionWorkflowAuthorityRequestRefused
+    )
+  , tlsRetentionWorkflowAuthorityMaximumBytes
+  )
 import Prodbox.Http.ResponseObligation
   ( ResponseObligation
   , ResponseRefusal (ResponseCancelled, ResponseHandlerFailed)
@@ -386,6 +398,8 @@ authorityBody cleanupRunState request path
         ( LazyByteString.toStrict
             (encodeControlPlaneResponse (TlsAuthorityObserved TlsRetentionEmpty))
         )
+  | path == "/v1/authority/tls-retention/workflow" =
+      pure (tlsRetentionWorkflowBody request)
   | path == "/v1/target-tls/exchange/prepare" = do
       prepared <-
         prepareTlsDekExchange
@@ -504,6 +518,23 @@ authenticatedInnerBody request = do
           :: Either DeserialiseFailure FixtureSignedRequestWire
       )
   pure (fixtureSignedBody signed)
+
+tlsRetentionWorkflowBody :: ByteString.ByteString -> ByteString.ByteString
+tlsRetentionWorkflowBody request =
+  LazyByteString.toStrict (encodeControlPlaneResponse response)
+ where
+  response =
+    case authenticatedInnerBody request of
+      Left _ -> TlsRetentionWorkflowAuthorityRequestRefused
+      Right innerBody ->
+        case decodeControlPlaneRequest
+          tlsRetentionWorkflowAuthorityMaximumBytes
+          (LazyByteString.fromStrict innerBody) of
+          Left _ -> TlsRetentionWorkflowAuthorityRequestRefused
+          Right (TlsRetentionWorkflowAuthorityRetain {}) ->
+            TlsRetentionWorkflowAuthorityNothingToRetain
+          Right (TlsRetentionWorkflowAuthorityRestore {}) ->
+            TlsRetentionWorkflowAuthorityIssuancePermitted
 
 fixtureBackupCiphertext :: AuthorityBackupCiphertext
 fixtureBackupCiphertext =

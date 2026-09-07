@@ -29,9 +29,11 @@ module Prodbox.ControlPlane.LocalClient
   , renderLocalLifecycleAuthorityError
   , withLocalLifecycleAuthorityClient
   , withLocalLifecycleAuthorityAuthenticatedTransport
+  , withLocalLifecycleAuthorityProviderAuthenticatedTransport
   , withLocalLifecycleAuthorityRetainedDeliveryAuthenticatedTransport
   , withLocalLifecycleAuthorityTlsWorkflowAuthenticatedTransport
   , lifecycleAuthorityHttpConfig
+  , lifecycleAuthorityProviderHttpConfig
   , lifecycleAuthorityRetainedDeliveryHttpConfig
   , lifecycleAuthorityTlsWorkflowHttpConfig
   , LocalProviderWorkerError (..)
@@ -76,6 +78,7 @@ import Network.Socket
   , tupleToHostAddress
   , withSocketsDo
   )
+import Prodbox.Capacity.ProviderWorkerBudget qualified as ProviderWorkerBudget
 import Prodbox.Capacity.RetainedMaterialDeliveryBudget qualified as RetainedMaterialDeliveryBudget
 import Prodbox.Capacity.TlsRetentionWorkflowBudget qualified as TlsRetentionWorkflowBudget
 import Prodbox.ControlPlane.AuthenticatedTransport
@@ -187,6 +190,18 @@ withLocalLifecycleAuthorityAuthenticatedTransport
   -> IO (Either LocalLifecycleAuthorityError value)
 withLocalLifecycleAuthorityAuthenticatedTransport bounds providers action =
   withLocalLifecycleAuthorityClient
+    (action . mkAuthenticatedClientTransport bounds providers)
+
+-- | Open the same exact Authority endpoint with only the response budget of
+-- the Provider execution route widened to contain its admitted child schedule.
+withLocalLifecycleAuthorityProviderAuthenticatedTransport
+  :: AuthenticatedTransportBounds
+  -> AuthenticatedClientProviders IO
+  -> (AuthenticatedClientTransport 'LifecycleAuthorityRuntime -> IO value)
+  -> IO (Either LocalLifecycleAuthorityError value)
+withLocalLifecycleAuthorityProviderAuthenticatedTransport bounds providers action =
+  withLocalLifecycleAuthorityClientUsing
+    lifecycleAuthorityProviderClient
     (action . mkAuthenticatedClientTransport bounds providers)
 
 -- | Open the same exact Authority endpoint with only the response budget of
@@ -835,6 +850,25 @@ lifecycleAuthorityClient localPort = do
 lifecycleAuthorityHttpConfig :: HttpConfig
 lifecycleAuthorityHttpConfig =
   defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
+
+lifecycleAuthorityProviderHttpConfig :: HttpConfig
+lifecycleAuthorityProviderHttpConfig =
+  defaultHttpConfig
+    { httpRequestTimeoutMicros =
+        ProviderWorkerBudget.providerWorkerResponseTimeoutMicros
+    }
+
+lifecycleAuthorityProviderClient
+  :: Int
+  -> Either
+       ControlPlaneClientError
+       (ControlPlaneClient 'LifecycleAuthorityRuntime)
+lifecycleAuthorityProviderClient localPort = do
+  endpoint <- mkLifecycleAuthorityEndpoint (Text.pack (loopbackEndpoint localPort))
+  newControlPlaneClient
+    lifecycleAuthorityProviderHttpConfig
+    (100 * 1024 * 1024)
+    endpoint
 
 lifecycleAuthorityRetainedDeliveryHttpConfig :: HttpConfig
 lifecycleAuthorityRetainedDeliveryHttpConfig =

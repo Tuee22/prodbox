@@ -302,6 +302,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , awsAdminPermitIntentKind
   , awsAdminPermitIntentOperationId
   , awsAdminPermitIntentPermitId
+  , awsAdminPermitIntentPlanBinding
   , awsAdminPermitIntentPreparedTarget
   , awsAdminPermitIntentRequestDigest
   , awsAdminPermitIntentTarget
@@ -2384,6 +2385,91 @@ credentialProvisionerAwsAdminAuthoritySuite =
       (snd <$> readIORef stateRef)
         `shouldReturn` AwsAdminAuthorityPrepared replacement
 
+    it "AWS-ADMIN-AUTHORIZED-CLEANUP-PROVEN-STATE-TRANSITION-REJECTED-2026-09-06" $ do
+      let retained =
+            postFirstReconcileRenewalIntentAt
+              renewalOldDeadline
+              imageDigest
+              targetAgent
+              "home"
+          replacement =
+            postFirstReconcileRenewalIntentAt
+              renewalNewDeadline
+              otherImageDigest
+              renewalTargetAgent
+              "home"
+          canonicalizeWithoutPlanBinding intent =
+            must
+              ( bindAwsAdminPermitIntentPreparedTarget
+                  Nothing
+                  Nothing
+                  renewalNewDeadline
+                  "owner-nonce-1"
+                  1
+                  renewalTargetAgent
+                  intent
+              )
+      predecessorPermit <- authorizedPermitFor retained
+      let authorized = AwsAdminAuthorityAuthorized predecessorPermit
+          cleanupProof =
+            must
+              ( proveAwsAdminAuthorizedRecovery
+                  renewalNow
+                  authorized
+                  AwsAdminAttemptResourceAbsent
+                  AwsAdminAttemptResourceAbsent
+                  ( AwsAdminAttemptJournalCleanupContinuation
+                      AwsAdminRecoveryCleanupProvenRemintUsed
+                  )
+              )
+          cleanupIntent =
+            canonicalizeWithoutPlanBinding
+              (must (bindAwsAdminAuthorizedRecoveryIntent cleanupProof replacement))
+      awsAdminPermitIntentPlanBinding retained `shouldBe` Nothing
+      awsAdminPermitIntentPlanBinding cleanupIntent `shouldBe` Nothing
+      commitAwsAdminPreparedAuthorizedRecovery cleanupProof cleanupIntent authorized
+        `shouldBe` Right (AwsAdminAuthorityPrepared cleanupIntent)
+      events <- newIORef []
+      stateRef <- newIORef (0 :: Int, authorized)
+      let repository = renewalRepository events stateRef
+          boundary =
+            AwsAdminPreparedTargetBoundary $ \intent -> do
+              modifyIORef' events (<> ["outbox-readback"])
+              pure (Right (awsAdminPermitIntentPreparedTarget intent))
+      prepareAwsAdminAuthorityAuthorizedRecovery
+        repository
+        boundary
+        cleanupProof
+        cleanupIntent
+        `shouldReturn` Right (AwsAdminAuthorityPrepared cleanupIntent)
+      readIORef events `shouldReturn` ["outbox-readback", "state-cas"]
+      (snd <$> readIORef stateRef)
+        `shouldReturn` AwsAdminAuthorityPrepared cleanupIntent
+
+      firstReconcilePermit <-
+        authorizedPermitFor
+          (renewalIntentAt renewalOldDeadline imageDigest targetAgent "home")
+      let firstReconcileAuthorized = AwsAdminAuthorityAuthorized firstReconcilePermit
+          firstReconcileProof =
+            must
+              ( proveAwsAdminAuthorizedRecovery
+                  renewalNow
+                  firstReconcileAuthorized
+                  AwsAdminAttemptResourceAbsent
+                  AwsAdminAttemptResourceAbsent
+                  ( AwsAdminAttemptJournalCleanupContinuation
+                      AwsAdminRecoveryCleanupProvenRemintUsed
+                  )
+              )
+          missingFirstReconcileBinding =
+            canonicalizeWithoutPlanBinding
+              (must (bindAwsAdminAuthorizedRecoveryIntent firstReconcileProof replacement))
+      commitAwsAdminPreparedAuthorizedRecovery
+        firstReconcileProof
+        missingFirstReconcileBinding
+        firstReconcileAuthorized
+        `shouldBe` Left AwsAdminAuthorityRenewalBindingMismatch
+
     it "Sprint 2.116 invokes the exact recovery observer before outbox and Authority transitions" $ do
       let retained = renewalIntentAt renewalOldDeadline imageDigest targetAgent "home"
           replacement =
@@ -3332,6 +3418,46 @@ renewalIntentAt activeDeadline activeImage selectedAgent scope =
           (operatorMaterialRequestDigest operatorRequest)
           receiptDigest
           (Just renewalPlanBinding)
+          activeDeadline
+      )
+
+postFirstReconcileRenewalIntentAt
+  :: AuthorityTime
+  -> Text
+  -> TargetAgentIdentity
+  -> Text
+  -> AwsAdminPermitIntent
+postFirstReconcileRenewalIntentAt activeDeadline activeImage selectedAgent scope =
+  must
+    ( mkNormalAwsAdminPermitIntent
+        renewalOperatorPermit
+        iamParameters
+        activeImage
+        scope
+        "http://lifecycle-authority.lifecycle-authority.svc:8600"
+        renewalPreparedTarget
+    )
+ where
+  renewalOperatorPermit =
+    must
+      ( mkOperatorMaterialPermit
+          (must (mkOperatorMaterialPermitId "permit-authority-test"))
+          operatorRequest
+          activeDeadline
+          Nothing
+          "operator-signature"
+      )
+  renewalPreparedTarget =
+    must
+      ( mkPreparedCredentialTargetObservation
+          "owner-nonce-1"
+          1
+          selectedAgent
+          (TargetAwsCredential AwsLifecycleProvider)
+          generation
+          (operatorMaterialRequestDigest operatorRequest)
+          receiptDigest
+          Nothing
           activeDeadline
       )
 

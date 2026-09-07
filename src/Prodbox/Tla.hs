@@ -18,45 +18,99 @@ import System.FilePath (takeDirectory)
 runTlaCheck :: FilePath -> IO ExitCode
 runTlaCheck repoRoot = do
   let tlaDir = repoRoot ++ "/documents/engineering/tla"
-      modelPath = tlaDir ++ "/gateway_orders_rule.tla"
-      configPath = tlaDir ++ "/gateway_orders_rule.cfg"
       resultPath = tlaDir ++ "/tlc_last_run.txt"
-      command = dockerCommand tlaDir
-  modelExists <- doesFileExist modelPath
-  configExists <- doesFileExist configPath
-  case (modelExists, configExists) of
-    (False, _) ->
-      writeResult resultPath (renderResult [] 1 "" ("Model file not found: " ++ modelPath))
-        >> pure (ExitFailure 1)
-    (_, False) ->
-      writeResult resultPath (renderResult [] 1 "" ("Config file not found: " ++ configPath))
-        >> pure (ExitFailure 1)
-    (True, True) -> do
-      outputResult <-
-        captureSubprocessResult
-          Subprocess
-            { subprocessPath = "docker"
-            , subprocessArguments = drop 1 command
-            , subprocessEnvironment = Nothing
-            , subprocessWorkingDirectory = Just repoRoot
-            }
-      case outputResult of
-        Failure err -> do
-          writeResult resultPath (renderResult command 1 "" err)
-          pure (ExitFailure 1)
-        Success output -> do
-          writeResult
-            resultPath
-            ( renderResult
-                command
-                (exitCodeInt (processExitCode output))
-                (processStdout output)
-                (processStderr output)
-            )
-          pure (processExitCode output)
+  availability <- traverse (observeModelFiles tlaDir) tlaModels
+  case concatMap missingModelFiles availability of
+    missing@(_ : _) -> do
+      writeResult resultPath (unlines missing)
+      pure (ExitFailure 1)
+    [] -> do
+      results <- traverse (runModel repoRoot tlaDir) tlaModels
+      writeResult resultPath (concatMap renderModelResult results)
+      pure
+        ( if all ((== ExitSuccess) . modelResultExitCode) results
+            then ExitSuccess
+            else ExitFailure 1
+        )
 
-dockerCommand :: FilePath -> [String]
-dockerCommand tlaDir =
+data TlaModel = TlaModel
+  { tlaModelFile :: FilePath
+  , tlaConfigFile :: FilePath
+  }
+
+tlaModels :: [TlaModel]
+tlaModels =
+  [ TlaModel "gateway_orders_rule.tla" "gateway_orders_rule.cfg"
+  , TlaModel "gateway_legacy_liveness.tla" "gateway_legacy_liveness.cfg"
+  ]
+
+data ModelAvailability = ModelAvailability
+  { availabilityModel :: TlaModel
+  , availabilityModelExists :: Bool
+  , availabilityConfigExists :: Bool
+  }
+
+observeModelFiles :: FilePath -> TlaModel -> IO ModelAvailability
+observeModelFiles tlaDir model = do
+  modelExists <- doesFileExist (tlaDir ++ "/" ++ tlaModelFile model)
+  configExists <- doesFileExist (tlaDir ++ "/" ++ tlaConfigFile model)
+  pure
+    ModelAvailability
+      { availabilityModel = model
+      , availabilityModelExists = modelExists
+      , availabilityConfigExists = configExists
+      }
+
+missingModelFiles :: ModelAvailability -> [String]
+missingModelFiles availability =
+  [ "Model file not found: " ++ tlaModelFile model
+  | not (availabilityModelExists availability)
+  ]
+    ++ [ "Config file not found: " ++ tlaConfigFile model
+       | not (availabilityConfigExists availability)
+       ]
+ where
+  model = availabilityModel availability
+
+data ModelResult = ModelResult
+  { modelResultName :: FilePath
+  , modelResultCommand :: [String]
+  , modelResultExitCode :: ExitCode
+  , modelResultStdout :: String
+  , modelResultStderr :: String
+  }
+
+runModel :: FilePath -> FilePath -> TlaModel -> IO ModelResult
+runModel repoRoot tlaDir model = do
+  let command = dockerCommand tlaDir model
+  outputResult <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "docker"
+        , subprocessArguments = drop 1 command
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $ case outputResult of
+    Failure err ->
+      ModelResult
+        { modelResultName = tlaModelFile model
+        , modelResultCommand = command
+        , modelResultExitCode = ExitFailure 1
+        , modelResultStdout = ""
+        , modelResultStderr = err
+        }
+    Success output ->
+      ModelResult
+        { modelResultName = tlaModelFile model
+        , modelResultCommand = command
+        , modelResultExitCode = processExitCode output
+        , modelResultStdout = processStdout output
+        , modelResultStderr = processStderr output
+        }
+
+dockerCommand :: FilePath -> TlaModel -> [String]
+dockerCommand tlaDir model =
   [ "docker"
   , "run"
   , "--rm"
@@ -75,19 +129,20 @@ dockerCommand tlaDir =
   , "-workers"
   , "8"
   , "-config"
-  , "gateway_orders_rule.cfg"
-  , "gateway_orders_rule.tla"
+  , tlaConfigFile model
+  , tlaModelFile model
   ]
 
-renderResult :: [String] -> Int -> String -> String -> String
-renderResult command returnCode stdoutText stderrText =
+renderModelResult :: ModelResult -> String
+renderModelResult result =
   unlines
-    [ "command: " ++ unwords command
-    , "returncode: " ++ show returnCode
+    [ "model: " ++ modelResultName result
+    , "command: " ++ unwords (modelResultCommand result)
+    , "returncode: " ++ show (exitCodeInt (modelResultExitCode result))
     , "stdout:"
-    , stdoutText
+    , modelResultStdout result
     , "stderr:"
-    , stderrText
+    , modelResultStderr result
     ]
 
 writeResult :: FilePath -> String -> IO ()

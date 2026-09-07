@@ -432,7 +432,6 @@ renewalCoreBindingsMatch retained replacement =
   planBindingIsExact =
     awsAdminPermitIntentPlanBinding retained
       == awsAdminPermitIntentPlanBinding replacement
-      && awsAdminPermitIntentPlanBinding retained /= Nothing
   preparedBindingsMatch =
     preparedCredentialTargetOwnerNonce retainedPrepared
       == preparedCredentialTargetOwnerNonce replacementPrepared

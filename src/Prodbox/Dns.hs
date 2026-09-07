@@ -51,7 +51,8 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkPublicARecordRef
   )
 import Prodbox.PublicEdge
-  ( publicFqdn
+  ( gatewayDnsWriteAuthorityNotReadyDiagnostic
+  , publicFqdn
   , sharedPublicHostFqdns
   )
 import Prodbox.Settings
@@ -179,7 +180,7 @@ queryHomeGatewayDnsRecordValues settings fqdn = do
       if homeGatewayDnsObservationWritable observed
         then Right (maybe [] pure (homeGatewayDnsObservationValue observed))
         else
-          Left "Gateway-DNS observation is bound to the requested record but its write authority is not ready"
+          Left gatewayDnsWriteAuthorityNotReadyDiagnostic
 
 decodeHomeGatewayDnsObservation
   :: Text -> String -> Value -> Either String HomeGatewayDnsObservation

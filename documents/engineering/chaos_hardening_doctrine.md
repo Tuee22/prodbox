@@ -459,8 +459,12 @@ prodbox applies this with an explicit decomposition for the emitter-local refine
 representative emitter and one real peer/acknowledger while holding `activeOrders` fixed. The
 canonical exhaustive run generated 7,139,920 states and checked 781,710 distinct states; the
 independent Orders/ranked-owner/partition axis and concrete Orders migration remain separate proof
-obligations. The model does not claim liveness or the production three-peer cardinality. Its exact
-scope, correspondence, and documented divergences are owned by
+obligations. `gateway_legacy_liveness.tla` separately checks six pre-cutover durable-fence/liveness
+invariants across two peers, two fences, full-heartbeat and compacted-cursor observations,
+in-process proof rotation, delayed predecessor delivery, and timeout expiry; its canonical run
+generated 14,683,109 states and checked 2,233,608 distinct states. Neither model claims liveness
+progress or the production three-peer cardinality. Their exact scope, correspondence, and documented
+divergences are owned by
 [tla_modelling_assumptions.md](./tla_modelling_assumptions.md).
 
 Where the invariant is **impossibility-bounded** (R7), state it *conditionally* — e.g. *≤ 1 owner once
@@ -474,8 +478,8 @@ stale owner cannot act on a belief the rest of the cluster has already overwritt
 
 **What this move cannot see — the honest limit.** Model checks the **design, not the code.** A green
 model does not prove the implementation refines it; model and code are separate artifacts that drift — in
-prodbox the correspondence between `gateway_orders_rule.tla` and `Daemon.hs` is kept as documentation
-(`tla_modelling_assumptions.md` §3), not executed, which is precisely the gap §10 exists to close — and a
+prodbox the correspondence between both Gateway models and `Daemon.hs` is kept as documentation
+(`tla_modelling_assumptions.md` §§2-3), not executed, which is precisely the gap §10 exists to close — and a
 bounded scope hides any bug that needs more actors than the scope allows. And a model in **logical
 time** says nothing about the **real-time / clock-skew** assumptions the implementation actually depends
 on — those are abstracted away, not verified, and must be named and bounded separately (R8). Its unique,

@@ -316,6 +316,11 @@ deliberately split: Provider Worker resolves only the Lifecycle-provider generat
 exact fixed role for non-credential SES/S3/DNS work. Only when SMTP IAM install, rotation, or repair
 is required does a separate `OperatorMaterialPermit` route an admin prompt to Credential
 Provisioner; a converged family or target restore from retained-home custody requires no re-prompt.
+For the harness's Operational Lifecycle-provider repair, the canonical role-policy digest revisions
+the stable cycle scope before durable operation lookup. An unchanged revision recovers the retained
+completion; policy drift selects a successor operation and ordinary next Target generation whose
+IAM trust/policy must be put and exactly read back before credential creation. Completed operations
+are immutable and are not re-executed under a later policy document.
 
 ## 2. Authentication Source And Storage Rules
 
@@ -540,9 +545,11 @@ resolve and use the exact Lifecycle Authority operation capability and the relev
 settings-defined AWS auth. A raw MinIO socket or ready gateway is not equivalent evidence.
 
 The supported path synchronizes only non-secret validation inputs such as operator-CIDR into the
-stack with `pulumi config set`. The fenced provider worker acquires the
-Lifecycle-provider generation through its own Vault role and projects only its bounded role session
-into Pulumi's subprocess environment; no AWS credential lives in Dhall or stack-local config.
+stack with `pulumi config set`. The fenced provider worker acquires the Lifecycle-provider base
+generation through its own Vault role, uses native STS to validate its exact account/user identity,
+assumes and verifies the sole account-bound role deterministically selected by the closed intent,
+and projects only the temporary response into Pulumi's subprocess environment. The base credential
+never reaches Pulumi; no AWS credential lives in Dhall or stack-local config.
 
 The target prerequisite proof submits or observes through the same operation-indexed
 `CapabilityRef` used for execution; the provider worker may then run bounded

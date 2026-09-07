@@ -532,10 +532,10 @@ data RequestReplayValueWire
   deriving anyclass (Serialise)
 
 requestReplayCodecVersion :: Word16
-requestReplayCodecVersion = 8
+requestReplayCodecVersion = 9
 
 legacyRequestReplayCodecVersions :: [Word16]
-legacyRequestReplayCodecVersions = [2, 3, 4, 5, 6, 7]
+legacyRequestReplayCodecVersions = [2, 3, 4, 5, 6, 7, 8]
 
 encodeRequestReplayProjection
   :: Int

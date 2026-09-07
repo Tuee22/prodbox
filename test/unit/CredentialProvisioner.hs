@@ -8,6 +8,7 @@ import Control.Monad (forM_)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Either (isRight)
 import Data.IORef
   ( IORef
   , modifyIORef'
@@ -26,6 +27,7 @@ import Options.Applicative
   , defaultPrefs
   , execParserPure
   )
+import Prodbox.Aws.Native.Sts (AssumeRoleRequest (..))
 import Prodbox.Aws.Native.Wire
   ( DispatchPhase (PossiblySent)
   , HttpOutcome (HttpOutcome)
@@ -39,6 +41,13 @@ import Prodbox.CLI.Command
   , PlanOptions (..)
   )
 import Prodbox.CLI.Parser (Options (..), parserInfo)
+import Prodbox.Capacity.ProviderWorkerBudget
+  ( ProviderWorkerResourceEnvelope (providerWorkerEnvelopeCpuMillicores)
+  )
+import Prodbox.ControlPlane.AuthorityBackupReconcileProduction
+  ( normalAwsAdminOperationIdForScope
+  )
+import Prodbox.ControlPlane.ProviderAssumedRoleSession
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( AwsCredentialIdentity (..)
   , TargetSecretId (..)
@@ -78,8 +87,12 @@ import Prodbox.Lifecycle.CredentialProvisioner.FirstReconcileJournal
 import Prodbox.Lifecycle.CredentialProvisioner.Kubernetes
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
 import Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
+import Prodbox.Lifecycle.CredentialProvisioner.ProviderRolePolicyOperationScope
+import Prodbox.Lifecycle.CredentialProvisioner.ProviderRoute53Policy
 import Prodbox.Lifecycle.CredentialProvisioner.TargetMaterial
+import Prodbox.Lifecycle.DnsRecord (mkAwsAccountId)
 import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork (ProviderIntent (..))
 import Prodbox.Lifecycle.TargetCommitIntent
   ( CredentialGeneration
   , mkCredentialGeneration
@@ -309,6 +322,229 @@ credentialProvisionerSuite =
       trustPolicy `shouldSatisfy` maybe False (Text.isInfixOf "TrustLifecycleProviderIdentity")
       userPolicy `shouldSatisfy` maybe False (Text.isInfixOf "sts:AssumeRole")
       rolePolicy `shouldSatisfy` maybe False (Text.isInfixOf "RegisteredIamRoleEffects")
+
+    it "freezes and closes the registered subzone Route 53 policy counterexample" $ do
+      let counterexample = frozenProviderRoute53PolicyCounterexample
+          expectedActions =
+            [ "route53:ChangeResourceRecordSets"
+            , "route53:GetChange"
+            , "route53:GetHostedZone"
+            , "route53:ListResourceRecordSets"
+            , "route53:ChangeTagsForResource"
+            , "route53:CreateHostedZone"
+            , "route53:DeleteHostedZone"
+            , "route53:ListHostedZones"
+            , "route53:ListTagsForResource"
+            ]
+      providerRoute53PolicyIdentity counterexample
+        `shouldBe` "LIFECYCLE-PROVIDER-ROUTE53-HOSTED-ZONE-CREATE-DENIED-2026-09-05"
+      providerRoute53Actions `shouldBe` expectedActions
+      validateProviderRoute53PolicyCounterexample counterexample
+        `shouldBe` Right
+          ProviderRoute53PolicyClosure
+            { providerRoute53PolicyOldToNewEnvelope =
+                ( providerRoute53PolicySupersededEnvelope counterexample
+                , providerRoute53PolicyReplacementEnvelope counterexample
+                )
+            , providerRoute53PolicySupersededDisposition =
+                ProviderRoute53HostedZoneCreateDenied
+            , providerRoute53PolicyReplacementDisposition =
+                ProviderRoute53RegisteredSubzoneAuthorized expectedActions
+            }
+      credentialIamProgramRolePolicyDocument
+        ( must
+            ( mkLifecycleProviderIamProgram
+                (fixtureAwsRegion FixtureUsWest2)
+                "123456789012"
+                "prodbox-lifecycle-provider"
+            )
+        )
+        `shouldSatisfy` maybe
+          False
+          ( \document ->
+              all (`Text.isInfixOf` document) expectedActions
+                && not ("route53:*" `Text.isInfixOf` document)
+          )
+
+    it "rejects every policy or resource-envelope mutation of the Route 53 reproducer" $ do
+      let counterexample = frozenProviderRoute53PolicyCounterexample
+          deleteCreateHostedZone = filter (/= "route53:CreateHostedZone")
+          widenedActions = "route53:*" : providerRoute53Actions
+      validateProviderRoute53PolicyCounterexample
+        counterexample
+          { providerRoute53PolicyRegisteredSubzoneActions =
+              deleteCreateHostedZone
+                (providerRoute53PolicyRegisteredSubzoneActions counterexample)
+          }
+        `shouldBe` Left ProviderRoute53PolicyRegisteredActionsDrift
+      validateProviderRoute53PolicyCounterexample
+        counterexample
+          { providerRoute53PolicySupersededActions =
+              providerRoute53Actions
+          }
+        `shouldBe` Left ProviderRoute53PolicySupersededActionsDrift
+      validateProviderRoute53PolicyCounterexample
+        counterexample
+          { providerRoute53PolicyReplacementActions = widenedActions
+          }
+        `shouldBe` Left ProviderRoute53PolicyReplacementActionsDrift
+      validateProviderRoute53PolicyCounterexample
+        counterexample
+          { providerRoute53PolicyReplacementEnvelope =
+              (providerRoute53PolicyReplacementEnvelope counterexample)
+                { providerWorkerEnvelopeCpuMillicores = 101
+                }
+          }
+        `shouldBe` Left ProviderRoute53PolicyEnvelopeChanged
+
+    it "revisions the durable credential operation when the Provider role policy changes" $ do
+      let counterexample = frozenProviderRolePolicyOperationCounterexample
+          supersededScope = providerRolePolicyOperationSupersededScope counterexample
+          replacementScope = providerRolePolicyOperationScope supersededScope
+          oldOperation =
+            normalAwsAdminOperationIdForScope
+              supersededScope
+              LifecycleProviderCredential
+              2
+          replacementOperation =
+            normalAwsAdminOperationIdForScope
+              replacementScope
+              LifecycleProviderCredential
+              2
+      providerRolePolicyOperationIdentity counterexample
+        `shouldBe` "LIFECYCLE-PROVIDER-ASSUMED-ROLE-ROUTE53-CREATE-DENIED-2026-09-06"
+      providerRolePolicyOperationRevision
+        `shouldBe` "bacc2854e31887da758e66bf3d8574e8399086511289ea57d59f75bd8e55394a"
+      providerRolePolicyOperationReplacementRevision counterexample
+        `shouldBe` providerRolePolicyOperationRevision
+      providerRolePolicyOperationReplacementScope counterexample
+        `shouldBe` replacementScope
+      oldOperation `shouldSatisfy` isRight
+      replacementOperation `shouldSatisfy` isRight
+      replacementOperation `shouldNotBe` oldOperation
+      providerRolePolicyOperationRevisionFor
+        (providerRolePolicyOperationMutatedDocument counterexample)
+        `shouldNotBe` providerRolePolicyOperationRevision
+      rke2Source <- readFile "src/Prodbox/CLI/Rke2.hs"
+      rke2Source
+        `shouldContain` "providerRolePolicyOperationScope operationScope"
+      rke2Source
+        `shouldContain` "revisionedOperationScope\n                                  iamParameters"
+      validateProviderRolePolicyOperationCounterexample counterexample
+        `shouldBe` Right
+          ProviderRolePolicyOperationClosure
+            { providerRolePolicyOperationOldToNewEnvelope =
+                ( providerRolePolicyOperationSupersededEnvelope counterexample
+                , providerRolePolicyOperationReplacementEnvelope counterexample
+                )
+            , providerRolePolicyOperationSupersededDisposition =
+                ProviderCompletedCredentialReceiptReplayed supersededScope
+            , providerRolePolicyOperationReplacementDisposition =
+                ProviderRevisedIamProgramScheduled replacementScope
+            }
+
+    it "rejects policy-revision, operation-scope, mutation, and envelope drift" $ do
+      let counterexample = frozenProviderRolePolicyOperationCounterexample
+      validateProviderRolePolicyOperationCounterexample
+        counterexample
+          { providerRolePolicyOperationReplacementRevision = "different"
+          }
+        `shouldBe` Left ProviderRolePolicyOperationRevisionDrift
+      validateProviderRolePolicyOperationCounterexample
+        counterexample
+          { providerRolePolicyOperationReplacementScope =
+              providerRolePolicyOperationSupersededScope counterexample
+          }
+        `shouldBe` Left ProviderRolePolicyOperationReplacementScopeDrift
+      validateProviderRolePolicyOperationCounterexample
+        counterexample
+          { providerRolePolicyOperationMutatedDocument =
+              lifecycleProviderRolePolicyDocument
+          }
+        `shouldBe` Left ProviderRolePolicyOperationMutationNotDetected
+      validateProviderRolePolicyOperationCounterexample
+        counterexample
+          { providerRolePolicyOperationReplacementEnvelope =
+              (providerRolePolicyOperationReplacementEnvelope counterexample)
+                { providerWorkerEnvelopeCpuMillicores = 101
+                }
+          }
+        `shouldBe` Left ProviderRolePolicyOperationEnvelopeChanged
+
+    it "freezes the base-user failure and derives the one registered role from closed intents" $ do
+      let counterexample = frozenProviderAssumedRoleCounterexample
+          account = must (mkAwsAccountId "751103452346")
+          request = providerAssumeRoleRequest ObserveProviderAwsScope account
+      providerAssumedRoleIdentity counterexample
+        `shouldBe` "LIFECYCLE-PROVIDER-ASSUME-ROLE-SESSION-NOT-BOUND-2026-09-06"
+      providerRoleForIntent ObserveProviderAwsScope `shouldBe` LifecycleProviderRole
+      providerRoleForIntent ObserveOperationalIdentity `shouldBe` LifecycleProviderRole
+      request
+        `shouldBe` AssumeRoleRequest
+          { assumeRoleArn =
+              "arn:aws:iam::751103452346:role/prodbox-lifecycle-provider"
+          , assumeRoleSessionName = "prodbox-provider-worker"
+          , assumeRoleDurationSeconds = 900
+          }
+      expectedLifecycleProviderBaseUserArn account
+        `shouldBe` "arn:aws:iam::751103452346:user/prodbox-lifecycle-provider"
+      expectedLifecycleProviderAssumedRoleArn account
+        `shouldBe` "arn:aws:sts::751103452346:assumed-role/prodbox-lifecycle-provider/prodbox-provider-worker"
+      case validateProviderAssumedRoleCounterexample counterexample of
+        Left err -> expectationFailure ("unexpected assumed-role closure refusal: " <> show err)
+        Right closure -> do
+          providerAssumedRoleOldToNewEnvelope closure
+            `shouldBe` ( providerAssumedRoleSupersededEnvelope counterexample
+                       , providerAssumedRoleReplacementEnvelope counterexample
+                       )
+          providerAssumedRoleSupersededDisposition closure
+            `shouldBe` ProviderBaseUserSignedEffects
+              "arn:aws:iam::751103452346:user/prodbox-lifecycle-provider"
+          providerAssumedRoleReplacementDisposition closure
+            `shouldBe` ProviderRegisteredRoleSignedEffects
+              "arn:aws:sts::751103452346:assumed-role/prodbox-lifecycle-provider/prodbox-provider-worker"
+          providerAssumedRoleClosedRequest closure `shouldBe` request
+
+    it "rejects role, session, identity, and resource-envelope drift in the assumed-role reproducer" $ do
+      let counterexample = frozenProviderAssumedRoleCounterexample
+      validateProviderAssumedRoleCounterexample
+        counterexample
+          { providerAssumedRoleRequestedRoleArn =
+              "arn:aws:iam::751103452346:role/different"
+          }
+        `shouldBe` Left ProviderAssumedRoleRequestedRoleDrift
+      validateProviderAssumedRoleCounterexample
+        counterexample
+          { providerAssumedRoleSessionName = "different-session"
+          }
+        `shouldBe` Left ProviderAssumedRoleSessionNameDrift
+      validateProviderAssumedRoleCounterexample
+        counterexample
+          { providerAssumedRoleReplacementCallerArn =
+              providerAssumedRoleBaseCallerArn counterexample
+          }
+        `shouldBe` Left ProviderAssumedRoleReplacementCallerDrift
+      validateProviderAssumedRoleCounterexample
+        counterexample
+          { providerAssumedRoleReplacementEnvelope =
+              (providerAssumedRoleReplacementEnvelope counterexample)
+                { providerWorkerEnvelopeCpuMillicores = 101
+                }
+          }
+        `shouldBe` Left ProviderAssumedRoleEnvelopeChanged
+
+    it "binds production native and subprocess capabilities to the same verified role session" $ do
+      productionSource <- readFile "src/Prodbox/ControlPlane/ProviderProduction.hs"
+      productionSource
+        `shouldContain` "assumeProviderRoleSession\n                (providerAssumeRoleRequest intent)"
+      productionSource
+        `shouldContain` "NativeSts.assumedRoleSessionCredentials roleSession"
+      productionSource
+        `shouldContain` "NativeSts.assumedRoleSessionHandle roleSession"
+      productionSource
+        `shouldContain` "(productionSessionCredentialHandle session)"
+      productionSource
+        `shouldNotContain` "route53ClientForSession session =\n  case baseCredentialHandleFromSettings"
 
     it "Sprint 2.121 accepts only singleton-equivalent trust-policy read-back" $ do
       let runWithTrustReadBack transform = do

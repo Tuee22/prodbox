@@ -230,13 +230,25 @@ manifest renderers consume the same compiled envelope, including ephemeral stora
 Tier-0 config is refreshed when that canonical capacity projection changes; a complete
 operator-owned config is never overwritten.
 
-Kubelet therefore renders the corrected reservation as equal
-`system-reserved`/`kube-reserved` halves (`250m / 768Mi / 4864Mi`). The RKE2 systemd boundary is a
-separate containment ceiling and remains byte-semantically at the established full-core/2GiB base
-and 3GiB maximum by adding the explicit two-slot peak back to the host-only vector before rendering
-`CPUQuota`, `MemoryHigh`, and `MemoryMax`. On the 8-core home node this changes Kubernetes CPU
-allocatable from 7000m to 7500m; the stricter proof-level `cluster.allocatable` remains 7000m because
-it additionally subtracts the 500m eviction floor.
+The 2026-09-06 revision-bound AWS-admin replay then live-proved a second scheduler edge. The
+standing Pods requested `7245m`; the credential parent consumed one `250m` slot, leaving `5m` of
+the `7500m` kubelet allocatable when its co-resident `250m` Target materializer was created.
+Kubernetes refused both Target attempts with `Insufficient cpu`. Stable counterexample
+`AWS-ADMIN-REVISIONED-TARGET-WORKER-INSUFFICIENT-CPU-2026-09-06` freezes that exact two-worker,
+no-fault topology. The correction transfers CPU only: `rke2_reserved` changes from `500m` to
+`250m`, and the proof-level eviction floor changes from `500m` to `750m`. Every non-CPU axis,
+workload profile, replica, envelope, host capacity, and the complete topology-normalized total
+`7210m / 12544Mi / 35424Mi / 157696Mi` is identical. The old scheduler result needs `7745m`
+against `7500m` and fails by `245m`; the replacement needs the same `7745m` against `7750m` and
+retains `5m` scheduler headroom.
+
+Kubelet therefore renders the replacement reservation as equal
+`system-reserved`/`kube-reserved` halves (`125m / 768Mi / 4864Mi`). The RKE2 systemd boundary is a
+separate containment ceiling: its CPU budget derives from the unchanged
+`rke2_reserved + eviction_floor = 1000m` sum, while its memory base/max remain 2GiB/3GiB. On the
+8-core home node Kubernetes CPU allocatable is now `7750m`; the stricter proof-level
+`cluster.allocatable` remains `7000m` because it subtracts both the host reservation and the
+`750m` proof floor.
 
 The rendered Kubernetes shape follows directly from these values:
 
@@ -386,18 +398,26 @@ it cannot be reused as evidence for concurrent lanes.
 
 The fenced Provider Worker is the concrete serialized case. Its four admitted request workers and
 independent readiness observer share one process-wide subprocess permit across both AWS CLI and
-Pulumi launch sites. A 2026-08-31 disposable-container measurement of the packaged AWS CLI recorded
-a 74,052 KiB peak; the typed plan rounds that slot upward to 80 MiB. The complete Provider profile
-is `64 MiB heap + 16 MiB native + 80 MiB child + 8 MiB kernel/cgroup + 8 MiB safety = 176 MiB`, with
-the child schedule bounded to one permit and the request-wide 300-second deadline. The exact
-`100m / 176Mi` request-equals-limit envelope keeps the portable single-node standing-workload sum
-at its existing 12,800 MiB allocatable ceiling instead of converting the live OOM fix into host
-overcommit. AWS CLI calls additionally carry a narrower physical 30-second/output bound.
+Pulumi launch sites. The earlier 80 MiB child slot covered only the 74,052 KiB packaged AWS CLI
+peak; live packaged-provider schema loading proved it insufficient when the exact 176 MiB cgroup
+recorded six child OOM kills. A non-mutating preview of the same project and image measured the
+uncapped schema/preview child at exactly 1,024,434,176 bytes (976.9765625 MiB), so the typed plan
+rounds that child slot upward to 1,024 MiB. The complete production profile is `64 MiB heap + 16 MiB
+native + 1,024 MiB child + 8 MiB kernel/cgroup + 8 MiB safety = 1,120 MiB`, with the child schedule
+bounded to one permit and the request-wide 300-second deadline. A hard 1,120 MiB probe reaches the
+post-schema invalid-credential boundary at a 966,365,184-byte peak with zero OOM events. The exact
+`100m / 1120Mi` request-equals-limit envelope transfers 944 MiB from the compiled plan's declared
+idle headroom: workload draw becomes 6,210m / 9,984Mi / 15,456Mi / 155,648Mi inside the unchanged
+7,000m / 13,312Mi / 80,032Mi / 177,952Mi allocatable host budget. No other workload envelope or
+host capacity changes. AWS CLI calls additionally carry a narrower physical 30-second/output bound.
 The Lifecycle Authority's Provider-route HTTP response budget is derived from the same admitted
 schedule maximum: 300 seconds of child execution plus 30 seconds of bounded authenticated
-framing/projection/encoding/socket overhead yields 330 seconds. Capacity validation rejects a
-configured Provider child deadline above the 300-second maximum, so the client cannot time out
-before an admitted schedule by construction. The independently long-running retained-material
+framing/projection/encoding/socket overhead yields 330 seconds. Both synchronous transport legs,
+host-to-Authority and Authority-to-Provider, consume that one typed bound for execute and
+admit-and-execute; admission-only keeps the ordinary Authority budget because it cannot run the
+child. Capacity validation rejects a configured Provider child deadline above the 300-second
+maximum, so neither transport leg can time out before an admitted schedule by construction. The
+independently long-running retained-material
 delivery route derives the same finite 330-second bound from its five-minute persisted operation
 lifetime plus 30 seconds of response overhead; both the host EAB client and in-cluster SES worker
 client consume that one constant. Unrelated HTTP clients retain their existing budgets, including

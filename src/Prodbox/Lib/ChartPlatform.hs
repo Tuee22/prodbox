@@ -6,7 +6,9 @@ module Prodbox.Lib.ChartPlatform
   , ChartInstallSnapshot (..)
   , ChartReleasePlan (..)
   , HelmUpgradeFailureDisposition (..)
+  , PerconaPatroniClaim (..)
   , PublicEdgePreserveOutcome (..)
+  , PublicEdgeTlsNamespaceObservation (..)
   , ResolvedCustomImage (..)
   , buildChartDeletePlan
   , buildChartDeletePlanForSubstrate
@@ -21,6 +23,8 @@ module Prodbox.Lib.ChartPlatform
   , readKubernetesApiEgressCoordinate
   , parseKubernetesApiEgressCoordinate
   , classifyPublicEdgePreserve
+  , classifyPublicEdgeTlsNamespaceObservation
+  , classifyPublicEdgeTlsRestoreSlotCreate
   , deleteChartPlan
   , deployChartPlan
   , deploymentConditionReportsTrue
@@ -34,17 +38,20 @@ module Prodbox.Lib.ChartPlatform
   , observePatroniOperatorAvailableWith
   , operatorAvailableTarget
   , operatorGateResult
+  , parsePatroniPrimaryClaimName
   , renderChartList
   , renderChartStatus
   , renderPublicEdgePreserveOutcome
   , retainReadyPublicEdgeCertificate
   , retainedPublicEdgeTlsSecretManifest
+  , tlsPublicEdgeSecretRestoreSlotManifest
   , resolveChart
   , resolveChartSecrets
   , resolvedCustomImageTargetAgentIdentity
   , resolveRuntimeChartImageForSubstrate
   , selectRepositoryManifestDigest
   , resolveDependencyOrder
+  , resolvePerconaPatroniRuntimeBindings
   , supportedChartNames
   , validateOperatorGatesWith
   , valuesForBootstrapBroker
@@ -184,6 +191,9 @@ import Prodbox.ControlPlane.TlsRetentionWorkflowAuthorityEndpoint
 import Prodbox.ControlPlane.TlsTargetAgentClient
   ( tlsTargetAgentClientWithTransport
   )
+import Prodbox.ControlPlane.TlsTargetAgentProduction
+  ( tlsPublicEdgeSecretRestoreSlotManifest
+  )
 import Prodbox.Gateway.ChartStatics qualified as ChartStatics
 import Prodbox.Gateway.Emitter.Persistence qualified as EmitterPersistence
 import Prodbox.Gateway.Probe qualified as GatewayProbe
@@ -231,7 +241,6 @@ import Prodbox.PostgresPlatform
   , patroniOperatorNamespace
   , patroniPostgresqlCrdName
   , patroniPrimaryServiceHost
-  , patroniPrimaryServiceName
   , patroniRunAsGroup
   , patroniRunAsUser
   , patroniStandbySecretName
@@ -968,12 +977,16 @@ deployChartPlan plan = do
           case accessResult of
             Left err -> pure (Left err)
             Right () -> do
-              restoreResult <- restorePublicEdgeTlsSecretAfterNamespaceCreate planToDeploy
-              case restoreResult of
+              slotResult <- ensurePublicEdgeTlsRestoreSlot planToDeploy
+              case slotResult of
                 Left err -> pure (Left err)
                 Right () -> do
-                  deployResult <- foldM deployRelease (Right ()) releases
-                  pure (deployResult >> Right (renderDeployReport plan))
+                  restoreResult <- restorePublicEdgeTlsSecretAfterNamespaceCreate planToDeploy
+                  case restoreResult of
+                    Left err -> pure (Left err)
+                    Right () -> do
+                      deployResult <- foldM deployRelease (Right ()) releases
+                      pure (deployResult >> Right (renderDeployReport plan))
  where
   deployRelease :: Either String () -> ChartReleasePlan -> IO (Either String ())
   deployRelease (Left err) _ = pure (Left err)
@@ -1052,7 +1065,7 @@ deployChartPlan plan = do
   finishStagedPatroniRelease = validateReleaseReady
 
   -- Sprint 3.13 chunk 13: derive the bootstrap anchor PV from live k8s state
-  -- (the Patroni primary endpoint -> primary pod -> its PVC -> bound PV) when
+  -- (the exact role-labelled primary pod -> its PVC -> bound PV) when
   -- the previous cluster is still present. After a supported chart delete, the
   -- only surviving anchor is the retained ordinal-0 host root, so fall back to
   -- that path before allowing a full three-replica cold bootstrap.
@@ -1207,7 +1220,8 @@ ensurePerconaPatroniStorageBindings
   -> IO (Either String ())
 ensurePerconaPatroniStorageBindings _repoRoot namespace rootChart logicalBindings = do
   -- Sprint 3.13 chunk 13: anchor PV comes from live k8s state via
-  -- 'discoverPatroniAnchorPersistentVolumeName' (Patroni primary endpoint).
+  -- 'discoverPatroniAnchorPersistentVolumeName' (the exact role-labelled
+  -- Patroni primary pod and its postgres-data PVC).
   -- The @.patroni-anchor-volume@ marker is gone.
   maybeAnchorVolumeName <- discoverPatroniAnchorPersistentVolumeName namespace
   ensurePerconaPatroniStorageBindingsWithExpectedClaims
@@ -1869,22 +1883,28 @@ normalizedPatroniClusterStatus = fmap (map toLower . trimWhitespace)
 -- preserved-data exercise drives the failure paths.
 discoverPatroniAnchorPersistentVolumeName :: String -> IO (Maybe String)
 discoverPatroniAnchorPersistentVolumeName namespace = do
-  maybePrimaryPodName <- readOptionalPatroniPrimaryPodName namespace
-  case maybePrimaryPodName >>= patroniClaimNameFromPodName of
+  maybePrimaryClaimName <- readOptionalPatroniPrimaryClaimName namespace
+  case maybePrimaryClaimName of
     Nothing -> pure Nothing
     Just claimName -> readOptionalPersistentVolumeNameForClaim namespace claimName
 
-readOptionalPatroniPrimaryPodName :: String -> IO (Maybe String)
-readOptionalPatroniPrimaryPodName namespace = do
+readOptionalPatroniPrimaryClaimName :: String -> IO (Maybe String)
+readOptionalPatroniPrimaryClaimName namespace = do
+  let clusterName = patroniClusterName namespace
+      selector =
+        "postgres-operator.crunchydata.com/cluster="
+          ++ clusterName
+          ++ ",postgres-operator.crunchydata.com/role=primary"
   result <-
     runPg
       [ "get"
-      , "endpoints"
-      , patroniPrimaryServiceName namespace
+      , "pods"
       , "--namespace"
       , namespace
+      , "--selector"
+      , selector
       , "-o"
-      , "jsonpath={.subsets[0].addresses[0].targetRef.name}"
+      , "json"
       ]
   pure $
     case result of
@@ -1893,13 +1913,50 @@ readOptionalPatroniPrimaryPodName namespace = do
         case processExitCode output of
           ExitFailure _ -> Nothing
           ExitSuccess ->
-            let value = trimWhitespace (processStdout output)
-             in if null value then Nothing else Just value
+            either
+              (const Nothing)
+              id
+              (parsePatroniPrimaryClaimName (BL8.pack (processStdout output)))
+
+parsePatroniPrimaryClaimName :: BL.ByteString -> Either String (Maybe String)
+parsePatroniPrimaryClaimName payload = do
+  value <- eitherDecode payload
+  parseEither parsePrimaryPodList value
+ where
+  parsePrimaryPodList =
+    withObject "Patroni primary pod list" $ \obj -> do
+      items <- obj .: "items"
+      case items of
+        [item] -> parsePrimaryPod item
+        _ -> pure Nothing
+
+  parsePrimaryPod =
+    withObject "Patroni primary pod" $ \pod -> do
+      metadata <- pod .: "metadata"
+      podName <- withObject "Patroni primary pod metadata" (.: "name") metadata
+      spec <- pod .: "spec"
+      volumes <- withObject "Patroni primary pod spec" (.: "volumes") spec
+      maybeClaims <- forM volumes parsePostgresDataVolume
+      let claims = [claimName | Just claimName <- maybeClaims]
+      pure $
+        case (patroniClaimNameFromPodName podName, claims) of
+          (Just expectedClaimName, [observedClaimName])
+            | observedClaimName == expectedClaimName -> Just observedClaimName
+          _ -> Nothing
+
+  parsePostgresDataVolume =
+    withObject "Patroni primary pod volume" $ \volume -> do
+      volumeName <- volume .:? "name" :: Parser (Maybe String)
+      case volumeName of
+        Just "postgres-data" -> do
+          pvc <- volume .: "persistentVolumeClaim"
+          Just <$> withObject "Patroni primary pod PVC" (.: "claimName") pvc
+        _ -> pure Nothing
 
 patroniClaimNameFromPodName :: String -> Maybe String
 patroniClaimNameFromPodName podName = do
-  _ <- dropPodOrdinal podName
-  pure (podName ++ "-pgdata")
+  statefulSetPrefix <- dropPodOrdinal podName
+  pure (statefulSetPrefix ++ "-pgdata")
 
 dropPodOrdinal :: String -> Maybe String
 dropPodOrdinal podName =
@@ -4094,7 +4151,8 @@ ensureChartStorage plan = do
 
   -- The Patroni anchor decision now derives from live k8s state alone
   -- (Sprint 3.13 chunk 13). 'discoverPatroniAnchorPersistentVolumeName'
-  -- queries the Patroni primary endpoint; when the cluster is unreachable
+  -- queries the exact role-labelled primary Pod and its postgres-data PVC;
+  -- when that ownership observation is unavailable
   -- the fall-back is the ordinal-0 binding, matching the prior marker-absent
   -- behavior. The previous @.patroni-anchor-volume@ marker file is gone.
   resetRetainedPatroniReplicaBindings :: IO (Either String ())
@@ -4107,23 +4165,25 @@ ensureChartStorage plan = do
           ]
     maybeAnchorVolumeName <-
       discoverPatroniAnchorPersistentVolumeName (chartDeploymentPlanNamespace plan)
-    let preservedBinding =
-          case maybeAnchorVolumeName of
-            Just anchorVolumeName ->
-              find ((== anchorVolumeName) . chartStorageBindingPersistentVolumeName) patroniBindings
-            Nothing ->
-              find ((== 0) . chartStorageBindingOrdinal) patroniBindings
-        bindingsToReset =
-          case preservedBinding of
-            Just binding ->
-              [ candidate
-              | candidate <- patroniBindings
-              , chartStorageBindingPersistentVolumeName candidate /= chartStorageBindingPersistentVolumeName binding
-              ]
-            Nothing -> []
-    existingReplicaBindings <-
-      filterM (doesDirectoryExist . chartStorageBindingHostPath) bindingsToReset
-    foldM resetBinding (Right ()) existingReplicaBindings
+    case maybeAnchorVolumeName of
+      -- An exact live primary means this is an in-place reconcile, not a
+      -- retained-cluster recreation. Deleting follower contents underneath
+      -- running Pods leaves Patroni processes attached to removed hostPath
+      -- inodes, while an unchanged Helm apply has no reason to replace them.
+      Just _ -> pure (Right ())
+      Nothing -> do
+        let preservedBinding = find ((== 0) . chartStorageBindingOrdinal) patroniBindings
+            bindingsToReset =
+              case preservedBinding of
+                Just binding ->
+                  [ candidate
+                  | candidate <- patroniBindings
+                  , chartStorageBindingPersistentVolumeName candidate /= chartStorageBindingPersistentVolumeName binding
+                  ]
+                Nothing -> []
+        existingReplicaBindings <-
+          filterM (doesDirectoryExist . chartStorageBindingHostPath) bindingsToReset
+        foldM resetBinding (Right ()) existingReplicaBindings
 
   resetBinding :: Either String () -> ChartStorageBinding -> IO (Either String ())
   resetBinding (Left err) _ = pure (Left err)
@@ -4216,10 +4276,11 @@ planOwnsPublicEdgeCertificate plan =
   chartDeploymentPlanNamespace plan == "vscode"
     && chartDeploymentPlanRootChart plan == "vscode"
 
--- | Install the exact-name Kubernetes capability before restore. Non-forcing
--- server-side apply names the object even on first creation, so
--- @resourceNames@ constrains restore creation. The Target Agent refuses a
--- differing existing Secret before apply. Only the one-shot worker
+-- | Install the exact-name Kubernetes capability before a selected worker
+-- reads or restores the public-edge Secret. The graph pre-establishes the
+-- object separately, so @resourceNames@ constrains every selected-worker
+-- GET/PATCH without granting namespace-wide Secret creation. The Target Agent
+-- refuses a differing existing Secret before patch. Only the one-shot worker
 -- ServiceAccount receives this capability; the standing Agent is coordinator-
 -- and metadata-only.
 ensurePublicEdgeTlsAgentAccess :: ChartDeploymentPlan -> IO (Either String ())
@@ -4331,6 +4392,46 @@ ensurePublicEdgeTlsAgentAccess plan
                    ]
             ]
       ]
+
+-- | Establish the non-secret exact-name object before asking Lifecycle
+-- Authority to restore retained bytes. A plain create is deliberate: success
+-- establishes the slot, while AlreadyExists leaves every existing object
+-- untouched for the selected worker's exact validation. The host never reads
+-- the Secret object or any Secret data.
+ensurePublicEdgeTlsRestoreSlot :: ChartDeploymentPlan -> IO (Either String ())
+ensurePublicEdgeTlsRestoreSlot plan
+  | not (planOwnsPublicEdgeCertificate plan) = pure (Right ())
+  | otherwise = createPublicEdgeTlsRestoreSlotIfAbsent
+
+createPublicEdgeTlsRestoreSlotIfAbsent :: IO (Either String ())
+createPublicEdgeTlsRestoreSlotIfAbsent =
+  withTempFile "prodbox-public-edge-tls-restore-slot-" $ \path handle -> do
+    BL.hPutStr handle (Pretty.encodePretty' prettyJsonConfig tlsPublicEdgeSecretRestoreSlotManifest)
+    hClose handle
+    outputResult <-
+      runCaptured "kubectl create public-edge TLS restore slot" "kubectl" ["create", "-f", path]
+    pure (outputResult >>= classifyPublicEdgeTlsRestoreSlotCreate)
+
+-- | Accept only actual creation or an API-server AlreadyExists refusal. The
+-- classifier intentionally ignores stdout for idempotence, so a subprocess
+-- cannot forge an existing-object observation through ordinary output.
+classifyPublicEdgeTlsRestoreSlotCreate :: ProcessOutput -> Either String ()
+classifyPublicEdgeTlsRestoreSlotCreate output =
+  case processExitCode output of
+    ExitSuccess -> Right ()
+    ExitFailure code ->
+      let stderrText = processStderr output
+          normalizedStderr = map toLower stderrText
+       in if "alreadyexists" `isInfixOf` normalizedStderr
+            || "already exists" `isInfixOf` normalizedStderr
+            then Right ()
+            else
+              Left
+                ( "kubectl create public-edge TLS restore slot failed (exit "
+                    ++ show code
+                    ++ "): "
+                    ++ stderrText
+                )
 
 -- | Sprint 3.34: the Kubernetes API egress coordinate — the compiled owner of
 -- the address and port a NetworkPolicy egress rule must match to admit traffic
@@ -4471,6 +4572,62 @@ data PublicEdgePreserveOutcome
     PreserveNothingToRetain
   deriving (Eq, Show)
 
+data PublicEdgeTlsNamespaceObservation
+  = PublicEdgeTlsNamespaceAbsent
+  | PublicEdgeTlsNamespacePresent
+  deriving (Eq, Show)
+
+-- | Classify the exact non-secret namespace observation that precedes
+-- retain-before-delete. Exit-zero empty output is Kubernetes' authoritative
+-- @--ignore-not-found@ absence result. A present object must bind back to the
+-- requested namespace; malformed, mismatched, or failed observations remain
+-- unobservable and may not be normalized to source-Secret absence.
+classifyPublicEdgeTlsNamespaceObservation
+  :: String -> ProcessOutput -> Either String PublicEdgeTlsNamespaceObservation
+classifyPublicEdgeTlsNamespaceObservation expectedNamespace output =
+  case processExitCode output of
+    ExitFailure _ ->
+      Left
+        ( "kubectl get namespace "
+            ++ expectedNamespace
+            ++ " failed: "
+            ++ processStderr output
+            ++ processStdout output
+        )
+    ExitSuccess
+      | null stdoutText -> Right PublicEdgeTlsNamespaceAbsent
+      | otherwise -> do
+          value <-
+            first
+              ("kubectl get namespace returned unexpected JSON payload: " ++)
+              (eitherDecode (BL8.pack stdoutText))
+          observedNamespace <-
+            first
+              ("kubectl get namespace returned invalid Namespace identity: " ++)
+              (parseEither parseNamespaceName value)
+          if observedNamespace == expectedNamespace
+            then Right PublicEdgeTlsNamespacePresent
+            else
+              Left
+                ( "kubectl get namespace identity mismatch: expected "
+                    ++ expectedNamespace
+                    ++ ", observed "
+                    ++ observedNamespace
+                )
+ where
+  stdoutText = trimWhitespace (processStdout output)
+
+  parseNamespaceName :: Value -> Parser String
+  parseNamespaceName =
+    withObject "Namespace" $ \obj -> do
+      apiVersion <- obj .: "apiVersion"
+      kind <- obj .: "kind"
+      if (apiVersion :: String) /= "v1" || (kind :: String) /= "Namespace"
+        then fail "expected apiVersion v1 and kind Namespace"
+        else pure ()
+      metadata <- obj .: "metadata"
+      withObject "Namespace.metadata" (.: "name") metadata
+
 -- | Pure: classify the preserve outcome from the observed live state —
 -- the owned cert Secret (if any) and the public-edge @Certificate@ (if
 -- any). Secret present → retain; Secret absent but a @Certificate@
@@ -4516,16 +4673,44 @@ preservePublicEdgeTlsSecretBeforeDelete plan
               )
           )
       Just scopeSet -> do
-        retained <-
-          retainPublicEdgeTls
-            (chartDeploymentPlanRepoRoot plan)
-            (chartDeploymentPlanSubstrate plan)
-            scopeSet
-        case retained of
+        namespaceObservation <- readPublicEdgeTlsNamespace
+        case namespaceObservation of
           Left err -> pure (Left err)
-          Right True -> pure (Right PreservedToRetentionStore)
-          Right False -> classifyMissingSource
+          Right PublicEdgeTlsNamespaceAbsent -> pure (Right PreserveNothingToRetain)
+          Right PublicEdgeTlsNamespacePresent -> do
+            accessResult <- ensurePublicEdgeTlsAgentAccess plan
+            case accessResult of
+              Left err -> pure (Left err)
+              Right () -> retainFromPresentNamespace scopeSet
  where
+  readPublicEdgeTlsNamespace = do
+    outputResult <-
+      runCaptured
+        ("kubectl get namespace " ++ chartDeploymentPlanNamespace plan)
+        "kubectl"
+        [ "get"
+        , "namespace"
+        , chartDeploymentPlanNamespace plan
+        , "--ignore-not-found=true"
+        , "-o"
+        , "json"
+        ]
+    pure
+      ( outputResult
+          >>= classifyPublicEdgeTlsNamespaceObservation (chartDeploymentPlanNamespace plan)
+      )
+
+  retainFromPresentNamespace scopeSet = do
+    retained <-
+      retainPublicEdgeTls
+        (chartDeploymentPlanRepoRoot plan)
+        (chartDeploymentPlanSubstrate plan)
+        scopeSet
+    case retained of
+      Left err -> pure (Left err)
+      Right True -> pure (Right PreservedToRetentionStore)
+      Right False -> classifyMissingSource
+
   classifyMissingSource = do
     observed <-
       readOptionalKubernetesCertificate

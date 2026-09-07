@@ -250,6 +250,14 @@ Build a clean-room Haskell `prodbox` repository with:
 > retains its prior containment. The plan models one Bootstrap slot and the co-resident
 > credential-plus-Target pair as mutually exclusive phases, while all four worker renderers consume
 > the same compiled envelope. Qualification state remains solely in [README.md](README.md#resume-here).
+> The revision-bound 2026-09-06 replay proved the two-slot phase still could not coexist on the
+> actual scheduler: standing requests were 7245m, so the 250m parent left only 5m of the 7500m
+> allocatable for its 250m Target child. Stable counterexample
+> `AWS-ADMIN-REVISIONED-TARGET-WORKER-INSUFFICIENT-CPU-2026-09-06` transfers only 250m from the
+> kubelet host reservation to the proof-level eviction floor. The old `500m + 500m` and replacement
+> `250m + 750m` sums are identical, as is the complete
+> `7210m / 12544Mi / 35424Mi / 157696Mi` topology-normalized total; kubelet allocatable becomes
+> 7750m, the unchanged two-worker demand fits at 7745m, and systemd retains its 1000m CPU ceiling.
 
 > **Runtime-memory correction (2026-07-10).** The July 10 gateway OOM evidence does not invalidate
 > those authored-admission and containment lemmas; it invalidates the stronger inference that they
@@ -3397,7 +3405,11 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
   `documents/engineering/tla_modelling_assumptions.md`.
 - The gateway daemon must materialize peer transport from the certificate, key, CA, and socket
   fields already retained in `DaemonConfig` and `Orders`, so `stateLastHeartbeatTimes` is updated
-  from inbound peer events rather than from the local heartbeat loop alone. The canonical target
+  from authenticated inbound peer evidence rather than from the local heartbeat loop alone. The
+  pre-cutover legacy topology persists an initial signed boot heartbeat and periodic backend-proof
+  heartbeats, then uses exact-boot-fenced, latest-only signed liveness frames carrying the complete
+  authenticated boot witness without Model-B work on the liveness hot path; ownership transitions
+  remain persisted. The canonical target
   is signed per-emitter sequence state plus vector-cursor delta gossip and bounded checkpoints, not
   an append-only full-log transport; `/v1/state` exposes bounded per-peer transport health.
 - The gateway daemon must emit signed `Claim` and `Yield` events on owner transitions and gate
@@ -3407,7 +3419,7 @@ that checkpoint for Sprints `8.7`/`8.8` and the live `8.5`/`8.6` proofs, all of 
   write authority without first observing its own yield superseded by a fresh claim.
 - The supported-host gate must fail fast on unhealthy NTP synchronization, the gateway daemon
   must record the maximum observed inter-node clock skew on `/v1/state` and refuse inbound
-  heartbeats whose timestamps exceed the documented bound, and the architecture and TLA+
+  heartbeats or bounded liveness frames whose timestamps exceed the documented bound, and the architecture and TLA+
   correspondence docs must name that bound, the operator response, and how the model's
   bounded-delay assumption maps to a runtime-enforced skew limit.
 - Orders documents must carry a monotonic version field, daemons must reject inbound peer events

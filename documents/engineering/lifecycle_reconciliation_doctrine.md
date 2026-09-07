@@ -141,14 +141,16 @@ Lifecycle Authority derives `2 * (56 + 4) = 120`: 56 requests for the hard eight
 first-reconcile protocol, then config observe, proposal/read-back, the Authority-bound retained-root
 marker's fresh authenticated observation, and in-force projection load. Authority Backup derives a
 separate `2 * (3 + 6) = 18`: at most three aggregate repair requests and six config-backup requests
-per attempt. Target Secret Agent derives `2 * (5 + 8 + 6 + 8) = 54`: five requests for provider-
+per attempt. Target Secret Agent derives `2 * (5 + 8 + 6 + 8 + 2) = 58`: five requests for provider-
 credential/source recovery and retained delivery; eight for TLS retention's four one-shot calls plus
 their four Authority trust installations; six for restore's three one-shot calls plus trust
-installations; and eight for the retain-on-ready capture. Its encoded ceiling is 112 MiB so 54
+installations; eight for the retain-on-ready capture; and two additional calls when the one-time
+pre-outbox adoption replaces ordinary home wrap with selected prepare, home rewrap, and selected
+restore. Its encoded ceiling is 118 MiB so 58
 accepted 2 MiB responses plus metadata fit. The Vault listener's finite 160 MiB request ceiling
-covers that projection's at-most 149.34 MiB Base64 expansion plus the bounded KV JSON envelope. TLS
+covers that projection's at-most 157.34 MiB Base64 expansion plus the bounded KV JSON envelope. TLS
 Retention and Provider Worker keep generic capacity four and the 12 MiB ceiling. Capacity widening
-migrates canonical v2/v3/v4/v5/v6/v7 state to v8 without dropping an entry or changing response-
+migrates canonical v2/v3/v4/v5/v6/v7/v8 state to v9 without dropping an entry or changing response-
 size, clock-skew, or CAS bounds. The encoded-byte and Vault-request ceilings may widen only to these
 compiled finite bounds; capacity shrink and all other limit drift fail closed.
 
@@ -279,6 +281,10 @@ mismatch, invalid bytes, authorization failure, timeout, and every other unobser
 refuse; deadline expiry alone is never quiescence. The replacement still commits and reads back
 its prepared-target outbox before the exact Authorized-to-Prepared Authority CAS. Attested,
 Completed, noncanonical, corrupt, unready, cursor-invalid, or binding-drifted state fails closed.
+The immutable plan-member binding is optional but exact across that CAS: first-reconcile and
+Genesis admission preserve `Just` on both sides, while a normal post-first-reconcile operation
+preserves `Nothing` on both sides. `Just`/`Nothing`, `Nothing`/`Just`, and unequal `Just` bindings
+all refuse; the recovery comparison cannot manufacture or discard first-reconcile membership.
 Backup repair remains a distinct `BackupRepairFrozen` program and cannot be selected by this
 expired-`Authorized` recovery path.
 For protected diagnosis and exact durable-continuation selection, the same single journal
@@ -503,6 +509,23 @@ observation failed validation. It retains the last typed failure across retries,
 deleting the Pod immediately before the final sample cannot collapse that failure into
 `WorkloadAbsent`. Only an all-absence observation history admits the absent result.
 
+After attestation and before permit issuance or stdin attach, retained service-session allocation
+and preparation project their interpreter failures into one exhaustive value-free cause ADT. The
+Target diagnostic may render only fixed `session-prepare-failed/...` tokens for journal write or
+availability, binding validity/occupancy, login ambiguity, accessor classification, cleanup,
+action, or unhandled failure. Preclean additionally preserves the exact value-free accessor-audit
+stage—identity, auditor login/evidence, inventory observation, accessor classification, known
+identity, revocation, visibility wait, or stable absence—under a fixed `preclean/...` suffix.
+Vault, audit, journal-store, and injected text is erased at the production boundary. This stage
+evidence does not change fencing, cleanup, permit, retry, attach, or TLS behavior.
+
+The subsequent bounded attach exchange retains an exhaustive value-free transport stage: limits
+validation, initial-payload validation, process start, initial-payload write, provisional read,
+decision-continuation write, completion collection, or wall-clock timeout. Target diagnostics map
+only those constructors to fixed tokens and erase every exception, `kubectl` response, payload, and
+frame. This diagnostic refinement does not make an ambiguous ingress retryable; the existing
+deadline, one-shot cleanup, and terminal-observation rules still decide recovery.
+
 The cleanup fold observes a flat signed genesis marker: positively absent, consumed, corrupt, or
 unobservable. Positive absence authorizes only conditional deletion/read-back from reconstructed
 Tier-0 intent, lost storage/authority generation, and exact registered ownership; it does not
@@ -544,10 +567,28 @@ TlsRestoreDigestMismatch | TlsRestoreUnobservable`; it never classifies certific
 decision uses the trusted Authority-time uncertainty interval to classify present bytes as usable,
 proven expired, not-yet-valid, or boundary-ambiguous. Only positive absence or trusted-time proven
 expiry may authorize a separate backup-receipted issuance intent. Not-yet-valid, uncertain time,
-integrity failure, or unobservability of store, key, Adapter, Agent, CAS, or read-back fails closed. AWS
-qualification destroys/recreates AWS Vault and EBS, then proves a newly attested Agent restores and
-read-backs the exact TLS Secret through retained-home Transit before issuance. The canonical byte
-flow, process-isolation boundary, and ADT are in
+integrity failure, or unobservability of store, key, Adapter, Agent, CAS, or read-back fails closed.
+Retain-before-delete separately observes the exact non-secret source Namespace before asking the
+selected Agent to read its Secret. Exit-zero empty `--ignore-not-found` is authoritative Namespace
+absence and therefore proves that no namespaced source exists; exact presence first reconciles the
+predeclared exact-name GET/PATCH Role, RoleBinding, and API-egress policy. Failed, malformed, or
+identity-mismatched Namespace observation and access failure refuse. Selected-Agent Secret
+unavailability remains unobservable and is never normalized to absence.
+The standing Target TLS HTTP boundary owns one closed projection of every route-specific plaintext
+response it authors: request refusal, explicit missing/mismatch, and one-shot operation
+unavailability. Its Authority client classifies only exact status/body pairs from that projection
+or the separate authenticated-role projection, erases the bytes, and renders a fixed cause;
+unmatched responses remain `other`. This diagnostic distinction changes no HTTP status, workflow
+outcome, replay decision, worker execution, or Secret behavior.
+After namespace and exact RBAC reconciliation and before Authority restore, the chart graph creates
+only a marked exact-name empty TLS restore slot; it accepts only create success or API
+`AlreadyExists` and never reads the Secret. The newly attested Agent has exact-name `get`/`patch`
+but no namespace-wide create. It admits only the complete still-empty slot shape, carries the
+observed opaque Kubernetes `resourceVersion` into its JSON merge PATCH as an optimistic CAS, and
+requires an independent exact-content read-back; absent, immutable, corrupt, different, raced, or
+unobservable state refuses. AWS qualification destroys/recreates AWS Vault and EBS, then proves a
+newly attested Agent restores and reads back the exact TLS Secret through retained-home Transit
+before issuance. The canonical byte flow, process-isolation boundary, and ADT are in
 [Lifecycle Control-Plane Architecture §5.4](./lifecycle_control_plane_architecture.md#54-retained-tls-envelope-workflow).
 
 **Retained operator-material custody.** SMTP and ACME EAB are non-recoverable cross-substrate
@@ -594,6 +635,15 @@ most 256 successors and fails closed if no exact logical binding is present. Any
 execution intent for that attempt takes this persisted successor deadline, not the expired
 external-ingress/provisioning deadline that produced the already committed custody receipt.
 
+Provider execution is likewise bounded end to end rather than on only its inner transport leg. Its
+typed response budget contains the admitted 300-second Provider child schedule plus 30 seconds for
+authenticated framing, projection, encoding, and socket completion. Both the host-to-Authority and
+Authority-to-Provider clients use that same 330-second constant for execute and admit-and-execute;
+admission-only and unrelated Authority requests retain their ordinary shorter budgets. A host
+timeout therefore cannot precede a still-licensed Provider child by construction, and changing the
+outer transport does not change the child deadline, admission key, operation identity, or replay
+semantics.
+
 The authenticated request that waits for terminal delivery has a route-specific finite response
 budget containing that persisted five-minute operation plus 30 seconds for authenticated framing,
 projection, encoding, and socket completion. The host EAB path and in-cluster SES worker path
@@ -631,7 +681,7 @@ class.
 
 | Class | Credential class | How the credential is obtained |
 |---|---|---|
-| Per-run stacks and EBS | Lifecycle-provider generation narrowed through the role committed by the provider intent | The fenced provider worker alone reads `secret/aws/lifecycle-provider`; a bounded session cannot outlive the mutation permit or absolute deadline. |
+| Per-run stacks and EBS | Lifecycle-provider generation narrowed through the sole registered role deterministically selected by the closed provider intent | The fenced provider worker alone reads `secret/aws/lifecycle-provider`; native STS validates the exact base caller, assumes and verifies the account-bound role, and projects only that temporary response to native clients/subprocesses inside a rank-2 callback. The fixed 900-second remote expiry is not an ownership grant: the handle cannot escape the callback, and effect work remains bounded by the mutation permit and absolute deadline. The harness binds the canonical role-policy digest into its durable credential-operation scope, so policy drift schedules a successor operation/Target generation with exact IAM put/read-back rather than reinterpreting an older completed receipt. |
 | Canonical `aws-ses` desired-present reconcile | Lifecycle-provider session for non-credential SES/S3; schema-indexed AWS-admin Provisioner permit for SMTP IAM | Fenced Provider Worker may reconcile only SES identity/DKIM/receipt-rule/S3 resources. Credential Provisioner alone installs/rotates/remints or repair-deletes the SMTP IAM identity/policy/key, derives `SesSmtpSource`, and hands it to retained-home custody under `OperatorMaterialPermit 'AwsAdminProvisioningIngress`. Readiness and target delivery hold neither session. |
 | Lifecycle Authority backup receipts/blobs | Authority-backup-store generation | The separately deployed Authority Backup Adapter alone reads `secret/aws/authority-backup-store` and may access only the configured long-lived backup bucket/prefix through `AuthorityBackupCommitReadBack`. Core Authority has only the typed adapter client; it cannot read that path, construct S3 clients, assume provider roles, or use `secret/aws/lifecycle-provider`. |
 | TLS ciphertext retention/restore | TLS-retention-store generation | The separate TLS Retention Adapter alone reads `secret/aws/tls-retention-store` and accesses exact `public-edge-tls/<substrate>/<canonical-scope-key>` objects. It sees only ciphertext/wrapped-DEK bytes; home Target Agent's dedicated Transit lane owns DEK issue/unwrap. |
@@ -665,6 +715,23 @@ in that line. The trace preserves the original signed-intent admission, replay r
 bytes, timeout, readiness, and terminal Provider observation. In particular, `socket-completion`
 is not a completion receipt and cannot settle an operation: only the registered Provider result and
 its exact read-back evidence do that.
+
+Pulumi desired-state observation is also a projection of the committed intent, not of Worker-local
+history. Every observe-first preview receives the typed registered-stack configuration as direct,
+non-shell Pulumi `--config` arguments; apply projects the same values before mutation. The
+Authority-retained checkpoint and committed stack configuration can therefore be rejoined after a
+fresh Worker image starts with no local stack-config file. A retained checkpoint alone never
+licenses an unconfigured preview, and an image-local `Pulumi.<stack>.yaml` file is not lifecycle
+evidence.
+
+The fenced role used for that registered subzone program receives its Route 53 capability from one
+closed action projection shared with Credential Provisioner's exact policy renderer. It contains
+record mutation/change polling/read-back plus precisely `ChangeTagsForResource`,
+`CreateHostedZone`, `DeleteHostedZone`, `ListHostedZones`, and `ListTagsForResource` for hosted-zone
+lifecycle; it contains no `route53:*`. A frozen stable counterexample holds the one-fenced-Worker,
+one-serialized-child, one-registered-stack, no-fault causal profile and exact Provider resource
+envelope constant while comparing the superseded record-only projection to this registered union.
+Thus changing IAM authorization cannot be used to hide a topology or capacity change.
 
 **Legacy checkpoint migration.** First-touch migration is owned by
 `Prodbox.Pulumi.EncryptedBackend`, but its admin-authenticated interpreter runs only in the

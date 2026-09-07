@@ -243,12 +243,15 @@ validateReadinessBarriers spec dag order =
 --
 -- Two behaviours are worth stating because they are decisions, not accidents:
 --
---   * __An expired admission re-observes once before it refuses.__ A hard
+--   * __Each distinct expired admission re-observes once before it refuses.__ A hard
 --     refusal would fail the first home @cluster reconcile@ outright: admissions
 --     cannot survive a reconcile phase boundary, which crosses federated Vault
 --     unseal and a settings reload. The point of the sprint is to narrow the
---     observe-to-act window, not to fail the run — so an expiry re-observes the
---     dependency and refuses only if the fresh observation also fails.
+--     observe-to-act window, not to fail the run — so an expiry re-observes its
+--     dependency and re-validates the complete declared set. More than one
+--     dependency may have expired during the same phase crossing; each is
+--     refreshed at most once, and a dependency that expires again while the
+--     others are refreshed is refused rather than widening its bound.
 --   * __This narrows the window; it does not make the pair atomic.__ Only a
 --     fence does that, and that is Sprint @3.31@'s and the cardinality work's
 --     surface.
@@ -349,24 +352,29 @@ runAnchoredStepOrder dag clock stepAnchor runMutation runStep requireReadiness c
               -- handled above, before the step runs at all.
               _ -> pure (Right ExitSuccess, admissions)
 
-  admitMutation component admissions = do
-    now <- clock
-    case admitComponentMutation dag now component admissions of
-      Right admission -> pure (Right (admission, admissions))
-      Left refusal -> case refusal of
-        AdmissionExpired _ dependency _ _ -> do
-          -- Re-observe the one dependency whose admission aged out, then decide
-          -- on the fresh evidence.
-          observed <- requireReadiness dependency
-          case observed of
-            Left exitCode -> pure (Left (Right exitCode))
-            Right fresh -> do
-              let refreshed = recordAdmission fresh admissions
-              retryNow <- clock
-              case admitComponentMutation dag retryNow component refreshed of
-                Right admission -> pure (Right (admission, refreshed))
-                Left retryRefusal -> pure (Left (Left retryRefusal))
-        _ -> pure (Left (Left refusal))
+  admitMutation component admissions = retryAdmission [] admissions
+   where
+    retryAdmission refreshedDependencies currentAdmissions = do
+      now <- clock
+      case admitComponentMutation dag now component currentAdmissions of
+        Right admission -> pure (Right (admission, currentAdmissions))
+        Left refusal -> case refusal of
+          AdmissionExpired _ dependency _ _
+            | dependency `elem` refreshedDependencies -> pure (Left (Left refusal))
+            | otherwise -> do
+                -- Re-observe each distinct dependency whose admission aged
+                -- out. Re-running the total admission check discovers the
+                -- next stale dependency without trusting a partially refreshed
+                -- set; the seen list makes the retry finite and preserves the
+                -- original edge bound.
+                observed <- requireReadiness dependency
+                case observed of
+                  Left exitCode -> pure (Left (Right exitCode))
+                  Right fresh ->
+                    retryAdmission
+                      (dependency : refreshedDependencies)
+                      (recordAdmission fresh currentAdmissions)
+          _ -> pure (Left (Left refusal))
 
 phaseRank :: ReconcilePhase -> Int
 phaseRank phase =

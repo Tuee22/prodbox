@@ -8,6 +8,7 @@
 module Prodbox.ControlPlane.TlsRetentionAuthorityClient
   ( TlsRetentionAuthorityClient (..)
   , TlsRetentionAuthorityClientError (..)
+  , TlsAuthorityStagingOutcome (..)
   , TlsAuthorityPromotionOutcome (..)
   , mkTlsRetentionAuthorityClient
   )
@@ -26,6 +27,7 @@ import Prodbox.ControlPlane.Client
   , ControlPlaneRouteFor
     ( LifecycleTlsRetentionObserveRoute
     , LifecycleTlsRetentionPromoteRoute
+    , LifecycleTlsRetentionStageRoute
     )
   )
 import Prodbox.ControlPlane.Codec
@@ -41,6 +43,7 @@ import Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
   ( TlsAuthorityObserveRequest (..)
   , TlsAuthorityPromoteRequest (..)
   , TlsAuthorityResponse (..)
+  , TlsAuthorityStageRequest (..)
   , tlsAuthorityResponseHttpStatus
   , tlsAuthorityResponseMaximumBytes
   )
@@ -50,12 +53,22 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   , PromotionEvidence
   , RetainedTlsRef
   , TlsRetentionState
+  , TlsSealedEnvelope
   )
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 
 data TlsRetentionAuthorityClient m = TlsRetentionAuthorityClient
   { observeTlsRetentionCurrent
       :: m (Either TlsRetentionAuthorityClientError TlsRetentionState)
+  , stageTlsRetentionCurrent
+      :: KeyRotationApproval
+      -> RetainedTlsRef
+      -> TlsSealedEnvelope
+      -> m
+           ( Either
+               TlsRetentionAuthorityClientError
+               TlsAuthorityStagingOutcome
+           )
   , promoteTlsRetentionCurrent
       :: KeyRotationApproval
       -> PromotionEvidence
@@ -66,6 +79,11 @@ data TlsRetentionAuthorityClient m = TlsRetentionAuthorityClient
                TlsAuthorityPromotionOutcome
            )
   }
+
+data TlsAuthorityStagingOutcome
+  = TlsAuthorityStagingCommitted !TlsRetentionState
+  | TlsAuthorityStagingAlreadyPending !TlsRetentionState
+  deriving stock (Eq, Show)
 
 data TlsAuthorityPromotionOutcome
   = TlsAuthorityPromotionCommitted !TlsRetentionState
@@ -93,6 +111,7 @@ mkTlsRetentionAuthorityClient transport substrate scope = do
   Right
     TlsRetentionAuthorityClient
       { observeTlsRetentionCurrent = observe
+      , stageTlsRetentionCurrent = stage
       , promoteTlsRetentionCurrent = promote
       }
  where
@@ -108,6 +127,26 @@ mkTlsRetentionAuthorityClient transport substrate scope = do
       decoded <- response
       case decoded of
         TlsAuthorityObserved state -> Right state
+        other -> Left (remoteError other)
+
+  stage approval candidate envelope = do
+    response <-
+      call
+        LifecycleTlsRetentionStageRoute
+        TlsAuthorityStageRequest
+          { tlsAuthorityStageSubstrate = substrate
+          , tlsAuthorityStageScope = scope
+          , tlsAuthorityStageApproval = approval
+          , tlsAuthorityStageCandidate = candidate
+          , tlsAuthorityStageEnvelope = envelope
+          }
+    pure $ do
+      decoded <- response
+      case decoded of
+        TlsAuthorityStagingApplied state ->
+          Right (TlsAuthorityStagingCommitted state)
+        TlsAuthorityStagingNoop state ->
+          Right (TlsAuthorityStagingAlreadyPending state)
         other -> Left (remoteError other)
 
   promote approval evidence candidate = do
@@ -160,6 +199,8 @@ mkTlsRetentionAuthorityClient transport substrate scope = do
 
 remoteError :: TlsAuthorityResponse -> TlsRetentionAuthorityClientError
 remoteError response = case response of
+  TlsAuthorityStagingRefused detail ->
+    TlsRetentionAuthorityClientRemoteRefused detail
   TlsAuthorityPromotionRefused detail ->
     TlsRetentionAuthorityClientRemoteRefused detail
   TlsAuthorityConcurrentWrite -> TlsRetentionAuthorityClientConcurrentWrite

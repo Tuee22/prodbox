@@ -113,6 +113,9 @@ transientFailureFragments = \case
   TransientConnectionFailure ->
     [ "connection reset by peer"
     , "connection refused"
+    , "failed to connect"
+    , "could not connect"
+    , "couldn't connect"
     , "unexpected eof"
     , "temporary failure"
     ]

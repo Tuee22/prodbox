@@ -8,6 +8,7 @@
 module Prodbox.ControlPlane.TlsTargetAgentClient
   ( TlsTargetAgentClient (..)
   , TlsTargetAgentClientError (..)
+  , TlsTargetAgentHttpResponseObservation (..)
   , classifyTlsTargetAgentHttpStatus
   , renderTlsTargetAgentClientCause
   , tlsTargetAgentClientReplayCapacityExhausted
@@ -46,6 +47,12 @@ import Prodbox.ControlPlane.Codec
   ( ControlPlaneResponseCodecError
   , decodeControlPlaneResponse
   , encodeControlPlaneRequest
+  )
+import Prodbox.ControlPlane.TargetOneShotOperationEndpoint
+  ( TlsTargetAgentPlainResponseCause
+  , TlsTargetAgentPlainResponseObservation (..)
+  , classifyTlsTargetAgentPlainResponse
+  , renderTlsTargetAgentPlainResponseCause
   )
 import Prodbox.ControlPlane.TlsDekExchange
   ( TlsDekEnvelope
@@ -99,26 +106,43 @@ data TlsTargetAgentClientError
   = TlsTargetAgentClientTransportFailed !AuthenticatedClientError
   | TlsTargetAgentClientHttpStatus
       !Int
-      !AuthenticatedRolePlainResponseObservation
+      !TlsTargetAgentHttpResponseObservation
   | TlsTargetAgentClientResponseInvalid !ControlPlaneResponseCodecError
   | TlsTargetAgentClientRetentionVersionMismatch
   | TlsTargetAgentClientRestoreReferenceMismatch
   deriving stock (Eq, Show)
 
--- | Preserve only an exact static authenticated-role response pair. Arbitrary
--- Target response bytes never cross this client boundary.
+data TlsTargetAgentHttpResponseObservation
+  = TlsTargetAgentEndpointResponse !TlsTargetAgentPlainResponseCause
+  | TlsTargetAgentAuthenticatedRoleResponse !AuthenticatedRolePlainResponseObservation
+  | TlsTargetAgentHttpResponseOther
+  deriving stock (Eq, Show)
+
+-- | Preserve only an exact Target TLS endpoint or authenticated-role response
+-- pair. Arbitrary Target response bytes never cross this client boundary.
 classifyTlsTargetAgentHttpStatus :: Int -> ByteString -> TlsTargetAgentClientError
 classifyTlsTargetAgentHttpStatus status body =
   TlsTargetAgentClientHttpStatus
     status
-    (classifyAuthenticatedRolePlainResponse status body)
+    ( case classifyTlsTargetAgentPlainResponse status body of
+        TlsTargetAgentPlainResponseKnown cause ->
+          TlsTargetAgentEndpointResponse cause
+        TlsTargetAgentPlainResponseOther ->
+          case classifyAuthenticatedRolePlainResponse status body of
+            known@(AuthenticatedRolePlainResponseKnown _) ->
+              TlsTargetAgentAuthenticatedRoleResponse known
+            AuthenticatedRolePlainResponseOther ->
+              TlsTargetAgentHttpResponseOther
+    )
 
 tlsTargetAgentClientReplayCapacityExhausted :: TlsTargetAgentClientError -> Bool
 tlsTargetAgentClientReplayCapacityExhausted clientError = case clientError of
   TlsTargetAgentClientHttpStatus
     _
-    ( AuthenticatedRolePlainResponseKnown
-        AuthenticatedRoleReplayCapacityExhausted
+    ( TlsTargetAgentAuthenticatedRoleResponse
+        ( AuthenticatedRolePlainResponseKnown
+            AuthenticatedRoleReplayCapacityExhausted
+          )
       ) -> True
   _ -> False
 
@@ -128,7 +152,12 @@ renderTlsTargetAgentClientCause :: TlsTargetAgentClientError -> Text
 renderTlsTargetAgentClientCause clientError = case clientError of
   TlsTargetAgentClientTransportFailed _ -> "transport-failed"
   TlsTargetAgentClientHttpStatus _ observation ->
-    "http-status/" <> renderAuthenticatedRolePlainResponseObservation observation
+    "http-status/" <> case observation of
+      TlsTargetAgentEndpointResponse cause ->
+        "target/" <> renderTlsTargetAgentPlainResponseCause cause
+      TlsTargetAgentAuthenticatedRoleResponse authenticated ->
+        renderAuthenticatedRolePlainResponseObservation authenticated
+      TlsTargetAgentHttpResponseOther -> "other"
   TlsTargetAgentClientResponseInvalid _ -> "response-invalid"
   TlsTargetAgentClientRetentionVersionMismatch -> "retention-version-mismatch"
   TlsTargetAgentClientRestoreReferenceMismatch -> "restore-reference-mismatch"

@@ -17,6 +17,7 @@ module Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , withHostLifecycleAuthorityAuthentication
   , lifecycleAuthorityManifestSignerDigest
   , withLifecycleAuthorityAuthenticatedTransport
+  , withLifecycleAuthorityProviderAuthenticatedTransport
   , withLifecycleAuthorityRetainedDeliveryAuthenticatedTransport
   , withLifecycleAuthorityTlsWorkflowAuthenticatedTransport
   , withProviderWorkerAuthenticatedTransport
@@ -86,6 +87,7 @@ import Prodbox.ControlPlane.LocalClient
   , LocalTlsRetentionError
   , withLocalAuthorityBackupAuthenticatedTransport
   , withLocalLifecycleAuthorityAuthenticatedTransport
+  , withLocalLifecycleAuthorityProviderAuthenticatedTransport
   , withLocalLifecycleAuthorityRetainedDeliveryAuthenticatedTransport
   , withLocalLifecycleAuthorityTlsWorkflowAuthenticatedTransport
   , withLocalProviderWorkerAuthenticatedTransport
@@ -316,6 +318,24 @@ withLifecycleAuthorityAuthenticatedTransport
 withLifecycleAuthorityAuthenticatedTransport authentication action = do
   result <-
     withLocalLifecycleAuthorityAuthenticatedTransport
+      (lifecycleAuthenticationBounds authentication)
+      (lifecycleAuthenticationProviders authentication)
+      action
+  pure
+    ( mapLeft
+        LifecycleAuthorityLocalTransportUnavailable
+        result
+    )
+
+withLifecycleAuthorityProviderAuthenticatedTransport
+  :: LifecycleAuthorityAuthentication
+  -> ( AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+       -> IO value
+     )
+  -> IO (Either LifecycleAuthorityAuthenticationError value)
+withLifecycleAuthorityProviderAuthenticatedTransport authentication action = do
+  result <-
+    withLocalLifecycleAuthorityProviderAuthenticatedTransport
       (lifecycleAuthenticationBounds authentication)
       (lifecycleAuthenticationProviders authentication)
       action

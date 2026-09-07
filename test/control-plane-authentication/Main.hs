@@ -256,6 +256,33 @@ canonicalEnvelopeTests =
         testWireRoute
           (testWireClaims (decodeTestWire (encodeSignedControlPlaneRequest request)))
           @?= 60
+    , testCase "assigns additive TLS staging and exact-version observation codes 61 and 62" $ do
+        let stageRequest =
+              signedRequest
+                signer
+                LifecycleTlsRetentionStage
+                LifecycleAuthorityRuntime
+                scopeA
+                authorityEpochGenesis
+                deadline
+                nonceA
+                body
+            observeRequest =
+              signedRequest
+                signer
+                TlsRetentionObserveVersion
+                TlsRetentionRuntime
+                scopeA
+                authorityEpochGenesis
+                deadline
+                nonceA
+                body
+        testWireRoute
+          (testWireClaims (decodeTestWire (encodeSignedControlPlaneRequest stageRequest)))
+          @?= 61
+        testWireRoute
+          (testWireClaims (decodeTestWire (encodeSignedControlPlaneRequest observeRequest)))
+          @?= 62
     , testCase "round-trips every closed caller principal under an independently pinned key" $
         mapM_ verifyCaller allCallerPrincipals
     , testCase "assigns stable caller codes and appends completion authority" $ do

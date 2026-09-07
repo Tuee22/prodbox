@@ -255,7 +255,7 @@ classifyProviderCallerResult result = case result of
           | otherwise -> TeardownProviderRefused detail
         AuthorityProviderTransportFailed _ ->
           TeardownProviderUnavailable (rendered err)
-        AuthorityProviderResponseInvalid _ ->
+        AuthorityProviderResponseInvalid _ _ ->
           TeardownProviderUnavailable (rendered err)
         AuthorityProviderResponseStatusMismatch _ ->
           TeardownProviderUnavailable (rendered err)

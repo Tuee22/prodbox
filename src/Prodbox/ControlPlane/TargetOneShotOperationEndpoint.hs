@@ -9,6 +9,12 @@
 -- capabilities itself.
 module Prodbox.ControlPlane.TargetOneShotOperationEndpoint
   ( TargetOneShotOperationBoundary (..)
+  , TlsTargetAgentPlainResponseCause (..)
+  , TlsTargetAgentPlainResponseObservation (..)
+  , allTlsTargetAgentPlainResponseCauses
+  , tlsTargetAgentPlainResponse
+  , classifyTlsTargetAgentPlainResponse
+  , renderTlsTargetAgentPlainResponseCause
   , targetOneShotOperationAuthenticatedHandler
   )
 where
@@ -17,6 +23,7 @@ import Codec.Serialise (Serialise)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.List (find)
 import Data.Text (Text)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler (..)
@@ -32,6 +39,7 @@ import Prodbox.ControlPlane.BootstrapCustodyEndpoint
   )
 import Prodbox.ControlPlane.Codec
   ( ControlPlaneRequestCodecError
+  , controlPlaneRequestCodecToken
   , decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
@@ -54,7 +62,9 @@ import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   , TlsTargetPrepareResult (..)
   , TlsTargetRestoreResult (..)
   , TlsTargetRetainResult (..)
+  , TlsTargetVerifyMismatchCause
   , TlsTargetVerifyResult (..)
+  , renderTlsTargetVerifyMismatchCause
   , tlsHomeRewrapHttpStatus
   , tlsHomeRewrapResponseBody
   , tlsHomeWrapHttpStatus
@@ -68,7 +78,7 @@ import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   , tlsTargetVerifyHttpStatus
   , tlsTargetVerifyResponseBody
   )
-import Prodbox.Http.ReplyStatus (ReplyStatus (..))
+import Prodbox.Http.ReplyStatus (ReplyStatus (..), replyStatusCode)
 
 data TargetOneShotOperationBoundary m = TargetOneShotOperationBoundary
   { runTargetOneShotOperation
@@ -76,6 +86,116 @@ data TargetOneShotOperationBoundary m = TargetOneShotOperationBoundary
       -> m (Either Text TargetWorkerOperationResult)
   , targetOneShotOperationBoundaryReadiness :: !RoleReadinessSource
   }
+
+-- | Every non-CBOR response pair authored by the standing Target Agent's TLS
+-- routes. The cause is route-specific and value-free; worker, Secret, Vault,
+-- and request details never enter this projection.
+data TlsTargetAgentPlainResponseCause
+  = TlsTargetPrepareRequestRefused !ControlPlaneRequestCodecError
+  | TlsTargetPrepareOneShotUnavailable
+  | TlsTargetRetainRequestRefused !ControlPlaneRequestCodecError
+  | TlsTargetRetainMissingResponse
+  | TlsTargetRetainOneShotUnavailable
+  | TlsHomeWrapRequestRefused !ControlPlaneRequestCodecError
+  | TlsHomeWrapOneShotUnavailable
+  | TlsHomeRewrapRequestRefused !ControlPlaneRequestCodecError
+  | TlsHomeRewrapOneShotUnavailable
+  | TlsTargetRestoreRequestRefused !ControlPlaneRequestCodecError
+  | TlsTargetRestoreOneShotUnavailable
+  | TlsTargetVerifyRequestRefused !ControlPlaneRequestCodecError
+  | TlsTargetVerifyMissingResponse
+  | TlsTargetVerifyMismatchResponse !TlsTargetVerifyMismatchCause
+  | TlsTargetVerifyOneShotUnavailable
+  deriving stock (Eq, Show)
+
+data TlsTargetAgentPlainResponseObservation
+  = TlsTargetAgentPlainResponseKnown !TlsTargetAgentPlainResponseCause
+  | TlsTargetAgentPlainResponseOther
+  deriving stock (Eq, Show)
+
+allTlsTargetAgentPlainResponseCauses :: [TlsTargetAgentPlainResponseCause]
+allTlsTargetAgentPlainResponseCauses =
+  (TlsTargetPrepareRequestRefused <$> allCodecErrors)
+    <> [TlsTargetPrepareOneShotUnavailable]
+    <> (TlsTargetRetainRequestRefused <$> allCodecErrors)
+    <> [TlsTargetRetainMissingResponse, TlsTargetRetainOneShotUnavailable]
+    <> (TlsHomeWrapRequestRefused <$> allCodecErrors)
+    <> [TlsHomeWrapOneShotUnavailable]
+    <> (TlsHomeRewrapRequestRefused <$> allCodecErrors)
+    <> [TlsHomeRewrapOneShotUnavailable]
+    <> (TlsTargetRestoreRequestRefused <$> allCodecErrors)
+    <> [TlsTargetRestoreOneShotUnavailable]
+    <> (TlsTargetVerifyRequestRefused <$> allCodecErrors)
+    <> [TlsTargetVerifyMissingResponse]
+    <> (TlsTargetVerifyMismatchResponse <$> [minBound .. maxBound])
+    <> [TlsTargetVerifyOneShotUnavailable]
+ where
+  allCodecErrors = [minBound .. maxBound]
+
+-- | The single source of truth for the standing Target TLS endpoint's exact
+-- plaintext response pairs.
+tlsTargetAgentPlainResponse
+  :: TlsTargetAgentPlainResponseCause -> (ReplyStatus, ByteString)
+tlsTargetAgentPlainResponse cause = case cause of
+  TlsTargetPrepareRequestRefused err ->
+    tlsPrepareResponse (TlsTargetPrepareBadRequest err)
+  TlsTargetPrepareOneShotUnavailable ->
+    (ReplyServiceUnavailable, "tls-target-prepare:one-shot-operation-unavailable")
+  TlsTargetRetainRequestRefused err ->
+    tlsRetainResponse (TlsTargetRetainBadRequest err)
+  TlsTargetRetainMissingResponse -> tlsRetainResponse TlsTargetRetainMissing
+  TlsTargetRetainOneShotUnavailable ->
+    (ReplyServiceUnavailable, "tls-target-retain:one-shot-operation-unavailable")
+  TlsHomeWrapRequestRefused err -> tlsWrapResponse (TlsHomeWrapBadRequest err)
+  TlsHomeWrapOneShotUnavailable ->
+    (ReplyServiceUnavailable, "tls-home-wrap:one-shot-operation-unavailable")
+  TlsHomeRewrapRequestRefused err -> tlsRewrapResponse (TlsHomeRewrapBadRequest err)
+  TlsHomeRewrapOneShotUnavailable ->
+    (ReplyServiceUnavailable, "tls-home-rewrap:one-shot-operation-unavailable")
+  TlsTargetRestoreRequestRefused err ->
+    tlsRestoreResponse (TlsTargetRestoreBadRequest err)
+  TlsTargetRestoreOneShotUnavailable ->
+    (ReplyServiceUnavailable, "tls-target-restore:one-shot-operation-unavailable")
+  TlsTargetVerifyRequestRefused err ->
+    tlsVerifyResponse (TlsTargetVerifyBadRequest err)
+  TlsTargetVerifyMissingResponse -> tlsVerifyResponse TlsTargetVerifyMissing
+  TlsTargetVerifyMismatchResponse cause ->
+    tlsVerifyResponse (TlsTargetVerifyMismatch cause)
+  TlsTargetVerifyOneShotUnavailable ->
+    (ReplyServiceUnavailable, "tls-target-verify:one-shot-operation-unavailable")
+
+classifyTlsTargetAgentPlainResponse
+  :: Int -> ByteString -> TlsTargetAgentPlainResponseObservation
+classifyTlsTargetAgentPlainResponse status body =
+  maybe
+    TlsTargetAgentPlainResponseOther
+    TlsTargetAgentPlainResponseKnown
+    (find matches allTlsTargetAgentPlainResponseCauses)
+ where
+  matches cause =
+    let (authoredStatus, authoredBody) = tlsTargetAgentPlainResponse cause
+     in replyStatusCode authoredStatus == status && authoredBody == body
+
+renderTlsTargetAgentPlainResponseCause :: TlsTargetAgentPlainResponseCause -> Text
+renderTlsTargetAgentPlainResponseCause cause = case cause of
+  TlsTargetPrepareRequestRefused err -> "prepare/request-refused/" <> codec err
+  TlsTargetPrepareOneShotUnavailable -> "prepare/one-shot-operation-unavailable"
+  TlsTargetRetainRequestRefused err -> "retain/request-refused/" <> codec err
+  TlsTargetRetainMissingResponse -> "retain/missing"
+  TlsTargetRetainOneShotUnavailable -> "retain/one-shot-operation-unavailable"
+  TlsHomeWrapRequestRefused err -> "home-wrap/request-refused/" <> codec err
+  TlsHomeWrapOneShotUnavailable -> "home-wrap/one-shot-operation-unavailable"
+  TlsHomeRewrapRequestRefused err -> "home-rewrap/request-refused/" <> codec err
+  TlsHomeRewrapOneShotUnavailable -> "home-rewrap/one-shot-operation-unavailable"
+  TlsTargetRestoreRequestRefused err -> "restore/request-refused/" <> codec err
+  TlsTargetRestoreOneShotUnavailable -> "restore/one-shot-operation-unavailable"
+  TlsTargetVerifyRequestRefused err -> "verify/request-refused/" <> codec err
+  TlsTargetVerifyMissingResponse -> "verify/missing"
+  TlsTargetVerifyMismatchResponse cause ->
+    "verify/mismatch/" <> renderTlsTargetVerifyMismatchCause cause
+  TlsTargetVerifyOneShotUnavailable -> "verify/one-shot-operation-unavailable"
+ where
+  codec = controlPlaneRequestCodecToken
 
 targetOneShotOperationAuthenticatedHandler
   :: (Monad m)
@@ -95,17 +215,17 @@ targetOneShotOperationAuthenticatedHandler maximumBytes boundary inner =
   handle caller route body = case route of
     TargetTlsPrepareExchange -> do
       response <- case decode body of
-        Left err -> pure (tlsPrepareResponse (TlsTargetPrepareBadRequest err))
+        Left err -> pure (tlsTargetAgentPlainResponse (TlsTargetPrepareRequestRefused err))
         Right () -> do
           result <- runTargetOneShotOperation boundary TargetWorkerTlsPrepareInput
           pure $ case result of
             Right (TargetWorkerTlsPreparedResult prepared) ->
               tlsPrepareResponse (TlsTargetPrepared prepared)
-            _ -> operationUnavailable "tls-target-prepare"
+            _ -> tlsTargetAgentPlainResponse TlsTargetPrepareOneShotUnavailable
       pure (Just response)
     TargetTlsRetain -> do
       response <- case decode body of
-        Left err -> pure (tlsRetainResponse (TlsTargetRetainBadRequest err))
+        Left err -> pure (tlsTargetAgentPlainResponse (TlsTargetRetainRequestRefused err))
         Right request -> do
           result <-
             runTargetOneShotOperation
@@ -115,12 +235,12 @@ targetOneShotOperationAuthenticatedHandler maximumBytes boundary inner =
             Right (TargetWorkerTlsRetainedResult receipt) ->
               tlsRetainResponse (TlsTargetRetained receipt)
             Right TargetWorkerTlsRetainMissingResult ->
-              tlsRetainResponse TlsTargetRetainMissing
-            _ -> operationUnavailable "tls-target-retain"
+              tlsTargetAgentPlainResponse TlsTargetRetainMissingResponse
+            _ -> tlsTargetAgentPlainResponse TlsTargetRetainOneShotUnavailable
       pure (Just response)
     TargetTlsHomeWrap -> do
       response <- case decode body of
-        Left err -> pure (tlsWrapResponse (TlsHomeWrapBadRequest err))
+        Left err -> pure (tlsTargetAgentPlainResponse (TlsHomeWrapRequestRefused err))
         Right request -> do
           result <-
             runTargetOneShotOperation
@@ -129,11 +249,11 @@ targetOneShotOperationAuthenticatedHandler maximumBytes boundary inner =
           pure $ case result of
             Right (TargetWorkerTlsHomeWrappedResult wrapped) ->
               tlsWrapResponse (TlsHomeWrapped wrapped)
-            _ -> operationUnavailable "tls-home-wrap"
+            _ -> tlsTargetAgentPlainResponse TlsHomeWrapOneShotUnavailable
       pure (Just response)
     TargetTlsHomeRewrap -> do
       response <- case decode body of
-        Left err -> pure (tlsRewrapResponse (TlsHomeRewrapBadRequest err))
+        Left err -> pure (tlsTargetAgentPlainResponse (TlsHomeRewrapRequestRefused err))
         Right request -> do
           result <-
             runTargetOneShotOperation
@@ -142,11 +262,11 @@ targetOneShotOperationAuthenticatedHandler maximumBytes boundary inner =
           pure $ case result of
             Right (TargetWorkerTlsHomeRewrappedResult envelope) ->
               tlsRewrapResponse (TlsHomeRewrapped envelope)
-            _ -> operationUnavailable "tls-home-rewrap"
+            _ -> tlsTargetAgentPlainResponse TlsHomeRewrapOneShotUnavailable
       pure (Just response)
     TargetTlsRestore -> do
       response <- case decode body of
-        Left err -> pure (tlsRestoreResponse (TlsTargetRestoreBadRequest err))
+        Left err -> pure (tlsTargetAgentPlainResponse (TlsTargetRestoreRequestRefused err))
         Right request -> do
           result <-
             runTargetOneShotOperation
@@ -155,11 +275,11 @@ targetOneShotOperationAuthenticatedHandler maximumBytes boundary inner =
           pure $ case result of
             Right (TargetWorkerTlsRestoredResult receipt) ->
               tlsRestoreResponse (TlsTargetRestored receipt)
-            _ -> operationUnavailable "tls-target-restore"
+            _ -> tlsTargetAgentPlainResponse TlsTargetRestoreOneShotUnavailable
       pure (Just response)
     TargetTlsVerifySource -> do
       response <- case decode body of
-        Left err -> pure (tlsVerifyResponse (TlsTargetVerifyBadRequest err))
+        Left err -> pure (tlsTargetAgentPlainResponse (TlsTargetVerifyRequestRefused err))
         Right request -> do
           result <-
             runTargetOneShotOperation
@@ -169,10 +289,10 @@ targetOneShotOperationAuthenticatedHandler maximumBytes boundary inner =
             Right (TargetWorkerTlsVerifiedResult receipt) ->
               tlsVerifyResponse (TlsTargetSourceVerified receipt)
             Right TargetWorkerTlsVerifyMissingResult ->
-              tlsVerifyResponse TlsTargetVerifyMissing
-            Right TargetWorkerTlsVerifyMismatchResult ->
-              tlsVerifyResponse TlsTargetVerifyMismatch
-            _ -> operationUnavailable "tls-target-verify"
+              tlsTargetAgentPlainResponse TlsTargetVerifyMissingResponse
+            Right (TargetWorkerTlsVerifyMismatchResult cause) ->
+              tlsTargetAgentPlainResponse (TlsTargetVerifyMismatchResponse cause)
+            _ -> tlsTargetAgentPlainResponse TlsTargetVerifyOneShotUnavailable
       pure (Just response)
     TargetChildCustodyCommit -> do
       response <- case decodeText body of
@@ -265,9 +385,6 @@ tlsRestoreResponse result =
 tlsVerifyResponse :: TlsTargetVerifyResult -> (ReplyStatus, ByteString)
 tlsVerifyResponse result =
   (tlsTargetVerifyHttpStatus result, tlsTargetVerifyResponseBody result)
-
-operationUnavailable :: ByteString -> (ReplyStatus, ByteString)
-operationUnavailable label = (ReplyServiceUnavailable, label <> ":one-shot-operation-unavailable")
 
 custodyCommitStatus :: ChildCustodyCommitResponse -> ReplyStatus
 custodyCommitStatus response = case response of

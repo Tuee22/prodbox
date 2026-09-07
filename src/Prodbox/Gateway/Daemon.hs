@@ -311,6 +311,9 @@ import Prodbox.Gateway.Peer
   , PeerError (..)
   , PeerTransportResponse
   , SignedAssertion
+  , SignedEmitterRetention (..)
+  , SignedLivenessFrame
+  , admitSignedLivenessFrame
   , boundedSignedAssertionsToList
   , decodeSignedAssertion
   , decodeSignedSemanticSnapshot
@@ -320,6 +323,7 @@ import Prodbox.Gateway.Peer
   , parsePeerHttpRequest
   , parsePeerHttpResponse
   , peerErrorResponse
+  , peerRequestLivenessFrame
   , peerRequestOrdersVersion
   , peerRequestReplayAssertions
   , peerRequestSemanticSnapshot
@@ -327,15 +331,19 @@ import Prodbox.Gateway.Peer
   , peerResponseAccepted
   , peerResponseAckPoint
   , peerResponseCursorVector
+  , reconcileSignedEmitterRetention
   , renderPeerCursorRequest
   , renderPeerDeltaRequest
   , renderPeerHttpResponse
+  , renderPeerLivenessRequest
   , renderPeerRepairRequest
+  , retainSignedEmitterAssertion
   , selectSignedDelta
   , selectSignedRepairFromCheckpoint
   , signAndConvertAssertion
   , signAndConvertAssertionForIncarnation
   , signAndConvertOrdersMigrationForIncarnation
+  , signLivenessFrame
   , signSemanticSnapshot
   , signedAssertionBytes
   , signedAssertionEmitter
@@ -344,11 +352,14 @@ import Prodbox.Gateway.Peer
   , signedAssertionKind
   , signedAssertionResultDigest
   , signedAssertionSequence
+  , signedLivenessEmitter
+  , signedLivenessTimestamp
   , signedSemanticSnapshotEmitter
   , signedSemanticSnapshotEvidence
   , validatePeerRequestHeartbeatSkew
   , verifySemanticSnapshot
   , verifySignedAssertion
+  , verifySignedLivenessFrame
   )
 import Prodbox.Gateway.Readiness
   ( DrainPhase (..)
@@ -466,6 +477,7 @@ data DaemonState = DaemonState
   , stateSignedReplay :: Map String [SignedAssertion]
   , stateSignedCheckpointHeartbeat :: Map String SignedAssertion
   , stateSignedCheckpointOwnership :: Map String SignedAssertion
+  , stateLivenessFrames :: Map String SignedLivenessFrame
   , statePeerCursors :: Map String BoundedState.CursorVector
   , stateLastHeartbeatTimes :: Map String UTCTime
   , stateGatewayOwner :: Maybe String
@@ -540,6 +552,7 @@ data DaemonEnv = DaemonEnv
   , envEmitterMountGeneration :: TVar Word64
   , envEmitterLeasePermit :: TMVar ()
   , envEmitterRecoveryRequested :: TVar Bool
+  , envLegacyLivenessSession :: TVar (Maybe LegacyLivenessSession)
   , envState :: TVar DaemonState
   , -- Readiness is a pure projection over cached boundary facts. Emitter
     -- authority is cleared immediately when Lease renewal fails.
@@ -658,6 +671,15 @@ data EmitterTopology
   = LegacyModelBEmitter
   | JournalLeaseEmitter
   deriving (Eq, Show)
+
+-- | Process-local sequence under one durable legacy heartbeat boot fence.
+-- The boot assertion is already committed through Model-B before this value
+-- can exist.  It is intentionally absent from retained state: a restart must
+-- commit a fresh fence before emitting another liveness frame.
+data LegacyLivenessSession = LegacyLivenessSession
+  { legacyLivenessBoot :: !SignedAssertion
+  , legacyLivenessNextSequence :: !Word64
+  }
 
 -- | Durable admission-marker observation at the injected authority boundary.
 -- The production dependency maps this to the Vault-backed continuity marker;
@@ -787,6 +809,7 @@ initialState ordersVersion boundedGateway =
     , stateSignedReplay = Map.empty
     , stateSignedCheckpointHeartbeat = Map.empty
     , stateSignedCheckpointOwnership = Map.empty
+    , stateLivenessFrames = Map.empty
     , statePeerCursors = Map.empty
     , stateLastHeartbeatTimes = Map.empty
     , stateGatewayOwner = Nothing
@@ -905,7 +928,6 @@ runGatewayDaemonWithRuntimeDependencies
                       ]
                     pure (ExitFailure 1)
                   Right () -> do
-                    now <- getCurrentTime
                     case initializeBoundedGateway gatewayBounds validatedOrders of
                       Left err -> do
                         logAtLevel logLevel Error "gateway_state_initialization_failed" [field "detail" err]
@@ -919,8 +941,7 @@ runGatewayDaemonWithRuntimeDependencies
                               ]
                             initialDaemonState =
                               (initialState (ordersVersionUtc orders) boundedGateway)
-                                { stateLastHeartbeatTimes = Map.singleton localNodeId now
-                                , stateMeshPeers = meshPeers
+                                { stateMeshPeers = meshPeers
                                 , statePeerHealth =
                                     Map.fromList
                                       [(p, PeerHealth Nothing False Nothing) | p <- meshPeers]
@@ -952,6 +973,7 @@ runGatewayDaemonWithRuntimeDependencies
                         emitterMountGenerationVar <- newTVarIO 0
                         emitterLeasePermit <- newTMVarIO ()
                         emitterRecoveryRequestedVar <- newTVarIO False
+                        legacyLivenessSessionVar <- newTVarIO Nothing
                         signalCount <- newTVarIO (0 :: Int)
                         objectStoreDurations <- newTVarIO []
                         lastBackendRoundTripVar <- newTVarIO Nothing
@@ -972,6 +994,7 @@ runGatewayDaemonWithRuntimeDependencies
                                 , envEmitterMountGeneration = emitterMountGenerationVar
                                 , envEmitterLeasePermit = emitterLeasePermit
                                 , envEmitterRecoveryRequested = emitterRecoveryRequestedVar
+                                , envLegacyLivenessSession = legacyLivenessSessionVar
                                 , envState = stateVar
                                 , envDrainPhase = drainPhaseVar
                                 , envWorkerRoster = workerRosterVar
@@ -2627,15 +2650,16 @@ restoreRetainedEmitterCaches env inputs replay =
                 Map.delete emitterName (stateSignedCheckpointHeartbeat daemonState)
             , stateSignedCheckpointOwnership =
                 Map.delete emitterName (stateSignedCheckpointOwnership daemonState)
+            , stateLivenessFrames =
+                Map.delete emitterName (stateLivenessFrames daemonState)
             , stateLastHeartbeatTimes = restoredHeartbeatTimes
             , stateDnsClaimAuthority = Nothing
             }
-        withCheckpoint =
-          Prelude.foldl
-            (flip advanceSignedCheckpointEvidence)
+        restored =
+          retainSignedAssertions
+            env
+            (checkpointEvidence ++ suffixSigned)
             cleared
-            checkpointEvidence
-        restored = retainSignedAssertions env suffixSigned withCheckpoint
     writeTVar (envState env) restored
     pure (Right ())
 
@@ -3391,6 +3415,10 @@ publishSignedAssertion env semantic signed = do
                         (Text.unpack (signedAssertionEmitter signed))
                         (posixSecondsToUTCTime (fromIntegral timestamp))
                         (stateLastHeartbeatTimes withSemantic)
+                  , stateLivenessFrames =
+                      Map.delete
+                        (Text.unpack (signedAssertionEmitter signed))
+                        (stateLivenessFrames withSemantic)
                   }
               _ -> withSemantic
       writeTVar (envState env) withHeartbeat
@@ -3403,25 +3431,18 @@ retainSignedAssertion
   -> DaemonState
 retainSignedAssertion env signed state =
   let emitter = Text.unpack (signedAssertionEmitter signed)
-      capacity = gatewayReplayPerEmitter (envGatewayBounds env)
-      prunedState = pruneSignedReplayAtCheckpoint env emitter state
-      existing = Map.findWithDefault [] emitter (stateSignedReplay prunedState)
-      position = signedAssertionPosition signed
-   in if any ((== position) . signedAssertionPosition) existing
-        then prunedState
-        else
-          let ordered = sortOn signedAssertionPosition (signed : existing)
-              evictedCount = max 0 (length ordered - capacity)
-              (evicted, retained) = splitAt evictedCount ordered
-              withCheckpoint =
-                Prelude.foldl
-                  (flip advanceSignedCheckpointEvidence)
-                  prunedState
-                  evicted
-           in withCheckpoint
-                { stateSignedReplay =
-                    Map.insert emitter retained (stateSignedReplay withCheckpoint)
-                }
+   in case boundedEmitterCheckpoint env emitter state of
+        Nothing -> state
+        Just checkpoint ->
+          installSignedEmitterRetention
+            emitter
+            ( retainSignedEmitterAssertion
+                (envGatewayBounds env)
+                checkpoint
+                signed
+                (signedEmitterRetention emitter state)
+            )
+            state
 
 retainSignedAssertions
   :: DaemonEnv
@@ -3437,79 +3458,57 @@ pruneSignedReplayAtCheckpoint
   -> DaemonState
   -> DaemonState
 pruneSignedReplayAtCheckpoint env emitter state =
-  case boundedNodeByName env emitter of
+  case boundedEmitterCheckpoint env emitter state of
     Nothing -> state
-    Just nodeId ->
-      case BoundedState.gatewayStateEmitterCheckpoint
-        nodeId
-        (stateBoundedGateway state) of
-        Nothing -> state
-        Just checkpoint ->
-          let checkpointPosition =
-                emitterCursorPosition
-                  (BoundedState.emitterCheckpointCursor checkpoint)
-              existing = Map.findWithDefault [] emitter (stateSignedReplay state)
-              (compacted, retained) =
-                span
-                  ((<= checkpointPosition) . signedAssertionPosition)
-                  (sortOn signedAssertionPosition existing)
-              withEvidence =
-                Prelude.foldl
-                  (flip advanceSignedCheckpointEvidence)
-                  state
-                  compacted
-           in withEvidence
-                { stateSignedReplay =
-                    Map.insert emitter retained (stateSignedReplay withEvidence)
-                }
+    Just checkpoint ->
+      installSignedEmitterRetention
+        emitter
+        (reconcileSignedEmitterRetention checkpoint (signedEmitterRetention emitter state))
+        state
 
-advanceSignedCheckpointEvidence
-  :: SignedAssertion
+boundedEmitterCheckpoint
+  :: DaemonEnv
+  -> String
+  -> DaemonState
+  -> Maybe BoundedState.EmitterCheckpoint
+boundedEmitterCheckpoint env emitter state = do
+  nodeId <- boundedNodeByName env emitter
+  BoundedState.gatewayStateEmitterCheckpoint nodeId (stateBoundedGateway state)
+
+signedEmitterRetention :: String -> DaemonState -> SignedEmitterRetention
+signedEmitterRetention emitter state =
+  SignedEmitterRetention
+    { signedEmitterReplay = Map.findWithDefault [] emitter (stateSignedReplay state)
+    , signedEmitterCheckpointHeartbeat = Map.lookup emitter (stateSignedCheckpointHeartbeat state)
+    , signedEmitterCheckpointOwnership = Map.lookup emitter (stateSignedCheckpointOwnership state)
+    }
+
+installSignedEmitterRetention
+  :: String
+  -> SignedEmitterRetention
   -> DaemonState
   -> DaemonState
-advanceSignedCheckpointEvidence signed state =
-  let emitter = Text.unpack (signedAssertionEmitter signed)
-      insertLatest evidence =
-        Map.insertWith
-          newerSignedAssertion
+installSignedEmitterRetention emitter retention state =
+  state
+    { stateSignedReplay =
+        Map.insert emitter (signedEmitterReplay retention) (stateSignedReplay state)
+    , stateSignedCheckpointHeartbeat =
+        replaceOptionalMapEntry
           emitter
-          signed
-          evidence
-   in case signedAssertionKind signed of
-        BoundedState.HeartbeatAssertion _ ->
-          state
-            { stateSignedCheckpointHeartbeat =
-                insertLatest (stateSignedCheckpointHeartbeat state)
-            }
-        BoundedState.OwnershipAssertion _ ->
-          state
-            { stateSignedCheckpointOwnership =
-                insertLatest (stateSignedCheckpointOwnership state)
-            }
-        BoundedState.EpochRotationAssertion -> state
-        BoundedState.OrdersMigrationAssertion _ ->
-          state
-            { stateSignedCheckpointHeartbeat =
-                Map.delete emitter (stateSignedCheckpointHeartbeat state)
-            , stateSignedCheckpointOwnership =
-                Map.delete emitter (stateSignedCheckpointOwnership state)
-            }
+          (signedEmitterCheckpointHeartbeat retention)
+          (stateSignedCheckpointHeartbeat state)
+    , stateSignedCheckpointOwnership =
+        replaceOptionalMapEntry
+          emitter
+          (signedEmitterCheckpointOwnership retention)
+          (stateSignedCheckpointOwnership state)
+    }
 
-newerSignedAssertion :: SignedAssertion -> SignedAssertion -> SignedAssertion
-newerSignedAssertion candidate existing =
-  if signedAssertionPosition candidate >= signedAssertionPosition existing
-    then candidate
-    else existing
-
-signedAssertionPosition :: SignedAssertion -> (Word64, Word64)
-signedAssertionPosition signed =
-  (signedAssertionEpoch signed, signedAssertionSequence signed)
-
-emitterCursorPosition :: BoundedState.EmitterCursor -> (Word64, Word64)
-emitterCursorPosition cursor =
-  ( BoundedState.emitterEpochValue (BoundedState.emitterCursorEpoch cursor)
-  , BoundedState.emitterSequenceValue (BoundedState.emitterCursorSequence cursor)
-  )
+replaceOptionalMapEntry :: (Ord key) => key -> Maybe value -> Map key value -> Map key value
+replaceOptionalMapEntry key maybeValue values =
+  case maybeValue of
+    Nothing -> Map.delete key values
+    Just value -> Map.insert key value values
 
 boundedNodeByName :: DaemonEnv -> String -> Maybe BoundedState.NodeId
 boundedNodeByName env nodeName =
@@ -3626,6 +3625,7 @@ daemonWorkerNames =
   [ "emitter_authority"
   , "emitter_recovery"
   , "heartbeat"
+  , "backend_round_trip"
   , "gateway_ownership"
   , "dns_write"
   , "rest_server"
@@ -3647,6 +3647,10 @@ daemonWorkerAction name env localPeer = case name of
       LegacyModelBEmitter -> atomically retry
       JournalLeaseEmitter -> emitterRecoveryLoop env
   "heartbeat" -> heartbeatLoop env
+  "backend_round_trip" ->
+    case envEmitterTopology env of
+      LegacyModelBEmitter -> legacyBackendRoundTripLoop env
+      JournalLeaseEmitter -> atomically retry
   "gateway_ownership" -> gatewayLoop env
   "dns_write" -> dnsWriteLoop env
   "rest_server" -> restServerLoop localPeer env
@@ -3991,20 +3995,170 @@ resolveLocalPeerEndpoint config orders =
 
 heartbeatLoop :: DaemonEnv -> IO ()
 heartbeatLoop env = forever $ do
-  now <- getCurrentTime
-  let timestamp =
-        fromIntegral
-          (max 0 (floor (utcTimeToPOSIXSeconds now) :: Integer))
-          :: Word64
+  result <- case envEmitterTopology env of
+    LegacyModelBEmitter -> emitLegacyBoundedLiveness env
+    JournalLeaseEmitter -> emitJournalHeartbeat env
+  case result of
+    Left err -> logForEnv env Warn "heartbeat_emission_refused" [field "detail" err]
+    Right () -> pure ()
+  liveConfig <- readTVarIO (envLiveConfig env)
+  threadDelay (round (liveHeartbeatInterval liveConfig * 1000000))
+
+emitJournalHeartbeat :: DaemonEnv -> IO (Either String ())
+emitJournalHeartbeat env = do
+  timestamp <- currentHeartbeatTimestamp
   result <-
     emitLocalSemanticAssertion
       env
       (BoundedState.HeartbeatAssertion timestamp)
-  case result of
-    Left err -> logForEnv env Warn "heartbeat_emission_refused" [field "detail" err]
-    Right _ -> pure ()
-  liveConfig <- readTVarIO (envLiveConfig env)
-  threadDelay (round (liveHeartbeatInterval liveConfig * 1000000))
+  pure (void result)
+
+-- | The rollback topology schedules renewal of its write-shaped MinIO
+-- readiness evidence at one fifth of the lifecycle gate's 300-second freshness
+-- window.  This worker is separate from the heartbeat hot path: a slow Model-B
+-- transaction can make readiness honestly stale, but cannot stop signed
+-- latest-only liveness from continuing to flow.
+legacyBackendRoundTripIntervalMicros :: Int
+legacyBackendRoundTripIntervalMicros = 60 * 1000 * 1000
+
+legacyBackendRoundTripLoop :: DaemonEnv -> IO ()
+legacyBackendRoundTripLoop env = forever $ do
+  threadDelay legacyBackendRoundTripIntervalMicros
+  refreshed <- refreshLegacyBackendRoundTrip env
+  case refreshed of
+    Left err ->
+      logForEnv env Warn "backend_round_trip_refresh_refused" [field "detail" err]
+    Right () -> pure ()
+
+-- | Commit a normal semantic heartbeat through the existing Model-B
+-- stage/re-observe/publish/commit transaction, then atomically replace the
+-- process-local liveness session with that durable heartbeat as sequence one.
+-- A racing old-session frame fails local fence verification after publication
+-- and therefore cannot overwrite the replacement session.
+refreshLegacyBackendRoundTrip :: DaemonEnv -> IO (Either String ())
+refreshLegacyBackendRoundTrip env = do
+  timestamp <- currentHeartbeatTimestamp
+  committed <-
+    emitLegacyLocalSemanticAssertion
+      env
+      (BoundedState.HeartbeatAssertion timestamp)
+  case committed of
+    Left err -> pure (Left err)
+    Right boot -> do
+      atomically $
+        writeTVar
+          (envLegacyLivenessSession env)
+          (Just (LegacyLivenessSession boot 1))
+      pure (Right ())
+
+-- | The rollback topology durably fences each process boot, periodically
+-- rotates that fence through the backend-proof worker, and keeps only one
+-- signed liveness frame per member in memory.  The hot path never enters the
+-- capacity-one Model-B child lane; ownership transitions retain their existing
+-- persistence-first boundary.
+emitLegacyBoundedLiveness :: DaemonEnv -> IO (Either String ())
+emitLegacyBoundedLiveness env = do
+  authority <- readTVarIO (envEmitterAuthority env)
+  case emitterAuthorityContinuityRuntime authority of
+    Nothing -> do
+      atomically $ writeTVar (envLegacyLivenessSession env) Nothing
+      pure (Left "retained continuity authority is unavailable")
+    Just _ -> do
+      sessionResult <- ensureLegacyLivenessSession env
+      case sessionResult of
+        Left err -> pure (Left err)
+        Right session -> publishLegacyLivenessFrame env session
+
+ensureLegacyLivenessSession
+  :: DaemonEnv
+  -> IO (Either String LegacyLivenessSession)
+ensureLegacyLivenessSession env = do
+  existing <- readTVarIO (envLegacyLivenessSession env)
+  case existing of
+    Just session -> pure (Right session)
+    Nothing -> do
+      timestamp <- currentHeartbeatTimestamp
+      committed <-
+        emitLegacyLocalSemanticAssertion
+          env
+          (BoundedState.HeartbeatAssertion timestamp)
+      case committed of
+        Left err -> pure (Left err)
+        Right boot -> do
+          let session = LegacyLivenessSession boot 1
+          atomically $ writeTVar (envLegacyLivenessSession env) (Just session)
+          pure (Right session)
+
+publishLegacyLivenessFrame
+  :: DaemonEnv
+  -> LegacyLivenessSession
+  -> IO (Either String ())
+publishLegacyLivenessFrame env session =
+  case localBoundedNode env of
+    Left err -> pure (Left err)
+    Right localNode ->
+      case gatewayEventKeyLookup env localNode of
+        Nothing -> pure (Left "local event-key authority is unavailable")
+        Just eventKey -> do
+          timestamp <- currentHeartbeatTimestamp
+          let sequenceNumber = legacyLivenessNextSequence session
+          case signLivenessFrame
+            (envGatewayBounds env)
+            (envValidatedOrders env)
+            localNode
+            (legacyLivenessBoot session)
+            sequenceNumber
+            timestamp
+            eventKey of
+            Left err -> pure (Left (show err))
+            Right frame ->
+              atomically $ do
+                state <- readTVar (envState env)
+                case verifySignedLivenessFrame
+                  (envGatewayBounds env)
+                  (envValidatedOrders env)
+                  (gatewayEventKeyLookup env)
+                  (stateBoundedGateway state)
+                  frame of
+                  Left err -> pure (Left (show err))
+                  Right () ->
+                    case admitSignedLivenessFrame
+                      (Map.lookup emitterName (stateLivenessFrames state))
+                      frame of
+                      Left err -> pure (Left (show err))
+                      Right admitted -> do
+                        writeTVar
+                          (envState env)
+                          state
+                            { stateLivenessFrames =
+                                Map.insert emitterName admitted (stateLivenessFrames state)
+                            , stateLastHeartbeatTimes =
+                                Map.insert
+                                  emitterName
+                                  (posixSecondsToUTCTime (fromIntegral timestamp))
+                                  (stateLastHeartbeatTimes state)
+                            }
+                        writeTVar
+                          (envLegacyLivenessSession env)
+                          ( if sequenceNumber == maxBound
+                              then Nothing
+                              else
+                                Just
+                                  session
+                                    { legacyLivenessNextSequence = sequenceNumber + 1
+                                    }
+                          )
+                        pure (Right ())
+ where
+  emitterName = Text.unpack (signedAssertionEmitter (legacyLivenessBoot session))
+
+currentHeartbeatTimestamp :: IO Word64
+currentHeartbeatTimestamp = do
+  now <- getCurrentTime
+  pure
+    ( fromIntegral
+        (max 0 (floor (utcTimeToPOSIXSeconds now) :: Integer))
+    )
 
 -- | Recompute the elected owner from heartbeat freshness, emit signed
 -- @claim@/@yield@ events on transitions, and update the in-memory owner
@@ -4016,16 +4170,26 @@ gatewayLoop env = forever $ do
       stateVar = envState env
   now <- getCurrentTime
   state <- readTVarIO stateVar
+  emitterAuthority <- readTVarIO (envEmitterAuthority env)
+  legacySession <- readTVarIO (envLegacyLivenessSession env)
   let nodeId = daemonNodeId config
       rule = ordersGatewayRule orders
       heartbeatTimeout = fromIntegral (heartbeatTimeoutSeconds rule)
       ordersOk = stateLatestObservedOrdersVersion state <= stateOrdersVersionUtc state
+      localEmitterReady = case envEmitterTopology env of
+        LegacyModelBEmitter ->
+          maybe False (const True) (emitterAuthorityContinuityRuntime emitterAuthority)
+            && maybe False (const True) legacySession
+            && Map.member nodeId (stateLivenessFrames state)
+        JournalLeaseEmitter -> True
       activeNodes =
         [ rankedId
         | rankedId <- rankedNodes rule
         , case Map.lookup rankedId (stateLastHeartbeatTimes state) of
-            Just lastHeartbeat -> diffUTCTime now lastHeartbeat < heartbeatTimeout
-            Nothing -> rankedId == nodeId
+            Just lastHeartbeat ->
+              diffUTCTime now lastHeartbeat < heartbeatTimeout
+                && (rankedId /= nodeId || localEmitterReady)
+            Nothing -> False
         ]
       owner =
         if not ordersOk
@@ -4837,6 +5001,11 @@ renderMetricsText now heapLiveBytes objectStoreDurations env state =
         ++ metricsDaemonName (envMetrics env)
         ++ "\"} "
         ++ show (sum (map length (Map.elems (stateSignedReplay state))))
+    , "# TYPE prodbox_gateway_bounded_liveness_frames gauge"
+    , "prodbox_gateway_bounded_liveness_frames{daemon=\""
+        ++ metricsDaemonName (envMetrics env)
+        ++ "\"} "
+        ++ show (Map.size (stateLivenessFrames state))
     , "# TYPE prodbox_gateway_semantic_members gauge"
     , "prodbox_gateway_semantic_members{daemon=\""
         ++ metricsDaemonName (envMetrics env)
@@ -5169,8 +5338,17 @@ handlePeerClient sock env =
                         | peerResponseAccepted acceptedResponse =
                             retainSignedAssertions env retainedAssertions withSnapshotPruned
                         | otherwise = withProjection
-                  writeTVar (envState env) after
-                  pure (applied, acceptedResponse)
+                  case peerRequestLivenessFrame request of
+                    Just frame
+                      | peerResponseAccepted acceptedResponse ->
+                          case installPeerLivenessObservation env now frame after of
+                            Left err -> pure (0, peerErrorResponse err)
+                            Right withLiveness -> do
+                              writeTVar (envState env) withLiveness
+                              pure (applied, acceptedResponse)
+                    _ -> do
+                      writeTVar (envState env) after
+                      pure (applied, acceptedResponse)
             envAfterPeerEventCommit (envHooks env) appliedCount
             sendPeerTransportResponse sock env response
 
@@ -5331,17 +5509,38 @@ refreshBoundedPeerObservations env now before after initial =
                 }
           | otherwise = state
      in case afterHeartbeat >>= heartbeatTimestamp of
-          Nothing -> withInbound
+          Nothing
+            | afterHeartbeat /= beforeHeartbeat ->
+                withInbound
+                  { stateLivenessFrames =
+                      Map.delete emitterName (stateLivenessFrames withInbound)
+                  , stateLastHeartbeatTimes =
+                      Map.delete emitterName (stateLastHeartbeatTimes withInbound)
+                  }
+            | otherwise -> withInbound
           Just timestamp ->
-            let withHeartbeat =
-                  withInbound
-                    { stateLastHeartbeatTimes =
-                        Map.insertWith
-                          max
-                          emitterName
-                          timestamp
-                          (stateLastHeartbeatTimes withInbound)
-                    }
+            let heartbeatChanged = afterHeartbeat /= beforeHeartbeat
+                withHeartbeat =
+                  if heartbeatChanged
+                    then
+                      withInbound
+                        { stateLivenessFrames =
+                            Map.delete emitterName (stateLivenessFrames withInbound)
+                        , stateLastHeartbeatTimes =
+                            Map.insert
+                              emitterName
+                              timestamp
+                              (stateLastHeartbeatTimes withInbound)
+                        }
+                    else
+                      withInbound
+                        { stateLastHeartbeatTimes =
+                            Map.insertWith
+                              max
+                              emitterName
+                              timestamp
+                              (stateLastHeartbeatTimes withInbound)
+                        }
              in if afterHeartbeat == beforeHeartbeat
                   then withHeartbeat
                   else
@@ -5371,6 +5570,44 @@ markPeerHealthInbound now maybeHealth =
   case maybeHealth of
     Nothing -> Just (PeerHealth (Just now) False Nothing)
     Just health -> Just health {peerHealthLastInboundEvent = Just now}
+
+installPeerLivenessObservation
+  :: DaemonEnv
+  -> UTCTime
+  -> SignedLivenessFrame
+  -> DaemonState
+  -> Either PeerError DaemonState
+installPeerLivenessObservation env now frame state = do
+  let emitter = Text.unpack (signedLivenessEmitter frame)
+      localEmitter = daemonNodeId (envBootConfig env)
+      timestamp =
+        posixSecondsToUTCTime (fromIntegral (signedLivenessTimestamp frame))
+  when
+    (emitter == localEmitter)
+    (Left (PeerLivenessSelfDeliveryForbidden (Text.pack emitter)))
+  let existing = Map.lookup emitter (stateLivenessFrames state)
+  admitted <-
+    admitSignedLivenessFrame
+      existing
+      frame
+  let skew = abs (realToFrac (diffUTCTime now timestamp) :: Double)
+      peerHealth
+        | existing == Just admitted = statePeerHealth state
+        | otherwise =
+            Map.alter
+              (markPeerHealthInbound now)
+              emitter
+              (statePeerHealth state)
+  Right
+    state
+      { stateLivenessFrames =
+          Map.insert emitter admitted (stateLivenessFrames state)
+      , stateLastHeartbeatTimes =
+          Map.insert emitter timestamp (stateLastHeartbeatTimes state)
+      , statePeerHealth = peerHealth
+      , stateMaxObservedSkewSeconds =
+          Just $! maybe skew (max skew) (stateMaxObservedSkewSeconds state)
+      }
 
 -- | Periodically exchange a bounded cursor and at most one bounded delta
 -- frame with every peer.  A complete append-only event log is never built or
@@ -5411,7 +5648,34 @@ pushToPeer env peer = do
           adopted <- adoptPeerCursorFromResponse env peer cursorResponse peerCursor
           case adopted of
             Left err -> markPeerError stateVar (peerNodeId peer) err
-            Right () -> dispatchPeerCursor env peer peerHost peerCursor True
+            Right () -> do
+              dispatchPeerCursor env peer peerHost peerCursor True
+              pushLivenessToPeer env peer peerHost
+
+pushLivenessToPeer :: DaemonEnv -> PeerEndpoint -> Text.Text -> IO ()
+pushLivenessToPeer env peer peerHost = do
+  state <- readTVarIO (envState env)
+  let localName = daemonNodeId (envBootConfig env)
+  for_ (Map.lookup localName (stateLivenessFrames state)) pushFrame
+ where
+  pushFrame frame =
+    case renderPeerLivenessRequest (envGatewayBounds env) peerHost frame of
+      Left err -> markPeerError stateVar peerName (show err)
+      Right request -> do
+        result <-
+          exchangePeerRequest
+            env
+            (peerDialSocketHost peer)
+            (peerSocketPort peer)
+            request
+        case result of
+          Left err -> markPeerError stateVar peerName err
+          Right response
+            | peerResponseAccepted response -> pure ()
+            | otherwise -> markPeerError stateVar peerName "peer rejected bounded liveness"
+
+  stateVar = envState env
+  peerName = peerNodeId peer
 
 dispatchPeerCursor
   :: DaemonEnv
@@ -5788,6 +6052,9 @@ renderStateJson now env dnsReady continuityDiagnostic lastRoundTrip state =
           .= BoundedState.gatewayStateEmitterCount (stateBoundedGateway state)
       , "signed_replay_assertion_count"
           .= sum (map length (Map.elems (stateSignedReplay state)))
+      , "bounded_liveness_frame_count" .= Map.size (stateLivenessFrames state)
+      , "bounded_liveness_frame_capacity"
+          .= BoundedState.validatedOrdersMemberCount (envValidatedOrders env)
       , "retained_assertion_count" .= retainedAssertionCount state
       , "retained_assertion_capacity"
           .= ( BoundedState.validatedOrdersMemberCount (envValidatedOrders env)

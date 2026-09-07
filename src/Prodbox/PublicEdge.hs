@@ -1,13 +1,17 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.PublicEdge
-  ( PublicEdgeRoute (..)
+  ( PublicEdgeReadinessObservation (..)
+  , PublicEdgeRoute (..)
   , adminPublicRoutes
   , apiPathPrefix
   , authPathPrefix
   , canonicalPublicRouteCatalog
+  , classifyPublicEdgeReadinessObservation
+  , gatewayDnsWriteAuthorityNotReadyDiagnostic
   , identityIssuerUrl
   , minioPathPrefix
+  , publicEdgeReadyClassification
   , publicEdgeClusterIssuerName
   , publicEdgeTlsRetentionKey
   , publicFqdn
@@ -53,6 +57,39 @@ import Prodbox.Settings
 import Prodbox.Settings.Coordinate (route53ZoneIdText)
 import Prodbox.Substrate (Substrate (..), substrateId)
 import Prodbox.Tls.CertScope (CertScopeSet, fqdnText, renderCertScopeSet)
+import System.Exit (ExitCode (..))
+
+-- | The bounded public-edge wait observes a command result rather than a
+-- boolean. A successful non-ready report and the one exact transient
+-- Gateway-DNS convergence refusal are retryable; every unrelated command
+-- failure remains terminal.
+data PublicEdgeReadinessObservation
+  = PublicEdgeReadinessReady
+  | PublicEdgeReadinessPending
+  | PublicEdgeReadinessGatewayDnsPending
+  | PublicEdgeReadinessTerminalFailure !Int
+  deriving (Eq, Show)
+
+publicEdgeReadyClassification :: String
+publicEdgeReadyClassification = "CLASSIFICATION=ready-for-external-proof"
+
+gatewayDnsWriteAuthorityNotReadyDiagnostic :: String
+gatewayDnsWriteAuthorityNotReadyDiagnostic =
+  "Gateway-DNS observation is bound to the requested record but its write authority is not ready"
+
+classifyPublicEdgeReadinessObservation
+  :: ExitCode -> String -> PublicEdgeReadinessObservation
+classifyPublicEdgeReadinessObservation exitCode output =
+  case exitCode of
+    ExitSuccess
+      | publicEdgeReadyClassification `elem` outputLines -> PublicEdgeReadinessReady
+      | otherwise -> PublicEdgeReadinessPending
+    ExitFailure code
+      | gatewayDnsWriteAuthorityNotReadyDiagnostic `elem` outputLines ->
+          PublicEdgeReadinessGatewayDnsPending
+      | otherwise -> PublicEdgeReadinessTerminalFailure code
+ where
+  outputLines = lines output
 
 data PublicEdgeRoute
   = PublicRouteAuth

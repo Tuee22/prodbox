@@ -190,6 +190,17 @@ unobservable. Only `absent` permits a visible seed proposal; an unlock bundle is
 evidence. A sealed or unreachable Vault, corrupt aggregate, or failed blob read-back never falls
 back to `prodbox.dhall` parameters.
 
+For a cluster-backed automated run, the retained bootstrap floor performs that proposal CAS and
+read-back through the bootstrap-core operator identity before credential repair. The harness does
+not repeat the proposal through its Gateway-owned test identity before Gateway reconciliation: an
+interrupted restore is allowed to have removed that workload-lifetime identity. Harness-only runs
+which establish no runtime floor retain their authenticated standalone proposal. This ordering
+changes neither the proposal bytes nor either caller's authorization and never falls back around
+caller-bound authentication. The subsequent pre-Gateway Lifecycle-provider credential repair is
+likewise triggered through the surviving bootstrap-core operator caller. Its stable harness
+operation scope and simulated prompt remain unchanged, and the route already admits both external
+callers; this is lifetime-correct caller selection, not widened route trust or credential reuse.
+
 ### The balance principle
 
 Tier 0 is shaped to hostbootstrap's binary-context contract TODAY, so the eventual refactor onto

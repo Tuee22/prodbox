@@ -248,16 +248,35 @@ Observe/seal and materialize/read-back are distinct capability kinds and neither
 Secret list/watch. Restore startup is ordered before cert-manager issuance: Authority names the
 receipt-committed immutable TLS-retention version, the Adapter returns bounded ciphertext/wrapped-
 DEK bytes, retained-home Agent rewraps the DEK to the newly attested selected worker, and that worker
-CAS-applies/read-backs the exact Secret. Corrupt, digest-mismatched, unobservable, not-yet-valid, or
+CAS-applies/read-backs the exact Secret. After namespace and access reconciliation but before the
+Authority request, the chart graph reserves `vscode/public-edge-tls` with one plain create of a
+marked `kubernetes.io/tls` restore slot whose required `tls.crt` and `tls.key` values are empty.
+That step accepts only create success or an API-server `AlreadyExists` refusal from stderr and never
+reads the Secret. The selected worker retains only exact-name `get`/`patch`: it accepts the complete
+still-empty slot shape, carries the observed opaque `resourceVersion` into an exact-name JSON merge
+PATCH as an optimistic CAS, and independently reads the restored content back. It cannot create a
+Secret or patch a different name. Missing, immutable, corrupt, different, concurrently replaced,
+or unobservable slot state fails closed. Corrupt, digest-mismatched, unobservable, not-yet-valid, or
 Authority-time-uncertain state blocks issuance; only positive absence or expiry proven by the pure
 trusted-Authority-time fold may lead to a separately committed issuance plan. AWS qualification
 deletes/recreates AWS Vault and EBS and proves this restore path before issuance.
 
-ChartPlatform is only the trigger for this workflow. It submits the closed retain/restore request
-and compiled substrate/scope slot to Lifecycle Authority; it does not construct or authenticate a
+ChartPlatform owns only the non-secret-bearing restore-slot establishment described above and the
+trigger for this workflow. It submits the closed retain/restore request and compiled
+substrate/scope slot to Lifecycle Authority; it does not read the slot, construct or authenticate a
 Target TLS client, select an ephemeral rewrap key, or call the ciphertext Adapter. The Authority
 self-route plus exact Authority-to-Adapter and Authority-to-Target NetworkPolicy lanes are part of
 the rendered topology and are pinned together with the authentication caller registry.
+
+Retain-before-delete has an additional source-container edge because an interrupted earlier delete
+can leave the `vscode` namespace absent before a later delete retry starts. ChartPlatform first
+observes that exact non-secret Namespace with `--ignore-not-found`: only exit-zero empty output is
+authoritative absence, which proves that neither its namespaced TLS Secret nor Certificate can
+exist and emits the explicit nothing-to-retain outcome. Exact Namespace presence first reconciles
+the already-declared exact-name worker Role, RoleBinding, and API-egress policy, then submits the
+Authority retain request. Failed, malformed, or name-mismatched Namespace observation and any
+access failure refuse. In particular, an Agent `secret-unavailable` result is never reclassified as
+absence, and the host never reads Secret data.
 
 The former same-binary gateway pre-Vault mode, gateway object-store/federation/target-secret routes,
 and gateway-held lifecycle permissions are historical implementation surfaces retained only for
@@ -437,7 +456,9 @@ cluster to report `.status.state=ready` and `.status.postgres.ready=3` before it
 `keycloak` or later dependent charts. Before the retained Patroni cluster is recreated, the chart
 runtime reinitializes retained follower roots for ordinals `1` and `2` so those replicas rejoin
 from the preserved cluster anchor instead of trying to continue from stale follower-local WAL
-state.
+state. An exact live-primary observation instead classifies the operation as an in-place
+reconcile and preserves all three active roots; no follower directory may be reset underneath a
+running Pod merely because the release is reconciled again.
 
 Patroni retained-claim discovery and cluster-readiness waits classify transient PostgreSQL
 convergence failures as `PgError` and run through `retryServiceAction`. Chart-platform
@@ -454,6 +475,16 @@ When retained Patroni state already exists, the chart runtime stages restore del
 - scale the Percona cluster back to the supported three-replica synchronous steady state before
   dependent charts continue
 
+Live anchor discovery does not depend on the selectorless Percona primary Service or an Endpoint
+`targetRef`. The runtime lists Pods with the exact Percona cluster and `role=primary` labels,
+accepts exactly one Pod, requires exactly one `postgres-data` PVC whose claim identity matches the
+Pod name with its ordinal removed, and follows that claim to its bound PV. The PV must belong to the
+release's logical retained-volume inventory before it can become the anchor. Empty, multiple,
+malformed, identity-mismatched, unbound, or non-owned observations retain the existing
+no-live-anchor fallback/refusal behavior. During three-replica expansion the observed anchor keeps
+its current claim while only the follower claims are assigned to the remaining retained PVs;
+lexical PVC ordering never displaces a proved live anchor.
+
 ## 5. CLI-Owned PV/PVC Lifecycle
 
 Repo-owned charts never create `PersistentVolume` objects directly.
@@ -463,6 +494,9 @@ Repo-owned charts never create `PersistentVolume` objects directly.
 - Percona-managed PostgreSQL clusters create their own PVC objects through the operator.
 - After the Percona cluster creates those PVCs, the Haskell runtime discovers the actual claim
   names and binds the deterministic retained PVs to those claims.
+- A live retained anchor is keyed by the exact role-labelled primary Pod, its `postgres-data` PVC,
+  and that PVC's bound PV; selectorless Service endpoints are readiness routing, not storage
+  ownership evidence.
 - Deterministic PV names and Patroni cluster or secret names flow through
   `src/Prodbox/Naming.hs` rather than through open-coded string concatenation.
 - Patroni service names, PVC names, and the three-replica storage-spec inventory flow through

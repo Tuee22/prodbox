@@ -32,8 +32,12 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   selects its role through the pod `args:` (`gateway start` vs `workload start`); the image's
   `ENTRYPOINT` is bare `tini -- prodbox`. The image follows the single-stage `ubuntu:24.04`
   doctrine with in-image `ghcup`, pinned GHC `9.12.4`, no symlinked Haskell tool shims, `tini` as
-  PID 1. The image includes the official AWS CLI bundle and pins Pulumi CLI `3.228.0`; it copies
-  the four checked-in YAML programs to `/opt/build/pulumi/`. The Provider Worker can select only
+  PID 1. The image includes the official AWS CLI bundle and pins Pulumi CLI `3.228.0` together
+  with that same release archive's `pulumi-language-yaml` host. It also installs the exact Pulumi
+  AWS provider `7.44.0` into the immutable image layer with release-asset SHA-256 verification for
+  both supported architectures; every checked-in Pulumi project declares `aws@7.44.0`. Runtime
+  provider discovery therefore downloads neither the provider archive nor its binary. The image
+  copies the four checked-in YAML programs to `/opt/build/pulumi/`. The Provider Worker can select only
   the three compiled non-SES program paths (`aws-eks`, `aws-eks-subzone`, and `aws-test`); its four
   SES resource arms use the exact native client and cannot construct SMTP IAM. Target Gateway
   Runtime and Credential Provisioner never shell out
@@ -163,7 +167,8 @@ daemon authentication.
 - Haskell quality tools: `fourmolu`, `hlint`
 - Host/runtime tools: `kubectl`, `helm`, `docker`, `ctr`, `sudo`, `systemctl`
 - Network and AWS tooling: `aws`, `curl`, `dig`, `ssh`
-- Infrastructure tooling: Pulumi CLI `3.228.0` in the union runtime image; host-side `pulumi`
+- Infrastructure tooling: Pulumi CLI `3.228.0`, its same-archive YAML language host, and the
+  checksum-pinned Pulumi AWS provider `7.44.0` in the union runtime image; host-side `pulumi`
   remains an explicit prerequisite only for pre-cutover operator surfaces tracked for deletion
 - Formal verification tooling: Docker plus the TLA+ runtime documented in `documents/engineering/tla/`
 
@@ -199,7 +204,8 @@ Worker image's exact Pulumi CLI version, are:
 ```text
 GHC 9.12.4
 Cabal 3.16.1.0
-Pulumi CLI 3.228.0 (Provider Worker image)
+Pulumi CLI + bundled YAML language host 3.228.0 (Provider Worker image)
+Pulumi AWS provider 7.44.0 (Provider Worker image; SHA-256 pinned per architecture)
 ```
 
 These are not floors or recommendations. The `.cabal` file declares

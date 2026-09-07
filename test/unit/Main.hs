@@ -608,6 +608,7 @@ import Prodbox.CLI.Rke2
   , OperationalAwsCredentialGate (..)
   , ReconcileStepId (..)
   , RedirectPolicy (..)
+  , RegistryGarbageCollectionMode (..)
   , RegistryStorageBackend (..)
   , RegistryStorageEdgeObservation (..)
   , RegistryStorageEdgeReadiness (..)
@@ -636,6 +637,7 @@ import Prodbox.CLI.Rke2
   , harborRegistryStorageDeleteArguments
   , harborRegistryStorageWaitArguments
   , harborStorageBackendManifestItems
+  , harnessLifecycleProviderCredentialCaller
   , homeSubstratePlatformComponents
   , independentPhase
   , inferCascadeSubstrate
@@ -650,6 +652,7 @@ import Prodbox.CLI.Rke2
   , operationalAwsCredentialGateFromResult
   , parseRegistryStorageEdgeResponse
   , registryConfigYaml
+  , registryGarbageCollectArguments
   , renderFailedCascadePhases
   , renderInotifySysctlDropIn
   , renderMinioChartArgs
@@ -909,11 +912,17 @@ import Prodbox.ControlPlane.Codec
   ( ControlPlaneRequestCodecError (ControlPlaneRequestInvalid)
   , encodeControlPlaneResponse
   )
+import Prodbox.ControlPlane.DedicatedAdapterStore
+  ( DedicatedAdapterStoreError (..)
+  )
 import Prodbox.ControlPlane.InClusterAuthorityStore
   ( InClusterAuthorityStoreError (..)
   , inClusterAuthorityStoreClusterId
   , inClusterAuthorityStoreEndpoint
   , mkInClusterAuthorityStoreConfig
+  )
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
   )
 import Prodbox.ControlPlane.ListenPort
   ( controlPlaneClusterServiceUrl
@@ -929,6 +938,7 @@ import Prodbox.ControlPlane.LocalClient
   , continueAuthorityBackupForwardAfterStartupWith
   , lifecycleAuthorityForwardTarget
   , lifecycleAuthorityHttpConfig
+  , lifecycleAuthorityProviderHttpConfig
   , lifecycleAuthorityRemotePort
   , lifecycleAuthorityRetainedDeliveryHttpConfig
   , lifecycleAuthorityTlsWorkflowHttpConfig
@@ -949,6 +959,7 @@ import Prodbox.ControlPlane.Observation
   )
 import Prodbox.ControlPlane.Observation.Internal (mintRoundTripWitness)
 import Prodbox.ControlPlane.ProviderProduction qualified as ProviderProduction
+import Prodbox.ControlPlane.ProviderPulumiConfigProjection qualified as ProviderPulumiConfigProjection
 import Prodbox.ControlPlane.RoleReadiness qualified as RoleReadiness
 import Prodbox.ControlPlane.Runtime qualified as ControlPlaneRuntime
 import Prodbox.ControlPlane.TargetMaterialEndpoint qualified as TargetMaterial
@@ -1106,7 +1117,9 @@ import Prodbox.Lib.ChartPlatform
   , ChartReleasePlan (..)
   , HelmUpgradeFailureDisposition (..)
   , KubernetesApiEgressCoordinate (..)
+  , PerconaPatroniClaim (..)
   , PublicEdgePreserveOutcome (..)
+  , PublicEdgeTlsNamespaceObservation (..)
   , ResolvedCustomImage (..)
   , buildChartDeletePlan
   , buildChartDeletePlanForSubstrate
@@ -1116,6 +1129,8 @@ import Prodbox.Lib.ChartPlatform
   , certManagerAdoptionAnnotations
   , chartReleasesToDeploy
   , classifyPublicEdgePreserve
+  , classifyPublicEdgeTlsNamespaceObservation
+  , classifyPublicEdgeTlsRestoreSlotCreate
   , deploymentConditionReportsTrue
   , helmUpgradeFailureDisposition
   , helmUpgradeWaitArguments
@@ -1124,14 +1139,17 @@ import Prodbox.Lib.ChartPlatform
   , operatorAvailableTarget
   , operatorGateResult
   , parseKubernetesApiEgressCoordinate
+  , parsePatroniPrimaryClaimName
   , renderPublicEdgePreserveOutcome
   , resolveChart
   , resolveChartSecrets
   , resolveDependencyOrder
+  , resolvePerconaPatroniRuntimeBindings
   , resolvedCustomImageTargetAgentIdentity
   , retainedPublicEdgeTlsSecretManifest
   , selectRepositoryManifestDigest
   , supportedChartNames
+  , tlsPublicEdgeSecretRestoreSlotManifest
   , validateOperatorGatesWith
   , valuesForAuthorityBackup
   , valuesForBootstrapBroker
@@ -1265,9 +1283,13 @@ import Prodbox.PrerequisiteId
   , prerequisiteIdText
   )
 import Prodbox.PublicEdge
-  ( authPathPrefix
+  ( PublicEdgeReadinessObservation (..)
+  , authPathPrefix
   , canonicalPublicRouteCatalog
+  , classifyPublicEdgeReadinessObservation
+  , gatewayDnsWriteAuthorityNotReadyDiagnostic
   , publicEdgeClusterIssuerName
+  , publicEdgeReadyClassification
   , publicEdgeTlsRetentionKey
   , publicRoutePathPrefix
   , requireSubstrateCertScopeSet
@@ -1295,6 +1317,7 @@ import Prodbox.Pulumi.EncryptedBackend
   , stackCheckpointPath
   , withDecryptedStackWith
   )
+import Prodbox.Registry.Retention qualified as RegistryRetention
 import Prodbox.Result qualified as Result
 import Prodbox.Retry
   ( PollOutcome (..)
@@ -1310,6 +1333,7 @@ import Prodbox.Retry
   , mkJitterFraction
   , mkRetryPolicy
   , pollUntilReady
+  , registryReferenceObservationRetryPolicy
   , retryDelayMicros
   , retryPolicyBaseDelayMicros
   , retryPolicyJitterFraction
@@ -1467,6 +1491,7 @@ import Prodbox.TestRunner
   , awsSubstrateBootstrapRestoreSteps
   , guardTestDelete
   , harnessPostCredentialRuntimeCommand
+  , harnessRequiresStandaloneInForceConfigSync
   , integrationRunbookCommandArgs
   , lifecycleCleanupTargetsForSuite
   , nativeMayProvisionPerRunAwsStacks
@@ -2094,6 +2119,55 @@ targetSecretAgentStartupDiagnosticSuite =
         `shouldBe` [ ControlPlaneRuntime.LifecycleAuthorityReadinessObjectStore
                    , ControlPlaneRuntime.LifecycleAuthorityReadinessBootstrapHandoff
                    ]
+    it "exhausts the closed payload-free TLS Retention startup vocabulary" $ do
+      let rendered =
+            map
+              ControlPlaneRuntime.renderTlsRetentionStartupCause
+              ControlPlaneRuntime.allTlsRetentionStartupCauses
+      rendered
+        `shouldBe` [ "store/coordinate-invalid"
+                   , "store/config-invalid"
+                   , "store/credential-read"
+                   , "store/field-missing/access-key"
+                   , "store/field-missing/secret-key"
+                   , "store/field-missing/region"
+                   , "store/field-missing/other"
+                   , "store/field-empty/access-key"
+                   , "store/field-empty/secret-key"
+                   , "store/field-empty/region"
+                   , "store/field-empty/other"
+                   ]
+      length rendered `shouldBe` length (nub rendered)
+      forM_ ControlPlaneRuntime.allTlsRetentionStartupCauses $ \cause -> do
+        ControlPlaneRuntime.tlsRetentionStartupRefusalDisposition
+          TlsRetentionRuntime
+          cause
+          `shouldBe` ( Just (ControlPlaneRuntime.renderTlsRetentionStartupCause cause)
+                     , ExitFailure 1
+                     )
+        ControlPlaneRuntime.tlsRetentionStartupRefusalDisposition
+          LifecycleAuthorityRuntime
+          cause
+          `shouldBe` (Nothing, ExitFailure 1)
+    it "classifies TLS Retention credential failures without retaining values" $ do
+      ControlPlaneRuntime.tlsRetentionStartupCauseFromStoreError
+        (DedicatedAdapterVaultReadFailed "private/path-a" "private-detail-a")
+        `shouldBe` ControlPlaneRuntime.TlsRetentionStartupStoreCredentialRead
+      ControlPlaneRuntime.tlsRetentionStartupCauseFromStoreError
+        (DedicatedAdapterVaultReadFailed "private/path-b" "private-detail-b")
+        `shouldBe` ControlPlaneRuntime.TlsRetentionStartupStoreCredentialRead
+      ControlPlaneRuntime.tlsRetentionStartupCauseFromStoreError
+        (DedicatedAdapterVaultFieldMissing "private/path" "access_key_id")
+        `shouldBe` ControlPlaneRuntime.TlsRetentionStartupStoreAccessKeyMissing
+      ControlPlaneRuntime.tlsRetentionStartupCauseFromStoreError
+        (DedicatedAdapterVaultFieldEmpty "private/path" "secret_access_key")
+        `shouldBe` ControlPlaneRuntime.TlsRetentionStartupStoreSecretKeyEmpty
+      ControlPlaneRuntime.tlsRetentionStartupCauseFromStoreError
+        (DedicatedAdapterVaultFieldMissing "private/path" "region")
+        `shouldBe` ControlPlaneRuntime.TlsRetentionStartupStoreRegionMissing
+      ControlPlaneRuntime.tlsRetentionStartupCauseFromStoreError
+        (DedicatedAdapterVaultFieldEmpty "private/path" "private-field")
+        `shouldBe` ControlPlaneRuntime.TlsRetentionStartupStoreOtherFieldEmpty
     it "exhausts the closed payload-free cause vocabulary" $ do
       map
         ControlPlaneRuntime.renderTargetSecretAgentStartupCause
@@ -6975,6 +7049,192 @@ unitSuite = do
         (harborRegistryStorageBackend {registryStorageBackendRedirect = RedirectEnabled})
         `shouldContain` "  redirect:\n    disable: false"
 
+    it "freezes the 177-revision registry-retention counterexample around two current tags" $ do
+      let revisionDigest indexValue =
+            let suffix = show indexValue
+             in "sha256:" ++ replicate (64 - length suffix) '0' ++ suffix
+          revisions = map revisionDigest [1 .. 177 :: Int]
+          currentDigest = last revisions
+          currentReference tag =
+            RegistryRetention.RegistryTagReference
+              { RegistryRetention.registryTagReferenceName = tag
+              , RegistryRetention.registryTagReferenceDigest = currentDigest
+              , RegistryRetention.registryTagReferenceMediaType =
+                  RegistryRetention.RegistryDockerV2Manifest
+              }
+          repository =
+            RegistryRetention.RegistryRepositoryReferences
+              { RegistryRetention.registryReferenceRepository = "prodbox/prodbox-runtime"
+              , RegistryRetention.registryReferenceTags =
+                  [ currentReference "latest"
+                  , currentReference "prodbox-3349a232b3454fb3be77b2f68919904f"
+                  ]
+              }
+      case RegistryRetention.mkRegistryReferenceSnapshot [repository] of
+        Left err -> expectationFailure (show err)
+        Right snapshot -> do
+          RegistryRetention.selectUntaggedManifestDigests revisions snapshot
+            `shouldBe` Right (init revisions)
+          RegistryRetention.validateRegistryReferenceReadBack snapshot snapshot
+            `shouldBe` Right ()
+          let markerLine =
+                "prodbox/prodbox-runtime: marking manifest "
+                  ++ currentDigest
+                  ++ " "
+              validCollectorOutput =
+                unlines
+                  [ "prodbox/prodbox-runtime"
+                  , markerLine
+                  , ""
+                  , "1 blobs marked, 0 blobs and 0 manifests eligible for deletion"
+                  ]
+              changedCollectorOutput =
+                unlines
+                  [ "prodbox/prodbox-runtime"
+                  , markerLine
+                  , ""
+                  , "1 blobs marked, 1 blobs and 0 manifests eligible for deletion"
+                  , "blob eligible for deletion: " ++ revisionDigest (1 :: Int)
+                  ]
+          RegistryRetention.validateRegistryGarbageCollectionResult
+            snapshot
+            ExitSuccess
+            validCollectorOutput
+            ""
+            `shouldSatisfy` isRight
+          RegistryRetention.validateRegistryGarbageCollectionResult
+            snapshot
+            ExitSuccess
+            validCollectorOutput
+            "Error: unknown flag: --quiet\nRun 'registry help' for usage.\n"
+            `shouldBe` Left RegistryRetention.RegistryGarbageCollectionStderrObserved
+          RegistryRetention.validateRegistryGarbageCollectionResult
+            snapshot
+            ExitSuccess
+            ""
+            ""
+            `shouldBe` Left RegistryRetention.RegistryGarbageCollectionManifestEvidenceInvalid
+          RegistryRetention.validateRegistryGarbageCollectionResult
+            snapshot
+            (ExitFailure 1)
+            validCollectorOutput
+            ""
+            `shouldBe` Left RegistryRetention.RegistryGarbageCollectionProcessFailed
+          case ( RegistryRetention.validateRegistryGarbageCollectionResult
+                   snapshot
+                   ExitSuccess
+                   validCollectorOutput
+                   ""
+               , RegistryRetention.validateRegistryGarbageCollectionResult
+                   snapshot
+                   ExitSuccess
+                   changedCollectorOutput
+                   ""
+               ) of
+            (Right dryRunEvidence, Right deleteEvidence) ->
+              RegistryRetention.validateRegistryGarbageCollectionReplay
+                dryRunEvidence
+                deleteEvidence
+                `shouldBe` Left RegistryRetention.RegistryGarbageCollectionReplayChanged
+            evidenceResult -> expectationFailure (show evidenceResult)
+
+    it "decodes only complete concrete registry reference observations" $ do
+      let digest = "sha256:" ++ replicate 64 'a'
+          headers =
+            unlines
+              [ "HTTP/1.1 200 OK\r"
+              , "Content-Type: application/vnd.docker.distribution.manifest.v2+json\r"
+              , "Docker-Content-Digest: " ++ digest ++ "\r"
+              ]
+      RegistryRetention.decodeRegistryCatalogPage
+        "{\"repositories\":[\"prodbox/prodbox-runtime\"]}"
+        `shouldBe` Right ["prodbox/prodbox-runtime"]
+      RegistryRetention.decodeRegistryTagsPage
+        "prodbox/prodbox-runtime"
+        "{\"name\":\"prodbox/prodbox-runtime\",\"tags\":[\"latest\",\"prodbox-machine\"]}"
+        `shouldBe` Right ["latest", "prodbox-machine"]
+      RegistryRetention.decodeRegistryManifestHeaders headers
+        `shouldBe` Right (digest, RegistryRetention.RegistryDockerV2Manifest)
+      RegistryRetention.decodeRegistryManifestHeaders
+        (headers ++ "Docker-Content-Digest: " ++ digest ++ "\n")
+        `shouldBe` Left RegistryRetention.RegistryReferenceHeaderAmbiguous
+      RegistryRetention.decodeRegistryManifestHeaders
+        ( "Content-Type: application/vnd.oci.image.index.v1+json\n"
+            ++ "Docker-Content-Digest: "
+            ++ digest
+            ++ "\n"
+        )
+        `shouldBe` Left RegistryRetention.RegistryReferenceMediaTypeUnsupported
+
+    it "renders the exact read-only fence and two-pass Distribution garbage collector" $ do
+      registryConfigYaml harborRegistryStorageBackend
+        `shouldContain` "maintenance:\n  readonly:\n    enabled: false"
+      registryConfigYaml
+        ( harborRegistryStorageBackend
+            { registryStorageBackendAccessMode = RegistryRetention.RegistryReadOnly
+            }
+        )
+        `shouldContain` "maintenance:\n  readonly:\n    enabled: true"
+      registryGarbageCollectArguments RegistryGarbageCollectionDryRun
+        `shouldBe` [ "exec"
+                   , "--namespace"
+                   , "harbor"
+                   , "deployment/registry"
+                   , "--container"
+                   , "registry"
+                   , "--"
+                   , "/usr/bin/env"
+                   , "REGISTRY_LOG_LEVEL=error"
+                   , "/bin/registry"
+                   , "garbage-collect"
+                   , "--dry-run"
+                   , "--delete-untagged"
+                   , "/etc/docker/registry/config.yml"
+                   ]
+      registryGarbageCollectArguments RegistryGarbageCollectionDelete
+        `shouldBe` [ "exec"
+                   , "--namespace"
+                   , "harbor"
+                   , "deployment/registry"
+                   , "--container"
+                   , "registry"
+                   , "--"
+                   , "/usr/bin/env"
+                   , "REGISTRY_LOG_LEVEL=error"
+                   , "/bin/registry"
+                   , "garbage-collect"
+                   , "--delete-untagged"
+                   , "/etc/docker/registry/config.yml"
+                   ]
+
+    it "restores read-write registry service after collector failure or interruption" $ do
+      repoRoot <- getCurrentDirectory
+      source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+      let sourceLines = lines source
+          retentionBlock =
+            takeWhile
+              (not . isInfixOf "restoreRegistryReadWriteAfterException ::")
+              (dropWhile (not . isInfixOf "reconcileRegistryManifestRetention ::") sourceLines)
+          interruptionRecoveryBlock =
+            takeWhile
+              (not . isInfixOf "-- | Sprint 4.43: the deep registry")
+              (dropWhile (not . isInfixOf "restoreRegistryReadWriteAfterException ::") sourceLines)
+      retentionBlock
+        `shouldSatisfy` any
+          (isInfixOf "`onException` restoreRegistryReadWriteAfterException repoRoot")
+      length
+        ( filter
+            (isInfixOf "setRegistryAccessMode repoRoot RegistryRetention.RegistryReadWrite")
+            retentionBlock
+        )
+        `shouldBe` 2
+      retentionBlock
+        `shouldSatisfy` any
+          (isInfixOf "firstNonSuccess [collectExit, restoreExit]")
+      interruptionRecoveryBlock
+        `shouldSatisfy` any
+          (isInfixOf "setRegistryAccessMode repoRoot RegistryRetention.RegistryReadWrite")
+
     goldenTest
       "renders the chart deployment plan deterministically"
       "test/golden/plans/chart-deploy-vscode.txt"
@@ -7609,8 +7869,8 @@ unitSuite = do
       let rendered = renderRke2ResourceGuardrailConfig Capacity.defaultResourcePlan
       rendered `shouldContain` "# Managed by `prodbox cluster reconcile`"
       rendered `shouldContain` "kubelet-arg:"
-      rendered `shouldContain` "\"system-reserved=cpu=250m,memory=768Mi,ephemeral-storage=4864Mi\""
-      rendered `shouldContain` "\"kube-reserved=cpu=250m,memory=768Mi,ephemeral-storage=4864Mi\""
+      rendered `shouldContain` "\"system-reserved=cpu=125m,memory=768Mi,ephemeral-storage=4864Mi\""
+      rendered `shouldContain` "\"kube-reserved=cpu=125m,memory=768Mi,ephemeral-storage=4864Mi\""
       rendered
         `shouldContain` "\"eviction-hard=memory.available<1024Mi,nodefs.available<10240Mi,imagefs.available<10240Mi\""
       rendered `shouldContain` "\"image-gc-high-threshold=70\""
@@ -7824,6 +8084,7 @@ unitSuite = do
       dockerfile `shouldContain` "ARG GHC_VERSION=9.12.4"
       dockerfile `shouldContain` "ARG CABAL_VERSION=3.16.1.0"
       dockerfile `shouldContain` "ARG PULUMI_VERSION=3.228.0"
+      dockerfile `shouldContain` "ARG PULUMI_AWS_PROVIDER_VERSION=7.44.0"
       dockerfile `shouldContain` "WORKDIR /opt/build"
       dockerfile `shouldContain` "BOOTSTRAP_HASKELL_MINIMAL=1"
       dockerfile `shouldContain` "ghcup install ghc \"${GHC_VERSION}\""
@@ -7835,8 +8096,34 @@ unitSuite = do
       dockerfile `shouldContain` "awscli.amazonaws.com"
       dockerfile `shouldContain` "dpkg --print-architecture"
       dockerfile `shouldContain` "pulumi-v${PULUMI_VERSION}-linux-${pulumi_arch}.tar.gz"
-      dockerfile `shouldContain` "install -m 0755 /tmp/pulumi/pulumi /usr/local/bin/pulumi"
+      filter (isInfixOf "install -m 0755 /tmp/pulumi/") (lines dockerfile)
+        `shouldBe` [ "    && install -m 0755 /tmp/pulumi/pulumi /usr/local/bin/pulumi \\"
+                   , "    && install -m 0755 /tmp/pulumi/pulumi-language-yaml /usr/local/bin/pulumi-language-yaml \\"
+                   ]
+      dockerfile `shouldContain` "/usr/local/bin/pulumi plugin install"
+      dockerfile `shouldContain` "resource aws \"${PULUMI_AWS_PROVIDER_VERSION}\""
+      dockerfile `shouldContain` "--exact"
+      dockerfile `shouldContain` "--checksum \"${aws_provider_checksum}\""
+      dockerfile
+        `shouldContain` Text.unpack ProviderWorkerBudget.providerWorkerAwsProviderLinuxAmd64Sha256
+      dockerfile
+        `shouldContain` Text.unpack ProviderWorkerBudget.providerWorkerAwsProviderLinuxArm64Sha256
+      dockerfile
+        `shouldContain` "/root/.pulumi/plugins/resource-aws-v${PULUMI_AWS_PROVIDER_VERSION}/pulumi-resource-aws"
+      dockerfile `shouldNotContain` "/root/.pulumi/bin/pulumi-language-yaml"
       dockerfile `shouldContain` "COPY pulumi ./pulumi"
+      pulumiProjects <-
+        mapM
+          (readFile . (repoRoot </>))
+          [ "pulumi/aws-eks-subzone/Pulumi.yaml"
+          , "pulumi/aws-eks/Pulumi.yaml"
+          , "pulumi/aws-test/Pulumi.yaml"
+          , "pulumi/aws-ses/Pulumi.yaml"
+          ]
+      map (filter (isInfixOf "aws: aws@") . lines) pulumiProjects
+        `shouldBe` replicate 4 ["  aws: aws@7.44.0"]
+      map (length . filter (isInfixOf "packages:") . lines) pulumiProjects
+        `shouldBe` replicate 4 1
       providerProduction `shouldContain` "providerBuildRoot = \"/opt/build\""
       providerProduction `shouldContain` "subprocessPath = \"/usr/local/bin/pulumi\""
       providerProduction `shouldContain` "\"pulumi\" </> subdirectory"
@@ -8689,6 +8976,8 @@ unitSuite = do
               nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
               harnessPostCredentialRuntimeCommand suitePlan
                 `shouldBe` Just (Rke2Reconcile (PlanOptions False Nothing) False)
+              harnessRequiresStandaloneInForceConfigSync suitePlan `shouldBe` False
+              harnessLifecycleProviderCredentialCaller `shouldBe` LifecycleAuthorityOperator
               nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` False
               lifecycleCleanupTargetsForSuite suitePlan
                 `shouldBe` completeLifecyclePerRunTargets
@@ -8828,6 +9117,7 @@ unitSuite = do
               nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
               harnessPostCredentialRuntimeCommand suitePlan `shouldBe` Nothing
+              harnessRequiresStandaloneInForceConfigSync suitePlan `shouldBe` True
             DelegatedSuite _ -> expectationFailure "expected native aws-iam plan"
 
     it "includes curl in the gateway-daemon validation prerequisites" $ do
@@ -9371,8 +9661,11 @@ unitSuite = do
     it "waits for public-edge readiness during supported runtime restore actions" $ do
       repoRoot <- getCurrentDirectory
       runnerSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestRunner.hs")
+      validationSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestValidation.hs")
 
       runnerSource `shouldContain` "runWaitForPublicEdgeReady"
+      runnerSource `shouldContain` "classifyPublicEdgeReadinessObservation"
+      validationSource `shouldContain` "classifyPublicEdgeReadinessObservation"
       runnerSource `shouldContain` "publicEdgeReadyAttempts = 60"
       runnerSource `shouldContain` "publicEdgeReadyDelayMicroseconds = 10000000"
       runnerSource `shouldContain` "publicEdgeCertificateRepairAttempts = 3"
@@ -9383,6 +9676,26 @@ unitSuite = do
       runnerSource `shouldContain` "Certificate renewal manually triggered by prodbox"
       runnerSource
         `shouldContain` "\"jsonpath={.status.failedIssuanceAttempts}{\\\"|\\\"}{.status.nextPrivateKeySecretName}{\\\"|\\\"}{.metadata.generation}\""
+
+    it "retries only the exact transient Gateway-DNS refusal before accepting readiness" $ do
+      let trace =
+            [ classifyPublicEdgeReadinessObservation
+                (ExitFailure 1)
+                gatewayDnsWriteAuthorityNotReadyDiagnostic
+            , classifyPublicEdgeReadinessObservation
+                ExitSuccess
+                publicEdgeReadyClassification
+            ]
+      trace
+        `shouldBe` [PublicEdgeReadinessGatewayDnsPending, PublicEdgeReadinessReady]
+      classifyPublicEdgeReadinessObservation
+        (ExitFailure 17)
+        "Gateway-DNS observation is bound to a different hosted zone"
+        `shouldBe` PublicEdgeReadinessTerminalFailure 17
+      classifyPublicEdgeReadinessObservation
+        ExitSuccess
+        "CLASSIFICATION=gateway-not-ready"
+        `shouldBe` PublicEdgeReadinessPending
 
     it "renders a valid public-edge certificate reissue status patch" $ do
       let patch =
@@ -9433,6 +9746,33 @@ unitSuite = do
           rendered `shouldNotContain` "ownerReferences"
           rendered `shouldNotContain` "resourceVersion"
           rendered `shouldNotContain` "source-uid"
+
+    it "reserves a non-secret exact public-edge TLS restore slot" $ do
+      let rendered = BL8.unpack (encode tlsPublicEdgeSecretRestoreSlotManifest)
+      rendered `shouldContain` "public-edge-tls"
+      rendered `shouldContain` "vscode"
+      rendered `shouldContain` "prodbox.io/tls-restore-slot"
+      rendered `shouldContain` "kubernetes.io/tls"
+      rendered `shouldContain` "\"tls.crt\":\"\""
+      rendered `shouldContain` "\"tls.key\":\"\""
+
+    it "accepts only create success or an API-server AlreadyExists refusal for the TLS slot" $ do
+      classifyPublicEdgeTlsRestoreSlotCreate
+        (ProcessOutput ExitSuccess "secret/public-edge-tls created" "")
+        `shouldBe` Right ()
+      classifyPublicEdgeTlsRestoreSlotCreate
+        ( ProcessOutput
+            (ExitFailure 1)
+            ""
+            "Error from server (AlreadyExists): secrets public-edge-tls already exists"
+        )
+        `shouldBe` Right ()
+      classifyPublicEdgeTlsRestoreSlotCreate
+        (ProcessOutput (ExitFailure 1) "AlreadyExists" "forbidden")
+        `shouldSatisfy` isLeft
+      classifyPublicEdgeTlsRestoreSlotCreate
+        (ProcessOutput (ExitFailure 1) "" "ordinary failure")
+        `shouldSatisfy` isLeft
 
     it "waits for stable Harbor endpoints before lifecycle image reconcile begins" $ do
       repoRoot <- getCurrentDirectory
@@ -9518,6 +9858,8 @@ unitSuite = do
       -- follow the definition around in the first place.
       retryPolicyMaxAttempts customImagePushRetryPolicy `shouldBe` 3
       retryPolicyBaseDelayMicros customImagePushRetryPolicy `shouldBe` 5000000
+      retryPolicyMaxAttempts registryReferenceObservationRetryPolicy `shouldBe` 16
+      retryPolicyBaseDelayMicros registryReferenceObservationRetryPolicy `shouldBe` 5000000
       rke2Source `shouldContain` "customImagePushRetryPolicy"
       rke2Source `shouldContain` "pushDockerImageWithRetry"
       rke2Source `shouldContain` "isRetryableHarborPublicationFailure"
@@ -10308,11 +10650,12 @@ unitSuite = do
         , "lookup minio.prodbox.svc.cluster.local"
         , "name resolution"
         , "connection refused"
+        , "curl: (7) Failed to connect to 127.0.0.1:30080: Couldn't connect to server"
         , "connection reset by peer"
         , "upstream returned 503 SERVICE UNAVAILABLE"
         , "context deadline exceeded"
         ]
-        `shouldBe` replicate 8 True
+        `shouldBe` replicate 9 True
       isRetryableTransientFailure [] "401 unauthorized" `shouldBe` False
 
     it "extends the shared transient classifier with operation-specific fragments" $ do
@@ -10847,6 +11190,69 @@ unitSuite = do
         `shouldBe` "data-vscode-0"
       chartStorageBindingHostPath binding
         `shouldBe` "/tmp/prodbox/.data/vscode/vscode/0"
+
+    it "discovers the exact role-labelled Patroni primary postgres-data claim" $ do
+      parsePatroniPrimaryClaimName
+        "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-hh5k-0\"},\"spec\":{\"volumes\":[{\"name\":\"postgres-data\",\"persistentVolumeClaim\":{\"claimName\":\"prodbox-vscode-pg-instance1-hh5k-pgdata\"}},{\"name\":\"cert-volume\",\"secret\":{\"secretName\":\"irrelevant\"}}]}}]}"
+        `shouldBe` Right (Just "prodbox-vscode-pg-instance1-hh5k-pgdata")
+
+    it "treats absent or ambiguous Patroni primary observations as no live anchor" $ do
+      parsePatroniPrimaryClaimName "{\"items\":[]}"
+        `shouldBe` Right Nothing
+      parsePatroniPrimaryClaimName
+        "{\"items\":[{\"metadata\":{\"name\":\"first-0\"}},{\"metadata\":{\"name\":\"second-0\"}}]}"
+        `shouldBe` Right Nothing
+
+    it "rejects a malformed or identity-mismatched Patroni primary claim" $ do
+      parsePatroniPrimaryClaimName
+        "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-hh5k-0\"},\"spec\":{\"volumes\":[{\"name\":\"postgres-data\",\"persistentVolumeClaim\":{\"claimName\":\"prodbox-vscode-pg-instance1-5krm-pgdata\"}}]}}]}"
+        `shouldBe` Right Nothing
+      parsePatroniPrimaryClaimName
+        "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-hh5k-0\"}}]}"
+        `shouldSatisfy` isLeft
+
+    it "preserves the observed Patroni anchor across randomly named follower claims" $ do
+      let logicalBindings =
+            map
+              ( either error id
+                  . storageBinding
+                    Capacity.defaultResourcePlan
+                    "/tmp/prodbox/.data"
+                    "vscode"
+                    "vscode"
+              )
+              (patroniStorageSpecs "vscode")
+          anchorVolumeName =
+            retainedStatefulSetPersistentVolumeName "vscode" "prodbox-vscode-pg" 0
+          firstFollowerVolumeName =
+            retainedStatefulSetPersistentVolumeName "vscode" "prodbox-vscode-pg" 1
+          secondFollowerVolumeName =
+            retainedStatefulSetPersistentVolumeName "vscode" "prodbox-vscode-pg" 2
+          claims =
+            [ PerconaPatroniClaim
+                "prodbox-vscode-pg-instance1-5krm-pgdata"
+                Nothing
+            , PerconaPatroniClaim
+                "prodbox-vscode-pg-instance1-hh5k-pgdata"
+                (Just anchorVolumeName)
+            , PerconaPatroniClaim
+                "prodbox-vscode-pg-instance1-rwr7-pgdata"
+                (Just secondFollowerVolumeName)
+            ]
+      fmap
+        ( map
+            ( \binding ->
+                ( chartStorageBindingPersistentVolumeName binding
+                , chartStorageBindingPersistentVolumeClaimName binding
+                )
+            )
+        )
+        (resolvePerconaPatroniRuntimeBindings logicalBindings claims (Just anchorVolumeName))
+        `shouldBe` Right
+          [ (anchorVolumeName, "prodbox-vscode-pg-instance1-hh5k-pgdata")
+          , (firstFollowerVolumeName, "prodbox-vscode-pg-instance1-5krm-pgdata")
+          , (secondFollowerVolumeName, "prodbox-vscode-pg-instance1-rwr7-pgdata")
+          ]
 
     it "lists supported charts in canonical order" $ do
       supportedChartNames `shouldBe` ["keycloak", "vscode", "api", "websocket", "gateway"]
@@ -13140,6 +13546,32 @@ unitSuite = do
       let dataMap = Map.fromList [("user", "alice"), ("pass", "p@ss")]
       InCluster.secretManifestStringData dataMap
         `shouldBe` InCluster.secretManifestStringData dataMap
+
+    it "classifies exact Secret apply statuses without retaining response values" $ do
+      InCluster.classifyK8sSecretApplyStatus 200 `shouldBe` Right ()
+      InCluster.classifyK8sSecretApplyStatus 201 `shouldBe` Right ()
+      InCluster.classifyK8sSecretApplyStatus 400
+        `shouldBe` Left InCluster.K8sSecretApplyBadRequest
+      InCluster.classifyK8sSecretApplyStatus 401
+        `shouldBe` Left InCluster.K8sSecretApplyUnauthorized
+      InCluster.classifyK8sSecretApplyStatus 403
+        `shouldBe` Left InCluster.K8sSecretApplyForbidden
+      InCluster.classifyK8sSecretApplyStatus 404
+        `shouldBe` Left InCluster.K8sSecretApplyNotFound
+      InCluster.classifyK8sSecretApplyStatus 405
+        `shouldBe` Left InCluster.K8sSecretApplyMethodNotAllowed
+      InCluster.classifyK8sSecretApplyStatus 409
+        `shouldBe` Left InCluster.K8sSecretApplyConflict
+      InCluster.classifyK8sSecretApplyStatus 415
+        `shouldBe` Left InCluster.K8sSecretApplyUnsupportedMediaType
+      InCluster.classifyK8sSecretApplyStatus 422
+        `shouldBe` Left InCluster.K8sSecretApplyUnprocessable
+      InCluster.classifyK8sSecretApplyStatus 429
+        `shouldBe` Left InCluster.K8sSecretApplyThrottled
+      InCluster.classifyK8sSecretApplyStatus 503
+        `shouldBe` Left InCluster.K8sSecretApplyServerUnavailable
+      InCluster.classifyK8sSecretApplyStatus 299
+        `shouldBe` Left InCluster.K8sSecretApplyUnexpectedStatus
 
     it "secretManifestStringData handles an empty stringData map" $ do
       BL8.unpack (encode (InCluster.secretManifestStringData Map.empty))
@@ -17868,6 +18300,44 @@ unitSuite = do
         `shouldBe` "public-edge-tls/home-local/api.example.test%2Cvscode.example.test"
 
   describe "public-edge typed preserve outcome" $ do
+    it "classifies only exact closed namespace presence or authoritative absence" $ do
+      classifyPublicEdgeTlsNamespaceObservation
+        "vscode"
+        (ProcessOutput ExitSuccess "" "")
+        `shouldBe` Right PublicEdgeTlsNamespaceAbsent
+      classifyPublicEdgeTlsNamespaceObservation
+        "vscode"
+        ( ProcessOutput
+            ExitSuccess
+            "{\"apiVersion\":\"v1\",\"kind\":\"Namespace\",\"metadata\":{\"name\":\"vscode\"}}"
+            ""
+        )
+        `shouldBe` Right PublicEdgeTlsNamespacePresent
+      classifyPublicEdgeTlsNamespaceObservation
+        "vscode"
+        ( ProcessOutput
+            ExitSuccess
+            "{\"apiVersion\":\"v1\",\"kind\":\"Namespace\",\"metadata\":{\"name\":\"other\"}}"
+            ""
+        )
+        `shouldSatisfy` isLeft
+      classifyPublicEdgeTlsNamespaceObservation
+        "vscode"
+        ( ProcessOutput
+            ExitSuccess
+            "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"name\":\"vscode\"}}"
+            ""
+        )
+        `shouldSatisfy` isLeft
+      classifyPublicEdgeTlsNamespaceObservation
+        "vscode"
+        (ProcessOutput ExitSuccess "not-json" "")
+        `shouldSatisfy` isLeft
+      classifyPublicEdgeTlsNamespaceObservation
+        "vscode"
+        (ProcessOutput (ExitFailure 1) "" "forbidden")
+        `shouldSatisfy` isLeft
+
     it "classifyPublicEdgePreserve distinguishes retain / in-flight / nothing (no silent absent)" $ do
       classifyPublicEdgePreserve (Just (object [])) Nothing
         `shouldBe` PreservedToRetentionStore
@@ -20267,14 +20737,17 @@ unitSuite = do
         ControlPlaneRuntime.authorityBackupReplayCapacity `shouldBe` 18
         ControlPlaneRuntime.authorityBackupReplayCapacity
           `shouldBe` (2 * ControlPlaneRuntime.authorityBackupReconcileAttemptRequestMaximum)
-        ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum `shouldBe` 27
-        ControlPlaneRuntime.targetSecretAgentReplayCapacity `shouldBe` 54
+        ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum `shouldBe` 29
+        ControlPlaneRuntime.targetSecretAgentReplayCapacity `shouldBe` 58
         ControlPlaneRuntime.targetSecretAgentReplayCapacity
           `shouldBe` (2 * ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum)
         ControlPlaneRuntime.targetSecretAgentReplayMaximumEncodedBytes
-          `shouldBe` (112 * 1024 * 1024)
+          `shouldBe` (118 * 1024 * 1024)
         vaultConfig <- readFile "charts/vault/templates/configmap.yaml"
+        vaultStatefulSet <- readFile "charts/vault/templates/statefulset.yaml"
         vaultConfig `shouldContain` "max_request_size = 167772160"
+        vaultStatefulSet
+          `shouldContain` "checksum/config: {{ include (print $.Template.BasePath \"/configmap.yaml\") . | sha256sum }}"
 
         classifyAwsAdminProvisionerHttpResponse
           (ControlPlaneResponse 503 "authenticated-replay-capacity-exhausted\n")
@@ -21908,7 +22381,7 @@ unitSuite = do
               ]
           )
 
-  describe "Sprint 1.60 runtime-memory decomposition and RTS policy" $ do
+  describe "runtime-memory decomposition, Provider capacity, and RTS policy" $ do
     it "rejects zero for every positive byte term and preserves positive bytes" $ do
       forM_ [minBound .. maxBound] $ \term -> do
         RuntimeMemory.mkPositiveBytes term 0
@@ -22033,13 +22506,262 @@ unitSuite = do
       Capacity.permit_capacity configuredChild `shouldBe` Just 1
       Capacity.action_deadline_milliseconds configuredChild `shouldBe` Just 300000
       Capacity.simultaneous_peak_bytes configuredChild
-        `shouldBe` [80 * 1024 * 1024]
+        `shouldBe` [1024 * 1024 * 1024]
       boundedSubprocessTimeoutMicros ProviderProduction.providerAwsCliLimits
         `shouldBe` (30 * 1000 * 1000)
       boundedSubprocessMaximumStdoutBytes ProviderProduction.providerAwsCliLimits
         `shouldBe` (4 * 1024 * 1024)
       boundedSubprocessMaximumStderrBytes ProviderProduction.providerAwsCliLimits
         `shouldBe` (1024 * 1024)
+
+    it "freezes the 256 MiB Provider plugin-overlap eviction and closes it without envelope drift" $ do
+      let counterexample = ProviderWorkerBudget.frozenProviderWorkerEphemeralCounterexample
+          envelope =
+            ProviderWorkerBudget.ProviderWorkerResourceEnvelope
+              { ProviderWorkerBudget.providerWorkerEnvelopeCpuMillicores = 100
+              , ProviderWorkerBudget.providerWorkerEnvelopeMemoryBytes = 176 * 1024 * 1024
+              , ProviderWorkerBudget.providerWorkerEnvelopeEphemeralBytes = 256 * 1024 * 1024
+              , ProviderWorkerBudget.providerWorkerEnvelopeDurableBytes = 0
+              }
+          observation =
+            ProviderWorkerBudget.ProviderWorkerEphemeralObservation
+              { ProviderWorkerBudget.providerWorkerBaselineRootfsBytes = 69632
+              , ProviderWorkerBudget.providerWorkerKubeletPeakBytes = 337674240
+              , ProviderWorkerBudget.providerWorkerTmpTotalBytes = 200804 * 1024
+              , ProviderWorkerBudget.providerWorkerPluginArchiveBytes = 200792 * 1024
+              , ProviderWorkerBudget.providerWorkerPulumiHomeTotalBytes = 231264 * 1024
+              , ProviderWorkerBudget.providerWorkerPluginDirectoryBytes = 231244 * 1024
+              , ProviderWorkerBudget.providerWorkerPluginBinaryBytes = 231216 * 1024
+              , ProviderWorkerBudget.providerWorkerPluginPartialBytes = 0
+              , ProviderWorkerBudget.providerWorkerPluginLockBytes = 0
+              , ProviderWorkerBudget.providerWorkerCheckpointScratchBytes = 12 * 1024
+              , ProviderWorkerBudget.providerWorkerCheckpointJsonBytes = 4 * 1024
+              , ProviderWorkerBudget.providerWorkerApplicationLogBytes = 24576
+              }
+          expectedClosure =
+            ProviderWorkerBudget.ProviderWorkerEphemeralClosure
+              { ProviderWorkerBudget.providerWorkerClosureOldToNewEnvelope = (envelope, envelope)
+              , ProviderWorkerBudget.providerWorkerClosureSupersededDisposition =
+                  ProviderWorkerBudget.ProviderWorkerEphemeralLimitExceeded
+                    337674240
+                    (256 * 1024 * 1024)
+              , ProviderWorkerBudget.providerWorkerClosureReplacementDisposition =
+                  ProviderWorkerBudget.ProviderWorkerRuntimeProviderOverlapEliminated
+              }
+      ProviderWorkerBudget.providerWorkerCounterexampleIdentity counterexample
+        `shouldBe` "PROVIDER-WORKER-PULUMI-EPHEMERAL-STORAGE-EVICTION-256MI-2026-09-05"
+      ProviderWorkerBudget.providerWorkerCounterexampleCausalProfile counterexample
+        `shouldBe` ProviderWorkerBudget.ProviderWorkerEphemeralCausalProfile
+          { ProviderWorkerBudget.providerWorkerCounterexampleTopology =
+              ProviderWorkerBudget.OneFencedProviderWorkerOneSerializedChild
+          , ProviderWorkerBudget.providerWorkerCounterexampleBackgroundLoad =
+              ProviderWorkerBudget.OneRegisteredStackReconcile
+          , ProviderWorkerBudget.providerWorkerCounterexampleFaultSchedule =
+              ProviderWorkerBudget.NoInjectedProviderFault
+          }
+      ProviderWorkerBudget.providerWorkerCounterexampleSupersededEnvelope counterexample
+        `shouldBe` envelope
+      ProviderWorkerBudget.providerWorkerCounterexampleReplacementEnvelope counterexample
+        `shouldBe` envelope
+      ProviderWorkerBudget.providerWorkerCounterexampleObservation counterexample
+        `shouldBe` observation
+      ProviderWorkerBudget.validateProviderWorkerEphemeralCounterexample counterexample
+        `shouldBe` Right expectedClosure
+
+    it "makes every frozen Provider eviction fact and both zero-runtime-write claims significant" $ do
+      let counterexample = ProviderWorkerBudget.frozenProviderWorkerEphemeralCounterexample
+          envelope = ProviderWorkerBudget.providerWorkerCounterexampleReplacementEnvelope counterexample
+          observation = ProviderWorkerBudget.providerWorkerCounterexampleObservation counterexample
+          packaging =
+            ProviderWorkerBudget.providerWorkerCounterexampleReplacementPackaging counterexample
+          changedEnvelope =
+            counterexample
+              { ProviderWorkerBudget.providerWorkerCounterexampleReplacementEnvelope =
+                  envelope
+                    { ProviderWorkerBudget.providerWorkerEnvelopeEphemeralBytes =
+                        257 * 1024 * 1024
+                    }
+              }
+          noLongerFailing =
+            counterexample
+              { ProviderWorkerBudget.providerWorkerCounterexampleObservation =
+                  observation
+                    { ProviderWorkerBudget.providerWorkerKubeletPeakBytes =
+                        256 * 1024 * 1024
+                    }
+              }
+          runtimeArchiveReturns =
+            counterexample
+              { ProviderWorkerBudget.providerWorkerCounterexampleReplacementPackaging =
+                  packaging
+                    { ProviderWorkerBudget.providerWorkerReplacementRuntimeArchiveBytes = 1
+                    }
+              }
+          runtimeBinaryReturns =
+            counterexample
+              { ProviderWorkerBudget.providerWorkerCounterexampleReplacementPackaging =
+                  packaging
+                    { ProviderWorkerBudget.providerWorkerReplacementRuntimeProviderBinaryBytes = 1
+                    }
+              }
+      ProviderWorkerBudget.validateProviderWorkerEphemeralCounterexample changedEnvelope
+        `shouldSatisfy` isLeft
+      ProviderWorkerBudget.validateProviderWorkerEphemeralCounterexample noLongerFailing
+        `shouldBe` Left
+          ( ProviderWorkerBudget.ProviderWorkerCounterexampleDidNotExceedLimit
+              (256 * 1024 * 1024)
+              (256 * 1024 * 1024)
+          )
+      ProviderWorkerBudget.validateProviderWorkerEphemeralCounterexample runtimeArchiveReturns
+        `shouldBe` Left (ProviderWorkerBudget.ProviderWorkerCounterexampleRuntimeProviderWrite 1 0)
+      ProviderWorkerBudget.validateProviderWorkerEphemeralCounterexample runtimeBinaryReturns
+        `shouldBe` Left (ProviderWorkerBudget.ProviderWorkerCounterexampleRuntimeProviderWrite 0 1)
+
+    it "freezes the packaged AWS schema OOM and transfers only declared idle headroom" $ do
+      let counterexample = ProviderWorkerBudget.frozenProviderWorkerSchemaMemoryCounterexample
+          supersededPartition =
+            ProviderWorkerBudget.providerWorkerSchemaCounterexampleSupersededPartition counterexample
+          replacementPartition =
+            ProviderWorkerBudget.providerWorkerSchemaCounterexampleReplacementPartition counterexample
+          supersededEnvelope =
+            ProviderWorkerBudget.providerWorkerPartitionEnvelope supersededPartition
+          replacementEnvelope =
+            ProviderWorkerBudget.providerWorkerPartitionEnvelope replacementPartition
+          supersededHeadroom =
+            ProviderWorkerBudget.providerWorkerPartitionIdleHeadroom supersededPartition
+          replacementHeadroom =
+            ProviderWorkerBudget.providerWorkerPartitionIdleHeadroom replacementPartition
+          sizingProbe =
+            ProviderWorkerBudget.providerWorkerSchemaCounterexampleSizingProbe counterexample
+      ProviderWorkerBudget.providerWorkerSchemaCounterexampleIdentity counterexample
+        `shouldBe` "PROVIDER-WORKER-PACKAGED-AWS-SCHEMA-OOM-176MIB-2026-09-05"
+      ProviderWorkerBudget.providerWorkerEnvelopeMemoryBytes supersededEnvelope
+        `shouldBe` (176 * 1024 * 1024)
+      ProviderWorkerBudget.providerWorkerEnvelopeMemoryBytes replacementEnvelope
+        `shouldBe` (1120 * 1024 * 1024)
+      ProviderWorkerBudget.providerWorkerEnvelopeMemoryBytes supersededHeadroom
+        `shouldBe` (4272 * 1024 * 1024)
+      ProviderWorkerBudget.providerWorkerEnvelopeMemoryBytes replacementHeadroom
+        `shouldBe` (3328 * 1024 * 1024)
+      ProviderWorkerBudget.providerWorkerSchemaProbeUncappedPeakBytes sizingProbe
+        `shouldBe` 1024434176
+      ProviderWorkerBudget.providerWorkerSchemaProbeHardLimitPeakBytes sizingProbe
+        `shouldBe` 966365184
+      ProviderWorkerBudget.providerWorkerSchemaCounterexampleLiveReplacement counterexample
+        `shouldBe` Nothing
+      ProviderWorkerBudget.validateProviderWorkerSchemaMemoryCounterexample counterexample
+        `shouldBe` Right ProviderWorkerBudget.ProviderWorkerSchemaMemoryPendingLiveReplacement
+      case Allocation.compileResourcePlanUncertified Capacity.defaultResourcePlan of
+        Left err -> expectationFailure (show err)
+        Right allocatedPlan -> do
+          Allocation.planAllocatable allocatedPlan
+            `shouldBe` Capacity.ResourceVector 7000 13312 80032 177952
+          Allocation.planTotalDraw allocatedPlan
+            `shouldBe` Capacity.ResourceVector 6210 9984 15456 155648
+          lookup "provider-worker" (Allocation.planWorkloadDraws allocatedPlan)
+            `shouldBe` Just (Capacity.ResourceVector 100 1120 256 0)
+      ProviderWorkerBudget.validateProviderWorkerSchemaMemoryCounterexample
+        counterexample
+          { ProviderWorkerBudget.providerWorkerSchemaCounterexampleReplacementPartition =
+              replacementPartition
+                { ProviderWorkerBudget.providerWorkerPartitionIdleHeadroom = supersededHeadroom
+                }
+          }
+        `shouldBe` Left ProviderWorkerBudget.ProviderWorkerSchemaMemoryArtifactDrift
+
+    it "freezes the retained-stack config loss and projects both inputs into observe-first preview" $ do
+      let counterexample =
+            ProviderPulumiConfigProjection.frozenProviderPulumiConfigCounterexample
+          expectedValues =
+            [ ("parentZoneId", "ZPARENT123")
+            , ("subzoneName", "aws.example.test")
+            ]
+          supersededArguments =
+            [ "preview"
+            , "--stack"
+            , "aws-eks-subzone"
+            , "--expect-no-changes"
+            , "--non-interactive"
+            , "--color"
+            , "never"
+            ]
+          replacementArguments =
+            supersededArguments
+              <> [ "--config"
+                 , "parentZoneId=ZPARENT123"
+                 , "--config"
+                 , "subzoneName=aws.example.test"
+                 ]
+          envelope =
+            ProviderWorkerBudget.ProviderWorkerResourceEnvelope
+              { ProviderWorkerBudget.providerWorkerEnvelopeCpuMillicores = 100
+              , ProviderWorkerBudget.providerWorkerEnvelopeMemoryBytes = 1120 * 1024 * 1024
+              , ProviderWorkerBudget.providerWorkerEnvelopeEphemeralBytes = 256 * 1024 * 1024
+              , ProviderWorkerBudget.providerWorkerEnvelopeDurableBytes = 0
+              }
+          expectedClosure =
+            ProviderPulumiConfigProjection.ProviderPulumiConfigClosure
+              { ProviderPulumiConfigProjection.providerPulumiConfigOldToNewEnvelope =
+                  (envelope, envelope)
+              , ProviderPulumiConfigProjection.providerPulumiConfigSupersededDisposition =
+                  ProviderPulumiConfigProjection.ProviderPulumiConfigMissing
+                    ["parentZoneId", "subzoneName"]
+              , ProviderPulumiConfigProjection.providerPulumiConfigReplacementDisposition =
+                  ProviderPulumiConfigProjection.ProviderPulumiConfigProjected expectedValues
+              }
+      ProviderPulumiConfigProjection.providerPulumiConfigIdentity counterexample
+        `shouldBe` "PROVIDER-WORKER-PULUMI-STACK-CONFIG-ABSENT-2026-09-05"
+      ProviderPulumiConfigProjection.providerPulumiConfigExpectedValues counterexample
+        `shouldBe` expectedValues
+      ProviderPulumiConfigProjection.providerPulumiConfigObservedMissingKeys counterexample
+        `shouldBe` ["parentZoneId", "subzoneName"]
+      ProviderPulumiConfigProjection.providerPulumiConfigSupersededPreviewArguments counterexample
+        `shouldBe` supersededArguments
+      ProviderPulumiConfigProjection.providerPulumiConfigReplacementPreviewArguments counterexample
+        `shouldBe` replacementArguments
+      ProviderPulumiConfigProjection.providerPulumiPreviewArguments
+        "aws-eks-subzone"
+        expectedValues
+        `shouldBe` replacementArguments
+      ProviderPulumiConfigProjection.validateProviderPulumiConfigCounterexample counterexample
+        `shouldBe` Right expectedClosure
+
+    it "makes each retained-stack preview input and the constant envelope significant" $ do
+      let counterexample =
+            ProviderPulumiConfigProjection.frozenProviderPulumiConfigCounterexample
+          expectedValues =
+            ProviderPulumiConfigProjection.providerPulumiConfigExpectedValues counterexample
+          replacementEnvelope =
+            ProviderPulumiConfigProjection.providerPulumiConfigReplacementEnvelope counterexample
+          without key = filter ((/= key) . fst) expectedValues
+          projectionWithout key =
+            ProviderPulumiConfigProjection.providerPulumiPreviewArguments
+              "aws-eks-subzone"
+              (without key)
+      forM_ ["parentZoneId", "subzoneName"] $ \key ->
+        ProviderPulumiConfigProjection.validateProviderPulumiConfigCounterexample
+          counterexample
+            { ProviderPulumiConfigProjection.providerPulumiConfigReplacementPreviewArguments =
+                projectionWithout key
+            }
+          `shouldBe` Left
+            ProviderPulumiConfigProjection.ProviderPulumiConfigReplacementProjectionDrift
+      ProviderPulumiConfigProjection.validateProviderPulumiConfigCounterexample
+        counterexample
+          { ProviderPulumiConfigProjection.providerPulumiConfigSupersededPreviewArguments =
+              ProviderPulumiConfigProjection.providerPulumiConfigReplacementPreviewArguments
+                counterexample
+          }
+        `shouldBe` Left
+          ProviderPulumiConfigProjection.ProviderPulumiConfigSupersededProjectionDrift
+      ProviderPulumiConfigProjection.validateProviderPulumiConfigCounterexample
+        counterexample
+          { ProviderPulumiConfigProjection.providerPulumiConfigReplacementEnvelope =
+              replacementEnvelope
+                { ProviderWorkerBudget.providerWorkerEnvelopeMemoryBytes = 1121 * 1024 * 1024
+                }
+          }
+        `shouldBe` Left ProviderPulumiConfigProjection.ProviderPulumiConfigEnvelopeChanged
 
     it "contains every admitted Provider child deadline inside its Provider-only HTTP budget" $ do
       ProviderWorkerBudget.providerWorkerMaximumChildDeadlineMilliseconds
@@ -22051,12 +22773,32 @@ unitSuite = do
       Prodbox.Http.Client.httpRequestTimeoutMicros
         ControlPlaneRuntime.lifecycleAuthorityProviderHttpConfig
         `shouldBe` ProviderWorkerBudget.providerWorkerResponseTimeoutMicros
+      Prodbox.Http.Client.httpRequestTimeoutMicros lifecycleAuthorityProviderHttpConfig
+        `shouldBe` ProviderWorkerBudget.providerWorkerResponseTimeoutMicros
+      Prodbox.Http.Client.httpRequestTimeoutMicros lifecycleAuthorityHttpConfig
+        `shouldBe` (30 * 1000 * 1000)
       Prodbox.Http.Client.httpRequestTimeoutMicros Prodbox.Http.Client.defaultHttpConfig
         `shouldBe` (10 * 1000 * 1000)
       ProviderWorkerBudget.validateProviderWorkerChildDeadlineMilliseconds 300000
         `shouldBe` Right ()
       ProviderWorkerBudget.validateProviderWorkerChildDeadlineMilliseconds 300001
         `shouldSatisfy` isLeft
+
+      providerCallerSource <- readFile "src/Prodbox/ControlPlane/ProviderCaller.hs"
+      let transportCallLines =
+            filter ("$ \\transport ->" `isInfixOf`) (lines providerCallerSource)
+      length
+        ( filter
+            ("withLifecycleAuthorityProviderAuthenticatedTransport" `isInfixOf`)
+            transportCallLines
+        )
+        `shouldBe` 4
+      length
+        ( filter
+            ("withLifecycleAuthorityAuthenticatedTransport" `isInfixOf`)
+            transportCallLines
+        )
+        `shouldBe` 1
 
       let overlongProvider profile
             | Capacity.runtime_profile_id profile == "provider-worker" =
@@ -22146,7 +22888,7 @@ unitSuite = do
       concurrently_ action action
       readIORef activeAndPeak `shouldReturn` (0, 1)
 
-    it "proves the measured Provider Worker child reserve and exact 176 MiB cgroup envelope" $ do
+    it "proves the measured Provider Worker child reserve and exact 1120 MiB cgroup envelope" $ do
       Allocation.compileResourcePlanUncertified Capacity.defaultResourcePlan
         `shouldSatisfy` isRight
       case Capacity.runtimeMemoryPlanForProfile Capacity.defaultCapacitySection "provider-worker" of
@@ -22157,17 +22899,17 @@ unitSuite = do
           RuntimeMemory.childProcessDeadlineMicros childBudget `shouldBe` 300000000
           RuntimeMemory.positiveBytesValue
             (RuntimeMemory.childProcessReservedPeakBytes childBudget)
-            `shouldBe` (80 * 1024 * 1024)
+            `shouldBe` (1024 * 1024 * 1024)
           RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryHeapRequiredBytes plan)
             `shouldBe` (56 * 1024 * 1024)
           RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryHeapCapBytes plan)
             `shouldBe` (64 * 1024 * 1024)
           RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryOuterRequiredBytes plan)
-            `shouldBe` (176 * 1024 * 1024)
+            `shouldBe` (1120 * 1024 * 1024)
           RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryContainerLimitBytes plan)
-            `shouldBe` (176 * 1024 * 1024)
+            `shouldBe` (1120 * 1024 * 1024)
           RuntimeMemory.positiveBytesValue (RuntimeMemory.runtimeMemoryHighWaterBytes plan)
-            `shouldBe` (168 * 1024 * 1024)
+            `shouldBe` (1112 * 1024 * 1024)
           RuntimeMemory.runtimeMemoryRtsArguments plan
             `shouldBe` ["+RTS", "-M67108864", "-RTS"]
 
@@ -22225,42 +22967,58 @@ unitSuite = do
         Right plan ->
           pure (BL8.pack (RuntimeMemory.renderRuntimeMemoryRtsPolicy plan ++ "\n"))
 
-    it "injects generated runtime and lifecycle-probe values into the gateway chart plan" $ do
-      result <-
-        buildChartDeploymentPlanForSubstrate
-          SubstrateAws
-          "/tmp/prodbox"
-          (testValidatedSettings "/tmp/prodbox/.data")
-          "gateway"
-          testChartSecrets
-          Map.empty
-      case result of
-        Left err -> expectationFailure err
-        Right deploymentPlan ->
-          case filter ((== "gateway") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases deploymentPlan) of
-            [release] ->
-              case eitherDecode (BL8.pack (chartReleasePlanValuesJson release)) :: Either String Value of
-                Left err -> expectationFailure err
-                Right (Object payload) -> do
-                  case KeyMap.lookup (Key.fromString "runtime") payload of
-                    Just (Object runtimePayload) ->
-                      KeyMap.lookup (Key.fromString "rtsArguments") runtimePayload
-                        `shouldBe` Just
-                          ( Array
-                              ( Vector.fromList
-                                  [ String "+RTS"
-                                  , String "-M268435456"
-                                  , String "-RTS"
-                                  ]
-                              )
-                          )
-                    _ -> expectationFailure "expected gateway runtime values"
-                  KeyMap.lookup (Key.fromString "probes") payload
-                    `shouldBe` Just GatewayProbe.gatewayLifecycleProbeValues
-                Right _ -> expectationFailure "expected gateway values object"
-            _ -> expectationFailure "expected one gateway release"
+    it
+      "injects generated runtime, lifecycle-probe, and pre-cutover timing values into the gateway chart plan"
+      $ do
+        result <-
+          buildChartDeploymentPlanForSubstrate
+            SubstrateAws
+            "/tmp/prodbox"
+            (testValidatedSettings "/tmp/prodbox/.data")
+            "gateway"
+            testChartSecrets
+            Map.empty
+        case result of
+          Left err -> expectationFailure err
+          Right deploymentPlan ->
+            case filter ((== "gateway") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases deploymentPlan) of
+              [release] ->
+                case eitherDecode (BL8.pack (chartReleasePlanValuesJson release)) :: Either String Value of
+                  Left err -> expectationFailure err
+                  Right (Object payload) -> do
+                    case KeyMap.lookup (Key.fromString "runtime") payload of
+                      Just (Object runtimePayload) ->
+                        KeyMap.lookup (Key.fromString "rtsArguments") runtimePayload
+                          `shouldBe` Just
+                            ( Array
+                                ( Vector.fromList
+                                    [ String "+RTS"
+                                    , String "-M268435456"
+                                    , String "-RTS"
+                                    ]
+                                )
+                            )
+                      _ -> expectationFailure "expected gateway runtime values"
+                    KeyMap.lookup (Key.fromString "probes") payload
+                      `shouldBe` Just GatewayProbe.gatewayLifecycleProbeValues
+                    KeyMap.lookup (Key.fromString "timing") payload
+                      `shouldBe` Just
+                        ( object
+                            [ "heartbeatIntervalSeconds" .= (0.5 :: Double)
+                            , "reconnectIntervalSeconds" .= (0.5 :: Double)
+                            , "syncIntervalSeconds" .= (1.0 :: Double)
+                            , "heartbeatTimeoutSeconds" .= (5 :: Int)
+                            ]
+                        )
+                  Right _ -> expectationFailure "expected gateway values object"
+              _ -> expectationFailure "expected one gateway release"
 
-    it "injects the Provider Worker RTS policy and 176 MiB Guaranteed-QoS envelope" $ do
+    it "keeps the bare gateway chart default on the explicit pre-cutover Orders timeout" $ do
+      repoRoot <- getCurrentDirectory
+      defaultValues <- readFile (repoRoot </> "charts" </> "gateway" </> "values.yaml")
+      defaultValues `shouldContain` "  heartbeatTimeoutSeconds: 5\n"
+
+    it "injects the Provider Worker RTS policy and 1120 MiB Guaranteed-QoS envelope" $ do
       let runtimeImage =
             ResolvedCustomImage
               { resolvedCustomImageRepository = "harbor.test/prodbox/runtime"
@@ -22305,8 +23063,8 @@ unitSuite = do
                     Just (Object resourcesPayload) ->
                       case KeyMap.lookup (Key.fromString "providerWorker") resourcesPayload of
                         Just (Object envelopePayload) -> do
-                          expectResourceVector envelopePayload "requests" ("100m", "176Mi", "256Mi")
-                          expectResourceVector envelopePayload "limits" ("100m", "176Mi", "256Mi")
+                          expectResourceVector envelopePayload "requests" ("100m", "1120Mi", "256Mi")
+                          expectResourceVector envelopePayload "limits" ("100m", "1120Mi", "256Mi")
                         _ -> expectationFailure "expected Provider Worker resource envelope"
                     _ -> expectationFailure "expected Provider Worker resources"
                 Right _ -> expectationFailure "expected Provider Worker values object"

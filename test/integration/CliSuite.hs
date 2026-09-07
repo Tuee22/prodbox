@@ -3,6 +3,7 @@ module CliSuite
   , runInstalledWithFakeAuthority
   , runRke2AdmissionRefusalFixture
   , runRunbookFailureFixture
+  , runStreamingCancellationFixture
   )
 where
 
@@ -76,12 +77,14 @@ import Prodbox.Settings.SecretRef
   ( SecretRef (SecretRefVault)
   , VaultSecretRef (..)
   )
+import Prodbox.Subprocess qualified as Subprocess
 import Prodbox.TestRunner qualified as TestRunner
 import Prodbox.TestValidation qualified as TestValidation
 import System.Directory
   ( Permissions (..)
   , copyFile
   , createDirectoryIfMissing
+  , doesDirectoryExist
   , doesFileExist
   , getCurrentDirectory
   , getPermissions
@@ -94,11 +97,12 @@ import System.FilePath (takeDirectory, (</>))
 import System.IO qualified as IO
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process
-  ( CreateProcess (cwd, env, std_out)
+  ( CreateProcess (create_group, cwd, env, std_err, std_out)
   , ProcessHandle
   , StdStream (CreatePipe)
   , createProcess
   , getProcessExitCode
+  , interruptProcessGroupOf
   , proc
   , readCreateProcessWithExitCode
   , terminateProcess
@@ -153,6 +157,28 @@ integrationCliSuite = do
       exitCode `shouldBe` ExitSuccess
       stderrText `shouldBe` ""
       stdoutText `shouldContain` "0.1.0"
+
+    it "propagates Ctrl-C from a streamed child without losing its exit observation" $
+      withSystemTempDirectory "prodbox-streaming-cancellation" $ \tmpDir -> do
+        integrationExecutable <- getExecutablePath
+        let markerPath = tmpDir </> "streaming-child-ready"
+        (_, maybeStdout, maybeStderr, processHandle) <-
+          createProcess
+            (proc integrationExecutable ["--fixture-streaming-cancellation", markerPath])
+              { cwd = Just tmpDir
+              , create_group = True
+              , std_out = CreatePipe
+              , std_err = CreatePipe
+              }
+        waitForStreamingCancellationMarker markerPath processHandle
+        interruptProcessGroupOf processHandle
+        exitCode <- waitForProcess processHandle
+        stdoutText <- maybe (pure "") (fmap BS8.unpack . BS8.hGetContents) maybeStdout
+        stderrText <- maybe (pure "") (fmap BS8.unpack . BS8.hGetContents) maybeStderr
+
+        exitCode `shouldBe` ExitFailure (-2)
+        stdoutText `shouldBe` ""
+        stderrText `shouldBe` ""
 
     it "fails fast with setup guidance when the repo Dhall config is missing" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -768,7 +794,7 @@ integrationCliSuite = do
         stdoutText `shouldContain` "CLASSIFICATION=stable"
         stdoutText `shouldContain` "STABLE_SAMPLES=3"
 
-    it "keeps a mid-run gateway OOM absorbing after later healthy samples" $
+    it "fails the installed gateway gate on a sampled OOM" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
@@ -802,7 +828,7 @@ integrationCliSuite = do
 
         gatewayPodSampleCount <-
           readFile (tmpDir </> "fake-rke2-state" </> "gateway-pods-sample.count")
-        (read gatewayPodSampleCount :: Int) `shouldSatisfy` (>= 3)
+        (read gatewayPodSampleCount :: Int) `shouldSatisfy` (>= 2)
         kubectlRecord <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl.txt")
         kubectlRecord
           `shouldContain` "get|pods|--namespace|gateway|-o|json|--request-timeout=5s"
@@ -943,9 +969,13 @@ integrationCliSuite = do
         patroniManifest <-
           readAppliedManifestContaining
             (tmpDir </> "fake-chart-state")
-            "prodbox-vscode-pg-instance1-0-pgdata"
+            "prodbox-vscode-pg-instance1-hh5k-pgdata"
         patroniManifest `shouldContain` "PersistentVolume"
         patroniManifest `shouldNotContain` "PersistentVolumeClaim"
+        patroniManifest
+          `shouldContain` "\"name\": \"prodbox-retained-vscode-prodbox-vscode-pg-0\""
+        patroniManifest
+          `shouldContain` "\"name\": \"prodbox-vscode-pg-instance1-hh5k-pgdata\""
 
         upgradeRecord <- readFile (tmpDir </> "fake-chart-state" </> "helm-upgrade.txt")
         upgradeRecord `shouldContain` "upgrade|--install|--wait|--timeout|30m0s|keycloak"
@@ -1042,6 +1072,46 @@ integrationCliSuite = do
         deleteStdout `shouldContain` "CHART_DELETION"
         deleteStdout `shouldContain` "HOST_STORAGE_PRESERVED=true"
 
+        -- A present source namespace must converge the same exact-name
+        -- Role/RoleBinding/API-egress capability before selected-Agent retain.
+        -- The two deploys have already accounted for five applies each; delete
+        -- adds only those three access objects.
+        chartStateFilesAfterPresentDelete <- listDirectory (tmpDir </> "fake-chart-state")
+        let applyCountAfterPresentDelete =
+              length
+                [ path
+                | path <- chartStateFilesAfterPresentDelete
+                , take 13 path == "kubectl-apply"
+                ]
+        applyCountAfterPresentDelete `shouldBe` (initialApplyTargetCount + 8)
+
+        -- Interrupted cleanup can leave the exact namespace absent. Its
+        -- exit-zero/empty --ignore-not-found observation authoritatively proves
+        -- that no namespaced Secret or Certificate can exist, so delete emits
+        -- the explicit outcome without trying to recreate access in a namespace
+        -- it is about to remove.
+        let absentNamespaceEnvVars =
+              ("PRODBOX_FAKE_PUBLIC_EDGE_NAMESPACE_ABSENT", "true")
+                : filter
+                  ((/= "PRODBOX_FAKE_PUBLIC_EDGE_NAMESPACE_ABSENT") . fst)
+                  envVars
+        (absentDeleteExitCode, absentDeleteStdout, absentDeleteStderr) <-
+          runInstalledWithAuthorityEnvironment
+            tmpDir
+            binary
+            ["charts", "delete", "vscode", "--yes"]
+            absentNamespaceEnvVars
+        absentDeleteExitCode `shouldBe` ExitSuccess
+        absentDeleteStderr `shouldBe` ""
+        absentDeleteStdout `shouldContain` "no Secret and no Certificate"
+        chartStateFilesAfterAbsentDelete <- listDirectory (tmpDir </> "fake-chart-state")
+        length
+          [ path
+          | path <- chartStateFilesAfterAbsentDelete
+          , take 13 path == "kubectl-apply"
+          ]
+          `shouldBe` applyCountAfterPresentDelete
+
         uninstallRecord <- readFile (tmpDir </> "fake-chart-state" </> "helm-uninstall.txt")
         uninstallRecord `shouldContain` "uninstall|vscode|--namespace|vscode"
         uninstallRecord `shouldContain` "uninstall|keycloak|--namespace|vscode"
@@ -1101,15 +1171,24 @@ integrationCliSuite = do
         -- Sprint 4.31: the retained ordinal-0 host data lives at the unified
         -- `.data/<namespace>/<StatefulSet>/<ordinal>` path (no `<release>` /
         -- `<claim>` segment), so the restore-staging detects it here.
-        createDirectoryIfMissing
-          True
-          (tmpDir </> ".data" </> "vscode" </> "prodbox-vscode-pg" </> "0")
+        let patroniRoot = tmpDir </> ".data" </> "vscode" </> "prodbox-vscode-pg"
+            anchorSentinel = patroniRoot </> "0" </> "anchor-sentinel"
+            followerSentinels =
+              [ patroniRoot </> "1" </> "follower-sentinel"
+              , patroniRoot </> "2" </> "follower-sentinel"
+              ]
+        mapM_ (createDirectoryIfMissing True . takeDirectory) (anchorSentinel : followerSentinels)
+        writeFile anchorSentinel "preserve-anchor"
+        mapM_ (`writeFile` "reset-follower") followerSentinels
         baseEnvVars <- fakeChartEnvironment tmpDir
         let envVars = ("PRODBOX_FAKE_PATRONI_STAGED_RESTORE", "true") : baseEnvVars
 
         (deployExitCode, deployStdout, deployStderr) <-
           runInstalledWithAuthorityEnvironment tmpDir binary ["charts", "reconcile", "vscode"] envVars
 
+        when
+          (deployExitCode /= ExitSuccess)
+          (expectationFailure ("deploy STDOUT:\n" ++ deployStdout ++ "\ndeploy STDERR:\n" ++ deployStderr))
         deployExitCode `shouldBe` ExitSuccess
         deployStderr `shouldBe` ""
         deployStdout `shouldContain` "CHART_DEPLOYMENT"
@@ -1121,6 +1200,48 @@ integrationCliSuite = do
               filter ("|keycloak-postgres|" `isInfixOf`) upgradeLines
         length keycloakPostgresUpgrades `shouldBe` 2
         length upgradeLines `shouldBe` 4
+
+        kubectlRecord <- readFile (tmpDir </> "fake-chart-state" </> "kubectl.txt")
+        kubectlRecord
+          `shouldContain` "get|pods|--namespace|vscode|--selector|postgres-operator.crunchydata.com/cluster=prodbox-vscode-pg,postgres-operator.crunchydata.com/role=primary|-o|json"
+        kubectlRecord `shouldNotContain` "targetRef.name"
+        doesFileExist anchorSentinel `shouldReturn` True
+        mapM_ (\sentinel -> doesFileExist sentinel `shouldReturn` False) followerSentinels
+
+    it
+      "HOME-PATRONI-RETAINED-THREE-ORDINAL-RESTORE-NONCONVERGENCE-2026-09-06 preserves active follower roots when an exact live primary exists"
+      $ withSystemTempDirectory "prodbox-hs-cli"
+      $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
+        let patroniRoot = tmpDir </> ".data" </> "vscode" </> "prodbox-vscode-pg"
+            sentinels =
+              [ patroniRoot </> "0" </> "anchor-sentinel"
+              , patroniRoot </> "1" </> "follower-sentinel"
+              , patroniRoot </> "2" </> "follower-sentinel"
+              ]
+        mapM_ (createDirectoryIfMissing True . takeDirectory) sentinels
+        mapM_ (`writeFile` "live-member") sentinels
+        baseEnvVars <- fakeChartEnvironment tmpDir
+        let envVars = ("PRODBOX_FAKE_PATRONI_LIVE_ANCHOR", "true") : baseEnvVars
+
+        (deployExitCode, deployStdout, deployStderr) <-
+          runInstalledWithAuthorityEnvironment tmpDir binary ["charts", "reconcile", "vscode"] envVars
+
+        when
+          (deployExitCode /= ExitSuccess)
+          (expectationFailure ("deploy STDOUT:\n" ++ deployStdout ++ "\ndeploy STDERR:\n" ++ deployStderr))
+        deployExitCode `shouldBe` ExitSuccess
+        deployStderr `shouldBe` ""
+        deployStdout `shouldContain` "ROOT_CHART=vscode"
+        mapM_ (\sentinel -> doesFileExist sentinel `shouldReturn` True) sentinels
+        mapM_
+          (\ordinal -> doesDirectoryExist (patroniRoot </> show ordinal) `shouldReturn` True)
+          [0 :: Int, 1, 2]
+
+        upgradeRecord <- readFile (tmpDir </> "fake-chart-state" </> "helm-upgrade.txt")
+        length (filter ("|keycloak-postgres|" `isInfixOf`) (lines upgradeRecord)) `shouldBe` 1
 
     it "rejects internal dependency charts on the public charts surface" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1425,8 +1546,96 @@ integrationCliSuite = do
         journalctlRecord <- readFile (tmpDir </> "fake-rke2-state" </> "journalctl.txt")
         journalctlRecord `shouldContain` "-u|rke2-server.service|-n|25|--no-pager"
 
+    it "freezes the 178-to-30 Registry GC partial-progress stderr overflow" $
+      withSystemTempDirectory "prodbox-hs-registry-gc-overflow" $ \tmpDir -> do
+        envVars <- fakeRke2Environment tmpDir
+        let limits =
+              Subprocess.BoundedSubprocessLimits
+                { Subprocess.boundedSubprocessMaximumInputBytes = 1
+                , Subprocess.boundedSubprocessMaximumStdoutBytes = 16 * 1024 * 1024
+                , Subprocess.boundedSubprocessMaximumStderrBytes = 64 * 1024
+                , Subprocess.boundedSubprocessTimeoutMicros = 10 * 1000 * 1000
+                }
+            oldCollector =
+              Subprocess.Subprocess
+                { Subprocess.subprocessPath = tmpDir </> "bin" </> "kubectl"
+                , Subprocess.subprocessArguments =
+                    [ "exec"
+                    , "--namespace"
+                    , "harbor"
+                    , "deployment/registry"
+                    , "--container"
+                    , "registry"
+                    , "--"
+                    , "/bin/registry"
+                    , "garbage-collect"
+                    , "--delete-untagged"
+                    , "/etc/docker/registry/config.yml"
+                    ]
+                , Subprocess.subprocessEnvironment = Just envVars
+                , Subprocess.subprocessWorkingDirectory = Just tmpDir
+                }
+        captureResult <- Subprocess.captureSubprocessBounded limits oldCollector
+        captureResult `shouldSatisfy` isLeft
+        readFile (tmpDir </> "fake-rke2-state" </> "registry-gc-partial-audit.txt")
+          `shouldReturn` "178->30\n"
+
+    it "fails closed on an exit-zero Registry GC usage rejection and restores read-write mode" $
+      withSystemTempDirectory "prodbox-hs-cli-registry-gc-refusal" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfig)
+        baseEnvVars <-
+          (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
+        let envVars =
+              ("PRODBOX_FAKE_REGISTRY_GC_USAGE_REJECTION", "1") : baseEnvVars
+
+        (installExitCode, installStdout, installStderr) <-
+          runRke2ReconcileWithFakeGateway
+            tmpDir
+            binary
+            ["cluster", "reconcile"]
+            envVars
+
+        installExitCode `shouldBe` ExitFailure 1
+        installStdout `shouldNotContain` "Registry manifest retention: untagged collection completed"
+        installStderr
+          `shouldContain` "Registry manifest retention collector refused its result: registry collector wrote to stderr"
+
+        let rke2StateDir = tmpDir </> "fake-rke2-state"
+        dockerRecord <- readFile (rke2StateDir </> "docker.txt")
+        dockerRecord `shouldNotContain` "build|-f|docker/prodbox.Dockerfile"
+        registryGcAuditExists <- doesFileExist (rke2StateDir </> "registry-gc-audit.txt")
+        registryGcAuditExists `shouldBe` False
+        kubectlRecord <- readFile (rke2StateDir </> "kubectl.txt")
+        let registryGcDryRunCommand =
+              "exec|--namespace|harbor|deployment/registry|--container|registry|--|/usr/bin/env|REGISTRY_LOG_LEVEL=error|/bin/registry|garbage-collect|--dry-run|--delete-untagged|/etc/docker/registry/config.yml"
+            registryGcDeleteCommand =
+              "exec|--namespace|harbor|deployment/registry|--container|registry|--|/usr/bin/env|REGISTRY_LOG_LEVEL=error|/bin/registry|garbage-collect|--delete-untagged|/etc/docker/registry/config.yml"
+        countRecordLines registryGcDryRunCommand kubectlRecord `shouldBe` 1
+        countRecordLines registryGcDeleteCommand kubectlRecord `shouldBe` 0
+
+        applyCount <- read <$> readFile (rke2StateDir </> "kubectl-apply.count")
+        appliedManifests <-
+          mapM
+            (\indexValue -> readFile (rke2StateDir </> "kubectl-apply-" ++ show indexValue ++ ".json"))
+            [1 .. applyCount :: Int]
+        let indexedManifests = zip [0 :: Int ..] appliedManifests
+            readOnlyIndex = fst <$> find (isInfixOf "read-only" . snd) indexedManifests
+            laterReadWriteExists indexValue =
+              any
+                ( \(candidateIndex, manifest) ->
+                    candidateIndex > indexValue && "read-write" `isInfixOf` manifest
+                )
+                indexedManifests
+        case readOnlyIndex of
+          Nothing -> expectationFailure "Registry GC refusal never applied the read-only fence"
+          Just indexValue -> laterReadWriteExists indexValue `shouldBe` True
+
     it
-      "runs native rke2 reconcile and delete through the built frontend with fake host, kubectl, helm, docker, and native AWS destroy helpers"
+      "REGISTRY-NODEPORT-READBACK-CONNECTION-REFUSED-AFTER-READY-CLEAN-INSTALL-2026-09-06 retries one transient Registry read-back and completes native reconcile/delete"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
@@ -1443,8 +1652,10 @@ integrationCliSuite = do
           (("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token") :) <$> fakeRke2Environment tmpDir
         let danglingRuntimeImageId = "sha256:" ++ replicate 64 'd'
             envVars =
-              ("PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID", danglingRuntimeImageId)
-                : baseEnvVars
+              [ ("PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID", danglingRuntimeImageId)
+              , ("PRODBOX_FAKE_REGISTRY_READ_BACK_TRANSIENT", "1")
+              ]
+                ++ baseEnvVars
 
         (installExitCode, installStdout, installStderr) <-
           runRke2ReconcileWithFakeGateway
@@ -1472,6 +1683,8 @@ integrationCliSuite = do
         installStdout `shouldContain` "Host inotify limits:"
         installStderr
           `shouldContain` "Retrying Harbor publication for mirror target 127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
+        installStderr
+          `shouldContain` "Retrying Registry reference observation after transient transport failure"
 
         createDirectoryIfMissing True (tmpDir </> ".kube")
         writeFile (tmpDir </> ".kube" </> "config") "server: https://127.0.0.1:6443\n"
@@ -1540,11 +1753,18 @@ integrationCliSuite = do
         kubectlRecord
           `shouldContain` "delete|storageclass|storageclass.storage.k8s.io/local-path|--ignore-not-found=true"
         -- registry:2 is applied as a plain Deployment + NodePort Service (no
-        -- Harbor nginx `/readyz` readiness patch); reconcile waits for the
-        -- Deployment to become Available.
+        -- Harbor nginx `/readyz` readiness patch); reconcile observes the
+        -- exact Deployment rollout, including recovery from an interrupted
+        -- read-only retention fence.
         kubectlRecord `shouldNotContain` "harbor-nginx"
         kubectlRecord
-          `shouldContain` "wait|--for=condition=Available|deployment/registry|-n|harbor|--timeout=300s"
+          `shouldContain` "rollout|status|deployment/registry|--namespace|harbor|--timeout=300s"
+        let registryGcDryRunCommand =
+              "exec|--namespace|harbor|deployment/registry|--container|registry|--|/usr/bin/env|REGISTRY_LOG_LEVEL=error|/bin/registry|garbage-collect|--dry-run|--delete-untagged|/etc/docker/registry/config.yml"
+            registryGcDeleteCommand =
+              "exec|--namespace|harbor|deployment/registry|--container|registry|--|/usr/bin/env|REGISTRY_LOG_LEVEL=error|/bin/registry|garbage-collect|--delete-untagged|/etc/docker/registry/config.yml"
+        countRecordLines registryGcDryRunCommand kubectlRecord `shouldBe` 1
+        countRecordLines registryGcDeleteCommand kubectlRecord `shouldBe` 1
         kubectlRecord `shouldContain` "annotate|namespace/prodbox|prodbox.io/id=prodbox-"
         kubectlRecord `shouldContain` "label|namespace/prodbox|prodbox.io/id=prodbox-"
         kubectlRecord
@@ -1589,6 +1809,16 @@ integrationCliSuite = do
         applyRegistryRuntime `shouldContain` "config.yml"
         applyRegistryRuntime `shouldContain` harborRegistryStorageSecretName
         applyRegistryRuntime `shouldContain` "nodePort"
+        applyRegistryRuntime `shouldContain` "registry-access-mode"
+        applyRegistryRuntime `shouldContain` "read-write"
+        applyRegistryReadOnly <-
+          readAppliedManifestContaining rke2StateDir "read-only"
+        applyRegistryReadOnly `shouldContain` "enabled: true"
+        registryGcAudit <- readFile (rke2StateDir </> "registry-gc-audit.txt")
+        registryGcAudit `shouldBe` "177->1\n"
+        registryGcPartialAuditExists <-
+          doesFileExist (rke2StateDir </> "registry-gc-partial-audit.txt")
+        registryGcPartialAuditExists `shouldBe` False
         -- registry:2 has no web UI, so only the MinIO console admin route remains.
         applyAdminRoutes <- readAppliedManifestContaining rke2StateDir "minio-console"
         applyAdminRoutes `shouldContain` "minio-console"
@@ -1699,6 +1929,12 @@ integrationCliSuite = do
         -- registry:2 readiness is a plain GET /v2/ probe — no Harbor /readyz
         -- nginx endpoint and no /api/v2.0 projects REST reconcile.
         curlRecord `shouldContain` "http://127.0.0.1:30080/v2/"
+        curlRecord `shouldContain` "http://127.0.0.1:30080/v2/_catalog?n=1000"
+        readFile (rke2StateDir </> "registry-catalog.count") `shouldReturn` "3\n"
+        curlRecord
+          `shouldContain` "http://127.0.0.1:30080/v2/prodbox/prodbox-runtime/tags/list?n=1000"
+        curlRecord
+          `shouldContain` "http://127.0.0.1:30080/v2/prodbox/prodbox-runtime/manifests/latest"
         curlRecord `shouldNotContain` "http://127.0.0.1:30080/readyz"
         curlRecord `shouldNotContain` "/api/v2.0/projects"
 
@@ -2754,6 +2990,49 @@ runRunbookFailureFixture repoRoot = do
     environment
     ["cluster", "reconcile", "--with-edge"]
 
+-- | Isolated process-group fixture for the streamed-child Ctrl-C regression.
+-- The marker proves the child exists before the parent test signals the group;
+-- the long sleep makes the child, rather than process startup, own the signal.
+runStreamingCancellationFixture :: FilePath -> IO ExitCode
+runStreamingCancellationFixture markerPath = do
+  result <-
+    Subprocess.runStreaming
+      Subprocess.Subprocess
+        { Subprocess.subprocessPath = "/bin/sh"
+        , Subprocess.subprocessArguments =
+            [ "-c"
+            , "printf 'ready\\n' > \"$1\"; exec sleep 300"
+            , "prodbox-streaming-cancellation"
+            , markerPath
+            ]
+        , Subprocess.subprocessEnvironment = Nothing
+        , Subprocess.subprocessWorkingDirectory = Nothing
+        }
+  case result of
+    Left err -> do
+      BS8.hPutStrLn IO.stderr (BS8.pack (show err))
+      pure (ExitFailure 2)
+    Right exitCode -> pure exitCode
+
+waitForStreamingCancellationMarker :: FilePath -> ProcessHandle -> IO ()
+waitForStreamingCancellationMarker markerPath processHandle = go (500 :: Int)
+ where
+  go remaining = do
+    markerExists <- doesFileExist markerPath
+    if markerExists
+      then pure ()
+      else do
+        childExit <- getProcessExitCode processHandle
+        case (remaining, childExit) of
+          (_, Just exitCode) ->
+            expectationFailure
+              ("streaming-cancellation fixture exited before its child marker: " ++ show exitCode)
+          (0, Nothing) -> do
+            terminateProcess processHandle
+            void (waitForProcess processHandle)
+            expectationFailure "streaming-cancellation fixture did not publish its child marker"
+          (_, Nothing) -> threadDelay 10000 >> go (remaining - 1)
+
 resolveBinaryPath :: IO FilePath
 resolveBinaryPath = do
   repoRoot <- getCurrentDirectory
@@ -3494,6 +3773,7 @@ fakeChartEnvironment repoRoot = do
                 && key /= "PRODBOX_FAKE_HELM_LIST_JSON"
                 && key /= "PRODBOX_FAKE_PATRONI_STAGED_RESTORE"
                 && key /= "PRODBOX_FAKE_PATRONI_LIVE_ANCHOR"
+                && key /= "PRODBOX_FAKE_PUBLIC_EDGE_NAMESPACE_ABSENT"
                 && key /= "PRODBOX_TEST_HOST_VAULT_KV"
           )
           currentEnvironment
@@ -3645,6 +3925,12 @@ fakeKubectlScript =
     , "  'get service')"
     , "    if [[ \"${3:-}\" == 'kubernetes' ]]; then printf '10.43.0.1'; else exit 1; fi"
     , "    ;;"
+    , "  'get namespace')"
+    , "    if [[ \"${PRODBOX_FAKE_PUBLIC_EDGE_NAMESPACE_ABSENT:-}\" == 'true' ]]; then"
+    , "      exit 0"
+    , "    fi"
+    , "    printf '{\"apiVersion\":\"v1\",\"kind\":\"Namespace\",\"metadata\":{\"name\":\"%s\"}}\\n' \"${3:-}\""
+    , "    ;;"
     , "  'port-forward service/lifecycle-authority'|'port-forward deployment/authority-backup'|'port-forward service/target-secret-agent'|'port-forward service/tls-retention')"
     , "    mapping=${!#}"
     , "    local_port=${mapping%%:*}"
@@ -3706,28 +3992,40 @@ fakeKubectlScript =
       -- the real post-DNAT API port, which is the coordinate under test.
       "    if [[ \"${3:-}\" == 'kubernetes' && \"$*\" == *'jsonpath={.subsets[*].addresses[*].ip}'* ]]; then"
     , "      printf '192.0.2.10|6443'"
-    , "    elif [[ \"${3:-}\" == 'prodbox-vscode-pg-ha' && \"$*\" == *'jsonpath={.subsets[0].addresses[0].targetRef.name}'* ]] && { [[ \"${PRODBOX_FAKE_PATRONI_LIVE_ANCHOR:-}\" == 'true' ]] || [[ -f \"$record_dir/patroni-ready.count\" ]]; }; then"
-    , "      printf 'prodbox-vscode-pg-instance1-0\\n'"
     , "    else"
     , "      printf 'Error from server (NotFound): endpoints \"%s\" not found\\n' \"${3:-endpoints}\" >&2"
     , "      exit 1"
     , "    fi"
     , "    ;;"
+    , "  'get pods')"
+    , "    if [[ \"$*\" == *'postgres-operator.crunchydata.com/cluster=prodbox-vscode-pg,postgres-operator.crunchydata.com/role=primary'* ]]; then"
+    , "      if [[ \"${PRODBOX_FAKE_PATRONI_LIVE_ANCHOR:-}\" == 'true' ]] || [[ -f \"$record_dir/patroni-ready.count\" ]]; then"
+    , "        cat <<'JSON'"
+    , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-hh5k-0\"},\"spec\":{\"volumes\":[{\"name\":\"postgres-data\",\"persistentVolumeClaim\":{\"claimName\":\"prodbox-vscode-pg-instance1-hh5k-pgdata\"}}]}}]}"
+    , "JSON"
+    , "      else"
+    , "        printf '{\"items\":[]}\\n'"
+    , "      fi"
+    , "    else"
+    , "      printf 'Error from server (NotFound): pods not found\\n' >&2"
+    , "      exit 1"
+    , "    fi"
+    , "    ;;"
     , "  'get pvc')"
-    , "    if [[ \"${3:-}\" == 'prodbox-vscode-pg-instance1-0-pgdata' && \"$*\" == *'jsonpath={.spec.volumeName}'* ]]; then"
+    , "    if [[ \"${3:-}\" == 'prodbox-vscode-pg-instance1-hh5k-pgdata' && \"$*\" == *'jsonpath={.spec.volumeName}'* ]]; then"
     , "      printf 'prodbox-retained-vscode-prodbox-vscode-pg-0\\n'"
     , "    elif [[ \"$*\" == *'postgres-operator.crunchydata.com/cluster=prodbox-vscode-pg,postgres-operator.crunchydata.com/data=postgres'* ]]; then"
     , "      if [[ \"${PRODBOX_FAKE_PATRONI_STAGED_RESTORE:-}\" == 'true' ]]; then"
     , "        claim_list_count=$(next_counter \"$record_dir/patroni-claim-list.count\")"
     , "        if [[ \"$claim_list_count\" -eq 1 ]]; then"
     , "          /bin/cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-0-pgdata\"}}]}"
+    , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-hh5k-pgdata\"},\"spec\":{\"volumeName\":\"prodbox-retained-vscode-prodbox-vscode-pg-0\"}}]}"
     , "JSON"
     , "          exit 0"
     , "        fi"
     , "      fi"
     , "      cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-0-pgdata\"}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-1-pgdata\"}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-2-pgdata\"}}]}"
+    , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-5krm-pgdata\"}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-hh5k-pgdata\"},\"spec\":{\"volumeName\":\"prodbox-retained-vscode-prodbox-vscode-pg-0\"}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-rwr7-pgdata\"}}]}"
     , "JSON"
     , "    else"
     , "      printf 'Error from server (NotFound): persistentvolumeclaims \"%s\" not found\\n' \"${3:-pvc}\" >&2"
@@ -3773,6 +4071,12 @@ fakeKubectlScript =
     , "    else"
     , "      cp \"${3:?}\" \"$target\""
     , "    fi"
+    , "    ;;"
+    , "  'create -f')"
+    , "    # The chart runtime creates the exact empty TLS restore slot rather"
+    , "    # than applying over an existing Secret. Preserve the manifest for"
+    , "    # boundary diagnosis and model a successful first create."
+    , "    cp \"${3:?}\" \"$record_dir/kubectl-create-manifest.json\""
     , "    ;;"
     , "  'delete pod'|'delete pvc'|'delete pv'|'delete namespace')"
     , "    append_args \"$record_dir/kubectl-delete.txt\" \"$@\""
@@ -3840,6 +4144,8 @@ fakeRke2Environment repoRoot = do
                 `notElem` [ "PATH"
                           , "PRODBOX_FAKE_RKE2_RECORD_DIR"
                           , "PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID"
+                          , "PRODBOX_FAKE_REGISTRY_GC_USAGE_REJECTION"
+                          , "PRODBOX_FAKE_REGISTRY_READ_BACK_TRANSIENT"
                           , "PRODBOX_RKE2_CONTAINERD_SOCKET"
                           , "PRODBOX_RKE2_ENDPOINT_STATUS_ROOT"
                           , "PRODBOX_TEST_RESIDUE_UNREACHABLE"
@@ -4254,6 +4560,30 @@ fakeRke2CurlScript =
     , "  printf '202'"
     , "  exit 0"
     , "fi"
+    , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/_catalog?n=1000'* ]]; then"
+    , "  catalog_count_file=$record_dir/registry-catalog.count"
+    , "  catalog_count=0"
+    , "  if [[ -f \"$catalog_count_file\" ]]; then catalog_count=$(<\"$catalog_count_file\"); fi"
+    , "  catalog_count=$((catalog_count + 1))"
+    , "  printf '%s\\n' \"$catalog_count\" > \"$catalog_count_file\""
+    , "  if [[ \"${PRODBOX_FAKE_REGISTRY_READ_BACK_TRANSIENT:-0}\" == '1' && \"$catalog_count\" == '2' ]]; then"
+    , "    printf \"curl: (7) Failed to connect to 127.0.0.1 port 30080 after 0 ms: Couldn't connect to server\\n\" >&2"
+    , "    exit 7"
+    , "  fi"
+    , "  printf '{\"repositories\":[\"prodbox/prodbox-runtime\"]}'"
+    , "  exit 0"
+    , "fi"
+    , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/prodbox/prodbox-runtime/tags/list?n=1000'* ]]; then"
+    , "  printf '{\"name\":\"prodbox/prodbox-runtime\",\"tags\":[\"latest\",\"prodbox-3349a232b3454fb3be77b2f68919904f\"]}'"
+    , "  exit 0"
+    , "fi"
+    , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/prodbox/prodbox-runtime/manifests/'* ]]; then"
+    , "  printf 'HTTP/1.1 200 OK\\r\\n'"
+    , "  printf 'Content-Type: application/vnd.docker.distribution.manifest.v2+json\\r\\n'"
+    , "  printf 'Docker-Content-Digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\r\\n'"
+    , "  printf '\\r\\n'"
+    , "  exit 0"
+    , "fi"
     , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/'* ]]; then"
     , "  printf '401'"
     , "  exit 0"
@@ -4530,7 +4860,37 @@ fakeRke2KubectlScript =
     , "    esac"
     , "    ;;"
     , "  exec)"
-    , "    if [[ \"$*\" == *'statefulset/minio'* && \"$*\" == *'/proc/self/mountinfo'* ]]; then"
+    , "    if [[ \"$*\" == *'deployment/registry'* && \"$*\" == *'/bin/registry garbage-collect'* && \"$*\" == *'--delete-untagged /etc/docker/registry/config.yml'* ]]; then"
+    , "      if [[ \"$*\" != *'/usr/bin/env REGISTRY_LOG_LEVEL=error /bin/registry garbage-collect'* ]]; then"
+    , "        printf '178->30\\n' > \"$record_dir/registry-gc-partial-audit.txt\""
+    , "        for ((index=1; index<=400; index++)); do"
+    , "          printf 'time=\"2026-09-05T00:00:00Z\" level=info msg=\"Deleting blob: /docker/registry/v2/blobs/sha256/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" service=registry sequence=%04d\\n' \"$index\" >&2"
+    , "        done"
+    , "        exit 0"
+    , "      fi"
+    , "      if [[ \"${PRODBOX_FAKE_REGISTRY_GC_USAGE_REJECTION:-0}\" == '1' ]]; then"
+    , "        printf '%s\\n' 'Error: unknown flag: --quiet' \"Run 'registry help' for usage.\" >&2"
+    , "        exit 0"
+    , "      fi"
+    , "      history_file=\"$record_dir/registry-manifest-history.count\""
+    , "      if [[ ! -f \"$history_file\" ]]; then printf '177' > \"$history_file\"; fi"
+    , "      before=$(/bin/cat \"$history_file\")"
+    , "      printf 'prodbox/prodbox-runtime\\n'"
+    , "      for ((index=1; index<=176; index++)); do"
+    , "        printf -v digest '%064d' \"$index\""
+    , "        printf 'manifest eligible for deletion: sha256:%s\\n' \"$digest\""
+    , "      done"
+    , "      printf 'prodbox/prodbox-runtime: marking manifest sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \\n'"
+    , "      printf '\\n1 blobs marked, 176 blobs and 176 manifests eligible for deletion\\n'"
+    , "      for ((index=1; index<=176; index++)); do"
+    , "        printf -v digest '%064d' \"$index\""
+    , "        printf 'blob eligible for deletion: sha256:%s\\n' \"$digest\""
+    , "      done"
+    , "      if [[ \"$*\" != *'--dry-run'* ]]; then"
+    , "        printf '%s->1\\n' \"$before\" > \"$record_dir/registry-gc-audit.txt\""
+    , "        printf '1' > \"$history_file\""
+    , "      fi"
+    , "    elif [[ \"$*\" == *'statefulset/minio'* && \"$*\" == *'/proc/self/mountinfo'* ]]; then"
     , "      printf '14443 14435 8:2 /tmp/prodbox/minio/0 /export rw,relatime - ext4 /dev/sda2 rw\\n'"
     , "    else"
     , "      printf 'unsupported fake kubectl exec command: %s\\n' \"$*\" >&2"

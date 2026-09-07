@@ -4,9 +4,9 @@
 **Supersedes**: N/A
 **Generated sections**: none
 
-> **Purpose**: Define the gateway emitter model-to-runtime correspondence, the finite actor,
-> journal, fencing, acknowledgement, and checkpoint domains explored by TLC, and the boundary
-> between formal safety evidence and native/runtime proof.
+> **Purpose**: Define the gateway emitter models' runtime correspondence, the finite actor,
+> journal, fencing, acknowledgement, checkpoint, and pre-cutover liveness domains explored by TLC,
+> and the boundary between formal safety evidence and native/runtime proof.
 
 ---
 
@@ -24,11 +24,15 @@ to TLC.
 
 ## 1. Modelled System
 
-The specification is
+The target specification is
 [`documents/engineering/tla/gateway_orders_rule.tla`](./tla/gateway_orders_rule.tla). The completed
 Sprint `2.32` refinement adds one representative per-emitter single-writer actor, one real peer
 boundary, an explicit two-barrier journal protocol, and the incarnation/Lease fences that admit a
-writer to the bounded semantic gateway model.
+writer to the bounded semantic gateway model. The separate pre-cutover specification is
+[`documents/engineering/tla/gateway_legacy_liveness.tla`](./tla/gateway_legacy_liveness.tla); it
+models the temporary remote-Model-B topology's durable process-boot and periodic backend-proof
+fences, compacted-cursor boot witness, and signed latest-only liveness protocol without inserting
+that adapter into the target actor model.
 
 There is deliberately no append-only event log. Each emitter has fixed slots for:
 
@@ -173,6 +177,37 @@ claim under the admitted Orders identity, credentials, observable continuity, an
 a live matching lock/incarnation/Lease fence. Stage admission, Lease expiry, and active-process
 crash revoke a live DNS writer.
 
+### 1.5 Legacy durable-boot liveness decomposition
+
+The pre-cutover production topology cannot sustain the authored heartbeat frequency when every
+heartbeat traverses its capacity-one remote Model-B stage/re-observe/commit transaction. The
+separate legacy model therefore explores the bounded protocol used during qualification without
+pretending that protocol is the target journal design:
+
+1. `StartProcess` chooses a strictly newer finite boot identity but grants no liveness.
+2. `PersistBootHeartbeat` represents the one ordinary signed persistence-first heartbeat. It makes
+   the boot durable and exact for the local receiver, clears local predecessor liveness, and leaves
+   an old frame in the finite delayed-network slot so rejection remains explored.
+3. `EmitLiveness` is admitted only when the running boot, durable boot, and local observed boot are
+   equal. It overwrites one source slot and one local receive slot with a positive monotonic
+   sequence and current finite clock value.
+4. `ObserveBootHeartbeat` advances one remote viewer to the emitter's durable boot and clears that
+   viewer's old receive slot before a frame under the new fence can arrive.
+5. `DeliverCurrentFrame` and `DeliverDelayedFrame` share `AcceptFrame`. Peer-to-peer delivery is
+   never self-delivery; a candidate must name the viewer's exact observed boot, advance the current
+   per-boot sequence, and carry a non-regressing timestamp.
+6. `CrashProcess` removes the local source and local receive slot while retaining one delayed frame
+   for adversarial delivery. `AdvanceClock` makes every unrefreshed slot expire under the finite
+   heartbeat timeout.
+
+The model abstracts the exact heartbeat coordinate/digest to a finite `boot` identity. Native
+`SignedLivenessFrame` verification owns canonical CBOR, HMAC, exact Orders, emitter,
+incarnation/epoch/sequence/digest, clock-skew, and byte limits. This decomposition checks the
+protocol consequence: a fresh accepted frame never survives observation of another durable boot,
+and local freshness exists only for a running process on its own durable fence. Claims, yields, and
+DNS authorization remain persistence-first semantic transitions covered by the target/ownership
+model and native composition tests; a liveness frame cannot encode them.
+
 ---
 
 ## 2. Variable-to-Runtime Correspondence
@@ -197,6 +232,18 @@ crash revoke a live DNS writer.
 | `ownerView`, `credentialReady`, `continuityObservable` | established DNS gate inputs and their restart restoration boundary |
 | `dnsWriteNode` | current revocable DNS-write authority, not historical write telemetry |
 
+The legacy-liveness model has its own closed correspondence:
+
+| TLA+ variable | Runtime correspondence |
+|---|---|
+| `clock` | bounded abstraction of the POSIX-second timestamp and Orders heartbeat timeout |
+| `runningBoot` | running process's would-be boot identity; the concrete `LegacyLivenessSession` is installed only after `durableBoot` commits |
+| `durableBoot` | newest persistence-first signed heartbeat committed through legacy Model-B continuity |
+| `observedBoot[viewer][emitter]` | viewer's `gatewayStateLatestHeartbeat emitter`, including the exact signed coordinate/digest used by verification |
+| `sourceFrame` | local emitter's one `stateLivenessFrames` member slot selected for peer delivery |
+| `delayedFrame` | one representative valid predecessor frame retained by an asynchronous network after source replacement or crash |
+| `receivedFrame[viewer][emitter]` | receiver's one admitted liveness slot and corresponding `stateLastHeartbeatTimes` freshness projection |
+
 The concrete actor additionally carries a bounded mailbox, the numeric absolute deadline, canonical
 signed bytes, AEAD nonces, payload limits, and structured failures. Those mechanisms refine these
 state transitions and are tested natively; TLC models deadline openness and bounded admission
@@ -217,6 +264,16 @@ The checked configuration is:
 | `MaxSequence` | `1` | ordinary assertion before and after epoch rotation |
 | `MaxOrdersVersion` | `1` | established admitted Orders identity for this refinement |
 
+The separately checked legacy-liveness configuration is:
+
+| Constant | TLC value | Meaning |
+|---|---:|---|
+| `Nodes` | `{n1, n2}` | two independent peer identities, including both directed delivery choices |
+| `MaxBoot` | `2` | predecessor plus one replacement durable fence, selected by either crash/restart or an in-process backend-proof refresh |
+| `MaxFrameSequence` | `2` | first frame plus one monotonic replacement and delayed predecessor |
+| `MaxTime` | `3` | finite clock steps spanning fresh and expired observations |
+| `HeartbeatTimeout` | `2` | strict freshness window inside the finite clock domain |
+
 The actor protocol is emitter-local. `Rank1` is the representative emitter; `Rank2` retains an
 independent lock/incarnation/Lease identity and acts as the directed receiver/acknowledger. Enabling
 a second interchangeable copy of the same actor squares the independent state product without
@@ -224,9 +281,10 @@ adding a cross-emitter transition. Cross-emitter ranked-owner and partition beha
 Sprint `2.31` proof axis; this model freshly checks its composition with the representative actor's
 journal and fence gate.
 
-The configuration uses no TLC `CONSTRAINT`, `ACTION_CONSTRAINT`, `StateConstraint`, or symmetry
-collapse. `CHECK_DEADLOCK FALSE` is intentional because sequence/incarnation exhaustion produces
-valid terminal states in this safety-only bounded model; it does not remove a state or transition.
+Neither configuration uses a TLC `CONSTRAINT`, `ACTION_CONSTRAINT`, `StateConstraint`, or symmetry
+collapse. `CHECK_DEADLOCK FALSE` is intentional because sequence/incarnation/time exhaustion
+produces valid terminal states in these safety-only bounded models; it does not remove a state or
+transition.
 
 Finite domains make exhaustive exploration possible; they are not production limits. Production
 cardinality and byte bounds are separately enforced by validated Orders limits, mailbox capacity,
@@ -256,6 +314,17 @@ the resource-envelope/soak proof axes.
 | `DnsLeaseRequiresCompleteGate` | A live DNS writer continues to satisfy the complete ownership, claim, Orders, credential, journal-idle, and writer-fence gate. |
 | `NoSimultaneousDNSWriters` | Under a stable ranked view, no more than one node satisfies the complete DNS gate. |
 
+The legacy-liveness module checks six separately scoped invariants:
+
+| Invariant | Meaning |
+|---|---|
+| `TypeOK` | Every clock, boot, and frame slot stays inside its finite typed domain; an absent slot carries only sentinels. |
+| `LocalBootObservationIsExact` | Each local receiver's heartbeat projection and compacted-cursor witness are exactly its durable Model-B fence. |
+| `SourceFrameHasLiveDurableFence` | A source frame exists only for a running process whose boot equals its durable fence. |
+| `AcceptedFrameHasAuthenticatedFenceEvidence` | Every retained receive slot names either the receiver's exact heartbeat projection or its compacted-cursor witness for the durable fence. |
+| `FreshFrameHasAuthenticatedFenceEvidence` | No fresh frame under the timeout can count without one of those exact authenticated fence observations. |
+| `FreshLocalFrameRequiresLiveDurableBoot` | Local freshness requires a running process on its own durable boot, so recovered predecessor evidence alone cannot self-elect. |
+
 These are safety properties. Progress depends on scheduling, transport, Kubernetes API, storage,
 and credential availability. Native deterministic schedules and daemon/integration tests own those
 liveness and timeout obligations.
@@ -274,6 +343,19 @@ The model does not prove:
 - TCP partial reads, timeouts, OS scheduling, Vault/MinIO/Route 53 availability, or GHC residency
 - liveness during an unbounded asynchronous partition
 - operational cutover or deployment qualification
+
+The legacy model abstracts both HMAC checks as possession of a frame emitted under one finite
+durable fence and does not model raw Orders bytes, signature/digest collisions, POSIX clock rollback,
+or network bandwidth. `observedBoot` represents a full latest-heartbeat projection;
+`observedCursorBoot` represents the at-or-after same-incarnation/epoch compacted cursor admitted by
+the native verifier. `RefreshBackendProof` treats the newly committed semantic heartbeat and local
+session replacement as one fence transition; the native transaction and race are covered by tests
+and the rule that an old-session frame fails local verification after publication. Native
+constructors and peer tests own those byte-level checks. The model's `delayedFrame` is one
+adversarial predecessor slot, sufficient to exercise rejection after crash, in-process proof
+rotation, and either receiver observation shape; it is not a claim that a real network retains only
+one packet. The 60-second refresh cadence and 300-second readiness freshness window are runtime
+constants rather than a temporal-progress property of this safety-only model.
 
 The deadline bit deliberately abstracts the native `Prodbox.ControlPlane.Capacity` arithmetic. For
 a plan with `workers` servers and `serviceTime` microseconds, native admission computes queue wait
@@ -305,8 +387,9 @@ Run:
 prodbox dev tla-check
 ```
 
-`src/Prodbox/Tla.hs` runs TLC 2.18 in the pinned `maxdiefenbach/tlaplus` container with eight
-workers and records the result in `documents/engineering/tla/tlc_last_run.txt`.
+`src/Prodbox/Tla.hs` runs each registered model through TLC 2.18 in a separate pinned
+`maxdiefenbach/tlaplus` container with eight workers and records the combined result in
+`documents/engineering/tla/tlc_last_run.txt`.
 
 The Sprint `2.32` configuration completed exhaustive exploration on 2026-07-20 with no invariant
 violation:
@@ -323,6 +406,25 @@ heartbeat and claim assertions, epoch checkpoint, both fsync barriers, Lease exp
 durable-stage resume, peer acknowledgement, checkpoint fold, checkpoint repair, and runtime gate
 restoration. The canonical evidence remains the unconstrained `prodbox dev tla-check` result above.
 
+The post-checkpoint-witness/backend-proof canonical run on 2026-09-05 UTC kept that target result
+exact and exhaustively checked the legacy-liveness configuration with no invariant violation:
+
+- 14,683,109 states generated
+- 2,233,608 distinct states checked
+- depth 26
+- zero states left on the queue
+- all six configured legacy-liveness invariants passed
+
+The first draft failed `FreshLocalFrameRequiresLiveDurableBoot`: it permitted a crashed node to
+accept its own delayed frame. That trace changed both model and runtime. Peer delivery now excludes
+self-delivery, and the daemon additionally requires its process-local durable-boot session and
+local frame before legacy ownership. The green run is therefore post-counterexample evidence, not
+the uncorrected first model.
+
+The enlarged run additionally covers a periodic persistence-first fence refresh and a receiver
+whose compacted cursor proves the embedded signed boot while its latest-heartbeat projection is
+absent. Delayed predecessor frames remain inadmissible after both restart and in-process rotation.
+
 This result covers only the finite model and assumptions documented here. It does not claim
 deployment qualification or replace native and live-infrastructure validation.
 
@@ -333,6 +435,8 @@ deployment qualification or replace native and live-infrastructure validation.
 - [Distributed Gateway Architecture](./distributed_gateway_architecture.md)
 - [TLA+ model](./tla/gateway_orders_rule.tla)
 - [TLA+ configuration](./tla/gateway_orders_rule.cfg)
+- [Legacy liveness model](./tla/gateway_legacy_liveness.tla)
+- [Legacy liveness configuration](./tla/gateway_legacy_liveness.cfg)
 - [Chaos Hardening Doctrine](./chaos_hardening_doctrine.md)
 - [Runtime memory doctrine](./resource_scaling_doctrine.md)
 - [Development plan](../../DEVELOPMENT_PLAN/README.md)

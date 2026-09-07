@@ -8,6 +8,7 @@ module Prodbox.TestRunner
   , TestRefusal (..)
   , guardTestDelete
   , integrationRunbookCommandArgs
+  , harnessRequiresStandaloneInForceConfigSync
   , harnessPostCredentialRuntimeCommand
   , PublicEdgeCertificateFailure (..)
   , awsSubstrateBootstrapCommandArgs
@@ -47,7 +48,7 @@ import Control.Monad (foldM, unless)
 import Data.Aeson (encode, object, (.=))
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char qualified as Char
-import Data.List (dropWhileEnd, find, isInfixOf, isPrefixOf)
+import Data.List (dropWhileEnd, find, isPrefixOf)
 import Data.Text qualified as Text
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
@@ -138,6 +139,11 @@ import Prodbox.Lifecycle.Teardown.Model
   )
 import Prodbox.Prerequisite
   ( prerequisiteRegistry
+  )
+import Prodbox.PublicEdge
+  ( PublicEdgeReadinessObservation (..)
+  , classifyPublicEdgeReadinessObservation
+  , publicEdgeReadyClassification
   )
 import Prodbox.Repo
   ( resolveTestTopologyConfigPath
@@ -262,9 +268,6 @@ publicEdgeNamespace = "vscode"
 
 publicEdgeCertificateName :: String
 publicEdgeCertificateName = "public-edge-tls"
-
-publicEdgeReadyClassification :: String
-publicEdgeReadyClassification = "CLASSIFICATION=ready-for-external-proof"
 
 publicEdgeReadyAttempts :: Int
 publicEdgeReadyAttempts = 60
@@ -794,13 +797,17 @@ runNativeSuite repoRoot environment haskellSuites suitePlan = do
               case preReconcileExit of
                 failure@(ExitFailure _) -> pure failure
                 ExitSuccess -> do
-                  -- Sprint 5.10 follow-up: with Vault now unsealed by the
-                  -- pre-reconcile, force the in-force config SSoT to match the
-                  -- regenerated binary-sibling config so the body's `--with-edge`
-                  -- reconcile (which reads the in-force SSoT) sees the populated
-                  -- `route53.zone_id`. Fixes a cluster established before the
-                  -- operator fields were populated (stale SSoT).
-                  syncExit <- runReconcileInForceConfig repoRoot
+                  -- Cluster-backed suites have already submitted and read
+                  -- back this exact proposal through the retained operator
+                  -- identity inside the bootstrap floor. Repeating it here
+                  -- through the Gateway-lifetime harness identity makes
+                  -- recovery depend on a chart the interrupted restore may
+                  -- legitimately have removed. IAM-only suites have no
+                  -- bootstrap floor and retain the standalone harness sync.
+                  syncExit <-
+                    if harnessRequiresStandaloneInForceConfigSync suitePlan
+                      then runReconcileInForceConfig repoRoot
+                      else pure ExitSuccess
                   case syncExit of
                     failure@(ExitFailure _) -> pure failure
                     ExitSuccess -> do
@@ -1252,6 +1259,13 @@ supportedRuntimeBootstrapNeedsReconcile suitePlan =
 -- local runtime to establish.
 harnessNeedsVaultBeforeSetup :: NativeSuitePlan -> Bool
 harnessNeedsVaultBeforeSetup = nativeRequiresSupportedRuntimeBootstrap
+
+-- | Whether the managed harness must submit its proposal itself. A
+-- cluster-backed suite's retained bootstrap floor already performs the exact
+-- config CAS/read-back before this decision; only a suite with no runtime
+-- floor needs the Gateway-owned harness caller here.
+harnessRequiresStandaloneInForceConfigSync :: NativeSuitePlan -> Bool
+harnessRequiresStandaloneInForceConfigSync = not . harnessNeedsVaultBeforeSetup
 
 -- | The pre-credential bootstrap floor deliberately stops before Provider
 -- Worker readiness because that role consumes the credential being repaired.
@@ -2146,30 +2160,30 @@ runWaitForPublicEdgeReady repoRoot environment substrate attempts delayMicroseco
         let combinedOutput = processStdout output ++ processStderr output
         writeOutput (processStdout output)
         writeDiagnostic (processStderr output)
-        case processExitCode output of
-          ExitFailure code ->
+        case classifyPublicEdgeReadinessObservation (processExitCode output) combinedOutput of
+          PublicEdgeReadinessTerminalFailure code ->
             failWith
               ( "`"
                   ++ commandDisplay spec
                   ++ "` exited with code "
                   ++ show code
               )
-          ExitSuccess
-            | publicEdgeReadyClassification `isInfixOf` combinedOutput -> do
-                -- Sprint 8.8 retain-on-ready: capture the freshly-issued cert
-                -- to the long-lived S3 store now that it is confirmed ready, so
-                -- every subsequent rebuild restores it instead of re-ordering
-                -- against ZeroSSL. Best-effort: a retention failure never fails
-                -- the run (the cert is already issued and serving).
-                retainOutcome <- retainReadyPublicEdgeCertificate repoRoot substrate
-                case retainOutcome of
-                  Left err ->
-                    writeDiagnosticLine
-                      ("public-edge cert retain-on-ready failed (non-fatal): " ++ err)
-                  Right outcome ->
-                    writeDiagnosticLine
-                      ("public-edge cert retain-on-ready: " ++ renderPublicEdgePreserveOutcome outcome)
-                pure ExitSuccess
+          PublicEdgeReadinessReady -> do
+            -- Sprint 8.8 retain-on-ready: capture the freshly-issued cert
+            -- to the long-lived S3 store now that it is confirmed ready, so
+            -- every subsequent rebuild restores it instead of re-ordering
+            -- against ZeroSSL. Best-effort: a retention failure never fails
+            -- the run (the cert is already issued and serving).
+            retainOutcome <- retainReadyPublicEdgeCertificate repoRoot substrate
+            case retainOutcome of
+              Left err ->
+                writeDiagnosticLine
+                  ("public-edge cert retain-on-ready failed (non-fatal): " ++ err)
+              Right outcome ->
+                writeDiagnosticLine
+                  ("public-edge cert retain-on-ready: " ++ renderPublicEdgePreserveOutcome outcome)
+            pure ExitSuccess
+          observation
             | attemptsLeft <= 1 ->
                 failWith
                   ( "`"
@@ -2180,7 +2194,7 @@ runWaitForPublicEdgeReady repoRoot environment substrate attempts delayMicroseco
                   )
             | otherwise -> do
                 repairResult <-
-                  if repairsLeft > 0
+                  if observation == PublicEdgeReadinessPending && repairsLeft > 0
                     then maybeRepairPublicEdgeCertificateIssuance repoRoot environment combinedOutput
                     else pure (Right False)
                 case repairResult of
@@ -2189,7 +2203,10 @@ runWaitForPublicEdgeReady repoRoot environment substrate attempts delayMicroseco
                     writeDiagnosticLine
                       ( if repaired
                           then "Waiting for public-edge certificate reissue before retry."
-                          else "Waiting for required native command output before retry."
+                          else
+                            if observation == PublicEdgeReadinessGatewayDnsPending
+                              then "Waiting for Gateway-DNS write authority before retry."
+                              else "Waiting for required native command output before retry."
                       )
                     threadDelay delayMicroseconds
                     go

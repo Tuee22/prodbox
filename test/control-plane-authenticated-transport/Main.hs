@@ -372,14 +372,14 @@ replayPureTests =
                 reserveRequestSequence priorLimits requests
               (currentDecisions, currentProjection) =
                 reserveRequestSequence currentLimits requests
-          targetSecretAgentReconcileAttemptRequestMaximum @?= 27
-          targetSecretAgentReplayCapacity @?= 54
+          targetSecretAgentReconcileAttemptRequestMaximum @?= 29
+          targetSecretAgentReplayCapacity @?= 58
           priorDecisions
             @?= replicate 10 ReplayReservationFresh
-              <> replicate 44 ReplayReservationCapacityExhausted
+              <> replicate 48 ReplayReservationCapacityExhausted
           requestReplayEntryCount priorProjection @?= 10
-          currentDecisions @?= replicate 54 ReplayReservationFresh
-          requestReplayEntryCount currentProjection @?= 54
+          currentDecisions @?= replicate 58 ReplayReservationFresh
+          requestReplayEntryCount currentProjection @?= 58
     ]
 
 replayCodecTests :: TestTree
@@ -402,7 +402,7 @@ replayCodecTests =
           @?= Left RequestReplayEnvelopeNonCanonical
         decodeRequestReplayProjection 65536 otherLimits encoded
           @?= Left RequestReplayLimitsMismatch
-    , testCase "widens canonical v2/v3/v4/v5/v6/v7 capacity into v8 without dropping retained entries" $ do
+    , testCase "widens canonical v2/v3/v4/v5/v6/v7/v8 capacity into v9 without dropping retained entries" $ do
         let targetLimits = mustRight (mkRequestReplayLimits 120 64 skew)
             tooSmallLimits = mustRight (mkRequestReplayLimits 3 64 skew)
             responseDrift = mustRight (mkRequestReplayLimits 120 65 skew)
@@ -427,6 +427,8 @@ replayCodecTests =
               LazyByteString.toStrict (serialise (previousReplayEnvelope 6 4))
             targetAgentV7Bytes =
               LazyByteString.toStrict (serialise (previousReplayEnvelope 7 10))
+            targetAgentV8Bytes =
+              LazyByteString.toStrict (serialise (previousReplayEnvelope 8 54))
             widenedV2 =
               mustRight
                 (decodeRequestReplayProjection 65536 targetLimits legacyV2Bytes)
@@ -451,6 +453,9 @@ replayCodecTests =
             widenedTargetAgentV7 =
               mustRight
                 (decodeRequestReplayProjection 65536 targetAgentLimits targetAgentV7Bytes)
+            widenedTargetAgentV8 =
+              mustRight
+                (decodeRequestReplayProjection 65536 targetAgentLimits targetAgentV8Bytes)
             currentBytes =
               mustRight (encodeRequestReplayProjection 65536 targetLimits widenedV5)
             currentEnvelope =
@@ -466,6 +471,7 @@ replayCodecTests =
         requestReplayProjectionLimits widenedAdapterV5 @?= adapterLimits
         requestReplayProjectionLimits widenedTargetAgentV6 @?= targetAgentLimits
         requestReplayProjectionLimits widenedTargetAgentV7 @?= targetAgentLimits
+        requestReplayProjectionLimits widenedTargetAgentV8 @?= targetAgentLimits
         requestReplayEntryCount widenedV2 @?= 1
         requestReplayEntryCount widenedV3 @?= 1
         requestReplayEntryCount widenedV4 @?= 1
@@ -473,7 +479,8 @@ replayCodecTests =
         requestReplayEntryCount widenedAdapterV5 @?= 1
         requestReplayEntryCount widenedTargetAgentV6 @?= 1
         requestReplayEntryCount widenedTargetAgentV7 @?= 1
-        previousReplayEnvelopeVersion currentEnvelope @?= 8
+        requestReplayEntryCount widenedTargetAgentV8 @?= 1
+        previousReplayEnvelopeVersion currentEnvelope @?= 9
         previousReplayEnvelopeCapacity currentEnvelope @?= 120
         decodeRequestReplayProjection 65536 targetLimits currentBytes
           @?= Right widenedV5
@@ -488,6 +495,8 @@ replayCodecTests =
         decodeRequestReplayProjection 65536 tooSmallLimits targetAgentV6Bytes
           @?= Left RequestReplayLimitsMismatch
         decodeRequestReplayProjection 65536 tooSmallLimits targetAgentV7Bytes
+          @?= Left RequestReplayLimitsMismatch
+        decodeRequestReplayProjection 65536 tooSmallLimits targetAgentV8Bytes
           @?= Left RequestReplayLimitsMismatch
         decodeRequestReplayProjection 65536 responseDrift legacyV4Bytes
           @?= Left RequestReplayLimitsMismatch
@@ -635,6 +644,13 @@ authenticatedTransportTests =
               , CallerTestHarness
               , CallerService LifecycleAuthorityRuntime
               ]
+        trustedCallersForRoute LifecycleTlsRetentionStage
+          @?= [ CallerOperatorCli
+              , CallerTestHarness
+              , CallerService LifecycleAuthorityRuntime
+              ]
+        trustedCallersForRoute TlsRetentionObserveVersion
+          @?= [CallerService LifecycleAuthorityRuntime]
         mapM_
           ( \route ->
               trustedCallersForRoute route
@@ -1523,12 +1539,12 @@ decodeTestMetadata bytes =
 
 makeReplayVersionNonCanonical :: ByteString -> ByteString
 makeReplayVersionNonCanonical bytes =
-  case replaceFirst "\x19\x00\x08" "\x18\x08" bytes of
+  case replaceFirst "\x19\x00\x09" "\x18\x09" bytes of
     Just replaced -> replaced
     Nothing -> replaceShortReplayVersion bytes
 
 replaceShortReplayVersion :: ByteString -> ByteString
-replaceShortReplayVersion bytes = case replaceFirst "\x08" "\x18\x08" bytes of
+replaceShortReplayVersion bytes = case replaceFirst "\x09" "\x18\x09" bytes of
   Just replaced -> replaced
   Nothing -> error "unexpected replay envelope encoding"
 

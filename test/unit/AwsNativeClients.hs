@@ -101,7 +101,10 @@ import Prodbox.Aws.Native.Sts
   , AssumeRoleRequest (..)
   , CallerIdentity (..)
   , StsClient (..)
+  , assumedRoleSessionCredentials
+  , assumedRoleSessionHandle
   , encodeGetCallerIdentityForm
+  , getCallerIdentityForSession
   , newStsClient
   , parseAssumeRoleResponse
   , parseGetCallerIdentityResponse
@@ -132,6 +135,7 @@ import Prodbox.Aws.Native.Wire
   )
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Lifecycle.OwnedResourceTags (longLivedPulumiStateBucketTags)
+import Prodbox.Settings (Credentials (..))
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
 import TestSupport
@@ -591,8 +595,14 @@ awsNativeClientsSuite =
       it "assumeRole returns a session whose non-secret fields are the temporary ones" $ do
         let sts = newStsClient baseHandle (respond 200 assumeRoleBody)
         result <- assumeRole sts (AssumeRoleRequest "arn:aws:iam::123:role/r" "sess" 900)
-        fmap credentialHandleAccessKeyId result `shouldBe` Right "ASIAFAKE"
-        fmap credentialHandleSecurityToken result `shouldBe` Right (Just "tmpToken")
+        fmap (credentialHandleAccessKeyId . assumedRoleSessionHandle) result
+          `shouldBe` Right "ASIAFAKE"
+        fmap (credentialHandleSecurityToken . assumedRoleSessionHandle) result
+          `shouldBe` Right (Just "tmpToken")
+        fmap (access_key_id . assumedRoleSessionCredentials) result
+          `shouldBe` Right "ASIAFAKE"
+        fmap (session_token . assumedRoleSessionCredentials) result
+          `shouldBe` Right (Just "tmpToken")
       it "the session handle signs with the temporary secret (signature equality)" $ do
         let sts = newStsClient baseHandle (respond 200 assumeRoleBody)
         result <- assumeRole sts (AssumeRoleRequest "arn:aws:iam::123:role/r" "sess" 900)
@@ -604,8 +614,25 @@ awsNativeClientsSuite =
         case result of
           Left err -> expectationFailure ("assumeRole failed: " <> show err)
           Right session -> do
-            probeSign session `shouldBe` probeSign reference
-            elem ("x-amz-security-token", "tmpToken") (shrHeaders (probeSign session)) `shouldBe` True
+            let sessionHandle = assumedRoleSessionHandle session
+            probeSign sessionHandle `shouldBe` probeSign reference
+            elem ("x-amz-security-token", "tmpToken") (shrHeaders (probeSign sessionHandle))
+              `shouldBe` True
+      it "proves the assumed caller with the session token rather than the base handle" $ do
+        let sessionHandle =
+              either
+                (error . show)
+                id
+                (mkSessionCredentialHandle "ASIAFAKE" "tmpSecret" "tmpToken" (fixtureAwsRegion FixtureUsEast1))
+        captured <- newIORef Nothing
+        let sender request = do
+              writeIORef captured (Just request)
+              pure (Right (HttpOutcome 200 [] callerIdentityBody))
+        result <- getCallerIdentityForSession sessionHandle sender
+        fmap callerIdentityAccount result `shouldBe` Right "123456789012"
+        request <- readIORef captured
+        fmap (elem ("x-amz-security-token", "tmpToken") . shrHeaders) request
+          `shouldBe` Just True
       it "parses and dispatches GetCallerIdentity without inventing the account coordinate" $ do
         parseGetCallerIdentityResponse callerIdentityBody
           `shouldBe` Right

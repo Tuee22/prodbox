@@ -3,16 +3,18 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Authenticated Lifecycle Authority endpoint for the public-edge TLS current
--- reference.  Requests name only a compiled substrate and canonical
+-- | Authenticated Lifecycle Authority endpoint for the public-edge TLS
+-- pending/current state. Requests name only a compiled substrate and canonical
 -- certificate scope; object-store coordinates and CAS revisions stay behind
 -- the repository resolver.
 module Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
   ( TlsAuthorityObserveRequest (..)
+  , TlsAuthorityStageRequest (..)
   , TlsAuthorityPromoteRequest (..)
   , TlsAuthorityResponse (..)
   , TlsAuthorityRepositoryResolver
   , serveTlsAuthorityObserveRequest
+  , serveTlsAuthorityStageRequest
   , serveTlsAuthorityPromoteRequest
   , tlsAuthorityResponseHttpStatus
   , tlsAuthorityResponseBody
@@ -34,9 +36,11 @@ import Prodbox.ControlPlane.TlsRetentionAuthority
   , TlsRetentionAuthorityRepository
   , TlsRetentionPromotionResult (..)
   , TlsRetentionSlot
+  , TlsRetentionStagingResult (..)
   , mkTlsRetentionSlot
   , observeTlsRetentionAuthority
   , promoteTlsRetentionAuthority
+  , stageTlsRetentionAuthority
   )
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.TlsRetention
@@ -46,6 +50,9 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   , TlsPromotionDecision (..)
   , TlsPromotionRefusal (..)
   , TlsRetentionState
+  , TlsSealedEnvelope
+  , TlsStagingDecision (..)
+  , TlsStagingRefusal (..)
   )
 
 data TlsAuthorityObserveRequest = TlsAuthorityObserveRequest
@@ -65,6 +72,16 @@ data TlsAuthorityPromoteRequest = TlsAuthorityPromoteRequest
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+data TlsAuthorityStageRequest = TlsAuthorityStageRequest
+  { tlsAuthorityStageSubstrate :: !Text
+  , tlsAuthorityStageScope :: !Text
+  , tlsAuthorityStageApproval :: !KeyRotationApproval
+  , tlsAuthorityStageCandidate :: !RetainedTlsRef
+  , tlsAuthorityStageEnvelope :: !TlsSealedEnvelope
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
 data TlsAuthorityResponse
   = TlsAuthorityObserved !TlsRetentionState
   | TlsAuthorityPromotionApplied !TlsRetentionState
@@ -73,6 +90,9 @@ data TlsAuthorityResponse
   | TlsAuthorityConcurrentWrite
   | TlsAuthorityUnavailable
   | TlsAuthorityRequestRefused
+  | TlsAuthorityStagingApplied !TlsRetentionState
+  | TlsAuthorityStagingNoop !TlsRetentionState
+  | TlsAuthorityStagingRefused !Text
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -80,7 +100,7 @@ type TlsAuthorityRepositoryResolver m revision =
   TlsRetentionSlot -> Either Text (TlsRetentionAuthorityRepository m revision)
 
 tlsAuthorityResponseMaximumBytes :: Int
-tlsAuthorityResponseMaximumBytes = 128 * 1024
+tlsAuthorityResponseMaximumBytes = 1024 * 1024
 
 serveTlsAuthorityObserveRequest
   :: (Monad m)
@@ -97,6 +117,29 @@ serveTlsAuthorityObserveRequest maximumBytes resolve body =
         (tlsAuthorityObserveSubstrate request)
         (tlsAuthorityObserveScope request)
         (fmap observeResponse . observeTlsRetentionAuthority)
+
+serveTlsAuthorityStageRequest
+  :: (Monad m)
+  => Int
+  -> TlsAuthorityRepositoryResolver m revision
+  -> LazyByteString.ByteString
+  -> m TlsAuthorityResponse
+serveTlsAuthorityStageRequest maximumBytes resolve body =
+  case decodeControlPlaneRequest maximumBytes body of
+    Left _ -> pure TlsAuthorityRequestRefused
+    Right request ->
+      withRepository
+        resolve
+        (tlsAuthorityStageSubstrate request)
+        (tlsAuthorityStageScope request)
+        ( \repository ->
+            stagingResponse
+              <$> stageTlsRetentionAuthority
+                repository
+                (tlsAuthorityStageApproval request)
+                (tlsAuthorityStageCandidate request)
+                (tlsAuthorityStageEnvelope request)
+        )
 
 serveTlsAuthorityPromoteRequest
   :: (Monad m)
@@ -142,6 +185,20 @@ observeResponse result = case result of
   Left _ -> TlsAuthorityUnavailable
   Right state -> TlsAuthorityObserved state
 
+stagingResponse
+  :: Either TlsRetentionAuthorityError TlsRetentionStagingResult
+  -> TlsAuthorityResponse
+stagingResponse result = case result of
+  Left TlsRetentionAuthorityConcurrentWrite -> TlsAuthorityConcurrentWrite
+  Left _ -> TlsAuthorityUnavailable
+  Right staging -> case tlsRetentionStagingDecision staging of
+    TlsStaged _ ->
+      TlsAuthorityStagingApplied (tlsRetentionStagingState staging)
+    TlsStagingNoop _ ->
+      TlsAuthorityStagingNoop (tlsRetentionStagingState staging)
+    TlsStagingRefused refusal ->
+      TlsAuthorityStagingRefused (stagingRefusalToken refusal)
+
 promotionResponse
   :: Either TlsRetentionAuthorityError TlsRetentionPromotionResult
   -> TlsAuthorityResponse
@@ -163,10 +220,25 @@ refusalToken refusal = case refusal of
   TlsStaleVersion -> "stale-version"
   TlsValidityRegression -> "validity-regression"
   TlsUnapprovedKeyChange -> "unapproved-key-change"
+  TlsPendingMissing -> "pending-missing"
+  TlsPendingMismatch -> "pending-mismatch"
+
+stagingRefusalToken :: TlsStagingRefusal -> Text
+stagingRefusalToken refusal = case refusal of
+  TlsStageEnvelopeInvalid -> "envelope-invalid"
+  TlsStageReferenceInvalid -> "reference-invalid"
+  TlsStageDigestMismatch -> "digest-mismatch"
+  TlsStageVersionMismatch -> "version-mismatch"
+  TlsStageValidityRegression -> "validity-regression"
+  TlsStageUnapprovedKeyChange -> "unapproved-key-change"
+  TlsStageConcurrentPending -> "concurrent-pending"
 
 tlsAuthorityResponseHttpStatus :: TlsAuthorityResponse -> ReplyStatus
 tlsAuthorityResponseHttpStatus response = case response of
   TlsAuthorityObserved _ -> ReplyOk
+  TlsAuthorityStagingApplied _ -> ReplyOk
+  TlsAuthorityStagingNoop _ -> ReplyOk
+  TlsAuthorityStagingRefused _ -> ReplyConflict
   TlsAuthorityPromotionApplied _ -> ReplyOk
   TlsAuthorityPromotionNoop _ -> ReplyOk
   TlsAuthorityPromotionRefused _ -> ReplyConflict

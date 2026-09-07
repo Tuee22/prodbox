@@ -218,7 +218,10 @@ import Prodbox.Lifecycle.Teardown.CascadeCandidate
 import Prodbox.Lifecycle.ValidationHostedZone qualified as Route53ValidationZone
 import Prodbox.Minio.ObjectStoreTypes (defaultObjectStoreBucket)
 import Prodbox.PublicEdge
-  ( PublicEdgeRoute (..)
+  ( PublicEdgeReadinessObservation (..)
+  , PublicEdgeRoute (..)
+  , classifyPublicEdgeReadinessObservation
+  , publicEdgeReadyClassification
   , publicFqdn
   , publicRoutePathPrefix
   , requireSubstratePublicFqdn
@@ -361,9 +364,6 @@ import System.IO
   )
 import System.Timeout (timeout)
 import Wuss qualified
-
-publicEdgeReadyClassification :: String
-publicEdgeReadyClassification = "CLASSIFICATION=ready-for-external-proof"
 
 publicEdgeReadyAttempts :: Int
 publicEdgeReadyAttempts = 60
@@ -5061,16 +5061,16 @@ waitForPublicEdgeReady repoRoot substrate = do
         let combinedOutput = processStdout output ++ processStderr output
         writeOutput (processStdout output)
         writeDiagnostic (processStderr output)
-        case processExitCode output of
-          ExitFailure code ->
+        case classifyPublicEdgeReadinessObservation (processExitCode output) combinedOutput of
+          PublicEdgeReadinessTerminalFailure code ->
             failWith
               ( "`"
                   ++ commandDisplay spec
                   ++ "` exited with code "
                   ++ show code
               )
-          ExitSuccess
-            | publicEdgeReadyClassification `isInfixOf` combinedOutput -> pure ExitSuccess
+          PublicEdgeReadinessReady -> pure ExitSuccess
+          observation
             | attemptsLeft <= 1 ->
                 failWith
                   ( "`"
@@ -5080,7 +5080,13 @@ waitForPublicEdgeReady repoRoot substrate = do
                       ++ "` before timeout."
                   )
             | otherwise -> do
-                writeDiagnosticLine "Waiting for public edge readiness before external curl validation."
+                writeDiagnosticLine
+                  ( case observation of
+                      PublicEdgeReadinessGatewayDnsPending ->
+                        "Waiting for Gateway-DNS write authority before external curl validation."
+                      PublicEdgeReadinessPending ->
+                        "Waiting for public edge readiness before external curl validation."
+                  )
                 threadDelay publicEdgeReadyDelayMicroseconds
                 waitForClassification spec (attemptsLeft - 1)
 

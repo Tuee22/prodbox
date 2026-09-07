@@ -2,9 +2,11 @@
 
 -- | Sprint 1.62 deliverable 3 (STS): native @AssumeRole@ (query protocol, XML
 -- response). The interpreter takes a 'BaseCredentialHandle' and yields a
--- 'SessionCredentialHandle' carrying the TEMPORARY credentials — a distinct
--- handle. There is no exported base→session widening; 'mkSessionCredentialHandle'
--- is called only here, so base→session is non-convertible by construction.
+-- closed 'AssumedRoleSession' carrying the TEMPORARY credentials both as a
+-- distinct native handle and as the subprocess projection made from the same
+-- STS response. There is no exported base→session widening;
+-- 'mkSessionCredentialHandle' is called only here, so base→session is
+-- non-convertible by construction.
 --
 -- Downstream (NOTE, not 1.62 work): replaces @LeaseRuntime.hs@'s @runAwsAssumeRole@
 -- / @sts get-caller-identity@ CLI sites.
@@ -12,8 +14,12 @@ module Prodbox.Aws.Native.Sts
   ( StsClient (..)
   , AssumeRoleRequest (..)
   , AssumeRoleCredentials (..)
+  , AssumedRoleSession
+  , assumedRoleSessionHandle
+  , assumedRoleSessionCredentials
   , CallerIdentity (..)
   , newStsClient
+  , getCallerIdentityForSession
   , stsEndpoint
   , stsScope
   , encodeAssumeRoleForm
@@ -33,6 +39,7 @@ import Numeric.Natural (Natural)
 import Prodbox.Aws.CredentialHandle
   ( BaseCredentialHandle
   , CredentialError
+  , CredentialHandle
   , SecretString (SecretString)
   , SessionCredentialHandle
   , credentialHandleRegion
@@ -56,6 +63,7 @@ import Prodbox.Aws.Native.Wire
   , renderFormBody
   )
 import Prodbox.Aws.Native.Xml (extractFirst)
+import Prodbox.Settings (Credentials (..))
 
 data AssumeRoleRequest = AssumeRoleRequest
   { assumeRoleArn :: !Text
@@ -80,8 +88,23 @@ data CallerIdentity = CallerIdentity
   }
   deriving (Eq, Show)
 
+-- | One STS-proven temporary session. The constructor is hidden so a base
+-- credential cannot be relabelled as assumed-role material. There is
+-- intentionally no 'Show' instance: its subprocess projection contains the
+-- temporary secret and token.
+data AssumedRoleSession = AssumedRoleSession
+  { internalAssumedRoleSessionHandle :: !SessionCredentialHandle
+  , internalAssumedRoleSessionCredentials :: !Credentials
+  }
+
+assumedRoleSessionHandle :: AssumedRoleSession -> SessionCredentialHandle
+assumedRoleSessionHandle = internalAssumedRoleSessionHandle
+
+assumedRoleSessionCredentials :: AssumedRoleSession -> Credentials
+assumedRoleSessionCredentials = internalAssumedRoleSessionCredentials
+
 data StsClient = StsClient
-  { assumeRole :: AssumeRoleRequest -> IO (Either AwsClientError SessionCredentialHandle)
+  { assumeRole :: AssumeRoleRequest -> IO (Either AwsClientError AssumedRoleSession)
   , getCallerIdentity :: IO (Either AwsClientError CallerIdentity)
   }
 
@@ -91,6 +114,14 @@ newStsClient handle sender =
     { assumeRole = runAssumeRole handle sender
     , getCallerIdentity = runGetCallerIdentity handle sender
     }
+
+-- | Prove which caller the temporary credentials actually name without
+-- widening them back to a base credential.
+getCallerIdentityForSession
+  :: SessionCredentialHandle
+  -> NativeAwsSender
+  -> IO (Either AwsClientError CallerIdentity)
+getCallerIdentityForSession = runGetCallerIdentity
 
 stsEndpoint :: ByteString -> AwsEndpoint
 stsEndpoint region =
@@ -168,7 +199,7 @@ runAssumeRole
   :: BaseCredentialHandle
   -> NativeAwsSender
   -> AssumeRoleRequest
-  -> IO (Either AwsClientError SessionCredentialHandle)
+  -> IO (Either AwsClientError AssumedRoleSession)
 runAssumeRole handle sender req = do
   raw <-
     performAwsRequest
@@ -180,17 +211,29 @@ runAssumeRole handle sender req = do
   pure $ do
     body <- raw
     arc <- first AwsResponseParseFailure (parseAssumeRoleResponse body)
-    first
-      credentialErrorToClient
-      ( mkSessionCredentialHandle
-          (arcAccessKeyId arc)
-          (unSecret (arcSecret arc))
-          (unSecret (arcToken arc))
-          (credentialHandleRegion handle)
-      )
+    sessionHandle <-
+      first
+        credentialErrorToClient
+        ( mkSessionCredentialHandle
+            (arcAccessKeyId arc)
+            (unSecret (arcSecret arc))
+            (unSecret (arcToken arc))
+            (credentialHandleRegion handle)
+        )
+    pure
+      AssumedRoleSession
+        { internalAssumedRoleSessionHandle = sessionHandle
+        , internalAssumedRoleSessionCredentials =
+            Credentials
+              { access_key_id = decodeUtf8 (arcAccessKeyId arc)
+              , secret_access_key = decodeUtf8 (unSecret (arcSecret arc))
+              , session_token = Just (decodeUtf8 (unSecret (arcToken arc)))
+              , region = decodeUtf8 (credentialHandleRegion handle)
+              }
+        }
 
 runGetCallerIdentity
-  :: BaseCredentialHandle
+  :: CredentialHandle origin
   -> NativeAwsSender
   -> IO (Either AwsClientError CallerIdentity)
 runGetCallerIdentity handle sender = do

@@ -60,6 +60,7 @@ import Prodbox.ControlPlane.TargetSecretWorker
   )
 import Prodbox.ControlPlane.TargetSecretWorkerCoordinator
   ( TargetWorkerCoordinatorError (..)
+  , TargetWorkerSessionPrepareCause (..)
   )
 import Prodbox.ControlPlane.TargetSecretWorkerProduction
   ( TargetWorkerJobConnection
@@ -70,6 +71,7 @@ import Prodbox.ControlPlane.TargetSecretWorkerProduction
 import Prodbox.ControlPlane.TargetSecretWorkerRuntime
   ( TargetSecretWorkerRuntimeError (..)
   , renderTargetSecretWorkerRuntimeRefusal
+  , targetSecretWorkerTlsApplyRefusalTokens
   )
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( isBoundedBatchAuditorLogin
@@ -484,41 +486,93 @@ renderTargetWorkerCoordinatorDiagnostic err = case err of
     "attestation-failed/" <> renderTargetWorkerAttestationError attestationError
   TargetWorkerCoordinatorAttachFailed detail ->
     "attach-failed/" <> classifyTargetWorkerAttachFailure detail
+  TargetWorkerCoordinatorSessionPrepareFailed cause ->
+    "session-prepare-failed/" <> renderTargetWorkerSessionPrepareCause cause
   TargetWorkerCoordinatorMaterializationRefused detail ->
     classifyTargetWorkerMaterializationRefusal detail
   _ -> renderAwsAdminTargetWorkerCause (classifyTargetWorkerError err)
 
--- | Refine only the three closed production attach failures. Arbitrary
+renderTargetWorkerSessionPrepareCause :: TargetWorkerSessionPrepareCause -> Text
+renderTargetWorkerSessionPrepareCause cause = case cause of
+  TargetWorkerSessionPrepareJournalWriteFailed -> "journal-write-failed"
+  TargetWorkerSessionPrepareJournalUnavailable -> "journal-unavailable"
+  TargetWorkerSessionPrepareBindingRoleMismatch -> "binding-role-mismatch"
+  TargetWorkerSessionPrepareRoleOccupied -> "role-occupied"
+  TargetWorkerSessionPrepareBindingInvalid -> "binding-invalid"
+  TargetWorkerSessionPreparePrecleanIdentityInvalid -> "preclean/identity-invalid"
+  TargetWorkerSessionPreparePrecleanAuditorLoginFailed -> "preclean/auditor-login-failed"
+  TargetWorkerSessionPreparePrecleanAuditorEvidenceInvalid ->
+    "preclean/auditor-evidence-invalid"
+  TargetWorkerSessionPreparePrecleanObservationFailed -> "preclean/observation-failed"
+  TargetWorkerSessionPreparePrecleanClassificationFailed ->
+    "preclean/classification-failed"
+  TargetWorkerSessionPreparePrecleanKnownIdentityMismatch ->
+    "preclean/known-identity-mismatch"
+  TargetWorkerSessionPreparePrecleanRevocationFailed -> "preclean/revocation-failed"
+  TargetWorkerSessionPreparePrecleanVisibilityWaitFailed ->
+    "preclean/visibility-wait-failed"
+  TargetWorkerSessionPreparePrecleanStableAbsenceFailed ->
+    "preclean/stable-absence-failed"
+  TargetWorkerSessionPrepareLoginFailedCleaned -> "login-failed-cleaned"
+  TargetWorkerSessionPrepareLoginAmbiguityCleaned -> "login-ambiguity-cleaned"
+  TargetWorkerSessionPrepareAccessorInvalid -> "accessor-invalid"
+  TargetWorkerSessionPrepareAccessorIdentityMismatch -> "accessor-identity-mismatch"
+  TargetWorkerSessionPrepareCleanupFailed -> "cleanup-failed"
+  TargetWorkerSessionPrepareCleanupThrew -> "cleanup-threw"
+  TargetWorkerSessionPrepareCleanupJournalFailed -> "cleanup-journal-failed"
+  TargetWorkerSessionPrepareActionFailed -> "action-failed"
+  TargetWorkerSessionPrepareUnhandledException -> "unhandled-exception"
+
+-- | Refine only the closed production attach failures. Arbitrary
 -- injected detail collapses before it reaches the protected diagnostic.
 classifyTargetWorkerAttachFailure :: Text -> Text
 classifyTargetWorkerAttachFailure detail = case detail of
-  "Target worker attach transport failed" -> "transport-unavailable"
+  "Target worker attach limits validation failed" -> "limits-invalid"
+  "Target worker attach initial payload validation failed" -> "initial-payload-invalid"
+  "Target worker attach process start failed" -> "process-start-unavailable"
+  "Target worker attach initial payload write failed" -> "initial-payload-write-unavailable"
+  "Target worker attach provisional read failed" -> "provisional-read-unavailable"
+  "Target worker attach decision continuation write failed" ->
+    "decision-continuation-write-unavailable"
+  "Target worker attach completion collection failed" -> "completion-collection-unavailable"
+  "Target worker attach wall-clock timeout" -> "wall-clock-timeout"
   "Target worker cleanup acknowledgement is invalid" -> "cleanup-ack-invalid"
   "Target worker terminal status is inconsistent" -> "terminal-status-inconsistent"
   _ -> "other"
 
--- | Admit only runtime-owned closed TLS-retain refusal tokens. The existing
+-- | Admit only runtime-owned closed TLS-operation refusal tokens. The existing
 -- generic rollout token retains its prior diagnostic, and arbitrary text is
 -- collapsed before it reaches the protected Target log.
 classifyTargetWorkerMaterializationRefusal :: Text -> Text
 classifyTargetWorkerMaterializationRefusal detail
   | detail == genericRefusal = "materialization-refused"
-  | detail `elem` tlsRetainRefusals = "materialization-refused/" <> detail
+  | detail `elem` tlsOperationRefusals = "materialization-refused/" <> detail
   | otherwise = "materialization-refused/other"
  where
   genericRefusal =
     renderTargetSecretWorkerRuntimeRefusal TargetSecretWorkerOperationRefused
-  tlsRetainRefusals =
+  tlsOperationRefusals =
     [ renderTargetSecretWorkerRuntimeRefusal
         TargetSecretWorkerTlsRetainProductionBoundaryUnavailable
     , renderTargetSecretWorkerRuntimeRefusal TargetSecretWorkerTlsRetainBadRequest
     , "tls-retain/secret-unavailable"
     , "tls-retain/secret-invalid"
     , "tls-retain/secret-readback-mismatch"
-    , "tls-retain/secret-apply-failed"
     , "tls-retain/dek-exchange-failed"
     , "tls-retain/cipher-failed"
     , "tls-retain/certificate-ciphertext-invalid"
     , "tls-retain/certificate-ciphertext-too-large"
     , "tls-retain/reference-mismatch"
+    , renderTargetSecretWorkerRuntimeRefusal
+        TargetSecretWorkerTlsRestoreProductionBoundaryUnavailable
+    , renderTargetSecretWorkerRuntimeRefusal TargetSecretWorkerTlsRestoreBadRequest
+    , "tls-restore/secret-unavailable"
+    , "tls-restore/secret-invalid"
+    , "tls-restore/secret-readback-mismatch"
+    , "tls-restore/dek-exchange-failed"
+    , "tls-restore/cipher-failed"
+    , "tls-restore/certificate-ciphertext-invalid"
+    , "tls-restore/certificate-ciphertext-too-large"
+    , "tls-restore/reference-mismatch"
     ]
+      <> targetSecretWorkerTlsApplyRefusalTokens

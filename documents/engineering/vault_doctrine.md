@@ -236,9 +236,12 @@ Requirements:
   `seal "transit"` stanza pointing at the parent Vault, and source the parent Transit token from
   `VAULT_TOKEN` rather than from the ConfigMap.
 - The TCP listener carries an explicit finite 160 MiB request ceiling. This admits the Target
-  Agent's 112 MiB replay projection after its at-most 149.34 MiB Base64 expansion and bounded KV
+  Agent's 118 MiB replay projection after its at-most 157.34 MiB Base64 expansion and bounded KV
   JSON envelope; it is not an unbounded listener override. The replay projection itself remains
-  limited independently by its 54-entry and 2 MiB-per-response bounds.
+  limited independently by its 58-entry and 2 MiB-per-response bounds. The StatefulSet Pod
+  template binds a deterministic digest of the rendered Vault ConfigMap: an unchanged effective
+  configuration keeps the template stable, while any listener, storage, or transit-seal change
+  rolls the Vault process before the reconcile's StatefulSet rollout wait can succeed.
 - Startup readiness gates that distinguish: not deployed; deployed but uninitialized; initialized
   but sealed; initialized and unsealed; policy reconciled.
 
@@ -1092,8 +1095,11 @@ Two distinct layers protect a Pulumi operation, and they are not the same concer
    sealed-opaque.
 
 Runtime AWS identities are split. The fenced provider worker reads only
-`secret/aws/lifecycle-provider` and may assume only the operation-specific role named by a
-committed intent. The separate Backup Adapter alone reads
+`secret/aws/lifecycle-provider` and may assume only the sole registered role deterministically
+selected by every constructor of the committed intent vocabulary. The base material is never a
+Provider-effect credential: the rank-2 session boundary observes its exact account/user identity,
+uses native STS to assume the account-bound role, verifies the assumed-role ARN, and gives native
+clients and subprocesses only projections of that temporary response. The separate Backup Adapter alone reads
 `secret/aws/authority-backup-store`; its LongLived identity reaches only the opaque backup prefix.
 The TLS Retention Adapter alone reads `secret/aws/tls-retention-store`; its LongLived identity
 reaches only exact registered TLS prefixes. Gateway DNS reads only `secret/aws/gateway-dns`, and
@@ -1107,6 +1113,12 @@ mode-indexed Credential Provisioner, an explicit Admin Action Runner, or the pos
 Decommission Runner only through a separate linear `SecretRef.Prompt` ingress; they are never a
 capability-program field or persisted value. Tests may simulate that prompt only with
 `aws_admin_for_test_simulation.*` in `test-secrets.dhall`.
+
+The Lifecycle-provider Vault generation and its IAM-program revision are related but distinct. The
+qualification harness hashes the canonical secret-free role policy into the durable credential
+operation scope. An unchanged revision may recover a completed receipt; a new revision schedules a
+successor operation and ordinary next Vault/Target generation after exact IAM put/read-back. No
+completed receipt is reopened merely because executable policy code changed.
 
 The default Vault reconcile plan materializes a distinct Kubernetes-auth role and policy for every
 standing control-plane process. Lifecycle Authority receives only retained-store HMAC/MinIO/Transit
@@ -1152,9 +1164,11 @@ pod-scoped memory volume and fixed-name Secret RBAC; neither credential can be r
 manifest or substituted across substrates.
 
 For canonical `aws-ses` work, the Lifecycle-provider bootstrap credential is only an AssumeRole source for
-the exact-trust `prodbox-ses-lease-session` role. The fenced provider worker receives a session
-bounded by one narrow non-credential SES identity/DKIM/receipt-rule/S3 provider mutation and the
-absolute operation deadline. It has no SMTP IAM identity/policy/key authority. Schema-indexed
+the exact-trust `prodbox-lifecycle-provider` role. The fenced provider worker receives a session
+bounded in-process by one narrow non-credential SES identity/DKIM/receipt-rule/S3 provider callback
+and the absolute operation deadline. STS's fixed 900-second credential duration is not the ownership
+bound: the opaque handle and subprocess projection cannot escape the rank-2 callback. It has no SMTP
+IAM identity/policy/key authority. Schema-indexed
 Credential Provisioner owns SMTP identity/policy/key install/rotate/remint and repair-time delete,
 derives `SesSmtpSource` from the one-time IAM secret in bounded memory, and sends only that closed
 source to retained-home custody. Semantic readiness and target delivery hold neither session.

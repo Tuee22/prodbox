@@ -17,6 +17,12 @@ module Prodbox.ControlPlane.AuthorityProviderEndpoint
   , providerDispatchFormatVersion
   , authorityProviderDispatchAuthenticatedHandler
   , AuthorityProviderClientError (..)
+  , AuthorityProviderResponseObservation (..)
+  , AuthorityProviderResponseShapeObservation (..)
+  , AuthorityProviderResponseSizeObservation (..)
+  , AuthorityProviderResponseStatusObservation (..)
+  , classifyAuthorityProviderResponse
+  , renderAuthorityProviderResponseObservation
   , dispatchAuthorityProviderIntent
   , dispatchAuthorityProviderIntentWithOperation
   , dispatchAuthorityProviderIntentOwnedBy
@@ -27,6 +33,7 @@ where
 import Codec.Serialise (Serialise, serialise)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Either (fromLeft)
 import Data.Text (Text)
@@ -37,6 +44,9 @@ import GHC.Generics (Generic)
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler (..)
+  , AuthenticatedRolePlainResponseObservation (..)
+  , classifyAuthenticatedRolePlainResponse
+  , renderAuthenticatedRolePlainResponseObservation
   )
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError
@@ -521,10 +531,114 @@ providerExecutionEvidence result = case result of
 
 data AuthorityProviderClientError
   = AuthorityProviderTransportFailed !AuthenticatedClientError
-  | AuthorityProviderResponseInvalid !ControlPlaneResponseCodecError
+  | AuthorityProviderResponseInvalid
+      !ControlPlaneResponseCodecError
+      !AuthorityProviderResponseObservation
   | AuthorityProviderResponseStatusMismatch !Int
   | AuthorityProviderRemoteRefused !Int !Text
   deriving stock (Eq, Show)
+
+-- | Value-free classification of a Provider-dispatch HTTP response. It is
+-- diagnostic only: recognizing another canonical envelope or a known static
+-- authenticated-role response does not make the Provider client accept it.
+data AuthorityProviderResponseObservation = AuthorityProviderResponseObservation
+  { authorityProviderResponseStatusObservation :: !AuthorityProviderResponseStatusObservation
+  , authorityProviderResponseSizeObservation :: !AuthorityProviderResponseSizeObservation
+  , authorityProviderResponseShapeObservation :: !AuthorityProviderResponseShapeObservation
+  }
+  deriving stock (Eq, Show)
+
+data AuthorityProviderResponseStatusObservation
+  = AuthorityProviderResponseStatusSuccess
+  | AuthorityProviderResponseStatusClientError
+  | AuthorityProviderResponseStatusServerError
+  | AuthorityProviderResponseStatusOther
+  deriving stock (Bounded, Enum, Eq, Show)
+
+data AuthorityProviderResponseSizeObservation
+  = AuthorityProviderResponseSizeEmpty
+  | AuthorityProviderResponseSizeWithinBound
+  | AuthorityProviderResponseSizeOverBound
+  deriving stock (Bounded, Enum, Eq, Show)
+
+data AuthorityProviderResponseShapeObservation
+  = AuthorityProviderResponseShapeDirect
+  | AuthorityProviderResponseShapeEndpointSuccess
+  | AuthorityProviderResponseShapeEndpointFailure
+  | AuthorityProviderResponseShapeAuthenticatedPlain
+      !AuthenticatedRolePlainResponseObservation
+  | AuthorityProviderResponseShapeEmpty
+  | AuthorityProviderResponseShapeOther
+  deriving stock (Eq, Show)
+
+classifyAuthorityProviderResponse
+  :: Int -> ByteString -> AuthorityProviderResponseObservation
+classifyAuthorityProviderResponse status body =
+  AuthorityProviderResponseObservation
+    { authorityProviderResponseStatusObservation = statusObservation
+    , authorityProviderResponseSizeObservation = sizeObservation
+    , authorityProviderResponseShapeObservation = shapeObservation
+    }
+ where
+  statusObservation
+    | status >= 200 && status < 300 = AuthorityProviderResponseStatusSuccess
+    | status >= 400 && status < 500 = AuthorityProviderResponseStatusClientError
+    | status >= 500 && status < 600 = AuthorityProviderResponseStatusServerError
+    | otherwise = AuthorityProviderResponseStatusOther
+  sizeObservation
+    | ByteString.null body = AuthorityProviderResponseSizeEmpty
+    | ByteString.length body <= providerDispatchResponseMaximumBytes =
+        AuthorityProviderResponseSizeWithinBound
+    | otherwise = AuthorityProviderResponseSizeOverBound
+  shapeObservation
+    | ByteString.null body = AuthorityProviderResponseShapeEmpty
+    | Right _ <- directResponse = AuthorityProviderResponseShapeDirect
+    | Right (Right _) <- endpointResponse = AuthorityProviderResponseShapeEndpointSuccess
+    | Right (Left _) <- endpointResponse = AuthorityProviderResponseShapeEndpointFailure
+    | known@(AuthenticatedRolePlainResponseKnown _) <-
+        classifyAuthenticatedRolePlainResponse status body =
+        AuthorityProviderResponseShapeAuthenticatedPlain known
+    | otherwise = AuthorityProviderResponseShapeOther
+  directResponse =
+    decodeControlPlaneResponse
+      providerDispatchResponseMaximumBytes
+      (LazyByteString.fromStrict body)
+      :: Either ControlPlaneResponseCodecError ProviderDispatchResponse
+  endpointResponse =
+    decodeControlPlaneResponse
+      providerDispatchResponseMaximumBytes
+      (LazyByteString.fromStrict body)
+      :: Either
+           ControlPlaneResponseCodecError
+           (Either Text ProviderDispatchResponse)
+
+renderAuthorityProviderResponseObservation
+  :: AuthorityProviderResponseObservation -> Text
+renderAuthorityProviderResponseObservation observation =
+  "status="
+    <> renderStatus (authorityProviderResponseStatusObservation observation)
+    <> "/size="
+    <> renderSize (authorityProviderResponseSizeObservation observation)
+    <> "/shape="
+    <> renderShape (authorityProviderResponseShapeObservation observation)
+ where
+  renderStatus status = case status of
+    AuthorityProviderResponseStatusSuccess -> "success"
+    AuthorityProviderResponseStatusClientError -> "client-error"
+    AuthorityProviderResponseStatusServerError -> "server-error"
+    AuthorityProviderResponseStatusOther -> "other"
+  renderSize size = case size of
+    AuthorityProviderResponseSizeEmpty -> "empty"
+    AuthorityProviderResponseSizeWithinBound -> "within-bound"
+    AuthorityProviderResponseSizeOverBound -> "over-bound"
+  renderShape shape = case shape of
+    AuthorityProviderResponseShapeDirect -> "direct"
+    AuthorityProviderResponseShapeEndpointSuccess -> "endpoint-success"
+    AuthorityProviderResponseShapeEndpointFailure -> "endpoint-failure"
+    AuthorityProviderResponseShapeAuthenticatedPlain known ->
+      "authenticated-plain/" <> renderAuthenticatedRolePlainResponseObservation known
+    AuthorityProviderResponseShapeEmpty -> "empty"
+    AuthorityProviderResponseShapeOther -> "other"
 
 -- | Dispatch and keep only the bounded evidence.
 --
@@ -669,7 +783,11 @@ callProviderDispatchRoute transport submissionKey intent owner lane = do
     ControlPlaneResponse status bytes <- first AuthorityProviderTransportFailed response
     decoded <-
       first
-        AuthorityProviderResponseInvalid
+        ( \err ->
+            AuthorityProviderResponseInvalid
+              err
+              (classifyAuthorityProviderResponse status bytes)
+        )
         ( decodeControlPlaneResponse
             providerDispatchResponseMaximumBytes
             (LazyByteString.fromStrict bytes)

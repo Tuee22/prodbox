@@ -220,8 +220,11 @@ S3 object is ciphertext rather than a directly materializable certificate. Under
 - cert-manager/ZeroSSL remains the public-edge issuer and native Vault PKI owns internal certs. The
   selected Target Secret Agent's one-shot worker reads/encrypts the exact TLS Secret; the retained
   home Agent's dedicated `prodbox-tls-envelope` Transit lane wraps/unwraps the DEK; and the TLS
-  Retention Adapter sees only envelope ciphertext and validated metadata. Implementation and live
-  proof status remain solely in the Development Plan.
+  Retention Adapter sees only envelope ciphertext and validated metadata. Before restore, chart
+  orchestration creates only a marked exact-name empty TLS slot without reading it; the selected
+  worker validates and resource-version-CAS patches that slot through exact-name `get`/`patch`,
+  with no namespace-wide create, then reads the restored material back before issuance.
+  Implementation and live proof status remain solely in the Development Plan.
 
 See [vault_doctrine.md §11](./vault_doctrine.md#11-tls-and-pki-under-vault) and
 [acme_provider_guide.md](./acme_provider_guide.md).
@@ -750,6 +753,12 @@ The supported public-edge diagnostic surface classifies:
 
 The supported success state for `prodbox edge status` is
 `CLASSIFICATION=ready-for-external-proof`.
+
+The canonical bounded readiness wait consumes one closed subprocess-observation classifier. A
+successful status with any other classification remains pending. The exact home Gateway-DNS
+write-authority-not-ready diagnostic is also pending because it is a point-in-time observation
+during post-restore authority convergence. Every other nonzero result remains terminal; in
+particular, record-binding mismatch and unreadable state are not treated as readiness delay.
 
 The `certificate-renew-due` and `certificate-expired` rungs are purely observational: prodbox reads
 cert-manager's `status.renewalTime` (renew-due) and `notAfter` (expired) and never recomputes a

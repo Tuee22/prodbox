@@ -24,10 +24,14 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.List qualified as List
 import Data.Text (Text)
 import Data.Word (Word16)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler (..)
+  , AuthenticatedRolePlainResponseCause (AuthenticatedRoleReplayUnavailable)
+  , AuthenticatedRolePlainResponseObservation (AuthenticatedRolePlainResponseKnown)
+  , authenticatedRolePlainResponse
   )
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   ( AuthorityAdmissionRepository (..)
@@ -35,12 +39,18 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   )
 import Prodbox.ControlPlane.AuthorityProviderEndpoint
   ( AuthorityProviderDispatchBoundary (..)
+  , AuthorityProviderResponseObservation (..)
+  , AuthorityProviderResponseShapeObservation (..)
+  , AuthorityProviderResponseSizeObservation (..)
+  , AuthorityProviderResponseStatusObservation (..)
   , ProviderDispatchLane (ProviderAdmitAndExecute, ProviderAdmitOnly)
   , ProviderDispatchPayload (..)
   , ProviderDispatchResponse (..)
   , authorityProviderDispatchAuthenticatedHandler
+  , classifyAuthorityProviderResponse
   , providerDispatchFormatVersion
   , providerDispatchResponseMaximumBytes
+  , renderAuthorityProviderResponseObservation
   )
 import Prodbox.ControlPlane.CallerPrincipal
   ( CallerPrincipal (CallerOperatorCli, CallerService)
@@ -48,6 +58,7 @@ import Prodbox.ControlPlane.CallerPrincipal
 import Prodbox.ControlPlane.Codec
   ( decodeControlPlaneResponse
   , encodeControlPlaneRequest
+  , encodeControlPlaneResponse
   )
 import Prodbox.ControlPlane.Coordinate (AuthorityScope, mkAuthorityScope)
 import Prodbox.ControlPlane.ProviderWorkerExecution
@@ -72,6 +83,7 @@ import Prodbox.ControlPlane.RoleReadiness (noRoleReadinessContribution)
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (LifecycleProviderDispatch)
   )
+import Prodbox.Http.ReplyStatus (replyStatusCode)
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , AuthorityAdmissionCommand (ApplyAuthorityGenesis)
@@ -167,10 +179,83 @@ controlPlaneAuthorityProviderDispatchLaneSuite =
       response `shouldSatisfy` isRefused
       executions <- readIORef (fixtureWorkerCalls fixture)
       executions `shouldBe` 0
+
+    it
+      "AUTHORITY-PROVIDER-DISPATCH-RESPONSE-INVALID-2026-09-06 classifies response shape without retaining values"
+      $ do
+        let responseA = ProviderDispatchRefused "private-provider-response-a"
+            responseB = ProviderDispatchRefused "different-private-provider-response-b"
+            encoded value = LazyByteString.toStrict (encodeControlPlaneResponse value)
+            classify = classifyAuthorityProviderResponse 200
+            direct = classify (encoded responseA)
+            endpointA =
+              classify
+                (encoded (Right responseA :: Either Text ProviderDispatchResponse))
+            endpointB =
+              classify
+                (encoded (Right responseB :: Either Text ProviderDispatchResponse))
+            endpointFailureA =
+              classify
+                (encoded (Left "private-endpoint-a" :: Either Text ProviderDispatchResponse))
+            endpointFailureB =
+              classify
+                (encoded (Left "private-endpoint-b" :: Either Text ProviderDispatchResponse))
+            (plainStatus, plainBody) =
+              authenticatedRolePlainResponse AuthenticatedRoleReplayUnavailable
+            plain =
+              classifyAuthorityProviderResponse (replyStatusCode plainStatus) plainBody
+            tokens =
+              fmap
+                renderAuthorityProviderResponseObservation
+                [ direct
+                , endpointA
+                , endpointFailureA
+                , plain
+                , classify ByteString8.empty
+                , classify "private-other-a"
+                ]
+        direct
+          `shouldBe` observation
+            AuthorityProviderResponseStatusSuccess
+            AuthorityProviderResponseSizeWithinBound
+            AuthorityProviderResponseShapeDirect
+        endpointA
+          `shouldBe` observation
+            AuthorityProviderResponseStatusSuccess
+            AuthorityProviderResponseSizeWithinBound
+            AuthorityProviderResponseShapeEndpointSuccess
+        endpointB `shouldBe` endpointA
+        endpointFailureA
+          `shouldBe` observation
+            AuthorityProviderResponseStatusSuccess
+            AuthorityProviderResponseSizeWithinBound
+            AuthorityProviderResponseShapeEndpointFailure
+        endpointFailureB `shouldBe` endpointFailureA
+        plain
+          `shouldBe` observation
+            AuthorityProviderResponseStatusServerError
+            AuthorityProviderResponseSizeWithinBound
+            ( AuthorityProviderResponseShapeAuthenticatedPlain
+                (AuthenticatedRolePlainResponseKnown AuthenticatedRoleReplayUnavailable)
+            )
+        classify ByteString8.empty
+          `shouldBe` observation
+            AuthorityProviderResponseStatusSuccess
+            AuthorityProviderResponseSizeEmpty
+            AuthorityProviderResponseShapeEmpty
+        classify "private-other-a" `shouldBe` classify "different-private-other-b"
+        List.nub tokens `shouldBe` tokens
  where
   isRefused response = case response of
     ProviderDispatchRefused _ -> True
     _ -> False
+
+  observation status size shape =
+    AuthorityProviderResponseObservation
+      { authorityProviderResponseStatusObservation = status
+      , authorityProviderResponseSizeObservation = size
+      , authorityProviderResponseShapeObservation = shape
+      }
 
 -- ---------------------------------------------------------------------------
 -- The fixture

@@ -16,6 +16,9 @@ storage:
     rootdirectory: /
   delete:
     enabled: true
+maintenance:
+  readonly:
+    enabled: false
 http:
   addr: :5000
 health:

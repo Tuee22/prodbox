@@ -9,7 +9,8 @@
 -- the object-store cipher/HMAC inputs from Vault; tests use the explicit hook
 -- seam below.
 module Prodbox.Pulumi.EncryptedBackend
-  ( CheckpointObservability (..)
+  ( CheckpointCommitDecision (..)
+  , CheckpointObservability (..)
   , EncryptedBackendError (..)
   , EncryptedBackendHooks (..)
   , LegacyPulumiBackend (..)
@@ -17,6 +18,7 @@ module Prodbox.Pulumi.EncryptedBackend
   , PulumiStackRef (..)
   , classifyCheckpointBytes
   , collectScratchCheckpoint
+  , decideCheckpointCommit
   , canonicalizeLegacyPulumiCheckpoint
   , exportLegacyPulumiCheckpoint
   , fileBackendEnvironment
@@ -627,39 +629,110 @@ withAuthorityCheckpointStack clients maybeLegacy allowRetirement authorizeCommit
           Right () -> do
             actionResult <- action scratch
             collected <- collectScratchCheckpoint scratch
+            let commit checkpointBytes = do
+                  authorized <- authorizeCommit
+                  case authorized of
+                    Left detail ->
+                      pure
+                        ( Left
+                            ( EncryptedBackendStoreFailed
+                                ("checkpoint commit refused: " ++ detail)
+                            )
+                        )
+                    Right () -> do
+                      persisted <-
+                        persistAuthorityCheckpoint
+                          clients
+                          (authorityLoadedExpectedDigest loaded)
+                          checkpointBytes
+                      case persisted of
+                        Left detail -> pure (Left (EncryptedBackendStoreFailed detail))
+                        Right () ->
+                          finalizeAuthorityAction
+                            maybeLegacy
+                            (authorityLoadedFromLegacy loaded)
+                            actionResult
             case collected of
               Left detail -> pure (Left (EncryptedBackendCollectFailed detail))
-              Right Nothing
-                | not allowRetirement ->
-                    pure
-                      ( Left
-                          ( EncryptedBackendStoreFailed
-                              "fenced desired-present reconcile produced no checkpoint; Authority retirement is not permitted"
-                          )
-                      )
-              Right checkpointBytes -> do
-                authorized <- authorizeCommit
-                case authorized of
-                  Left detail ->
-                    pure
-                      ( Left
-                          ( EncryptedBackendStoreFailed
-                              ("checkpoint commit refused: " ++ detail)
-                          )
-                      )
-                  Right () -> do
-                    persisted <-
-                      persistAuthorityCheckpoint
-                        clients
-                        (authorityLoadedExpectedDigest loaded)
-                        checkpointBytes
-                    case persisted of
-                      Left detail -> pure (Left (EncryptedBackendStoreFailed detail))
-                      Right () ->
-                        finalizeAuthorityAction
-                          maybeLegacy
-                          (authorityLoadedFromLegacy loaded)
-                          actionResult
+              Right collectedBytes ->
+                case decideCheckpointCommit
+                  allowRetirement
+                  (actionFailureDetail actionResult)
+                  collectedBytes of
+                  RefuseRetirementUnpermitted detail ->
+                    pure (Left (EncryptedBackendStoreFailed detail))
+                  RefuseRetirementAfterFailedAction detail ->
+                    pure (Left (EncryptedBackendActionFailed detail))
+                  CommitCheckpointBytes bytes -> commit (Just bytes)
+                  CommitCheckpointRetirement -> commit Nothing
+
+-- | What the checkpoint transaction is permitted to do with the state the
+-- scratch backend left behind.
+--
+-- Retirement deletes the Authority's only record of a stack, so it is the one
+-- outcome here that can strand live cloud resources.  Keeping the four answers
+-- apart in a type means a caller cannot reach retirement by falling through a
+-- @Maybe@ it did not examine.
+data CheckpointCommitDecision
+  = -- | Write these bytes back.  This is also the answer for a mutation that
+    -- failed part-way: the collected state records the deletions that /did/
+    -- land, and discarding it would lose that progress.
+    CommitCheckpointBytes !ByteString
+  | -- | The scratch backend holds no stack and the run earned the right to say
+    -- so.  Only this constructor authorizes retirement.
+    CommitCheckpointRetirement
+  | -- | This transaction may never retire (a fenced desired-present reconcile).
+    RefuseRetirementUnpermitted !String
+  | -- | The scratch backend holds no stack, but the action that was supposed to
+    -- empty it failed, so its emptiness is not evidence of anything.
+    RefuseRetirementAfterFailedAction !String
+  deriving (Eq, Show)
+
+-- | Pure: decide the fate of the retained checkpoint.
+--
+-- The rule that matters is the third clause.  'collectScratchCheckpoint'
+-- answers 'Nothing' both when @pulumi stack rm@ removed the state file after a
+-- clean destroy and when the action never got far enough to write one, and
+-- those are different facts.  Reading the second as the first retires the
+-- checkpoint for a stack whose AWS resources are still running; the next
+-- @cluster delete --cascade@ then observes @CheckpointAbsent@, maps it to
+-- @ResidueAbsent@, skips the destroy and reports the phase clean — permanently,
+-- because the evidence that would contradict it has been deleted.  That is the
+-- 2026-09-07 post-mortem: a live EKS cluster and VPC survived a cascade whose
+-- @per-run destroys@ phase reported success.
+--
+-- So an absent scratch checkpoint is a retirement only when the action
+-- succeeded.  Present bytes are always written back, failed action or not,
+-- because partial progress is what makes the next attempt resumable.
+decideCheckpointCommit
+  :: Bool
+  -- ^ Whether this transaction may retire at all.
+  -> Maybe String
+  -- ^ The action's failure detail; 'Nothing' when it succeeded.
+  -> Maybe ByteString
+  -- ^ The checkpoint collected from scratch.
+  -> CheckpointCommitDecision
+decideCheckpointCommit allowRetirement actionFailure collected =
+  case collected of
+    Just bytes -> CommitCheckpointBytes bytes
+    Nothing
+      | not allowRetirement ->
+          RefuseRetirementUnpermitted
+            "fenced desired-present reconcile produced no checkpoint; Authority retirement is not permitted"
+      | Just detail <- actionFailure ->
+          RefuseRetirementAfterFailedAction
+            ( detail
+                ++ " (the retained Pulumi checkpoint was PRESERVED, not retired: "
+                ++ "this action left no scratch checkpoint, but it failed, so its "
+                ++ "absence is not evidence that the stack is gone. Resolve the "
+                ++ "failure and retry; the stack's state is intact.)"
+            )
+      | otherwise -> CommitCheckpointRetirement
+
+-- | The action's failure detail, or 'Nothing' when it succeeded. Keeps
+-- 'decideCheckpointCommit' pure and independent of the action's result type.
+actionFailureDetail :: Either String a -> Maybe String
+actionFailureDetail = either Just (const Nothing)
 
 loadAuthorityCheckpoint
   :: AuthorityCheckpointClients

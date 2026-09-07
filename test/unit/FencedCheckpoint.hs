@@ -15,6 +15,7 @@ import Data.IORef
   , readIORef
   , writeIORef
   )
+import Data.List (isInfixOf)
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
   , ModelBCasAdapter (..)
@@ -43,8 +44,10 @@ import Prodbox.Lifecycle.Lease
   , mkOwnerNonce
   )
 import Prodbox.Pulumi.EncryptedBackend
-  ( EncryptedBackendError (..)
+  ( CheckpointCommitDecision (..)
+  , EncryptedBackendError (..)
   , PulumiStackRef (..)
+  , decideCheckpointCommit
   , withFencedDecryptedStackEnvironment
   )
 import TestSupport
@@ -56,7 +59,8 @@ data FakeCheckpointStore = FakeCheckpointStore
   }
 
 fencedCheckpointSuite :: SuiteBuilder ()
-fencedCheckpointSuite =
+fencedCheckpointSuite = do
+  checkpointRetirementSuite
   describe "Sprint 4.47 fenced Pulumi checkpoint writeback" $ do
     it "initializes a missing checkpoint only after commit authorization" $ do
       stateRef <- newStore ModelBMissing False
@@ -229,3 +233,43 @@ expectRight :: (Show error) => Either error value -> value
 expectRight result = case result of
   Right value -> value
   Left err -> error ("expected Right, got " ++ show err)
+
+-- | The 2026-09-07 post-mortem: a cascade retired the @aws-eks@ checkpoint after
+-- a destroy that never removed anything, so every later run observed
+-- @CheckpointAbsent@, mapped it to @ResidueAbsent@, skipped the destroy and
+-- reported the phase clean while an EKS cluster and VPC stayed live. These pin
+-- the rule that stops it: an empty scratch backend is a retirement only when the
+-- action that emptied it succeeded.
+checkpointRetirementSuite :: SuiteBuilder ()
+checkpointRetirementSuite =
+  describe "checkpoint retirement requires a successful action" $ do
+    it "retires when retirement is permitted and the action succeeded" $
+      decideCheckpointCommit True Nothing Nothing
+        `shouldBe` CommitCheckpointRetirement
+
+    it "REFUSES to retire when the action failed and left no checkpoint" $
+      case decideCheckpointCommit True (Just "pulumi destroy exited 255") Nothing of
+        RefuseRetirementAfterFailedAction detail -> do
+          detail `shouldSatisfy` isInfixOf "pulumi destroy exited 255"
+          detail `shouldSatisfy` isInfixOf "PRESERVED"
+        other ->
+          expectationFailure
+            ("a failed action must never retire the checkpoint, got " ++ show other)
+
+    it "writes collected bytes back even when the action failed, so partial progress survives" $
+      decideCheckpointCommit True (Just "destroy failed part-way") (Just validCheckpoint)
+        `shouldBe` CommitCheckpointBytes validCheckpoint
+
+    it "never retires when the transaction forbids retirement" $ do
+      decideCheckpointCommit False Nothing Nothing
+        `shouldSatisfy` isUnpermitted
+      decideCheckpointCommit False (Just "boom") Nothing
+        `shouldSatisfy` isUnpermitted
+
+    it "still commits bytes when retirement is forbidden" $
+      decideCheckpointCommit False Nothing (Just validCheckpoint)
+        `shouldBe` CommitCheckpointBytes validCheckpoint
+ where
+  isUnpermitted decision = case decision of
+    RefuseRetirementUnpermitted _ -> True
+    _ -> False

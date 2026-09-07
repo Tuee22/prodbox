@@ -159,8 +159,8 @@ tlsTargetAgentPlainResponse cause = case cause of
   TlsTargetVerifyRequestRefused err ->
     tlsVerifyResponse (TlsTargetVerifyBadRequest err)
   TlsTargetVerifyMissingResponse -> tlsVerifyResponse TlsTargetVerifyMissing
-  TlsTargetVerifyMismatchResponse cause ->
-    tlsVerifyResponse (TlsTargetVerifyMismatch cause)
+  TlsTargetVerifyMismatchResponse mismatch ->
+    tlsVerifyResponse (TlsTargetVerifyMismatch mismatch)
   TlsTargetVerifyOneShotUnavailable ->
     (ReplyServiceUnavailable, "tls-target-verify:one-shot-operation-unavailable")
 
@@ -191,8 +191,8 @@ renderTlsTargetAgentPlainResponseCause cause = case cause of
   TlsTargetRestoreOneShotUnavailable -> "restore/one-shot-operation-unavailable"
   TlsTargetVerifyRequestRefused err -> "verify/request-refused/" <> codec err
   TlsTargetVerifyMissingResponse -> "verify/missing"
-  TlsTargetVerifyMismatchResponse cause ->
-    "verify/mismatch/" <> renderTlsTargetVerifyMismatchCause cause
+  TlsTargetVerifyMismatchResponse mismatch ->
+    "verify/mismatch/" <> renderTlsTargetVerifyMismatchCause mismatch
   TlsTargetVerifyOneShotUnavailable -> "verify/one-shot-operation-unavailable"
  where
   codec = controlPlaneRequestCodecToken

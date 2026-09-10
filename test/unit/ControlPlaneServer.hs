@@ -24,6 +24,7 @@ import Network.Socket
   , withSocketsDo
   )
 import Network.Socket.ByteString (recv, sendAll)
+import Prodbox.Capacity.ProviderWorkerBudget qualified as ProviderWorkerBudget
 import Prodbox.CheckCode (controlPlaneReplyStatusViolations)
 import Prodbox.ControlPlane.Capacity
   ( RejectionReason (RejectedDeadlineUnmeetable, RejectedSaturated)
@@ -59,6 +60,8 @@ import Prodbox.ControlPlane.RoleReadiness (constantRoleReadinessSource)
 import Prodbox.ControlPlane.Route (ControlPlaneRoute (LifecycleMigrationApply))
 import Prodbox.ControlPlane.Runtime
   ( controlPlaneCapacityPlan
+  , controlPlaneRequestBudget
+  , controlPlaneRequestBudgetFor
   , receiveControlPlaneRequest
   , refuseControlPlaneConnection
   , serveControlPlaneConnection
@@ -425,6 +428,15 @@ controlPlaneServerSuite =
       -- because a plan that merely validates says nothing about how much margin
       -- it validated with.
       fmap serviceCapacityUtilizationPpm controlPlaneCapacityPlan `shouldBe` Right 600000
+
+    it
+      "AUTHORITY-PROVIDER-DISPATCH-RESPONSE-INVALID-2026-09-06 contains the nested Provider response inside the Authority server budget"
+      $ do
+        controlPlaneRequestBudgetFor LifecycleAuthorityRuntime
+          `shouldBe` RemainingDuration
+            (fromIntegral ProviderWorkerBudget.providerWorkerResponseTimeoutMicros)
+        controlPlaneRequestBudgetFor ProviderWorkerRuntime
+          `shouldBe` controlPlaneRequestBudget
 
     it "Sprint 4.68: a saturated accept path refuses 429 through the obligation" $ do
       -- The refusal is not a raw write. A connection the admission machine

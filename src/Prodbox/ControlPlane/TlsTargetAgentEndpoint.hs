@@ -234,6 +234,7 @@ data TlsHomeRewrapResult
   = TlsHomeRewrapped !TlsDekEnvelope
   | TlsHomeRewrapFailed !TlsTargetAgentError
   | TlsHomeRewrapBadRequest !ControlPlaneRequestCodecError
+  | TlsHomeRewrapCiphertextAuthenticationFailed
   deriving stock (Eq, Show)
 
 data TlsTargetRestoreRequest = TlsTargetRestoreRequest
@@ -640,6 +641,7 @@ tlsHomeRewrapHttpStatus result = case result of
   TlsHomeRewrapped _ -> ReplyOk
   TlsHomeRewrapFailed _ -> ReplyConflict
   TlsHomeRewrapBadRequest _ -> ReplyBadRequest
+  TlsHomeRewrapCiphertextAuthenticationFailed -> ReplyConflict
 
 tlsHomeRewrapResponseBody :: TlsHomeRewrapResult -> ByteString
 tlsHomeRewrapResponseBody result = case result of
@@ -647,6 +649,8 @@ tlsHomeRewrapResponseBody result = case result of
   TlsHomeRewrapFailed _ -> "tls-home-rewrap:failed"
   TlsHomeRewrapBadRequest err ->
     TextEncoding.encodeUtf8 ("tls-home-rewrap:bad-request:" <> controlPlaneRequestCodecToken err)
+  TlsHomeRewrapCiphertextAuthenticationFailed ->
+    "tls-home-rewrap:ciphertext-authentication-failed"
 
 tlsTargetRestoreHttpStatus :: TlsTargetRestoreResult -> ReplyStatus
 tlsTargetRestoreHttpStatus result = case result of

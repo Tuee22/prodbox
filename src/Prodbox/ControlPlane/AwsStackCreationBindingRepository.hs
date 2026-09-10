@@ -56,6 +56,7 @@ module Prodbox.ControlPlane.AwsStackCreationBindingRepository
   , confirmCommittedAwsStackCreationBindingReadBack
   , commitAwsStackCreationBindingAttempt
   , independentlyReadBackCommittedAwsStackCreationBinding
+  , readBackCommittedAwsStackCreationBindingForCreationScope
   , readBackCommittedAwsStackCreationBindingForScope
   , AwsStackCreationBindingClient (..)
   , lifecycleAuthorityAwsStackCreationBindingClient
@@ -628,6 +629,25 @@ readBackCommittedAwsStackCreationBindingForScope
   -> m (Either AwsStackCreationBindingError CommittedAwsStackCreationBinding)
 readBackCommittedAwsStackCreationBindingForScope client key cleanupScope =
   case identityFor ReconcileDesiredAbsent key cleanupScope of
+    Left err -> pure (Left err)
+    Right identity ->
+      readBackAwsStackCreationBindingByIdentity client identity
+
+-- | Read the committed creation binding back through its original creation
+-- scope.  This is deliberately distinct from
+-- 'readBackCommittedAwsStackCreationBindingForScope': a selected generation
+-- reconstructs a @ReconcileDesiredPresent@ scope, while a cleanup caller owns
+-- a @ReconcileDesiredAbsent@ scope.  Keeping the two entrypoints closed over
+-- their lifecycle operation prevents either role from silently accepting the
+-- other's evidence.
+readBackCommittedAwsStackCreationBindingForCreationScope
+  :: (Monad m)
+  => AwsStackCreationBindingClient m
+  -> RegisteredResourceKey
+  -> ObservationEvidenceScope
+  -> m (Either AwsStackCreationBindingError CommittedAwsStackCreationBinding)
+readBackCommittedAwsStackCreationBindingForCreationScope client key creationScope =
+  case identityFor ReconcileDesiredPresent key creationScope of
     Left err -> pure (Left err)
     Right identity ->
       readBackAwsStackCreationBindingByIdentity client identity

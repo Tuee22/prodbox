@@ -44,6 +44,7 @@ module Prodbox.Lifecycle.HostCleanupRunner
   , hostCleanupRunnerRegressionConcurrentLeaseFenced
   , hostCleanupRunnerRegressionSteppedTopology
   , hostCleanupRunnerRegressionStepStopsAtOnePhase
+  , hostCleanupRunnerRegressionProgressedPrepareResumes
   )
 where
 
@@ -72,7 +73,8 @@ import Prodbox.Lifecycle.CleanupRun
   )
 import Prodbox.Lifecycle.HostCleanupIntent
 import Prodbox.Lifecycle.HostCleanupIntent.Internal
-  ( transitionHostCleanupIntent
+  ( hostCleanupIntentSameBaseBinding
+  , transitionHostCleanupIntent
   , withHostCleanupExecutionLease
   )
 import Prodbox.Lifecycle.Teardown.CascadeEvidence
@@ -349,16 +351,22 @@ prepareHostCleanupRunner
 prepareHostCleanupRunner store expected = do
   prepared <- prepareHostCleanupIntent store expected
   observed <- observeHostCleanupIntent store
-  pure $ case observed of
-    Right (Just actual)
-      | actual == expected
+  pure $ case (prepared, observed) of
+    (Right exact, Right (Just actual))
+      | actual == exact
           && hostCleanupIntentPhase actual == HostCleanupPrepared ->
           Right actual
       | otherwise -> Left HostCleanupRunnerPreparedReadBackMismatch
-    Right Nothing -> case prepared of
-      Left err -> Left (HostCleanupRunnerIntentError err)
-      Right _ -> Left HostCleanupRunnerIntentMissing
-    Left err -> Left (HostCleanupRunnerIntentError err)
+    (Left HostCleanupIntentActiveConflict, Right (Just actual))
+      | hostCleanupIntentSameBaseBinding expected actual -> Right actual
+      | otherwise ->
+          Left
+            ( HostCleanupRunnerIntentError
+                HostCleanupIntentActiveConflict
+            )
+    (Left err, _) -> Left (HostCleanupRunnerIntentError err)
+    (Right _, Right Nothing) -> Left HostCleanupRunnerIntentMissing
+    (Right _, Left err) -> Left (HostCleanupRunnerIntentError err)
 
 -- | Bind the opaque Authority readiness witness to the complete host record.
 -- The uninstall operation is selected from the sealed CleanupRun graph, not
@@ -1100,6 +1108,7 @@ data HostCleanupRunnerRegression = HostCleanupRunnerRegression
   , hostCleanupRunnerRegressionConcurrentLeaseFenced :: !Bool
   , hostCleanupRunnerRegressionSteppedTopology :: !Bool
   , hostCleanupRunnerRegressionStepStopsAtOnePhase :: !Bool
+  , hostCleanupRunnerRegressionProgressedPrepareResumes :: !Bool
   }
 
 fixedHostCleanupRunnerRegression
@@ -1169,6 +1178,11 @@ runFixedHostCleanupRunnerRegression run ready local complete otherReady =
             ready
             local
             complete
+        progressedPrepare <-
+          fixedProgressedPrepareScenario
+            (temporaryRoot </> "progressed-prepare")
+            intent
+            ready
         pure
           ( Right
               HostCleanupRunnerRegression
@@ -1184,6 +1198,8 @@ runFixedHostCleanupRunnerRegression run ready local complete otherReady =
                 , hostCleanupRunnerRegressionSteppedTopology = steppedTopology
                 , hostCleanupRunnerRegressionStepStopsAtOnePhase =
                     stoppedAtOnePhase
+                , hostCleanupRunnerRegressionProgressedPrepareResumes =
+                    progressedPrepare
                 }
           )
 
@@ -1360,6 +1376,38 @@ fixedSteppedScenario root intent run ready local complete = do
           Right (HostCleanupRunnerCompleted result) -> pure (Just result)
           Right (HostCleanupRunnerAdvanced _) ->
             driveSteps store effects (budget - 1)
+
+fixedProgressedPrepareScenario
+  :: FilePath
+  -> HostCleanupIntent
+  -> ReadyToUninstallEvidence
+  -> IO Bool
+fixedProgressedPrepareScenario root intent ready = do
+  storeResult <- fixedStoreAt root
+  case storeResult of
+    Left _ -> pure False
+    Right store -> do
+      prepared <- prepareHostCleanupRunner store intent
+      case prepared of
+        Left _ -> pure False
+        Right exact -> do
+          bound <- persistHostCleanupReady store exact ready
+          case bound of
+            Left _ -> pure False
+            Right durable -> do
+              advanced <-
+                transitionHostCleanupIntent
+                  store
+                  durable
+                  HostCleanupAuthorityAccepted
+                  Nothing
+              replayed <- prepareHostCleanupRunner store intent
+              pure $ case (advanced, replayed) of
+                (Right expected, Right actual) ->
+                  actual == expected
+                    && hostCleanupIntentPhase actual
+                      == HostCleanupAuthorityAccepted
+                _ -> False
 
 -- | One more than the number of durable phases, so a stepping loop that failed
 -- to advance terminates instead of spinning.

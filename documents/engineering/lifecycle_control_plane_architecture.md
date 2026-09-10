@@ -118,6 +118,14 @@ but is not admitted while genesis is active. The plan then narrates the visible
 `EstablishAuthorityBackup` action. Before creating the Job, the pure planner compiles a bounded
 secret-free `FirstReconcileProvisioningPlan` from Tier-0 plus the managed identity registry: exact
 ordered action indices, identity/target/coordinate bindings, maximum count, and session deadline.
+The no-wait Authority Backup apply is separated from establishment by an exact requested-Deployment-
+revision observation only; `DeploymentAvailable` remains deferred until after credential-backed
+establishment. The establishment transport independently observes bounded `/healthz` listener
+liveness before it runs the genesis program. A successful establishment is then followed by a
+non-admitting requested-revision-plus-`DeploymentAvailable` barrier before Lifecycle Authority
+uses the Adapter's Kubernetes Service for config backup; Pod-local liveness does not imply Service
+EndpointSlice publication during a Recreate rollout. The graph-owned production admission remains
+after in-force settings load and repeats the full revision/availability proof there.
 Authority primary-journals the intent and issues a signed
 one-time `GenesisBackupPermit`, after which a separately resourced Credential Provisioner Job alone receives
 the ephemeral operator-admin prompt (or test-only automation fixture), performs the permit-bounded
@@ -1103,6 +1111,13 @@ declares no family for a capability's dependants the derivation answers *underiv
 *empty*: a dependant set that defaulted to empty would discharge trivially and would be
 indistinguishable from a capability that genuinely reaches nothing.
 
+For checkpoint custody, derivation starts from the descriptor's canonical registered resource key.
+The Provider-facing Pulumi stack ID is a separate execution coordinate and cannot select a
+custodial capability. This distinction is load-bearing for the registered `aws-eks` resource,
+whose Pulumi stack ID is `aws-eks-test`: registration, checkpoint lookup, disposition, and
+dependant derivation all retain `aws-eks`, while the alias is unrecognized outside Provider
+execution.
+
 **A disposition is consumed where custody ends, and the program is ordered so it can be.** The
 proof a disposition carries is a fact the run establishes earlier — a dependant absence it read
 back, an object it observed empty — so the node that ends custody must not be reachable before the
@@ -1353,8 +1368,17 @@ The bounded transaction is:
 4. the Job uses that in-memory admin session to execute only the permit's deterministic S3/IAM
    create/observe/delete/remint algebra. It observes the finite key inventory before creation; an
    applied-but-response-lost key is deleted, observed stably absent, and reminted rather than
-   blindly retried. It then presents the permit, its verified workload attestation, and the new
-   backup credential directly to the home Agent over the permit-bound channel;
+   blindly retried. A nonempty inventory on the initial exceptional Genesis attempt follows that
+   same journaled cleanup-required, bounded delete, stable-absence, and one-remint path because the
+   permit owns the exact deterministic backup identity. The journal admits that edge only from an
+   initial `GenesisBackupKind` intent with the unspent recovery flag. An exact normal permit for a
+   remaining retained first-reconcile plan member has the same bounded authority over that
+   member's deterministic identity. A plan-unbound post-first-reconcile initial install still
+   refuses nonempty inventory and cannot claim or delete pre-existing keys; backup repair remains
+   outside this edge, and a nonempty remint refuses because its single cleanup/remint budget is
+   already spent. The Job then presents
+   the permit, its verified workload attestation, and the new backup credential directly to the
+   home Agent over the permit-bound channel;
 5. the Agent verifies Transit signature/key generation, expiry, Authority and Provisioner
    attestations, primary generation, nonce/intent digest, target identity/path, and deterministic
    AWS/Adapter coordinates. In one CAS/read-back at
@@ -1415,25 +1439,39 @@ bounded reconcile attempt plus one immediate unchanged retry, not for four isola
 only the first attempt. Each attempt contains the hard eight-member first-reconcile envelope of 56
 requests followed by the exact config observe, propose/read-back, retained-root-marker observation,
 and in-force-load requests, for a compiled capacity of `2 * (56 + 4) = 120` inside the five-minute request lifetime plus one-minute
-skew horizon. The Authority Backup Adapter has its own compiled envelope: a complete attempt can
-make three aggregate repair calls and six config-backup calls, so it retains
-`2 * (3 + 6) = 18`. The Target Secret Agent's complete qualification envelope is five requests for
-provider-credential/source recovery and retained delivery, eight for TLS retention's four one-shot
-calls plus their four Authority trust installations, six for restore's three one-shot calls plus
-trust installations, eight for the retain-on-ready capture, and two additional calls when the
-one-time pre-outbox adoption replaces ordinary home wrap with selected prepare, home rewrap, and
-selected restore. It therefore retains `2 * (5 + 8 + 6 + 8 + 2) = 58`, with a distinct 118 MiB
-encoded ceiling for 58 accepted 2 MiB responses plus replay metadata. The Vault listener's finite
-160 MiB request ceiling covers the projection's
-at-most 157.34 MiB Base64 expansion plus its bounded KV JSON envelope. TLS Retention and Provider
-Worker remain at generic capacity four and the 12 MiB encoded ceiling. A capacity increase is a
-retained codec migration: only canonical v2/v3/v4/v5/v6/v7/v8 bytes with identical response-size and
-clock-skew limits and a capacity no greater than the role's compiled target are admitted; all
-entries survive and the next successful CAS writes v9 with the current target capacity. The
+skew horizon. The Authority Backup Adapter has its own qualification envelope: the nine-request
+ordinary reconcile plus four recovery-boundary observations precede the cascade; its 59-node
+candidate then uses eight registration, six claim, six primary-outcome, eight-per-node
+begin/complete-custody, and thirteen terminal custody/tombstone/read-back requests. It therefore
+retains `2 * (13 + 8 + 6 + 6 + 59 * 8 + 13) = 1036`, preserving an interrupted first prefix while
+admitting one immediate unchanged retry. The exact compiled cascade aggregate remains below 24 KiB
+at every transition, and a separate 32 MiB encoded ceiling covers two complete envelopes plus replay
+metadata. The Target Secret Agent's complete qualification envelope is 34 requests: one provider-
+credential observation, one committed-source recovery observation, three retained-delivery
+requests, the complete retain/restore/retain-on-ready TLS envelope, the two-request legacy-adoption
+plus three-request immutable-version recovery maxima, and two net requests when an unopenable exact
+version-2 collision stages fresh fixed-version-3 bytes. It therefore retains `2 * 34 = 68`, with a
+distinct 138 MiB encoded ceiling for 68 accepted 2 MiB responses plus replay metadata. The Vault
+listener's finite 192 MiB request ceiling covers the projection's Base64 expansion plus its bounded
+KV JSON envelope. Provider Worker derives `2 * (1 + 6 * 4 + 3 + 7 + 5) = 80`: one AWS-scope
+proof; observe/reconcile-observe/mutate/read-back for six Provider-mutated non-EKS registered
+families; three Provider observations around the Kubernetes-owned DNS01 deletion; seven requests
+across EKS observation, drain, destroy, and read-back; five terminal-audit queries; and one
+immediate unchanged retry. Its replay response limit is the same 64 KiB limit already enforced by
+the Provider client, and 80 maximum responses plus metadata fit under the unchanged 12 MiB encoded
+ceiling. TLS Retention remains at generic capacity four and the 12 MiB encoded ceiling. A limit
+change is a retained codec migration: canonical v2 through v12 bytes are admitted only when stored
+capacity is no greater than the role's compiled target, stored response maximum is no smaller than
+the new maximum, clock skew is identical, and every retained response validates under the new
+maximum. All entries survive and the next successful CAS writes v13 with the current limits. The
 encoded and Vault-request ceilings may widen only to the new compiled finite bounds. Capacity
-shrink, response/skew drift, corruption, or deleting replay evidence to make room fails closed. An
+shrink, response-limit widening, clock-skew drift, an oversized retained response, corruption, or
+deleting replay evidence to make room fails closed. An
 outer authentication/replay HTTP refusal is classified before an endpoint response
-decoder, so a non-CBOR replay refusal cannot masquerade as an invalid endpoint payload.
+decoder, so a non-CBOR replay refusal cannot masquerade as an invalid endpoint payload. The
+Provider Worker client applies that total exact status/body classifier only after its canonical
+response decoder fails, retains only the closed observation, and leaves unmatched plaintext as a
+codec failure; classification changes no Provider, replay, or retry behavior.
 
 The protected AWS-admin prepare response names a closed stage/cause rather than asserting that
 every failure is an outbox failure. Authority-time observation, initial and confirmation admission
@@ -1535,7 +1573,24 @@ declared/runtime-image shape or digest, annotation binding, named ServiceAccount
 Kubernetes/response/name/namespace/UID failure, or `other`. Pod JSON, annotation names/values,
 image identities, UIDs, subprocess text, and Kubernetes responses are not renderable. Raw status
 integers, response text, Kubernetes errors, identities, annotation values, and retained values are
-discarded. This refinement changes no delivery call,
+discarded. TLS materialization refusals further retain only their operation and closed typed cause:
+home rewrap distinguishes request decoding, a non-DEK defensive other arm, and every finite
+DEK-exchange constructor; lengths, versions, cipher errors, Transit detail, and codec values are
+erased. Retain and restore use their own finite Target-agent vocabularies. Arbitrary worker refusal
+detail collapses to `materialization-refused/other`. A retained-home unwrap refusal additionally
+preserves one value-free `TlsDekTransitFailure`: session acquisition or relogin class (sealed,
+forbidden, or unavailable), exact common request statuses (400, 401, 403, 404, or 429), other
+client/server/unexpected status, connection, timeout, decode, or unexpected exception. The
+production boundary obtains this classification from `withSessionTokenDetailed`; HTTP response
+bodies at status 400 are decoded only as Vault's canonical singleton `errors` response and matched
+against the pinned Vault 1.18.3 Transit-decrypt grammar. Missing ciphertext, key absence,
+malformed/version-invalid or policy-too-old ciphertext, invalid convergent nonce, invalid length,
+and AEAD authentication failure have distinct value-free causes; malformed, multi-error, and
+unknown bodies collapse to `request-bad-request/other`. The body itself, status values outside the
+closed projection, session detail, exception text, tokens, ciphertexts, and transport addresses
+are erased. The exchange carries the typed cause through
+`TlsDekTransitUnwrapUnavailable`, and the protected worker allowlist is generated exhaustively from
+that finite type. This refinement changes no delivery call, Transit effect, policy,
 authentication, retry, worker creation, cleanup, remint, permit, journal, observation, or receipt
 behavior.
 
@@ -2160,7 +2215,7 @@ effect completion, source absence, or workload absence.
 ### 5.4 Retained TLS envelope workflow
 
 TLS retention uses the retained home trust root, never an ephemeral AWS Vault. Bootstrap baseline
-creates the non-exportable home Transit key `transit/keys/prodbox-tls-envelope`; only the home
+creates the non-exportable home Transit key `transit/keys/prodbox-tls-retention-dek`; only the home
 Target Secret Agent's envelope endpoint may request data-key generation or unwrap. The TLS
 Retention Adapter sees no Transit token, DEK, certificate plaintext, or private-key plaintext.
 
@@ -2185,7 +2240,7 @@ For retention after issuance or renewal:
 3. The retained home Agent's dedicated TLS-envelope lane starts its own one-shot bounded worker,
    asks retained-home Transit for a fresh plaintext/wrapped DEK pair, and encrypts the plaintext DEK
    to that selected worker's attested public key. Its Vault policy names only
-   `prodbox-tls-envelope`; it may briefly see a DEK but can never read a certificate Secret.
+   `prodbox-tls-retention-dek`; it may briefly see a DEK but can never read a certificate Secret.
    Authority sees only the wrapped DEK, encrypted-to-Agent DEK, attestations, and typed receipt. The
    selected worker decrypts the DEK and encrypts the bounded certificate/key bytes locally.
 4. Authority receipt-commits a retention outbox containing only certificate ciphertext, the
@@ -2224,6 +2279,42 @@ response-lost put is recovered by exact object version/digest observation under 
 it is never uploaded again under a new operation. Restore names the receipt-committed current ref
 and exact immutable version—not S3 `latest`, list order, or a caller-selected key.
 
+One pre-outbox compatibility state is narrower than ordinary adoption. A fresh Authority aggregate
+that observes occupied immutable version 1 first attempts the normal decrypt, selected-Agent apply,
+and exact source read-back. Only the authenticated, value-free
+`home-rewrap-ciphertext-authentication-failed` result proves that the version-1 wrapped DEK cannot
+authenticate under the current retained-home `prodbox-tls-retention-dek` key. If the current source
+Secret is still present, the workflow obtains a fresh DEK, retains that exact source as immutable
+version 2, and performs one Authority CAS that records both the abandoned version-1 envelope digest
+and the complete version-2 pending outbox before the Adapter PUT. The recovery-pending state has no
+restorable predecessor and authorizes neither restore nor issuance; response loss may resume only
+the byte-identical version-2 pending outbox. If and only if that immutable PUT returns the closed
+conflict/confirmation-bytes-mismatch result, the workflow observes exact version 2—never a list or
+`latest`. Canonical occupied bytes normally decrypt through the retained-home Agent, apply through
+the selected Agent, and read back the identical certificate/source binding. One further Authority
+CAS then records both conflicting version-2 digests and replaces the outbox only when legacy
+evidence, approval, version, certificate, and source are unchanged. This collision-pending state
+likewise has no current or predecessor and grants no restore or issuance authority. Exact Adapter
+read-back and exact source re-observation are still required before version 2 promotes to current.
+
+If and only if the exact observed version-2 wrapped DEK instead returns authenticated
+`home-rewrap-ciphertext-authentication-failed`, the workflow may abandon that object without
+asserting its certificate/source metadata and construct one fixed version-3 successor. It retains
+the still-present exact source again through the selected Agent, producing fresh certificate
+ciphertext because retention version is part of the AEAD associated data, and wraps the fresh DEK
+under the current retained-home Transit key. Before any version-3 Adapter PUT, Authority CAS-stages
+a successor-pending state containing the version-1 evidence, both version-2 collision digests, the
+displaced version-2 approval/candidate identity, and the complete version-3 outbox. The displaced
+and successor approval, certificate, and source must match. That state grants no current,
+predecessor, restore, or issuance authority; ordinary exact Adapter read-back, exact source
+re-observation, and promotion remain mandatory. A different version-3 immutable occupant or any
+attempt to advance to version 4 refuses.
+
+A nonempty Authority state outside these exact recovery states, changed binding/evidence,
+missing/corrupt version-2 bytes, every other Adapter, Target, or Vault result, or unobservable state
+refuses. Recovery never overwrites or deletes an immutable object and never lists or selects
+`latest`; versions 1 and 2 are never applied or promoted in the successor branch.
+
 The concrete durable pending value is ciphertext-only and contains the previous committed
 reference, the stored key-rotation approval, the exact candidate reference, and the exact sealed
 envelope. A retry that observes pending ignores a newly supplied approval and performs no fresh
@@ -2245,6 +2336,31 @@ the same source witness. Authority then stages those already-existing bytes, con
 the normal immutable store boundary, re-observes the source, and promotes. Corrupt or unobservable
 bytes, a missing or changed source, failed AAD/identity validation, or a non-idempotent read-back
 refuses without staging the candidate.
+
+That compatibility inspection is a genesis-only transition: it requires `TlsRetentionEmpty`.
+Once Authority has promoted any current reference, the next retention version is generated and
+staged directly in the Authority lane; a same-numbered object surviving in the legacy lane is
+neither observed nor eligible for adoption. This prevents unrelated pre-outbox history from being
+combined with the newly observed live source after cutover, while an interrupted pending Authority
+outbox continues to replay its exact bytes before either branch is considered.
+
+That exact-key compatibility GET is confined to the legacy lane. The established single-field
+observe payload and its canonical bytes remain unchanged. Every Authority-owned immutable PUT,
+confirmation read-back, current restore, and collision observation instead uses the disjoint
+`authority-v1/versions/<n>.envelope` lane selected by an explicit lane-tagged payload on the same
+authenticated route. The Adapter still accepts no caller-selected object name. A persisted
+successor outbox interrupted before the split therefore resumes its byte-identical envelope in the
+Authority lane; it neither guesses another version nor rewrites or deletes an occupied legacy
+object.
+
+That missing-source refusal has its own appended payload-free Authority-workflow response arm; it
+is not collapsed with source mismatch, changed-source adoption, or selected-Agent unavailability.
+Only chart pre-delete may consume the exact missing-source arm, and only after it has already proved
+the namespace and exact-name Agent access: its separate non-secret exact-name Certificate
+observation classifies the partial state as issuance deferred or explicitly nothing to retain.
+Every mismatch/unobservable arm remains a terminal refusal, and retain-on-ready treats even exact
+source absence as terminal because it conflicts with the preceding Ready observation. Existing
+wire constructors retain their prior order; the new closed arm is appended.
 
 TLS Adapter credential binding is eager and has its own payload-free startup projection over
 coordinate/configuration refusal, credential read, and missing or empty access-key, secret-key,
@@ -2451,7 +2567,7 @@ Each substrate runs a Target Secret Agent with:
   `ExecuteTargetDecommissionTombstone` can use it, and completion requires typed absence read-back;
 - separate `TlsSecret*` Kubernetes-RBAC capabilities for enumerated TLS Secret identities, never
   conflated with Vault KV CAS; on home, a separately queued `TlsEnvelopeKeyExchange` lane limited to
-  the exact `prodbox-tls-envelope` Transit key;
+  the exact `prodbox-tls-retention-dek` Transit key;
 - on home only, a separately queued one-shot retained-material custody/rewrap lane limited to the
   non-exportable custody Transit key, the two closed SMTP/EAB schemas, exact receipt references, and
   attested target envelopes; it cannot export plaintext or address another Vault path;
@@ -2873,7 +2989,7 @@ Boundary modules contain mutable cells, sockets, clients, workers, and credentia
 | Operator material fold | Lifecycle Authority target-sealing/outbox adapter |
 | Target generation and exceptional permit fold | Target Secret Agent exact receipt/target-KV and Transit adapter |
 | `TlsSecret*` programs | Selected Target Agent's exact Kubernetes-Secret lane and one-shot secret worker; never its generic Vault-KV lane |
-| `TlsEnvelopeKeyExchange` | Retained home Target Agent's dedicated `prodbox-tls-envelope` Transit lane and one-shot DEK worker |
+| `TlsEnvelopeKeyExchange` | Retained home Target Agent's dedicated `prodbox-tls-retention-dek` Transit lane and one-shot DEK worker |
 | Emitter `stepEmitter` | Single actor, native continuity store, peer publisher |
 | Registered DNS record plan | Gateway DNS adapter or fenced authority provider worker, as fixed by resource ownership |
 | Cleanup DAG | Lifecycle Authority cleanup journal/recovery worker plus substrate/lifecycle node interpreters; TestRunner is a client |
@@ -2940,6 +3056,11 @@ completion, producing a finite 330-second HTTP response budget; both the host-to
 and Authority-to-Provider client consume that same typed bound for execute and
 admit-and-execute. Admission-only stays on the generic Authority budget because it starts no
 Provider effect. Capacity validation rejects any Provider profile above that admitted maximum. The
+Lifecycle Authority server's accepted-connection envelope also uses that 330-second upper bound:
+it contains the nested Provider response and retains enough time to encode an exact Authority
+result if the Provider Worker's unchanged 300-second server envelope returns a terminal timeout.
+Every sibling role keeps the established 300-second server envelope, and their shorter clients
+remain unchanged. The
 retained-material delivery route likewise owns
 one five-minute persisted operation lifetime plus 30 seconds of response overhead, and both its
 host EAB client and in-cluster SES worker client project that same 330-second bound. The generic
@@ -3175,6 +3296,32 @@ the client API. Both the bounded namespace and every active revision require an 
 Authority Backup receipt before their primary CAS; scan repairs a missing per-run primary from the
 complete indexed plan before returning it to the recovery worker.
 
+Terminal observation and compaction are distinct. The entry client independently reads and returns
+the exact backup-receipted live terminal revision while its lease-plus-retention window remains
+live. It does not issue a compaction request that the Authority must refuse. At or after the exact
+eligibility boundary, the same fold compacts to the immutable report blob and non-reusable
+tombstone, then independently reads back the descriptor/report-digest binding. Deferral therefore
+neither clears the durable run nor promotes a nonterminal or failed result.
+
+A fresh cascade's deterministic descriptor carries its declared initial lease window relative to
+zero. The candidate therefore commits its intrinsic primary-success fact under that exact initial
+owner/fence before claiming the active epoch-time lease; claiming first would classify every fresh
+vacant primary as a lost predecessor. Once active, claiming an expired owner with a vacant primary
+slot records the typed runner-lost outcome. That fact is immutable: the cascade candidate resumes
+the cleanup nodes under the successor fence and retains runner-lost in the final report rather than
+trying to attach success. The recovery run can therefore converge external state to absence without
+being promoted into qualification evidence.
+
+Stack cleanup has two non-interchangeable retained Provider-configuration readers. Before the
+stack-reader bundle exists, initial exact observation and checkpoint recovery reconstruct the
+configuration only from the independently read-back stack-creation binding. After checkpoint
+recovery, the commit/read-back pair seals that configuration together with the recovered checkpoint
+pair and complete ownership manifest under the future reconcile operation. Reconcile and its final
+absence read-back alone consume that bundle, both by the reconcile operation identity; the final
+Provider observation still uses its own purpose-separated dispatch identity. This ordering removes
+the otherwise impossible dependency in which checkpoint recovery required a bundle it had to
+precede, without allowing either retained source to substitute for or repair the other.
+
 The cascade's three run-keyed retained slots — one run's accepted pre-uninstall readiness, its
 committed report identity, and its one-shot local-completion permit — are reachable from a host
 through the compiled route `/v1/authority/cascade-retained-slot` and through no other. That route is
@@ -3236,8 +3383,16 @@ same scope. A completed backup-receipted cleanup report permits the final local 
 incomplete run returns its stable `CleanupRunId` and a typed recovery-plane disposition. When
 profile establishment was positively confirmed, that disposition records the live profile and every
 still-needed credential; when establishment failed, it records the exact unavailable capability and
-must not claim the profile is live. The next cascade resumes the same run. Total loss of the retained
-trust root refuses and does not widen ordinary teardown into decommission.
+must not claim the profile is live. An interrupted nonterminal cascade resumes the same run. A
+terminal failure is immutable and cannot be resumed or rewritten as success: before a distinct
+operator attempt may occupy the single host-intent slot, registration must join the old intent to
+its authenticated descriptor-bound terminal report, durably archive the exact intent plus
+descriptor/report bindings, read that archive back, and only then remove the active link. A
+completed intent follows the same release ordering through its exact completion receipt. The
+candidate retires either form before report compaction, and an unobservable/nonterminal/foreign
+binding leaves the slot occupied. Re-entry into the same nonterminal run accepts only its exact
+base binding and resumes from the already-durable phase. Total loss of the retained trust root
+refuses and does not widen ordinary teardown into decommission.
 
 #### 11.0.1 Retained artifact authority
 
@@ -3271,6 +3426,11 @@ come from cannot render a plan. The substrate obligation is the only state-depen
 
 A rendered repair is a pure plan over one observed `LocalRke2RecoveryStateView`. It differs across
 states only in its substrate arm:
+
+The install observation uses the closed no-follow marker set emitted by the supported RKE2
+installer. Its unit-file marker is `/usr/local/lib/systemd/system/rke2-server.service`; the
+prodbox-owned `/etc/systemd/system/rke2-server.service.d` guardrail directory and the enabled
+wants-link are separate markers, not substitutes for that file.
 
 | Observed state | Substrate arm | Common arm |
 |---|---|---|

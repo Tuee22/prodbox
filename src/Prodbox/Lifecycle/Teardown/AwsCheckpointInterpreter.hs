@@ -269,8 +269,12 @@ readBackAwsStackCheckpointRecovery interpreter context target =
       case selected of
         Left err -> pure (Left err)
         Right (_, authority) -> do
+          -- The stack-reader bundle is produced only after this checkpoint
+          -- recovery node succeeds. Re-observe through the retained creation
+          -- binding here; the later target absence node is the first read-back
+          -- that may consume the reconcile-keyed bundle.
           exactResult <-
-            readBackAwsRegisteredTargetAbsent
+            observeAwsRegisteredTarget
               (awsCheckpointRegisteredTargetInterpreter interpreter)
               context
               target
@@ -288,12 +292,27 @@ readBackAwsStackCheckpointRecovery interpreter context target =
                       )
                   )
               ExactResourcePresent _ ->
-                readBackRestore authority attemptOperation
+                readBackCurrentOrRestored authority attemptOperation
               incomplete ->
                 pure (Left (AwsCheckpointTargetObservationIncomplete incomplete))
  where
   key = registeredTargetKey target
   scope = teardownExecutionObservationScope context
+
+  readBackCurrentOrRestored authority attemptOperation = do
+    current <- observeBoundCheckpointPair authority key scope
+    case current of
+      Left err -> pure (Left err)
+      Right bound ->
+        case confirmCheckpointRecoveryReadBack
+          attemptOperation
+          key
+          scope
+          (boundCheckpointPairObservation bound) of
+          Right evidence -> pure (Right evidence)
+          Left (CheckpointRestorePrimaryNotRecovered _ _) ->
+            readBackRestore authority attemptOperation
+          Left err -> pure (Left (AwsCheckpointRestoreInvalid err))
 
   readBackRestore authority attemptOperation = do
     observed <-

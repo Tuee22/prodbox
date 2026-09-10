@@ -14,6 +14,7 @@ module Prodbox.ControlPlane.TlsTargetAgentProduction
   , TlsSecretApplyDecision (..)
   , decideTlsSecretApply
   , tlsDekVaultBoundary
+  , classifyTlsDekTransitOperationError
   , tlsPublicEdgeSecretRestoreSlotManifest
   , isTlsPublicEdgeSecretRestoreSlot
   , parseTlsPublicEdgeSecret
@@ -23,6 +24,7 @@ where
 import Control.Exception (SomeException, try)
 import Data.Aeson
   ( Value
+  , eitherDecode
   , object
   , withObject
   , (.:)
@@ -33,6 +35,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString.Base64 qualified as Base64
+import Data.ByteString.Lazy.Char8 qualified as LazyByteString.Char8
 import Data.Hourglass (Elapsed (Elapsed), timeGetElapsed)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -46,6 +49,7 @@ import Data.X509 qualified as X509
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.ControlPlane.TlsDekExchange
   ( TlsDekTransitBoundary (..)
+  , TlsDekTransitFailure (..)
   )
 import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   ( TlsPublicEdgeSecret
@@ -58,7 +62,7 @@ import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   , tlsPublicEdgeSecretData
   , tlsPublicEdgeSecretType
   )
-import Prodbox.Http.Client (HttpError)
+import Prodbox.Http.Client (HttpError (..))
 import Prodbox.K8s.InCluster
   ( K8sSecretApplyError (..)
   , K8sSecretOps (..)
@@ -76,8 +80,10 @@ import Prodbox.Vault.Client
   )
 import Prodbox.Vault.Session
   ( VaultSession
+  , VaultSessionError (..)
+  , VaultSessionOperationError (..)
   , sessionAddress
-  , withSessionToken
+  , withSessionTokenDetailed
   )
 
 publicEdgeTlsSecretNamespace :: Text
@@ -403,18 +409,79 @@ isCertManagerAnnotation name _ = "cert-manager.io/" `Text.isPrefixOf` name
 vaultSessionCall
   :: VaultSession
   -> (VaultToken -> IO (Either HttpError value))
-  -> IO (Either Text value)
+  -> IO (Either TlsDekTransitFailure value)
 vaultSessionCall session action = do
-  attempted <- catchVaultSession (withSessionToken session action)
+  attempted <- catchVaultSession (withSessionTokenDetailed session action)
   pure $ case attempted of
-    Left _ -> Left "TLS DEK Vault session is unavailable"
-    Right (Left _) -> Left "TLS DEK Transit operation failed"
+    Left _ -> Left TlsDekTransitUnexpectedException
+    Right (Left failure) -> Left (classifyTlsDekTransitOperationError failure)
     Right (Right value) -> Right value
 
 catchVaultSession
-  :: IO (Either HttpError value)
-  -> IO (Either SomeException (Either HttpError value))
+  :: IO (Either VaultSessionOperationError value)
+  -> IO (Either SomeException (Either VaultSessionOperationError value))
 catchVaultSession = try
+
+-- | Erase all Vault and HTTP detail while retaining the exact authenticated
+-- session or request boundary that refused the Transit operation.
+classifyTlsDekTransitOperationError
+  :: VaultSessionOperationError
+  -> TlsDekTransitFailure
+classifyTlsDekTransitOperationError operationError = case operationError of
+  VaultSessionAcquisitionFailed sessionError -> case sessionError of
+    VaultSessionSealed _ -> TlsDekTransitSessionAcquisitionSealed
+    VaultSessionForbidden _ -> TlsDekTransitSessionAcquisitionForbidden
+    VaultSessionUnavailable _ -> TlsDekTransitSessionAcquisitionUnavailable
+  VaultSessionReloginFailed sessionError -> case sessionError of
+    VaultSessionSealed _ -> TlsDekTransitSessionReloginSealed
+    VaultSessionForbidden _ -> TlsDekTransitSessionReloginForbidden
+    VaultSessionUnavailable _ -> TlsDekTransitSessionReloginUnavailable
+  VaultSessionRequestFailed httpError -> case httpError of
+    HttpStatus 400 body -> classifyTlsDekTransitBadRequest body
+    HttpStatus 401 _ -> TlsDekTransitRequestUnauthorized
+    HttpStatus 403 _ -> TlsDekTransitRequestForbidden
+    HttpStatus 404 _ -> TlsDekTransitRequestNotFound
+    HttpStatus 429 _ -> TlsDekTransitRequestThrottled
+    HttpStatus status _
+      | status >= 400 && status < 500 -> TlsDekTransitRequestClientFailure
+      | status >= 500 && status < 600 -> TlsDekTransitRequestServerFailure
+      | otherwise -> TlsDekTransitRequestUnexpectedStatus
+    HttpConnectionFailure _ -> TlsDekTransitRequestConnectionFailure
+    HttpTimeout _ -> TlsDekTransitRequestTimeout
+    HttpDecode _ -> TlsDekTransitRequestDecodeFailure
+
+classifyTlsDekTransitBadRequest :: String -> TlsDekTransitFailure
+classifyTlsDekTransitBadRequest body =
+  case eitherDecode (LazyByteString.Char8.pack body) of
+    Right fields ->
+      case Map.lookup "errors" (fields :: Map Text [Text]) of
+        Just [message] -> classifyMessage message
+        _ -> TlsDekTransitRequestBadRequestOther
+    Left _ -> TlsDekTransitRequestBadRequestOther
+ where
+  classifyMessage message = case message of
+    "missing ciphertext to decrypt" ->
+      TlsDekTransitRequestBadRequestMissingCiphertext
+    "encryption key not found" -> TlsDekTransitRequestBadRequestKeyNotFound
+    "invalid ciphertext: no prefix" ->
+      TlsDekTransitRequestBadRequestCiphertextNoPrefix
+    "invalid ciphertext: wrong number of fields" ->
+      TlsDekTransitRequestBadRequestCiphertextWrongFields
+    "invalid ciphertext: version number could not be decoded" ->
+      TlsDekTransitRequestBadRequestCiphertextVersionUndecodable
+    "invalid ciphertext: version is too new" ->
+      TlsDekTransitRequestBadRequestCiphertextVersionTooNew
+    "ciphertext or signature version is disallowed by policy (too old)" ->
+      TlsDekTransitRequestBadRequestCiphertextVersionTooOld
+    "invalid convergent nonce supplied" ->
+      TlsDekTransitRequestBadRequestConvergentNonceInvalid
+    "invalid ciphertext: could not decode base64" ->
+      TlsDekTransitRequestBadRequestCiphertextBase64Invalid
+    "invalid ciphertext length" ->
+      TlsDekTransitRequestBadRequestCiphertextLengthInvalid
+    "cipher: message authentication failed" ->
+      TlsDekTransitRequestBadRequestCiphertextAuthenticationFailed
+    _ -> TlsDekTransitRequestBadRequestOther
 
 mapLeft :: (left -> right) -> Either left value -> Either right value
 mapLeft f = either (Left . f) Right

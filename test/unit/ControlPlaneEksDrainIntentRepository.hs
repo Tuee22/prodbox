@@ -24,17 +24,52 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word16, Word64)
 import EksClientAuthProjectionFixture (testEksClientAuthProjection)
-import Prodbox.ControlPlane.Codec (encodeControlPlaneRequest)
+import Prodbox.ControlPlane.AuthenticatedTransport
+  ( AuthenticatedClientProviders (..)
+  , AuthenticatedTransportBounds
+  , mkAuthenticatedClientTransport
+  , mkAuthenticatedTransportBounds
+  )
+import Prodbox.ControlPlane.CallerPrincipal
+  ( CallerPrincipal (CallerOperatorCli)
+  )
+import Prodbox.ControlPlane.Client
+  ( controlPlaneClientWithTransport
+  , mkLifecycleAuthorityEndpoint
+  )
+import Prodbox.ControlPlane.Codec
+  ( encodeControlPlaneRequest
+  , encodeControlPlaneResponse
+  )
+import Prodbox.ControlPlane.Coordinate
+  ( AuthorityScope
+  , mkAuthorityScope
+  )
 import Prodbox.ControlPlane.EksClientAuthProjection
   ( EksClientAuthProjection
   )
 import Prodbox.ControlPlane.EksDrainIntentClient
 import Prodbox.ControlPlane.EksDrainIntentEndpoint
 import Prodbox.ControlPlane.EksDrainIntentRepository
+import Prodbox.ControlPlane.EksDrainIntentTransportClient
+  ( lifecycleAuthorityEksDrainIntentAuthenticatedClient
+  )
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
-import Prodbox.Http.ReplyStatus (ReplyStatus (..))
+import Prodbox.ControlPlane.RequestAuthentication
+  ( RequestNonce
+  , RequestSigner
+  , localRequestSigningCapability
+  , mkRequestNonce
+  , mkRequestSigner
+  , mkSigningKeyGeneration
+  )
+import Prodbox.Http.ReplyStatus
+  ( ReplyStatus (..)
+  , replyStatusCode
+  )
+import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
   , ModelBCasAdapter (..)
@@ -49,6 +84,10 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , modelBObjectLogicalName
   )
 import Prodbox.Lifecycle.CleanupRun
+import Prodbox.Lifecycle.Lease
+  ( AuthorityTime
+  , authorityTimeFromMicros
+  )
 import Prodbox.Lifecycle.Teardown.AwsEksAdapter
 import Prodbox.Lifecycle.Teardown.EksDrainIntent
 import Prodbox.Lifecycle.Teardown.EksDrainSession
@@ -408,6 +447,29 @@ controlPlaneEksDrainIntentRepositorySuite =
                 expectedIdentity
                 (eksDrainIntentAuthorityIdentity wrongIntent)
             )
+
+    it "preserves only recovery-missing through authenticated transport" $ do
+      let identity = eksDrainIntentAuthorityIdentity fixtureIntent
+      missingClient <-
+        authenticatedIntentClientFor
+          ( EksDrainIntentWireRefused
+              eksDrainIntentEndpointFormatVersion
+              EksDrainIntentWireRecoveryMissing
+          )
+      recoverCommittedEksDrainIntent missingClient identity
+        `shouldReturn` Left EksDrainIntentClientRecoveryMissing
+
+      refusedClient <-
+        authenticatedIntentClientFor
+          ( EksDrainIntentWireRefused
+              eksDrainIntentEndpointFormatVersion
+              EksDrainIntentWireReadBackMissing
+          )
+      recoverCommittedEksDrainIntent refusedClient identity
+        `shouldReturn` Left
+          ( EksDrainIntentClientRemoteRefused
+              "EksDrainIntentWireReadBackMissing"
+          )
 
     it "recovers a Model-B CAS response loss and keeps divergent bytes in conflict" $ do
       durable <- newDurableModelB True
@@ -1014,6 +1076,74 @@ fixtureAuthority =
 
 fixtureModelBVersion :: ModelBObjectVersion
 fixtureModelBVersion = mustRight (mkModelBObjectVersion "eks-drain-version-1")
+
+authenticatedIntentClientFor
+  :: EksDrainIntentWireResponse
+  -> IO (EksDrainIntentClient IO)
+authenticatedIntentClientFor response = do
+  endpoint <-
+    mustRightIO
+      (mkLifecycleAuthorityEndpoint "http://lifecycle-authority:8600")
+  rawClient <-
+    mustRightIO
+      ( controlPlaneClientWithTransport
+          eksDrainIntentEndpointResponseMaximumBytes
+          endpoint
+          ( \method _ url _ -> do
+              method `shouldBe` "POST"
+              url
+                `shouldBe` "http://lifecycle-authority:8600/v1/authority/eks-drain-intent"
+              pure
+                ( Right
+                    ( replyStatusCode
+                        (eksDrainIntentWireResponseStatus response)
+                    , LazyByteString.toStrict
+                        (encodeControlPlaneResponse response)
+                    )
+                )
+          )
+      )
+  pure
+    ( lifecycleAuthorityEksDrainIntentAuthenticatedClient
+        ( mkAuthenticatedClientTransport
+            intentTransportBounds
+            intentClientProviders
+            rawClient
+        )
+    )
+
+intentTransportBounds :: AuthenticatedTransportBounds
+intentTransportBounds =
+  mustRight (mkAuthenticatedTransportBounds (512 * 1024) 256 (500 * 1024))
+
+intentClientProviders :: AuthenticatedClientProviders IO
+intentClientProviders =
+  AuthenticatedClientProviders
+    { provideAuthenticatedClientSigner =
+        pure (Right (localRequestSigningCapability intentRequestSigner))
+    , provideAuthenticatedClientScope = pure (Right intentAuthorityScope)
+    , provideAuthenticatedClientEpoch = pure (Right authorityEpochGenesis)
+    , provideAuthenticatedClientDeadline = pure (Right intentDeadline)
+    , provideAuthenticatedClientNonce = pure (Right intentRequestNonce)
+    }
+
+intentRequestSigner :: RequestSigner
+intentRequestSigner =
+  mustRight
+    ( mkRequestSigner
+        CallerOperatorCli
+        (mustRight (mkSigningKeyGeneration 1))
+        (ByteString.pack [0 .. 31])
+    )
+
+intentRequestNonce :: RequestNonce
+intentRequestNonce = mustRight (mkRequestNonce (ByteString.pack [32 .. 47]))
+
+intentAuthorityScope :: AuthorityScope
+intentAuthorityScope = mustRight (mkAuthorityScope "cluster-a")
+
+intentDeadline :: AuthorityTime
+intentDeadline = authorityTimeFromMicros 2000
 
 rewriteRegisteredKey :: ByteString -> ByteString
 rewriteRegisteredKey bytes =

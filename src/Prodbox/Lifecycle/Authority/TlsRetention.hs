@@ -43,6 +43,9 @@ module Prodbox.Lifecycle.Authority.TlsRetention
 
     -- * State
   , TlsRetentionPending (..)
+  , TlsLegacyRecoveryEvidence (..)
+  , TlsLegacyRecoveryCollisionEvidence (..)
+  , TlsLegacyRecoverySuccessorEvidence (..)
   , TlsRetentionState (..)
   , initialTlsRetentionState
   , currentRetainedRef
@@ -57,6 +60,12 @@ module Prodbox.Lifecycle.Authority.TlsRetention
   , decideTlsStaging
   , applyTlsStaging
   , stepTlsStaging
+
+    -- * Unrecoverable pre-outbox recovery staging
+  , TlsLegacyRecoveryStagingDecision (..)
+  , TlsLegacyRecoveryStagingRefusal (..)
+  , decideTlsLegacyRecoveryStaging
+  , applyTlsLegacyRecoveryStaging
 
     -- * Promotion (renewal CAS)
   , PromotionEvidence (..)
@@ -199,6 +208,41 @@ data TlsRetentionPending = TlsRetentionPending
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- | Value-free evidence for the one pre-outbox immutable version that cannot
+-- be opened by the retained-home Transit key. The digest binds the exact
+-- occupied bytes; the fixed constructor records the only admitted diagnosis.
+-- It grants neither restore nor issuance authority.
+data TlsLegacyRecoveryEvidence = TlsLegacyRecoveryEvidence
+  { tlsLegacyRecoveryVersion :: !RetentionVersion
+  , tlsLegacyRecoveryEnvelopeDigest :: !Text
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- | Exact value-free evidence that an already-staged recovery candidate cannot
+-- occupy its immutable key because that key contains different canonical
+-- bytes. The Authority retains both digests before replacing the outbox; this
+-- evidence grants neither restore nor issuance authority.
+data TlsLegacyRecoveryCollisionEvidence = TlsLegacyRecoveryCollisionEvidence
+  { tlsLegacyRecoveryCollisionVersion :: !RetentionVersion
+  , tlsLegacyRecoveryPendingEnvelopeDigest :: !Text
+  , tlsLegacyRecoveryObservedEnvelopeDigest :: !Text
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- | Compact durable identity of the version-2 recovery outbox displaced by
+-- an exact immutable collision whose occupied wrapped DEK did not authenticate
+-- under the retained-home Transit key. The fixed successor state records that
+-- closed diagnosis without retaining a second maximum-sized envelope.
+data TlsLegacyRecoverySuccessorEvidence = TlsLegacyRecoverySuccessorEvidence
+  { tlsLegacyRecoverySuccessorCollision :: !TlsLegacyRecoveryCollisionEvidence
+  , tlsLegacyRecoveryDisplacedApproval :: !KeyRotationApproval
+  , tlsLegacyRecoveryDisplacedCandidate :: !RetainedTlsRef
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
 -- | The per-substrate retention state: no committed reference, one current
 -- committed reference, or a durable pre-effect outbox retaining the previous
 -- committed reference while its exact successor is in flight.
@@ -206,6 +250,17 @@ data TlsRetentionState
   = TlsRetentionEmpty
   | TlsRetentionCurrent !RetainedTlsRef
   | TlsRetentionPendingState !TlsRetentionPending
+  | TlsRetentionLegacyRecoveryPendingState
+      !TlsLegacyRecoveryEvidence
+      !TlsRetentionPending
+  | TlsRetentionLegacyRecoveryCollisionPendingState
+      !TlsLegacyRecoveryEvidence
+      !TlsLegacyRecoveryCollisionEvidence
+      !TlsRetentionPending
+  | TlsRetentionLegacyRecoverySuccessorPendingState
+      !TlsLegacyRecoveryEvidence
+      !TlsLegacyRecoverySuccessorEvidence
+      !TlsRetentionPending
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -218,10 +273,16 @@ currentRetainedRef state = case state of
   TlsRetentionEmpty -> Nothing
   TlsRetentionCurrent ref -> Just ref
   TlsRetentionPendingState pending -> tlsPendingPrevious pending
+  TlsRetentionLegacyRecoveryPendingState _ _ -> Nothing
+  TlsRetentionLegacyRecoveryCollisionPendingState {} -> Nothing
+  TlsRetentionLegacyRecoverySuccessorPendingState {} -> Nothing
 
 pendingTlsRetention :: TlsRetentionState -> Maybe TlsRetentionPending
 pendingTlsRetention state = case state of
   TlsRetentionPendingState pending -> Just pending
+  TlsRetentionLegacyRecoveryPendingState _ pending -> Just pending
+  TlsRetentionLegacyRecoveryCollisionPendingState _ _ pending -> Just pending
+  TlsRetentionLegacyRecoverySuccessorPendingState _ _ pending -> Just pending
   TlsRetentionEmpty -> Nothing
   TlsRetentionCurrent _ -> Nothing
 
@@ -273,6 +334,25 @@ validateTlsRetentionState state = case state of
       == TlsStaged pending
       then Right ()
       else Left "TLS retention pending state is not a valid staging transition"
+  TlsRetentionLegacyRecoveryPendingState evidence pending ->
+    case decideTlsLegacyRecoveryStaging
+      (tlsPendingApproval pending)
+      TlsRetentionEmpty
+      evidence
+      Nothing
+      (tlsPendingCandidate pending)
+      (tlsPendingEnvelope pending) of
+      TlsLegacyRecoveryStaged expected
+        | pending == expected -> Right ()
+      _ -> Left "TLS legacy-recovery pending state is not a valid staging transition"
+  TlsRetentionLegacyRecoveryCollisionPendingState evidence collision pending ->
+    case validateLegacyRecoveryCollisionPending evidence collision pending of
+      True -> Right ()
+      False -> Left "TLS legacy-recovery collision pending state is invalid"
+  TlsRetentionLegacyRecoverySuccessorPendingState evidence successor pending ->
+    case validateLegacyRecoverySuccessorPending evidence successor pending of
+      True -> Right ()
+      False -> Left "TLS legacy-recovery successor pending state is invalid"
 
 validateBoundedText :: Text -> Int -> Text -> Either Text ()
 validateBoundedText label maximumLength value
@@ -376,6 +456,238 @@ stepTlsStaging approval state candidate envelope =
   let decision = decideTlsStaging approval state candidate envelope
    in (decision, applyTlsStaging decision state)
 
+data TlsLegacyRecoveryStagingRefusal
+  = TlsLegacyRecoveryStageStateNotEmpty
+  | TlsLegacyRecoveryStageConcurrentPending
+  | TlsLegacyRecoveryStageEvidenceInvalid
+  | TlsLegacyRecoveryStageEnvelopeInvalid
+  | TlsLegacyRecoveryStageReferenceInvalid
+  | TlsLegacyRecoveryStageDigestMismatch
+  | TlsLegacyRecoveryStageVersionMismatch
+  | TlsLegacyRecoveryStageCollisionEvidenceInvalid
+  deriving stock (Eq, Show)
+
+data TlsLegacyRecoveryStagingDecision
+  = TlsLegacyRecoveryStaged !TlsRetentionPending
+  | TlsLegacyRecoveryCollisionRebased
+      !TlsLegacyRecoveryCollisionEvidence
+      !TlsRetentionPending
+  | TlsLegacyRecoveryCollisionSuccessorStaged
+      !TlsLegacyRecoverySuccessorEvidence
+      !TlsRetentionPending
+  | TlsLegacyRecoveryStagingNoop !TlsRetentionPending
+  | TlsLegacyRecoveryStagingRefused !TlsLegacyRecoveryStagingRefusal
+  deriving stock (Eq, Show)
+
+-- | Stage a fresh version only after exact version 1 is occupied by a
+-- pre-outbox envelope whose Transit ciphertext produced the closed
+-- authentication-failed observation. The ordinary recovery stages fixed
+-- version 2. If its immutable key is occupied, the verified occupied envelope
+-- may replace that outbox at version 2; if the occupied wrapped DEK itself
+-- produces the same closed authentication failure, exactly one fresh version-3
+-- successor may be staged. No state admits a later version.
+decideTlsLegacyRecoveryStaging
+  :: KeyRotationApproval
+  -> TlsRetentionState
+  -> TlsLegacyRecoveryEvidence
+  -> Maybe TlsLegacyRecoveryCollisionEvidence
+  -> RetainedTlsRef
+  -> TlsSealedEnvelope
+  -> TlsLegacyRecoveryStagingDecision
+decideTlsLegacyRecoveryStaging approval state evidence maybeCollision candidate envelope
+  | tlsLegacyRecoveryVersion evidence /= RetentionVersion 1 =
+      TlsLegacyRecoveryStagingRefused TlsLegacyRecoveryStageEvidenceInvalid
+  | Left _ <- validateDigest (tlsLegacyRecoveryEnvelopeDigest evidence) =
+      TlsLegacyRecoveryStagingRefused TlsLegacyRecoveryStageEvidenceInvalid
+  | Left _ <- validateTlsSealedEnvelope envelope =
+      TlsLegacyRecoveryStagingRefused TlsLegacyRecoveryStageEnvelopeInvalid
+  | retainedCiphertextDigest candidate /= tlsSealedEnvelopeDigest envelope =
+      TlsLegacyRecoveryStagingRefused TlsLegacyRecoveryStageDigestMismatch
+  | Left _ <- validateRetainedTlsRef candidate =
+      TlsLegacyRecoveryStagingRefused TlsLegacyRecoveryStageReferenceInvalid
+  | retainedVersion candidate /= RetentionVersion 2
+      && retainedVersion candidate /= RetentionVersion 3 =
+      TlsLegacyRecoveryStagingRefused TlsLegacyRecoveryStageVersionMismatch
+  | otherwise = case state of
+      TlsRetentionEmpty -> case maybeCollision of
+        Nothing
+          | retainedVersion candidate == RetentionVersion 2 ->
+              TlsLegacyRecoveryStaged desiredPending
+          | otherwise -> versionMismatch
+        Just _ -> collisionInvalid
+      TlsRetentionLegacyRecoveryPendingState existingEvidence pending
+        | existingEvidence /= evidence -> concurrentPending
+        | pending == desiredPending
+            && maybeCollision == Nothing
+            && retainedVersion candidate == RetentionVersion 2 ->
+            TlsLegacyRecoveryStagingNoop pending
+        | Just collision <- maybeCollision
+        , retainedVersion candidate == RetentionVersion 2
+        , validCollisionRebase collision pending desiredPending ->
+            TlsLegacyRecoveryCollisionRebased collision desiredPending
+        | Just collision <- maybeCollision
+        , retainedVersion candidate == RetentionVersion 3
+        , let successor = successorEvidenceFor collision pending
+        , validUnopenableCollisionSuccessor
+            evidence
+            successor
+            desiredPending ->
+            TlsLegacyRecoveryCollisionSuccessorStaged successor desiredPending
+        | maybeCollision /= Nothing -> collisionInvalid
+        | retainedVersion candidate /= RetentionVersion 2 -> versionMismatch
+        | otherwise -> concurrentPending
+      TlsRetentionLegacyRecoveryCollisionPendingState existingEvidence existingCollision pending
+        | existingEvidence == evidence
+            && Just existingCollision == maybeCollision
+            && retainedVersion candidate == RetentionVersion 2
+            && pending == desiredPending ->
+            TlsLegacyRecoveryStagingNoop pending
+        | otherwise -> concurrentPending
+      TlsRetentionLegacyRecoverySuccessorPendingState existingEvidence successor pending
+        | existingEvidence == evidence
+            && Just (tlsLegacyRecoverySuccessorCollision successor) == maybeCollision
+            && retainedVersion candidate == RetentionVersion 3
+            && pending == desiredPending ->
+            TlsLegacyRecoveryStagingNoop pending
+        | otherwise -> concurrentPending
+      TlsRetentionPendingState _ ->
+        concurrentPending
+      TlsRetentionCurrent _ ->
+        TlsLegacyRecoveryStagingRefused TlsLegacyRecoveryStageStateNotEmpty
+ where
+  desiredPending =
+    TlsRetentionPending
+      { tlsPendingPrevious = Nothing
+      , tlsPendingApproval = approval
+      , tlsPendingCandidate = candidate
+      , tlsPendingEnvelope = envelope
+      }
+  concurrentPending =
+    TlsLegacyRecoveryStagingRefused TlsLegacyRecoveryStageConcurrentPending
+  collisionInvalid =
+    TlsLegacyRecoveryStagingRefused TlsLegacyRecoveryStageCollisionEvidenceInvalid
+  versionMismatch =
+    TlsLegacyRecoveryStagingRefused TlsLegacyRecoveryStageVersionMismatch
+  successorEvidenceFor collision pending =
+    TlsLegacyRecoverySuccessorEvidence
+      { tlsLegacyRecoverySuccessorCollision = collision
+      , tlsLegacyRecoveryDisplacedApproval = tlsPendingApproval pending
+      , tlsLegacyRecoveryDisplacedCandidate = tlsPendingCandidate pending
+      }
+
+applyTlsLegacyRecoveryStaging
+  :: TlsLegacyRecoveryEvidence
+  -> TlsLegacyRecoveryStagingDecision
+  -> TlsRetentionState
+  -> TlsRetentionState
+applyTlsLegacyRecoveryStaging evidence decision state = case decision of
+  TlsLegacyRecoveryStaged pending ->
+    TlsRetentionLegacyRecoveryPendingState evidence pending
+  TlsLegacyRecoveryCollisionRebased collision pending ->
+    TlsRetentionLegacyRecoveryCollisionPendingState evidence collision pending
+  TlsLegacyRecoveryCollisionSuccessorStaged successor pending ->
+    TlsRetentionLegacyRecoverySuccessorPendingState evidence successor pending
+  TlsLegacyRecoveryStagingNoop _ -> state
+  TlsLegacyRecoveryStagingRefused _ -> state
+
+validCollisionRebase
+  :: TlsLegacyRecoveryCollisionEvidence
+  -> TlsRetentionPending
+  -> TlsRetentionPending
+  -> Bool
+validCollisionRebase collision existing replacement =
+  validateLegacyRecoveryCollisionPendingEvidence collision existing replacement
+    && tlsPendingApproval replacement == tlsPendingApproval existing
+    && retainedCert replacementCandidate == retainedCert existingCandidate
+    && retainedSourceSecret replacementCandidate == retainedSourceSecret existingCandidate
+ where
+  existingCandidate = tlsPendingCandidate existing
+  replacementCandidate = tlsPendingCandidate replacement
+
+validateLegacyRecoveryCollisionPending
+  :: TlsLegacyRecoveryEvidence
+  -> TlsLegacyRecoveryCollisionEvidence
+  -> TlsRetentionPending
+  -> Bool
+validateLegacyRecoveryCollisionPending evidence collision pending =
+  tlsLegacyRecoveryVersion evidence == RetentionVersion 1
+    && either (const False) (const True) (validateDigest (tlsLegacyRecoveryEnvelopeDigest evidence))
+    && tlsPendingPrevious pending == Nothing
+    && tlsLegacyRecoveryCollisionVersion collision == retainedVersion candidate
+    && tlsLegacyRecoveryObservedEnvelopeDigest collision == retainedCiphertextDigest candidate
+    && tlsLegacyRecoveryPendingEnvelopeDigest collision /= retainedCiphertextDigest candidate
+    && either
+      (const False)
+      (const True)
+      (validateDigest (tlsLegacyRecoveryPendingEnvelopeDigest collision))
+    && either (const False) (const True) (validateRetainedTlsRef candidate)
+    && either (const False) (const True) (validateTlsSealedEnvelope (tlsPendingEnvelope pending))
+    && retainedCiphertextDigest candidate == tlsSealedEnvelopeDigest (tlsPendingEnvelope pending)
+ where
+  candidate = tlsPendingCandidate pending
+
+validateLegacyRecoveryCollisionPendingEvidence
+  :: TlsLegacyRecoveryCollisionEvidence
+  -> TlsRetentionPending
+  -> TlsRetentionPending
+  -> Bool
+validateLegacyRecoveryCollisionPendingEvidence collision existing replacement =
+  tlsPendingPrevious existing == Nothing
+    && tlsPendingPrevious replacement == Nothing
+    && collisionVersion == retainedVersion existingCandidate
+    && collisionVersion == retainedVersion replacementCandidate
+    && pendingDigest == retainedCiphertextDigest existingCandidate
+    && observedDigest == retainedCiphertextDigest replacementCandidate
+    && pendingDigest /= observedDigest
+    && either (const False) (const True) (validateDigest pendingDigest)
+    && either (const False) (const True) (validateDigest observedDigest)
+ where
+  collisionVersion = tlsLegacyRecoveryCollisionVersion collision
+  pendingDigest = tlsLegacyRecoveryPendingEnvelopeDigest collision
+  observedDigest = tlsLegacyRecoveryObservedEnvelopeDigest collision
+  existingCandidate = tlsPendingCandidate existing
+  replacementCandidate = tlsPendingCandidate replacement
+
+validUnopenableCollisionSuccessor
+  :: TlsLegacyRecoveryEvidence
+  -> TlsLegacyRecoverySuccessorEvidence
+  -> TlsRetentionPending
+  -> Bool
+validUnopenableCollisionSuccessor evidence successor pending =
+  validateLegacyRecoverySuccessorPending evidence successor pending
+
+validateLegacyRecoverySuccessorPending
+  :: TlsLegacyRecoveryEvidence
+  -> TlsLegacyRecoverySuccessorEvidence
+  -> TlsRetentionPending
+  -> Bool
+validateLegacyRecoverySuccessorPending evidence successor pending =
+  tlsLegacyRecoveryVersion evidence == RetentionVersion 1
+    && either (const False) (const True) (validateDigest (tlsLegacyRecoveryEnvelopeDigest evidence))
+    && tlsLegacyRecoveryCollisionVersion collision == RetentionVersion 2
+    && tlsLegacyRecoveryPendingEnvelopeDigest collision == retainedCiphertextDigest displaced
+    && tlsLegacyRecoveryObservedEnvelopeDigest collision /= retainedCiphertextDigest displaced
+    && tlsLegacyRecoveryObservedEnvelopeDigest collision /= retainedCiphertextDigest candidate
+    && retainedCiphertextDigest displaced /= retainedCiphertextDigest candidate
+    && either
+      (const False)
+      (const True)
+      (validateDigest (tlsLegacyRecoveryObservedEnvelopeDigest collision))
+    && either (const False) (const True) (validateRetainedTlsRef displaced)
+    && retainedVersion displaced == RetentionVersion 2
+    && tlsPendingPrevious pending == Nothing
+    && tlsPendingApproval pending == tlsLegacyRecoveryDisplacedApproval successor
+    && retainedVersion candidate == RetentionVersion 3
+    && retainedCert candidate == retainedCert displaced
+    && retainedSourceSecret candidate == retainedSourceSecret displaced
+    && either (const False) (const True) (validateRetainedTlsRef candidate)
+    && either (const False) (const True) (validateTlsSealedEnvelope (tlsPendingEnvelope pending))
+    && retainedCiphertextDigest candidate == tlsSealedEnvelopeDigest (tlsPendingEnvelope pending)
+ where
+  collision = tlsLegacyRecoverySuccessorCollision successor
+  displaced = tlsLegacyRecoveryDisplacedCandidate successor
+  candidate = tlsPendingCandidate pending
+
 data TlsPromotionRefusal
   = -- | The source Secret was not re-observed exactly.
     TlsSourceNotReobserved
@@ -430,6 +742,21 @@ decideTlsPromotion approval evidence state candidate
               else TlsPromotionRefused TlsStaleVersion
         | otherwise -> TlsPromotionRefused TlsPendingMissing
       TlsRetentionEmpty -> TlsPromotionRefused TlsPendingMissing
+      TlsRetentionLegacyRecoveryPendingState _ pending
+        | tlsPendingCandidate pending /= candidate
+            || tlsPendingApproval pending /= approval ->
+            TlsPromotionRefused TlsPendingMismatch
+        | otherwise -> decideAgainstPrevious Nothing
+      TlsRetentionLegacyRecoveryCollisionPendingState _ _ pending
+        | tlsPendingCandidate pending /= candidate
+            || tlsPendingApproval pending /= approval ->
+            TlsPromotionRefused TlsPendingMismatch
+        | otherwise -> decideAgainstPrevious Nothing
+      TlsRetentionLegacyRecoverySuccessorPendingState _ _ pending
+        | tlsPendingCandidate pending /= candidate
+            || tlsPendingApproval pending /= approval ->
+            TlsPromotionRefused TlsPendingMismatch
+        | otherwise -> decideAgainstPrevious Nothing
  where
   decideAgainstPrevious maybeCurrent = case maybeCurrent of
     Nothing -> TlsPromoted candidate
@@ -485,6 +812,9 @@ data TlsRestoreRefusal
   | -- | An intact reference was claimed but nothing is committed, or it does not
     -- match the committed version.
     TlsRestoreReferenceMismatch
+  | -- | A recovery outbox has no recoverable predecessor and therefore cannot
+    -- authorize restore or fresh issuance before its fresh candidate promotes.
+    TlsRestoreRecoveryPending
   deriving (Eq, Show)
 
 data TlsRestoreDecision
@@ -514,7 +844,26 @@ decideTlsRestore state observation = case observation of
             && retainedCiphertextDigest observed == retainedCiphertextDigest current ->
             TlsRestoreApply current
       _ -> TlsRestoreRefused TlsRestoreReferenceMismatch
-  RestoreCommittedAbsent -> TlsRestoreIssue
-  RestoreTrustedTimeExpired -> TlsRestoreIssue
+    TlsRetentionLegacyRecoveryPendingState _ _ ->
+      TlsRestoreRefused TlsRestoreReferenceMismatch
+    TlsRetentionLegacyRecoveryCollisionPendingState {} ->
+      TlsRestoreRefused TlsRestoreReferenceMismatch
+    TlsRetentionLegacyRecoverySuccessorPendingState {} ->
+      TlsRestoreRefused TlsRestoreReferenceMismatch
+  RestoreCommittedAbsent -> issueUnlessRecoveryPending state
+  RestoreTrustedTimeExpired -> issueUnlessRecoveryPending state
   RestoreCommittedCorrupt -> TlsRestoreRefused TlsRestoreCorrupt
   RestoreCommittedUnobservable -> TlsRestoreRefused TlsRestoreUnobservable
+
+issueUnlessRecoveryPending :: TlsRetentionState -> TlsRestoreDecision
+issueUnlessRecoveryPending state = case state of
+  TlsRetentionLegacyRecoveryPendingState _ _ ->
+    TlsRestoreRefused TlsRestoreRecoveryPending
+  TlsRetentionLegacyRecoveryCollisionPendingState {} ->
+    TlsRestoreRefused TlsRestoreRecoveryPending
+  TlsRetentionLegacyRecoverySuccessorPendingState {} ->
+    TlsRestoreRefused TlsRestoreRecoveryPending
+  TlsRetentionPendingState pending
+    | tlsPendingPrevious pending == Nothing ->
+        TlsRestoreRefused TlsRestoreRecoveryPending
+  _ -> TlsRestoreIssue

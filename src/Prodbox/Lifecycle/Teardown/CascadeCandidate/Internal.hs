@@ -15,7 +15,7 @@
 -- @6.5@ owns activating a public writer, and nothing in the repository calls
 -- the entrypoint below.
 --
--- Four properties carry the design.
+-- Six properties carry the design.
 --
 --   * __Caller-declared identity is validated before a session is opened.__
 --     AWS account and region are deliberately not caller fields: after the
@@ -42,6 +42,16 @@
 --     @UninstallCascadeLocalFoundation@ node, so the durable host record and
 --     the graph cannot disagree about which node is allowed to destroy the
 --     host.
+--
+--   * __A recorded primary outcome is immutable on resume.__  A vacant fresh
+--     run records success because the cascade is its own primary work.  An
+--     expired-owner takeover instead preserves the kernel's runner-lost fact
+--     (or any other already-recorded outcome) and resumes cleanup.  The final
+--     report therefore remains non-qualifying without stranding the graph.
+--     The fresh primary fact is attached before claiming the epoch-time lease:
+--     the descriptor's stable initial lease is a declared window relative to
+--     zero, so claiming it first would misclassify every new cascade as an
+--     expired predecessor.
 --
 -- What this module does not own: the content of any node, which belongs to the
 -- runtime that answers it; the public @cluster delete --cascade@ route, which
@@ -75,6 +85,8 @@ module Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal
   , cascadeCandidateTerminalOperationIsCompiled
   , cascadeCandidateDeclaredLeaseIsRequired
   , cascadeCandidateIdentityBindsDescriptor
+  , cascadeCandidatePreservesRecordedPrimaryOutcome
+  , cascadeCandidateFreshPrimarySurvivesDeclaredLeaseClaim
   , CascadeCandidatePlanSummary (..)
   , fixedCascadeCandidatePlanSummary
   )
@@ -97,6 +109,7 @@ import Prodbox.ControlPlane.CascadePreUninstallRuntime.Internal
   )
 import Prodbox.ControlPlane.CleanupRunClient
   ( descriptorBoundCleanupRunClient
+  , descriptorBoundCleanupRunPrimaryOutcome
   )
 import Prodbox.ControlPlane.DescriptorBoundLifecycleRuntime.Internal
   ( descriptorBoundLifecycleNodeActionInternal
@@ -116,11 +129,13 @@ import Prodbox.Lifecycle.Authority.ClientRegistry
   )
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDigest
+  , CleanupLease (..)
   , CleanupOperationId
   , CleanupOwnerId
-  , CleanupPrimaryOutcome (CleanupPrimarySucceeded)
+  , CleanupPrimaryOutcome (..)
   , CleanupRunError
   , CleanupRunId
+  , claimCleanupRun
   , cleanupDigestText
   , cleanupGraphDigest
   , cleanupGraphNodes
@@ -128,9 +143,12 @@ import Prodbox.Lifecycle.CleanupRun
   , cleanupNodeOperationId
   , cleanupOperationIdText
   , cleanupRunIdText
+  , cleanupRunLease
+  , cleanupRunPrimaryOutcome
   , mkCleanupOwnerId
   , mkCleanupRunId
   , newCleanupRun
+  , recordPrimaryOutcome
   )
 import Prodbox.Lifecycle.CleanupRunEntry
   ( CleanupHostPreparation (PrepareHostUninstallRecord)
@@ -138,14 +156,17 @@ import Prodbox.Lifecycle.CleanupRunEntry
   , LifecycleCleanupDescriptor
   , LifecycleCleanupDescriptorError
   , LifecycleCleanupResult
+  , RegisteredLifecycleCleanup
   , attachLifecycleCleanupPrimaryOutcome
   , claimLifecycleCleanupRun
   , lifecycleCleanupDescriptorHostIntent
+  , lifecycleCleanupDescriptorInitialRun
   , lifecycleCleanupDescriptorProgramDescriptor
   , mkLifecycleCleanupDescriptor
   , observeLifecycleCleanupResult
   , registerLifecycleCleanupRun
   , registeredLifecycleCleanupBoundRun
+  , retireTerminalLifecycleCleanupHostIntent
   )
 import Prodbox.Lifecycle.CleanupRunRunner
   ( CleanupRunDriverError
@@ -350,6 +371,8 @@ data CascadeCandidateError
   | CascadeCandidateClaimFailed !LifecycleCleanupClientError
   | CascadeCandidatePrimaryFailed !LifecycleCleanupClientError
   | CascadeCandidateDriveFailed !CleanupRunDriverError
+  | CascadeCandidateHostIntentRetirementFailed
+      !LifecycleCleanupClientError
   deriving stock (Eq, Show)
 
 renderCascadeCandidateError :: CascadeCandidateError -> String
@@ -381,6 +404,8 @@ renderCascadeCandidateError = \case
     "the cascade primary outcome could not be recorded: " ++ show err
   CascadeCandidateDriveFailed err ->
     "the cascade could not be driven to a terminal run: " ++ show err
+  CascadeCandidateHostIntentRetirementFailed err ->
+    "the cascade terminal host intent could not be retired: " ++ show err
 
 -- ---------------------------------------------------------------------------
 -- The drive
@@ -467,28 +492,33 @@ runCascadeCandidate inputs environment =
         case registered of
           Left err -> pure (Left (CascadeCandidateRegistrationFailed err))
           Right admitted -> do
-            now <- currentEpochMicros
-            claimed <-
-              claimLifecycleCleanupRun
-                client
-                owner
-                now
-                (now + cascadeCandidateLeaseWindowMicros environment)
-                admitted
-            case claimed of
-              Left err -> pure (Left (CascadeCandidateClaimFailed err))
-              Right held -> do
-                -- The cascade is its own primary work; there is no separate
-                -- action whose failure the cleanup would be reacting to, so
-                -- the primary outcome is a fact about the run rather than an
-                -- observation of something else.
-                attached <-
-                  attachLifecycleCleanupPrimaryOutcome
+            -- The cascade is its own primary work; there is no separate
+            -- action whose failure the cleanup would be reacting to, so the
+            -- primary outcome is a fact about the run rather than an
+            -- observation of something else.  Commit that fact before the
+            -- first epoch-time claim: a fresh deterministic descriptor holds
+            -- a declared lease window relative to zero, not an expired
+            -- predecessor whose vacant primary should become RunnerLost.
+            prepared <- case cascadePrimaryPreparation admitted of
+              CascadePrimaryAttachSucceeded ->
+                attachLifecycleCleanupPrimaryOutcome
+                  client
+                  CleanupPrimarySucceeded
+                  admitted
+              CascadePrimaryResumeRecorded -> pure (Right admitted)
+            case prepared of
+              Left err -> pure (Left (CascadeCandidatePrimaryFailed err))
+              Right primaryReady -> do
+                now <- currentEpochMicros
+                claimed <-
+                  claimLifecycleCleanupRun
                     client
-                    CleanupPrimarySucceeded
-                    held
-                case attached of
-                  Left err -> pure (Left (CascadeCandidatePrimaryFailed err))
+                    owner
+                    now
+                    (now + cascadeCandidateLeaseWindowMicros environment)
+                    primaryReady
+                case claimed of
+                  Left err -> pure (Left (CascadeCandidateClaimFailed err))
                   Right ready -> do
                     driven <-
                       resumeDescriptorBoundDurableCleanupWithContext
@@ -504,24 +534,38 @@ runCascadeCandidate inputs environment =
                     case driven of
                       Left err -> pure (Left (CascadeCandidateDriveFailed err))
                       Right _ -> do
-                        terminalNow <- currentEpochMicros
-                        result <-
-                          observeLifecycleCleanupResult
+                        retired <-
+                          retireTerminalLifecycleCleanupHostIntent
+                            (PrepareHostUninstallRecord store)
                             client
-                            terminalNow
-                            (cascadeCandidateReportRetentionMicros environment)
                             ready
-                        pure
-                          ( Right
-                              CascadeCandidateOutcome
-                                { cascadeCandidateOutcomeAwsScope = awsScope
-                                , cascadeCandidateOutcomeGraphDigest =
-                                    internalCandidateGraphDigest plan
-                                , cascadeCandidateOutcomeDescriptorDigest =
-                                    cascadeCandidatePlanDescriptorDigest plan
-                                , cascadeCandidateOutcomeLifecycleResult = result
-                                }
-                          )
+                        case retired of
+                          Left err ->
+                            pure
+                              ( Left
+                                  ( CascadeCandidateHostIntentRetirementFailed
+                                      err
+                                  )
+                              )
+                          Right () -> do
+                            terminalNow <- currentEpochMicros
+                            result <-
+                              observeLifecycleCleanupResult
+                                client
+                                terminalNow
+                                (cascadeCandidateReportRetentionMicros environment)
+                                ready
+                            pure
+                              ( Right
+                                  CascadeCandidateOutcome
+                                    { cascadeCandidateOutcomeAwsScope = awsScope
+                                    , cascadeCandidateOutcomeGraphDigest =
+                                        internalCandidateGraphDigest plan
+                                    , cascadeCandidateOutcomeDescriptorDigest =
+                                        cascadeCandidatePlanDescriptorDigest plan
+                                    , cascadeCandidateOutcomeLifecycleResult = result
+                                    }
+                              )
 
   owner = cascadeCandidateOwner inputs
 
@@ -564,7 +608,7 @@ cascadeScopeSubmissionKey inputs =
 -- runtime escapes the public facade; holding one of these booleans authorizes
 -- nothing.
 data CascadeCandidateRegression
-  = CascadeCandidateRegression !Bool !Bool !Bool !Bool
+  = CascadeCandidateRegression !Bool !Bool !Bool !Bool !Bool !Bool
 
 fixedCascadeCandidateRegression :: CascadeCandidateRegression
 fixedCascadeCandidateRegression =
@@ -573,6 +617,8 @@ fixedCascadeCandidateRegression =
     terminalCompiled
     leaseRequired
     identityBinds
+    primaryResumePreserves
+    freshPrimarySurvivesClaim
  where
   first' = resolveCascadeCandidatePlan regressionAwsScope regressionInputs
   second' = resolveCascadeCandidatePlan regressionAwsScope regressionInputs
@@ -623,22 +669,100 @@ fixedCascadeCandidateRegression =
           /= cascadeCandidatePlanDescriptorDigest other
       _ -> False
 
+  primaryResumePreserves =
+    cascadePrimaryPreparationFromOutcome Nothing == CascadePrimaryAttachSucceeded
+      && all
+        ( (== CascadePrimaryResumeRecorded)
+            . cascadePrimaryPreparationFromOutcome
+            . Just
+        )
+        [ CleanupPrimarySucceeded
+        , CleanupPrimaryFailed "primary-failed"
+        , CleanupPrimaryCancelled
+        , CleanupPrimaryRunnerLost
+        , CleanupPrimaryExitFailure 1
+        ]
+
+  -- The declared window is already below the later epoch-time sample.  The
+  -- production order must attach the intrinsic fresh-cascade fact first: the
+  -- same kernel then preserves it across the expired-window claim, whereas a
+  -- claim-first mutation records RunnerLost in the vacant immutable slot.
+  freshPrimarySurvivesClaim = case first' of
+    Left _ -> False
+    Right plan ->
+      let initial =
+            lifecycleCleanupDescriptorInitialRun
+              (internalCandidateDescriptor plan)
+          lease = cleanupRunLease initial
+          afterDeclaredWindow = cleanupLeaseExpiresAtMicros lease + 1
+          activeExpiry = afterDeclaredWindow + 1_000_000
+          attachFirst = do
+            recorded <-
+              recordPrimaryOutcome
+                (cleanupLeaseOwner lease)
+                (cleanupLeaseFence lease)
+                CleanupPrimarySucceeded
+                initial
+            claimCleanupRun
+              (cleanupLeaseOwner lease)
+              afterDeclaredWindow
+              activeExpiry
+              recorded
+          claimFirst =
+            claimCleanupRun
+              (cleanupLeaseOwner lease)
+              afterDeclaredWindow
+              activeExpiry
+              initial
+       in (cleanupRunPrimaryOutcome <$> attachFirst)
+            == Right (Just CleanupPrimarySucceeded)
+            && (cleanupRunPrimaryOutcome <$> claimFirst)
+              == Right (Just CleanupPrimaryRunnerLost)
+
 cascadeCandidatePlanIsDeterministic :: CascadeCandidateRegression -> Bool
 cascadeCandidatePlanIsDeterministic
-  (CascadeCandidateRegression value _ _ _) = value
+  (CascadeCandidateRegression value _ _ _ _ _) = value
 
 cascadeCandidateTerminalOperationIsCompiled
   :: CascadeCandidateRegression -> Bool
 cascadeCandidateTerminalOperationIsCompiled
-  (CascadeCandidateRegression _ value _ _) = value
+  (CascadeCandidateRegression _ value _ _ _ _) = value
 
 cascadeCandidateDeclaredLeaseIsRequired :: CascadeCandidateRegression -> Bool
 cascadeCandidateDeclaredLeaseIsRequired
-  (CascadeCandidateRegression _ _ value _) = value
+  (CascadeCandidateRegression _ _ value _ _ _) = value
 
 cascadeCandidateIdentityBindsDescriptor :: CascadeCandidateRegression -> Bool
 cascadeCandidateIdentityBindsDescriptor
-  (CascadeCandidateRegression _ _ _ value) = value
+  (CascadeCandidateRegression _ _ _ value _ _) = value
+
+cascadeCandidatePreservesRecordedPrimaryOutcome
+  :: CascadeCandidateRegression -> Bool
+cascadeCandidatePreservesRecordedPrimaryOutcome
+  (CascadeCandidateRegression _ _ _ _ value _) = value
+
+cascadeCandidateFreshPrimarySurvivesDeclaredLeaseClaim
+  :: CascadeCandidateRegression -> Bool
+cascadeCandidateFreshPrimarySurvivesDeclaredLeaseClaim
+  (CascadeCandidateRegression _ _ _ _ _ value) = value
+
+data CascadePrimaryPreparation
+  = CascadePrimaryAttachSucceeded
+  | CascadePrimaryResumeRecorded
+  deriving stock (Eq, Show)
+
+cascadePrimaryPreparation
+  :: RegisteredLifecycleCleanup surface -> CascadePrimaryPreparation
+cascadePrimaryPreparation =
+  cascadePrimaryPreparationFromOutcome
+    . descriptorBoundCleanupRunPrimaryOutcome
+    . registeredLifecycleCleanupBoundRun
+
+cascadePrimaryPreparationFromOutcome
+  :: Maybe CleanupPrimaryOutcome -> CascadePrimaryPreparation
+cascadePrimaryPreparationFromOutcome = \case
+  Nothing -> CascadePrimaryAttachSucceeded
+  Just _ -> CascadePrimaryResumeRecorded
 
 -- | Secret-free identities from the fixed qualification trace.  It contains
 -- no plan, descriptor, runtime, permit, or callable effect and therefore

@@ -95,6 +95,7 @@ import Prodbox.ControlPlane.ConfigEndpoint
   )
 import Prodbox.ControlPlane.TlsDekExchange
   ( TlsDekTransitBoundary (..)
+  , TlsDekTransitFailure (TlsDekTransitUnexpectedException)
   , prepareTlsDekExchange
   )
 import Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
@@ -405,7 +406,7 @@ authorityBody cleanupRunState request path
         prepareTlsDekExchange
           TlsDekTransitBoundary
             { tlsDekTransitEncrypt = \_ -> pure (Right "vault:v1:fixture-private-key")
-            , tlsDekTransitDecrypt = \_ -> pure (Left "fixture decrypt is unavailable")
+            , tlsDekTransitDecrypt = \_ -> pure (Left TlsDekTransitUnexpectedException)
             }
       case prepared of
         Left detail -> ioError (userError (show detail))

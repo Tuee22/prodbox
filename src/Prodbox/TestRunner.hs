@@ -11,6 +11,8 @@ module Prodbox.TestRunner
   , harnessRequiresStandaloneInForceConfigSync
   , harnessPostCredentialRuntimeCommand
   , PublicEdgeCertificateFailure (..)
+  , CascadeQualificationBootstrapMode (..)
+  , cascadeQualificationBootstrapMode
   , awsSubstrateBootstrapCommandArgs
   , awsSubstrateBootstrapRestorePlan
   , awsSubstrateBootstrapRestoreSteps
@@ -48,7 +50,7 @@ import Control.Monad (foldM, unless)
 import Data.Aeson (encode, object, (.=))
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char qualified as Char
-import Data.List (dropWhileEnd, find, isPrefixOf)
+import Data.List (dropWhileEnd, find, isPrefixOf, stripPrefix)
 import Data.Text qualified as Text
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
@@ -1529,15 +1531,42 @@ awsSubstrateBootstrapActions
   -> Maybe GatewayRuntimeStabilityRecorder
   -> [IO ExitCode]
 awsSubstrateBootstrapActions repoRoot environment suitePlan maybeGatewayStability =
-  case nativeSubstrate suitePlan of
-    SubstrateHomeLocal -> []
-    SubstrateAws ->
+  case (nativeSubstrate suitePlan, cascadeQualificationBootstrapMode environment suitePlan) of
+    (SubstrateHomeLocal, _) -> []
+    (SubstrateAws, CascadeQualificationRecoverExisting) ->
+      [ emitLineAction
+          "Cascade qualification recovery mode: fresh AWS substrate provisioning is skipped; the candidate consumes existing registered and residual state."
+      ]
+    (SubstrateAws, CascadeQualificationProvisionFresh) ->
       [ runAwsSubstrateBootstrap
           repoRoot
           environment
           suitePlan
           maybeGatewayStability
       ]
+
+-- | A recovery-labelled qualification cycle is an explicit escape from the
+-- fresh-substrate bootstrap, not from the typed cleanup graph.  It exists for
+-- the topology where an interrupted/older generation owns deterministic AWS
+-- names and would therefore make a fresh Pulumi create fail before the private
+-- candidate could recover it.  Ordinary pre/post qualification cycles retain
+-- the full substrate provisioning path.
+data CascadeQualificationBootstrapMode
+  = CascadeQualificationProvisionFresh
+  | CascadeQualificationRecoverExisting
+  deriving (Eq, Show)
+
+cascadeQualificationBootstrapMode
+  :: [(String, String)]
+  -> NativeSuitePlan
+  -> CascadeQualificationBootstrapMode
+cascadeQualificationBootstrapMode environment suitePlan
+  | nativeValidations suitePlan == [ValidationCascadeQualification]
+  , Just cycleLabel <- lookup cascadeQualificationCycleVariable environment
+  , Just recoveryIdentity <- stripPrefix "recovery-" cycleLabel
+  , not (null recoveryIdentity) =
+      CascadeQualificationRecoverExisting
+  | otherwise = CascadeQualificationProvisionFresh
 
 runAwsSubstrateBootstrap
   :: FilePath

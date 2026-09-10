@@ -19,12 +19,14 @@ module Prodbox.ControlPlane.TlsRetentionAuthority
   , StoredTlsRetentionState (..)
   , TlsRetentionAuthorityError (..)
   , TlsRetentionStagingResult (..)
+  , TlsLegacyRecoveryStagingResult (..)
   , TlsRetentionPromotionResult (..)
   , tlsRetentionStateMaximumBytes
   , tlsRetentionStateCodec
   , modelBTlsRetentionAuthorityRepository
   , observeTlsRetentionAuthority
   , stageTlsRetentionAuthority
+  , stageTlsLegacyRecoveryAuthority
   , promoteTlsRetentionAuthority
   )
 where
@@ -42,12 +44,21 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   ( KeyRotationApproval
   , PromotionEvidence
   , RetainedTlsRef
+  , TlsLegacyRecoveryCollisionEvidence
+  , TlsLegacyRecoveryEvidence
+  , TlsLegacyRecoveryStagingDecision
+    ( TlsLegacyRecoveryCollisionRebased
+    , TlsLegacyRecoveryCollisionSuccessorStaged
+    , TlsLegacyRecoveryStaged
+    )
   , TlsPromotionDecision (TlsPromoted)
   , TlsRetentionState
   , TlsSealedEnvelope
   , TlsStagingDecision (TlsStaged)
+  , applyTlsLegacyRecoveryStaging
   , applyTlsPromotion
   , applyTlsStaging
+  , decideTlsLegacyRecoveryStaging
   , decideTlsPromotion
   , decideTlsStaging
   , initialTlsRetentionState
@@ -159,6 +170,12 @@ data TlsRetentionStagingResult = TlsRetentionStagingResult
   }
   deriving stock (Eq, Show)
 
+data TlsLegacyRecoveryStagingResult = TlsLegacyRecoveryStagingResult
+  { tlsLegacyRecoveryStagingState :: !TlsRetentionState
+  , tlsLegacyRecoveryStagingDecision :: !TlsLegacyRecoveryStagingDecision
+  }
+  deriving stock (Eq, Show)
+
 tlsRetentionStateMaximumBytes :: Int
 tlsRetentionStateMaximumBytes = 960 * 1024
 
@@ -249,6 +266,45 @@ stageTlsRetentionAuthority repository approval candidate envelope = do
             Right False -> Left TlsRetentionAuthorityConcurrentWrite
             Right True -> Right result
         _ -> pure (Right result)
+
+stageTlsLegacyRecoveryAuthority
+  :: (Monad m)
+  => TlsRetentionAuthorityRepository m revision
+  -> KeyRotationApproval
+  -> TlsLegacyRecoveryEvidence
+  -> Maybe TlsLegacyRecoveryCollisionEvidence
+  -> RetainedTlsRef
+  -> TlsSealedEnvelope
+  -> m (Either TlsRetentionAuthorityError TlsLegacyRecoveryStagingResult)
+stageTlsLegacyRecoveryAuthority repository approval evidence collision candidate envelope = do
+  observed <- readTlsRetentionState repository
+  case observed of
+    Left detail -> pure (Left (TlsRetentionAuthorityReadFailed detail))
+    Right maybeStored -> do
+      let current = maybe initialTlsRetentionState storedTlsRetentionState maybeStored
+          expected = storedTlsRetentionRevision <$> maybeStored
+          decision =
+            decideTlsLegacyRecoveryStaging
+              approval
+              current
+              evidence
+              collision
+              candidate
+              envelope
+          next = applyTlsLegacyRecoveryStaging evidence decision current
+          result = TlsLegacyRecoveryStagingResult next decision
+      case decision of
+        TlsLegacyRecoveryStaged _ -> commit expected next result
+        TlsLegacyRecoveryCollisionRebased _ _ -> commit expected next result
+        TlsLegacyRecoveryCollisionSuccessorStaged _ _ -> commit expected next result
+        _ -> pure (Right result)
+ where
+  commit expected next result = do
+    written <- compareAndSwapTlsRetentionState repository expected next
+    pure $ case written of
+      Left detail -> Left (TlsRetentionAuthorityWriteFailed detail)
+      Right False -> Left TlsRetentionAuthorityConcurrentWrite
+      Right True -> Right result
 
 promoteTlsRetentionAuthority
   :: (Monad m)

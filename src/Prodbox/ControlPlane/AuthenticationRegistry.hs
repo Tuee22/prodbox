@@ -224,6 +224,7 @@ controlPlaneRouteCallerTopology =
   , (TargetTlsVerifySource, [authority])
   , row LifecycleTlsRetentionObserve [authority]
   , row LifecycleTlsRetentionStage [authority]
+  , row LifecycleTlsRetentionLegacyRecoveryStage [authority]
   , row LifecycleTlsRetentionPromote [authority]
   , row LifecycleTlsRetentionWorkflow []
   , row LifecyclePulumiCheckpoint [providerWorker]

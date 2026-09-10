@@ -25,7 +25,7 @@ import Data.IORef
   , readIORef
   , writeIORef
   )
-import Data.List (nub)
+import Data.List (isPrefixOf, nub)
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Map.Strict qualified as Map
 import Data.Set (Set)
@@ -124,7 +124,8 @@ import Prodbox.Lifecycle.Teardown.Program
   , teardownOperationTag
   )
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
-import System.Directory (doesFileExist)
+import System.Directory (doesFileExist, listDirectory)
+import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import TestSupport
 
@@ -226,7 +227,31 @@ lifecycleCleanupClientSuite =
             (fakeCleanupRunClient fake)
             conflicting
         refusedRegistration `shouldSatisfy` isLeft
-        readIORef (fakeCommandTrace fake) `shouldReturn` []
+        readIORef (fakeCommandTrace fake)
+          `shouldReturn` [CleanupRunDescriptorObserve fixtureRawRunId]
+
+    it "creates a fresh run after the production descriptor-missing observation" $
+      withSystemTempDirectory "prodbox-lifecycle-cleanup-client-descriptor-missing" $ \retainedRoot -> do
+        fake <-
+          newFakeAuthority
+            fixtureCompiled
+            []
+            False
+            (const CleanupNodeSucceeded)
+        _ <-
+          expectIoRight
+            ( registerLifecycleCleanupRun
+                (PrepareHostUninstallRecord (fixtureStore retainedRoot))
+                (fakeCleanupRunClient fake)
+                fixtureDescriptor
+            )
+        trace <- readIORef (fakeCommandTrace fake)
+        case take 2 trace of
+          [CleanupRunDescriptorObserve _, CleanupRunDescriptorCreate _ _] -> pure ()
+          observed ->
+            expectationFailure
+              ("expected descriptor-missing observe before create, observed " ++ show observed)
+        readIORef (fakeCreateApplications fake) `shouldReturn` 1
 
     it "recovers create, primary, and report response loss without duplicating a lifecycle effect" $
       withSystemTempDirectory "prodbox-lifecycle-cleanup-client-response-loss" $ \retainedRoot -> do
@@ -271,6 +296,80 @@ lifecycleCleanupClientSuite =
         assertOneRunId fake
         compactCount <- countCommands isCompactCommand <$> readIORef (fakeCommandTrace fake)
         compactCount `shouldBe` 1
+
+    it "returns the exact terminal report without compacting inside its retention window" $
+      withSystemTempDirectory "prodbox-lifecycle-cleanup-client-retention" $ \retainedRoot -> do
+        fake <-
+          newFakeAuthority
+            fixtureCompiled
+            []
+            True
+            (const CleanupNodeSucceeded)
+        let client = fakeCleanupRunClient fake
+        registered <-
+          expectIoRight
+            ( registerLifecycleCleanupRun
+                (PrepareHostUninstallRecord (fixtureStore retainedRoot))
+                client
+                fixtureDescriptor
+            )
+        recorded <-
+          expectIoRight
+            ( attachLifecycleCleanupPrimaryOutcome
+                client
+                CleanupPrimarySucceeded
+                registered
+            )
+        result <- observeLifecycleCleanupResult client 100 1 recorded
+        case result of
+          LifecycleCleanupIncompleteResult incomplete ->
+            expectationFailure ("retained terminal report became incomplete: " ++ show incomplete)
+          LifecycleCleanupReportObserved report -> do
+            cleanupReportRunId report `shouldBe` fixtureRunId
+            cleanupReportPrimaryOutcome report `shouldBe` CleanupPrimarySucceeded
+        stored <- readIORef (fakeStoredRun fake)
+        stored `shouldSatisfy` isLiveStoredRun
+        compactCount <- countCommands isCompactCommand <$> readIORef (fakeCommandTrace fake)
+        compactCount `shouldBe` 0
+
+    it "archives an immutable terminal failure before admitting a distinct host intent" $
+      withSystemTempDirectory "prodbox-lifecycle-cleanup-client-failed-retirement" $ \retainedRoot -> do
+        fake <-
+          newFakeAuthority
+            fixtureCompiled
+            []
+            True
+            (const (CleanupNodeFailed "fixed terminal failure"))
+        let store = fixtureStore retainedRoot
+            client = fakeCleanupRunClient fake
+        registered <-
+          expectIoRight
+            ( registerLifecycleCleanupRun
+                (PrepareHostUninstallRecord store)
+                client
+                fixtureDescriptor
+            )
+        _ <-
+          expectIoRight
+            ( attachLifecycleCleanupPrimaryOutcome
+                client
+                CleanupPrimarySucceeded
+                registered
+            )
+        let replacement = descriptorFor otherRunId
+        replacementResult <-
+          registerLifecycleCleanupRun
+            (PrepareHostUninstallRecord store)
+            client
+            replacement
+        replacementResult `shouldSatisfy` isLeft
+        observeHostCleanupIntent store
+          `shouldReturn` Right
+            (Just (lifecycleCleanupDescriptorHostIntent replacement))
+        archived <-
+          listDirectory
+            (retainedRoot </> "host-cleanup-intent")
+        length (filter ("failed-" `isPrefixOf`) archived) `shouldBe` 1
 
     it "preserves both the transition failure and its failed independent re-observation" $
       withSystemTempDirectory "prodbox-lifecycle-cleanup-client-unconfirmed" $ \retainedRoot -> do
@@ -751,7 +850,11 @@ executeFakeDescriptorCommand compiled finishAutomatically outcomeFor storedRun c
       | otherwise -> do
           stored <- readIORef storedRun
           case stored of
-            FakeRunMissing -> pure (CleanupRunDescriptorNotFound, False)
+            FakeRunMissing ->
+              pure
+                ( CleanupRunDescriptorRefused CleanupRunDescriptorMissing
+                , False
+                )
             FakeRunLive run -> do
               refuse <- consumeFault faults RefuseNextLiveObserve
               pure
@@ -1223,6 +1326,12 @@ isCompactCommand :: CleanupRunDescriptorCommand -> Bool
 isCompactCommand command = case command of
   CleanupRunDescriptorCompact {} -> True
   _ -> False
+
+isLiveStoredRun :: FakeStoredRun -> Bool
+isLiveStoredRun stored = case stored of
+  FakeRunLive {} -> True
+  FakeRunMissing -> False
+  FakeRunTombstoned {} -> False
 
 isRecordedUninstallFailure :: Maybe CleanupNodeState -> Bool
 isRecordedUninstallFailure state = case state of

@@ -133,7 +133,7 @@ keyed by `(substrate, exact canonical scope-set)` rather than independently supp
 [lifecycle_control_plane_architecture.md §5.4](./lifecycle_control_plane_architecture.md#54-retained-tls-envelope-workflow)).
 The selected Target Secret Agent encrypts
 the exact cert-manager TLS Secret locally; the retained home Agent's
-`transit/keys/prodbox-tls-envelope` lane wraps its DEK; and the separately credentialed TLS
+`transit/keys/prodbox-tls-retention-dek` lane wraps its DEK; and the separately credentialed TLS
 Retention Adapter stores/read-backs only that envelope. Restore follows the reverse Agent-mediated
 path before issuance evaluation on every rebuild, so each exact canonical SAN set is issued once
 and restored thereafter rather than re-ordered each cycle. Corrupt, mismatched, rollback, or unobservable retention state

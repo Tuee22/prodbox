@@ -30,7 +30,9 @@ import Prodbox.ControlPlane.DedicatedAdapterStore
   , DedicatedAdapterKind (TlsRetentionAdapter)
   , DedicatedAdapterTransport (..)
   , adapterBindingTransport
+  , adapterObjectStoreReady
   , adapterObjectVersionText
+  , tlsLegacyRetentionEnvelopeObjectName
   , tlsRetentionEnvelopeObjectName
   )
 import Prodbox.ControlPlane.TlsRetentionEndpoint
@@ -70,6 +72,7 @@ tlsRetentionRepositoryWithTransport transport =
     { storeTlsEnvelope = storeEnvelope transport
     , restoreTlsEnvelope = restoreEnvelope transport
     , observeTlsEnvelopeVersion = observeEnvelopeVersion transport
+    , observeTlsAuthorityEnvelopeVersion = observeAuthorityEnvelopeVersion transport
     }
 
 storeEnvelope
@@ -147,32 +150,53 @@ observeEnvelopeVersion
 observeEnvelopeVersion transport version =
   case retentionVersionObjectName version of
     Left _ -> pure (Left TlsRestoreRepositoryObjectNameInvalid)
-    Right objectName -> do
-      observed <- observeAdapterObject transport objectName
-      pure $ case observed of
-        Left _ -> Left TlsRestoreRepositoryObservationUnobservable
-        Right AdapterObjectMissing -> Right TlsVersionEnvelopeMissing
-        Right (AdapterObjectObserved objectVersion bytes) ->
-          case decodeEnvelope bytes of
-            Left _ -> Right TlsVersionEnvelopeCorrupt
-            Right envelope ->
-              Right
-                ( TlsVersionEnvelopePresent
-                    envelope
-                    (adapterObjectVersionText objectVersion)
-                )
+    Right objectName -> observeEnvelopeAtName transport objectName
+
+observeAuthorityEnvelopeVersion
+  :: DedicatedAdapterTransport 'TlsRetentionAdapter IO
+  -> RetentionVersion
+  -> IO (Either TlsRestoreRepositoryFailure TlsVersionEnvelopeObservation)
+observeAuthorityEnvelopeVersion transport version =
+  case authorityRetentionVersionObjectName version of
+    Left _ -> pure (Left TlsRestoreRepositoryObjectNameInvalid)
+    Right objectName -> observeEnvelopeAtName transport objectName
+
+observeEnvelopeAtName
+  :: DedicatedAdapterTransport 'TlsRetentionAdapter IO
+  -> AdapterObjectName 'TlsRetentionAdapter
+  -> IO (Either TlsRestoreRepositoryFailure TlsVersionEnvelopeObservation)
+observeEnvelopeAtName transport objectName = do
+  observed <- observeAdapterObject transport objectName
+  pure $ case observed of
+    Left _ -> Left TlsRestoreRepositoryObservationUnobservable
+    Right AdapterObjectMissing -> Right TlsVersionEnvelopeMissing
+    Right (AdapterObjectObserved objectVersion bytes) ->
+      case decodeEnvelope bytes of
+        Left _ -> Right TlsVersionEnvelopeCorrupt
+        Right envelope ->
+          Right
+            ( TlsVersionEnvelopePresent
+                envelope
+                (adapterObjectVersionText objectVersion)
+            )
 
 retentionObjectName
   :: RetainedTlsRef
   -> Either Text (AdapterObjectName 'TlsRetentionAdapter)
 retentionObjectName reference =
-  retentionVersionObjectName (retainedVersion reference)
+  authorityRetentionVersionObjectName (retainedVersion reference)
+
+authorityRetentionVersionObjectName
+  :: RetentionVersion
+  -> Either Text (AdapterObjectName 'TlsRetentionAdapter)
+authorityRetentionVersionObjectName (RetentionVersion version) =
+  tlsRetentionEnvelopeObjectName version
 
 retentionVersionObjectName
   :: RetentionVersion
   -> Either Text (AdapterObjectName 'TlsRetentionAdapter)
 retentionVersionObjectName (RetentionVersion version) =
-  tlsRetentionEnvelopeObjectName version
+  tlsLegacyRetentionEnvelopeObjectName version
 
 encodeEnvelope :: TlsSealedEnvelope -> ByteString.ByteString
 encodeEnvelope = LazyByteString.toStrict . encodeControlPlaneResponse

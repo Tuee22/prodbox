@@ -3,6 +3,8 @@
 module Prodbox.TestValidation
   ( runNativeValidation
   , cascadeQualificationCycleVariable
+  , NativeValidationKubeconfigMode (..)
+  , nativeValidationKubeconfigMode
   , namespaceResourceQuotaHardFields
   , namespaceLimitRangeContainerFields
   , gatewayRuntimeExpectedReplicas
@@ -1354,7 +1356,11 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
         ++ substrateId substrate
         ++ "] entering body"
     )
-  result <- withSubstrateKubeconfigEnv repoRoot substrate runSubstrateValidation
+  result <-
+    case nativeValidationKubeconfigMode validation of
+      ValidationUsesSelectedSubstrateKubeconfig ->
+        withSubstrateKubeconfigEnv repoRoot substrate runSubstrateValidation
+      ValidationOwnsKubeconfigScopes -> runSubstrateValidation
   writeDiagnosticLine
     ( "[validation="
         ++ nativeValidationId validation
@@ -1478,6 +1484,24 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
           ]
       ValidationKeycloakInvite -> runKeycloakInviteValidation repoRoot substrate environment
       ValidationSealedVault -> runSealedVaultValidation repoRoot environment
+
+-- | Most AWS validations run wholly against the selected EKS target and may
+-- therefore use one suite-scoped kubeconfig.  Cascade qualification crosses
+-- both control planes: its evidence inventory is observed on retained local
+-- RKE2, while its cloud nodes acquire operation-bound ephemeral EKS clients
+-- through the Provider.  An outer EKS kubeconfig is both redundant and an
+-- invalid prerequisite when recovery starts from a retired checkpoint.
+data NativeValidationKubeconfigMode
+  = ValidationUsesSelectedSubstrateKubeconfig
+  | ValidationOwnsKubeconfigScopes
+  deriving (Eq, Show)
+
+nativeValidationKubeconfigMode
+  :: NativeValidation -> NativeValidationKubeconfigMode
+nativeValidationKubeconfigMode validation =
+  case validation of
+    ValidationCascadeQualification -> ValidationOwnsKubeconfigScopes
+    _ -> ValidationUsesSelectedSubstrateKubeconfig
 
 -- | Wrap a validation action with substrate-aware `KUBECONFIG` plus AWS_*
 -- credentials for the AWS substrate.

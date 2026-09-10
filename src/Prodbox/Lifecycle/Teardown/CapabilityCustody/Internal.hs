@@ -88,6 +88,7 @@ module Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal
   , capabilityCustodyInertnessOnlyFromEmptiness
   , capabilityCustodyRetirementRotatesOntoRetained
   , capabilityCustodyRevocationIsInertnessOnly
+  , capabilityCustodyStackNameLookupExact
   )
 where
 
@@ -110,8 +111,7 @@ import Prodbox.Lifecycle.ResidueStatus
   )
 import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
 import Prodbox.Lifecycle.Teardown.Model
-  ( ManagedResourceCoordinate (AwsPulumiStackCoordinate)
-  , RegisteredResourceKey (AwsEksKey, AwsTestKey)
+  ( RegisteredResourceKey (AwsEksKey, AwsTestKey)
   , ResourceKind (Stack)
   , registeredResourceKeyText
   )
@@ -123,7 +123,6 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest
   )
 import Prodbox.Lifecycle.Teardown.Registry
   ( SomeManagedResourceDescriptor (SomeManagedResourceDescriptor)
-  , managedResourceCoordinate
   , managedResourceKey
   , managedResourceKind
   , managedResourceRegistry
@@ -161,21 +160,25 @@ registeredCustodialCapabilities =
     registeredCheckpointCapabilities
     registeredCredentialCapabilities
 
--- | The checkpoint capability one Pulumi stack name names, derived from the
--- registry's own coordinates rather than from a second list of stack names.
+-- | The checkpoint capability one registry name names, derived from the
+-- registry's own keys rather than from a second list of stack names.
 --
--- A stack the registry declares no descriptor for has no checkpoint capability
--- here, which is a refusal rather than a default: a caller about to delete a
--- checkpoint object for an unregistered stack is naming something this
+-- The checkpoint registration deliberately carries the registry name, which
+-- need not equal the Provider-facing Pulumi stack id. In particular, the
+-- @aws-eks@ registry entry uses Pulumi stack id @aws-eks-test@. Matching the
+-- Provider coordinate here would make the registered name unrecognised and the
+-- alias authoritative instead.
+--
+-- A name the registry declares no descriptor for has no checkpoint capability
+-- here, which is a refusal rather than a default: a caller about to retire a
+-- checkpoint object for an unregistered name is naming something this
 -- repository does not manage.
 checkpointCapabilityForStackName :: Text -> Maybe CustodialCapability
 checkpointCapabilityForStackName stackName =
   case [ managedResourceKey descriptor
        | SomeManagedResourceDescriptor descriptor <- managedResourceRegistry
        , managedResourceKind descriptor == Stack
-       , AwsPulumiStackCoordinate _ registeredName <-
-           [managedResourceCoordinate descriptor]
-       , registeredName == stackName
+       , registeredResourceKeyText (managedResourceKey descriptor) == stackName
        ] of
     [key] -> Just (CheckpointCapability key)
     _ -> Nothing
@@ -759,6 +762,7 @@ data CapabilityCustodyRegression = CapabilityCustodyRegression
   , capabilityCustodyInertnessOnlyFromEmptiness :: !Bool
   , capabilityCustodyRetirementRotatesOntoRetained :: !Bool
   , capabilityCustodyRevocationIsInertnessOnly :: !Bool
+  , capabilityCustodyStackNameLookupExact :: !Bool
   }
 
 fixedCapabilityCustodyRegression :: IO CapabilityCustodyRegression
@@ -778,6 +782,7 @@ fixedCapabilityCustodyRegression = do
       , capabilityCustodyInertnessOnlyFromEmptiness = inertnessOnlyFromEmptiness
       , capabilityCustodyRetirementRotatesOntoRetained = retirementRotates
       , capabilityCustodyRevocationIsInertnessOnly = revocationIsInertnessOnly
+      , capabilityCustodyStackNameLookupExact = stackNameLookupExact
       }
  where
   fixedCapability = CheckpointCapability regressionStackKey
@@ -809,6 +814,18 @@ fixedCapabilityCustodyRegression = do
     map dispositionCapability retireArms
       == replicate retireDispositionCount fixedCapability
       && dispositionCapability (CapabilityHeld fixedCapability) == fixedCapability
+
+  -- Sprint 4.91: the public checkpoint name is the registry key, not the
+  -- Provider-facing Pulumi stack id. Cover the complete derived stack
+  -- inventory and pin the one load-bearing unequal-name alias as unrecognised.
+  stackNameLookupExact =
+    all
+      ( \key ->
+          checkpointCapabilityForStackName (registeredResourceKeyText key)
+            == Just (CheckpointCapability key)
+      )
+      registeredCheckpointCapabilities
+      && checkpointCapabilityForStackName "aws-eks-test" == Nothing
 
   -- A checkpoint reaches more than its own stack, so a derivation that returned
   -- only the stack would read as a complete answer without being one.

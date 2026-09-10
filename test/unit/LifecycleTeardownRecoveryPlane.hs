@@ -18,6 +18,8 @@ lifecycleTeardownRecoveryPlaneSuite =
       recoveryPlaneFixtureProfileCanonical regression `shouldBe` True
       recoveryPlaneFixtureProfileTargetAgentSeparated regression `shouldBe` True
       recoveryPlaneFixtureIdentityCanonical regression `shouldBe` True
+      recoveryPlaneFixtureDnsZoneCanonical regression `shouldBe` True
+      recoveryPlaneFixtureLegacyV1RestartReadable regression `shouldBe` True
       recoveryPlaneFixtureDynamicProfileRestored regression `shouldBe` True
 
     it "requires one exact normalized fact for every profile component" $ do
@@ -25,11 +27,21 @@ lifecycleTeardownRecoveryPlaneSuite =
       recoveryPlaneFixtureExactCompletenessEnforced regression `shouldBe` True
       recoveryPlaneFixtureEveryFailureRefused regression `shouldBe` True
       recoveryPlaneFixtureDiagnosticsNormalized regression `shouldBe` True
+      recoveryPlaneFixtureFailureRenderingBounded regression `shouldBe` True
 
     it "mints initial readiness only from a complete exact observation" $ do
       let regression = mustRight fixedRecoveryPlaneFixtureRegression
       recoveryPlaneFixtureInitialReadyExact regression `shouldBe` True
       recoveryPlaneFixtureCrossBindingRefused regression `shouldBe` True
+
+    it "carries normalized initial and final failures into node diagnostics" $ do
+      execution <- readFile "src/Prodbox/Lifecycle/Teardown/Execution.hs"
+      mapM_
+        (execution `shouldContain`)
+        [ "recoveryPlaneInitialFailures evidence"
+        , "recoveryPlaneFinalFailures evidence"
+        , "renderRecoveryPlaneComponentFailures failures"
+        ]
 
     it "classifies fresh final state as Established, NotEstablished, or Lost" $ do
       let regression = mustRight fixedRecoveryPlaneFixtureRegression

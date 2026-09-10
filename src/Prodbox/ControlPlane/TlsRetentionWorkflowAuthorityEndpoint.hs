@@ -86,6 +86,7 @@ data TlsRetentionWorkflowAuthorityFailure
   | TlsRetentionWorkflowAuthorityPromotionStateMismatch
   | TlsRetentionWorkflowAuthorityRestoreRefused
   | TlsRetentionWorkflowAuthorityWrappedDekInvalid
+  | TlsRetentionWorkflowAuthorityLegacySourceMissing
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 

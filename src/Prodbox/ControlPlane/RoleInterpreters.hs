@@ -265,6 +265,7 @@ import Prodbox.ControlPlane.Route
       , LifecyclePulumiCheckpoint
       , LifecycleRecoveryPlane
       , LifecycleRetainedSesLease
+      , LifecycleTlsRetentionLegacyRecoveryStage
       , LifecycleTlsRetentionObserve
       , LifecycleTlsRetentionPromote
       , LifecycleTlsRetentionStage
@@ -296,6 +297,7 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
 import Prodbox.ControlPlane.TlsDekExchange (TlsDekTransitBoundary)
 import Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
   ( TlsAuthorityRepositoryResolver
+  , serveTlsAuthorityLegacyRecoveryStageRequest
   , serveTlsAuthorityObserveRequest
   , serveTlsAuthorityPromoteRequest
   , serveTlsAuthorityStageRequest
@@ -976,6 +978,13 @@ lifecycleAuthorityTlsRetentionAuthenticatedHandler maximumBytes resolve inner =
     LifecycleTlsRetentionStage -> do
       response <-
         serveTlsAuthorityStageRequest
+          maximumBytes
+          resolve
+          (LazyByteString.fromStrict body)
+      pure (Just (tlsAuthorityResponseHttpStatus response, tlsAuthorityResponseBody response))
+    LifecycleTlsRetentionLegacyRecoveryStage -> do
+      response <-
+        serveTlsAuthorityLegacyRecoveryStageRequest
           maximumBytes
           resolve
           (LazyByteString.fromStrict body)

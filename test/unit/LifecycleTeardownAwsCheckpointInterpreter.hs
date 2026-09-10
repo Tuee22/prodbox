@@ -67,6 +67,18 @@ lifecycleTeardownAwsCheckpointInterpreterSuite =
       readIORef (fakeCheckpointCalls environment)
         `shouldReturn` [CheckpointPairObserved "aws-test"]
 
+    it "reads back a current primary without inventing a restore operation" $ do
+      environment <- newEnvironment TargetPresent PairBoth RestoreApplied RetireApplied
+      runNode environment (nodeFor RestoreNode AwsTestKey)
+        `shouldReturn` CleanupNodeSucceeded
+      runNode environment (nodeFor RecoveryReadBackNode AwsTestKey)
+        `shouldReturn` CleanupNodeSucceeded
+      readIORef (fakeAuthoritySubmissions environment) `shouldReturn` []
+      readIORef (fakeCheckpointCalls environment)
+        `shouldReturn` [ CheckpointPairObserved "aws-test"
+                       , CheckpointPairObserved "aws-test"
+                       ]
+
     it "restores an exactly missing primary from the current backup under one stable retry key" $ do
       environment <- newEnvironment TargetPresent PairBackupOnly RestoreApplied RetireApplied
       let restorePlan = nodeFor RestoreNode AwsTestKey
@@ -104,6 +116,14 @@ lifecycleTeardownAwsCheckpointInterpreterSuite =
         `shouldReturn` CleanupNodeSucceeded
       readIORef (fakeAuthoritySubmissions environment) `shouldReturn` []
       readIORef (fakeCheckpointCalls environment) `shouldReturn` []
+
+    it "keeps checkpoint recovery on creation binding before the stack-reader bundle exists" $ do
+      environment <- newEnvironment TargetAbsent PairBackupOnly RestoreApplied RetireApplied
+      writeIORef (fakeBundleReadFails environment) True
+      runNode environment (nodeFor RestoreNode AwsTestKey)
+        `shouldReturn` CleanupNodeSucceeded
+      runNode environment (nodeFor RecoveryReadBackNode AwsTestKey)
+        `shouldReturn` CleanupNodeSucceeded
 
     it "refuses missing, partial, and unobservable copies instead of weakening them to absence" $ do
       let cases =
@@ -243,6 +263,7 @@ data FakeEnvironment = FakeEnvironment
   , fakeErrors :: !(IORef [Text])
   , fakeObservedBindingMode :: !(IORef ObservedBindingMode)
   , fakeForceRecoveryReadBack :: !(IORef Bool)
+  , fakeBundleReadFails :: !(IORef Bool)
   }
 
 newtype CheckpointEffects value = CheckpointEffects
@@ -305,6 +326,7 @@ newEnvironment target pairFixture restoreFixture retirementFixture = do
   errors <- newIORef []
   bindingMode <- newIORef ObserveExact
   forceReadBack <- newIORef False
+  bundleReadFails <- newIORef False
   pure
     FakeEnvironment
       { fakeTargetFixture = target
@@ -317,6 +339,7 @@ newEnvironment target pairFixture restoreFixture retirementFixture = do
       , fakeErrors = errors
       , fakeObservedBindingMode = bindingMode
       , fakeForceRecoveryReadBack = forceReadBack
+      , fakeBundleReadFails = bundleReadFails
       }
 
 interpreterFor :: FakeEnvironment -> AwsCheckpointInterpreter CheckpointEffects
@@ -346,7 +369,7 @@ registeredTargetInterpreterFor environment =
           pure (providerResult environment intent)
     , awsRegisteredTargetReadStackDecisionInputs =
         \_ _ _ -> pure (Left "decision input reader is outside this focused adapter")
-    , awsRegisteredTargetReadStackProviderBinding =
+    , awsRegisteredTargetReadStackCreationBinding =
         \operationId key bindingScope ->
           pure
             ( firstText
@@ -357,6 +380,22 @@ registeredTargetInterpreterFor environment =
                     providerRevision
                     (providerConfig key)
                 )
+            )
+    , awsRegisteredTargetReadStackProviderBinding =
+        \operationId key bindingScope -> do
+          unavailable <- liftCheckpointIO (readIORef (fakeBundleReadFails environment))
+          pure
+            ( if unavailable
+                then Left "stack-reader bundle unavailable before commit"
+                else
+                  firstText
+                    ( mkAwsStackProviderBinding
+                        operationId
+                        key
+                        bindingScope
+                        providerRevision
+                        (providerConfig key)
+                    )
             )
     , awsRegisteredTargetPresentEksDestroyBoundary =
         mkAwsEksPresentDestroyBoundary $ \_ _ _ ->
@@ -680,6 +719,7 @@ hasSeparateRestoreAttemptAndReadBack :: [CheckpointCall] -> Bool
 hasSeparateRestoreAttemptAndReadBack calls = case calls of
   [ CheckpointPairObserved "aws-test"
     , CheckpointRestoreAttempted attempted
+    , CheckpointPairObserved "aws-test"
     , CheckpointRestoreReadBack observed
     ] -> attempted == observed
   _ -> False

@@ -49,7 +49,7 @@ import Prodbox.ControlPlane.Codec
   , encodeControlPlaneRequest
   )
 import Prodbox.ControlPlane.TargetOneShotOperationEndpoint
-  ( TlsTargetAgentPlainResponseCause
+  ( TlsTargetAgentPlainResponseCause (TlsHomeRewrapCiphertextAuthenticationFailedResponse)
   , TlsTargetAgentPlainResponseObservation (..)
   , classifyTlsTargetAgentPlainResponse
   , renderTlsTargetAgentPlainResponseCause
@@ -110,6 +110,7 @@ data TlsTargetAgentClientError
   | TlsTargetAgentClientResponseInvalid !ControlPlaneResponseCodecError
   | TlsTargetAgentClientRetentionVersionMismatch
   | TlsTargetAgentClientRestoreReferenceMismatch
+  | TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed
   deriving stock (Eq, Show)
 
 data TlsTargetAgentHttpResponseObservation
@@ -122,18 +123,20 @@ data TlsTargetAgentHttpResponseObservation
 -- pair. Arbitrary Target response bytes never cross this client boundary.
 classifyTlsTargetAgentHttpStatus :: Int -> ByteString -> TlsTargetAgentClientError
 classifyTlsTargetAgentHttpStatus status body =
-  TlsTargetAgentClientHttpStatus
-    status
-    ( case classifyTlsTargetAgentPlainResponse status body of
-        TlsTargetAgentPlainResponseKnown cause ->
-          TlsTargetAgentEndpointResponse cause
-        TlsTargetAgentPlainResponseOther ->
-          case classifyAuthenticatedRolePlainResponse status body of
-            known@(AuthenticatedRolePlainResponseKnown _) ->
-              TlsTargetAgentAuthenticatedRoleResponse known
-            AuthenticatedRolePlainResponseOther ->
-              TlsTargetAgentHttpResponseOther
-    )
+  case classifyTlsTargetAgentPlainResponse status body of
+    TlsTargetAgentPlainResponseKnown
+      TlsHomeRewrapCiphertextAuthenticationFailedResponse ->
+        TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed
+    TlsTargetAgentPlainResponseKnown cause ->
+      TlsTargetAgentClientHttpStatus
+        status
+        (TlsTargetAgentEndpointResponse cause)
+    TlsTargetAgentPlainResponseOther ->
+      TlsTargetAgentClientHttpStatus status $ case classifyAuthenticatedRolePlainResponse status body of
+        known@(AuthenticatedRolePlainResponseKnown _) ->
+          TlsTargetAgentAuthenticatedRoleResponse known
+        AuthenticatedRolePlainResponseOther ->
+          TlsTargetAgentHttpResponseOther
 
 tlsTargetAgentClientReplayCapacityExhausted :: TlsTargetAgentClientError -> Bool
 tlsTargetAgentClientReplayCapacityExhausted clientError = case clientError of
@@ -161,6 +164,8 @@ renderTlsTargetAgentClientCause clientError = case clientError of
   TlsTargetAgentClientResponseInvalid _ -> "response-invalid"
   TlsTargetAgentClientRetentionVersionMismatch -> "retention-version-mismatch"
   TlsTargetAgentClientRestoreReferenceMismatch -> "restore-reference-mismatch"
+  TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed ->
+    "home-rewrap-ciphertext-authentication-failed"
 
 tlsTargetAgentMaximumResponseBytes :: Int
 tlsTargetAgentMaximumResponseBytes = 2 * 1024 * 1024

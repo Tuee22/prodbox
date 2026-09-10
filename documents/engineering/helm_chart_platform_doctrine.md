@@ -636,7 +636,7 @@ false and permits no S3 request. Plaintext credential fields are not cached acro
 TLS Retention and Provider Worker retain their ordinary eager credential-backed startup boundary.
 Substrate identity and target KV allowlist live only in the Target Secret Agent document; that document also
 fixes the exact seal-receipt KV prefix, bounded secret-worker limits, receipt-retention/GC window,
-enumerated TLS Kubernetes Secret identities, and (home only) the `prodbox-tls-envelope` Transit
+enumerated TLS Kubernetes Secret identities, and (home only) the `prodbox-tls-retention-dek` Transit
 lane plus the closed SMTP/EAB retained-material custody/rewrap lane and exact receipt catalog. Each
 substrate role also gets HMAC-only access to its exact
 `prodbox-target-secret-commitment-<substrate>` key, with no key export/list. Vault-KV, commitment
@@ -929,6 +929,15 @@ The current implementation boundary is:
   `preservePublicEdgeTlsSecretBeforeDelete` silent-success gap is closed: the preserve path emits
   typed/logged outcomes and never reports silent success when the owned certificate is absent (the
   soundness rule in [lifecycle_reconciliation_doctrine.md §3.1](./lifecycle_reconciliation_doctrine.md#31-the-managed-resource-registry-and-exact-observation-boundary)).
+  A fresh Authority aggregate can meet an immutable pre-outbox Adapter version while an interrupted
+  chart cycle has left the selected Secret absent. The workflow still refuses that missing legacy
+  source and exposes only its appended payload-free Authority failure. The chart pre-delete fold is
+  the sole consumer allowed to continue from that exact arm: after exact namespace presence and
+  access convergence, it observes the non-secret exact-name Certificate and emits either deferred
+  issuance or nothing-to-retain explicitly. Source/content mismatch, corrupt occupation,
+  unobservable access, and every other Authority failure remain terminal. Retain-on-ready also
+  refuses the missing-source arm because a preceding Ready observation and subsequent exact absence
+  disagree.
   The high-churn canonical validation loop does not re-order the certificate against a separate test
   issuer; the single `zerossl-dns01` `ClusterIssuer` issues each exact production SAN set once and
   the S3 retain-and-restore path restores it on every rebuild. See

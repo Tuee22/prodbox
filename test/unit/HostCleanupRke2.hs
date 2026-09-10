@@ -43,6 +43,8 @@ hostCleanupRke2Suite =
         `shouldBe` "/usr/local/bin/rke2-uninstall.sh"
       localRke2InstallMarkerPath LocalRke2DataDirectoryMarker
         `shouldBe` "/var/lib/rancher/rke2"
+      localRke2InstallMarkerPath LocalRke2SystemdUnitMarker
+        `shouldBe` "/usr/local/lib/systemd/system/rke2-server.service"
 
     it "requires a fresh absent answer from every canonical marker" $ do
       observedMarkers <- newIORef []

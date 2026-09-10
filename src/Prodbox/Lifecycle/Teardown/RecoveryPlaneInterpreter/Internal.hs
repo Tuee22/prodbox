@@ -30,6 +30,7 @@ module Prodbox.Lifecycle.Teardown.RecoveryPlaneInterpreter.Internal
   , recoveryPlaneInterpreterWrongPredecessorRefused
   , recoveryPlaneInterpreterTwoSurfaceRestartDispatch
   , recoveryPlaneInterpreterCompleteObservationSet
+  , recoveryPlaneInterpreterCrossPhaseIdentityStable
   , recoveryPlaneInterpreterOpacityClosed
   )
 where
@@ -43,6 +44,7 @@ import Data.IORef
   , modifyIORef'
   , newIORef
   , readIORef
+  , writeIORef
   )
 import Data.List (nub)
 import Data.Text (Text)
@@ -182,6 +184,7 @@ import Prodbox.Lifecycle.Teardown.RecoveryPlane.Internal
   ( RecoveryPlaneAttemptBinding (..)
   , RecoveryPlaneRawComponentObservation (..)
   , RecoveryPlaneRawComponentResult (..)
+  , encodeRecoveryPlaneIdentityWireInternal
   , recoveryPlaneComponentObservationSetInternal
   )
 
@@ -604,6 +607,7 @@ data RecoveryPlaneInterpreterRegression
   , recoveryPlaneInterpreterWrongPredecessorRefused :: !Bool
   , recoveryPlaneInterpreterTwoSurfaceRestartDispatch :: !Bool
   , recoveryPlaneInterpreterCompleteObservationSet :: !Bool
+  , recoveryPlaneInterpreterCrossPhaseIdentityStable :: !Bool
   , recoveryPlaneInterpreterOpacityClosed :: !Bool
   }
   deriving (Eq, Show)
@@ -614,6 +618,7 @@ data SurfaceRegression = SurfaceRegression
   , surfaceRegressionFinalReadBackExact :: !Bool
   , surfaceRegressionRawExecutionRefused :: !Bool
   , surfaceRegressionObservationSetComplete :: !Bool
+  , surfaceRegressionCrossPhaseIdentityStable :: !Bool
   }
 
 -- | Exercise the real authenticated cleanup-run read-back, opaque descriptor
@@ -659,6 +664,9 @@ fixedRecoveryPlaneInterpreterRegression = do
         , recoveryPlaneInterpreterCompleteObservationSet =
             surfaceRegressionObservationSetComplete cascadeResult
               && surfaceRegressionObservationSetComplete explicitResult
+        , recoveryPlaneInterpreterCrossPhaseIdentityStable =
+            surfaceRegressionCrossPhaseIdentityStable cascadeResult
+              && surfaceRegressionCrossPhaseIdentityStable explicitResult
         , recoveryPlaneInterpreterOpacityClosed = True
         }
 
@@ -668,6 +676,7 @@ completeSurfaceDispatch regression =
     && surfaceRegressionInitialReadBackExact regression
     && surfaceRegressionFinalReadBackExact regression
     && surfaceRegressionObservationSetComplete regression
+    && surfaceRegressionCrossPhaseIdentityStable regression
 
 runSurfaceRegression
   :: CleanupSurfaceWitness surface
@@ -680,7 +689,14 @@ runSurfaceRegression witness maybeAwsScope runId =
     Right (compiled, initialRun, descriptor) -> do
       repository <- newFixedRecoveryPlaneRepositoryClientInternal
       observedRows <- newIORef []
-      let interpreter = regressionInterpreter repository observedRows
+      establishIdentity <- newIORef Nothing
+      crossPhaseIdentityStable <- newIORef True
+      let interpreter =
+            regressionInterpreter
+              repository
+              observedRows
+              establishIdentity
+              crossPhaseIdentityStable
       establish <-
         executeRegressionOperation
           interpreter
@@ -714,6 +730,7 @@ runSurfaceRegression witness maybeAwsScope runId =
           "recovery-regression"
           "observe-recovery-plane-disposition"
       rows <- readIORef observedRows
+      stableIdentity <- readIORef crossPhaseIdentityStable
       pure $ do
         establishOutcome <- establish
         initialOutcome <- initialReadBack
@@ -731,17 +748,32 @@ runSurfaceRegression witness maybeAwsScope runId =
                 isFailedOutcome rawOutcome
             , surfaceRegressionObservationSetComplete =
                 completeObservationRows rows
+            , surfaceRegressionCrossPhaseIdentityStable = stableIdentity
             }
 
 regressionInterpreter
   :: RecoveryPlaneRepositoryClient IO
   -> IORef [RecoveryPlaneComponentIdentity]
+  -> IORef (Maybe ByteString.ByteString)
+  -> IORef Bool
   -> RecoveryPlaneInterpreter IO
-regressionInterpreter repository observedRows =
+regressionInterpreter repository observedRows establishIdentity stableIdentity =
   recoveryPlaneInterpreterInternal
     repository
-    (RecoveryPlaneEstablishBoundary (\_ _ _ _ _ -> pure RecoveryPlaneEstablishApplied))
-    ( RecoveryPlaneComponentObserver $ \_ _ component -> do
+    ( RecoveryPlaneEstablishBoundary $ \_ _ _ identity _ -> do
+        writeIORef
+          establishIdentity
+          (Just (encodeRecoveryPlaneIdentityWireInternal identity))
+        pure RecoveryPlaneEstablishApplied
+    )
+    ( RecoveryPlaneComponentObserver $ \identity _ component -> do
+        established <- readIORef establishIdentity
+        modifyIORef'
+          stableIdentity
+          ( &&
+              established
+                == Just (encodeRecoveryPlaneIdentityWireInternal identity)
+          )
         modifyIORef' observedRows (component :)
         pure RecoveryPlaneRawReady
     )
@@ -805,7 +837,14 @@ wrongPredecessorRegression =
     Right (compiled, initialRun, descriptor) -> do
       repository <- newFixedRecoveryPlaneRepositoryClientInternal
       observedRows <- newIORef []
-      let interpreter = regressionInterpreter repository observedRows
+      establishIdentity <- newIORef Nothing
+      crossPhaseIdentityStable <- newIORef True
+      let interpreter =
+            regressionInterpreter
+              repository
+              observedRows
+              establishIdentity
+              crossPhaseIdentityStable
       case ( runningAtRegressionOperation
                "predecessor-a"
                "read-back-recovery-plane"

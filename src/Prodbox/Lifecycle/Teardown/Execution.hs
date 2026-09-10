@@ -128,6 +128,7 @@ import Prodbox.Lifecycle.Teardown.RecoveryPlane
   , recoveryPlaneFinalDisposition
   , recoveryPlaneFinalDispositionAttemptId
   , recoveryPlaneFinalEstablishAttemptId
+  , recoveryPlaneFinalFailures
   , recoveryPlaneFinalIdentity
   , recoveryPlaneFinalInitialReadBackAttemptId
   , recoveryPlaneIdentityDescriptorDigest
@@ -140,8 +141,10 @@ import Prodbox.Lifecycle.Teardown.RecoveryPlane
   , recoveryPlaneIdentitySurface
   , recoveryPlaneInitialDisposition
   , recoveryPlaneInitialEstablishAttemptId
+  , recoveryPlaneInitialFailures
   , recoveryPlaneInitialIdentity
   , recoveryPlaneInitialReadBackAttemptId
+  , renderRecoveryPlaneComponentFailures
   )
 import Prodbox.Lifecycle.Teardown.RegisteredTargetResult
 import Prodbox.Lifecycle.Teardown.Registry
@@ -950,7 +953,11 @@ validateNodeResult
         | otherwise -> case recoveryPlaneInitialDisposition evidence of
             RecoveryPlaneInitiallyReady -> CleanupNodeSucceeded
             RecoveryPlaneInitiallyNotReady ->
-              CleanupNodeFailed "cleanup recovery plane is not initially ready"
+              CleanupNodeFailed
+                ( recoveryFailure
+                    "cleanup recovery plane is not initially ready"
+                    (recoveryPlaneInitialFailures evidence)
+                )
        where
         identity = recoveryPlaneInitialIdentity evidence
       _ -> resultKindMismatch
@@ -977,12 +984,25 @@ validateNodeResult
         | otherwise -> case recoveryPlaneFinalDisposition evidence of
             RecoveryPlaneEstablished -> CleanupNodeSucceeded
             RecoveryPlaneNotEstablished ->
-              CleanupNodeFailed "cleanup recovery plane was not established"
+              CleanupNodeFailed
+                ( recoveryFailure
+                    "cleanup recovery plane was not established"
+                    (recoveryPlaneFinalFailures evidence)
+                )
             RecoveryPlaneLost ->
-              CleanupNodeFailed "cleanup recovery plane was lost"
+              CleanupNodeFailed
+                ( recoveryFailure
+                    "cleanup recovery plane was lost"
+                    (recoveryPlaneFinalFailures evidence)
+                )
        where
         identity = recoveryPlaneFinalIdentity evidence
       _ -> resultKindMismatch
+
+    recoveryFailure prefix =
+      maybe
+        prefix
+        (\failures -> prefix <> ": " <> renderRecoveryPlaneComponentFailures failures)
 
     recoveryIdentityMatches
       :: RecoverySurfaceWitness surface

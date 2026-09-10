@@ -8,7 +8,9 @@
 -- lifecycle-operation subkey through the local Lifecycle Authority.  Runtime
 -- provider output cannot choose a registry key, lifecycle class, or cleanup
 -- surface, and mutation responses never stand in for the mandatory absence
--- read-back.
+-- read-back. Generic stack observations reconstruct configuration from the
+-- retained creation binding before the reconcile bundle exists; reconcile and
+-- final absence alone consume that bundle under the reconcile operation id.
 module Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter
   ( AwsStackDecisionInputs
   , awsStackDecisionInputsOperationId
@@ -64,6 +66,7 @@ import Prodbox.Lifecycle.Teardown.Execution
   ( TeardownExecutionContext
   , teardownExecutionObservationScope
   , teardownExecutionOperationId
+  , teardownExecutionOperationIdFor
   )
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
@@ -318,6 +321,14 @@ refusingDns01ChallengeOwnerDeleteBoundary detail =
 
 data AwsRegisteredTargetInterpreter m = AwsRegisteredTargetInterpreter
   { awsRegisteredTargetProviderBoundary :: !(TeardownProviderBoundary m)
+  , awsRegisteredTargetReadStackCreationBinding
+      :: CleanupOperationId
+      -> RegisteredResourceKey
+      -> ObservationEvidenceScope
+      -> m (Either Text AwsStackProviderBinding)
+  -- ^ Provider configuration independently reconstructed from the retained
+  -- stack-creation binding. This reader is observation-only and is the sole
+  -- stack configuration source before the reconcile bundle exists.
   , awsRegisteredTargetReadStackDecisionInputs
       :: CleanupOperationId
       -> RegisteredResourceKey
@@ -328,6 +339,9 @@ data AwsRegisteredTargetInterpreter m = AwsRegisteredTargetInterpreter
       -> RegisteredResourceKey
       -> ObservationEvidenceScope
       -> m (Either Text AwsStackProviderBinding)
+  -- ^ Provider configuration from the independently read-back stack-reader
+  -- bundle. It is keyed by the future reconcile operation and is used only
+  -- by reconcile and its terminal absence read-back.
   , awsRegisteredTargetPresentEksDestroyBoundary
       :: !(AwsEksPresentDestroyBoundary m)
   , awsRegisteredTargetDns01ChallengeOwnerDeleteBoundary
@@ -398,6 +412,7 @@ data AwsRegisteredTargetInterpreterError
   | AwsRegisteredTargetEksDestroyBoundaryInvalid
   | AwsRegisteredTargetDecisionInputsUnavailable !Text
   | AwsRegisteredTargetDecisionInputsBindingMismatch
+  | AwsRegisteredTargetReconcileOperationMissing !RegisteredResourceKey
   | AwsRegisteredTargetProviderBindingUnavailable !Text
   | AwsRegisteredTargetProviderBindingMismatch
   | AwsRegisteredTargetCheckpointKeyMismatch
@@ -433,7 +448,7 @@ observeAwsRegisteredTarget interpreter context target =
           fmap verifiedAwsEksExactObservation
             <$> observeVerifiedAwsEksForDecision interpreter context target
         Right GenericStackExecutor -> do
-          binding <- readBoundStackProviderBinding interpreter context target
+          binding <- readCreationStackProviderBinding interpreter context target
           case binding of
             Left err -> pure (Left err)
             Right exactBinding -> do
@@ -675,7 +690,7 @@ readBackBoundStackDesiredAbsence
   -> RegisteredTargetBinding
   -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
 readBackBoundStackDesiredAbsence interpreter context target = do
-  binding <- readBoundStackProviderBinding interpreter context target
+  binding <- readReconcileStackProviderBinding interpreter context target
   case binding of
     Left err -> pure (Left err)
     Right exactBinding ->
@@ -686,16 +701,55 @@ readBackBoundStackDesiredAbsence interpreter context target = do
         (teardownExecutionObservationScope context)
         (internalAwsStackProviderBindingConfig exactBinding)
 
-readBoundStackProviderBinding
+readCreationStackProviderBinding
   :: (Monad m)
   => AwsRegisteredTargetInterpreter m
   -> TeardownExecutionContext surface
   -> RegisteredTargetBinding
   -> m (Either AwsRegisteredTargetInterpreterError AwsStackProviderBinding)
-readBoundStackProviderBinding interpreter context target = do
+readCreationStackProviderBinding interpreter context target =
+  readStackProviderBinding
+    (awsRegisteredTargetReadStackCreationBinding interpreter)
+    (teardownExecutionOperationId context)
+    context
+    target
+
+readReconcileStackProviderBinding
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> TeardownExecutionContext surface
+  -> RegisteredTargetBinding
+  -> m (Either AwsRegisteredTargetInterpreterError AwsStackProviderBinding)
+readReconcileStackProviderBinding interpreter context target =
+  case teardownExecutionOperationIdFor
+    context
+    (ReconcileRegisteredTargetAbsent target) of
+    Nothing ->
+      pure
+        ( Left
+            (AwsRegisteredTargetReconcileOperationMissing (registeredTargetKey target))
+        )
+    Just reconcileOperation ->
+      readStackProviderBinding
+        (awsRegisteredTargetReadStackProviderBinding interpreter)
+        reconcileOperation
+        context
+        target
+
+readStackProviderBinding
+  :: (Monad m)
+  => ( CleanupOperationId
+       -> RegisteredResourceKey
+       -> ObservationEvidenceScope
+       -> m (Either Text AwsStackProviderBinding)
+     )
+  -> CleanupOperationId
+  -> TeardownExecutionContext surface
+  -> RegisteredTargetBinding
+  -> m (Either AwsRegisteredTargetInterpreterError AwsStackProviderBinding)
+readStackProviderBinding reader operationId context target = do
   loaded <-
-    awsRegisteredTargetReadStackProviderBinding
-      interpreter
+    reader
       operationId
       key
       scope
@@ -708,7 +762,6 @@ readBoundStackProviderBinding interpreter context target = do
           Left AwsRegisteredTargetProviderBindingMismatch
       | otherwise -> Right binding
  where
-  operationId = teardownExecutionOperationId context
   scope = teardownExecutionObservationScope context
   key = registeredTargetKey target
 
@@ -901,7 +954,7 @@ reconcileStack
   -> RegisteredTargetBinding
   -> m (Either AwsRegisteredTargetInterpreterError RegisteredTargetReconcileResult)
 reconcileStack interpreter context target = do
-  loadedBinding <- readBoundStackProviderBinding interpreter context target
+  loadedBinding <- readReconcileStackProviderBinding interpreter context target
   case loadedBinding of
     Left err -> pure (refusedResult context target err)
     Right binding -> do

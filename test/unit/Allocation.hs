@@ -344,8 +344,8 @@ allocationSuite =
                 id
                 (Scheduler.validateOneShotWorkerSchedulerCounterexample counterexample)
         Scheduler.oneShotWorkerSchedulerOldToNewTotal closure
-          `shouldBe` ( C.ResourceVector 7210 12544 35424 157696
-                     , C.ResourceVector 7210 12544 35424 157696
+          `shouldBe` ( C.ResourceVector 7210 12608 35424 157696
+                     , C.ResourceVector 7210 12608 35424 157696
                      )
         Scheduler.oneShotWorkerSchedulerSupersededDisposition closure
           `shouldBe` Scheduler.OneShotWorkerSchedulerInsufficientCpu 7745 7500 245

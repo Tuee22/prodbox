@@ -45,8 +45,10 @@ module Prodbox.CLI.Rke2
   , nativeHarnessBootstrapFloorStepOrder
   , ReconcileStepAnchor (..)
   , ReconcileStepId (..)
+  , reconcileStepAnchor
   , nativeInstallStepOrder
   , nativeComponentReadinessTarget
+  , AuthorityBackupReadinessStage (..)
   , authorityBackupReadinessChecks
   , componentReadinessRetryPolicyFor
   , renderNativeDeletePlan
@@ -219,6 +221,7 @@ import Prodbox.Config.ComponentGraph
   ( ComponentDag
   , ComponentId (..)
   , ComponentNode (..)
+  , ReadinessProbe (ProbeResourceExists)
   , chartNameForComponent
   , componentCapabilityRequirement
   , componentIdText
@@ -448,6 +451,7 @@ import Prodbox.Lifecycle.ReadinessObservation
   , ComponentReadinessTarget (..)
   , ReadinessProbeResult (..)
   , componentReadinessRetryPolicy
+  , waitForComponentReadiness
   )
 import Prodbox.Lifecycle.RegistryBackendWitness (registryBackendWitness)
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
@@ -1642,6 +1646,7 @@ data ReconcileStepId
   | StepAuthorityBackupChartReady
   | StepAuthorityBackupRolloutReady
   | StepEstablishAuthorityBackup
+  | StepAuthorityBackupServiceRoutingReady
   | StepReconcileInForceConfig
   | StepLoadInForceSettings
   | StepProviderWorkerChartReady
@@ -1694,6 +1699,7 @@ reconcileStepToken step = case step of
   StepAuthorityBackupChartReady -> "ensure_authority_backup_chart_ready"
   StepAuthorityBackupRolloutReady -> "observe_authority_backup_rollout_ready"
   StepEstablishAuthorityBackup -> "establish_authority_backup_admission"
+  StepAuthorityBackupServiceRoutingReady -> "observe_authority_backup_service_routing_ready"
   StepReconcileInForceConfig -> "reconcile_authority_in_force_config"
   StepLoadInForceSettings -> "load_authority_in_force_settings"
   StepProviderWorkerChartReady -> "ensure_provider_worker_chart_ready"
@@ -1744,6 +1750,7 @@ reconcileStepPhase step = case step of
   StepAuthorityBackupChartReady -> PhaseTransition
   StepAuthorityBackupRolloutReady -> PhaseTransition
   StepEstablishAuthorityBackup -> PhaseTransition
+  StepAuthorityBackupServiceRoutingReady -> PhaseTransition
   StepReconcileInForceConfig -> PhaseTransition
   StepLoadInForceSettings -> PhaseTransition
   StepProviderWorkerChartReady -> PhaseSteady
@@ -1799,8 +1806,9 @@ reconcileStepAnchor step = case step of
   StepLifecycleAuthorityChartReady -> ComponentReadiness ComponentChartLifecycleAuthority
   StepPostUnsealHandoff -> ComponentReadiness ComponentChartLifecycleAuthority
   StepAuthorityBackupChartReady -> ComponentMutation ComponentChartAuthorityBackup
-  StepAuthorityBackupRolloutReady -> ComponentReadiness ComponentChartAuthorityBackup
+  StepAuthorityBackupRolloutReady -> TransitionFor ComponentChartAuthorityBackup
   StepEstablishAuthorityBackup -> TransitionFor ComponentChartAuthorityBackup
+  StepAuthorityBackupServiceRoutingReady -> TransitionFor ComponentChartAuthorityBackup
   StepReconcileInForceConfig -> TransitionFor ComponentChartAuthorityBackup
   StepLoadInForceSettings -> ComponentReadiness ComponentChartAuthorityBackup
   StepProviderWorkerChartReady -> ComponentReadiness ComponentChartProviderWorker
@@ -1888,6 +1896,7 @@ stepsForComponent component = case component of
     , StepAuthorityBackupChartReady
     , StepAuthorityBackupRolloutReady
     , StepEstablishAuthorityBackup
+    , StepAuthorityBackupServiceRoutingReady
     , StepReconcileInForceConfig
     , StepLoadInForceSettings
     ]
@@ -2261,6 +2270,7 @@ applyNativeInstallPlanWithMode mode repoRoot bootstrapSettings payload = do
     StepAuthorityBackupChartReady -> wrongPhaseStep PhaseBootstrap step
     StepAuthorityBackupRolloutReady -> wrongPhaseStep PhaseBootstrap step
     StepEstablishAuthorityBackup -> wrongPhaseStep PhaseBootstrap step
+    StepAuthorityBackupServiceRoutingReady -> wrongPhaseStep PhaseBootstrap step
     StepReconcileInForceConfig -> wrongPhaseStep PhaseBootstrap step
     StepProviderWorkerChartReady -> wrongPhaseStep PhaseBootstrap step
     StepTlsRetentionChartReady -> wrongPhaseStep PhaseBootstrap step
@@ -2300,12 +2310,21 @@ applyNativeInstallPlanWithMode mode repoRoot bootstrapSettings payload = do
         SubstrateHomeLocal
         ComponentChartAuthorityBackup
     -- Authority Backup is deliberately applied without Helm waiting because
-    -- its capability-backed readiness is graph-owned. This requested-revision
-    -- barrier separates that mutation from the first backup-admission request;
-    -- otherwise the old Available condition can race the Recreate rollout.
-    StepAuthorityBackupRolloutReady -> pure ExitSuccess
+    -- its capability-backed production readiness is graph-owned. This
+    -- non-admitting requested-revision barrier separates that mutation from
+    -- the first backup-admission request; requiring DeploymentAvailable here
+    -- would deadlock a fresh root because establishment creates the credential
+    -- that makes the new process ready.
+    StepAuthorityBackupRolloutReady ->
+      requireAuthorityBackupRequestedRevision repoRoot
     StepEstablishAuthorityBackup ->
       requireEstablishedAuthorityBackupAdmission repoRoot bootstrapSettings
+    -- The Pod-local establishment transport can reach a process before the
+    -- Recreate Deployment is published behind its Service. Config observation
+    -- runs through Lifecycle Authority and therefore requires that routing edge
+    -- explicitly; this transition does not mint dependency admission.
+    StepAuthorityBackupServiceRoutingReady ->
+      requireAuthorityBackupServiceRouting repoRoot
     StepReconcileInForceConfig -> do
       reconciled <-
         reconcileInForceConfigFromFile LifecycleAuthorityOperator repoRoot
@@ -2418,6 +2437,7 @@ applyNativeInstallPlanWithMode mode repoRoot bootstrapSettings payload = do
     StepAuthorityBackupChartReady -> wrongPhaseStep PhaseSteady step
     StepAuthorityBackupRolloutReady -> wrongPhaseStep PhaseSteady step
     StepEstablishAuthorityBackup -> wrongPhaseStep PhaseSteady step
+    StepAuthorityBackupServiceRoutingReady -> wrongPhaseStep PhaseSteady step
     StepReconcileInForceConfig -> wrongPhaseStep PhaseSteady step
     StepRequireOperationalAwsCredentials -> wrongPhaseStep PhaseSteady step
     StepPublicEdgeAcmeRuntime -> wrongPhaseStep PhaseSteady step
@@ -2697,7 +2717,7 @@ nativeComponentReadinessTarget repoRoot settings component =
             component
             ( observeKubernetesReadinessOnce
                 repoRoot
-                authorityBackupReadinessChecks
+                (authorityBackupReadinessChecks AuthorityBackupProductionAdmission)
             )
         )
     ComponentChartTlsRetention ->
@@ -2715,13 +2735,81 @@ nativeComponentReadinessTarget repoRoot settings component =
           )
       )
 
--- | Exact requested-revision barrier between the no-wait Authority Backup
--- Helm mutation and the first authenticated backup request.
-authorityBackupReadinessChecks :: [KubernetesReadinessCheck]
-authorityBackupReadinessChecks =
-  [ DeploymentRevisionObserved "authority-backup" "authority-backup"
-  , DeploymentAvailable "authority-backup" "authority-backup"
-  ]
+-- | The two Authority Backup convergence stages cannot be collapsed: a fresh
+-- root has no dedicated credential until establishment, while the process's
+-- production readiness requires that credential.
+data AuthorityBackupReadinessStage
+  = AuthorityBackupPreEstablishment
+  | AuthorityBackupPostEstablishmentServiceRouting
+  | AuthorityBackupProductionAdmission
+  deriving (Bounded, Enum, Eq, Show)
+
+authorityBackupReadinessChecks
+  :: AuthorityBackupReadinessStage -> [KubernetesReadinessCheck]
+authorityBackupReadinessChecks stage =
+  case stage of
+    AuthorityBackupPreEstablishment ->
+      [DeploymentRevisionObserved "authority-backup" "authority-backup"]
+    AuthorityBackupPostEstablishmentServiceRouting -> postEstablishmentChecks
+    AuthorityBackupProductionAdmission -> postEstablishmentChecks
+ where
+  postEstablishmentChecks =
+    [ DeploymentRevisionObserved "authority-backup" "authority-backup"
+    , DeploymentAvailable "authority-backup" "authority-backup"
+    ]
+
+-- | Bound the no-wait Helm apply to its requested Deployment revision without
+-- minting a production dependency admission. The final graph-owned readiness
+-- barrier runs only after credential establishment and settings reload.
+requireAuthorityBackupRequestedRevision :: FilePath -> IO ExitCode
+requireAuthorityBackupRequestedRevision repoRoot = do
+  result <-
+    waitForComponentReadiness
+      deploymentRevisionObservationRetryPolicy
+      ( ResourceExistsTarget
+          ComponentChartAuthorityBackup
+          ( observeKubernetesReadinessOnce
+              repoRoot
+              (authorityBackupReadinessChecks AuthorityBackupPreEstablishment)
+          )
+      )
+      ProbeResourceExists
+  case result of
+    Left detail ->
+      failWith
+        ( "Authority Backup did not reach its requested Deployment revision before "
+            ++ "credential establishment: "
+            ++ Text.unpack detail
+        )
+    Right () -> pure ExitSuccess
+
+-- | Once establishment has proved the Pod-local Adapter, wait until Kubernetes
+-- publishes that same requested revision behind the Service used by Lifecycle
+-- Authority. This is a routing precondition for config backup, not component
+-- dependency admission; the final graph-owned production barrier remains after
+-- in-force settings are loaded.
+requireAuthorityBackupServiceRouting :: FilePath -> IO ExitCode
+requireAuthorityBackupServiceRouting repoRoot = do
+  result <-
+    waitForComponentReadiness
+      deploymentRevisionObservationRetryPolicy
+      ( ResourceExistsTarget
+          ComponentChartAuthorityBackup
+          ( observeKubernetesReadinessOnce
+              repoRoot
+              ( authorityBackupReadinessChecks
+                  AuthorityBackupPostEstablishmentServiceRouting
+              )
+          )
+      )
+      ProbeResourceExists
+  case result of
+    Left detail ->
+      failWith
+        ( "Authority Backup did not become Service-routable after credential establishment: "
+            ++ Text.unpack detail
+        )
+    Right () -> pure ExitSuccess
 
 unsupportedNativeReadiness :: ComponentId -> Either Text.Text value
 unsupportedNativeReadiness component =

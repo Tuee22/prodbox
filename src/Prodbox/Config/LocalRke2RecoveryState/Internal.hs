@@ -685,7 +685,7 @@ productionBoundaryCanonical =
        , "/usr/local/bin/rke2-uninstall.sh"
        , "/var/lib/rancher/rke2"
        , "/etc/rancher/rke2"
-       , "/etc/systemd/system/rke2-server.service"
+       , "/usr/local/lib/systemd/system/rke2-server.service"
        , "/etc/systemd/system/rke2-server.service.d"
        , "/etc/systemd/system/multi-user.target.wants/rke2-server.service"
        ]

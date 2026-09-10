@@ -98,7 +98,9 @@ import Prodbox.ControlPlane.TargetSecretWorkerRuntime
   ( TargetSecretWorkerRuntimeError (..)
   , TargetWorkerAuditorRecoveryBoundary (..)
   , acquireTargetWorkerAuditorWith
+  , classifyTlsHomeRewrapWorkerResult
   , renderTargetSecretWorkerRuntimeRefusal
+  , targetSecretWorkerTlsHomeRewrapRefusalTokens
   , targetWorkerServiceLoginAccepted
   )
 import Prodbox.ControlPlane.TargetWorkerExecutionPermit
@@ -113,13 +115,21 @@ import Prodbox.ControlPlane.TargetWorkerExecutionPermit
   , verifyTargetWorkerExecutionPermit
   )
 import Prodbox.ControlPlane.TlsDekExchange
-  ( TlsDekExchangeError (TlsDekPrivateTokenUnavailable)
+  ( TlsDekExchangeError (..)
   , TlsDekTransitBoundary (..)
+  , TlsDekTransitFailure (..)
+  , mkTlsWrappedDek
   , prepareTlsDekExchange
+  , rewrapTlsDekFromRetainedHome
+  , tlsDekPreparedPublicKey
   )
 import Prodbox.ControlPlane.TlsTargetAgentEndpoint
-  ( TlsSecretApplyFailure (..)
+  ( TlsHomeRewrapResult (..)
+  , TlsSecretApplyFailure (..)
   , TlsTargetAgentError (..)
+  )
+import Prodbox.ControlPlane.TlsTargetAgentProduction
+  ( classifyTlsDekTransitOperationError
   )
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditError (..)
@@ -128,6 +138,7 @@ import Prodbox.ControlPlane.VaultAccessorAudit
   , isBoundedBatchAuditorLogin
   )
 import Prodbox.Crypto.Aead (AeadError (AeadAuthenticationFailed))
+import Prodbox.Http.Client (HttpError (..))
 import Prodbox.Lifecycle.CheckpointAuthority (TargetClusterSecretSink)
 import Prodbox.Lifecycle.Decommission.AuthorityExport
   ( AuthorityManifestSigner (..)
@@ -157,6 +168,10 @@ import Prodbox.Vault.Client
   ( TokenAccessorInfo (..)
   , VaultKubernetesLoginResult (..)
   , VaultToken (..)
+  )
+import Prodbox.Vault.Session
+  ( VaultSessionError (..)
+  , VaultSessionOperationError (..)
   )
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import TestSupport
@@ -326,7 +341,8 @@ controlPlaneTargetSecretWorkerSuite =
             , (TlsTargetSecretInvalid, "secret-invalid")
             , (TlsTargetSecretReadBackMismatch, "secret-readback-mismatch")
             ,
-              ( TlsTargetDekExchangeFailed TlsDekPrivateTokenUnavailable
+              ( TlsTargetDekExchangeFailed
+                  (TlsDekPrivateTokenUnavailable TlsDekTransitRequestBadRequestOther)
               , "dek-exchange-failed"
               )
             ,
@@ -342,6 +358,104 @@ controlPlaneTargetSecretWorkerSuite =
               , "certificate-ciphertext-too-large"
               )
             , (TlsTargetReferenceMismatch, "reference-mismatch")
+            ]
+          homeRewrapCases =
+            [ (TlsDekLengthInvalid 123, "length-invalid")
+            , (TlsDekPublicKeyInvalid, "public-key-invalid")
+            , (TlsDekSecretKeyInvalid, "secret-key-invalid")
+            , (TlsDekPrivateTokenInvalid, "private-token-invalid")
+            ,
+              ( TlsDekPrivateTokenUnavailable TlsDekTransitRequestBadRequestOther
+              , "private-token-unavailable"
+              )
+            , (TlsDekEnvelopeBindingMismatch, "envelope-binding-mismatch")
+            , (TlsDekEnvelopeVersionUnsupported 123, "envelope-version-unsupported")
+            , (TlsDekCipherFailed AeadAuthenticationFailed, "cipher-failed")
+            ,
+              ( TlsDekTransitWrapUnavailable TlsDekTransitRequestBadRequestOther
+              , "transit-wrap-unavailable"
+              )
+            , (TlsDekWrappedCiphertextInvalid, "wrapped-ciphertext-invalid")
+            ]
+          transitFailureTokens =
+            [ "session-acquisition-sealed"
+            , "session-acquisition-forbidden"
+            , "session-acquisition-unavailable"
+            , "session-relogin-sealed"
+            , "session-relogin-forbidden"
+            , "session-relogin-unavailable"
+            , "request-bad-request/missing-ciphertext"
+            , "request-bad-request/key-not-found"
+            , "request-bad-request/ciphertext-no-prefix"
+            , "request-bad-request/ciphertext-wrong-fields"
+            , "request-bad-request/ciphertext-version-undecodable"
+            , "request-bad-request/ciphertext-version-too-new"
+            , "request-bad-request/ciphertext-version-too-old"
+            , "request-bad-request/convergent-nonce-invalid"
+            , "request-bad-request/ciphertext-base64-invalid"
+            , "request-bad-request/ciphertext-length-invalid"
+            , "request-bad-request/ciphertext-authentication-failed"
+            , "request-bad-request/other"
+            , "request-unauthorized"
+            , "request-forbidden"
+            , "request-not-found"
+            , "request-throttled"
+            , "request-client-failure"
+            , "request-server-failure"
+            , "request-unexpected-status"
+            , "request-connection-failure"
+            , "request-timeout"
+            , "request-decode-failure"
+            , "unexpected-exception"
+            ]
+          transitFailures = [minBound .. maxBound] :: [TlsDekTransitFailure]
+          transitFailureCases = zip transitFailures transitFailureTokens
+          operationFailureCases =
+            [
+              ( VaultSessionAcquisitionFailed (VaultSessionSealed "detail-a")
+              , TlsDekTransitSessionAcquisitionSealed
+              )
+            ,
+              ( VaultSessionAcquisitionFailed (VaultSessionForbidden "detail-a")
+              , TlsDekTransitSessionAcquisitionForbidden
+              )
+            ,
+              ( VaultSessionAcquisitionFailed (VaultSessionUnavailable "detail-a")
+              , TlsDekTransitSessionAcquisitionUnavailable
+              )
+            ,
+              ( VaultSessionReloginFailed (VaultSessionSealed "detail-a")
+              , TlsDekTransitSessionReloginSealed
+              )
+            ,
+              ( VaultSessionReloginFailed (VaultSessionForbidden "detail-a")
+              , TlsDekTransitSessionReloginForbidden
+              )
+            ,
+              ( VaultSessionReloginFailed (VaultSessionUnavailable "detail-a")
+              , TlsDekTransitSessionReloginUnavailable
+              )
+            ,
+              ( VaultSessionRequestFailed
+                  (HttpStatus 400 "{\"errors\":[\"cipher: message authentication failed\"]}")
+              , TlsDekTransitRequestBadRequestCiphertextAuthenticationFailed
+              )
+            , (VaultSessionRequestFailed (HttpStatus 401 "detail-a"), TlsDekTransitRequestUnauthorized)
+            , (VaultSessionRequestFailed (HttpStatus 403 "detail-a"), TlsDekTransitRequestForbidden)
+            , (VaultSessionRequestFailed (HttpStatus 404 "detail-a"), TlsDekTransitRequestNotFound)
+            , (VaultSessionRequestFailed (HttpStatus 429 "detail-a"), TlsDekTransitRequestThrottled)
+            , (VaultSessionRequestFailed (HttpStatus 422 "detail-a"), TlsDekTransitRequestClientFailure)
+            , (VaultSessionRequestFailed (HttpStatus 503 "detail-a"), TlsDekTransitRequestServerFailure)
+            ,
+              ( VaultSessionRequestFailed (HttpStatus 302 "detail-a")
+              , TlsDekTransitRequestUnexpectedStatus
+              )
+            ,
+              ( VaultSessionRequestFailed (HttpConnectionFailure "detail-a")
+              , TlsDekTransitRequestConnectionFailure
+              )
+            , (VaultSessionRequestFailed (HttpTimeout "detail-a"), TlsDekTransitRequestTimeout)
+            , (VaultSessionRequestFailed (HttpDecode "detail-a"), TlsDekTransitRequestDecodeFailure)
             ]
           applyFailureTokens =
             [ "initial-observation-unavailable"
@@ -382,6 +496,125 @@ controlPlaneTargetSecretWorkerSuite =
         `shouldBe` "tls-retain/bad-request"
       diagnostic "tls-retain/secret-unavailable"
         `shouldBe` "materialization-refused/tls-retain/secret-unavailable"
+      forM_ homeRewrapCases $ \(exchangeError, expected) -> do
+        let refusal = "tls-home-rewrap/dek-exchange-failed/" <> expected
+        runtimeToken
+          (TargetSecretWorkerTlsHomeRewrapFailed (TlsTargetDekExchangeFailed exchangeError))
+          `shouldBe` refusal
+        diagnostic refusal `shouldBe` ("materialization-refused/" <> refusal)
+      length transitFailures `shouldBe` length transitFailureTokens
+      forM_ transitFailureCases $ \(failure, expected) -> do
+        let refusal =
+              "tls-home-rewrap/dek-exchange-failed/transit-unwrap-unavailable/"
+                <> expected
+        runtimeToken
+          ( TargetSecretWorkerTlsHomeRewrapFailed
+              (TlsTargetDekExchangeFailed (TlsDekTransitUnwrapUnavailable failure))
+          )
+          `shouldBe` refusal
+        diagnostic refusal `shouldBe` ("materialization-refused/" <> refusal)
+      classifyTlsHomeRewrapWorkerResult
+        ( TlsHomeRewrapFailed
+            ( TlsTargetDekExchangeFailed
+                ( TlsDekTransitUnwrapUnavailable
+                    TlsDekTransitRequestBadRequestCiphertextAuthenticationFailed
+                )
+            )
+        )
+        `shouldBe` Right TargetWorkerTlsHomeRewrapCiphertextAuthenticationFailedResult
+      classifyTlsHomeRewrapWorkerResult
+        ( TlsHomeRewrapFailed
+            ( TlsTargetDekExchangeFailed
+                (TlsDekTransitUnwrapUnavailable TlsDekTransitRequestBadRequestOther)
+            )
+        )
+        `shouldBe` Left
+          ( TargetSecretWorkerTlsHomeRewrapFailed
+              ( TlsTargetDekExchangeFailed
+                  (TlsDekTransitUnwrapUnavailable TlsDekTransitRequestBadRequestOther)
+              )
+          )
+      forM_ operationFailureCases $ \(operationFailure, expected) ->
+        classifyTlsDekTransitOperationError operationFailure `shouldBe` expected
+      classifyTlsDekTransitOperationError
+        (VaultSessionRequestFailed (HttpStatus 400 "detail-b"))
+        `shouldBe` TlsDekTransitRequestBadRequestOther
+      let badRequestCases =
+            [
+              ( "{\"errors\":[\"missing ciphertext to decrypt\"]}"
+              , TlsDekTransitRequestBadRequestMissingCiphertext
+              )
+            ,
+              ( "{\"errors\":[\"encryption key not found\"]}"
+              , TlsDekTransitRequestBadRequestKeyNotFound
+              )
+            ,
+              ( "{\"errors\":[\"invalid ciphertext: no prefix\"]}"
+              , TlsDekTransitRequestBadRequestCiphertextNoPrefix
+              )
+            ,
+              ( "{\"errors\":[\"invalid ciphertext: wrong number of fields\"]}"
+              , TlsDekTransitRequestBadRequestCiphertextWrongFields
+              )
+            ,
+              ( "{\"errors\":[\"invalid ciphertext: version number could not be decoded\"]}"
+              , TlsDekTransitRequestBadRequestCiphertextVersionUndecodable
+              )
+            ,
+              ( "{\"errors\":[\"invalid ciphertext: version is too new\"]}"
+              , TlsDekTransitRequestBadRequestCiphertextVersionTooNew
+              )
+            ,
+              ( "{\"errors\":[\"ciphertext or signature version is disallowed by policy (too old)\"]}"
+              , TlsDekTransitRequestBadRequestCiphertextVersionTooOld
+              )
+            ,
+              ( "{\"errors\":[\"invalid convergent nonce supplied\"]}"
+              , TlsDekTransitRequestBadRequestConvergentNonceInvalid
+              )
+            ,
+              ( "{\"errors\":[\"invalid ciphertext: could not decode base64\"]}"
+              , TlsDekTransitRequestBadRequestCiphertextBase64Invalid
+              )
+            ,
+              ( "{\"errors\":[\"invalid ciphertext length\"]}"
+              , TlsDekTransitRequestBadRequestCiphertextLengthInvalid
+              )
+            ,
+              ( "{\"errors\":[\"cipher: message authentication failed\"]}"
+              , TlsDekTransitRequestBadRequestCiphertextAuthenticationFailed
+              )
+            ]
+      forM_ badRequestCases $ \(body, expected) ->
+        classifyTlsDekTransitOperationError
+          (VaultSessionRequestFailed (HttpStatus 400 body))
+          `shouldBe` expected
+      classifyTlsDekTransitOperationError
+        (VaultSessionRequestFailed (HttpStatus 400 "{\"errors\":[\"secret-detail\"]}"))
+        `shouldBe` TlsDekTransitRequestBadRequestOther
+      prepared <-
+        mustRight
+          <$> prepareTlsDekExchange
+            TlsDekTransitBoundary
+              { tlsDekTransitEncrypt = const (pure (Right "vault:v1:private-token"))
+              , tlsDekTransitDecrypt = const (pure (Left TlsDekTransitRequestBadRequestOther))
+              }
+      rewrapTlsDekFromRetainedHome
+        TlsDekTransitBoundary
+          { tlsDekTransitEncrypt = const (pure (Right "vault:v1:unused"))
+          , tlsDekTransitDecrypt = const (pure (Left TlsDekTransitRequestBadRequestOther))
+          }
+        (mustRight (mkTlsWrappedDek "vault:v1:retained-dek"))
+        (tlsDekPreparedPublicKey prepared)
+        `shouldReturn` Left (TlsDekTransitUnwrapUnavailable TlsDekTransitRequestBadRequestOther)
+      runtimeToken (TargetSecretWorkerTlsHomeRewrapFailed TlsTargetSecretUnavailable)
+        `shouldBe` "tls-home-rewrap/other-target-error"
+      runtimeToken TargetSecretWorkerTlsHomeRewrapBadRequest
+        `shouldBe` "tls-home-rewrap/bad-request"
+      diagnostic "tls-home-rewrap/bad-request"
+        `shouldBe` "materialization-refused/tls-home-rewrap/bad-request"
+      length targetSecretWorkerTlsHomeRewrapRefusalTokens
+        `shouldBe` (length homeRewrapCases + length transitFailureCases + 2)
       runtimeToken TargetSecretWorkerTlsRestoreProductionBoundaryUnavailable
         `shouldBe` "tls-restore/production-boundary-unavailable"
       runtimeToken TargetSecretWorkerTlsRestoreBadRequest
@@ -772,7 +1005,7 @@ controlPlaneTargetSecretWorkerSuite =
         prepareTlsDekExchange
           TlsDekTransitBoundary
             { tlsDekTransitEncrypt = const (pure (Right "vault:v1:opaque-prepared"))
-            , tlsDekTransitDecrypt = const (pure (Left "unused"))
+            , tlsDekTransitDecrypt = const (pure (Left TlsDekTransitUnexpectedException))
             }
       let result = TargetWorkerTlsPreparedResult (mustRight prepared)
           completion =

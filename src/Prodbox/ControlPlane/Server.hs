@@ -232,6 +232,7 @@ controlPlaneRouteMaximumBodyBytes route = case route of
   TargetTlsVerifySource -> controlPlaneMaximumBodyBytes
   LifecycleTlsRetentionObserve -> controlPlaneMaximumBodyBytes
   LifecycleTlsRetentionStage -> controlPlaneMaximumBodyBytes
+  LifecycleTlsRetentionLegacyRecoveryStage -> controlPlaneMaximumBodyBytes
   LifecycleTlsRetentionPromote -> controlPlaneMaximumBodyBytes
   LifecycleTlsRetentionWorkflow -> controlPlaneMaximumBodyBytes
   LifecycleAdminActionExecution -> controlPlaneMaximumBodyBytes

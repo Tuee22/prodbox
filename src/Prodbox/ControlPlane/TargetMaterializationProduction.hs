@@ -72,6 +72,7 @@ import Prodbox.ControlPlane.TargetSecretWorkerRuntime
   ( TargetSecretWorkerRuntimeError (..)
   , renderTargetSecretWorkerRuntimeRefusal
   , targetSecretWorkerTlsApplyRefusalTokens
+  , targetSecretWorkerTlsHomeRewrapRefusalTokens
   )
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( isBoundedBatchAuditorLogin
@@ -575,4 +576,5 @@ classifyTargetWorkerMaterializationRefusal detail
     , "tls-restore/certificate-ciphertext-too-large"
     , "tls-restore/reference-mismatch"
     ]
+      <> targetSecretWorkerTlsHomeRewrapRefusalTokens
       <> targetSecretWorkerTlsApplyRefusalTokens

@@ -140,10 +140,10 @@ mkAwsNativeStackFamilyObservationRequest key scope revision config = do
   stackRef <- either (Left . AwsNativeStackFamilyRefInvalid) Right (mkProviderStackRef stackName)
   let AwsAccountId account = awsScopeAccountId awsScope
       AwsRegion region = awsScopeRegion awsScope
-      zone = hostedZoneIdText <$> evidenceAwsDnsZone scope
-  if key == AwsEksSubzoneKey && zone == Nothing
-    then Left AwsNativeStackFamilyZoneMissing
-    else Right ()
+      scopedZone = hostedZoneIdText <$> evidenceAwsDnsZone scope
+  zone <- case key of
+    AwsEksSubzoneKey -> maybe (Left AwsNativeStackFamilyZoneMissing) (Right . Just) scopedZone
+    _ -> Right Nothing
   familyRef <-
     either
       (Left . AwsNativeStackFamilyRefInvalid)

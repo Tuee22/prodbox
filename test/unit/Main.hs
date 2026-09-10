@@ -599,13 +599,15 @@ import Prodbox.CLI.Pulumi
   , runPulumiCommandWithGate
   )
 import Prodbox.CLI.Rke2
-  ( CascadePhaseOutcome (..)
+  ( AuthorityBackupReadinessStage (..)
+  , CascadePhaseOutcome (..)
   , CascadeSubstrateDecision (..)
   , DeleteTerminalArm (..)
   , GatewayFullModeProbe (..)
   , KubernetesReadinessCheck (..)
   , MinioImageSource (..)
   , OperationalAwsCredentialGate (..)
+  , ReconcileStepAnchor (..)
   , ReconcileStepId (..)
   , RedirectPolicy (..)
   , RegistryGarbageCollectionMode (..)
@@ -651,6 +653,7 @@ import Prodbox.CLI.Rke2
   , nativeInstallStepOrderRespectsGraph
   , operationalAwsCredentialGateFromResult
   , parseRegistryStorageEdgeResponse
+  , reconcileStepAnchor
   , registryConfigYaml
   , registryGarbageCollectArguments
   , renderFailedCascadePhases
@@ -1481,7 +1484,8 @@ import Prodbox.TestRestore
   , restoreStepResetsGatewayHealthyWindow
   )
 import Prodbox.TestRunner
-  ( ClusterEvidence (..)
+  ( CascadeQualificationBootstrapMode (..)
+  , ClusterEvidence (..)
   , PublicEdgeCertificateFailure (..)
   , TestDeleteTarget (..)
   , TestGate (..)
@@ -1489,6 +1493,7 @@ import Prodbox.TestRunner
   , awsSubstrateBootstrapCommandArgs
   , awsSubstrateBootstrapRestorePlan
   , awsSubstrateBootstrapRestoreSteps
+  , cascadeQualificationBootstrapMode
   , guardTestDelete
   , harnessPostCredentialRuntimeCommand
   , harnessRequiresStandaloneInForceConfigSync
@@ -1516,6 +1521,7 @@ import Prodbox.TestValidation
   ( DaemonBootstrapAuditInput (..)
   , DaemonBootstrapAuditProvenance (..)
   , GatewayRuntimeSampleOutcome (..)
+  , NativeValidationKubeconfigMode (..)
   , SealedVaultAuditInput (..)
   , VolumeRebindSnapshot (..)
   , assertInviteOidcClaims
@@ -1532,6 +1538,7 @@ import Prodbox.TestValidation
   , gatewayPartitionValidationReport
   , gatewayRuntimeSampleOutcome
   , gatewayRuntimeSampleOutcomeExit
+  , nativeValidationKubeconfigMode
   , parseVolumeRebindSnapshot
   , renderGatewayValidationConfigDhall
   , resourceGuardrailReport
@@ -4517,10 +4524,59 @@ unitSuite = do
         `shouldBe` 60
       retryPolicyMaxAttempts (componentReadinessRetryPolicyFor ComponentMinio)
         `shouldBe` retryPolicyMaxAttempts componentReadinessRetryPolicy
-      authorityBackupReadinessChecks
-        `shouldBe` [ DeploymentRevisionObserved "authority-backup" "authority-backup"
-                   , DeploymentAvailable "authority-backup" "authority-backup"
+    it "separates Authority Backup revision convergence, Service routing, and final admission" $ do
+      map
+        (\stage -> (stage, authorityBackupReadinessChecks stage))
+        [minBound .. maxBound]
+        `shouldBe` [
+                     ( AuthorityBackupPreEstablishment
+                     , [DeploymentRevisionObserved "authority-backup" "authority-backup"]
+                     )
+                   ,
+                     ( AuthorityBackupPostEstablishmentServiceRouting
+                     ,
+                       [ DeploymentRevisionObserved "authority-backup" "authority-backup"
+                       , DeploymentAvailable "authority-backup" "authority-backup"
+                       ]
+                     )
+                   ,
+                     ( AuthorityBackupProductionAdmission
+                     ,
+                       [ DeploymentRevisionObserved "authority-backup" "authority-backup"
+                       , DeploymentAvailable "authority-backup" "authority-backup"
+                       ]
+                     )
                    ]
+      reconcileStepAnchor StepAuthorityBackupRolloutReady
+        `shouldBe` TransitionFor ComponentChartAuthorityBackup
+      reconcileStepAnchor StepAuthorityBackupServiceRoutingReady
+        `shouldBe` TransitionFor ComponentChartAuthorityBackup
+      reconcileStepAnchor StepLoadInForceSettings
+        `shouldBe` ComponentReadiness ComponentChartAuthorityBackup
+    it
+      "AUTHORITY-BACKUP-POST-ESTABLISHMENT-SERVICE-ROUTING-2026-09-07 waits for Service routing before config"
+      $ do
+        repoRoot <- getCurrentDirectory
+        source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+        let sourceLines = lines source
+            blockFromTo startMarker endMarker =
+              takeWhile
+                (not . isInfixOf endMarker)
+                (dropWhile (not . isInfixOf startMarker) sourceLines)
+            transitionBlock =
+              blockFromTo
+                "transitionStepAction step ="
+                "The @PhaseSteady@ executor"
+            routingIndex = elemIndex "    StepAuthorityBackupServiceRoutingReady ->" transitionBlock
+            configIndex = elemIndex "    StepReconcileInForceConfig -> do" transitionBlock
+        routingIndex `shouldSatisfy` (`indexPrecedes` configIndex)
+        transitionBlock
+          `shouldSatisfy` any
+            (isInfixOf "requireAuthorityBackupServiceRouting repoRoot")
+        authorityBackupReadinessChecks AuthorityBackupPreEstablishment
+          `shouldNotContain` [DeploymentAvailable "authority-backup" "authority-backup"]
+        authorityBackupReadinessChecks AuthorityBackupPostEstablishmentServiceRouting
+          `shouldContain` [DeploymentAvailable "authority-backup" "authority-backup"]
     it "declares every registry-backed native platform dependency explicitly" $ do
       case validateComponentGraph defaultComponentGraph of
         Left err -> expectationFailure ("default component graph is invalid: " ++ show err)
@@ -5039,6 +5095,7 @@ unitSuite = do
                    , StepAuthorityBackupChartReady
                    , StepAuthorityBackupRolloutReady
                    , StepEstablishAuthorityBackup
+                   , StepAuthorityBackupServiceRoutingReady
                    , StepReconcileInForceConfig
                    , StepLoadInForceSettings
                    ]
@@ -5070,6 +5127,8 @@ unitSuite = do
           indexOf StepAuthorityBackupRolloutReady
             `shouldSatisfy` (`indexPrecedes` indexOf StepEstablishAuthorityBackup)
           indexOf StepEstablishAuthorityBackup
+            `shouldSatisfy` (`indexPrecedes` indexOf StepAuthorityBackupServiceRoutingReady)
+          indexOf StepAuthorityBackupServiceRoutingReady
             `shouldSatisfy` (`indexPrecedes` indexOf StepReconcileInForceConfig)
           indexOf StepReconcileInForceConfig
             `shouldSatisfy` (`indexPrecedes` indexOf StepLoadInForceSettings)
@@ -5088,6 +5147,7 @@ unitSuite = do
           bootstrapFloor `shouldContain` [StepCredentialProvisionerSubstrateReady]
           bootstrapFloor `shouldContain` [StepLifecycleAuthorityChartReady]
           bootstrapFloor `shouldContain` [StepAuthorityBackupRolloutReady]
+          bootstrapFloor `shouldContain` [StepAuthorityBackupServiceRoutingReady]
           bootstrapFloor `shouldContain` [StepReconcileInForceConfig]
           bootstrapFloor `shouldContain` [StepLoadInForceSettings]
           bootstrapFloor `shouldNotContain` [StepProviderWorkerChartReady]
@@ -5112,6 +5172,9 @@ unitSuite = do
               blockFromTo
                 "requireEstablishedAuthorityBackupAdmission ::"
                 "authorityBackupRuntimeInputs"
+        transitionBlock
+          `shouldSatisfy` any
+            (isInfixOf "requireAuthorityBackupRequestedRevision repoRoot")
         transitionBlock
           `shouldSatisfy` any
             (isInfixOf "requireEstablishedAuthorityBackupAdmission repoRoot bootstrapSettings")
@@ -8862,6 +8925,10 @@ unitSuite = do
                            , ["charts", "reconcile", "api", "--substrate", "aws"]
                            , ["charts", "reconcile", "websocket", "--substrate", "aws"]
                            ]
+              cascadeQualificationBootstrapMode
+                [("PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE", "recovery-other-suite")]
+                suitePlan
+                `shouldBe` CascadeQualificationProvisionFresh
             DelegatedSuite _ -> expectationFailure "expected native aggregate test plan"
 
     it "wraps targeted keycloak-invite on home substrate in the managed IAM harness" $ do
@@ -8981,6 +9048,22 @@ unitSuite = do
               nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` False
               lifecycleCleanupTargetsForSuite suitePlan
                 `shouldBe` completeLifecyclePerRunTargets
+              cascadeQualificationBootstrapMode
+                [("PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE", "pre-1")]
+                suitePlan
+                `shouldBe` CascadeQualificationProvisionFresh
+              cascadeQualificationBootstrapMode
+                [("PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE", "recovery-older-generation")]
+                suitePlan
+                `shouldBe` CascadeQualificationRecoverExisting
+              cascadeQualificationBootstrapMode
+                [("PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE", "recovery-")]
+                suitePlan
+                `shouldBe` CascadeQualificationProvisionFresh
+              nativeValidationKubeconfigMode ValidationCascadeQualification
+                `shouldBe` ValidationOwnsKubeconfigScopes
+              nativeValidationKubeconfigMode ValidationAwsEks
+                `shouldBe` ValidationUsesSelectedSubstrateKubeconfig
             DelegatedSuite _ -> expectationFailure "expected native cascade-qualification plan"
 
     it "maps cluster-backed named suites to native validations plus prerequisites" $ do
@@ -20734,18 +20817,23 @@ unitSuite = do
         ControlPlaneRuntime.lifecycleAuthorityReplayCapacity
           `shouldBe` (2 * ControlPlaneRuntime.lifecycleAuthorityReconcileAttemptRequestMaximum)
         ControlPlaneRuntime.authorityBackupReconcileAttemptRequestMaximum `shouldBe` 9
-        ControlPlaneRuntime.authorityBackupReplayCapacity `shouldBe` 18
+        ControlPlaneRuntime.authorityBackupQualificationPreludeRequestMaximum `shouldBe` 13
+        ControlPlaneRuntime.authorityBackupCascadeCandidateRequestMaximum `shouldBe` 505
+        ControlPlaneRuntime.authorityBackupQualificationAttemptRequestMaximum `shouldBe` 518
+        ControlPlaneRuntime.authorityBackupReplayCapacity `shouldBe` 1036
         ControlPlaneRuntime.authorityBackupReplayCapacity
-          `shouldBe` (2 * ControlPlaneRuntime.authorityBackupReconcileAttemptRequestMaximum)
-        ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum `shouldBe` 29
-        ControlPlaneRuntime.targetSecretAgentReplayCapacity `shouldBe` 58
+          `shouldBe` (2 * ControlPlaneRuntime.authorityBackupQualificationAttemptRequestMaximum)
+        ControlPlaneRuntime.authorityBackupReplayMaximumEncodedBytes
+          `shouldBe` (32 * 1024 * 1024)
+        ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum `shouldBe` 34
+        ControlPlaneRuntime.targetSecretAgentReplayCapacity `shouldBe` 68
         ControlPlaneRuntime.targetSecretAgentReplayCapacity
           `shouldBe` (2 * ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum)
         ControlPlaneRuntime.targetSecretAgentReplayMaximumEncodedBytes
-          `shouldBe` (118 * 1024 * 1024)
+          `shouldBe` (138 * 1024 * 1024)
         vaultConfig <- readFile "charts/vault/templates/configmap.yaml"
         vaultStatefulSet <- readFile "charts/vault/templates/statefulset.yaml"
-        vaultConfig `shouldContain` "max_request_size = 167772160"
+        vaultConfig `shouldContain` "max_request_size = 201326592"
         vaultStatefulSet
           `shouldContain` "checksum/config: {{ include (print $.Template.BasePath \"/configmap.yaml\") . | sha256sum }}"
 
@@ -22657,7 +22745,7 @@ unitSuite = do
           Allocation.planAllocatable allocatedPlan
             `shouldBe` Capacity.ResourceVector 7000 13312 80032 177952
           Allocation.planTotalDraw allocatedPlan
-            `shouldBe` Capacity.ResourceVector 6210 9984 15456 155648
+            `shouldBe` Capacity.ResourceVector 6210 10048 15456 155648
           lookup "provider-worker" (Allocation.planWorkloadDraws allocatedPlan)
             `shouldBe` Just (Capacity.ResourceVector 100 1120 256 0)
       ProviderWorkerBudget.validateProviderWorkerSchemaMemoryCounterexample

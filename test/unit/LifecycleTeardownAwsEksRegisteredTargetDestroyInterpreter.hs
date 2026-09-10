@@ -163,6 +163,8 @@ registeredInterpreter environment =
     { awsRegisteredTargetProviderBoundary = providerBoundary environment
     , awsRegisteredTargetReadStackDecisionInputs = \_ _ _ ->
         pure (Left "EKS present destroy must use AwsStackReaderClient")
+    , awsRegisteredTargetReadStackCreationBinding = \_ _ _ ->
+        pure (Left "EKS present destroy must use AwsStackReaderClient")
     , awsRegisteredTargetReadStackProviderBinding = \_ _ _ ->
         pure (Left "EKS present destroy must use AwsStackReaderClient")
     , awsRegisteredTargetPresentEksDestroyBoundary =

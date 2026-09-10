@@ -880,6 +880,7 @@ data TargetWorkerOperationResult
   | TargetWorkerFederationRecoveryPreparedResult !ChildRecoveryDelivery
   | TargetWorkerFederationRecoveryObservedResult !ChildRecoveryConsumptionObservation
   | TargetWorkerFederationRecoveryCommittedResult !ChildRecoveryConsumptionObservation
+  | TargetWorkerTlsHomeRewrapCiphertextAuthenticationFailedResult
   deriving stock (Eq)
 
 instance Show TargetWorkerOperationResult where
@@ -903,6 +904,8 @@ instance Show TargetWorkerOperationResult where
       "TargetWorkerFederationRecoveryObservedResult"
     TargetWorkerFederationRecoveryCommittedResult {} ->
       "TargetWorkerFederationRecoveryCommittedResult"
+    TargetWorkerTlsHomeRewrapCiphertextAuthenticationFailedResult ->
+      "TargetWorkerTlsHomeRewrapCiphertextAuthenticationFailedResult"
 
 targetWorkerOperationResultMatchesSchema
   :: TargetWorkerIngressSchema -> TargetWorkerOperationResult -> Bool
@@ -915,6 +918,9 @@ targetWorkerOperationResultMatchesSchema schema result = case (schema, result) o
   (TargetWorkerTlsRetain, TargetWorkerTlsRetainMissingResult) -> True
   (TargetWorkerTlsHomeWrap, TargetWorkerTlsHomeWrappedResult {}) -> True
   (TargetWorkerTlsHomeRewrap, TargetWorkerTlsHomeRewrappedResult {}) -> True
+  ( TargetWorkerTlsHomeRewrap
+    , TargetWorkerTlsHomeRewrapCiphertextAuthenticationFailedResult
+    ) -> True
   (TargetWorkerTlsRestore, TargetWorkerTlsRestoredResult {}) -> True
   (TargetWorkerTlsVerify, TargetWorkerTlsVerifiedResult {}) -> True
   (TargetWorkerTlsVerify, TargetWorkerTlsVerifyMissingResult) -> True
@@ -948,6 +954,7 @@ data WireTargetWorkerOperationResult
   | WireTargetWorkerFederationRecoveryPreparedResult !ChildRecoveryDelivery
   | WireTargetWorkerFederationRecoveryObservedResult !ChildRecoveryConsumptionObservation
   | WireTargetWorkerFederationRecoveryCommittedResult !ChildRecoveryConsumptionObservation
+  | WireTargetWorkerTlsHomeRewrapCiphertextAuthenticationFailedResult
   deriving stock (Eq, Generic)
   deriving anyclass (Serialise)
 
@@ -1040,6 +1047,8 @@ operationResultWire result = case result of
     WireTargetWorkerFederationRecoveryObservedResult observation
   TargetWorkerFederationRecoveryCommittedResult observation ->
     WireTargetWorkerFederationRecoveryCommittedResult observation
+  TargetWorkerTlsHomeRewrapCiphertextAuthenticationFailedResult ->
+    WireTargetWorkerTlsHomeRewrapCiphertextAuthenticationFailedResult
 
 operationResultFromWire
   :: WireTargetWorkerOperationResult
@@ -1074,6 +1083,8 @@ operationResultFromWire wire = case wire of
     Right (TargetWorkerFederationRecoveryObservedResult observation)
   WireTargetWorkerFederationRecoveryCommittedResult observation ->
     Right (TargetWorkerFederationRecoveryCommittedResult observation)
+  WireTargetWorkerTlsHomeRewrapCiphertextAuthenticationFailedResult ->
+    Right TargetWorkerTlsHomeRewrapCiphertextAuthenticationFailedResult
 
 encodeTargetWorkerProvisionalCompletion
   :: TargetWorkerProvisionalCompletion -> ByteString

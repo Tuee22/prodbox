@@ -23,6 +23,7 @@ module Prodbox.ControlPlane.CleanupRunClient
   , descriptorBoundCleanupRunReport
   , withDescriptorBoundCleanupProgram
   , deriveDescriptorBoundRecoveryRequirement
+  , deriveDescriptorBoundRecoveryRequirementAtCompletedOperation
   , cleanupRunClient
   , descriptorBoundCleanupRunClient
   )
@@ -31,6 +32,7 @@ where
 import Data.Bifunctor (first)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text.Encoding qualified as TextEncoding
 import Numeric.Natural (Natural)
@@ -76,7 +78,8 @@ import Prodbox.Lifecycle.CleanupRun
   , CleanupLease
   , CleanupNodeId
   , CleanupNodeOutcome
-  , CleanupNodeState
+  , CleanupNodeState (..)
+  , CleanupOperationId
   , CleanupOwnerId
   , CleanupPrimaryOutcome
   , CleanupRun (..)
@@ -86,7 +89,10 @@ import Prodbox.Lifecycle.CleanupRun
   , CleanupRunReport
   , cleanupAttemptIdText
   , cleanupDigestText
+  , cleanupGraphNodes
+  , cleanupNodeId
   , cleanupNodeIdText
+  , cleanupNodeOperationId
   , cleanupOwnerIdText
   , cleanupRunIdText
   , cleanupRunTerminal
@@ -289,6 +295,65 @@ deriveDescriptorBoundRecoveryRequirement bound = do
             (internalDescriptorBoundCleanupRunValue bound)
       )
   first CleanupRunClientDescriptorRecoveryRequirementFailed derived
+
+-- | Reconstruct the recovery requirement that was authoritative while one
+-- exact operation attempt was Running, after its immediately-following node
+-- has observed that attempt as completed. Recovery-plane identity is minted
+-- at Establish time; the first read-back must replay that point-in-time
+-- requirement rather than minting a different identity merely because
+-- Establish itself has become terminal.
+deriveDescriptorBoundRecoveryRequirementAtCompletedOperation
+  :: DescriptorBoundCleanupRun
+  -> CleanupOperationId
+  -> CleanupAttemptId
+  -> CleanupNodeOutcome
+  -> Either
+       CleanupRunClientError
+       DerivedOrdinaryTeardownRecoveryRequirement
+deriveDescriptorBoundRecoveryRequirementAtCompletedOperation
+  bound
+  operationId
+  attemptId
+  outcome = do
+    plan <- case filter
+      ((== operationId) . cleanupNodeOperationId)
+      (cleanupGraphNodes (descriptorBoundCleanupRunGraph bound)) of
+      [candidate] -> Right candidate
+      [] ->
+        Left
+          ( CleanupRunClientDescriptorBindingMismatch
+              "completed recovery operation is absent from the committed graph"
+          )
+      _ ->
+        Left
+          ( CleanupRunClientDescriptorBindingMismatch
+              "completed recovery operation is duplicated in the committed graph"
+          )
+    let nodeId = cleanupNodeId plan
+        run = internalDescriptorBoundCleanupRunValue bound
+    case Map.lookup nodeId (cleanupRunNodeStates run) of
+      Just (CleanupNodeCompleted actualAttempt actualOutcome)
+        | actualAttempt == attemptId && actualOutcome == outcome -> do
+            derived <-
+              withDescriptorBoundCleanupProgram
+                bound
+                ( \_ compiled _ ->
+                    deriveOrdinaryTeardownRecoveryRequirementInternal
+                      compiled
+                      run
+                        { cleanupRunNodeStates =
+                            Map.insert
+                              nodeId
+                              (CleanupNodeRunning attemptId)
+                              (cleanupRunNodeStates run)
+                        }
+                )
+            first CleanupRunClientDescriptorRecoveryRequirementFailed derived
+      _ ->
+        Left
+          ( CleanupRunClientDescriptorBindingMismatch
+              "completed recovery operation does not match the authoritative attempt receipt"
+          )
 
 cleanupRunClient
   :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime

@@ -244,10 +244,10 @@ expectedWorkerEnvelope =
     }
 
 expectedPlanDraw :: ResourceVector
-expectedPlanDraw = ResourceVector 6210 9984 15456 155648
+expectedPlanDraw = ResourceVector 6210 10048 15456 155648
 
 expectedTotal :: ResourceVector
-expectedTotal = ResourceVector 7210 12544 35424 157696
+expectedTotal = ResourceVector 7210 12608 35424 157696
 
 expectedSupersededDisposition :: OneShotWorkerSchedulerDisposition
 expectedSupersededDisposition =

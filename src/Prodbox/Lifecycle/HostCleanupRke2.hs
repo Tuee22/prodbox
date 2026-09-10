@@ -77,7 +77,7 @@ localRke2InstallMarkerPath marker = case marker of
   LocalRke2UninstallScriptMarker -> "/usr/local/bin/rke2-uninstall.sh"
   LocalRke2DataDirectoryMarker -> "/var/lib/rancher/rke2"
   LocalRke2ConfigDirectoryMarker -> "/etc/rancher/rke2"
-  LocalRke2SystemdUnitMarker -> "/etc/systemd/system/rke2-server.service"
+  LocalRke2SystemdUnitMarker -> "/usr/local/lib/systemd/system/rke2-server.service"
   LocalRke2SystemdDropInDirectoryMarker ->
     "/etc/systemd/system/rke2-server.service.d"
   LocalRke2SystemdWantsLinkMarker ->

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Sprint 4.86: the non-public cascade candidate entrypoint's four
+-- | Sprint 4.86: the non-public cascade candidate entrypoint's six
 -- non-authorizing diagnostics.
 --
 -- The entrypoint, its inputs record, its resolved plan, and both closed
@@ -32,4 +32,14 @@ lifecycleTeardownCascadeCandidateSuite =
 
     it "binds the program descriptor to the declared run identity" $
       cascadeCandidateIdentityBindsDescriptor fixedCascadeCandidateRegression
+        `shouldBe` True
+
+    it
+      "CASCADE-QUALIFICATION-RECOVERY-PRIMARY-OUTCOME-CONFLICT-2026-09-09 preserves every recorded primary outcome and resumes cleanup"
+      $ cascadeCandidatePreservesRecordedPrimaryOutcome fixedCascadeCandidateRegression
+        `shouldBe` True
+
+    it
+      "CASCADE-QUALIFICATION-FRESH-DECLARED-LEASE-RUNNER-LOST-2026-09-09 attaches fresh primary success before claiming the epoch lease"
+      $ cascadeCandidateFreshPrimarySurvivesDeclaredLeaseClaim fixedCascadeCandidateRegression
         `shouldBe` True

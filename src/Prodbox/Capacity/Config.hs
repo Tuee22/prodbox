@@ -340,8 +340,8 @@ defaultResourcePlan =
             "authority-backup"
             "authority-backup"
             1
-            (ResourceVector 60 80 256 1)
-            (ResourceVector 60 80 256 1)
+            (ResourceVector 60 144 256 1)
+            (ResourceVector 60 144 256 1)
         , workload "tls-retention" "tls-retention" 1 (ResourceVector 60 80 256 1) (ResourceVector 60 80 256 1)
         , workload
             "target-secret-agent"

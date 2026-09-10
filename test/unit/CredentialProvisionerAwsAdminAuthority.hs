@@ -206,6 +206,10 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminCoordinator
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   ( AwsAdminExecutionError (..)
+  , AwsAdminInstallAttempt (..)
+  , AwsAdminInstallInventory (..)
+  , AwsAdminInstallInventoryDecision (..)
+  , AwsAdminInstallPlanBinding (..)
   , AwsAdminRecoveryRemintCause (..)
   , AwsAdminTargetDeliveryCause (..)
   , AwsAdminTargetObservationCause (..)
@@ -233,6 +237,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   , classifyAwsAdminTargetWorkerObservationFailure
   , classifyAwsAdminWorkerJournalUnavailable
   , classifyAwsAdminWorkerReceiptTransport
+  , decideAwsAdminInstallInventory
   , decodeAwsAdminWorkerReceipt
   , decodeAwsAdminWorkerReceiptTextEnvelope
   , encodeAwsAdminWorkerReceiptTextEnvelope
@@ -2109,6 +2114,44 @@ credentialProvisionerAwsAdminAuthoritySuite =
           classifyAwsAdminAttemptResourceHttpStatus status
             `shouldBe` AwsAdminAttemptResourceUnobservable
 
+    it
+      "FIRST-RECONCILE-DETERMINISTIC-IDENTITY-NONEMPTY-INVENTORY-2026-09-07 scopes initial cleanup to plan ownership"
+      $ do
+        let digest = must (mkTargetValueDigest (Text.replicate 64 "a"))
+            genesis = GenesisBackupKind digest
+        [ decideAwsAdminInstallInventory
+            genesis
+            AwsAdminInstallWithFirstReconcileBinding
+            AwsAdminInstallInitialAttempt
+            AwsAdminInstallInventoryNonempty
+          , decideAwsAdminInstallInventory
+              NormalOperatorMaterialKind
+              AwsAdminInstallWithoutPlanBinding
+              AwsAdminInstallInitialAttempt
+              AwsAdminInstallInventoryNonempty
+          , decideAwsAdminInstallInventory
+              NormalOperatorMaterialKind
+              AwsAdminInstallWithFirstReconcileBinding
+              AwsAdminInstallInitialAttempt
+              AwsAdminInstallInventoryNonempty
+          , decideAwsAdminInstallInventory
+              NormalOperatorMaterialKind
+              AwsAdminInstallWithFirstReconcileBinding
+              AwsAdminInstallRemintAttempt
+              AwsAdminInstallInventoryNonempty
+          , decideAwsAdminInstallInventory
+              genesis
+              AwsAdminInstallWithFirstReconcileBinding
+              AwsAdminInstallInitialAttempt
+              AwsAdminInstallInventoryEmpty
+          ]
+          `shouldBe` [ AwsAdminInstallRequireCleanup
+                     , AwsAdminInstallRefuseNonempty
+                     , AwsAdminInstallRequireCleanup
+                     , AwsAdminInstallRefuseRemint
+                     , AwsAdminInstallProceed
+                     ]
+
     it "Sprint 2.116 binds cleanup continuation to its predecessor and starts before remint" $ do
       let retained = renewalIntentAt renewalOldDeadline imageDigest targetAgent "home"
           replacement =
@@ -2215,121 +2258,152 @@ credentialProvisionerAwsAdminAuthoritySuite =
       awsAdminExecutionJournalPhase restarted
         `shouldBe` AwsAdminExecutionIntentCommitted True
 
-    it "Sprint 2.116 preserves the Genesis program while binding its cleanup predecessor" $ do
-      let genesisPlan = GenesisPlan "genesis-plan-digest" "authority-backup-store/home"
-          retainedFirstPlan = defaultFirstReconcileProvisioningPlan renewalOldDeadline
-          retainedMember = case firstReconcilePlanMembers retainedFirstPlan of
-            member : _ -> member
-            [] -> error "compiled first-reconcile plan has no genesis member"
-          retainedPlanBinding =
-            mkFirstReconcilePermitBinding
-              (firstReconcilePlanDigest retainedFirstPlan)
-              (firstReconcilePlanMemberIndex retainedMember)
-              (firstReconcilePlanMemberDigest retainedMember)
-              Nothing
-          canonicalize activeDeadline selectedAgent intent =
-            must
-              ( bindAwsAdminPermitIntentPreparedTarget
-                  (Just (genesisPlan, retainedMember))
-                  (Just retainedPlanBinding)
-                  activeDeadline
-                  "owner-nonce-1"
-                  1
-                  selectedAgent
-                  intent
-              )
-          genesisIntentAt activeDeadline selectedAgent =
-            canonicalize activeDeadline selectedAgent rawIntent
-           where
-            callerPlan = defaultFirstReconcileProvisioningPlan activeDeadline
-            genesisPermit =
+    it
+      "FIRST-RECONCILE-DETERMINISTIC-IDENTITY-NONEMPTY-INVENTORY-2026-09-07 admits only exact plan-bound initial cleanup"
+      $ do
+        let genesisPlan = GenesisPlan "genesis-plan-digest" "authority-backup-store/home"
+            retainedFirstPlan = defaultFirstReconcileProvisioningPlan renewalOldDeadline
+            retainedMember = case firstReconcilePlanMembers retainedFirstPlan of
+              member : _ -> member
+              [] -> error "compiled first-reconcile plan has no genesis member"
+            retainedPlanBinding =
+              mkFirstReconcilePermitBinding
+                (firstReconcilePlanDigest retainedFirstPlan)
+                (firstReconcilePlanMemberIndex retainedMember)
+                (firstReconcilePlanMemberDigest retainedMember)
+                Nothing
+            canonicalize activeDeadline selectedAgent intent =
               must
-                ( mkGenesisBackupPermit
-                    genesisPlan
-                    callerPlan
-                    (initialFirstReconcileCursor callerPlan)
-                    (must (mkOperatorMaterialPermitId "permit-authority-test"))
-                    (must (mkOperatorMaterialOperationId operationId))
-                    generation
+                ( bindAwsAdminPermitIntentPreparedTarget
+                    (Just (genesisPlan, retainedMember))
+                    (Just retainedPlanBinding)
                     activeDeadline
-                    "operator-signature"
+                    "owner-nonce-1"
+                    1
+                    selectedAgent
+                    intent
                 )
-            rawIntent =
-              withGenesisBackupOperatorPermit genesisPermit $ \genesisOperatorPermit ->
-                let prepared =
-                      must
-                        ( mkPreparedCredentialTargetObservation
-                            "owner-nonce-1"
-                            1
-                            selectedAgent
-                            (TargetAwsCredential AwsAuthorityBackupStore)
-                            generation
-                            (operatorMaterialPermitRequestDigest genesisOperatorPermit)
-                            receiptDigest
-                            (operatorMaterialPermitPlanBinding genesisOperatorPermit)
-                            activeDeadline
-                        )
-                 in must
-                      ( mkGenesisAwsAdminPermitIntent
-                          genesisPermit
-                          ( must
-                              ( mkAuthorityBackupIamParameters
-                                  (fixtureAwsRegion FixtureUsWest2)
-                                  "prodbox-retained"
-                                  ["authority-backup-store/home"]
-                              )
-                          )
-                          imageDigest
-                          "home"
-                          "http://lifecycle-authority.lifecycle-authority.svc:8600"
-                          prepared
-                      )
-          retained = genesisIntentAt renewalOldDeadline targetAgent
-          replacement = genesisIntentAt renewalNewDeadline renewalTargetAgent
-      predecessorPermit <- authorizedPermitFor retained
-      let authorized = AwsAdminAuthorityAuthorized predecessorPermit
-          cleanupProof =
-            must
-              ( proveAwsAdminAuthorizedRecovery
-                  renewalNow
-                  authorized
-                  AwsAdminAttemptResourceAbsent
-                  AwsAdminAttemptResourceAbsent
-                  ( AwsAdminAttemptJournalCleanupContinuation
-                      AwsAdminRecoveryKeyCreatedRemintUsed
+            genesisIntentAt activeDeadline selectedAgent =
+              canonicalize activeDeadline selectedAgent rawIntent
+             where
+              callerPlan = defaultFirstReconcileProvisioningPlan activeDeadline
+              genesisPermit =
+                must
+                  ( mkGenesisBackupPermit
+                      genesisPlan
+                      callerPlan
+                      (initialFirstReconcileCursor callerPlan)
+                      (must (mkOperatorMaterialPermitId "permit-authority-test"))
+                      (must (mkOperatorMaterialOperationId operationId))
+                      generation
+                      activeDeadline
+                      "operator-signature"
                   )
-              )
-          noEffectProof =
-            must
-              ( proveAwsAdminAuthorizedRecovery
-                  renewalNow
-                  authorized
-                  AwsAdminAttemptResourceAbsent
-                  AwsAdminAttemptResourceAbsent
-                  AwsAdminAttemptJournalAbsent
-              )
-          cleanupIntent =
-            canonicalize
-              renewalNewDeadline
-              renewalTargetAgent
-              (must (bindAwsAdminAuthorizedRecoveryIntent cleanupProof replacement))
-          cleanupIsGenesis = case awsAdminPermitIntentKind cleanupIntent of
-            CleanupRecoveryKind (GenesisBackupCleanupProgram _) _ -> True
-            _ -> False
-      cleanupIsGenesis `shouldBe` True
-      awsAdminGenesisKindMatches genesisPlan retainedMember cleanupIntent `shouldBe` True
-      bindAwsAdminAuthorizedRecoveryIntent noEffectProof replacement
-        `shouldBe` Right replacement
-      commitAwsAdminPreparedAuthorizedRecovery cleanupProof cleanupIntent authorized
-        `shouldBe` Right (AwsAdminAuthorityPrepared cleanupIntent)
-      cleanupPermit <- authorizedPermitFor cleanupIntent
-      let cleanupPermitRoundTrips =
-            case decodeSignedAwsAdminPermit (encodeSignedAwsAdminPermit cleanupPermit) of
-              Left _ -> False
-              Right somePermit -> withSomeSignedAwsAdminPermit somePermit (== cleanupPermit)
-      cleanupPermitRoundTrips `shouldBe` True
-      awsAdminExecutionJournalPhase (initialAwsAdminExecutionJournal cleanupPermit)
-        `shouldBe` AwsAdminExecutionCleanupRequired False
+              rawIntent =
+                withGenesisBackupOperatorPermit genesisPermit $ \genesisOperatorPermit ->
+                  let prepared =
+                        must
+                          ( mkPreparedCredentialTargetObservation
+                              "owner-nonce-1"
+                              1
+                              selectedAgent
+                              (TargetAwsCredential AwsAuthorityBackupStore)
+                              generation
+                              (operatorMaterialPermitRequestDigest genesisOperatorPermit)
+                              receiptDigest
+                              (operatorMaterialPermitPlanBinding genesisOperatorPermit)
+                              activeDeadline
+                          )
+                   in must
+                        ( mkGenesisAwsAdminPermitIntent
+                            genesisPermit
+                            ( must
+                                ( mkAuthorityBackupIamParameters
+                                    (fixtureAwsRegion FixtureUsWest2)
+                                    "prodbox-retained"
+                                    ["authority-backup-store/home"]
+                                )
+                            )
+                            imageDigest
+                            "home"
+                            "http://lifecycle-authority.lifecycle-authority.svc:8600"
+                            prepared
+                        )
+            retained = genesisIntentAt renewalOldDeadline targetAgent
+            replacement = genesisIntentAt renewalNewDeadline renewalTargetAgent
+        predecessorPermit <- authorizedPermitFor retained
+        normalPermit <-
+          authorizedPermitFor
+            (renewalIntentAt renewalOldDeadline imageDigest targetAgent "home")
+        unboundNormalPermit <-
+          authorizedPermitFor
+            (postFirstReconcileRenewalIntentAt renewalOldDeadline imageDigest targetAgent "home")
+        let genesisJournal = initialAwsAdminExecutionJournal predecessorPermit
+            normalJournal = initialAwsAdminExecutionJournal normalPermit
+            unboundNormalJournal = initialAwsAdminExecutionJournal unboundNormalPermit
+            genesisCleanup =
+              stepAwsAdminExecutionJournal
+                (RequireAwsAdminStableCleanup False)
+                genesisJournal
+        (awsAdminExecutionJournalPhase <$> genesisCleanup)
+          `shouldBe` Right (AwsAdminExecutionCleanupRequired False)
+        ( awsAdminExecutionJournalPhase
+            <$> stepAwsAdminExecutionJournal
+              (RequireAwsAdminStableCleanup False)
+              normalJournal
+          )
+          `shouldBe` Right (AwsAdminExecutionCleanupRequired False)
+        stepAwsAdminExecutionJournal
+          (RequireAwsAdminStableCleanup False)
+          unboundNormalJournal
+          `shouldBe` Left AwsAdminExecutionTransitionRefused
+        stepAwsAdminExecutionJournal
+          (RequireAwsAdminStableCleanup True)
+          genesisJournal
+          `shouldBe` Left AwsAdminExecutionTransitionRefused
+        let authorized = AwsAdminAuthorityAuthorized predecessorPermit
+            cleanupProof =
+              must
+                ( proveAwsAdminAuthorizedRecovery
+                    renewalNow
+                    authorized
+                    AwsAdminAttemptResourceAbsent
+                    AwsAdminAttemptResourceAbsent
+                    ( AwsAdminAttemptJournalCleanupContinuation
+                        AwsAdminRecoveryKeyCreatedRemintUsed
+                    )
+                )
+            noEffectProof =
+              must
+                ( proveAwsAdminAuthorizedRecovery
+                    renewalNow
+                    authorized
+                    AwsAdminAttemptResourceAbsent
+                    AwsAdminAttemptResourceAbsent
+                    AwsAdminAttemptJournalAbsent
+                )
+            cleanupIntent =
+              canonicalize
+                renewalNewDeadline
+                renewalTargetAgent
+                (must (bindAwsAdminAuthorizedRecoveryIntent cleanupProof replacement))
+            cleanupIsGenesis = case awsAdminPermitIntentKind cleanupIntent of
+              CleanupRecoveryKind (GenesisBackupCleanupProgram _) _ -> True
+              _ -> False
+        cleanupIsGenesis `shouldBe` True
+        awsAdminGenesisKindMatches genesisPlan retainedMember cleanupIntent `shouldBe` True
+        bindAwsAdminAuthorizedRecoveryIntent noEffectProof replacement
+          `shouldBe` Right replacement
+        commitAwsAdminPreparedAuthorizedRecovery cleanupProof cleanupIntent authorized
+          `shouldBe` Right (AwsAdminAuthorityPrepared cleanupIntent)
+        cleanupPermit <- authorizedPermitFor cleanupIntent
+        let cleanupPermitRoundTrips =
+              case decodeSignedAwsAdminPermit (encodeSignedAwsAdminPermit cleanupPermit) of
+                Left _ -> False
+                Right somePermit -> withSomeSignedAwsAdminPermit somePermit (== cleanupPermit)
+        cleanupPermitRoundTrips `shouldBe` True
+        awsAdminExecutionJournalPhase (initialAwsAdminExecutionJournal cleanupPermit)
+          `shouldBe` AwsAdminExecutionCleanupRequired False
 
     it "Sprint 2.115 preserves outbox-before-state order and exact CAS response-loss recovery" $ do
       let retained = renewalIntentAt renewalOldDeadline imageDigest targetAgent "home"

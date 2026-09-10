@@ -1403,6 +1403,18 @@ regressionRegisteredInterpreter providerCalls =
           pure (TeardownProviderRefused "fixed dispatcher Provider refusal")
     , awsRegisteredTargetReadStackDecisionInputs =
         \_ _ _ -> pure (Left "fixed decision reader refusal")
+    , awsRegisteredTargetReadStackCreationBinding =
+        \operationId key scope ->
+          pure
+            ( firstShow
+                ( mkAwsStackProviderBinding
+                    operationId
+                    key
+                    scope
+                    regressionProviderRevision
+                    (regressionProviderConfig key)
+                )
+            )
     , awsRegisteredTargetReadStackProviderBinding =
         \operationId key scope ->
           pure

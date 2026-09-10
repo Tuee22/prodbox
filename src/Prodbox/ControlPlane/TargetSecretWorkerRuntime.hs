@@ -14,7 +14,9 @@ module Prodbox.ControlPlane.TargetSecretWorkerRuntime
   , retainedTargetWorkerRewrapBoundary
   , TargetSecretWorkerRuntimeError (..)
   , renderTargetSecretWorkerRuntimeRefusal
+  , targetSecretWorkerTlsHomeRewrapRefusalTokens
   , targetSecretWorkerTlsApplyRefusalTokens
+  , classifyTlsHomeRewrapWorkerResult
   , targetSecretWorkerCommitmentKey
   , targetSecretWorkerTrustPath
   , targetWorkerServiceLoginAccepted
@@ -162,6 +164,10 @@ import Prodbox.ControlPlane.TargetWorkerExecutionPermit
   , verifiedPermitServiceAccountUid
   , verifiedPermitSessionBinding
   , verifyTargetWorkerExecutionPermit
+  )
+import Prodbox.ControlPlane.TlsDekExchange
+  ( TlsDekExchangeError (..)
+  , TlsDekTransitFailure (..)
   )
 import Prodbox.ControlPlane.TlsTargetAgentEndpoint
   ( TlsHomeRewrapRequest (..)
@@ -326,6 +332,8 @@ data TargetSecretWorkerRuntimeError
   | TargetSecretWorkerTlsRetainProductionBoundaryUnavailable
   | TargetSecretWorkerTlsRetainFailed !TlsTargetAgentError
   | TargetSecretWorkerTlsRetainBadRequest
+  | TargetSecretWorkerTlsHomeRewrapFailed !TlsTargetAgentError
+  | TargetSecretWorkerTlsHomeRewrapBadRequest
   | TargetSecretWorkerTlsRestoreProductionBoundaryUnavailable
   | TargetSecretWorkerTlsRestoreFailed !TlsTargetAgentError
   | TargetSecretWorkerTlsRestoreBadRequest
@@ -342,12 +350,149 @@ renderTargetSecretWorkerRuntimeRefusal runtimeError = case runtimeError of
   TargetSecretWorkerTlsRetainFailed targetError ->
     "tls-retain/" <> renderTlsTargetAgentError targetError
   TargetSecretWorkerTlsRetainBadRequest -> "tls-retain/bad-request"
+  TargetSecretWorkerTlsHomeRewrapFailed targetError ->
+    "tls-home-rewrap/" <> renderTlsHomeRewrapTargetError targetError
+  TargetSecretWorkerTlsHomeRewrapBadRequest -> "tls-home-rewrap/bad-request"
   TargetSecretWorkerTlsRestoreProductionBoundaryUnavailable ->
     "tls-restore/production-boundary-unavailable"
   TargetSecretWorkerTlsRestoreFailed targetError ->
     "tls-restore/" <> renderTlsTargetAgentError targetError
   TargetSecretWorkerTlsRestoreBadRequest -> "tls-restore/bad-request"
   _ -> "target-worker-materialization-refused"
+
+renderTlsHomeRewrapTargetError :: TlsTargetAgentError -> Text
+renderTlsHomeRewrapTargetError targetError = case targetError of
+  TlsTargetDekExchangeFailed exchangeError ->
+    "dek-exchange-failed/"
+      <> renderTlsDekExchangeRefusalCause
+        (classifyTlsDekExchangeError exchangeError)
+      <> renderTlsDekTransitFailureSuffix exchangeError
+  _ -> "other-target-error"
+
+renderTlsDekTransitFailureSuffix :: TlsDekExchangeError -> Text
+renderTlsDekTransitFailureSuffix exchangeError = case exchangeError of
+  TlsDekTransitUnwrapUnavailable failure ->
+    "/" <> renderTlsDekTransitFailure failure
+  _ -> ""
+
+data TlsDekExchangeRefusalCause
+  = TlsDekRefusalLengthInvalid
+  | TlsDekRefusalPublicKeyInvalid
+  | TlsDekRefusalSecretKeyInvalid
+  | TlsDekRefusalPrivateTokenInvalid
+  | TlsDekRefusalPrivateTokenUnavailable
+  | TlsDekRefusalEnvelopeBindingMismatch
+  | TlsDekRefusalEnvelopeVersionUnsupported
+  | TlsDekRefusalCipherFailed
+  | TlsDekRefusalTransitWrapUnavailable
+  | TlsDekRefusalTransitUnwrapUnavailable
+  | TlsDekRefusalWrappedCiphertextInvalid
+  deriving stock (Bounded, Enum, Eq, Show)
+
+classifyTlsDekExchangeError :: TlsDekExchangeError -> TlsDekExchangeRefusalCause
+classifyTlsDekExchangeError exchangeError = case exchangeError of
+  TlsDekLengthInvalid _ -> TlsDekRefusalLengthInvalid
+  TlsDekPublicKeyInvalid -> TlsDekRefusalPublicKeyInvalid
+  TlsDekSecretKeyInvalid -> TlsDekRefusalSecretKeyInvalid
+  TlsDekPrivateTokenInvalid -> TlsDekRefusalPrivateTokenInvalid
+  TlsDekPrivateTokenUnavailable _ -> TlsDekRefusalPrivateTokenUnavailable
+  TlsDekEnvelopeBindingMismatch -> TlsDekRefusalEnvelopeBindingMismatch
+  TlsDekEnvelopeVersionUnsupported _ -> TlsDekRefusalEnvelopeVersionUnsupported
+  TlsDekCipherFailed _ -> TlsDekRefusalCipherFailed
+  TlsDekTransitWrapUnavailable _ -> TlsDekRefusalTransitWrapUnavailable
+  TlsDekTransitUnwrapUnavailable _ -> TlsDekRefusalTransitUnwrapUnavailable
+  TlsDekWrappedCiphertextInvalid -> TlsDekRefusalWrappedCiphertextInvalid
+
+renderTlsDekExchangeRefusalCause :: TlsDekExchangeRefusalCause -> Text
+renderTlsDekExchangeRefusalCause cause = case cause of
+  TlsDekRefusalLengthInvalid -> "length-invalid"
+  TlsDekRefusalPublicKeyInvalid -> "public-key-invalid"
+  TlsDekRefusalSecretKeyInvalid -> "secret-key-invalid"
+  TlsDekRefusalPrivateTokenInvalid -> "private-token-invalid"
+  TlsDekRefusalPrivateTokenUnavailable -> "private-token-unavailable"
+  TlsDekRefusalEnvelopeBindingMismatch -> "envelope-binding-mismatch"
+  TlsDekRefusalEnvelopeVersionUnsupported -> "envelope-version-unsupported"
+  TlsDekRefusalCipherFailed -> "cipher-failed"
+  TlsDekRefusalTransitWrapUnavailable -> "transit-wrap-unavailable"
+  TlsDekRefusalTransitUnwrapUnavailable -> "transit-unwrap-unavailable"
+  TlsDekRefusalWrappedCiphertextInvalid -> "wrapped-ciphertext-invalid"
+
+renderTlsDekTransitFailure :: TlsDekTransitFailure -> Text
+renderTlsDekTransitFailure failure = case failure of
+  TlsDekTransitSessionAcquisitionSealed -> "session-acquisition-sealed"
+  TlsDekTransitSessionAcquisitionForbidden -> "session-acquisition-forbidden"
+  TlsDekTransitSessionAcquisitionUnavailable -> "session-acquisition-unavailable"
+  TlsDekTransitSessionReloginSealed -> "session-relogin-sealed"
+  TlsDekTransitSessionReloginForbidden -> "session-relogin-forbidden"
+  TlsDekTransitSessionReloginUnavailable -> "session-relogin-unavailable"
+  TlsDekTransitRequestBadRequestMissingCiphertext ->
+    "request-bad-request/missing-ciphertext"
+  TlsDekTransitRequestBadRequestKeyNotFound ->
+    "request-bad-request/key-not-found"
+  TlsDekTransitRequestBadRequestCiphertextNoPrefix ->
+    "request-bad-request/ciphertext-no-prefix"
+  TlsDekTransitRequestBadRequestCiphertextWrongFields ->
+    "request-bad-request/ciphertext-wrong-fields"
+  TlsDekTransitRequestBadRequestCiphertextVersionUndecodable ->
+    "request-bad-request/ciphertext-version-undecodable"
+  TlsDekTransitRequestBadRequestCiphertextVersionTooNew ->
+    "request-bad-request/ciphertext-version-too-new"
+  TlsDekTransitRequestBadRequestCiphertextVersionTooOld ->
+    "request-bad-request/ciphertext-version-too-old"
+  TlsDekTransitRequestBadRequestConvergentNonceInvalid ->
+    "request-bad-request/convergent-nonce-invalid"
+  TlsDekTransitRequestBadRequestCiphertextBase64Invalid ->
+    "request-bad-request/ciphertext-base64-invalid"
+  TlsDekTransitRequestBadRequestCiphertextLengthInvalid ->
+    "request-bad-request/ciphertext-length-invalid"
+  TlsDekTransitRequestBadRequestCiphertextAuthenticationFailed ->
+    "request-bad-request/ciphertext-authentication-failed"
+  TlsDekTransitRequestBadRequestOther -> "request-bad-request/other"
+  TlsDekTransitRequestUnauthorized -> "request-unauthorized"
+  TlsDekTransitRequestForbidden -> "request-forbidden"
+  TlsDekTransitRequestNotFound -> "request-not-found"
+  TlsDekTransitRequestThrottled -> "request-throttled"
+  TlsDekTransitRequestClientFailure -> "request-client-failure"
+  TlsDekTransitRequestServerFailure -> "request-server-failure"
+  TlsDekTransitRequestUnexpectedStatus -> "request-unexpected-status"
+  TlsDekTransitRequestConnectionFailure -> "request-connection-failure"
+  TlsDekTransitRequestTimeout -> "request-timeout"
+  TlsDekTransitRequestDecodeFailure -> "request-decode-failure"
+  TlsDekTransitUnexpectedException -> "unexpected-exception"
+
+-- | Exact home-rewrap runtime tokens admitted by the standing Target Agent.
+targetSecretWorkerTlsHomeRewrapRefusalTokens :: [Text]
+targetSecretWorkerTlsHomeRewrapRefusalTokens =
+  ["tls-home-rewrap/bad-request", "tls-home-rewrap/other-target-error"]
+    <> [ "tls-home-rewrap/dek-exchange-failed/"
+           <> renderTlsDekExchangeRefusalCause cause
+       | cause <- [minBound .. maxBound]
+       , cause /= TlsDekRefusalTransitUnwrapUnavailable
+       ]
+    <> [ "tls-home-rewrap/dek-exchange-failed/transit-unwrap-unavailable/"
+           <> renderTlsDekTransitFailure failure
+       | failure <- [minBound .. maxBound]
+       ]
+
+-- | Promote only the exact Transit authentication-failed observation to a
+-- typed, payload-free operation result. Every other failure remains on the
+-- ordinary refused-completion path.
+classifyTlsHomeRewrapWorkerResult
+  :: TlsHomeRewrapResult
+  -> Either TargetSecretWorkerRuntimeError TargetWorkerOperationResult
+classifyTlsHomeRewrapWorkerResult result = case result of
+  TlsHomeRewrapped envelope -> Right (TargetWorkerTlsHomeRewrappedResult envelope)
+  TlsHomeRewrapFailed
+    ( TlsTargetDekExchangeFailed
+        ( TlsDekTransitUnwrapUnavailable
+            TlsDekTransitRequestBadRequestCiphertextAuthenticationFailed
+          )
+      ) ->
+      Right TargetWorkerTlsHomeRewrapCiphertextAuthenticationFailedResult
+  TlsHomeRewrapFailed err -> Left (TargetSecretWorkerTlsHomeRewrapFailed err)
+  TlsHomeRewrapBadRequest _ -> Left TargetSecretWorkerTlsHomeRewrapBadRequest
+  TlsHomeRewrapCiphertextAuthenticationFailed ->
+    Right TargetWorkerTlsHomeRewrapCiphertextAuthenticationFailedResult
 
 renderTlsTargetAgentError :: TlsTargetAgentError -> Text
 renderTlsTargetAgentError targetError = case targetError of
@@ -626,9 +771,7 @@ executeOperation session rewrap attestation operation = case operation of
         transit
         (tlsHomeRewrapWrappedDek request)
         (tlsHomeRewrapTargetPublicKey request)
-    pure $ case result of
-      TlsHomeRewrapped envelope -> Right (TargetWorkerTlsHomeRewrappedResult envelope)
-      _ -> Left TargetSecretWorkerOperationRefused
+    pure (classifyTlsHomeRewrapWorkerResult result)
   TargetWorkerTlsRestoreInput request -> do
     boundaries <- tlsTargetAgentProductionBoundaries session
     case boundaries of

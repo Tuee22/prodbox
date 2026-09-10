@@ -81,6 +81,21 @@ lifecycleTeardownAwsRegisteredTargetInterpreterSuite =
             _ -> False
       map snd calls `shouldSatisfy` hasObservationAndReadBack
 
+    it "closes CASCADE-QUALIFICATION-STACK-READER-ROLE-IDENTITY-MISMATCH-2026-09-09" $ do
+      environment <- newEnvironment BoundaryHealthy DecisionPrimary False
+      let observePlan = nodeFor ObserveNode AwsTestKey
+          reconcilePlan = nodeFor ReconcileNode AwsTestKey
+          readBackPlan = nodeFor ReadBackNode AwsTestKey
+          reconcileOperation = cleanupNodeOperationId reconcilePlan
+      runNode environment observePlan `shouldReturn` CleanupNodeSucceeded
+      readIORef (fakeCreationBindingCalls environment)
+        `shouldReturn` [cleanupNodeOperationId observePlan]
+      readIORef (fakeBundleBindingCalls environment) `shouldReturn` []
+      runNode environment reconcilePlan `shouldReturn` CleanupNodeSucceeded
+      runNode environment readBackPlan `shouldReturn` CleanupNodeSucceeded
+      readIORef (fakeBundleBindingCalls environment)
+        `shouldReturn` [reconcileOperation, reconcileOperation]
+
     it "keeps unavailable and refused observations unobservable, never absent" $ do
       mapM_
         ( \mode -> do
@@ -290,6 +305,8 @@ data FakeEnvironment = FakeEnvironment
   , fakeDecisionMode :: !DecisionMode
   , fakeWrongProviderBinding :: !Bool
   , fakeProviderCalls :: !(IORef [(ClientSubmissionKey, ProviderIntent)])
+  , fakeCreationBindingCalls :: !(IORef [CleanupOperationId])
+  , fakeBundleBindingCalls :: !(IORef [CleanupOperationId])
   , fakeVerifiedEksDecisions
       :: !( IORef
               [ Either
@@ -350,6 +367,8 @@ newEnvironment
   :: BoundaryMode -> DecisionMode -> Bool -> IO FakeEnvironment
 newEnvironment boundaryMode decisionMode wrongProviderBinding = do
   calls <- newIORef []
+  creationBindingCalls <- newIORef []
+  bundleBindingCalls <- newIORef []
   verifiedEksDecisions <- newIORef []
   pure
     FakeEnvironment
@@ -357,6 +376,8 @@ newEnvironment boundaryMode decisionMode wrongProviderBinding = do
       , fakeDecisionMode = decisionMode
       , fakeWrongProviderBinding = wrongProviderBinding
       , fakeProviderCalls = calls
+      , fakeCreationBindingCalls = creationBindingCalls
+      , fakeBundleBindingCalls = bundleBindingCalls
       , fakeVerifiedEksDecisions = verifiedEksDecisions
       }
 
@@ -373,8 +394,15 @@ interpreterFor environment =
     , awsRegisteredTargetReadStackDecisionInputs =
         \operationId key scope ->
           pure (firstText (decisionInputs environment operationId key scope))
+    , awsRegisteredTargetReadStackCreationBinding =
+        \operationId key scope -> do
+          liftInterpreterIO
+            (modifyIORef' (fakeCreationBindingCalls environment) (<> [operationId]))
+          pure (firstText (providerBinding environment operationId key scope))
     , awsRegisteredTargetReadStackProviderBinding =
-        \operationId key scope ->
+        \operationId key scope -> do
+          liftInterpreterIO
+            (modifyIORef' (fakeBundleBindingCalls environment) (<> [operationId]))
           pure (firstText (providerBinding environment operationId key scope))
     , awsRegisteredTargetPresentEksDestroyBoundary =
         mkAwsEksPresentDestroyBoundary $ \_ _ _ ->

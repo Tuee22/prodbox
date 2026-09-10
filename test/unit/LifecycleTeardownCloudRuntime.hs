@@ -265,6 +265,18 @@ registeredInterpreter environment owner =
             )
     , awsRegisteredTargetReadStackDecisionInputs =
         \_ _ _ -> pure (Left "fixture decision reader refused")
+    , awsRegisteredTargetReadStackCreationBinding =
+        \operationId key scope ->
+          pure
+            ( firstText
+                ( mkAwsStackProviderBinding
+                    operationId
+                    key
+                    scope
+                    providerRevision
+                    (providerConfig key)
+                )
+            )
     , awsRegisteredTargetReadStackProviderBinding =
         \operationId key scope ->
           pure

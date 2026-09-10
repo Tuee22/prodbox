@@ -36,8 +36,12 @@ import Prodbox.ControlPlane.TargetSecretWorker
   , encodeTargetWorkerReceipt
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
-  ( SignedAwsAdminPermit
+  ( AwsAdminPermitIntent
+  , AwsAdminPermitKind (..)
+  , SignedAwsAdminPermit
   , awsAdminPermitIntentCleanupPredecessor
+  , awsAdminPermitIntentKind
+  , awsAdminPermitIntentPlanBinding
   , decodeSignedAwsAdminPermit
   , encodeSignedAwsAdminPermit
   , signedAwsAdminPermitIntent
@@ -124,8 +128,21 @@ stepAwsAdminExecutionJournal
   -> AwsAdminExecutionJournal
   -> Either AwsAdminExecutionJournalError AwsAdminExecutionJournal
 stepAwsAdminExecutionJournal event journal = do
-  nextPhase <- stepPhase event (awsAdminExecutionJournalPhase journal)
+  nextPhase <-
+    case (awsAdminExecutionJournalPhase journal, event) of
+      (AwsAdminExecutionIntentCommitted False, RequireAwsAdminStableCleanup False) ->
+        if initialCleanupAuthority (signedAwsAdminPermitIntent (awsAdminExecutionJournalPermit journal))
+          then Right (AwsAdminExecutionCleanupRequired False)
+          else Left AwsAdminExecutionTransitionRefused
+      _ -> stepPhase event (awsAdminExecutionJournalPhase journal)
   pure journal {internalAwsAdminExecutionJournalPhase = nextPhase}
+
+initialCleanupAuthority :: AwsAdminPermitIntent -> Bool
+initialCleanupAuthority intent =
+  case (awsAdminPermitIntentKind intent, awsAdminPermitIntentPlanBinding intent) of
+    (GenesisBackupKind _, Just _) -> True
+    (NormalOperatorMaterialKind, Just _) -> True
+    _ -> False
 
 stepPhase
   :: AwsAdminExecutionEvent

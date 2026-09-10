@@ -17,6 +17,7 @@ import Data.Text qualified as Text
 import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
 import Prodbox.ControlPlane.AuthenticatedRuntime
 import Prodbox.ControlPlane.AuthenticatedTransport
@@ -61,6 +62,9 @@ import Prodbox.ControlPlane.Coordinate
 import Prodbox.ControlPlane.ProjectionImportEndpoint
   ( unavailableProjectionImportHandler
   )
+import Prodbox.ControlPlane.ProviderWorkerClient
+  ( providerWorkerResponseMaximumBytes
+  )
 import Prodbox.ControlPlane.PulumiCheckpointEndpoint
   ( PulumiCheckpointHandler
   , PulumiCheckpointObservation (PulumiCheckpointMissing)
@@ -97,11 +101,18 @@ import Prodbox.ControlPlane.Route
   , routesForRole
   )
 import Prodbox.ControlPlane.Runtime
-  ( authorityBackupReconcileAttemptRequestMaximum
+  ( authorityBackupCascadeCandidateRequestMaximum
+  , authorityBackupQualificationAttemptRequestMaximum
+  , authorityBackupQualificationPreludeRequestMaximum
+  , authorityBackupReconcileAttemptRequestMaximum
   , authorityBackupReplayCapacity
+  , authorityBackupReplayMaximumEncodedBytes
   , lifecycleAuthorityFirstReconcileRequestMaximum
   , lifecycleAuthorityReconcileAttemptRequestMaximum
   , lifecycleAuthorityReplayCapacity
+  , providerWorkerQualificationAttemptRequestMaximum
+  , providerWorkerReplayCapacity
+  , providerWorkerReplayMaximumEncodedBytes
   , targetSecretAgentReconcileAttemptRequestMaximum
   , targetSecretAgentReplayCapacity
   , targetSecretAgentReplayMaximumEncodedBytes
@@ -130,18 +141,50 @@ import Prodbox.Lifecycle.Authority.Submission
   , OperationId (OperationId)
   , RequestDigest (RequestDigest)
   )
+import Prodbox.Lifecycle.CheckpointAuthority
+  ( ModelBCodec (encodeModelBValue)
+  )
+import Prodbox.Lifecycle.CleanupRun
+  ( CleanupNodeOutcome (CleanupNodeSucceeded)
+  , CleanupPrimaryOutcome (CleanupPrimarySucceeded)
+  , CleanupRunStored (CleanupRunStoredDescriptorBoundActive)
+  , beginCleanupNode
+  , claimCleanupRun
+  , cleanupDigestOfBytes
+  , cleanupGraphNodes
+  , cleanupNodeId
+  , cleanupRunStoredCodec
+  , completeCleanupNode
+  , mkCleanupAttemptId
+  , mkCleanupOwnerId
+  , mkCleanupRunId
+  , newCleanupRun
+  , recordPrimaryOutcome
+  )
 import Prodbox.Lifecycle.Lease
   ( AuthorityDuration
   , AuthorityTime
   , authorityDurationFromMicros
   , authorityTimeFromMicros
   )
+import Prodbox.Lifecycle.Teardown.Graph
+  ( compileDesiredAbsenceGraph
+  , compiledDesiredAbsenceGraph
+  )
+import Prodbox.Lifecycle.Teardown.Model
+  ( AwsAccountId (AwsAccountId)
+  , AwsRegion (AwsRegion)
+  , AwsScope (AwsScope)
+  , CleanupSurfaceWitness (CascadeSurface)
+  , LinuxRke2FoundationId (LinuxRke2FoundationId)
+  )
 import Prodbox.Runtime.Role
   ( RuntimeRole (..)
   )
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
-  ( assertFailure
+  ( assertBool
+  , assertFailure
   , testCase
   , (@?=)
   )
@@ -330,15 +373,15 @@ replayPureTests =
         requestReplayEntryCount priorProjection @?= 64
         currentDecisions @?= replicate 120 ReplayReservationFresh
         requestReplayEntryCount currentProjection @?= 120
-    , testCase "sizes the Authority Backup Adapter for repair plus config and one retry" $ do
+    , testCase "sizes Authority Backup for the complete qualification cascade and one retry" $ do
         let priorLimits = mustRight (mkRequestReplayLimits 4 64 skew)
             currentLimits =
               mustRight
                 (mkRequestReplayLimits authorityBackupReplayCapacity 64 skew)
-            requestCount = 2 * authorityBackupReconcileAttemptRequestMaximum
+            requestCount = 2 * authorityBackupQualificationAttemptRequestMaximum
             requests =
               [ verifiedFor
-                  (mustRight (mkRequestNonce (ByteString.replicate 16 (fromIntegral index))))
+                  (nonceForIndex index)
                   body
               | index <- [1 .. requestCount]
               ]
@@ -347,13 +390,159 @@ replayPureTests =
             (currentDecisions, currentProjection) =
               reserveRequestSequence currentLimits requests
         authorityBackupReconcileAttemptRequestMaximum @?= 9
-        authorityBackupReplayCapacity @?= 18
+        authorityBackupQualificationPreludeRequestMaximum @?= 13
+        authorityBackupCascadeCandidateRequestMaximum @?= 505
+        authorityBackupQualificationAttemptRequestMaximum @?= 518
+        authorityBackupReplayCapacity @?= 1036
         priorDecisions
           @?= replicate 4 ReplayReservationFresh
-            <> replicate 14 ReplayReservationCapacityExhausted
+            <> replicate 1032 ReplayReservationCapacityExhausted
         requestReplayEntryCount priorProjection @?= 4
-        currentDecisions @?= replicate 18 ReplayReservationFresh
-        requestReplayEntryCount currentProjection @?= 18
+        currentDecisions @?= replicate 1036 ReplayReservationFresh
+        requestReplayEntryCount currentProjection @?= 1036
+    , testCase "sizes Provider Worker for the complete qualification cascade and one retry" $ do
+        let priorLimits = mustRight (mkRequestReplayLimits 4 64 skew)
+            currentLimits =
+              mustRight
+                (mkRequestReplayLimits providerWorkerReplayCapacity 64 skew)
+            requestCount = 2 * providerWorkerQualificationAttemptRequestMaximum
+            requests =
+              [ verifiedFor (nonceForIndex index) body
+              | index <- [1 .. requestCount]
+              ]
+            (priorDecisions, priorProjection) =
+              reserveRequestSequence priorLimits requests
+            (currentDecisions, currentProjection) =
+              reserveRequestSequence currentLimits requests
+        providerWorkerQualificationAttemptRequestMaximum @?= 40
+        providerWorkerReplayCapacity @?= 80
+        priorDecisions
+          @?= replicate 4 ReplayReservationFresh
+            <> replicate 76 ReplayReservationCapacityExhausted
+        requestReplayEntryCount priorProjection @?= 4
+        currentDecisions @?= replicate 80 ReplayReservationFresh
+        requestReplayEntryCount currentProjection @?= 80
+    , testCase "bounds the encoded Authority Backup qualification envelope" $ do
+        let responseMaximum = 2 * 1024 * 1024
+            aggregateResponseMaximum = 24 * 1024
+            qualificationPreludeResponseMaximum = 224 * 1024
+            priorMaximumEncodedBytes = 12 * 1024 * 1024
+            limits =
+              mustRight
+                (mkRequestReplayLimits authorityBackupReplayCapacity responseMaximum skew)
+            maximumAggregateResponse =
+              mustRight
+                ( mkReplayResponse
+                    limits
+                    ReplyOk
+                    (ByteString.replicate aggregateResponseMaximum 97)
+                )
+            maximumPreludeResponse =
+              mustRight
+                ( mkReplayResponse
+                    limits
+                    ReplyOk
+                    (ByteString.replicate qualificationPreludeResponseMaximum 98)
+                )
+            requests =
+              [ verifiedFor (nonceForIndex index) body
+              | index <- [1 .. authorityBackupReplayCapacity]
+              ]
+            responses =
+              replicate
+                (fromIntegral (2 * authorityBackupQualificationPreludeRequestMaximum))
+                maximumPreludeResponse
+                <> replicate
+                  (fromIntegral (2 * authorityBackupCascadeCandidateRequestMaximum))
+                  maximumAggregateResponse
+            completed =
+              foldl'
+                ( \projection (request, replayResponse) ->
+                    completeReplayRequest limits replayResponse projection request
+                )
+                (initialRequestReplayProjection limits)
+                (zip requests responses)
+            encoded =
+              mustRight
+                ( encodeRequestReplayProjection
+                    authorityBackupReplayMaximumEncodedBytes
+                    limits
+                    completed
+                )
+            compiled =
+              mustRight
+                ( compileDesiredAbsenceGraph
+                    (mustRight (mkCleanupRunId "authority-backup-capacity-proof"))
+                    (LinuxRke2FoundationId "home")
+                    ( Just
+                        ( AwsScope
+                            (AwsAccountId "111122223333")
+                            (AwsRegion canonicalRegressionAwsRegion)
+                        )
+                    )
+                    Nothing
+                    CascadeSurface
+                )
+            graph = compiledDesiredAbsenceGraph compiled
+            owner = mustRight (mkCleanupOwnerId "authority-backup-capacity-owner")
+            initial =
+              mustRight
+                ( newCleanupRun
+                    (mustRight (mkCleanupRunId "authority-backup-capacity-proof"))
+                    graph
+                    owner
+                    0
+                    1800000000
+                )
+            claimed = mustRight (claimCleanupRun owner 1 1800000001 initial)
+            primary = mustRight (recordPrimaryOutcome owner 1 CleanupPrimarySucceeded claimed)
+            advance run (index, node) =
+              let attempt =
+                    mustRight
+                      (mkCleanupAttemptId ("authority-backup-attempt-" <> Text.pack (show index)))
+                  begun =
+                    mustRight
+                      (beginCleanupNode owner 1 (cleanupNodeId node) attempt run)
+               in mustRight
+                    ( completeCleanupNode
+                        owner
+                        1
+                        (cleanupNodeId node)
+                        attempt
+                        CleanupNodeSucceeded
+                        begun
+                    )
+            runs =
+              scanl
+                advance
+                primary
+                (zip [1 :: Int ..] (cleanupGraphNodes graph))
+            descriptorDigest = cleanupDigestOfBytes "authority-backup-capacity-descriptor"
+            aggregateSizes =
+              [ ByteString.length
+                  ( mustRight
+                      ( encodeModelBValue
+                          (cleanupRunStoredCodec (3 * 1024 * 1024))
+                          (CleanupRunStoredDescriptorBoundActive descriptorDigest run)
+                      )
+                  )
+              | run <- runs
+              ]
+        length (cleanupGraphNodes graph) @?= 59
+        assertBool
+          "the compiled cascade aggregate outgrew its replay-response proof bound"
+          (maximum aggregateSizes < aggregateResponseMaximum)
+        requestReplayEntryCount completed @?= authorityBackupReplayCapacity
+        ByteString.length encoded > priorMaximumEncodedBytes @?= True
+        ByteString.length encoded <= authorityBackupReplayMaximumEncodedBytes @?= True
+        decodeRequestReplayProjection authorityBackupReplayMaximumEncodedBytes limits encoded
+          @?= Right completed
+        encodeRequestReplayProjection priorMaximumEncodedBytes limits completed
+          @?= Left
+            ( RequestReplayEnvelopeTooLarge
+                (ByteString.length encoded)
+                priorMaximumEncodedBytes
+            )
     , testCase
         "sizes the Target Agent for the complete credential and TLS qualification envelope plus its retry"
         $ do
@@ -372,14 +561,14 @@ replayPureTests =
                 reserveRequestSequence priorLimits requests
               (currentDecisions, currentProjection) =
                 reserveRequestSequence currentLimits requests
-          targetSecretAgentReconcileAttemptRequestMaximum @?= 29
-          targetSecretAgentReplayCapacity @?= 58
+          targetSecretAgentReconcileAttemptRequestMaximum @?= 34
+          targetSecretAgentReplayCapacity @?= 68
           priorDecisions
             @?= replicate 10 ReplayReservationFresh
-              <> replicate 48 ReplayReservationCapacityExhausted
+              <> replicate 58 ReplayReservationCapacityExhausted
           requestReplayEntryCount priorProjection @?= 10
-          currentDecisions @?= replicate 58 ReplayReservationFresh
-          requestReplayEntryCount currentProjection @?= 58
+          currentDecisions @?= replicate 68 ReplayReservationFresh
+          requestReplayEntryCount currentProjection @?= 68
     ]
 
 replayCodecTests :: TestTree
@@ -402,111 +591,236 @@ replayCodecTests =
           @?= Left RequestReplayEnvelopeNonCanonical
         decodeRequestReplayProjection 65536 otherLimits encoded
           @?= Left RequestReplayLimitsMismatch
-    , testCase "widens canonical v2/v3/v4/v5/v6/v7/v8 capacity into v9 without dropping retained entries" $ do
-        let targetLimits = mustRight (mkRequestReplayLimits 120 64 skew)
-            tooSmallLimits = mustRight (mkRequestReplayLimits 3 64 skew)
-            responseDrift = mustRight (mkRequestReplayLimits 120 65 skew)
-            skewDrift =
+    , testCase
+        "widens canonical v2 through v12 limits into v13 without dropping retained entries"
+        $ do
+          let targetLimits = mustRight (mkRequestReplayLimits 120 64 skew)
+              tooSmallLimits = mustRight (mkRequestReplayLimits 3 64 skew)
+              responseDrift = mustRight (mkRequestReplayLimits 120 65 skew)
+              skewDrift =
+                mustRight
+                  ( mkRequestReplayLimits
+                      120
+                      64
+                      (mustRight (authorityDurationFromMicros 101))
+                  )
+              legacyV2Bytes =
+                LazyByteString.toStrict (serialise (previousReplayEnvelope 2 4))
+              legacyV3Bytes =
+                LazyByteString.toStrict (serialise (previousReplayEnvelope 3 64))
+              legacyV4Bytes =
+                LazyByteString.toStrict (serialise (previousReplayEnvelope 4 118))
+              legacyV5Bytes =
+                LazyByteString.toStrict (serialise (previousReplayEnvelope 5 120))
+              adapterV5Bytes =
+                LazyByteString.toStrict (serialise (previousReplayEnvelope 5 4))
+              targetAgentV6Bytes =
+                LazyByteString.toStrict (serialise (previousReplayEnvelope 6 4))
+              targetAgentV7Bytes =
+                LazyByteString.toStrict (serialise (previousReplayEnvelope 7 10))
+              targetAgentV8Bytes =
+                LazyByteString.toStrict (serialise (previousReplayEnvelope 8 54))
+              targetAgentV9Bytes =
+                LazyByteString.toStrict (serialise (previousReplayEnvelope 9 58))
+              targetAgentV10Bytes =
+                LazyByteString.toStrict (serialise (previousReplayEnvelope 10 64))
+              authorityBackupV11Bytes =
+                LazyByteString.toStrict (serialise (previousReplayEnvelope 11 18))
+              providerV12Bytes =
+                LazyByteString.toStrict
+                  ( serialise
+                      ( previousReplayEnvelopeWithResponse
+                          12
+                          4
+                          (2 * 1024 * 1024)
+                          "response"
+                      )
+                  )
+              providerV12OversizedResponseBytes =
+                LazyByteString.toStrict
+                  ( serialise
+                      ( previousReplayEnvelopeWithResponse
+                          12
+                          4
+                          (2 * 1024 * 1024)
+                          (ByteString.replicate (64 * 1024 + 1) 97)
+                      )
+                  )
+              widenedV2 =
+                mustRight
+                  (decodeRequestReplayProjection 65536 targetLimits legacyV2Bytes)
+              widenedV3 =
+                mustRight
+                  (decodeRequestReplayProjection 65536 targetLimits legacyV3Bytes)
+              widenedV4 =
+                mustRight
+                  (decodeRequestReplayProjection 65536 targetLimits legacyV4Bytes)
+              widenedV5 =
+                mustRight
+                  (decodeRequestReplayProjection 65536 targetLimits legacyV5Bytes)
+              adapterLimits =
+                mustRight (mkRequestReplayLimits authorityBackupReplayCapacity 64 skew)
+              widenedAdapterV5 =
+                mustRight
+                  (decodeRequestReplayProjection 65536 adapterLimits adapterV5Bytes)
+              widenedAuthorityBackupV11 =
+                mustRight
+                  ( decodeRequestReplayProjection
+                      65536
+                      adapterLimits
+                      authorityBackupV11Bytes
+                  )
+              providerLimits =
+                mustRight
+                  ( mkRequestReplayLimits
+                      providerWorkerReplayCapacity
+                      providerWorkerResponseMaximumBytes
+                      skew
+                  )
+              widenedProviderV12 =
+                mustRight
+                  ( decodeRequestReplayProjection
+                      (3 * 1024 * 1024)
+                      providerLimits
+                      providerV12Bytes
+                  )
+              targetAgentLimits =
+                mustRight (mkRequestReplayLimits targetSecretAgentReplayCapacity 64 skew)
+              widenedTargetAgentV6 =
+                mustRight
+                  (decodeRequestReplayProjection 65536 targetAgentLimits targetAgentV6Bytes)
+              widenedTargetAgentV7 =
+                mustRight
+                  (decodeRequestReplayProjection 65536 targetAgentLimits targetAgentV7Bytes)
+              widenedTargetAgentV8 =
+                mustRight
+                  (decodeRequestReplayProjection 65536 targetAgentLimits targetAgentV8Bytes)
+              widenedTargetAgentV9 =
+                mustRight
+                  (decodeRequestReplayProjection 65536 targetAgentLimits targetAgentV9Bytes)
+              widenedTargetAgentV10 =
+                mustRight
+                  (decodeRequestReplayProjection 65536 targetAgentLimits targetAgentV10Bytes)
+              currentBytes =
+                mustRight (encodeRequestReplayProjection 65536 targetLimits widenedV5)
+              currentEnvelope =
+                mustRight
+                  ( mapLeft
+                      show
+                      (deserialiseOrFail (LazyByteString.fromStrict currentBytes))
+                  )
+          requestReplayProjectionLimits widenedV2 @?= targetLimits
+          requestReplayProjectionLimits widenedV3 @?= targetLimits
+          requestReplayProjectionLimits widenedV4 @?= targetLimits
+          requestReplayProjectionLimits widenedV5 @?= targetLimits
+          requestReplayProjectionLimits widenedAdapterV5 @?= adapterLimits
+          requestReplayProjectionLimits widenedAuthorityBackupV11 @?= adapterLimits
+          requestReplayProjectionLimits widenedProviderV12 @?= providerLimits
+          requestReplayProjectionLimits widenedTargetAgentV6 @?= targetAgentLimits
+          requestReplayProjectionLimits widenedTargetAgentV7 @?= targetAgentLimits
+          requestReplayProjectionLimits widenedTargetAgentV8 @?= targetAgentLimits
+          requestReplayProjectionLimits widenedTargetAgentV9 @?= targetAgentLimits
+          requestReplayProjectionLimits widenedTargetAgentV10 @?= targetAgentLimits
+          requestReplayEntryCount widenedV2 @?= 1
+          requestReplayEntryCount widenedV3 @?= 1
+          requestReplayEntryCount widenedV4 @?= 1
+          requestReplayEntryCount widenedV5 @?= 1
+          requestReplayEntryCount widenedAdapterV5 @?= 1
+          requestReplayEntryCount widenedAuthorityBackupV11 @?= 1
+          requestReplayEntryCount widenedProviderV12 @?= 1
+          requestReplayEntryCount widenedTargetAgentV6 @?= 1
+          requestReplayEntryCount widenedTargetAgentV7 @?= 1
+          requestReplayEntryCount widenedTargetAgentV8 @?= 1
+          requestReplayEntryCount widenedTargetAgentV9 @?= 1
+          requestReplayEntryCount widenedTargetAgentV10 @?= 1
+          previousReplayEnvelopeVersion currentEnvelope @?= 13
+          previousReplayEnvelopeCapacity currentEnvelope @?= 120
+          decodeRequestReplayProjection 65536 targetLimits currentBytes
+            @?= Right widenedV5
+          decodeRequestReplayProjection 65536 tooSmallLimits legacyV2Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 tooSmallLimits legacyV3Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 tooSmallLimits legacyV4Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 tooSmallLimits legacyV5Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 tooSmallLimits targetAgentV6Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 tooSmallLimits targetAgentV7Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 tooSmallLimits targetAgentV8Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 tooSmallLimits targetAgentV9Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 tooSmallLimits targetAgentV10Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 tooSmallLimits authorityBackupV11Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 tooSmallLimits providerV12Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 responseDrift legacyV4Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 skewDrift legacyV4Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection
+            (3 * 1024 * 1024)
+            providerLimits
+            providerV12OversizedResponseBytes
+            @?= Left
+              ( RequestReplayResponseInvalid
+                  (ReplayResponseBodyTooLarge (64 * 1024 + 1) (64 * 1024))
+              )
+          decodeRequestReplayProjection
+            65536
+            targetLimits
+            (LazyByteString.toStrict (serialise (previousReplayEnvelope 99 4)))
+            @?= Left (RequestReplayEnvelopeUnsupportedVersion 99)
+    , testCase "bounds the complete Provider Worker envelope at maximum response size" $ do
+        let priorMaximumEncodedBytes = 5 * 1024 * 1024
+            limits =
               mustRight
                 ( mkRequestReplayLimits
-                    120
-                    64
-                    (mustRight (authorityDurationFromMicros 101))
+                    providerWorkerReplayCapacity
+                    providerWorkerResponseMaximumBytes
+                    skew
                 )
-            legacyV2Bytes =
-              LazyByteString.toStrict (serialise (previousReplayEnvelope 2 4))
-            legacyV3Bytes =
-              LazyByteString.toStrict (serialise (previousReplayEnvelope 3 64))
-            legacyV4Bytes =
-              LazyByteString.toStrict (serialise (previousReplayEnvelope 4 118))
-            legacyV5Bytes =
-              LazyByteString.toStrict (serialise (previousReplayEnvelope 5 120))
-            adapterV5Bytes =
-              LazyByteString.toStrict (serialise (previousReplayEnvelope 5 4))
-            targetAgentV6Bytes =
-              LazyByteString.toStrict (serialise (previousReplayEnvelope 6 4))
-            targetAgentV7Bytes =
-              LazyByteString.toStrict (serialise (previousReplayEnvelope 7 10))
-            targetAgentV8Bytes =
-              LazyByteString.toStrict (serialise (previousReplayEnvelope 8 54))
-            widenedV2 =
+            maximumResponse =
               mustRight
-                (decodeRequestReplayProjection 65536 targetLimits legacyV2Bytes)
-            widenedV3 =
-              mustRight
-                (decodeRequestReplayProjection 65536 targetLimits legacyV3Bytes)
-            widenedV4 =
-              mustRight
-                (decodeRequestReplayProjection 65536 targetLimits legacyV4Bytes)
-            widenedV5 =
-              mustRight
-                (decodeRequestReplayProjection 65536 targetLimits legacyV5Bytes)
-            adapterLimits = mustRight (mkRequestReplayLimits 18 64 skew)
-            widenedAdapterV5 =
-              mustRight
-                (decodeRequestReplayProjection 65536 adapterLimits adapterV5Bytes)
-            targetAgentLimits =
-              mustRight (mkRequestReplayLimits targetSecretAgentReplayCapacity 64 skew)
-            widenedTargetAgentV6 =
-              mustRight
-                (decodeRequestReplayProjection 65536 targetAgentLimits targetAgentV6Bytes)
-            widenedTargetAgentV7 =
-              mustRight
-                (decodeRequestReplayProjection 65536 targetAgentLimits targetAgentV7Bytes)
-            widenedTargetAgentV8 =
-              mustRight
-                (decodeRequestReplayProjection 65536 targetAgentLimits targetAgentV8Bytes)
-            currentBytes =
-              mustRight (encodeRequestReplayProjection 65536 targetLimits widenedV5)
-            currentEnvelope =
-              mustRight
-                ( mapLeft
-                    show
-                    (deserialiseOrFail (LazyByteString.fromStrict currentBytes))
+                ( mkReplayResponse
+                    limits
+                    ReplyOk
+                    (ByteString.replicate providerWorkerResponseMaximumBytes 97)
                 )
-        requestReplayProjectionLimits widenedV2 @?= targetLimits
-        requestReplayProjectionLimits widenedV3 @?= targetLimits
-        requestReplayProjectionLimits widenedV4 @?= targetLimits
-        requestReplayProjectionLimits widenedV5 @?= targetLimits
-        requestReplayProjectionLimits widenedAdapterV5 @?= adapterLimits
-        requestReplayProjectionLimits widenedTargetAgentV6 @?= targetAgentLimits
-        requestReplayProjectionLimits widenedTargetAgentV7 @?= targetAgentLimits
-        requestReplayProjectionLimits widenedTargetAgentV8 @?= targetAgentLimits
-        requestReplayEntryCount widenedV2 @?= 1
-        requestReplayEntryCount widenedV3 @?= 1
-        requestReplayEntryCount widenedV4 @?= 1
-        requestReplayEntryCount widenedV5 @?= 1
-        requestReplayEntryCount widenedAdapterV5 @?= 1
-        requestReplayEntryCount widenedTargetAgentV6 @?= 1
-        requestReplayEntryCount widenedTargetAgentV7 @?= 1
-        requestReplayEntryCount widenedTargetAgentV8 @?= 1
-        previousReplayEnvelopeVersion currentEnvelope @?= 9
-        previousReplayEnvelopeCapacity currentEnvelope @?= 120
-        decodeRequestReplayProjection 65536 targetLimits currentBytes
-          @?= Right widenedV5
-        decodeRequestReplayProjection 65536 tooSmallLimits legacyV2Bytes
-          @?= Left RequestReplayLimitsMismatch
-        decodeRequestReplayProjection 65536 tooSmallLimits legacyV3Bytes
-          @?= Left RequestReplayLimitsMismatch
-        decodeRequestReplayProjection 65536 tooSmallLimits legacyV4Bytes
-          @?= Left RequestReplayLimitsMismatch
-        decodeRequestReplayProjection 65536 tooSmallLimits legacyV5Bytes
-          @?= Left RequestReplayLimitsMismatch
-        decodeRequestReplayProjection 65536 tooSmallLimits targetAgentV6Bytes
-          @?= Left RequestReplayLimitsMismatch
-        decodeRequestReplayProjection 65536 tooSmallLimits targetAgentV7Bytes
-          @?= Left RequestReplayLimitsMismatch
-        decodeRequestReplayProjection 65536 tooSmallLimits targetAgentV8Bytes
-          @?= Left RequestReplayLimitsMismatch
-        decodeRequestReplayProjection 65536 responseDrift legacyV4Bytes
-          @?= Left RequestReplayLimitsMismatch
-        decodeRequestReplayProjection 65536 skewDrift legacyV4Bytes
-          @?= Left RequestReplayLimitsMismatch
-        decodeRequestReplayProjection
-          65536
-          targetLimits
-          (LazyByteString.toStrict (serialise (previousReplayEnvelope 99 4)))
-          @?= Left (RequestReplayEnvelopeUnsupportedVersion 99)
+            requests =
+              [ verifiedFor (nonceForIndex index) body
+              | index <- [1 .. providerWorkerReplayCapacity]
+              ]
+            completed =
+              foldl'
+                (completeReplayRequest limits maximumResponse)
+                (initialRequestReplayProjection limits)
+                requests
+            encoded =
+              mustRight
+                ( encodeRequestReplayProjection
+                    providerWorkerReplayMaximumEncodedBytes
+                    limits
+                    completed
+                )
+        providerWorkerResponseMaximumBytes @?= 64 * 1024
+        providerWorkerReplayMaximumEncodedBytes @?= 12 * 1024 * 1024
+        requestReplayEntryCount completed @?= providerWorkerReplayCapacity
+        ByteString.length encoded > priorMaximumEncodedBytes @?= True
+        ByteString.length encoded <= providerWorkerReplayMaximumEncodedBytes @?= True
+        decodeRequestReplayProjection providerWorkerReplayMaximumEncodedBytes limits encoded
+          @?= Right completed
+        encodeRequestReplayProjection priorMaximumEncodedBytes limits completed
+          @?= Left
+            ( RequestReplayEnvelopeTooLarge
+                (ByteString.length encoded)
+                priorMaximumEncodedBytes
+            )
     , testCase "bounds the complete Target Agent envelope at maximum response size" $ do
         let responseMaximum = 2 * 1024 * 1024
             priorMaximumEncodedBytes = 24 * 1024 * 1024
@@ -1507,10 +1821,19 @@ data PreviousReplayValueWire
 
 previousReplayEnvelope :: Word16 -> Natural -> PreviousReplayEnvelope
 previousReplayEnvelope version capacity =
+  previousReplayEnvelopeWithResponse version capacity 64 "response"
+
+previousReplayEnvelopeWithResponse
+  :: Word16
+  -> Natural
+  -> Int
+  -> ByteString
+  -> PreviousReplayEnvelope
+previousReplayEnvelopeWithResponse version capacity maximumResponseBytes responseBody =
   PreviousReplayEnvelope
     { previousReplayEnvelopeVersion = version
     , previousReplayEnvelopeCapacity = capacity
-    , previousReplayEnvelopeMaximumResponseBytes = 64
+    , previousReplayEnvelopeMaximumResponseBytes = maximumResponseBytes
     , previousReplayEnvelopeClockSkewMicros = 100
     , previousReplayEnvelopeEntries =
         [ PreviousReplayEntryWire
@@ -1525,7 +1848,7 @@ previousReplayEnvelope version capacity =
                   (verifiedRequestDigestBytes verifiedRequest)
                   2000
                   200
-                  "response"
+                  responseBody
             }
         ]
     }
@@ -1539,12 +1862,12 @@ decodeTestMetadata bytes =
 
 makeReplayVersionNonCanonical :: ByteString -> ByteString
 makeReplayVersionNonCanonical bytes =
-  case replaceFirst "\x19\x00\x09" "\x18\x09" bytes of
+  case replaceFirst "\x19\x00\x0d" "\x18\x0d" bytes of
     Just replaced -> replaced
     Nothing -> replaceShortReplayVersion bytes
 
 replaceShortReplayVersion :: ByteString -> ByteString
-replaceShortReplayVersion bytes = case replaceFirst "\x09" "\x18\x09" bytes of
+replaceShortReplayVersion bytes = case replaceFirst "\x0d" "\x18\x0d" bytes of
   Just replaced -> replaced
   Nothing -> error "unexpected replay envelope encoding"
 
@@ -1795,6 +2118,31 @@ reserveRequestSequence limits =
      in (replayReservationDecision reserved : decisions, replayReservationProjection reserved)
   finish (decisions, projection) = (reverse decisions, projection)
 
+completeReplayRequest
+  :: RequestReplayLimits
+  -> ReplayResponse
+  -> RequestReplayProjection
+  -> VerifiedControlPlaneRequest
+  -> RequestReplayProjection
+completeReplayRequest limits replayResponse projection request =
+  let reserved = reserveVerifiedRequest now attemptA request projection
+   in case replayReservationDecision reserved of
+        ReplayReservationFresh ->
+          replayCompletionProjection
+            ( completeVerifiedRequest
+                attemptA
+                request
+                replayResponse
+                (replayReservationProjection reserved)
+            )
+        decision ->
+          error
+            ( "unexpected replay reservation: "
+                ++ show decision
+                ++ " under "
+                ++ show limits
+            )
+
 emptyReplay :: RequestReplayProjection
 emptyReplay = initialRequestReplayProjection replayLimits
 
@@ -1831,6 +2179,22 @@ nonceA = mustRight (mkRequestNonce (ByteString.pack [0 .. 15]))
 
 nonceB :: RequestNonce
 nonceB = mustRight (mkRequestNonce (ByteString.pack [16 .. 31]))
+
+-- Capacity proofs above 256 entries need genuinely distinct nonces; a single
+-- repeated byte would wrap and accidentally exercise exact replay instead.
+nonceForIndex :: Natural -> RequestNonce
+nonceForIndex index =
+  mustRight
+    ( mkRequestNonce
+        ( ByteString.pack
+            ( replicate 8 165
+                ++ [ fromIntegral
+                       ((index `div` (256 ^ shift)) `mod` 256)
+                   | shift <- [0 .. 7 :: Int]
+                   ]
+            )
+        )
+    )
 
 attemptA :: ReplayAttemptId
 attemptA = mustRight (mkReplayAttemptId (ByteString.pack [32 .. 47]))

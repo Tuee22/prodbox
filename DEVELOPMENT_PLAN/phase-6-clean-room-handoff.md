@@ -386,11 +386,13 @@ transport before handoff.
 
 ## Sprint 6.5: Typed Teardown Single-Writer Cutover and Clean-Room Handoff [🔄 Active]
 
-**Status**: Active (resumed 2026-08-31). The former gates are complete: Sprint `5.36`
-landed the lifecycle-kernel `TestRunner` client, Sprint `7.38` sealed the run's DNS hosted zone into
-the compiled observation scope, Sprint `4.89` landed the custodial-capability disposition, and
-Sprint `4.86` landed the non-public candidate entrypoint that drives the total dispatcher over a
-durable descriptor-bound run. This sprint activates that replacement.
+**Status**: Active. Sprint `4.91` closed the checkpoint-custody registry-key/Pulumi-stack-ID
+mismatch exposed by this sprint's live cascade recovery. The former gates are complete: Sprint
+`5.36` landed the lifecycle-kernel `TestRunner` client, Sprint `7.38` sealed the run's DNS hosted
+zone into the compiled observation scope, Sprint `4.89` landed the custodial-capability disposition,
+and Sprint `4.86` landed the non-public candidate entrypoint that drives the total dispatcher over
+a durable descriptor-bound run. Deploy the corrected runtime, recover the registered AWS graph,
+then resume activation qualification.
 **Deployment qualification**: pending — clean-room/destructive evidence from the superseded
 cascade is invalid for the replacement composition.
 **Doctrine**: [Lifecycle Control-Plane Architecture § 12, “Cutover and
@@ -3879,6 +3881,1941 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
   **1,174,405,120-byte** maximum. No Kubernetes logs other than the single permitted Target Agent
   and Lifecycle Authority reads were taken. The Provider-response diagnostic, qualification,
   activation, preactivation, and writer cutover remain unproved.
+- Current-tree resumption validation on **2026-09-07** starts from a clean build of the exact
+  repository revision. The synchronized executable is
+  `sha256:6e09038a86248959e22471f0a62ce5cdd620eee70f1c3a589bea9cda15b898bc`, and canonical
+  `prodbox dev check` exits **0** with HLint `No hints` and warning-clean all-target compilation.
+  This refreshes only the code-local baseline: it does not close
+  `TLS-RETENTION-VERIFY-MISMATCH-BEFORE-VSCODE-DELETE-2026-09-06`, prove cleanup, or change any
+  qualification/cutover state. Rerun the exact live `pre-1` cycle next so the deployed closed
+  verify-mismatch discriminator can select source identity, certificate identity, or both before
+  any TLS behavior change.
+- The exact live `pre-1` replay on that tree runs from **11:14:25 through 11:51:32 EDT** and stops
+  before AWS setup, candidate execution, or TLS verification at the fresh-root Authority Backup
+  readiness barrier. It builds local runtime image
+  `sha256:82a41f292face9c2365cfb2abe05386f63b84a50747022d8d575f0ba1e695af9` in **983.2 s**,
+  publishes Registry manifest
+  `sha256:735c747f379cab2701c5bfc4c1a47747997bde25b27fa0b36a5e537414b90b91`, and imports OCI
+  manifest `sha256:18a52c54354de0e3e25c9c3ddf158fb267a73e269d1a5d2656573e2b6ca85d31` in
+  **127.5 s**. RKE2 `v1.36.4+rke2r1`, MinIO, Registry, Vault, Bootstrap Broker, Target Agent, and
+  Lifecycle Authority reconcile on new storage generation `vault-8c9b826f...` and root session
+  `root-session-28446425...`; the transcript is
+  `/tmp/prodbox-sprint-6.5-current-tree-live-pre-1.log` at
+  `sha256:22122b75619102f68d254496893f05d4f70b1a2eab544d09440b6756ddbaf0f4`.
+- The terminal is exact: `chart_authority_backup` cannot satisfy `ProbeRolloutComplete` because
+  `DeploymentAvailable "authority-backup" "authority-backup"` remains `False`. Read-only
+  inspection proves the sole Pod pulled the exact runtime image, is Running with zero restarts,
+  has a populated Service and EndpointSlice, emits no log line, and serves stable `HTTP 503` /
+  `not-ready`. This is not the already-closed requested-revision rollout race; the Deployment is at
+  revision 1 and the running process's dedicated-store readiness remains false on a newly
+  initialized retained root. Stable counterexample
+  `AUTHORITY-BACKUP-FRESH-ROOT-STORE-NOT-READY-2026-09-07` owns this earlier boundary. Add only a
+  closed, value-free cause diagnostic to the dedicated-adapter readiness observer, prove it cannot
+  render credential or provider detail, validate locally, and rerun the same live cycle before
+  changing store, credential, bootstrap ordering, or retry semantics. No qualification artifact
+  or activation witness exists, exact cleanup is unproved, and the legacy public writer remains
+  sole.
+- The value-free diagnostic requested by
+  `AUTHORITY-BACKUP-FRESH-ROOT-STORE-NOT-READY-2026-09-07` is now code-local and validated. The
+  dedicated-adapter transport returns the closed `DedicatedAdapterReadiness` algebra; its
+  exhaustive eight-cause vocabulary renders only fixed tokens, and the Authority Backup / TLS
+  Retention runtime readiness observers emit only store identity plus that fixed cause through the
+  existing closed diagnostic sink. Adapter consumers retain the prior Boolean contract as a pure
+  projection, so this revision changes observation only and does not change store, credential,
+  bootstrap ordering, or retry behavior. The focused dedicated-adapter matrix passes **20/20** and
+  canonical `prodbox dev check` passes with HLint `No hints` and a warning-clean all-target build.
+  The synchronized executable is
+  `sha256:a31e22557527ddb6e4c9d6d8909df70205076d517c26846cbaba3744a45f56ec`; the retained gate
+  transcript is `/tmp/prodbox-sprint-6.5-diagnostic-dev-check.log` at
+  `sha256:a2b29b57fd4fb253f1be5447d4a381739ce2d2f79c2cdc572cac1288d71a1cf0`. Rerun exact live
+  `pre-1` next and require the closed cause before admitting any behavioral correction.
+- The exact diagnostic `pre-1` rerun from **2026-09-07 12:31:23–12:56:16 EDT** reproduces the same
+  pre-AWS `ProbeRolloutComplete` terminal and closes its cause: every Authority Backup readiness
+  observation is the fixed `dedicated-adapter-readiness store=authority-backup-store
+  cause=credential-unavailable` value. The sole revision-1 Pod is Running with zero restarts and
+  the Service / EndpointSlice is populated, so the fresh-root cycle is exact: component admission
+  waits for full Deployment availability before `StepEstablishAuthorityBackup` can create the
+  credential that makes the process ready. The run builds local image
+  `sha256:4112ad02742307dfcb1620cbb19df6e7732b88bf453ecff4a6bab3399d818585` in **992.0 s**,
+  publishes Registry manifest
+  `sha256:e25351e9723f971777450045291dbcfa3d4c806c9e2457f927005ae4fe3f411a`, and imports OCI
+  manifest `sha256:18862373ae9d03cc90fbf06cb75e0fba19db75c274708113dca307a9ed2b8015` in
+  **125.6 s**. Its transcript is `/tmp/prodbox-sprint-6.5-diagnostic-live-pre-1.log` at
+  `sha256:8833cdb57cd871f5652ab65948f373e305b967d0acdef16fb2dae6835929a665`. Correct only
+  this ordering: require the requested Deployment revision before establishment, then retain the
+  full `DeploymentAvailable` barrier after credential establishment and in-force settings load.
+  Pin both stages locally and rerun exact `pre-1`; no qualification artifact or activation witness
+  exists, exact cleanup is unproved, and the legacy public writer remains sole.
+- The fresh-root Authority Backup ordering correction is now code-local and validated. The
+  `AuthorityBackupReadinessStage` algebra separates pre-establishment requested-revision
+  convergence from post-establishment production availability.
+  `StepAuthorityBackupRolloutReady` is a non-admitting `TransitionFor` step that performs the
+  bounded revision observation directly; the component group's final `ComponentReadiness` remains
+  after credential establishment, in-force config reconciliation, and settings reload and still
+  requires both requested revision and `DeploymentAvailable`. The two focused stage/executor
+  regressions pass **1/1** each, the primary unit suite passes **4873/4873**, the specialized
+  Authority admission, authentication, and authenticated-transport suites pass **27/27**,
+  **35/35**, and **36/36**, and canonical `prodbox dev check` passes with HLint `No hints` and a
+  warning-clean all-target build. The synchronized executable is
+  `sha256:92f1c4173fdf132046bccf1517d60d244042438f83a2181bf88a50298694f943`; the gate
+  transcript is `/tmp/prodbox-sprint-6.5-authority-backup-ordering-dev-check.log` at
+  `sha256:a1e9cfadb14b28f940e6dc78d623dc5b7e2f8d35e96b1cd44a8ad4d951f2b856`, and the
+  canonical unit transcript is `/tmp/prodbox-sprint-6.5-authority-backup-ordering-unit.log` at
+  `sha256:37080a99067b9a4f771409e3d561af0b24c1a89f53b439a8ab1119bf09ec7273`. Rerun exact
+  live `pre-1` next; deployment qualification remains pending and the legacy writer remains sole.
+- The ordering-corrected live `pre-1` from **2026-09-07 13:30:30–13:53:38 EDT** crosses the former
+  Authority Backup rollout barrier and reaches Genesis credential establishment. It then exits 1
+  on the protected worker terminal `execution-failed/install-requires-empty-inventory`; the
+  coordinator correctly refuses the non-receipt as `AwsAdminWorkerReceiptDecodeFailed`. The run
+  builds local image
+  `sha256:ac9f61c0e6d8fe061fc54d0f50b7330539f2d7b183a820457185e5b2170e05e1` in **1004.0 s**,
+  publishes Registry manifest
+  `sha256:d204430fbe648878ca6347ed4ee2a057aa02f937ea005aca3503ee53e2567004`, and imports OCI
+  manifest `sha256:07b5205c3f1da5472f553f69669dbd758408f46aeb8a20f5f7710e353f88671d` in
+  **96.0 s**. Its transcript is
+  `/tmp/prodbox-sprint-6.5-authority-backup-ordering-live-pre-1.log` at
+  `sha256:383f694fd4029727d4aa4805f4b3ad3254ea6170e9703aad7fc8493f05d0fe17`.
+  Stable counterexample `AUTHORITY-BACKUP-GENESIS-NONEMPTY-INVENTORY-2026-09-07` owns the next
+  boundary. The exceptional Genesis permit already owns the deterministic backup identity and the
+  execution journal already has a cleanup-required → stable-absence → one-remint path; admit that
+  path only for an initial nonempty Genesis inventory. Preserve the ordinary-install refusal,
+  require stable absence before the one fresh key creation, pin both decisions locally, and rerun
+  exact `pre-1`. No qualification artifact or activation witness exists, exact cleanup is unproved,
+  and the legacy public writer remains sole.
+- That Genesis inventory counterexample is now closed code-locally. The AWS-admin execution fold
+  uses an explicit install-attempt × observed-inventory decision: an empty inventory proceeds; a
+  nonempty remint refuses because its single cleanup/remint budget is already spent; a nonempty initial
+  `GenesisBackupKind` enters journaled cleanup-required, bounded deletion, stable-absence proof,
+  and the one remint; and a plan-unbound ordinary or backup-repair initial install still refuses.
+  No fresh key can be created before cleanup read-back. The readiness doctrine now also states the exact
+  requested-revision → establishment-transport `/healthz` → post-establishment
+  `DeploymentAvailable` order. Focused Genesis and retained cleanup-continuation proofs pass
+  **1/1** each; canonical `prodbox dev check` passes with HLint `No hints` and warning-clean
+  all-target compilation; the primary unit suite passes **4874/4874** and the Authority admission,
+  authentication, and authenticated-transport suites pass **27/27**, **35/35**, and **36/36**. The
+  synchronized executable is
+  `sha256:376cba380f71b2ff1a3e70af8b64a8686a311e9dd466b4ddb76aac44f462042f`; the gate transcript is
+  `/tmp/prodbox-sprint-6.5-genesis-inventory-dev-check.log` at
+  `sha256:9aef1ee22642e7ce3ca5edb8947374648ef56cb943ad9fcf8ff5e5850f5f2b82`, and the unit transcript is
+  `/tmp/prodbox-sprint-6.5-genesis-inventory-unit.log` at
+  `sha256:5fffa8543c5537f116e3508c98d1046a9797c1db5b7e8a80add4842abd149473`. Rerun exact live
+  `pre-1` next; deployment qualification remains pending and the legacy writer remains sole.
+- The resulting live `pre-1` runs from **2026-09-07 14:34:14–14:58:37 EDT**, crosses the former
+  nonempty-inventory refusal, and proves the execution decision reaches cleanup. It then exits 1
+  on the protected terminal `execution-failed/journal-transition-rejected`: the journal permits
+  cleanup-required from prepared-create and key-created phases, but not from the initial
+  intent-committed phase selected by exceptional Genesis cleanup. The run builds local image
+  `sha256:7dd679989f687da51b647e589f6e4a70011355e666dd8123364a8f06972e6e37` in **1008.6 s**,
+  publishes Registry manifest
+  `sha256:a15172a210a03c44b24d6c5778f8d10b223b52ad11fc1866fd53693f2cee964d`, imports OCI manifest
+  `sha256:b036d3376926a67ec9bf6d7af543fff664423e0e431bab3838ad2cbaae4185ec` in **123.7 s**, and
+  retains the exact root session `root-session-28446425...` and storage generation
+  `vault-8c9b826f...`. Its transcript is
+  `/tmp/prodbox-sprint-6.5-genesis-inventory-live-pre-1.log` at
+  `sha256:babb84cfc2a5134f96382a76524bf9fa9a11f7892b0f18585ea49d71da5fc7d8`. Stable
+  counterexample `AUTHORITY-BACKUP-GENESIS-INITIAL-CLEANUP-JOURNAL-TRANSITION-2026-09-07` owns
+  the next boundary. Admit only `RequireAwsAdminStableCleanup False` from initial
+  `GenesisBackupKind` intent; retain refusal for normal, backup-repair, remint-used, and mismatched
+  flags, pin the journal transition and its negative space, then rerun exact `pre-1`. No candidate,
+  qualification artifact, activation witness, or cleanup proof exists, and the legacy writer
+  remains sole.
+- The Genesis initial-cleanup journal counterexample is now closed code-locally. The journal
+  inspects the signed permit and admits `RequireAwsAdminStableCleanup False` from
+  `AwsAdminExecutionIntentCommitted False` only for `GenesisBackupKind`; normal and backup-repair
+  permits, the spent-remint flag, and mismatched events remain refusals. Replayed cleanup-required
+  is still idempotent. The execution decision now also refuses a nonempty remint with the existing
+  closed `recovery-remint-ambiguous/intent-inventory-not-empty` cause instead of attempting a
+  second cleanup. The inventory selector, exact journal edge, and retained cleanup-continuation
+  focused proofs pass **1/1** each. Canonical `prodbox dev check` passes with HLint `No hints` and
+  warning-clean all-target compilation; the primary unit suite passes **4874/4874**, with
+  auxiliaries **27/27**, **35/35**, and **36/36**. The synchronized executable is
+  `sha256:cd0ff240f8af9046fbf811dfca19f113d63880c70788f3cb49d73372f7366d00`; the gate transcript is
+  `/tmp/prodbox-sprint-6.5-genesis-journal-dev-check.log` at
+  `sha256:cbf9a4528a4bb5d511c9fd0a38bc59e898f50399c69a868c1f81e1bdb4f689ad`, and the unit transcript
+  is `/tmp/prodbox-sprint-6.5-genesis-journal-unit.log` at
+  `sha256:cc8470b7c06eca3252fef273316a1ede7e0c8d63a98ff22d477dcd9f339c6034`. Rerun exact live
+  `pre-1` next; deployment qualification remains pending and the legacy writer remains sole.
+- The next live `pre-1` runs from **2026-09-07 15:35:45–15:59:16 EDT** and live-closes the Genesis
+  journal counterexample: the first AWS-admin attach contains one unique valid receipt, so
+  exceptional Genesis cleanup, stable absence, remint, and Target delivery complete. The retained
+  cursor then selects compiled member 1, `LifecycleProviderCredential`, and that first-reconcile
+  install exits 1 on `execution-failed/install-requires-empty-inventory`. This is later than Genesis
+  and before any candidate execution. The run builds local image
+  `sha256:d9b50f3dd00153a5d5dff2c1a7d0a5152f8055bb0e25340793065b2926f50126` in **1004.5 s**,
+  publishes Registry manifest
+  `sha256:f2c5acbde5fc451930a26547b55d162cc10bb79bffffd0f5cdae39616d5f1e11`, imports OCI manifest
+  `sha256:c327982c477c32286a281037cded12e2feb5c08530ce18179df2459ebfaf55c5` in **95.1 s**, and
+  retains root session `root-session-28446425...` and storage generation `vault-8c9b826f...`. Its
+  transcript is `/tmp/prodbox-sprint-6.5-genesis-journal-live-pre-1.log` at
+  `sha256:6e24a5523b3b08b953bd2b35eccbc0b108ac976b91b41d9f2c9d47c34cd149f0`. Stable
+  counterexample `FIRST-RECONCILE-DETERMINISTIC-IDENTITY-NONEMPTY-INVENTORY-2026-09-07` owns the
+  next boundary. Extend initial cleanup authority only to a normal permit carrying an exact
+  retained first-reconcile plan-member binding; keep post-first-reconcile normal installs, backup
+  repair, remint-used, and mismatched bindings refused, require stable absence before the single
+  remint, pin the positive and negative journal/decision cases, and rerun exact `pre-1`. No
+  candidate, qualification artifact, activation witness, or exact cleanup proof exists, and the
+  legacy writer remains sole.
+- That first-reconcile inventory counterexample is now closed code-locally. The install fold
+  carries an explicit signed-intent plan-binding classification and admits initial cleanup for
+  nonempty inventory only for Genesis or normal operator material bound to an exact retained
+  first-reconcile plan member. A plan-unbound normal install, backup repair, and every remint-used
+  nonempty inventory remain closed refusals. The execution journal independently inspects the
+  signed permit before admitting the one initial cleanup transition, so stable absence still
+  precedes the only fresh-key creation. The stable-counterexample focus is **2/2**, the retained
+  cleanup-continuation proof is **1/1**, canonical `prodbox dev check` is clean, and the full unit
+  boundary is **4,874 + 27 + 35 + 36** passing tests. The exact executable is
+  `sha256:8e3687988911909bafa84b5bf55064f015c6c417a75a57e6bc4a59df80d01115`; the gate
+  transcript is `/tmp/prodbox-sprint-6.5-first-reconcile-inventory-dev-check.log` at
+  `sha256:cbf9a4528a4bb5d511c9fd0a38bc59e898f50399c69a868c1f81e1bdb4f689ad`, and the unit
+  transcript is `/tmp/prodbox-sprint-6.5-first-reconcile-inventory-unit.log` at
+  `sha256:a302606144c82e452aa4fb76f85bff8eb62b6c70162f5f14e9aa55d629baaaa0`. Exact
+  `pre-1` is again the next action. No candidate, qualification artifact, activation witness, or
+  exact cleanup proof exists, and the legacy writer remains sole.
+- The exact live `pre-1` rerun proves that counterexample across all five compiled
+  first-reconcile members: each deterministic identity traverses cleanup/recovery, the
+  Lifecycle-provider credential reads back current at generation **2**, and the run completes the
+  home platform reconcile through DNS01/EAB materialization and a Ready ZeroSSL issuer. It builds
+  local image `sha256:21848a1ea426f39319f9aaaeca26025a9789e22fd0b11810416d4904e84a6e80`
+  in **1001.7 s**, publishes Registry manifest
+  `sha256:72b901029af68a32331b1f4a475961469bd6dee67562d3d395103cb0b78212d1`, and imports OCI
+  manifest `sha256:f0f783d10ed1415cb40c5e9685e368ef107a497200dbb3aa864aafe1637806df`
+  in **121.5 s**. Candidate execution then reaches the chart-deletion graph and stops at
+  `TlsRetentionWorkflowAuthoritySourceReadBackMismatch`. Its failure wrapper restores a public
+  edge classified `ready-for-external-proof`, but reports one failed best-effort VS Code deletion
+  and explicitly does **not** prove exact terminal cleanup, so it preserves operational
+  credentials for recovery. The transcript is
+  `/tmp/prodbox-sprint-6.5-first-reconcile-inventory-live-pre-1.log` at
+  `sha256:d847ccaa70d625823886db970157e1a5d4108a677e346a2e77ca97e513904f2b`. Stable
+  counterexample `TLS-RETENTION-AUTHORITY-SOURCE-READBACK-MISMATCH-2026-09-07` owns the next
+  boundary: isolate the exact retained source/operation binding that disagrees at Authority
+  read-back, pin the positive and mismatch cases at that ownership boundary, preserve the closed
+  refusal, and rerun exact `pre-1`. No candidate qualification artifact, activation witness, or
+  exact cleanup proof exists, and the legacy writer remains sole.
+- Read-only retained-Authority diagnosis selects the narrower internal cause
+  `tls-retention/workflow failure=legacy-source-missing`; the later retain-on-ready attempt is an
+  independent `home-agent/http-status/target/home-rewrap/one-shot-operation-unavailable`. The
+  selected-Agent protocol assigns 404 only to an exact missing Secret/restore slot, while an
+  unobservable read is 503 and a source/content disagreement is 409. The partial-state topology is
+  therefore exact: a fresh Authority TLS aggregate sees the pre-outbox immutable Adapter version,
+  the `vscode` namespace exists, and legacy adoption finds no selected source Secret before the VS
+  Code delete. Preserve the workflow-level refusal and append one payload-free
+  `LegacySourceMissing` Authority failure arm without renumbering existing wire constructors. Only
+  the chart pre-delete fold may consume that exact arm, after its existing exact namespace/access
+  proof, by running the existing Certificate presence classifier: present means explicitly
+  deferred issuance; absent means explicitly nothing to retain. Adapter/source mismatch, corrupt
+  occupation, unobservable access, and every other Authority refusal remain terminal;
+  retain-on-ready also keeps an exact missing source terminal because readiness and absence
+  disagree. Pin the new projection, both classifier outcomes, and the negative
+  mismatch/unavailable space before exact `pre-1`.
+- That partial-state TLS counterexample is now closed code-locally. The Authority workflow appends
+  the payload-free `TlsRetentionWorkflowAuthorityLegacySourceMissing` constructor and maps only
+  `TlsWorkflowLegacySourceMissing` to it; direct source mismatch and non-idempotent adoption retain
+  the prior source-mismatch refusal. `PublicEdgeTlsRetainResult` keeps this arm typed on both home
+  and AWS paths. Only VS Code pre-delete feeds it into the existing exact Certificate classifier,
+  while retain-on-ready converts it to a terminal inconsistency. The stable-counterexample proof is
+  **1/1**, the complete TLS endpoint group is **30/30**, the public-edge preserve group is **5/5**,
+  canonical `prodbox dev check` is clean, and the full unit boundary is **4,875 + 27 + 35 + 36**
+  passing tests. The exact executable is
+  `sha256:17b677543d076a266518593b1aec0981beda7c80c28954f57b14e12c34f35c03`; the focused
+  transcript is `/tmp/prodbox-sprint-6.5-tls-legacy-source-focused.log` at
+  `sha256:b710045bda7c96ceca5bd9e9a68dc33747083788b45c2e3bf59f164fca5f331e`, the gate
+  transcript is `/tmp/prodbox-sprint-6.5-tls-legacy-source-dev-check.log` at
+  `sha256:02eb7d91be76658bb356f24186daef4742a2271705421e2d8f247f7fbf5912ab`, and the
+  unit transcript is `/tmp/prodbox-sprint-6.5-tls-legacy-source-unit.log` at
+  `sha256:c541c2c649698b7e9cfca1510fad5e2103b5c3029ba00cddf6a0e394bd30caa9`. Exact
+  `pre-1` is again the next action. No candidate qualification artifact, activation witness, or
+  exact cleanup proof exists, and the legacy writer remains sole.
+- The exact same live `pre-1` rerun starts platform reconciliation at **2026-09-07 18:03:52 EDT**
+  and exits at **18:28:46 EDT**, before candidate execution, after
+  `ConfigBackupTransportFailed (AuthenticatedClientTransportFailed
+  (ControlPlaneTransportFailed (HttpTimeout "connection timeout")))` makes the retained in-force
+  config unobservable. It builds local image
+  `sha256:e083cbc339c5aaf933dcc23a9be5eac80f0a37ff9946e23ec291c94750e0eecd` in
+  **1129.3 s**, publishes Registry manifest
+  `sha256:4e249014c7189914d04b77b11aa73d4812fd94d997d7168a7980861104200421`, and imports OCI
+  manifest `sha256:9949ced000e851393d9ed6ad2056fa827f5ae8e0202442327174a6ada7a71fa0`
+  in **90.9 s**. Its transcript is
+  `/tmp/prodbox-sprint-6.5-tls-legacy-source-live-pre-1.log` at
+  `sha256:b91175116282d34ec95c07fb6af388410e301ed51c857fb63f445750b0af5488`.
+  Read-only Kubernetes timing makes the race exact: the new Lifecycle Authority Pod starts at
+  22:28:18Z and is Ready at 22:28:29Z; the Recreate Authority Backup Pod starts at 22:28:33Z, is
+  reachable through the Pod-local establishment transport, but does not become Ready and enter its
+  Service EndpointSlice until 22:28:44Z. The Lifecycle Authority config observation enters that
+  empty-Service interval and the transcript closes two seconds after routing becomes available.
+  Stable counterexample `AUTHORITY-BACKUP-POST-ESTABLISHMENT-SERVICE-ROUTING-2026-09-07` owns this
+  boundary. Add a non-admitting post-establishment requested-revision-plus-Deployment-availability
+  barrier before config observation, retain the graph-owned production admission after in-force
+  settings load, pin the positive ordering and pre-establishment negative space, and rerun exact
+  `pre-1`. No candidate, qualification artifact, activation witness, or exact cleanup proof exists,
+  and the legacy public writer remains sole.
+- That Service-routing counterexample is now closed code-locally. The native Authority Backup
+  component has three explicit stages: pre-establishment revision convergence without
+  availability, post-establishment Service routing with requested revision plus
+  `DeploymentAvailable`, and the same full observation again as graph-owned production admission
+  after settings load. The new `StepAuthorityBackupServiceRoutingReady` is a non-admitting
+  transition placed between successful establishment and the first in-force config observation,
+  and both rendered reconcile plans expose that exact order. The stable-counterexample proof
+  passes **1/1**, the two changed golden plans pass **1/1** each, canonical `prodbox dev check` is
+  clean, and the full unit boundary is **4,876 + 27 + 35 + 36** passing tests. The exact executable
+  is `sha256:0e5c9d72badced7a2cf3e80a428ad6d1f897a98d57933a750d5339b5db5ece9c`; the focused
+  transcript is `/tmp/prodbox-sprint-6.5-authority-backup-service-routing-focused.log` at
+  `sha256:9f56d8e13b32495e3f02f5893b23b5ec95abff2aa7795a8f57f7e5fcf7dd0c62`, the gate
+  transcript is `/tmp/prodbox-sprint-6.5-authority-backup-service-routing-dev-check.log` at
+  `sha256:0a8ecf3f50878be0360d3682606acc2c099c0dbc03bc49908706cd2a36ffad6f`, and the unit
+  transcript is `/tmp/prodbox-sprint-6.5-authority-backup-service-routing-unit.log` at
+  `sha256:6a8d0a88f5a8c15c4c060a016d16745276b819049dc382b4d604b39f67de8ae5`. Exact `pre-1`
+  is again the next action. No candidate, qualification artifact, activation witness, or exact
+  cleanup proof exists, and the legacy public writer remains sole.
+- The exact live `pre-1` rerun starts platform reconciliation at **2026-09-07 19:20:25 EDT** and
+  exits 1 at **20:02:39 EDT** after the full AWS harness restoration wrapper. It builds local image
+  `sha256:57ab819f57372dcce054eed4f6197bd18d1f3372669a9e9d27c9d8d76dcec025` in
+  **1131.0 s**, publishes Registry manifest
+  `sha256:c34972ec740db08305b192935abbc1163a58c130341f7a99fca85434d2c01f4b`, and imports OCI
+  manifest `sha256:cb1aacd72362a104b02115c7c3ed88ba789980bb9262fdf03d7a98cc2be0f069`
+  in **90.1 s**. Its transcript is
+  `/tmp/prodbox-sprint-6.5-authority-backup-service-routing-live-pre-1.log` at
+  `sha256:b3dd7c467a874320c488d88f0863f59a8d5a27bdd0b30a897eb64f0876e51ff1`.
+  The run crosses the new Authority Backup Service-routing barrier, reads the retained config and
+  marker current, reaches Lifecycle-provider credential generation 2, and completes home-platform
+  reconcile. It also live-proves the missing-legacy-source TLS correction: websocket and API
+  pre-delete both classify the absent source as nothing to preserve and continue. VS Code
+  pre-delete then fails at `TlsRetentionWorkflowAuthorityHomeAgentUnavailable`; the protected
+  Authority log narrows that to
+  `home-agent/http-status/target/home-rewrap/one-shot-operation-unavailable`, while the Target
+  Agent log currently collapses the one-shot failure to
+  `target-one-shot/tls-home-rewrap failure=coordinator/materialization-refused`. Stable
+  counterexample `TLS-HOME-REWRAP-TARGET-MATERIALIZATION-REFUSED-2026-09-07` owns this diagnostic
+  boundary. Add only a closed, value-free home-rewrap runtime refusal classification, pin its
+  finite causes and arbitrary-detail collapse, then rerun exact `pre-1` before changing behavior.
+  The wrapper restores gateway, VS Code, API, websocket, and the Ready public edge, but exact
+  terminal cleanup is not proved, so operational credentials remain preserved. No candidate
+  qualification artifact or activation witness exists, and the legacy public writer remains sole.
+- That diagnostic boundary is now closed code-locally. Home rewrap maps its two runtime result
+  arms to `TargetSecretWorkerTlsHomeRewrapFailed` or
+  `TargetSecretWorkerTlsHomeRewrapBadRequest`; the value-free renderer erases nested exchange and
+  codec values to `tls-home-rewrap/dek-exchange-failed` or
+  `tls-home-rewrap/bad-request`. The standing Target Agent admits only those two exact additions
+  and still maps arbitrary detail to `materialization-refused/other`. Worker execution, protocol,
+  authentication, session and Job cleanup, retry, HTTP behavior, and TLS decisions are unchanged.
+  The exhaustive focused regression passes **1/1**, canonical `prodbox dev check` is clean, and
+  the full unit boundary remains **4,876 + 27 + 35 + 36** passing tests. The exact executable is
+  `sha256:46b7d55fcc3a5420303115345c45c59d86f5acde455515fbd827ec81a165f835`; the focused
+  transcript is `/tmp/prodbox-sprint-6.5-tls-home-rewrap-diagnostic-focused.log` at
+  `sha256:496858316941fe2207fd91f31a07abcec3ee992f20dc495c12c78d929cf5dddc`, the gate
+  transcript is `/tmp/prodbox-sprint-6.5-tls-home-rewrap-diagnostic-dev-check.log` at
+  `sha256:9d8c8247d45463623807b6cae68515d58f8eb9fd1e3901ad538c564de339879b`, and the unit
+  transcript is `/tmp/prodbox-sprint-6.5-tls-home-rewrap-diagnostic-unit.log` at
+  `sha256:42da6d4f4b4ad5e516aec4b98e57d9b9077bb5192a57b571e546407e615cbe93`. Exact
+  `pre-1` is again the next action. No candidate qualification artifact, activation witness, or
+  exact cleanup proof exists, and the legacy public writer remains sole.
+- The unchanged diagnostic live `pre-1` closes at **2026-09-07 21:18:26 EDT** with transcript
+  `/tmp/prodbox-sprint-6.5-tls-home-rewrap-diagnostic-live-pre-1.log` at
+  `sha256:042e5e3a1d63d25f7160c36c7e8bc0caea1e6ef3a73bba94001336582da0340f`. It builds
+  local image `sha256:e9050236f267687495ab61c1861eb87088f51d3c2c820fc21a76f46eea1d40f4`
+  in **1131.9 s**, publishes Registry manifest
+  `sha256:905073cad62d9a494bf13be9a73107bc707c92fe5cfde751dd74385331596c8a`, and imports OCI
+  manifest `sha256:39f7f63f489a00fbf5d10776d67bbf82fa7a65e2b3f6481c3455600b954ea022`
+  in **99.6 s**; retention removes only the immediately preceding manifest and local image. It
+  again crosses retained config, marker, credential generation 2, home-platform reconcile, and
+  the missing-source websocket/API deletion paths. The new protected Target Agent diagnostic
+  selects exact `materialization-refused/tls-home-rewrap/dek-exchange-failed`; Authority preserves
+  the outer `home-agent/http-status/target/home-rewrap/one-shot-operation-unavailable`. Stable
+  successor counterexample `TLS-HOME-REWRAP-DEK-EXCHANGE-FAILED-2026-09-07` owns the
+  still-collapsed finite `TlsDekExchangeError` boundary. Refine only that closed value-free error
+  projection and its allowlist, then rerun exact `pre-1` before changing Transit policy,
+  ciphertext, key material, or effect behavior. The total wrapper again restores every runtime
+  node except the VS Code delete, and the final public edge is `ready-for-external-proof`; exact
+  terminal cleanup is nevertheless unproved, operational credentials remain preserved, no
+  candidate artifact or activation witness exists, and the legacy public writer remains sole.
+- That successor diagnostic is now closed code-locally. An exhaustive bounded
+  `TlsDekExchangeRefusalCause` projects all eleven `TlsDekExchangeError` constructors without
+  their length, version, cipher, Transit, or nested error values. Home-rewrap refusals admit only
+  those generated `dek-exchange-failed/<cause>` tokens plus exact bad-request and defensive
+  other-target arms; arbitrary detail still collapses to `materialization-refused/other`. The
+  projection and allowlist cardinality regression passes **1/1**, canonical `prodbox dev check` is
+  clean, and the full unit boundary remains **4,876 + 27 + 35 + 36** passing tests. The exact
+  executable is
+  `sha256:1ce82b18f37fa169d339fc11df40482971662859ec21c64c08c2d4efe12e38d3`; the focused
+  transcript is `/tmp/prodbox-sprint-6.5-tls-home-rewrap-exchange-diagnostic-focused.log` at
+  `sha256:496858316941fe2207fd91f31a07abcec3ee992f20dc495c12c78d929cf5dddc`, the gate
+  transcript is `/tmp/prodbox-sprint-6.5-tls-home-rewrap-exchange-diagnostic-dev-check.log` at
+  `sha256:01f2d502e24680b4cc92239303e8d2b2eea0611e5e08a285ba1afd24a02bb4f2`, and the unit
+  transcript is `/tmp/prodbox-sprint-6.5-tls-home-rewrap-exchange-diagnostic-unit.log` at
+  `sha256:243640e2bb2ce18b7dd1d109c6f8ef810edf1fa810b997a02913685055093eaa`. No TLS effect,
+  policy, authentication, retry, or cleanup behavior changes. Exact `pre-1` is again the next
+  action; no candidate artifact, activation witness, or exact cleanup proof exists, and the legacy
+  public writer remains sole.
+- The exact diagnostic live `pre-1` runs from **2026-09-07 21:49:46–22:32:47 EDT** and selects the
+  closed successor
+  `materialization-refused/tls-home-rewrap/dek-exchange-failed/transit-unwrap-unavailable` in the
+  protected Target Agent log. The Authority-facing projection remains
+  `home-agent/http-status/target/home-rewrap/one-shot-operation-unavailable`. It builds local image
+  `sha256:7d874db465aa63d4e48d5f0189bace5e29114098fa2a6e70f120a8cff3f58f38` in
+  **1134.5 s**, publishes Registry manifest
+  `sha256:e01f38b7ce72b9ca4f2687370c7461426009511d6b1bcb6668afe7848ee755a0`, and imports OCI
+  manifest `sha256:73edd1ac3397ce369ecf685b008132c1006a137e2b61cbedae3c208bdbfb3f6f`
+  in **89.5 s**; retention removes only the immediately preceding manifest and local image. The
+  run crosses retained config and marker observation, Lifecycle-provider credential generation 2,
+  home platform reconcile, and the websocket/API missing-source deletion paths before VS Code
+  deletion requests the retained-home DEK unwrap. Its total wrapper restores all runtime nodes,
+  with only the repeated best-effort VS Code deletion failed, and returns the public edge to
+  `ready-for-external-proof`; exact terminal cleanup is not proved and operational credentials
+  stay preserved. The transcript is
+  `/tmp/prodbox-sprint-6.5-tls-home-rewrap-exchange-diagnostic-live-pre-1.log` at
+  `sha256:1e0b24c450364c31062a8db5992afead917d14dcfe5ab13f56518017b9f024df`. Stable
+  counterexample `TLS-HOME-REWRAP-TRANSIT-UNWRAP-UNAVAILABLE-2026-09-07` owns the next boundary:
+  classify the value-free Transit failure at the authenticated Vault boundary before changing
+  policy, ciphertext, key material, retry, or effect behavior, pin every admitted diagnostic and
+  arbitrary-detail collapse, and rerun exact `pre-1`. No candidate artifact, activation witness,
+  or exact cleanup proof exists, and the legacy public writer remains sole.
+- That Transit diagnostic boundary is now closed code-locally. `TlsDekTransitBoundary` returns an
+  exhaustive value-free `TlsDekTransitFailure`; the production Vault seam uses detailed
+  authenticated session provenance and classifies acquisition, relogin, exact common request
+  statuses, other client/server/status classes, connection, timeout, decode, and unexpected
+  exceptions without retaining any detail. `TlsDekTransitUnwrapUnavailable` carries that cause
+  through the exchange, and the protected Target-worker allowlist is generated from the finite
+  type. The stable-counterexample focus, including exact cause propagation, exhaustive projection,
+  allowlist cardinality, and arbitrary-detail erasure, is **1/1**; canonical `prodbox dev check` is
+  clean, and the full unit boundary remains **4,876 + 27 + 35 + 36** passing tests. The exact
+  executable is
+  `sha256:91b646318789d4df24e20845e50c68ba0efb557df81aaa00c07285a49e443067`; the focused
+  transcript is `/tmp/prodbox-sprint-6.5-tls-transit-diagnostic-focused.log` at
+  `sha256:16f49269d0c3c4dc61b2775d01b00b4d20e80dac40f6660725c459c697eb8153`, the gate
+  transcript is `/tmp/prodbox-sprint-6.5-tls-transit-diagnostic-dev-check.log` at
+  `sha256:d8d26986f7800c81aac810ff1951bd14ab9126e1f87c6e9f611639dbae0c5091`, and the unit
+  transcript is `/tmp/prodbox-sprint-6.5-tls-transit-diagnostic-unit.log` at
+  `sha256:a079f516c079649a3765ce432e7085c721a7fe6c18fcf31bf5fdf3ff4e6ecff4`. No policy,
+  ciphertext, key-material, retry, authentication, effect, or cleanup behavior changes. Exact
+  `pre-1` is again the next action; no candidate artifact, activation witness, or exact cleanup
+  proof exists, and the legacy public writer remains sole.
+- The exact diagnostic live `pre-1` runs from **2026-09-07 23:14:24–23:57:53 EDT** and selects
+  `materialization-refused/tls-home-rewrap/dek-exchange-failed/transit-unwrap-unavailable/request-bad-request`
+  twice in the protected Target Agent log. This proves an authenticated Vault request returning
+  HTTP 400 after session handling; it rules out session acquisition/relogin, permission,
+  throttling, server, transport, timeout, and response-decode classes while leaving the closed
+  Vault bad-request families unresolved. The
+  Authority-facing projection remains
+  `home-agent/http-status/target/home-rewrap/one-shot-operation-unavailable`. The run builds local
+  image `sha256:cee5e84d6a2510621ade27540e44b67d5d08f0d185d0f39a774c333f59eec62d`
+  in **1130.2 s**, publishes Registry manifest
+  `sha256:f8e3b3779da1b8c23627d076d5c9f21e0458dcc849746b0444a0839d69d80a90`, and imports OCI
+  manifest `sha256:d6950a1b262b64dcb42ff406e179b958fa4093bf806c044b7ce71ca37bbd4d6d`
+  in **92.3 s**; retention removes only the immediately preceding manifest and local image. It
+  again crosses retained config, marker, credential generation 2, complete home-platform
+  reconcile, and the websocket/API missing-source deletion paths. The total wrapper restores every
+  runtime node; only the repeated best-effort VS Code deletion fails. Its first public-edge
+  observation sees transient missing DNS, the bounded retry observes Route 53 in sync, and the
+  final classification is `ready-for-external-proof`. Exact terminal cleanup is nevertheless
+  unproved and operational credentials stay preserved. The transcript is
+  `/tmp/prodbox-sprint-6.5-tls-transit-diagnostic-live-pre-1.log` at
+  `sha256:8809debfa722002f75c631bb25af107dc36431639916c3bb7bdc56e60e6900a7`. Stable
+  counterexample `TLS-HOME-REWRAP-TRANSIT-BAD-REQUEST-2026-09-07` owns the next boundary: prove the
+  retained wrapped-DEK/key provenance that makes Vault reject this exact ciphertext before
+  changing the key, ciphertext, or retention state; pin recovery and every mismatch/refusal case,
+  then rerun exact `pre-1`. No candidate artifact, activation witness, or exact cleanup proof
+  exists, and the legacy public writer remains sole.
+- The stable counterexample's bad-request diagnostic is now closed code-locally without changing
+  a Transit effect or recovery decision. The production boundary decodes only Vault's canonical
+  singleton `errors` response and maps the pinned Vault `1.18.3` decrypt grammar onto twelve
+  finite, value-free causes: missing ciphertext, key not found, five malformed/version-invalid
+  ciphertext families, policy-too-old ciphertext, invalid convergent nonce, invalid ciphertext
+  length, AEAD authentication failure, or `other`. Malformed, multi-error, and unknown bodies all
+  collapse to `request-bad-request/other`; no body or server detail enters the exchange state,
+  allowlist, or protected diagnostic. The exhaustive renderer/allowlist and classifier regression
+  passes **1/1**, including every recognized response and arbitrary-detail erasure, and the
+  complete unit boundary passes **4,876 + 27 + 35 + 36**. The exact executable is
+  `sha256:c3d8c61b1fce670df99c5ad20196f8114cd03bef777ef7437ee1485416c73bab`; the focused
+  transcript is `/tmp/prodbox-sprint-6.5-tls-transit-bad-request-focused.log` at
+  `sha256:496858316941fe2207fd91f31a07abcec3ee992f20dc495c12c78d929cf5dddc`, and the unit
+  transcript is `/tmp/prodbox-sprint-6.5-tls-transit-bad-request-unit.log` at
+  `sha256:4becdd5d0c5c8b4aea854853b2480896b286272876538b6fa7a3da395a61ef03`. Canonical
+  `prodbox dev check` passes on this documentation-inclusive revision; its transcript is
+  `/tmp/prodbox-sprint-6.5-tls-transit-bad-request-dev-check.log` at
+  `sha256:c8aa82d9ed48f7bf839410c3eae965a29b10db5839d7134587ec657a3f9660f5`. Exact live
+  `pre-1` is the next action. No candidate artifact, activation witness, or exact cleanup proof
+  exists, and the legacy public writer remains sole.
+- The exact refined live `pre-1` runs from **2026-09-08 00:38:11–01:21:25 EDT** and selects
+  `materialization-refused/tls-home-rewrap/dek-exchange-failed/transit-unwrap-unavailable/request-bad-request/ciphertext-authentication-failed`
+  twice in the protected Target Agent log. Vault therefore accepted the ciphertext grammar and
+  version but the AEAD tag did not authenticate under the current retained-home Transit key; this
+  rules out missing-key, malformed-ciphertext, version-too-new, policy-too-old, and all non-400
+  families without exposing ciphertext or response detail. The Authority keeps the expected outer
+  `home-agent/http-status/target/home-rewrap/one-shot-operation-unavailable`, and the CLI keeps
+  `TlsRetentionWorkflowAuthorityHomeAgentUnavailable`. It builds local image
+  `sha256:69f9029f668a417517afd1fc3e79151198297045f1b60c1867ab08575650a3bb` in **1117.0 s**,
+  publishes Registry manifest
+  `sha256:71d1133bb699b251809f1153428f5ad73ea5904875548b8c11018e9cbe1cabeb`, and imports OCI
+  manifest `sha256:ee5a30b10afb24e2182f423185f7f21a5546de1436cdcf8c114d359662f6cffc`
+  in **90.1 s**; retention removes only the preceding Registry manifest and local image. The run
+  crosses retained config and marker observation, Lifecycle-provider credential generation 2, the
+  complete home-platform reconcile, and websocket/API missing-source deletion before VS Code
+  deletion asks the home Agent to unwrap the retained DEK. The total wrapper restores all runtime
+  nodes, the final public edge is `ready-for-external-proof`, and a complete cluster inventory
+  shows no Target one-shot or Credential Provisioner Job/Pod residue. Exact terminal cleanup is
+  still unproved and operational credentials remain preserved. The transcript is
+  `/tmp/prodbox-sprint-6.5-tls-transit-bad-request-live-pre-1.log` at
+  `sha256:d463061e2f8373527d860268c456022fb9ce97c2f4aac5c545b7b64664c49e78`.
+  Stable successor counterexample
+  `TLS-HOME-REWRAP-TRANSIT-CIPHERTEXT-AUTHENTICATION-FAILED-2026-09-08` now owns the exact
+  retained-provenance boundary. Prove whether the occupied immutable TLS version and its
+  Authority/current-or-pending record are bound to the current Vault storage generation and
+  Transit key generation, then pin recovery for every absent, mismatched, and unobservable
+  provenance case before changing any retention decision or allocating another version. No
+  candidate qualification artifact, activation witness, or exact cleanup proof exists, and the
+  legacy public writer remains sole.
+- That retained-provenance counterexample is closed code-locally by one narrow, crash-safe
+  pre-outbox transition. Historical evidence binds the occupied version-1 envelope to retained-home
+  Vault storage generation
+  `vault-a290544ececcff87892b19c03dcbf1a06ad3eb800614aaf413af5b81f42ad422`; the current
+  generation is
+  `vault-8c9b826f8837e83494e164d06e30a79966669b52d6d09f6511d63182c335146a`, its Authority TLS
+  aggregate is empty, and the exact current Kubernetes source remains present. Only the authenticated
+  Target result `home-rewrap-ciphertext-authentication-failed` selects recovery after normal
+  version-1 decrypt/apply fails. The workflow encrypts the current source afresh as fixed version 2,
+  then one Authority CAS records the abandoned version-1 envelope digest together with the complete
+  version-2 pending outbox before the immutable PUT. Recovery-pending has no current/predecessor
+  reference, so restore and issuance refuse; exact replay resumes the same v2 bytes, and ordinary
+  Adapter read-back plus source re-observation must precede promotion. Nonempty or pending Authority
+  state, wrong version, invalid or changed digest, mismatched candidate/envelope, missing source,
+  every other Target/Vault result, and every unobservable arm refuse. Version 1 is never applied,
+  promoted, overwritten, deleted, listed, or selected as latest.
+- The exact cause crosses the one-shot worker, standing Target endpoint, and authenticated client as
+  an appended value-free constructor; arbitrary status/body text remains erased. The separate
+  authenticated Authority recovery-staging route is additive at numeric code **63**, preserves all
+  preceding wire tags, and is reachable only inside the Authority-owned TLS workflow. The added
+  recovery calls widen one complete Target attempt from 29 to **32** requests and its two-attempt
+  retained replay from 58 to **64** entries with a **130 MiB** encoded ceiling. Focused workflow,
+  worker, route, and transport suites pass **31/31**, **41/41**, **9/9**, and **36/36** at
+  `/tmp/prodbox-sprint-6.5-tls-legacy-recovery-{workflow-focused,worker-focused,route-focused,transport-focused}.log`
+  with respective SHA-256 digests
+  `b6aafe8d72528b8e8a3f916d6c64c92bcea72360f3072407c8145fc0039f00f3`,
+  `620fa194db1e734ff378a8168f5cccef9f9842f92fe0457e94afeb3ae754af44`,
+  `bdda6b0d9dde418184405e1a5c8926a4abb6374beec0a7433082ec96fec90ddd`, and
+  `4ae5db907fbd3bd1041566d6082f55dc4d0174c22161359e287cdbae9c2240c0`.
+  Canonical unit validation passes **4,880 + 27 + 35 + 36**; its transcript is
+  `/tmp/prodbox-sprint-6.5-tls-legacy-recovery-unit.log` at
+  `sha256:c936fc446df7223dd0741aec2cfb01d5601b1457463f245c8502d1ebad8bc2ee`.
+  Canonical `prodbox dev check` passes on the doctrine-inclusive recovery revision at
+  `/tmp/prodbox-sprint-6.5-tls-legacy-recovery-dev-check.log`,
+  `sha256:e3840dd900a3ceba09fa5ca7313dd8d58f56c90b15a3b01212b99acff5536b81`; the synchronized
+  executable is `sha256:4b4b0c4621bd409f908959258ff87ce62f4d2799873ce5e9120f06caf6b6ca1b`.
+  Exact live `pre-1` is next. No candidate qualification artifact, activation witness, or exact
+  cleanup proof exists, and the legacy public writer remains sole.
+- The exact replay-compatible live `pre-1` runs from **2026-09-08 04:20:39–05:02:46 EDT**. It
+  builds local image `sha256:32d7dd7266affee1305b2e7bf36cfb7dc0fc2eb07be06441be160ff50633283d` in **1,113.2 s**,
+  publishes Registry manifest
+  `sha256:560ff6c3c41bdc76b0e097b3dd6dfcc5b9dfafd5f810aabc39fe2ae48b104330`, and imports OCI
+  manifest `sha256:381423488a4a929659faf1fd6ea0e4bd589b1db4942e78dc278bdf8c9907bd741` in **89.1 s**.
+  Retention removes only the immediately superseded manifest/image. The Target Agent becomes
+  Ready, live-proving canonical nonempty v9/capacity-58 admission under v10/capacity 64. The TLS
+  workflow then durably stages recovery version 2 but the immutable exact key is already occupied
+  by different canonical bytes; the protected Agent selects
+  `adapter/http-status/store/repository-failed/put/conflict/confirmation/bytes-mismatch`, and
+  restore subsequently selects `pending-without-current`. Stable counterexample
+  `TLS-LEGACY-RECOVERY-V2-IMMUTABLE-COLLISION-2026-09-08` owns this exact boundary. Its repair may
+  rebase only a legacy-recovery pending outbox after that closed conflict onto exact-key-observed
+  canonical bytes with identical legacy evidence, approval, version, certificate, and source; it
+  must retain the recovery-pending restore/issuance refusal and require the ordinary adapter
+  read-back plus source re-observation before promotion. The wrapper restores the public edge to
+  `ready-for-external-proof`; VS Code restore remains the repeated best-effort failure, exact
+  cleanup is unproved, and operational credentials remain preserved. The transcript is
+  `/tmp/prodbox-sprint-6.5-target-replay-v9-widen-live-pre-1.log` at
+  `sha256:9d9c38051a853b2be0c3b504f23d6d1f88cb82bdd4e2163f3c1393a3fcb9f5ab`. No candidate
+  qualification artifact or activation witness exists, and the legacy public writer remains sole.
+- That immutable-collision counterexample is now closed on the code-owned surface without deleting,
+  overwriting, or selecting a latest retained object. The Authority can append one exact
+  legacy-recovery collision outbox only from the ordinary recovery-pending state and only after the
+  Target Agent reports the closed exact-key `put/conflict/confirmation/bytes-mismatch` outcome. The
+  request durably binds the original pending digest and exact-key-observed digest; approval,
+  version, certificate, source, and legacy-v1 evidence must remain identical, while the two
+  envelope digests must be distinct. The workflow re-applies only the observed canonical envelope
+  through retained-home rewrap, re-observes its source, commits the collision outbox by CAS, and
+  then uses the ordinary exact store read-back, source proof, and promotion path. Restore and
+  issuance remain refused for both recovery outbox states. Both states round-trip through the
+  bounded retained codec, and forged, metadata-changing, non-conflict, absent, corrupt, or
+  unobservable variants fail closed. The focused Authority fold/endpoint suite passes **27/27** at
+  `/tmp/prodbox-sprint-6.5-tls-recovery-v2-collision-authority-codec-focused-final.log`,
+  `sha256:fd6b04d27a4bcd846724c16746b1fae72d4f5b5239b0f83f372698c3bfd3a01c`; the full TLS
+  workflow suite passes **32/32** at
+  `/tmp/prodbox-sprint-6.5-tls-recovery-v2-collision-endpoint-focused.log`,
+  `sha256:c03c96ca1454602510bff1218d4a433bad745882e31655e9f2f4ebc0465d87df`. Canonical unit
+  validation passes **4,884 + 27 + 35 + 36** with exit 0 at
+  `/tmp/prodbox-sprint-6.5-tls-recovery-v2-collision-unit-final-after-lint.log`,
+  `sha256:6d8d41a7f5d00aa07a2184c7357ddcadeb841124f2e7c894806e7de348b5fef7`.
+  Documentation-inclusive `prodbox dev check` passes with exit 0 at
+  `/tmp/prodbox-sprint-6.5-tls-recovery-v2-collision-dev-check-final.log`,
+  `sha256:809694359946a54323e25c1ca8c8418c709b6f99c40a2965008bc47e410a82bb`; the synchronized
+  executable is `sha256:a51a7623f72d4b1327ef29f105d05f2da13eb524b0e7d6f23736143a65feef4e`.
+  Exact live `pre-1` remains next. No candidate qualification artifact, activation witness, or exact
+  cleanup proof exists, and the legacy public writer remains sole.
+- The exact collision-recovery `pre-1` runs from **2026-09-08 06:10:54–06:52:22 EDT** on local
+  runtime image `sha256:4dc0e173cc2aa002103b90444c1b8c49a87c58ab68c2cc732fd6149208cd2e67`,
+  tag `prodbox-3349a232b3454fb3be77b2f68919904f`, and Registry manifest
+  `sha256:93ecb4fb473254c89ed7b4a7b0fd6391ed0df18094c1d8fdd09f0f2caf5fc91e`.
+  It crosses complete home-platform reconciliation and chart deletion. The exact immutable
+  version-2 collision is observed, but applying those occupied canonical bytes fails at the
+  retained-home rewrap with the closed cause
+  `home-agent/home-rewrap-ciphertext-authentication-failed`; restore then correctly selects
+  `pending-without-current`, and retain-on-ready repeats the same authentication failure. Stable
+  counterexample
+  `TLS-LEGACY-RECOVERY-V2-COLLISION-CIPHERTEXT-AUTHENTICATION-FAILED-2026-09-08` owns this exact
+  boundary. The licensed repair is one bounded fixed-version-3 successor only from the durable
+  legacy-recovery version-2 pending state after exact version-2 conflict, exact-key observation,
+  and that closed authentication failure. It must retain the displaced version-2 pending identity
+  and both version-2 digests in Authority state, create fresh version-3 selected-Agent
+  ciphertext because the certificate AEAD binds its retention version, stage the complete
+  version-3 outbox by CAS before its immutable PUT, and retain restore/issuance refusal until
+  ordinary exact read-back, source re-observation, and promotion. It may not overwrite/delete
+  either older object, infer the occupied object's certificate/source metadata, select latest, or
+  advance beyond version 3. The wrapper restores the public edge to `ready-for-external-proof`;
+  VS Code delete/reconcile remains the repeated best-effort failure, exact cleanup is unproved,
+  and operational credentials remain preserved. The transcript is
+  `/tmp/prodbox-sprint-6.5-tls-recovery-v2-collision-live-pre-1.log` at
+  `sha256:84d3f115b25039a195cd4dfd27e6961b3900f4144f748fa5886b44adde490bca`.
+  No candidate qualification artifact or activation witness exists, and the legacy public writer
+  remains sole.
+- That counterexample is now closed on its code-owned boundary. The existing recovery-stage
+  request schema remains unchanged: candidate version 2 means the already-proved occupied-byte
+  adoption, while candidate version 3 selects one appended
+  `TlsRetentionLegacyRecoverySuccessorPendingState`. The latter is constructible only from the
+  exact version-2 recovery-pending state and collision evidence. It durably retains legacy-v1
+  evidence, both version-2 digests, the displaced approval/candidate identity, and one complete
+  fresh version-3 outbox; approval, certificate, and source must remain identical, all three
+  envelope digests must be distinct, and restore/issuance remain refused. The workflow stages that
+  state before version-3 PUT and then uses only ordinary exact read-back, source verification, and
+  promotion. Version-3 mismatch and every version-4 attempt refuse. Because this adds two requests
+  to the worst successful Target-Agent attempt, its derived retained replay envelope is now
+  `2 * 34 = 68` entries with a 138 MiB bound. Replay codec v11 monotonically admits canonical v10
+  capacity 64 with identical response/skew limits and preserves every entry; shrink, drift,
+  malformed/noncanonical state, and clearing still refuse. Focused Authority fold/endpoint tests
+  pass **30/30** at `/tmp/prodbox-sprint-6.5-tls-v3-successor-authority-focused.log`,
+  `sha256:e4489b984b3190ccaae0b83f8b7b9e621bc36bc7327a5f694bfda9c1ac8ddb19`; the TLS workflow
+  suite passes **33/33** at `/tmp/prodbox-sprint-6.5-tls-v3-successor-workflow-focused.log`,
+  `sha256:9f8ae7da8e87623a9e4cd7e3a83a78993d2b90b3d17ac33f56295f28245f2413`; authenticated
+  transport/replay passes **36/36** at
+  `/tmp/prodbox-sprint-6.5-tls-v3-successor-transport-focused.log`,
+  `sha256:21a64ce203f9dd9439dce14de1e2345cba0ee856dcf7697ec902b2146f3042cd`; and the runtime
+  capacity focus passes **1/1** at
+  `/tmp/prodbox-sprint-6.5-tls-v3-successor-runtime-capacity-focused.log`,
+  `sha256:e9cbcd1b62180fe07f8d9235bd51ea8ce6d121a6b0f244f248895292e4c59412`.
+  Complete unit validation passes primary **4888/4888** plus auxiliaries **27/27**, **35/35**, and
+  **36/36** at `/tmp/prodbox-sprint-6.5-tls-v3-successor-unit.log`,
+  `sha256:b5adaff3182eed1fc124c0dccbd047a71e4a6dd5e637deffabeaadde6eaab7f4`. Canonical
+  documentation-inclusive `prodbox dev check` passes with the pinned formatter, HLint `No hints`,
+  policy and generated-document checks, and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-tls-v3-successor-dev-check.log`,
+  `sha256:2a23ef64776f25a394fa324b0736467a8b8d2278e672137bbfa81038211ae698`. Diff validation passes,
+  and the gate-built installed executable is
+  `sha256:bd708bebf5542d7c618f3e9de5fee9490b22c2bdbb888fb8929fd351959928b7`.
+  A ledger-inclusive canonical rerun also passes at
+  `/tmp/prodbox-sprint-6.5-tls-v3-successor-ledger-inclusive-dev-check.log`,
+  `sha256:f1ca6775524a18bc1a6584b1d7d95b62ad9e2a3813696d64ddd7b75b7953734c`.
+  The unchanged exact next action is live home `pre-1` qualification with that executable. No
+  qualification state changes, and the legacy writer remains sole.
+- The exact live home `pre-1` retry starts at **2026-09-08T10:40:33-04:00** and ends at
+  **2026-09-08T11:22:38-04:00** with status **1** at
+  `/tmp/prodbox-sprint-6.5-tls-v3-successor-live-pre-1.log`,
+  `sha256:a829ec4b59dfd8193bded88029639b3a650fbc73a1270bab9f08ff04da353dad`. It builds local
+  image `sha256:752fef87d320272a973a2f68283bc1af81bbc93881dd4a3d4b7cb434d31ff9c5` in
+  **1,129.3 s**, publishes registry manifest
+  `sha256:5a16417bf2d5c14c10b2d7da90571f2bc4811b4a1d8e35d1e3314df6d431ebe3`, imports OCI
+  manifest `sha256:8062f2040c67d30241407c54b566db38e29e18c39c83b9cbe801b8d2f504f468`, admits the
+  retained Authority generation through the version-11 replay-capacity migration, and crosses full
+  home-platform reconciliation. The TLS-retention delete path nevertheless returns
+  `TlsRetentionWorkflowAuthorityAdapterUnavailable`; Authority logs retain exact version-2
+  repository conflict `put/conflict/confirmation/bytes-mismatch`, restore correctly refuses the
+  remaining `pending-without-current` state, and retain-on-ready repeats adapter-unavailable.
+  Stable counterexample `TLS-LEGACY-RECOVERY-V3-IMMUTABLE-COLLISION-2026-09-08` owns the exact
+  conflict between the durably staged fixed-version-3 successor and the pre-Authority legacy object
+  lane. The restore graph deletes
+  websocket, API, and gateway, then reconciles gateway, API, websocket, and the public edge; VSCode
+  delete and reconcile both fail. Final edge classification is `ready-for-external-proof`, exact
+  terminal cleanup is unproved, and operational credentials are preserved for recovery. A scoped
+  read-only fixed-key probe at `/tmp/prodbox-sprint-6.5-tls-legacy-lane-fixed-probe.log`,
+  `sha256:d79dcbe6ae842747e7fc017d717f14df07b9c2da2c26b7da99bd1d4a0aadd819`, proves exact legacy
+  `versions/1.envelope` through `versions/12.envelope` all present with distinct ETags, S3 version
+  IDs, and creation times from September 3–5. It performs no list/latest read and no mutation. An
+  initial AWS-CLI metadata probe exceeded the Adapter Pod's **80 MiB** limit once; Kubernetes
+  reports the exact `OOMKilled`/137 restart and the Pod is again Ready before the bounded curl probe
+  ends. The licensed correction is therefore not another guessed integer and not object cleanup:
+  retain exact legacy compatibility observations at `versions/<n>.envelope`, but place every
+  Authority-owned immutable store/read-back/restore at the disjoint fixed protocol lane
+  `authority-v1/versions/<n>.envelope`. The already-durable version-3 successor outbox then resumes
+  the same bytes into the new lane; neither legacy objects nor Authority state are rewritten, and
+  there is still no version 4, recursive recovery, list, latest, overwrite, or delete transition.
+  The bounded lane split is now implemented without changing the durable Authority state or the
+  legacy observe payload's canonical single-field wire encoding. The store, confirmation, current
+  restore, and successor-collision observer derive only `authority-v1/versions/<n>.envelope`; the
+  initial empty-state compatibility observer alone derives `versions/<n>.envelope`. A distinct
+  lane-tagged payload selects the Authority observer on the existing authenticated route, and
+  neither payload admits a caller-selected key. Stable counterexample regression
+  `TLS-LEGACY-RECOVERY-V3-IMMUTABLE-COLLISION-2026-09-08` passes **1/1** at
+  `/tmp/prodbox-sprint-6.5-tls-authority-lane-focused.log`,
+  `sha256:ee1e4d85fb7d4121d9727cba320862c886d32bf29b8073c0f9ba43f3313c8d17`; documentation and
+  the component inventory now name both lanes. Full unit validation passes **4,889 + 27 + 35 +
+  36** at `/tmp/prodbox-sprint-6.5-tls-authority-lane-unit.log`,
+  `sha256:b701f1a4a8c3b69e5b8398e8b1a4b7ef9830bc0742728ea16abea102eba90bc0`. Canonical
+  documentation-inclusive `prodbox dev check` passes with the pinned formatter, HLint `No hints`,
+  policy/generated-document checks, and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-tls-authority-lane-dev-check.log`,
+  `sha256:7d4e8a561d9a8b8f1abc457b4dfc7a2aa61f359e39bf49fc5fb9b5d5fab47a62`; diff validation
+  passes and the synchronized executable is
+  `sha256:6cbd2e77bc590823712c16d4c48ab481fb47244acb4e28ab0e50031a3b305bd2`. The
+  ledger-inclusive canonical rerun also passes at
+  `/tmp/prodbox-sprint-6.5-tls-authority-lane-ledger-inclusive-dev-check.log`,
+  `sha256:f1ca6775524a18bc1a6584b1d7d95b62ad9e2a3813696d64ddd7b75b7953734c`. The exact next
+  action is another live home `pre-1` with that executable. No candidate cycle qualifies, and the
+  legacy writer remains sole.
+- The exact lane-split live `pre-1` runs from **2026-09-08T12:33:59-04:00** through
+  **2026-09-08T13:27:42-04:00** and exits **1** at
+  `/tmp/prodbox-sprint-6.5-tls-authority-lane-live-pre-1.log`,
+  `sha256:87ef44787b952420f68a14edd157175cc460b87b181ab9fe3eefd83b115e0e84`. It builds local
+  image `sha256:5732dc206a097971aec358868358592c9f08fedb74b8ced05029b440872877f3` in
+  **1,125.6 s**, publishes Registry manifest
+  `sha256:7e5f964adb433e0b30ff918c6e7aac5af75f03c6cd76eed3c02b2fa63a1b8b28`, and imports OCI
+  manifest `sha256:d4682b9477171504f1167ff0b307f866f9675403c1e4438c0ffa5ecac2a0c10e` in **93.4 s**;
+  retention removes only the immediately superseded Registry manifest `5a16417b…` and local image
+  `752fef87…`. This live-closes
+  `TLS-LEGACY-RECOVERY-V3-IMMUTABLE-COLLISION-2026-09-08`: TLS retention reports exact Authority
+  and Adapter custody, websocket/API/VS Code/Gateway delete, all preserved-volume restores, and the
+  public edge complete. The final edge is `ready-for-external-proof`; a later non-fatal
+  retain-on-ready attempt reports `TlsRetentionWorkflowAuthoritySourceReadBackMismatch` but does
+  not stop the restored graph.
+- The disqualifying terminal is the already-registered live-open
+  `AUTHORITY-PROVIDER-DISPATCH-RESPONSE-INVALID-2026-09-06`. After an EKS-subzone Provider receipt,
+  the registered stack lifecycle generation commits as `AwsStackCreationCommitCreated`, but its
+  admitted create returns
+  `AuthorityProviderResponseInvalid ControlPlaneRequestInvalid` with exact value-free observation
+  `status=client-error,size=within-bound,shape=other`; a stack may exist under that cycle. Exact
+  terminal cleanup is not proved and operational credentials remain preserved. Freeze that
+  route's Authority/Provider production logs and exact source response projection to identify the
+  unrecognized bounded response producer before changing response acceptance, encoding,
+  authentication, dispatch, settlement, or recovery. No candidate cycle qualifies, and the legacy
+  writer remains sole.
+- Scoped read-only evidence closes the response-shape diagnosis without exposing credentials,
+  request bodies, or Provider resource coordinates. Lifecycle Authority and Provider Worker logs
+  are `/tmp/prodbox-sprint-6.5-provider-response-authority-logs.log`,
+  `sha256:28a86daaec15ef3e480254ae099a08f954de4faa111e8537399bbd5f2eba3888`, and
+  `/tmp/prodbox-sprint-6.5-provider-response-worker-logs.log`,
+  `sha256:d1b1858968e7ae5c993be062eded5138804e71869d1770985bcb34a4ef15de14`. The final Provider
+  request completes ingress, admission, trust/time, narrow-session, and credential-binding, enters
+  capability execution at **17:22:43.089084367Z**, emits no
+  capability/projection/encoding completion, and records only socket completion at
+  **17:27:44.137002648Z**. Source projection proves the outer Lifecycle Authority server
+  independently authors HTTP 408 `request-deadline-exceeded` at its generic 300-second
+  accepted-connection bound, racing the nested Provider Worker's unchanged 300-second server
+  envelope before Authority can encode `ProviderDispatchResponse`.
+- The bounded correction leaves the Provider child, Provider Worker server, authentication,
+  replay, operation identity, and every sibling role at their existing limits. Only the Lifecycle
+  Authority accepted-connection envelope consumes the already-typed 330-second Provider response
+  bound, so an inner terminal response has its documented 30-second projection margin. Stable
+  diagnostic and budget regressions pass **2/2** at
+  `/tmp/prodbox-sprint-6.5-authority-provider-server-budget-formatted-focused.log`,
+  `sha256:db59aae772c64871513565194cec7da98db6c19e4a96f9cb0a7d3280bb7090d6`; lifecycle and
+  resource-scaling doctrine plus the component inventory now name the nested server bound. Run
+  full local gates before the unchanged live `pre-1`. The Provider response counterexample remains
+  live-open until that replay, no candidate cycle qualifies, and the legacy writer remains sole.
+- Full unit validation for the nested Provider server budget passes **4,890 + 27 + 35 + 36** at
+  `/tmp/prodbox-sprint-6.5-authority-provider-server-budget-unit.log`,
+  `sha256:fc55f3c5522a1ba4b40e3c3fd326c87548c7d63489a1cbe741a3ab2b257889bc`. Run the
+  canonical all-target quality gate before rebuilding the executable and replaying live `pre-1`;
+  the counterexample remains live-open, no candidate cycle qualifies, and the legacy writer
+  remains sole.
+- Canonical `prodbox dev check` passes with the pinned formatter, HLint `No hints`, policy and
+  generated-document checks, and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-authority-provider-server-budget-dev-check.log`,
+  `sha256:5f78f176c5a83a2d11cf8c136a7b22d79d831fc3d4a9d178f581bf7f24beffab`; diff validation
+  passes and the synchronized executable is
+  `sha256:440d73ac61a7a1cc74a98cb959bd714f736d20c021c17a6de785e342b9e67aa7`. Run the
+  ledger-inclusive canonical gate before replaying live `pre-1`; no candidate cycle qualifies and
+  the legacy writer remains sole.
+- The ledger-inclusive canonical rerun also passes at
+  `/tmp/prodbox-sprint-6.5-authority-provider-server-budget-ledger-inclusive-dev-check.log`,
+  `sha256:823f917f14d3e63e56dd225cc12896e31bec14eecc0dafcec280b16dfc66e7fc`; the
+  synchronized executable remains exact at
+  `sha256:440d73ac61a7a1cc74a98cb959bd714f736d20c021c17a6de785e342b9e67aa7`. The exact next
+  action is the unchanged live home `pre-1` recovery replay. No candidate cycle qualifies, and the
+  legacy writer remains sole.
+- Final documentation lint and diff validation pass; the empty lint transcript is
+  `/tmp/prodbox-sprint-6.5-authority-provider-server-budget-final-docs-lint.log`,
+  `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. Proceed with the
+  live home `pre-1` recovery replay.
+- The nested-budget live `pre-1` runs from **2026-09-08T14:16:10-04:00** through
+  **2026-09-08T14:58:59-04:00** and exits **1** at
+  `/tmp/prodbox-sprint-6.5-authority-provider-server-budget-live-pre-1.log`,
+  `sha256:56028c7689291b321efa7aa27c48a6a086a12590aa2b6ed55528748835985fea`. It builds local
+  image `sha256:6692d7fb468bd2aa1449d2a49ce40421a8e6bea1d06b733b56b0e360e6201317` in
+  **1,122.9 s**, publishes Registry manifest
+  `sha256:c5933c1a95ef8c0be1b1a51ce47515e04100fafa991da901587c73947db5452c`, and imports OCI
+  manifest `sha256:3f1333c05e9ad3e0167333c2ada281740752c76662eaac93eca123aa1bafa83b` in **88.0 s**;
+  retention removes only the immediately superseded manifest `7e5f964a…` and image `5732dc20…`.
+  The run does not re-reach the Provider operation. Its total restore deletes and restores
+  WebSocket/Redis, API, and Gateway/Pulsar and proves the public edge `ready-for-external-proof`,
+  but the certificate-owning VS Code delete refuses at
+  `TlsRetentionWorkflowAuthoritySourceReadBackMismatch` and its restore refuses at
+  `TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`. Stable counterexample
+  `TLS-AUTHORITY-RETAIN-READBACK-MISMATCH-SELECTED-AGENT-UNAVAILABLE-2026-09-08` owns that exact
+  Authority retain→restore sequence. Freeze scoped Lifecycle Authority, TLS Retention Adapter, and
+  Target Agent evidence before changing the workflow, custody, selection, or retry semantics.
+  Exact terminal cleanup is not proved, operational credentials remain preserved, no candidate
+  cycle qualifies, and the legacy writer remains sole; the Provider response counterexample also
+  remains live-open because this run did not reach it.
+- Time-scoped read-only logs prove every participating Pod Ready with zero restarts and close the
+  counterexample to selection logic rather than workload loss. The timestamped Lifecycle Authority
+  and Target Agent transcripts are
+  `/tmp/prodbox-sprint-6.5-tls-authority-sequence-authority-timestamped.log`,
+  `sha256:0765a52ed9f11f74735812eed8b55fe14dae1c99e00320e2a229c7d42531a0a1`, and
+  `/tmp/prodbox-sprint-6.5-tls-authority-sequence-agent-timestamped.log`,
+  `sha256:98e4d924816a23a35bd1b159d03c32e68be600c632ad8ca35d7f257458ed3c3d`; the Adapter log
+  is exactly empty at `/tmp/prodbox-sprint-6.5-tls-authority-sequence-adapter-logs.log`,
+  `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. At 14:55:21 the
+  Authority reports `legacy-adoption-not-idempotent`; at 14:57:53 the independent VS Code restore
+  reaches the selected Agent and correctly refuses `secret-apply-failed/existing-content-mismatch`;
+  at 14:58:58 the later retain reports one-shot preclean classification failure.
+- Source makes the first failure exact. After any promoted Authority current version,
+  `retainPublicEdgeTlsWorkflow` still observes the old legacy `versions/<next>.envelope` lane before
+  creating a fresh next version. This installation retains legacy versions 1–12 while Authority
+  current is version 3, so legacy version 4 is incorrectly treated as an adoption candidate and
+  combined with the newly observed live source. The source read-back mismatch correctly refuses
+  that non-idempotent composition; delete therefore leaves the live namespace present, and the
+  total graph's independent restore correctly refuses replacing its different live certificate
+  with Authority version 3. Restrict legacy observation/adoption to genesis `TlsRetentionEmpty`;
+  once an Authority current exists, create the fresh successor directly in the disjoint
+  `authority-v1` lane. Preserve the exact empty-state migration, immutable collision recovery,
+  source verification, one-shot cleanup, and all refusal semantics. The later preclean failure
+  remains secondary evidence to re-evaluate after this causal correction.
+- The genesis-only legacy observation correction is code-local complete. A promoted Authority
+  current now enters fresh successor creation directly, while `TlsRetentionEmpty` retains the exact
+  legacy migration/recovery branch and pending state still resumes before either. The stable
+  counterexample regression extends the existing stage-before-PUT/interruption test through a
+  second post-promotion retention and fails if that successor calls the legacy observer; it passes
+  **1/1** after formatting at
+  `/tmp/prodbox-sprint-6.5-tls-authority-current-lane-focused.log`,
+  `sha256:92fcbb7d0fa52bd107fec6b7ba3eadd7cff92b126c2e2c7404bbc3ed2053cb1b`. The pinned
+  formatter passes with HLint `No hints` at
+  `/tmp/prodbox-sprint-6.5-tls-authority-current-lane-format.log`,
+  `sha256:b62764783a0004e9ca9cf455f2de37d9ba8b9c3f37056014cc3c5d74bb053b40`; diff validation
+  passes, and lifecycle doctrine plus the certificate-material inventory now state the
+  genesis-only rule. Run full local gates before another live `pre-1`. The live counterexample
+  remains open until that replay, no candidate cycle qualifies, and the legacy writer remains
+  sole.
+- Full unit validation for the genesis-only legacy observation correction passes
+  **4,890 + 27 + 35 + 36** at
+  `/tmp/prodbox-sprint-6.5-tls-authority-current-lane-unit.log`,
+  `sha256:38d14fb5bed44d7e29b28888b82a55f961c7e65728677f65cc517994ff189769`. Run the
+  canonical all-target quality gate before rebuilding the executable and replaying live `pre-1`;
+  the counterexample remains open, no candidate cycle qualifies, and the legacy writer remains
+  sole.
+- The canonical all-target quality gate for that correction exits **0** with HLint `No hints` at
+  `/tmp/prodbox-sprint-6.5-tls-authority-current-lane-dev-check.log`,
+  `sha256:693043863ee70476cb30f9822513844e67e9971e829db245bf1521dc429ca1d4`. The rebuilt
+  executable is `sha256:a8a3646bd7f0f09f5db45d9b2bab34f0d93ce0ee939df73ee0034416b4181143`.
+  Record the evidence in both ledgers and validate that ledger-inclusive tree before replaying live
+  `pre-1`; the counterexample remains open, no candidate cycle qualifies, and the legacy writer
+  remains sole.
+- The ledger-inclusive canonical quality gate also exits **0** with HLint `No hints` at
+  `/tmp/prodbox-sprint-6.5-tls-authority-current-lane-ledger-inclusive-dev-check.log`,
+  `sha256:f1ca6775524a18bc1a6584b1d7d95b62ad9e2a3813696d64ddd7b75b7953734c`. Run the final
+  documentation-only and diff checks, then replay live `pre-1` under the exact rebuilt executable;
+  the counterexample remains open, no candidate cycle qualifies, and the legacy writer remains
+  sole.
+- The final documentation check and documentation lint both exit **0** with empty output at
+  `/tmp/prodbox-sprint-6.5-tls-authority-current-lane-final-docs-check.log` and
+  `/tmp/prodbox-sprint-6.5-tls-authority-current-lane-final-docs-lint.log`, each
+  `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`; `git diff
+  --check` also exits **0**. The local correction is fully validated. Replay live `pre-1`; the
+  counterexample remains open until live evidence closes it, no candidate cycle qualifies, and the
+  legacy writer remains sole.
+- The corrected live `pre-1` from **2026-09-08 15:48:35–16:37:44 EDT** is not a candidate. Its
+  transcript is `/tmp/prodbox-sprint-6.5-tls-authority-current-lane-live-pre-1.log`,
+  `sha256:a7937c29f1df4886a38ba5f320fd755a5cd4c28ba162fdffa6669d9e36849660`. It builds
+  local image `sha256:ee7c4605d462a8462fa2b9c90348b9d1d8f6b45cca4d471b0165c5778ae9312e`
+  in **1,112.1 s**, publishes Registry manifest
+  `sha256:8a1e8eec8c401705fd1c25cea883b43bda2d796c26ce8e1cc17d2a2689b13e3b`, and imports
+  OCI manifest `sha256:ac1d22e496c63fb7e2181bd6968c407b77d5ebe9ca9cc0491e71fce10f135e52`
+  in **93.8 s**; retention removes only the immediately superseded manifest/image. The exact VS Code
+  delete now reports `retained through the Authority and TLS Retention Adapter`, and the whole
+  gateway/VS Code/API/WebSocket graph restores with its exact retained bindings and a
+  `ready-for-external-proof` public edge. This live-closes the blocking retain read-back and restore
+  arms of `TLS-AUTHORITY-RETAIN-READBACK-MISMATCH-SELECTED-AGENT-UNAVAILABLE-2026-09-08`.
+  The later non-fatal retain-on-ready arm remains open: the Target Agent reports
+  `coordinator/session-prepare-failed/preclean/classification-failed`, projected by the Authority as
+  `selected-agent/http-status/target/retain/one-shot-operation-unavailable`.
+- The widened nested server budget is also live-confirmed: Provider capability execution runs from
+  16:36:17 to 16:37:43 and the complete structured 503 reaches the host rather than being replaced
+  by the outer Authority timeout. Stable counterexample
+  `AWS-EKS-TEST-RECONCILE-IAM-NAME-COLLISION-2026-09-08` owns its disqualifying terminal. The
+  registered generation is `AwsStackCreationCommitCreated`; Pulumi creates a VPC, then AWS refuses
+  the deterministic cluster role, node role, and Load Balancer Controller policy with exact 409
+  `EntityAlreadyExists`, so a stack may exist and cleanup is not proved. Operational credentials are
+  correctly preserved. All four scoped role Pods are Ready, zero-restart, and on the exact local
+  image. Scoped logs are Lifecycle Authority
+  `/tmp/prodbox-sprint-6.5-current-lane-live-pre-1-authority.log`
+  (`sha256:263f6adc32e56d9174f1c15c336ce486913313fc40520bb0a6e5e1b30ed44cb8`), empty TLS
+  Retention Adapter log (`sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`),
+  Target Agent `/tmp/prodbox-sprint-6.5-current-lane-live-pre-1-target-agent.log`
+  (`sha256:ed8287da66b204907f88da0225d48509381f811ed62a5cf5cebab99a132d2067`), and Provider
+  Worker `/tmp/prodbox-sprint-6.5-current-lane-live-pre-1-provider-worker.log`
+  (`sha256:2b9ad188ab962582570f98d910aa2879401685bf329038173b1fcebe3858950b`). Run the
+  registered `prodbox aws stack test destroy --yes` recovery and require exact terminal absence
+  before another `pre-1`; no candidate cycle qualifies and the legacy writer remains sole.
+- The first registered recovery probe, `prodbox aws stack test destroy --yes`, exits **0** at
+  16:41:37 EDT and reports only `AWS test Provider destroy receipt: registered stack is absent`.
+  Transcript `/tmp/prodbox-sprint-6.5-aws-eks-test-iam-collision-stack-test-destroy.log` is
+  `sha256:ba4de51772570a3f18fb314a1c500f75668a1b4df74c46f103a981b0ee4a1b7c`. That exact
+  stack-checkpoint absence does not prove the independently registered deterministic IAM family
+  absent; treating it as cleanup would reproduce the collision. Run the full registered cascade
+  desired-absence graph, whose independent IAM-family adapter is a predecessor of EKS stack
+  absence, and require its exact terminal evidence. The counterexample remains open, no candidate
+  cycle qualifies, and the legacy writer remains sole.
+- The registered cascade recovery from **2026-09-08 16:42:49–16:43:45 EDT** exits **1**, correctly
+  withholds a completion receipt, and selects stable counterexample
+  `CASCADE-AWS-EKS-PROVIDER-CHECKPOINT-STACK-DESCRIPTOR-MISSING-2026-09-08`. Transcript
+  `/tmp/prodbox-sprint-6.5-aws-eks-test-iam-collision-cascade-recovery.log` is
+  `sha256:25ddb0d68f902f306d3cec56f49426e0ab8ae7efc294f111de287f4f88293d21`. The retained
+  checkpoint observer classifies `aws-eks` and `aws-eks-subzone` present and `aws-test` absent,
+  while the EKS drain cannot materialize a kubeconfig because the `aws-eks` checkpoint is
+  unavailable. The Provider destroy then fails closed while storing the encrypted checkpoint:
+  `the managed resource registry declares no stack descriptor for aws-eks; registered stack is
+  present`. The EBS reaper proves its own family clean; local uninstall completes; the independent
+  tag sweep still observes the EKS cluster plus its VPC/subnet/gateway/route-table/security-group
+  family. Exact AWS cleanup is therefore unresolved and the retained root has no retirement
+  license. Restore mandatory local RKE2 through `prodbox cluster reconcile`, freeze the
+  stack-descriptor lookup and checkpoint-materialization call paths, and correct the registered
+  identity mismatch before rerunning the cascade recovery. No candidate cycle qualifies and the
+  legacy writer remains sole.
+- Mandatory local recovery succeeds from **2026-09-08 16:44:46–16:59:16 EDT** through `prodbox
+  cluster reconcile`. Transcript
+  `/tmp/prodbox-sprint-6.5-stack-descriptor-counterexample-cluster-reconcile.log` is
+  `sha256:3992734d4d0ee51e2a70e300aa9c8655eb93bf350dbcba63f4e730688eba7258`. RKE2,
+  Registry, Vault, Lifecycle Authority, Authority Backup, Provider Worker, gateway, and TLS
+  Retention are restored; Vault reuses the exact retained root/session/storage identity and the
+  runtime reuses the exact local/Registry/OCI image identities from the rejected run. Source
+  diagnosis opens Sprint `4.91`: the Authority checkpoint registration deliberately names the
+  canonical registry key `aws-eks`, but `checkpointCapabilityForStackName` compares that input to
+  `AwsPulumiStackCoordinate`'s Pulumi stack ID `aws-eks-test`. Match the exact registered
+  resource-key text instead, pin all registered stack capabilities plus the negative provider-ID
+  alias, and leave checkpoint bytes, lifecycle decisions, custody dispositions, and every other
+  stack unchanged. Sprint `6.5` is blocked on that earlier-phase correction; no candidate cycle
+  qualifies and the legacy writer remains sole.
+- Sprint `4.91` is now Done and Sprint `6.5` deploys its exact correction through `prodbox cluster
+  reconcile` from **2026-09-08 17:43:06–18:11:46 EDT**, exit **0**. The clean union-runtime build
+  completes in **1,111.7 s** as local image
+  `sha256:971ea616540108816089f53f091c21b401b9794a01690b772ada2bca4104697c`, publishes
+  Registry manifest `sha256:bc6f777e1aa021184b8fa7b68a22b18018a8d13f623a41c62c2831546202776f`, and
+  imports OCI manifest
+  `sha256:7855a36444cb8a227510f4becdb84f91e4fef5a0de22a6d5913c64b7dd7171e2` in **88.9 s**.
+  Vault reuses the exact retained root session, storage generation, and baseline digest;
+  Lifecycle Authority, Authority Backup, Target Agent, Provider Worker, Gateway, and TLS Retention
+  all cross the current reconcile graph. Transcript
+  `/tmp/prodbox-sprint-6.5-checkpoint-custody-fix-deploy-cluster-reconcile.log` is
+  `sha256:7537e4da673647ecdaff36ab56cfbcccc5ae32718876e2653cd4c49cc9f50cbe`. The registered
+  cascade recovery is next; require its exact terminal evidence before claiming the stranded AWS
+  graph absent. No candidate cycle qualifies and the legacy writer remains sole.
+- That corrected cascade recovery runs from **2026-09-08 18:13:35–18:15:56 EDT** and exits **1**,
+  correctly withholding a completion receipt. It live-closes the Sprint-`4.91` lookup refusal:
+  both current checkpoint registrations reach fresh Provider operations 50/51, both destroys
+  complete, their references retire, and post-destroy observations return `registered stack is
+  absent`. The immutable retired EKS checkpoint has plaintext digest `b2f…` and owns
+  `vpc-08bd233bb0d435a8f`; the terminal 19-row tag audit instead owns the older EKS cluster and
+  `vpc-0cc44cd337d7dc6c7` family. The Provider result therefore describes the exact destroyed
+  registered generation while the audit correctly finds an older generation that escaped current
+  checkpoint custody. EKS kubeconfig hydration was unavailable because the registered partial
+  checkpoint contained only the stack, provider, and VPC, with no output snapshot from which to
+  construct access. The EBS reaper alone is clean; local RKE2 is uninstalled and the retained root
+  remains preserved without retirement authority. Transcript
+  `/tmp/prodbox-sprint-6.5-checkpoint-custody-fix-cascade-recovery.log` is
+  `sha256:88f4a5eb4c54bd7486eb3feb4d2acdaabe22d50b0972fbaf50ae3abab04ea268`. The diagnostic
+  hypothesis `CASCADE-AWS-EKS-CHECKPOINT-AWS-TRUTH-DIVERGENCE-2026-09-08` is falsified and closed.
+  Stable counterexample `CASCADE-AWS-EKS-OLDER-GENERATION-CHECKPOINTLESS-ORPHAN-2026-09-08` owns
+  the actual boundary and selects the qualification candidate's bounded native
+  recovery/adoption path; no Provider checkpoint fix or earlier-phase reopening is licensed.
+- The mandatory retained local control plane is restored by `prodbox cluster reconcile`; the run
+  exits **0** with Lifecycle Authority, Authority Backup, Provider Worker, MinIO, and Vault Ready.
+  Transcript `/tmp/prodbox-sprint-6.5-checkpoint-aws-truth-divergence-cluster-reconcile.log` is
+  `sha256:a02eda6851b7e4214f59209ee1ed11baedc64c4d0f1ea377445ae8e3a4235e99`. Run the unchanged
+  qualification-only `pre-1` candidate next. No candidate cycle qualifies and the legacy writer
+  remains sole.
+- That unchanged `pre-1` runs from **2026-09-08 19:13:47–19:39:29 EDT** and stops before candidate
+  dispatch. The retained-home, credential, Gateway, TLS, and application restore surfaces converge,
+  then the ordinary AWS bootstrap first reconciles the subzone and attempts to create a fresh EKS
+  generation. Pulumi creates a new exact VPC checkpoint, but the checkpointless older cluster role,
+  node role, and Load Balancer Controller policy refuse creation with exact AWS 409
+  `EntityAlreadyExists`; the registered generation remains `AwsStackCreationCommitCreated`, so a
+  stack may exist and operational credentials remain preserved. Transcript
+  `/tmp/prodbox-sprint-6.5-checkpointless-older-generation-live-pre-1.log` is
+  `sha256:278cff14ae2fd6476dba40a260ff4d3d11c588ab1bd1d505dc4219ccc56a08a4`. Stable
+  counterexample `CASCADE-QUALIFICATION-BOOTSTRAP-PRECEDES-RESIDUE-RECOVERY-2026-09-08` owns the
+  ordering defect: the qualification-only surface needs one explicit recovery mode that skips fresh
+  AWS substrate provisioning and dispatches the same typed candidate against already
+  committed/residual state. It must remain non-public, preserve the ordinary `pre-1`/`pre-2`
+  provisioning path, and use a distinct stable recovery cycle identity. No candidate cycle
+  qualifies and the legacy writer remains sole.
+- That ordering correction is code-locally complete. `CascadeQualificationBootstrapMode` converts
+  the test-cycle environment boundary into either ordinary fresh provisioning or existing-state
+  recovery; only the exact qualification suite and a nonempty `recovery-<identity>` label select
+  the latter. Recovery mode emits its choice and skips only the AWS stack/chart bootstrap, leaving
+  the retained-home, credential, runbook, prerequisite, private candidate, and evidence paths
+  unchanged. Ordinary `pre-1`/`pre-2` and every other suite retain fresh provisioning. Both exact
+  selector regressions pass **1/1**, warning-clean affected-target compilation passes, and the
+  complete primary suite passes **4,891/4,891 in 88.32 s**. Transcripts are
+  `/tmp/prodbox-sprint-6.5-recovery-bootstrap-mode-{other-suite-focused,focused,primary-unit}.log`
+  at respective SHA-256 digests `97b322b4…`, `d42509f5…`, and `65baca70…`. Run the
+  documentation-inclusive canonical gate, synchronize its binary, then invoke stable cycle
+  `recovery-older-generation`; no preactivation qualification row changes until live evidence
+  exists.
+- The documentation-inclusive canonical gate now exits **0** with pinned formatting, HLint `No
+  hints`, generated-artifact/documentation checks, and warning-clean all-target compilation. Its
+  transcript is `/tmp/prodbox-sprint-6.5-recovery-bootstrap-mode-dev-check.log` at
+  `sha256:ac51ba9b04129b430386cd865e070aa367e6dc7f651106d3df150c8d51a820c9`; final
+  documentation check, documentation lint, and `git diff --check` also pass. The synchronized
+  executable is exact at
+  `sha256:a2ba8febfca0d2153e1e25dcf43bf52d67f12b2531d6c72cdaf410690b285c07`. Run
+  `recovery-older-generation` through the qualification-only command; the legacy public writer
+  remains sole.
+- The recovery-labelled live run from **2026-09-08 20:11:37–20:59:24 EDT** validates that ordering
+  correction: it emits the explicit recovery-mode marker, skips fresh AWS stack/chart
+  provisioning, and reaches Phase 2 candidate dispatch after the complete retained-home restore.
+  It then exits **1** before the candidate body because the blanket AWS validation wrapper calls
+  `withEksKubeconfig`, which requires the now-retired current `aws-eks` output checkpoint.
+  Transcript
+  `/tmp/prodbox-sprint-6.5-recovery-bootstrap-mode-live-recovery-older-generation.log` is
+  `sha256:bcf4716c6268f90156a88641527bddee82b58e865e008b46737d85be8cf9d73f`. Stable
+  counterexample `CASCADE-QUALIFICATION-EAGER-EKS-KUBECONFIG-BEFORE-CANDIDATE-2026-09-08` owns
+  the execution-context defect: the qualification candidate observes its source image inventory
+  on the retained local control plane and its cloud runtime obtains operation-bound ephemeral EKS
+  client projections from the Provider. Remove only that redundant outer wrapper for this
+  validation; ordinary AWS-target validations retain it. No candidate cycle qualifies and the
+  legacy writer remains sole.
+- That execution-context correction is code-locally complete.
+  `NativeValidationKubeconfigMode` keeps the selected-substrate wrapper for every ordinary
+  validation and selects self-owned scopes only for `ValidationCascadeQualification`; the
+  candidate's existing local inventory observation and Provider projection boundaries remain
+  unchanged. The exact focused regression passes **1/1** and the complete primary suite passes
+  **4,891/4,891 in 87.98 s**. Transcripts
+  `/tmp/prodbox-sprint-6.5-cascade-owned-kubeconfig-{focused,primary-unit}.log` have respective
+  SHA-256 digests `6fa02513…` and `63e74e83…`; `git diff --check` passes. Run the canonical gate
+  and then replay `recovery-older-generation`; no candidate cycle qualifies and the legacy writer
+  remains sole.
+- The documentation-inclusive canonical gate exits **0** with pinned formatting, HLint `No
+  hints`, generated-artifact/documentation checks, and warning-clean all-target compilation. Its
+  transcript is `/tmp/prodbox-sprint-6.5-cascade-owned-kubeconfig-dev-check.log` at
+  `sha256:89a4723df50c243fa643a845a1ebc2b51866fab3ffb89058d075dae55142c2f5`; final documentation
+  check, documentation lint, and `git diff --check` also pass. The synchronized executable is
+  exact at `sha256:ab46ebb5927905af1bbbb68a0a0f9432f77a3624add3ea5da0fcf315d64bef56`. Replay
+  `recovery-older-generation` next; no candidate cycle qualifies and the legacy writer remains
+  sole.
+- The corrected live replay from **2026-09-08 21:21:32–22:08:12 EDT** builds local image
+  `sha256:24f01a01016eecfd5aeaec86f5b5ce34b684fded9f42be6b5fe0f2f7b0ff8184` in **1,129.9 s**,
+  publishes Registry manifest
+  `sha256:a54e71973b135a99f64f9baca8f05191149e05517f2212c4e84f3c347cd8d2aa`, and imports OCI
+  manifest `sha256:435b2a92981c11d5eced4dd57c459e6464151978a7bfd53cc1c05a69db4a7e02` in **95.8 s**;
+  retention removes only the immediately superseded manifest/image. Retained-home restore and the
+  recovery marker succeed, Phase 2 reaches the private candidate body, and the eager-kubeconfig
+  counterexample is live-closed. The run then exits **1** at
+  `LifecycleCleanupAuthorityFailed (CleanupRunClientDescriptorRefused
+  CleanupRunDescriptorMissing)` before any cleanup node runs; operational credentials are
+  preserved. Transcript
+  `/tmp/prodbox-sprint-6.5-cascade-owned-kubeconfig-live-recovery-older-generation.log` is
+  `sha256:754f5001274b718f919bfb31b43ee35c64e5e441a2f1f51d509b62e28ee1fd07`. Stable
+  counterexample `CASCADE-CANDIDATE-PRODUCTION-DESCRIPTOR-MISSING-NOT-CREATE-2026-09-08` owns
+  the registration mismatch: the production endpoint's fresh descriptor absence is a typed
+  `CleanupRunDescriptorMissing` refusal, but `observeOrCreate` recognizes only descriptor-run
+  `NotFound`; the fake Authority returns the latter for fresh state and masks production. Admit
+  the exact missing-descriptor answer as the create precondition and make the fake
+  production-shaped; no other refusal may authorize creation. No candidate cycle qualifies and
+  the legacy writer remains sole.
+- That registration mismatch is code-locally closed. `observeOrCreate` admits the exact
+  `CleanupRunClientDescriptorRefused CleanupRunDescriptorMissing` answer beside the
+  already-admitted descriptor-run `NotFound` answer and no other refusal; the fake Authority now
+  emits the production answer for fresh state and an explicit trace regression requires
+  observe-before-create. The exact regression passes **1/1**, the complete lifecycle
+  cleanup-client group passes **11/11**, and the complete primary suite passes **4,892/4,892 in
+  88.01 s**. Warning-clean affected-target compilation and `git diff --check` pass. Transcripts
+  `/tmp/prodbox-sprint-6.5-descriptor-missing-registration-{build,focused,group,primary-unit}.log`
+  have respective SHA-256 digests `9f6c643f…`, `0c617ade…`, `33ee95ed…`, and `6c79458d…`. Run the
+  canonical gate, then replay `recovery-older-generation`; no candidate cycle qualifies and the
+  legacy writer remains sole.
+- The documentation-inclusive canonical gate exits **0** with pinned formatting, HLint `No
+  hints`, generated-artifact/documentation checks, and warning-clean all-target compilation. Its
+  transcript is `/tmp/prodbox-sprint-6.5-descriptor-missing-registration-dev-check.log` at
+  `sha256:c91133640c4a4bcfcc3638ce69662b2530b76e85e3111b1b1f9a7693e8b24ae0`; final documentation
+  check, documentation lint, and `git diff --check` also pass. The synchronized executable is
+  exact at `sha256:2197075bc61674cbfee7bd51c5ff1f5c91bff2c5378899b8464084bd50c33e60`. Replay
+  `recovery-older-generation` next; no candidate cycle qualifies and the legacy writer remains
+  sole.
+- That live replay runs from **2026-09-08 22:28:24–23:15:07 EDT** and exits **1** after the full
+  retained-home reconcile/restore, recovery marker, Phase 2 dispatch, and private candidate-body
+  entry. It builds local image
+  `sha256:c304836916070c6e5644438d8732a1a1ea1a38ef84e842fe840cb2f36719b8d6` in **1,135.3 s**, publishes Registry
+  manifest `sha256:7556e392751b2983eb1523b0b7c12d786f2df86a6637cf61af658fc6cdfc3ef9`, and imports OCI
+  manifest `sha256:5dc5f4678fab120134a68044f6d443b2f603094481b9e5d7343044852c6c752a` in **86.5 s**; retention removes only
+  the immediately superseded image/manifest. Production now recognizes missing descriptor as the
+  fresh create precondition, so the registration counterexample is live-closed. Descriptor
+  creation then copies its exact state to Authority Backup but the required observation is refused
+  with `AuthenticatedRolePlainResponseKnown AuthenticatedRoleReplayCapacityExhausted`; the
+  response-lost re-observation is refused identically, no cleanup node runs, and operational
+  credentials remain preserved. Transcript
+  `/tmp/prodbox-sprint-6.5-descriptor-missing-registration-live-recovery-older-generation.log` is
+  `sha256:358e8246e4526ad23596d55570688f72f436b2d7408b34b79ac30498d9053f5f`.
+  Stable counterexample
+  `CASCADE-QUALIFICATION-AUTHORITY-BACKUP-REPLAY-ENVELOPE-UNDERSIZED-2026-09-08` owns the new
+  boundary. The role's compiled capacity 18 describes only two nine-request cluster-reconcile
+  envelopes; it does not include the supported multi-command restore graph followed by the
+  descriptor-bound cleanup state machine. The exact capacity refusal proves 18 retained requests
+  were live when the mandatory create read-back attempted request 19. Derive and test the complete
+  qualification envelope, widen only Authority Backup through the existing lossless legacy-codec
+  migration, and leave deadlines, skew, response bounds, authentication, cleanup transitions, and
+  all sibling role capacities unchanged. No candidate cycle qualifies and the legacy writer
+  remains sole.
+- The Authority Backup correction is now code-local. The role derives a **13-request**
+  reconcile/recovery prelude and a **505-request** candidate (`8` registration + `6` claim + `6`
+  primary + `59 * 8` node transitions + `13` terminal custody/read-back), then retains
+  `2 * (13 + 505) = 1036` entries for one interrupted attempt and its immediate unchanged retry.
+  Replay codec **v12** losslessly admits v2–v11 with unchanged response and skew limits. The exact
+  59-node descriptor aggregate is measured below 24 KiB; a mixed prelude/aggregate worst-case
+  projection fits the new 32 MiB encoded ceiling and fails the former 12 MiB ceiling. Authority
+  Backup alone rises from 80 to 144 MiB, preserving the typed host fit. The already-current Target
+  Agent 138 MiB bound also receives its missing physical listener closure: Vault's finite request
+  ceiling is 192 MiB, sufficient for Base64 plus KV framing. The focused authenticated-transport
+  suite passes **37/37** in **0.54 s**; transcript
+  `/tmp/prodbox-sprint-6.5-authority-backup-replay-envelope-focused.log` is
+  `sha256:6b5906cf5213bb8dfc843762294df155281927b6f43f6718aa80493ad33fe224`.
+  Run the full primary suite and canonical gate next, then redeploy and replay
+  `recovery-older-generation`; no candidate cycle qualifies and the legacy writer remains sole.
+- The complete unit surface is now green on that correction: primary **4,892/4,892** in **89.00
+  s** plus auxiliaries **27/27**, **35/35**, and **37/37** in **128.29 s** overall. Its first pass
+  correctly exposed two frozen capacity projections that still named the former 80 MiB Authority
+  Backup envelope; the current steady workload draw is **10,048 MiB**, and the independently
+  frozen one-shot scheduler topology total is **12,608 MiB** after adding the same 64 MiB. Both
+  exact capacity regressions pass, and the unchanged scheduler CPU dispositions remain a 245m
+  superseded deficit and 5m replacement headroom. The successful full transcript is
+  `/tmp/prodbox-sprint-6.5-authority-backup-replay-envelope-unit-rerun.log` at
+  `sha256:d03303d34a8e9c56c192d48ab697ecafe33e02f96102d29958b0eb2e74274fa6`. Run the canonical
+  gate next, then redeploy and replay `recovery-older-generation`; no candidate cycle qualifies and
+  the legacy writer remains sole.
+- The documentation-inclusive canonical gate now exits **0** in **599.61 s** with repository
+  policy, pinned Fourmolu, HLint `No hints`, generated-artifact/documentation checks, and
+  warning-clean all-target compilation. Its transcript is
+  `/tmp/prodbox-sprint-6.5-authority-backup-replay-envelope-dev-check-rerun-3.log` at
+  `sha256:93e971ad0f9f116825ee71ef422e33bc1b32504c887bff44189dbca174925784`. The synchronized
+  `.build/prodbox` is byte-identical to the gate-built executable at
+  `sha256:b3b61e02e161515d7076240c7d86d9aa88bab2ffb4763d6133d9cc651fe88dc8`. Replay
+  `recovery-older-generation` next on this exact revision; no candidate cycle qualifies and the
+  legacy writer remains sole.
+- That live recovery rerun runs from **2026-09-09 00:57:38–01:43:54 EDT** and exits **1** after
+  reconciling the retained local plane, rebuilding/restoring the older-generation application
+  topology, and entering the private candidate body. It builds local image
+  `sha256:832746cb4faa0d5ce3889c472945bdb2b936c6ea65b454a740cf2a18fec82a62` in **1,036.5 s**,
+  publishes Registry manifest
+  `sha256:87b84945e392902468018fdf7678cff22a62298ddb2c61bfcaeeac57f4f5d585`, and imports OCI
+  manifest `sha256:3a20574b47e7a6f4c768b2aba5c1b5b06b213142563b4891bd2a2841f092df19` in **96.5 s**;
+  retention removes only the immediately superseded manifest/image. Authority Backup deploys with
+  the widened envelope, advances and independently reads back the in-force config, and accepts
+  descriptor registration/claim beyond the former request-19 refusal, live-closing
+  `CASCADE-QUALIFICATION-AUTHORITY-BACKUP-REPLAY-ENVELOPE-UNDERSIZED-2026-09-08`. The expired
+  predecessor lease correctly causes claim to retain `CleanupPrimaryRunnerLost`, but the candidate
+  unconditionally tries to attach `CleanupPrimarySucceeded`; the exact protected result is
+  `LifecycleCleanupPrimaryOutcomeConflict CleanupPrimarySucceeded CleanupPrimaryRunnerLost`.
+  Stable counterexample
+  `CASCADE-QUALIFICATION-RECOVERY-PRIMARY-OUTCOME-CONFLICT-2026-09-09` owns this resume boundary.
+  No cleanup node runs, operational credentials remain preserved, and the supported runtime is
+  restored. Transcript
+  `/tmp/prodbox-sprint-6.5-authority-backup-replay-envelope-live-recovery-older-generation.log` is
+  `sha256:ecb57cf00b744f5e7a47bd31f5074391617db90a10a4566e7fe19c76d7df1731`. Preserve an already
+  recorded runner-lost fact and resume its cleanup graph; do not rewrite it as success, allocate a
+  replacement run, or weaken primary-outcome conflict detection. The legacy writer remains sole
+  and no qualification artifact or activation witness exists.
+- The recovery-primary correction is now code-local. After the claim's independent read-back, a
+  vacant primary still attaches `CleanupPrimarySucceeded`; any already-recorded constructor is
+  preserved and the descriptor-bound driver resumes nodes under that exact run and successor
+  fence. Thus runner-lost cannot become success, still makes the final result non-qualifying, and
+  no longer strands recover-to-clean before node execution. The existing strict attach conflict
+  remains unchanged for callers asserting an outcome. The named regression passes **1/1**, and all
+  five non-authorizing candidate regressions pass **5/5**; transcripts
+  `/tmp/prodbox-sprint-6.5-recovery-primary-outcome-conflict-{focused-rerun,group}.log` have SHA-256
+  digests `c271ca0693851505a67971a6b401d6d9474be1c53936d2b2b86943b34bcb50c8` and
+  `59cf043c7e10a781e0257295a00d69f8521c178aca31fc67583e3372d6480d2c`. Run the complete unit
+  surface and canonical gate next, then rerun `recovery-older-generation`; the legacy writer
+  remains sole and no qualification artifact or activation witness exists.
+- The complete unit surface is green on the recovery-primary correction: primary **4,893/4,893**
+  in **88.26 s** plus auxiliaries **27/27**, **35/35**, and **37/37** in **127.53 s** overall.
+  Transcript `/tmp/prodbox-sprint-6.5-recovery-primary-outcome-conflict-unit.log` is
+  `sha256:3ec97bf061eb31c257797e348b8429e7ff6a64ca3fc9cd3e6342c6583ec58721`. Run the canonical
+  gate next, then rerun `recovery-older-generation`; the legacy writer remains sole and no
+  qualification artifact or activation witness exists.
+- The documentation-inclusive canonical gate exits **0** in **610.59 s** with repository policy,
+  pinned formatting, HLint `No hints`, generated-artifact/documentation checks, and warning-clean
+  all-target compilation. Its transcript is
+  `/tmp/prodbox-sprint-6.5-recovery-primary-outcome-conflict-dev-check-rerun.log` at
+  `sha256:b0196ce6212a2246b1ce8d820e3ca6094a6b8e228eafd083652302bb82beb92d`. The synchronized
+  `.build/prodbox` and gate-built executable are byte-identical at
+  `sha256:d49ecac0c70b4363a05448b79f0381c6792d6e89e87a51690308d67aa0fb33f8`. Rerun
+  `recovery-older-generation` on this exact correction; the legacy writer remains sole and no
+  qualification artifact or activation witness exists.
+- That corrected live recovery rerun runs from **2026-09-09 02:11:51–02:59:54 EDT** and exits
+  **1** in **2,883.09 s**. It passes the former primary-outcome attachment boundary with the exact
+  `CleanupPrimaryRunnerLost` fact preserved, resumes the descriptor-bound cleanup driver, and
+  reaches descriptor compaction. Compaction then refuses the still-live run with
+  `CleanupRunDescriptorBindingMismatch "descriptor-bound cleanup run retention window has not
+  elapsed"`; the mandatory independent re-observation confirms
+  `LifecycleCleanupReobservePostStateRejected "descriptor-bound cleanup run remained live after
+  compaction"`. Stable counterexample
+  `CASCADE-QUALIFICATION-RECOVERY-DESCRIPTOR-RETENTION-WINDOW-2026-09-09` owns this resume boundary.
+  The emitted evidence correctly records `aggregate_succeeded=false`,
+  `cleanup_residue_absent=false`, and the non-qualifying runner-lost primary; it is not an
+  activation witness. Operational credentials remain preserved and the supported runtime is
+  restored. The transcript
+  `/tmp/prodbox-sprint-6.5-recovery-primary-outcome-conflict-live-recovery-older-generation.log` is
+  `sha256:c997cfb25485b47c402611815697039832a5bf533987b4f5fc21651ed2f2657b`; evidence
+  `.test-data/qualification/cascade-d13e38d8210241534162d747.evidence` is
+  `sha256:366c4ed5baf8539b46ff344e2ff2fa0b595fe5b36d8e5b568ef279aede99312b`. Resolve the
+  retention/compaction contract without weakening exact descriptor binding, inventing success, or
+  clearing the durable recovered run. The legacy writer remains sole and no qualification artifact
+  or activation witness exists.
+- The descriptor-retention correction is code-local and preserves the existing eligibility guard.
+  The descriptor-bound entry fold independently validates and returns the exact backup-receipted
+  live terminal report while `now < lease expiry + retention`, issuing no compaction request; at or
+  after that boundary it retains the existing immutable report-blob/tombstone transition and
+  mandatory descriptor/report-digest read-back. Nonterminal, runner-lost, failed-node, encode,
+  binding, and post-compaction ambiguity arms remain fail-closed. The named regression passes
+  **1/1** and the whole lifecycle cleanup-client group passes **12/12**, including eligible
+  compaction and lost-response recovery. Transcripts
+  `/tmp/prodbox-sprint-6.5-recovery-descriptor-retention-{focused-rerun-3,group}.log` have SHA-256
+  digests `0472d05dcac3269fb44d3c37bb31f305e8a523fdc9a28287a049c0b267555f3c` and
+  `f8fa32c14425a2998bcb7be282b9b4ea9c2b6746874d87ca939944d2a6452979`. Run the complete unit
+  surface and canonical gate next, then replay `recovery-older-generation`; the legacy writer
+  remains sole and no qualification artifact or activation witness exists.
+- The complete unit surface is green on the descriptor-retention correction: primary
+  **4,894/4,894** in **88.26 s** plus auxiliaries **27/27**, **35/35**, and **37/37** in
+  **128.47 s** overall. Transcript
+  `/tmp/prodbox-sprint-6.5-recovery-descriptor-retention-unit.log` is
+  `sha256:1613289d5f0533e48b75657077fc626fe181d61cccc061e1e591628c48cb78f5`. Run the canonical
+  gate next, then replay `recovery-older-generation`; the legacy writer remains sole and no
+  qualification artifact or activation witness exists.
+- The documentation-inclusive canonical gate exits **0** in **612.18 s** with repository policy,
+  pinned formatting, HLint `No hints`, generated-artifact/documentation checks, and warning-clean
+  all-target compilation. Its transcript is
+  `/tmp/prodbox-sprint-6.5-recovery-descriptor-retention-dev-check.log` at
+  `sha256:506998eca40db1b3bf7d8b4c5b0a7189b5bfa4953f981bc703744fad90e62ff9`. The synchronized
+  `.build/prodbox` and gate-built executable are byte-identical at
+  `sha256:15668613910fbd0726477f34f932fa12572a327c242772dd8c0e8283c9a2eae3`. Replay
+  `recovery-older-generation` on this exact correction; the legacy writer remains sole and no
+  qualification artifact or activation witness exists.
+- That live replay runs from **2026-09-09 03:27:52–04:14:52 EDT** and exits **1** in
+  **2,820.02 s**. It builds local image
+  `sha256:849c24750b5ce356c052f58ddc2b424b80fe37bd42f6663490ce58fc859f83cd` in **1,122.0 s**,
+  publishes Registry manifest
+  `sha256:33c1a6f90e6ef886d299617eda66bafe2ea38eb46539db4b6926b67a205d92d0`, and imports OCI
+  manifest `sha256:6ef4d5cf71436d70edc68854392446fe73c091409b1909eb5391de74aa06e5df`
+  in **91.1 s**; retention removes only the immediately superseded manifest/image. The candidate
+  returns `LifecycleCleanupReportObserved` without a premature compaction request, live-closing
+  `CASCADE-QUALIFICATION-RECOVERY-DESCRIPTOR-RETENTION-WINDOW-2026-09-09`. That exact retained
+  report exposes the next earlier node failure: recovery-plane Establish recorded
+  `LocalRke2HostObservationRepositoryStateUnobservable (LocalRke2RecoveryStateContradictory
+  (LocalRke2InstallMarkersIncomplete (LocalRke2SystemdUnitMarker :| [])))`; read-back and final
+  disposition fail, and every dependent AWS/audit/local-terminal node is blocked. Stable
+  counterexample `CASCADE-QUALIFICATION-RECOVERY-RKE2-SYSTEMD-MARKER-INCOMPLETE-2026-09-09` owns
+  this boundary. Evidence correctly retains `CleanupPrimaryRunnerLost`,
+  `aggregate_succeeded=false`, and `cleanup_residue_absent=false`; operational credentials remain
+  preserved and this is not an activation witness. Transcript
+  `/tmp/prodbox-sprint-6.5-recovery-descriptor-retention-live-recovery-older-generation.log` is
+  `sha256:e32d31a2aeb8504d5b6eac636d8d5eb5c7afcb900a01045a068e369a258f673d`; rewritten evidence
+  `.test-data/qualification/cascade-d13e38d8210241534162d747.evidence` is
+  `sha256:048013e09e7d4ba250fd4957908a3b86de60fadd39040a80dab23d2b84bf41be`. Read-only host
+  evidence resolves the exact install-marker observation and durable retry disposition: all eight
+  supported-install markers exist, the enabled wants-link
+  targets `/usr/local/lib/systemd/system/rke2-server.service`, and `systemctl show` reports that
+  exact `FragmentPath`, while the observer alone named the absent
+  `/etc/systemd/system/rke2-server.service`. The supported installer and recovery installer do not
+  override its systemd directory, so the canonical unit-file marker is corrected to the former
+  path; the `/etc/systemd/system/rke2-server.service.d` guardrail directory and enabled wants-link
+  remain separate markers. A direct regression pins that distinction, and the focused local-RKE2
+  group passes **31/31**. Transcript `/tmp/prodbox-sprint-6.5-rke2-unit-path-focused.log` is
+  `sha256:630332d029102150e253e9b0a10f0a1b8b3cb196703787eb18b1f3c775c9a5f7`. The failed report
+  remains immutable: same-cycle identity resumes an interrupted nonterminal run, whereas the next
+  live correction attempt uses a distinct recovery cycle/run id against the same registered and
+  residual resources. Canonical unit passes primary **4,894/4,894** plus auxiliary **27/27**,
+  **35/35**, and **37/37**; transcript `/tmp/prodbox-sprint-6.5-rke2-unit-path-unit.log` is
+  `sha256:ee7a43deb09fc1b876cdbf57397c10d17076c4a7b415d885b4270e79376ae327`. The canonical quality
+  gate passes in **607.43 s** with repository policy, Fourmolu, HLint (`No hints`), generated/docs
+  checks, and the all-target warning-clean build; transcript
+  `/tmp/prodbox-sprint-6.5-rke2-unit-path-dev-check.log` is
+  `sha256:69cd3d6ae2d13a9c8f206e6df5d832e47df02e5dfaaa1ec7082c2ebe7eeeb39e`. The synchronized
+  gate-built `.build/prodbox` is
+  `sha256:bb89f3035011a4d110a46c71d06e63ae8a2b88a277e9b6e18a823d7cf407236e`. The live
+  counterexample remains open until the new run passes. Post-ledger docs generation/lint and
+  `git diff --check` also exit zero; their empty transcript
+  `/tmp/prodbox-sprint-6.5-rke2-unit-path-post-ledger-docs.log` is the empty SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. The legacy writer remains
+  sole and no qualification artifact or activation witness exists.
+- The distinct live recovery cycle `recovery-rke2-marker-corrected` runs from **2026-09-09
+  04:40:50–05:28:01 EDT** and exits **1** in **2,831.42 s**. It builds corrected local image
+  `sha256:cd416df3cb36e422c5287fb8b3118b1535a1189355a035e664e77bc65c058d86` in **1,114.3 s**,
+  publishes Registry manifest
+  `sha256:c9f744d2d38fece5c5711eedc2100cc8d76e5d5f7d5792f675d8cbbeede828fe`, and imports OCI
+  manifest `sha256:e68f2177b34c9996933bfeb56dcca3c254df2a4101a7fdee32b0bafc6d120552`
+  in **90.3 s**; retention removes only the immediately superseded manifest/image. The run advances
+  past the corrected install observation and exposes the next earlier boundary before cleanup-run
+  registration: `LifecycleCleanupHostRunnerFailed HostCleanupRunnerPreparedReadBackMismatch` for
+  durable run `cascade-qualification-recovery-rke2-marker-corrected`. Stable counterexample
+  `CASCADE-QUALIFICATION-RECOVERY-HOST-PREPARED-READBACK-MISMATCH-2026-09-09` owns this boundary.
+  No new qualification evidence file is written; the prior failed evidence remains byte-identical.
+  Operational credentials are preserved, and this is not an activation witness. Transcript
+  `/tmp/prodbox-sprint-6.5-rke2-unit-path-live-recovery-rke2-marker-corrected.log` is
+  `sha256:7da2d804a7b98557da03342f22c9be707ecc697a2ebd3c2b838c69a2b5ab3cd2`. Diagnose the exact
+  prepared-intent read-back binding before another live run. The legacy writer remains sole.
+- Read-only journal decoding proves that boundary is neither corruption nor a permitted overwrite:
+  `active-v1.cbor` is the exact owner-only `HostCleanupPrepared` intent for terminal failed run
+  `cascade-qualification-recovery-older-generation`, and the Authority report for that run is
+  immutable. The host journal deliberately has one active slot, but its existing exact-completion
+  retirement had no production caller and there was no typed terminal-failure retirement. The
+  correction keeps that single-writer invariant: a distinct candidate first joins the active run
+  to its authenticated descriptor-bound terminal report; an incomplete intent can be archived only
+  when that report contains a non-success node, in a canonical owner-only envelope carrying the
+  exact active intent, descriptor digest, report bytes, and report digest. The archive is fsynced
+  and independently read back before the active link is removed; exact replay closes response loss,
+  while a nonterminal/unobservable run or foreign binding leaves the slot occupied. Completed host
+  state instead uses its exact completion-receipt retirement. The candidate performs either
+  retirement before terminal-report compaction, so the next run never has to infer failure from a
+  tombstone. Re-entry for the same run now resumes an exact already-advanced base binding instead of
+  requiring the journal to remain `Prepared`, and a true foreign conflict preserves its typed
+  `HostCleanupIntentActiveConflict` diagnostic. Focused entry-protocol regressions pass **13/13**;
+  `/tmp/prodbox-sprint-6.5-host-intent-terminal-retirement-entry-focused.log` is
+  `sha256:e2573e6c9db321abc0053273fd2fb0239370a04cd2e4221d2cbb690bdc700df4`. Focused host-runner
+  regressions pass **5/5**;
+  `/tmp/prodbox-sprint-6.5-host-intent-terminal-retirement-runner-focused.log` is
+  `sha256:37ce28b5995fc243f09d7cd29dfbf328022197672d196b7ae9caeb40ec512946`. Complete canonical
+  unit validation passes primary **4,895/4,895** plus auxiliary **27/27**, **35/35**, and **37/37**
+  in **121.41 s**; `/tmp/prodbox-sprint-6.5-host-intent-terminal-retirement-unit.log` is
+  `sha256:1dfd2b23edc14c8422eb982aac405670dc0e1985363ed5edde85eb98f5e9838a`. The canonical quality
+  gate passes in **624.81 s** with repository policy, pinned Fourmolu, HLint (`No hints`), generated
+  artifacts/docs, and warning-clean all-target compilation;
+  `/tmp/prodbox-sprint-6.5-host-intent-terminal-retirement-dev-check.log` is
+  `sha256:cb574c265b2b6b2dd934cbb8ad409db0c234b4825ba1b649061fbb8602b4406b`. The synchronized
+  `.build/prodbox` and gate-built executable are byte-identical at
+  `sha256:eb4f8caf6707aff779fd8d08b87624e7fa0726ad3c728bdabbe965867ccc6497`. Replay
+  `recovery-host-intent-retired`. Post-ledger docs generation/check/lint and `git diff --check`
+  also exit zero; `/tmp/prodbox-sprint-6.5-host-intent-terminal-retirement-post-ledger-docs.log`
+  is empty at `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. The legacy writer
+  remains sole and no activation witness exists.
+- The exact live replay `recovery-host-intent-retired` exits **1** in **2,920.19 s** on 2026-09-09.
+  It builds local runtime image
+  `sha256:6702caa427ce72c8aa5738554741e78f15786b44fb4744808987d238ca411f1f` in **1,122.6 s**,
+  publishes Registry manifest
+  `sha256:bb01db1831ae1213bfc2cdcde877520e78160e61d60abc54633859930bec5dd5`, and imports OCI
+  manifest `sha256:7c193a01d9859c4d6d427ab12a564e490ac6593f75ee5b4268c16c94a3ef6ad3` in **89.9 s**;
+  retention removes only the immediately superseded manifest/image. The distinct run is admitted,
+  returns `LifecycleCleanupReportObserved`, and writes evidence
+  `.test-data/qualification/cascade-ad4d0cd8c3440ba0cf6cfd7d.evidence` at file SHA-256
+  `fa673fdf480580266e124ba6cb4cd073480dd99cfc90c5532543ee66dbb464c9` with governed evidence
+  digest `ff273c9bc872b5b7ee3996691da8a3cbb07cac49834be8cb730ca211801c39fc`. There is no
+  `active-v1.cbor`; the formerly blocking run and this newly terminal run are each retained as one
+  immutable `failed-*.cbor` archive, live-closing
+  `CASCADE-QUALIFICATION-RECOVERY-HOST-PREPARED-READBACK-MISMATCH-2026-09-09` without overwriting
+  either failure. The graph preserves `CleanupPrimaryRunnerLost`; recovery Establish succeeds, but
+  initial read-back fails generically as `cleanup recovery plane is not initially ready`, final
+  disposition reports not established, and every AWS/audit/local-terminal successor is blocked.
+  Operational credentials remain preserved and this is not an activation witness. Transcript
+  `/tmp/prodbox-sprint-6.5-host-intent-terminal-retirement-live-recovery-host-intent-retired.log`
+  is `sha256:d5b7161d7043788789c3444925c06172b924c8f05cbc2f2c6661f6c8d5dffbc6`. Fresh read-only exact
+  object, Vault, and RBAC probes find no current unavailable component, so no semantic correction
+  is licensed from the generic report. Stable counterexample
+  `CASCADE-QUALIFICATION-RECOVERY-INITIAL-FAILURE-DIAGNOSTIC-LOST-2026-09-09` owns the loss of the
+  public component identity/kind failures in `Execution`; expose those bounded non-authorizing
+  facts for both initial and final failure outcomes before the next distinct live replay. The
+  legacy writer remains sole.
+- The diagnostic-loss counterexample is closed code-locally without changing recovery admission,
+  component predicates, or readiness evidence. `RecoveryPlane` now renders only the existing
+  normalized fixed-profile component identity and `missing`, `partial`, `unavailable`, or
+  `unobservable` kind, caps that projection at 1,024 characters, and structurally cannot include
+  the erased raw observer detail. `Execution` appends that view to both initial-read-back and final
+  recovery failure node outcomes; success remains reachable only through the unchanged typed Ready
+  evidence. The focused recovery-plane group passes **6/6** in **0.77 s**;
+  `/tmp/prodbox-sprint-6.5-recovery-component-diagnostic-focused.log` is
+  `sha256:2c97994318dad16555af4dc85602a252ad0e687afcf0906c14b5e08d76938897`, and its build
+  transcript is
+  `sha256:4862609a630bed4bead97a13e6ad3de75f7ec81654175e212b6714dd24da34a1`. Complete
+  canonical unit validation passes primary **4,896/4,896** plus auxiliary **27/27**, **35/35**,
+  and **37/37** in **124.20 s**;
+  `/tmp/prodbox-sprint-6.5-recovery-component-diagnostic-unit.log` is
+  `sha256:fb3316e9719406656b8433e168383a5d17b9c945681c029b9dd9b2c204a4fba0`. The canonical
+  quality gate passes in **614.81 s** with repository policy, pinned Fourmolu, HLint (`No hints`),
+  generated artifacts/docs, and warning-clean all-target compilation;
+  `/tmp/prodbox-sprint-6.5-recovery-component-diagnostic-dev-check.log` is
+  `sha256:a3e44bf891c108614a876992364730af55f857971291098306914e9e02f4f74d`. The synchronized
+  `.build/prodbox` and gate-built executable are byte-identical at
+  `sha256:e97c9224d982e5c101726fd37a9db60dd865f44af4676ecaa9e719593471adb5`. Replay under the
+  distinct cycle `recovery-component-diagnostic`; the legacy writer remains sole and no activation
+  witness exists. Post-ledger docs generation/check/lint and `git diff --check` also exit zero;
+  `/tmp/prodbox-sprint-6.5-recovery-component-diagnostic-post-ledger-docs.log` is empty at
+  `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+- The distinct live replay `recovery-component-diagnostic` exits **1** in **2,987.81 s** on
+  2026-09-09. It builds local runtime image
+  `sha256:a574161b4ed1cee34a6585b168bf67a865cf32061967642236782b2f25614ff7` in **1,134.4 s**,
+  publishes Registry manifest
+  `sha256:1c1db4a4b64b8da1d0f6643838f9fc625e9436d8efd65960f96a4117b42f8285`, and imports OCI
+  manifest `sha256:f8e095f247a6ba11f08b0adbdbf08d44dab0d16011133c7fe4ded63571749172`
+  in **93.5 s**; retention removes only the immediately superseded manifest/image. Retained-home
+  preflight reaches a ready external-proof edge and enters the recovery-mode body. Durable run
+  `cascade-qualification-recovery-component-diagnostic` returns graph digest
+  `22cec8a9f49d3e640b55f400ec0d3c21475428cbd08ecf0a542ec3e6142954b6` with preserved primary
+  `CleanupPrimaryRunnerLost`. Recovery Establish succeeds; both initial read-back and final
+  disposition now fail exactly with `component/cluster_base:missing`, and every AWS/audit/local
+  terminal successor remains blocked. Evidence
+  `.test-data/qualification/cascade-4cd87b56be0115497bf809ac.evidence` has file SHA-256
+  `9a37a7e0f9bf21b3aae48044d64224142538a29c5d4660251695b5ce111e0b09` and governed digest
+  `05a98bd272065d0bb32ac06203cf527765a4f559a5597e7705edba48b039102e`. The terminal host intent
+  is archived and no active link remains; operational credentials are preserved. Transcript
+  `/tmp/prodbox-sprint-6.5-recovery-component-diagnostic-live-recovery-component-diagnostic.log`
+  is `sha256:f998d532f626c7707686aa8e897a564981c9724f05c376343c1a50298a92478a`.
+  This live-closes
+  `CASCADE-QUALIFICATION-RECOVERY-INITIAL-FAILURE-DIAGNOSTIC-LOST-2026-09-09`, but is not a
+  qualification or activation witness. Stable counterexample
+  `CASCADE-QUALIFICATION-RECOVERY-CLUSTER-BASE-MISSING-2026-09-09` owns the newly visible exact
+  boundary. Diagnose which independent cluster-base observation produced absence and whether
+  Establish can legitimately succeed without repairing it; do not infer readiness from later
+  point probes or conflate local RKE2 with the missing older EKS target. The legacy writer remains
+  sole.
+- The exact diagnosis is cross-phase identity drift rather than local RKE2 absence. The host
+  endpoint commits the Healthy cluster-base candidate against the descriptor-bound Establish node
+  while that exact attempt is Running. `RecoveryPlaneIdentity` also binds the digest of currently
+  nonterminal recovery capabilities; when the immediately following read-back re-derived that
+  identity from the new run state, Establish had become terminal, so it selected a different
+  exact-keyed host-observation slot and honestly returned `missing`. The correction preserves the
+  original identity rather than weakening it: from the read-back node's sole exact attempted
+  predecessor, it validates the completed Establish operation, attempt, and outcome against the
+  authoritative run, purely reconstructs that one node as Running, and re-derives the
+  Establish-time requirement through the committed descriptor. Both Cascade and ExplicitPerRun
+  regressions now require the serialized identity seen by initial and final observation to be
+  byte-identical to Establish. The focused interpreter group passes **7/7** in **2.56 s**;
+  `/tmp/prodbox-sprint-6.5-recovery-establish-identity-focused.log` is
+  `sha256:92783dcc8757a03136677fa95dacca7b44a086d879fa9cee5a64cafa6b1d6ffa`, and its warning-clean
+  build transcript is
+  `sha256:e787f56e5165604da52baf5793c02dadb473262c5744d8e45f21cb49f864c129`. Complete canonical
+  unit validation passes primary **4,897/4,897** plus auxiliary **27/27**, **35/35**, and
+  **37/37** in **131.34 s**;
+  `/tmp/prodbox-sprint-6.5-recovery-establish-identity-unit.log` is
+  `sha256:a8c1785af8a9dd0d7ae4344844e4f8f96ff253e2905e40375803f386a9c754d5`. Canonical
+  `prodbox dev check` passes in **626.27 s** with repository policy, pinned Fourmolu, HLint
+  (`No hints`), generated artifacts/docs, and warning-clean all-target compilation;
+  `/tmp/prodbox-sprint-6.5-recovery-establish-identity-dev-check-rerun.log` is
+  `sha256:b2d7ce7b9e852702ffd20233d29253106e84462d844fd8bac62a633dc7f54601`.
+  The synchronized `.build/prodbox` and gate-built executable are byte-identical at
+  `sha256:e0b8c2884d58cbc0a948d37625d7f0f709d2583e29a31ad8b46da5d5fd81458c`. Post-ledger docs
+  generation/check/lint and `git diff --check` also exit zero;
+  `/tmp/prodbox-sprint-6.5-recovery-establish-identity-post-ledger-docs.log` is empty at
+  `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. A distinct live
+  `recovery-establish-identity` replay remains pending. The legacy writer remains sole and no
+  activation witness exists.
+- The distinct live `recovery-establish-identity` replay exits **1** in **3,517.47 s** on
+  2026-09-09. It builds local runtime image
+  `sha256:8a7b9a4c68992a6e78e4f26cc33679476399da01f75d96ec7f01e77a0a7f9940` in **1,135.2 s**,
+  publishes Registry manifest
+  `sha256:46721e1a08ca524fc4c8f8e4fdc3241125005530e946ea0d2e8145ca64d2fc2e`, and imports OCI
+  manifest `sha256:64dc2c5b794e04d542e61a1f929a1080da4890fae26eba5cecad7a2b1b15463e`
+  in **99.2 s**; retention removes only the immediately superseded manifest/image. Retained-home
+  preflight reaches a ready external-proof edge and enters recovery mode. Durable run
+  `cascade-qualification-recovery-establish-identity` returns graph digest
+  `4e4c1535513b6496b0b5687ad27e36b7423162712fc564dfb913ab9bd0bba04d`. Recovery Establish
+  attempt `5acc9e3c...`, initial read-back attempt `af56add7...`, and final disposition attempt
+  `f72e7d15...` all complete `CleanupNodeSucceeded`, live-closing
+  `CASCADE-QUALIFICATION-RECOVERY-CLUSTER-BASE-MISSING-2026-09-09` and proving the Establish-time
+  identity correction. The graph advances into AWS teardown but is not qualifying: its primary is
+  `CleanupPrimaryRunnerLost`, and later nodes expose missing stack-reader/Provider and EKS-drain
+  bindings plus exact AWS family/DNS unobservability. Evidence
+  `.test-data/qualification/cascade-9f57b606c2c7a82630d1c9d0.evidence` has file SHA-256
+  `f7e5d71f0e06b6cb26b108d3e1bef7b0d8f54a746721d9a16761df4a44e27569` and governed digest
+  `27c3020adf792bdeb5aa762da587cee83f2808d392163554998dea3e0891d0b2`. The terminal host intent
+  is archived with no active link, and operational credentials are preserved. Transcript
+  `/tmp/prodbox-sprint-6.5-recovery-establish-identity-live-recovery-establish-identity.log` is
+  `sha256:a501a1fd7f882c626a6687c35cd8fd39bea13937132b8890f08c2f606b06a94b`.
+- The earliest independent defect is the fresh primary ordering, not the lease kernel. A cascade
+  descriptor must remain stable across re-entry, so its initial run encodes the declared lease
+  window relative to zero rather than sampling a clock into program identity.
+  `runCascadeCandidate` then claims that fresh run at current epoch before it attaches
+  `CleanupPrimarySucceeded`; ordinary expired-lease takeover correctly records
+  `CleanupPrimaryRunnerLost` into the vacant immutable slot. Stable counterexample
+  `CASCADE-QUALIFICATION-FRESH-DECLARED-LEASE-RUNNER-LOST-2026-09-09` owns the correction: attach
+  the cascade's intrinsic primary-success fact while the freshly registered exact owner/fence is
+  still authoritative, then claim the active epoch lease. A resume with any recorded primary
+  outcome must still skip attachment and preserve it. Do not change `claimCleanupRun`, lease
+  expiry/fencing, descriptor determinism, or any AWS node in this correction.
+- That correction is code-local to the non-public candidate drive. A fresh vacant run now commits
+  `CleanupPrimarySucceeded` through the existing exact owner/fence transition before its epoch-time
+  claim; a resumed run with any existing primary constructor skips attachment exactly as before.
+  The lease kernel, descriptor bytes, stable run identity, fencing, and AWS graph are unchanged.
+  The regression exercises both orders against the real pure kernel: attach-first preserves
+  success across the expired declared-window claim, while the claim-first mutation records
+  runner-lost. The focused candidate group passes **6/6** in **0.16 s**;
+  `/tmp/prodbox-sprint-6.5-recovery-primary-activation-focused.log` is
+  `sha256:3eb901286c8a5b00c3e5b3988bc0c71c83cec47bc66630e95fd05ecbe97f3150`, and its warning-clean
+  build transcript is
+  `sha256:d7c3d5bfaa5bd01397ed49e1d5861531b6b2d507d5274540a30a7ddb3e2365d1`.
+  Complete unit validation passes primary **4898/4898** plus auxiliaries **27/27**, **35/35**, and
+  **37/37** in **134.52 s** at
+  `/tmp/prodbox-sprint-6.5-recovery-primary-activation-unit.log`,
+  `sha256:9f79bba314d843aa76d010d1e73762913cf1c46dbf0a4a36540781c2d8ec0dc3`. Canonical quality
+  validation passes in **617.23 s** at
+  `/tmp/prodbox-sprint-6.5-recovery-primary-activation-dev-check.log`,
+  `sha256:ea9689f457d102152b4e50e9d1c800865af79e029ab2de9b19319e779d79b624`, with pinned formatting,
+  HLint `No hints`, policy and generated-document checks, and warning-clean all-target compilation.
+  The gate-built and installed executables are byte-identical at
+  `sha256:fa63678c7a1739153db905a9c2faa0e37a03f0f22ccb377bc81fb631e2bda398`. The distinct live replay
+  is next. Ledger-inclusive generated-document check, documentation lint, and `git diff --check`
+  also pass with empty output at
+  `/tmp/prodbox-sprint-6.5-recovery-primary-activation-post-ledger-docs.log`,
+  `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+- The distinct live `recovery-primary-activation` replay exits **1** after **3630.35 s** at
+  `/tmp/prodbox-sprint-6.5-recovery-primary-activation-live-recovery-primary-activation.log`,
+  `sha256:01d8ff45e6314b3bab5c8102fa67e56e9dc01f4bf94938ac0161b13bbdecb9cb`. It builds local image
+  `sha256:3b95350b0f83238c327d710ded274d68ef8de73b48ee9d23075a80e83a21a131` in **1129.3 s**,
+  publishes Registry manifest
+  `sha256:f6eba82edf712c94bb09f677a60f21efe906af378ccbe17fb8f05468a5ff2d69`, and imports OCI
+  manifest `sha256:24e73464e7b7d9a1bbcd03637fe747d1095ff1d2c148a428b73088ba45425671`
+  in **91.8 s**. Retention removes only the preceding Registry manifest `sha256:46721e1a...` and
+  local image `sha256:8a7b9a4c...`. Durable run
+  `cascade-qualification-recovery-primary-activation` returns graph digest
+  `0264613f3d190d47db8474fb655ebbbd796f74ab0ac4874a425419100057f8a0`. Recovery Establish
+  attempt `4b595bcb...`, read-back attempt `8c152bbd...`, and final disposition attempt
+  `83bf6f2c...` all complete `CleanupNodeSucceeded`; critically, the report's immutable primary is
+  now `CleanupPrimarySucceeded`, live-closing
+  `CASCADE-QUALIFICATION-FRESH-DECLARED-LEASE-RUNNER-LOST-2026-09-09` without changing the lease
+  kernel or descriptor identity. Evidence
+  `.test-data/qualification/cascade-c6cf62586055818910e07d71.evidence` has file SHA-256
+  `795f5f4a370e354c3d27e50c1733bb03eba96d8850c9baf2ed1392f5e5d58f6e` and governed digest
+  `12faa6980b74d3e36d2f213b218a7a40b29081d122c2d2cedd98c2dec440e82b`. The terminal host intent
+  is archived as `failed-b524d710...-a4b52a42....cbor`, no `active-v1` link remains, and
+  operational credentials are preserved. The same report now cleanly exposes the later
+  independent EBS/IAM/load-balancer-family, stack-reader, EKS-drain, and DNS01 boundaries;
+  diagnose their dependency order before admitting the next correction.
+- Source inspection selects the shared stack-reader boundary before the independent EKS-drain and
+  DNS01 failures. `observeAwsRegisteredTarget` sends a generic stack's initial read through
+  `awsRegisteredTargetReadStackProviderBinding`; production binds that field to the stack-reader
+  repository, but the graph cannot commit its bundle until after checkpoint recovery. The same
+  field is also addressed by the final absence node's operation id although
+  `CommitAwsStackReaderBundle` stores the bundle under the future reconcile operation. The
+  checkpoint recovery read-back further re-enters that final-reader path before bundle commit.
+  Stable counterexample
+  `CASCADE-QUALIFICATION-STACK-READER-ROLE-IDENTITY-MISMATCH-2026-09-09` owns only this correction:
+  pre-bundle observation must reconstruct the Provider configuration from the separately retained
+  stack-creation binding, reconcile and final absence must consume the independently read-back
+  stack-reader bundle under its reconcile identity, and checkpoint no-restore read-back must use
+  the pre-bundle observation path. The graph, repository/wire schemas, Provider effects, and all
+  later failure boundaries remain unchanged.
+- That correction is now code-local. `AwsRegisteredTargetInterpreter` carries separate creation-
+  binding and stack-reader-bundle readers. Initial generic-stack observation uses the former;
+  reconcile and terminal absence use the latter, with the terminal node deriving the compiled
+  reconcile operation id rather than addressing the bundle by its own read-back id. Checkpoint
+  recovery re-observes through the pre-bundle path. Production reconstructs creation bindings only
+  from the retained stack-generation and exact creation-binding read-back; no fallback or process-
+  local handoff was added. The registered-target group passes **15/15** and the checkpoint group
+  passes **10/10** at `/tmp/prodbox-sprint-6.5-stack-reader-role-identity-focused.log`,
+  `sha256:1039cd1d58f662ecc0f18e8d10e1a6691ed7df40f464c45aac0f318c76dcfcca`. Warning-clean complete
+  unit-target compilation passes in **148.78 s** at
+  `/tmp/prodbox-sprint-6.5-stack-reader-role-identity-focused-build.log`,
+  `sha256:3ac619715789b1858d88e4b4e32689b11236d5837bec69a2f4a7fd13f0768477`. Complete unit validation
+  passes primary **4900/4900** and auxiliaries **27/35/37** in **140.51 s** at
+  `/tmp/prodbox-sprint-6.5-stack-reader-role-identity-unit.log`,
+  `sha256:115d4916000e90db06e339d8fa4ded8692d6d63d9e4d4f125edf976248b7da07`. Canonical `prodbox dev
+  check` passes in **621.68 s** at
+  `/tmp/prodbox-sprint-6.5-stack-reader-role-identity-dev-check.log`,
+  `sha256:e05d5a6a4d97440efde1ddeb956de8623d013869e6daece9dfeaf20ca63c7ab9`, including pinned
+  formatting, HLint `No hints`, documentation/generated-artifact policy, and warning-clean
+  all-target compilation. The gate-built executable and synchronized `.build/prodbox` are
+  byte-identical at
+  `sha256:c0bfc872f8ae8a9709fb5f22315eb94961f3812b3d10411f2d8d8f67f2912b25`. Post-ledger generated
+  documentation, documentation policy/lint, and `git diff --check` pass with empty transcript
+  `/tmp/prodbox-sprint-6.5-stack-reader-role-identity-post-ledger-docs.log`,
+  `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. The distinct live replay is
+  next.
+- The live `stack-reader-role-identity` command exits **1** in **4,884.84 s** before candidate
+  dispatch because that label does not carry the required `recovery-` prefix and therefore selects
+  `CascadeQualificationProvisionFresh`. The moving `ubuntu:24.04` tag changed upstream digest
+  during the run, so its first image/Registry/OCI identities
+  `8575da38641d3d0aaa964fb5373bfa2e5e4d1cc9333764fe273ef816622f19f5` /
+  `88fcc2e925b86e8c89c472daccf98e6dbe06bc752211d536c93ed7aade3fb4c3` /
+  `453364efb199c9f43405198fddc9097cd4a6a4ed7b2944c1468cd361cbd56377` were superseded through the
+  supported reconcile by
+  `0b783fae7e6727596b002b5d7469d5cde8566af0d110123e33826bf7bafc1e08` /
+  `9249bdc46dce8bbd15d45a132861a9e843f7cca7fd8f896b400fe38ceddb6080` /
+  `0d658791d4655951ec1ec6d06d07954dd02b0fe47ef8fff49fca01dd55c3e74a`; retention removed only the
+  immediately superseded pair. Fresh EKS create then re-exposes the already-registered
+  `CASCADE-QUALIFICATION-BOOTSTRAP-PRECEDES-RESIDUE-RECOVERY-2026-09-08` boundary: AWS returns exact
+  409 `EntityAlreadyExists` for deterministic role
+  `prodbox-aws-eks-test-aws-eks-test-cluster-cluster-role` after Pulumi creates an Internet gateway
+  and two public subnets. The committed generation remains `AwsStackCreationCommitCreated`, a
+  stack may exist, exact cleanup is not proved, and operational credentials are preserved. No
+  qualification evidence or host-cleanup intent is emitted because the private candidate was not
+  entered. Transcript
+  `/tmp/prodbox-sprint-6.5-stack-reader-role-identity-live-stack-reader-role-identity.log` is
+  `sha256:df81a7d93d2a32642d4add44ac50090f1913052fb927e2a1170c81fc4e01b9e4`. This is a
+  command-selection correction, not a code change: run the distinct correctly prefixed cycle
+  `recovery-stack-reader-role-identity` against the retained generation; no local gate is
+  invalidated. Ledger-inclusive generated documentation, documentation policy/lint, and `git diff
+  --check` pass with empty transcript
+  `/tmp/prodbox-sprint-6.5-stack-reader-role-identity-pre-recovery-docs.log`,
+  `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+- The correctly prefixed live `recovery-stack-reader-role-identity` cycle exits **1** on 2026-09-09
+  after entering the private candidate. Retained-home reconciliation is exact on local image
+  `sha256:0b783fae7e6727596b002b5d7469d5cde8566af0d110123e33826bf7bafc1e08` and Registry manifest
+  `sha256:9249bdc46dce8bbd15d45a132861a9e843f7cca7fd8f896b400fe38ceddb6080`.
+  Durable run `cascade-qualification-recovery-stack-reader-role-identity` returns graph digest
+  `b1bba8fc0bf0d9c706cd8a9f57d5be1a9bdd58231b5ed6f736e5ede992121a7c` with preserved primary
+  `CleanupPrimarySucceeded`; recovery Establish, initial read-back, and final disposition all
+  complete `CleanupNodeSucceeded`. `aws-eks/observe` also succeeds, live-proving the prior reader-
+  role split on that arm. The earliest remaining generic-stack failure is
+  `aws-eks-subzone/observe`: its selected generation reconstructs the original
+  `ReconcileDesiredPresent` creation scope, then the older absent-cleanup reader rejects that scope
+  as `AwsStackCreationFieldInvalid "lifecycle operation mismatch"` before any Provider observation.
+  Stable counterexample
+  `CASCADE-QUALIFICATION-CREATION-BINDING-SCOPE-OPERATION-MISMATCH-2026-09-09` owns only a distinct
+  creation-scope reader and the proof that present and absent scope readers remain disjoint. Later
+  checkpoint-operation, Provider-request, EKS-drain, DNS01, EBS, IAM, and load-balancer-family
+  failures remain unlicensed. Evidence
+  `.test-data/qualification/cascade-5a97a31848129b57c30ec023.evidence` has file SHA-256
+  `6500b21f04c52201620097a55725a63dfa8ca1541e4a36351a28ea2832fb34a1` and governed digest
+  `317c03d3f6a5dd3b444bcd660247a563800874be38418b90a772a6dbd90aca2e`. Transcript
+  `/tmp/prodbox-sprint-6.5-stack-reader-role-identity-live-recovery-stack-reader-role-identity.log`
+  is `sha256:6e09c61c601d4ae3c62bc70fa97ce8dfbfe6038caead4ecbe69ae28fb185a0cb`.
+- The creation-binding lifecycle-operation correction is code-local and validated. The Authority
+  repository exposes distinct creation- and cleanup-scope read helpers; each derives its identity
+  only after validating its own `ReconcileDesiredPresent` or `ReconcileDesiredAbsent` operation,
+  and the bidirectional negative cases prove neither accepts the other's scope. Production selected-
+  generation reconstruction calls only the creation helper. No graph edge, wire schema, Provider
+  intent/effect, or later target boundary changes. The focused repository group passes **11/11** at
+  `/tmp/prodbox-sprint-6.5-creation-binding-scope-focused.log`,
+  `sha256:c5a03916c2a991336f97b690902edd2fcb26861ed176255f33bc073153047094`.
+  Complete unit validation passes primary **4900/4900** plus auxiliaries **27/27**, **35/35**, and
+  **37/37** at `/tmp/prodbox-sprint-6.5-creation-binding-scope-unit.log`,
+  `sha256:291bcfccbe9fd40c72041877094a6313f3f80e5bb5d86cc72f8dad9303790f03`.
+  Canonical `prodbox dev check` passes with pinned formatting, HLint `No hints`, repository and
+  generated-document policy, and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-creation-binding-scope-dev-check.log`,
+  `sha256:117975441eb8333d81d7882cb7f8ba2d18b2f1a48c32c869637eba51245a1661`.
+  The gate-built and synchronized `.build/prodbox` are byte-identical at
+  `sha256:502995be0f2d9e949b8d73812d1240ff0b27ed7b7aea7a3ed8070a05f7e08459`. Run the distinct
+  live recovery cycle `recovery-creation-binding-scope` next; the legacy writer remains sole.
+- The distinct live `recovery-creation-binding-scope` cycle exits **1** on 2026-09-09 after entering
+  the private candidate, but it live-proves the creation-reader correction. Durable run
+  `cascade-qualification-recovery-creation-binding-scope` preserves primary
+  `CleanupPrimarySucceeded`; recovery Establish, initial read-back, and final disposition all
+  succeed. `aws-eks/observe` remains successful, and `aws-eks-subzone/observe` crosses the former
+  lifecycle-operation mismatch before refusing at
+  `AwsRegisteredTargetStackBindingInvalid (AwsStackNativeFamilyInvalid
+  AwsNativeStackFamilyZoneMissing)`. The same zone-less descriptor later refuses DNS01 observation
+  as `Dns01ChallengeHostedZoneMissing`. Stable counterexample
+  `CASCADE-QUALIFICATION-AWS-DNS-ZONE-RESOLUTION-MISSING-2026-09-09` owns only resolution of the
+  exact AWS-substrate zone through the existing config-or-live-stack-output read path before
+  descriptor compilation and key-specific projection of that shared DNS coordinate into the
+  subzone-native Provider ref. It does not license inferred identity, relaxed family validation,
+  or changes to later EKS checkpoint, EKS-drain, Provider-request, EBS, IAM, or load-balancer-
+  family boundaries.
+  Graph digest is
+  `c7f28c23624598cc84470db99ba49de1e18f5e70e945cb9ceea736f6f15bf903`. Evidence
+  `.test-data/qualification/cascade-1fc747f5ec62edd274956a7d.evidence` has governed digest
+  `c6c4e8d18e6ab6d4d565c8a86d2a5d91073bd3cf324c273e2b033f9ea5a60b28` and file SHA-256
+  `a33b6097287e89b545075535811106638b84ff74fa8d135229fba9854aac8d31`. Transcript
+  `/tmp/prodbox-sprint-6.5-creation-binding-scope-live-recovery-creation-binding-scope.log` is
+  `sha256:ff6f153914f94e7947b62d95aadc5a7fc622ea12e072c1c51212a113b4de34fa`.
+- The AWS DNS-zone resolution correction is code-local and validated. Qualification uses the
+  existing typed config-or-live-`aws-eks-subzone`-output resolver before descriptor compilation;
+  the compiled scope therefore retains one exact hosted-zone ID even when the authored override
+  is intentionally empty. The native-family adapter projects that DNS coordinate into only the
+  subzone ref, continues to require it there, and proves EKS/test refs remain zone-free. No
+  Provider effect, graph edge, wire schema, identity inference, or later target behavior changes.
+  The exact adapter regression passes **11/11** at
+  `/tmp/prodbox-sprint-6.5-aws-dns-zone-resolution-focused.log`,
+  `sha256:426b77774fa6b539559ea4d6476a14fdef604ce6618ac20612ae15c7847798a5`. Complete unit
+  validation passes primary **4901/4901** plus auxiliaries **27/27**, **35/35**, and **37/37** at
+  `/tmp/prodbox-sprint-6.5-aws-dns-zone-resolution-unit.log`,
+  `sha256:72d22d8796214fbe52bf3530b386965c75adbd2ac23ab5ab573b0a419aa9e992`. Canonical `prodbox
+  dev check` passes with pinned formatting, HLint `No hints`, repository/generated-document
+  policy, and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-aws-dns-zone-resolution-dev-check.log`,
+  `sha256:c4253647dfa59059e010c5d33f369f51c6d3f8729b37eece01ed095075fb956f`. The gate-built and
+  synchronized `.build/prodbox` are byte-identical at
+  `sha256:2a3016965253e40bb0e097eb8078537535a5b073f4539530c4ef925757435873`. Run distinct live
+  recovery cycle `recovery-aws-dns-zone-resolution` next; the legacy writer remains sole.
+- Live `recovery-aws-dns-zone-resolution` exits **1** on 2026-09-09 but proves the DNS-zone
+  resolution/projection correction. The run builds local image
+  `sha256:7b5e5cda221e293f24e42339c528ea0bde4c1ce0ac5021d162768b26f6fdb84c` in **1,122.3 s**,
+  publishes Registry manifest
+  `sha256:4039c02d64ea4d83a565163cedaf7ce318f283d2a7bb38661ce758f49f844d54`, and imports OCI
+  manifest `sha256:9863418c72246666918510010b73f90f99e926b7fcdfb01837ed21b7ca797e69` in **97.9 s**;
+  retention removes only the immediately superseded manifest/image. In the private graph,
+  `aws-eks-subzone/observe` and `dns-aws-dns01-challenge-records/observe` both cross their former
+  typed zone-missing refusals and reach Provider observation, where current independent failures
+  classify them as unobservable. Recovery Establish and initial read-back succeed, but final
+  disposition read-back fails with
+  `RecoveryPlaneBindingObservationScopeMismatch`: its expected scope contains exact
+  `HostedZoneId "Z00231272QFGWVE1AJI2G"` while the retained recovery binding lost that coordinate.
+  Stable counterexample `CASCADE-QUALIFICATION-RECOVERY-PLANE-DNS-ZONE-SCOPE-LOSS-2026-09-09` owns
+  only preservation and exact read-back of the optional DNS coordinate across recovery-plane
+  binding persistence; it does not license relaxed scope equality or changes to later target
+  boundaries. Durable run `cascade-qualification-recovery-aws-dns-zone-resolution` preserves
+  primary `CleanupPrimarySucceeded` and returns graph digest
+  `23715076c1b13ca4363e601c378395ef8c54dd136384231e3dbf586db1e9dc7a`. Evidence
+  `.test-data/qualification/cascade-7b4fcce84437351d199e1a1f.evidence` has governed digest
+  `5dc4a9b72206c2e639bf25ff3d528ef1ea92f2f62c2a84b62446f9f5cdaf950c` and file SHA-256
+  `a4a9af96bb9eb92d8b002da80b392083c85999527b75bc8da8bb6bf52bd65df9`. Transcript
+  `/tmp/prodbox-sprint-6.5-aws-dns-zone-resolution-live-recovery-aws-dns-zone-resolution.log` is
+  `sha256:f9f0e2d4cb9c27bb76f5388d312ac6237a5193116bf5f6979c9f698436f08278`.
+- The recovery-plane DNS-zone scope counterexample is closed code-locally without changing
+  scope equality or any observer. `RecoveryPlaneIdentityWire` v2 retains the optional hosted-zone
+  key and reconstructs the exact zone-bearing scope on restart. The bounded canonical decoder
+  admits the prior v1 shape only through its separate exact legacy layout and upgrades it to the
+  zoneless scope it originally represented; it cannot attach a zone to legacy evidence. Focused
+  codec, Authority-repository, and descriptor-bound restart validation passes **19/19** at
+  `/tmp/prodbox-sprint-6.5-recovery-plane-dns-scope-focused.log`,
+  `sha256:e7c0ea3ec16fa02dae3dfdf4b9a290ad0bb8b0ffb9d1412dfca9e5d52145b1e3`. Complete unit
+  validation passes primary **4901/4901** plus auxiliaries **27/27**, **35/35**, and **37/37** at
+  `/tmp/prodbox-sprint-6.5-recovery-plane-dns-scope-unit.log`,
+  `sha256:13029b1ccf615559f86e78fd98a3cae4ffb258c2d3891058edd53115657d8822`. Canonical `prodbox
+  dev check` passes with pinned formatting, HLint `No hints`, repository/generated-document policy,
+  and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-recovery-plane-dns-scope-dev-check.log`,
+  `sha256:5b8881c735e18dd3466153d8775395d001b4e25c010041ef1bc55b35cd8c7155`. The synchronized
+  executable is `sha256:cabedfe110c505645a2038ec80ac25573c16c46d380d3e216f72356a667b19d2`.
+  Run distinct live cycle `recovery-recovery-plane-dns-zone-scope` next; the legacy public writer
+  remains sole.
+- Live `recovery-recovery-plane-dns-zone-scope` exits **1** on 2026-09-09 but proves the
+  RecoveryPlane identity correction. The run builds local image
+  `sha256:81819e8bf307d25804ef09f7f64fd4b806b5d6e872d30733fd8dc1533b41e521` in **1,136.3 s**,
+  publishes Registry manifest
+  `sha256:1cf76ba1115d1b15f3f62c633a2cafd83046ee60d4af732373548a50e6bcd179`, and imports OCI
+  manifest `sha256:528aec2f2f9823e619d34826bb497f348a0b291929ff76afb504f281489df3fd` in **96.6 s**;
+  retention removes only the immediately superseded manifest/image. Recovery Establish, initial
+  read-back, and final disposition all succeed under the exact zone-bearing scope. The EKS target
+  and checkpoint pair also observe successfully, and checkpoint restore succeeds without mutation
+  because its primary copy is already current. Mandatory checkpoint recovery read-back then fails
+  at `CheckpointAuthorityOperationUnknown`: it requires an admission key that correctly was never
+  created on that no-mutation arm. Stable counterexample
+  `CASCADE-QUALIFICATION-AWS-EKS-CHECKPOINT-NO-MUTATION-READBACK-2026-09-09` owns only direct
+  recovery read-back from a fresh exact current primary pair; missing-primary recovery from a usable
+  backup must still bind and read back the exact admitted restore operation. Durable run
+  `cascade-qualification-recovery-recovery-plane-dns-zone-scope` preserves primary
+  `CleanupPrimarySucceeded` and graph digest
+  `48e42482305e3a5c73e31672ac003d21f4db4e40504c8db2dc9ce85c3f8cbda3`. Evidence
+  `.test-data/qualification/cascade-fa91219591cd00541d1c37bb.evidence` has governed digest
+  `22f0d36d43a5d0f17d19e8120aefc0ec057ea5af8ad292acb270a620e1527305` and file SHA-256
+  `d4d6c0089ae1f89af17f003f7a24f5747a0277b9a7671b23515a401ecd49af59`. Transcript
+  `/tmp/prodbox-sprint-6.5-recovery-plane-dns-scope-live-recovery-recovery-plane-dns-zone-scope.log`
+  is `sha256:69e2df08bec52fa0240c98fb1795169fd34ac85847099f006a4c4d76b6f81daa`. Later EKS-drain,
+  Provider-request, EBS, IAM, DNS-family, and load-balancer-family failures remain unlicensed.
+- The EKS-checkpoint no-mutation read-back counterexample is closed code-locally. Recovery now
+  re-observes the exact checkpoint pair before selecting its proof path: an exact current primary
+  closes directly with no Authority submission, while backup-only recovery continues through the
+  previously admitted restore operation and its independent read-back. Partial, unobservable,
+  corrupt, and binding-mismatched observations remain refusals. Focused validation passes **11/11**
+  at `/tmp/prodbox-sprint-6.5-checkpoint-no-mutation-readback-focused.log`,
+  `sha256:7ee3a9656b58dd9a074d5b50bb10583f433a902dc5fbd43e1a8d22346e99d724`. Complete unit
+  validation passes primary **4902/4902** plus auxiliaries **27/27**, **35/35**, and **37/37** at
+  `/tmp/prodbox-sprint-6.5-checkpoint-no-mutation-readback-unit.log`,
+  `sha256:bcb1a6094b12f67a47106ffd1539d9a5d81fbd3f70ff6d66bdc7415ed54b3d7a`. Canonical
+  `prodbox dev check` passes with pinned formatting, HLint `No hints`, repository/generated-document
+  policy, and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-checkpoint-no-mutation-readback-dev-check.log`,
+  `sha256:fb33b93eb0fd3459f725ff558c184a279332a46f3175eb9689419904ee009e11`. The synchronized
+  executable is `sha256:c1b2df0688c4ccdba2ce62d262832a55facb84a9cee35eabab96d19c7b3cf754`.
+  Run distinct live cycle `recovery-aws-eks-checkpoint-no-mutation-readback` next; the legacy public
+  writer remains sole.
+- Live `recovery-aws-eks-checkpoint-no-mutation-readback` exits **1** on 2026-09-09 but proves the
+  checkpoint correction. The run builds local image
+  `sha256:0aef7a375cee8baaa12c797a7907392e8c011464aa4ccf83800a9e81c197898e` in **1,127.7 s**,
+  publishes Registry manifest
+  `sha256:9d2a8a09c0f5b8120f32a67aca725a34e28d9f43d33b3832ba08033d9205ce31`, and imports OCI
+  manifest `sha256:6d42fe5320abdb1b415bb55c90949d342503ac82168b6e8aa4b86fa515be74c6` in **92.3 s**;
+  retention removes only the immediately superseded manifest/image. Recovery Establish, initial
+  read-back, and final disposition succeed, as do EKS target observation, checkpoint-pair
+  observation, restore, and mandatory checkpoint recovery read-back. The independent EKS
+  drain-intent commit then refuses because authenticated transport maps Authority's exact 404
+  `EksDrainIntentWireRecoveryMissing` to generic `EksDrainIntentClientRemoteRefused` instead of the
+  client model's existing `EksDrainIntentClientRecoveryMissing`; this prevents the already-closed
+  create-on-missing arm. Stable counterexample
+  `CASCADE-QUALIFICATION-EKS-DRAIN-RECOVERY-MISSING-WIRE-2026-09-09` owns only recovery-action
+  preservation of that exact missing response. Every other wire refusal, unavailable response,
+  action, and HTTP-status mismatch remains non-absence. Durable run
+  `cascade-qualification-recovery-aws-eks-checkpoint-no-mutation-readback` preserves primary
+  `CleanupPrimarySucceeded` and graph digest
+  `1774b488c41bfafb76118c5dc6b5b3aa0a3c482a097d35dc28a0b728677f85cd`. Evidence
+  `.test-data/qualification/cascade-30a6a1f3a2fe0e3c9967f8c1.evidence` has governed digest
+  `9699d51f595144fd37f850c82586f17ddea96a2bcbda0f7ca41e691820932d2c` and file SHA-256
+  `9e661cc92d2dd361a2e623e2f246343b8dbbda96c40004259a96679c4a195e9c`. Transcript
+  `/tmp/prodbox-sprint-6.5-checkpoint-no-mutation-readback-live-recovery-aws-eks-checkpoint-no-mutation-readback.log`
+  is `sha256:18703249accdf10b81d0f98bc13202ad821733fe81bf017d9a7f656a52009499`. Parallel
+  stack-reader Provider-request, EBS, IAM, DNS-family, and load-balancer-family failures remain
+  unlicensed.
+- The EKS drain-intent recovery-missing wire counterexample is closed code-locally. The
+  authenticated transport preserves only the recovery action's canonical Authority
+  `EksDrainIntentWireRecoveryMissing` response as the client model's typed recovery-missing value,
+  which reaches the executor's existing create-on-missing arm. A distinct not-found refusal is
+  regression-proven to remain `EksDrainIntentClientRemoteRefused`; unavailable responses, wrong
+  actions, proof mismatches, and HTTP-status mismatches remain non-absence. Focused repository,
+  endpoint, and authenticated-transport validation passes **16/16** at
+  `/tmp/prodbox-sprint-6.5-eks-drain-recovery-missing-wire-focused.log`,
+  `sha256:284b974ff8b23e810d66c234f829d954d3beac76e2dc47b4dbc9dcaf81ac856b`. Complete unit
+  validation passes primary **4903/4903** plus auxiliaries **27/27**, **35/35**, and **37/37** at
+  `/tmp/prodbox-sprint-6.5-eks-drain-recovery-missing-wire-unit.log`,
+  `sha256:809c70477edf57d8760586e05041ff898b8529f86da4b878609c261dd2cb2f24`. Canonical
+  `prodbox dev check` passes with pinned formatting, HLint `No hints`, repository/generated-document
+  policy, and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-eks-drain-recovery-missing-wire-dev-check.log`,
+  `sha256:fc7b16e64e5076759c2c8117bbafaa5ecfbb591046a2abc6c427e8fe7a91a4ca`. The synchronized
+  executable is `sha256:138c0bc74d789daa9f434882a8e0fe5e7f664a2b6506d880d9584e0c744c4767`.
+  Run distinct live cycle `recovery-eks-drain-recovery-missing-wire` next; the legacy public writer
+  remains sole.
+- Live `recovery-eks-drain-recovery-missing-wire` exits **1** on 2026-09-09 but proves the exact
+  drain transport correction: recovery-missing reaches the existing create-on-missing arm and its
+  fresh Provider observation. The run builds local image
+  `sha256:435dce10327dd4549112387549186bd23bf101686d52882b7ad18630324c5fd1` in **1,145.7 s**,
+  publishes Registry manifest
+  `sha256:a27e6c1bc8e5e624259e3fabcbef12ddbdf3986755fa924acc94425dfbd8e146`, and imports OCI
+  manifest `sha256:c1b8309a4dbf590776a6e29b791e0b54c77f45e3512e81ca63a59c85b17fdb11` in **90.5 s**;
+  retention removes only the immediately superseded manifest/image. Recovery Establish, both
+  read-backs, final disposition, EKS target observation, checkpoint-pair observation, restore, and
+  recovery read-back all succeed. Drain commit and parallel stack-reader, EBS, IAM, DNS-family,
+  and load-balancer-family Provider calls then expose
+  `ProviderWorkerResponseInvalid ControlPlaneRequestInvalid`. Read-only Provider Worker workload
+  diagnostics show affected requests either complete authenticated ingress, intent admission,
+  trust and clock revalidation, narrow-session and credential binding, capability execution,
+  authority projection, and response encoding, or stop after socket ingress. The Provider client
+  currently decodes every outer authenticated-runtime plaintext response as a role response, so
+  the exact outer refusal is lost. Stable counterexample
+  `CASCADE-QUALIFICATION-PROVIDER-WORKER-PLAIN-RESPONSE-DIAGNOSTIC-LOST-2026-09-10` owns only a
+  closed value-free classification at that boundary; Provider execution and replay policy remain
+  unchanged until the diagnostic names the refusal. Durable run
+  `cascade-qualification-recovery-eks-drain-recovery-missing-wire` preserves primary
+  `CleanupPrimarySucceeded` and graph digest
+  `4a5f51d6ce51c74f7cf3d3f486f481d18db0037fbbfd2b590c4e9ab413c0e845`. Evidence
+  `.test-data/qualification/cascade-d4a57708edbd0b6e5b2f4273.evidence` has governed digest
+  `2ac00a2309c8dde3204f2c836c53e097f6a56272584294c42d69196e4d594f16` and file SHA-256
+  `22c92f1b1d5e85eaeec0aead61cf6c17297d334a3302be0ba342db6cdc525fcb`. Transcript
+  `/tmp/prodbox-sprint-6.5-eks-drain-recovery-missing-wire-live-recovery-eks-drain-recovery-missing-wire.log`
+  is `sha256:14eb4d657f250c0955e85acdb75b60f2275181a9bfa75e89dcca2a839e096c2c`. This is not a
+  qualification or activation witness; the legacy public writer remains sole.
+- The Provider Worker plaintext-response diagnostic is closed code-locally. Canonical Provider
+  response decoding remains first; only a failure crosses the authenticated-role interpreter's
+  total exact status/body classifier. Each of its 21 static response pairs becomes a closed
+  bodyless observation, while wrong or unknown plaintext remains a codec failure. The diagnostic
+  changes no HTTP response, replay policy, retry, Provider execution, evidence, or cleanup
+  decision. Focused Provider validation passes **27/27** at
+  `/tmp/prodbox-sprint-6.5-provider-worker-plain-response-diagnostic-focused.log`,
+  `sha256:742a0e323593ef719b14479a684412c4d1f4bd1a5c6c5ac0788181269e1b9f5d`. Complete unit
+  validation passes primary **4904/4904** plus auxiliaries **27/27**, **35/35**, and **37/37** at
+  `/tmp/prodbox-sprint-6.5-provider-worker-plain-response-diagnostic-unit.log`,
+  `sha256:2546d42e39ecba425a3489204be8e022297a11c695e9743a6697aee2fa925c8d`. Canonical
+  `prodbox dev check` passes with pinned formatting, HLint `No hints`, repository/generated-document
+  policy, and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-provider-worker-plain-response-diagnostic-dev-check.log`,
+  `sha256:c2bf06997f86b829d54cce52a7be436aaf844457c28bbafedd521a9a22c3fefd`. The synchronized
+  executable is `sha256:6474fd818d8cc92fe49b6ca73be5222557d1a9e58b524c4754ecf8821ae2de59`.
+  Run distinct live cycle `recovery-provider-worker-plain-response-diagnostic` next; the legacy
+  public writer remains sole.
+- Live `recovery-provider-worker-plain-response-diagnostic` exits **1** on 2026-09-10 and closes
+  `CASCADE-QUALIFICATION-PROVIDER-WORKER-PLAIN-RESPONSE-DIAGNOSTIC-LOST-2026-09-10`. The run builds
+  local image `sha256:d4360640abd34fa62e52560bf650f7d4bfea87ad06bb0c363d52f7180a2e83e4` in
+  **1,125.0 s**, publishes Registry manifest
+  `sha256:2c1e62268f379585ec7a56a27959a2197f774f2244a42ab735282eeaf80b75a6`, and imports OCI
+  manifest `sha256:a3088872e5a2b87ad8e75c0372a47f02c1eccc179382a7601cea4ac3c7ead502` in **98.1 s**;
+  retention removes only the immediately superseded manifest/image. Recovery Establish, both
+  read-backs, final disposition, EKS target and checkpoint-pair observation, checkpoint restore,
+  and checkpoint recovery read-back all succeed. The drain commit and parallel Provider-backed
+  nodes now preserve the exact outer refusal as
+  `ProviderWorkerAuthenticatedRoleResponse (AuthenticatedRolePlainResponseKnown
+  AuthenticatedRoleReplayCapacityExhausted)`. Stable counterexample
+  `CASCADE-QUALIFICATION-PROVIDER-WORKER-REPLAY-ENVELOPE-UNDERSIZED-2026-09-10` owns the Provider
+  role's generic capacity four: derive its complete qualification Provider request envelope plus
+  one immediate unchanged retry, preserve every retained entry through the supported replay-codec
+  widening, align the replay response maximum with the existing 64 KiB Provider client maximum,
+  and prove the existing 12 MiB encoded ceiling. Durable run
+  `cascade-qualification-recovery-provider-worker-plain-response-diagnostic` preserves primary
+  `CleanupPrimarySucceeded` and graph digest
+  `c0a16c37202088374a1b1f19a9c76928d92cedb04c59df50a3155841892af468`. Evidence
+  `.test-data/qualification/cascade-fbd1df8f1616e32bd71a8117.evidence` has governed digest
+  `4f297689214303fb651e05aa55de2bf6a223cc05c0affc2fb6df6ec98bce4c0b` and file SHA-256
+  `feca5d27c7303592c11d2db5b9be39e2ecbfb625e8d37e6f9cd373211d72f181`. Transcript
+  `/tmp/prodbox-sprint-6.5-provider-worker-plain-response-diagnostic-live-recovery-provider-worker-plain-response-diagnostic.log`
+  is `sha256:5e186c2f0dca6d8b188fe57ac152ef6d512fcca9ddb4caa1d26a98bcf0fba077`. This is not a
+  qualification or activation witness; the legacy public writer remains sole.
+- Code-local closure for
+  `CASCADE-QUALIFICATION-PROVIDER-WORKER-REPLAY-ENVELOPE-UNDERSIZED-2026-09-10` derives one exact
+  complete qualification attempt as `1 + 6 * 4 + 3 + 7 + 5 = 40` Provider Worker requests: one
+  operational AWS-scope proof; four requests each for six Provider-mutated non-EKS registered
+  families; three Provider observations for the Kubernetes-owned DNS01 family; seven EKS
+  observation/drain/destroy/read-back requests; and five terminal-audit queries. The role retains
+  two complete attempts at capacity **80**, uses its already-enforced 64 KiB client response limit
+  at the server replay boundary, and keeps the 12 MiB encoded ceiling. Canonical v2 through v11
+  widening into v12 preserves every retained entry. The focused authenticated-transport suite
+  passes **39/39** at
+  `/tmp/prodbox-sprint-6.5-provider-worker-replay-envelope-focused.log`,
+  `sha256:aac6f7ef2374ed415fdd4d54e5327b1e14fc26b0d67f157ec2b0d7fcb11e35ef`. Exact-state full unit
+  passes primary **4,904/4,904** and auxiliaries **27/27**, **35/35**, and **39/39** at
+  `/tmp/prodbox-sprint-6.5-provider-worker-replay-envelope-unit.log`,
+  `sha256:977ddc8725a311b57d6559aaa6be8ab389c7f502f78538a6cbabbb57fce34def`. Canonical `prodbox dev
+  check` passes at `/tmp/prodbox-sprint-6.5-provider-worker-replay-envelope-dev-check.log`,
+  `sha256:310e1d99ae3dffc4fb806eb7138b58bddf9301b78fdb777e411b951c8fb030e9`; the synchronized
+  executable is exact at
+  `sha256:aa601b56945f3ad3bc73b08c549b70774f1d9f0ee31ba95e25eb9ae55377b9cc`. Run distinct live cycle
+  `recovery-provider-worker-replay-envelope` next; the legacy public writer remains sole.
+- Live `recovery-provider-worker-replay-envelope` reaches the Provider Worker rollout on 2026-09-10
+  but is interrupted before the redundant 30-minute Helm timeout after the new Pod remains Running
+  with zero restarts and not Ready for more than seven minutes; direct read-only probes return
+  liveness **200** and readiness **503**. It builds local image
+  `sha256:f49c57f3a0f03e303dcecbd0402f5ab8e1e365dc33d19f014b2603456dbe6c07` in **1,119.7 s**,
+  publishes Registry manifest
+  `sha256:12d5e52e648e290337aa87b77afe29489bd5429afcfc6b2a645f49117bf00f5b`, and imports OCI manifest
+  `sha256:d1a5d5887133affb3969b8d32217642c0123000ada6ddecdd9555ad88234ab49` in **100.4 s**; retention
+  removes only the immediately superseded manifest/image. Stable counterexample
+  `CASCADE-QUALIFICATION-PROVIDER-WORKER-REPLAY-LIMIT-MIGRATION-UNADMITTED-2026-09-10` owns the
+  deterministic startup mismatch: current codec v12 requires exact capacity, while every admitted
+  prior version requires exact response maximum, so retained capacity-four/2 MiB Provider state
+  cannot enter capacity-80/64 KiB runtime even when every entry fits the narrower bound. Advance
+  the codec to v13; admit canonical v2-through-v12 only for capacity widening plus response-bound
+  narrowing whose entries all validate under the new limit; preserve every entry and keep clock
+  equality, shrink, response widening, corruption, and oversize-entry cases fail-closed. The run
+  emits no candidate governed evidence. Transcript
+  `/tmp/prodbox-sprint-6.5-provider-worker-replay-envelope-live-recovery-provider-worker-replay-envelope.log`
+  is `sha256:1f439943b13caa429284ddc4faf7f5cd3dd2201ccc7ac7502f6be7cbe86e550b`. Run distinct live cycle
+  `recovery-provider-worker-replay-envelope-v13` after code-local closure; the legacy public writer
+  remains sole.
+
+- The recovery-enabled live `pre-1` builds local image
+  `sha256:be8e1b8ffe9c0467b2685f7620c7da2ba09c9ba083cc69208277b49be1cc6d0d` in
+  **1,119.1 s**, publishes Registry manifest
+  `sha256:2d4ab5aad4a929659faf1fd6ea0e4bd589b1db4942e78dc278bdf8c9907bd741`, and imports OCI
+  manifest `sha256:6668901dcb20ff08cc81a77e83352c1584032eb07be06441be160ff50633283d`
+  in **90.4 s**. Retention removes only the immediately superseded manifest/image. The new Target
+  Agent then remains Running with zero restarts but not Ready for the complete ten-minute rollout;
+  its exact protected cause is
+  `readiness/dependency-unavailable/request-replay-projection`, and Helm's failed-release cleanup
+  proves the release absent. The transcript is
+  `/tmp/prodbox-sprint-6.5-tls-legacy-recovery-live-pre-1.log` at
+  `sha256:73c3b994d8ce20abca5807504f61c3a9d4ed7a88b6728a9380e2367a54ba42bd`; the read-only
+  protected-log reproducer is
+  `/tmp/prodbox-sprint-6.5-tls-legacy-recovery-target-readiness-sampler-2.log` at
+  `sha256:79486bfc533e40b4b52e8b25341c8456edd87e065f2da533496fe0bcafe7c40f`.
+  Stable counterexample `TARGET-AGENT-REPLAY-V9-CAPACITY-DRIFT-2026-09-08` owns the exact
+  retained-codec boundary; TLS recovery and candidate execution are not reached.
+- That counterexample is closed code-locally without clearing retained evidence or weakening a
+  limit. The deployed projection is canonical request-replay v9 at capacity 58, while the new
+  complete-attempt envelope requires 64. Codec v9 required exact limits, so startup correctly
+  refused the widened runtime. Codec v10 now admits canonical nonempty v2–v9 projections only when
+  response-size and clock-skew limits are identical and prior capacity is no greater than the new
+  compiled capacity; every entry is preserved and rewritten as v10 only on the next CAS. Capacity
+  shrink, response/skew drift, malformed/noncanonical bytes, duplicate keys, invalid entries, and
+  evidence clearing remain refusals. The authenticated-transport regression passes **36/36** at
+  `/tmp/prodbox-sprint-6.5-target-replay-v9-widen-focused.log`,
+  `sha256:1058f0200eaebf104da1df1500c40b4b370737f42b02a430214fed5efd0c22d4`;
+  canonical unit validation passes **4,880 + 27 + 35 + 36** at
+  `/tmp/prodbox-sprint-6.5-target-replay-v9-widen-unit.log`,
+  `sha256:d044fdfdbb30b095dbb0c2ca11c7db7ed734804e4378b7de41733ef854995cb1`.
+  Documentation-inclusive `prodbox dev check` passes at
+  `/tmp/prodbox-sprint-6.5-target-replay-v9-widen-dev-check.log`,
+  `sha256:823f917f14d3e63e56dd225cc12896e31bec14eecc0dafcec280b16dfc66e7fc`; the synchronized
+  executable is `sha256:479d9a01ea84459deba3ee9f3e291dcc5ea0247d03cc1027d49e6b654e8cd93b`.
+  Exact live `pre-1` is next. No candidate qualification artifact, activation witness, or exact
+  cleanup proof exists, and the legacy public writer remains sole.
 - The corrected live rerun proves that barrier and completes home reconcile on local image
   `sha256:7d8f4318...` and registry manifest `sha256:20488c96...`. It then stops before candidate
   execution at AWS IAM harness setup: the executable-sibling Tier-0 config is still the unauthored

@@ -13,8 +13,10 @@ import Data.Text qualified as Text
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
+import Prodbox.Lifecycle.DnsRecord (mkHostedZoneId)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
+  , ProviderNativeStackFamilyRef
   , ProviderRevision
   , ProviderStackConfig
   , ProviderStackConfigError (..)
@@ -23,11 +25,13 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkAwsTestProviderStackConfig
   , mkProviderRevision
   , providerIntentCoordinate
+  , providerNativeStackFamilyHostedZoneId
   , providerStackConfigRef
   , providerStackRefText
   )
 import Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
-  ( encodeAwsNativeStackFamilyEvidence
+  ( AwsNativeStackFamilyAdapterError (AwsNativeStackFamilyZoneMissing)
+  , encodeAwsNativeStackFamilyEvidence
   )
 import Prodbox.Lifecycle.Teardown.AwsStackAdapter
 import Prodbox.Lifecycle.Teardown.Decision
@@ -265,6 +269,43 @@ lifecycleTeardownAwsStackAdapterSuite =
         (mkAwsStackDestroyReadBackRequest request readBackRevision)
         `shouldBe` ObserveNativeStackFamily nativeRef testConfig
 
+    it "projects the shared DNS coordinate only into the subzone native family" $ do
+      mkAwsNativeStackObserveRequest
+        AwsEksSubzoneKey
+        exactScope
+        initialRevision
+        subzoneConfig
+        `shouldBe` Left
+          (AwsStackNativeFamilyInvalid AwsNativeStackFamilyZoneMissing)
+      let subzoneRequest =
+            mustRight
+              ( mkAwsNativeStackObserveRequest
+                  AwsEksSubzoneKey
+                  exactScopeWithDnsZone
+                  initialRevision
+                  subzoneConfig
+              )
+          eksRequest =
+            mustRight
+              ( mkAwsNativeStackObserveRequest
+                  AwsEksKey
+                  exactScopeWithDnsZone
+                  initialRevision
+                  eksConfig
+              )
+          testRequest =
+            mustRight
+              ( mkAwsNativeStackObserveRequest
+                  AwsTestKey
+                  exactScopeWithDnsZone
+                  initialRevision
+                  testConfig
+              )
+      providerNativeStackFamilyHostedZoneId (nativeRequestRef subzoneRequest)
+        `shouldBe` Just "ZSUBZONE123"
+      providerNativeStackFamilyHostedZoneId (nativeRequestRef eksRequest) `shouldBe` Nothing
+      providerNativeStackFamilyHostedZoneId (nativeRequestRef testRequest) `shouldBe` Nothing
+
     it "requires a separately coordinated exact-absence read-back to close destroy" $ do
       let destroy = destroyRequestFor AwsTestKey testConfig providerRevision
           readBack = mkAwsStackDestroyReadBackRequest destroy readBackRevision
@@ -340,6 +381,17 @@ genericDestroyRows =
 
 exactScope :: ObservationEvidenceScope
 exactScope = scopeFor Cascade lifecycleRegistryRevision validAwsScope ReconcileDesiredAbsent
+
+exactScopeWithDnsZone :: ObservationEvidenceScope
+exactScopeWithDnsZone =
+  mkObservationEvidenceScopeWithDnsZone
+    Cascade
+    lifecycleRegistryRevision
+    (DurableObservationRunScope "aws-adapter-run")
+    (LinuxRke2FoundationId "home-rke2")
+    validAwsScope
+    (mustRight (mkHostedZoneId "ZSUBZONE123"))
+    ReconcileDesiredAbsent
 
 scopeWithoutAws :: ObservationEvidenceScope
 scopeWithoutAws = scopeFor Cascade lifecycleRegistryRevision Nothing ReconcileDesiredAbsent
@@ -444,6 +496,11 @@ decodedVerified request evidence = case decodeEvidence request evidence of
   AwsStackObservationDecoded verified -> verified
   AwsStackObservationRejected refusal _ ->
     error ("expected verified AWS stack observation, got " <> show refusal)
+
+nativeRequestRef :: AwsStackObservationRequest purpose -> ProviderNativeStackFamilyRef
+nativeRequestRef request = case awsStackObservationRequestIntent request of
+  ObserveNativeStackFamily ref _ -> ref
+  other -> error ("expected native stack-family observation, got " <> show other)
 
 assertExactBinding
   :: AwsStackObservationRequest purpose

@@ -26,6 +26,10 @@ lifecycleTeardownRecoveryPlaneInterpreterSuite =
       regression <- fixedRegression
       recoveryPlaneInterpreterFinalReadBackExact regression `shouldBe` True
 
+    it "replays the Establish-time identity at the immediately following read-back" $ do
+      regression <- fixedRegression
+      recoveryPlaneInterpreterCrossPhaseIdentityStable regression `shouldBe` True
+
     it "refuses raw execution and a different durable predecessor attempt" $ do
       regression <- fixedRegression
       recoveryPlaneInterpreterRawExecutionRefused regression `shouldBe` True

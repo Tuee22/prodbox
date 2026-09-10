@@ -82,6 +82,7 @@ import Prodbox.ControlPlane.CleanupRunClient
   ( CleanupRunClientError
   , DescriptorBoundCleanupRun
   , deriveDescriptorBoundRecoveryRequirement
+  , deriveDescriptorBoundRecoveryRequirementAtCompletedOperation
   , descriptorBoundCleanupRunDescriptorDigest
   , descriptorBoundCleanupRunGraph
   , descriptorBoundCleanupRunGraphDigest
@@ -468,67 +469,82 @@ descriptorBoundRecoveryPlaneIdentityForInternal bound expectedWitness = do
     first
       RecoveryPlaneRepositoryDescriptorBindingInvalid
       (deriveDescriptorBoundRecoveryRequirement bound)
-  joined <-
-    first
-      RecoveryPlaneRepositoryDescriptorBindingInvalid
-      ( withDescriptorBoundCleanupProgram bound $ \actualWitness compiled _ ->
-          deriveMatchingIdentity requirement actualWitness compiled
-      )
-  joined
- where
-  deriveMatchingIdentity
-    :: forall actual
-     . DerivedOrdinaryTeardownRecoveryRequirement
-    -> CleanupSurfaceWitness actual
-    -> CompiledDesiredAbsenceProgram actual
-    -> Either RecoveryPlaneRepositoryError (RecoveryPlaneIdentity surface)
-  deriveMatchingIdentity requirement actualWitness compiled =
-    case (expectedWitness, actualWitness) of
-      (CascadeRecoverySurface, CascadeSurface) ->
-        derive CascadeRecoverySurface compiled
-      (ExplicitPerRunRecoverySurface, ExplicitPerRunSurface) ->
-        derive ExplicitPerRunRecoverySurface compiled
-      (OperationalRecoverySurface, OperationalTeardownSurface) ->
-        derive OperationalRecoverySurface compiled
-      (ExplicitLongLivedRecoverySurface, ExplicitLongLivedSurface) ->
-        derive ExplicitLongLivedRecoverySurface compiled
-      _ ->
-        Left
-          ( RecoveryPlaneRepositoryEvidenceInvalid
-              ( RecoveryPlaneBindingSurfaceMismatch
-                  (recoverySurface expectedWitness)
-                  (cleanupSurface actualWitness)
-              )
-          )
-   where
-    derive
-      :: RecoverySurfaceWitness actual
-      -> CompiledDesiredAbsenceProgram actual
-      -> Either RecoveryPlaneRepositoryError (RecoveryPlaneIdentity actual)
-    derive witness candidateCompiled =
+  descriptorBoundRecoveryPlaneIdentityForRequirementInternal
+    bound
+    expectedWitness
+    requirement
+
+descriptorBoundRecoveryPlaneIdentityForRequirementInternal
+  :: forall surface
+   . DescriptorBoundCleanupRun
+  -> RecoverySurfaceWitness surface
+  -> DerivedOrdinaryTeardownRecoveryRequirement
+  -> Either RecoveryPlaneRepositoryError (RecoveryPlaneIdentity surface)
+descriptorBoundRecoveryPlaneIdentityForRequirementInternal
+  bound
+  expectedWitness
+  requirement = do
+    joined <-
       first
-        RecoveryPlaneRepositoryEvidenceInvalid
-        ( deriveRecoveryPlaneIdentityFromCompiledInternal
-            (descriptorBoundCleanupRunDescriptorDigest bound)
-            witness
-            candidateCompiled
-            requirement
+        RecoveryPlaneRepositoryDescriptorBindingInvalid
+        ( withDescriptorBoundCleanupProgram bound $ \actualWitness compiled _ ->
+            deriveMatchingIdentity requirement actualWitness compiled
         )
-  recoverySurface
-    :: RecoverySurfaceWitness actual -> CleanupSurface
-  recoverySurface witness = case witness of
-    CascadeRecoverySurface -> Cascade
-    ExplicitPerRunRecoverySurface -> ExplicitPerRun
-    OperationalRecoverySurface -> OperationalTeardown
-    ExplicitLongLivedRecoverySurface -> ExplicitLongLived
-  cleanupSurface :: CleanupSurfaceWitness actual -> CleanupSurface
-  cleanupSurface witness = case witness of
-    LocalOnlySurface -> LocalOnly
-    CascadeSurface -> Cascade
-    ExplicitPerRunSurface -> ExplicitPerRun
-    OperationalTeardownSurface -> OperationalTeardown
-    ExplicitLongLivedSurface -> ExplicitLongLived
-    TotalDecommissionSurface -> TotalDecommission
+    joined
+   where
+    deriveMatchingIdentity
+      :: forall actual
+       . DerivedOrdinaryTeardownRecoveryRequirement
+      -> CleanupSurfaceWitness actual
+      -> CompiledDesiredAbsenceProgram actual
+      -> Either RecoveryPlaneRepositoryError (RecoveryPlaneIdentity surface)
+    deriveMatchingIdentity candidateRequirement actualWitness compiled =
+      case (expectedWitness, actualWitness) of
+        (CascadeRecoverySurface, CascadeSurface) ->
+          derive CascadeRecoverySurface compiled
+        (ExplicitPerRunRecoverySurface, ExplicitPerRunSurface) ->
+          derive ExplicitPerRunRecoverySurface compiled
+        (OperationalRecoverySurface, OperationalTeardownSurface) ->
+          derive OperationalRecoverySurface compiled
+        (ExplicitLongLivedRecoverySurface, ExplicitLongLivedSurface) ->
+          derive ExplicitLongLivedRecoverySurface compiled
+        _ ->
+          Left
+            ( RecoveryPlaneRepositoryEvidenceInvalid
+                ( RecoveryPlaneBindingSurfaceMismatch
+                    (recoverySurface expectedWitness)
+                    (cleanupSurface actualWitness)
+                )
+            )
+     where
+      derive
+        :: RecoverySurfaceWitness actual
+        -> CompiledDesiredAbsenceProgram actual
+        -> Either RecoveryPlaneRepositoryError (RecoveryPlaneIdentity actual)
+      derive witness candidateCompiled =
+        first
+          RecoveryPlaneRepositoryEvidenceInvalid
+          ( deriveRecoveryPlaneIdentityFromCompiledInternal
+              (descriptorBoundCleanupRunDescriptorDigest bound)
+              witness
+              candidateCompiled
+              candidateRequirement
+          )
+    recoverySurface
+      :: RecoverySurfaceWitness actual -> CleanupSurface
+    recoverySurface witness = case witness of
+      CascadeRecoverySurface -> Cascade
+      ExplicitPerRunRecoverySurface -> ExplicitPerRun
+      OperationalRecoverySurface -> OperationalTeardown
+      ExplicitLongLivedRecoverySurface -> ExplicitLongLived
+    cleanupSurface :: CleanupSurfaceWitness actual -> CleanupSurface
+    cleanupSurface witness = case witness of
+      LocalOnlySurface -> LocalOnly
+      CascadeSurface -> Cascade
+      ExplicitPerRunSurface -> ExplicitPerRun
+      OperationalTeardownSurface -> OperationalTeardown
+      ExplicitLongLivedSurface -> ExplicitLongLived
+      TotalDecommissionSurface -> TotalDecommission
 
 -- | Bind the Establish mutation/repair attempt only after its exact node has
 -- begun in the opaque descriptor-bound handle.
@@ -566,7 +582,22 @@ withDescriptorBoundRecoveryPlaneInitialContextInternal
      )
   -> Either RecoveryPlaneRepositoryError result
 withDescriptorBoundRecoveryPlaneInitialContextInternal bound witness context consume = do
-  identity <- descriptorBoundRecoveryPlaneIdentityForInternal bound witness
+  currentIdentity <- descriptorBoundRecoveryPlaneIdentityForInternal bound witness
+  predecessor <- exactAttemptedEstablish currentIdentity context
+  establishRequirement <-
+    first
+      RecoveryPlaneRepositoryDescriptorBindingInvalid
+      ( deriveDescriptorBoundRecoveryRequirementAtCompletedOperation
+          bound
+          (recoveryPlaneIdentityEstablishOperationId currentIdentity)
+          (teardownAttemptedPredecessorAttemptId predecessor)
+          (teardownAttemptedPredecessorOutcome predecessor)
+      )
+  identity <-
+    descriptorBoundRecoveryPlaneIdentityForRequirementInternal
+      bound
+      witness
+      establishRequirement
   withDescriptorBoundRecoveryPlaneInitialBindingsInternal
     bound
     identity

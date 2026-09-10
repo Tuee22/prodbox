@@ -219,7 +219,7 @@ S3 object is ciphertext rather than a directly materializable certificate. Under
   it cannot fall back to operator re-entry, another target, or config plaintext.
 - cert-manager/ZeroSSL remains the public-edge issuer and native Vault PKI owns internal certs. The
   selected Target Secret Agent's one-shot worker reads/encrypts the exact TLS Secret; the retained
-  home Agent's dedicated `prodbox-tls-envelope` Transit lane wraps/unwraps the DEK; and the TLS
+  home Agent's dedicated `prodbox-tls-retention-dek` Transit lane wraps/unwraps the DEK; and the TLS
   Retention Adapter sees only envelope ciphertext and validated metadata. Before restore, chart
   orchestration creates only a marked exact-name empty TLS slot without reading it; the selected
   worker validates and resource-version-CAS patches that slot through exact-name `get`/`patch`,

@@ -60,7 +60,7 @@ import Prodbox.Lifecycle.CleanupRunEntry
   ( LifecycleCleanupResult
   , lifecycleCleanupResultSucceeded
   )
-import Prodbox.Lifecycle.DnsRecord (mkHostedZoneId)
+import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.HostCleanupCompositionRoot
   ( HostCleanupCompositionInputs (..)
   )
@@ -88,6 +88,7 @@ import Prodbox.Lifecycle.Teardown.RetainedInventory
   ( RetainedNameBinding
   , mkRetainedNameBinding
   )
+import Prodbox.PublicEdge (resolveSubstrateHostedZoneId)
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( ValidatedCoordinates (..)
@@ -98,16 +99,13 @@ import Prodbox.Settings
   , validatedCoordinates
   , validatedResourcePlan
   )
-import Prodbox.Settings.Coordinate
-  ( route53ZoneIdText
-  , s3BucketNameText
-  )
+import Prodbox.Settings.Coordinate (s3BucketNameText)
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessResult
   )
-import Prodbox.Substrate (Substrate (SubstrateHomeLocal))
+import Prodbox.Substrate (Substrate (SubstrateAws, SubstrateHomeLocal))
 import Prodbox.Test.Qualification.SourceIdentity
   ( SourceIdentity
   , sourceManifestDigest
@@ -186,8 +184,10 @@ runCascadeQualificationCandidate repoRoot environment cycleLabel = do
     (_, _, _, Left err, _) -> pure (Left ("load teardown counterexample: " ++ show err))
     (_, _, _, _, Just (Left err)) -> pure (Left ("run teardown counterexample oracle: " ++ show err))
     (_, _, _, _, Nothing) -> pure (Left "the teardown counterexample oracle was not constructed")
-    (Right settings, Right basics, Right sourceIdentity, Right fixture, Just (Right oracle)) ->
-      case qualificationComposition repoRoot environment cycleLabel settings basics of
+    (Right settings, Right basics, Right sourceIdentity, Right fixture, Just (Right oracle)) -> do
+      dnsZoneResult <- resolveQualificationDnsZone repoRoot settings
+      case dnsZoneResult >>= \dnsZone ->
+        qualificationComposition repoRoot environment cycleLabel settings basics dnsZone of
         Left err -> pure (Left err)
         Right (runId, inputs, candidateEnvironment, retainedBinding) -> do
           -- The candidate's terminal node uninstalls the local cluster, so
@@ -234,6 +234,7 @@ qualificationComposition
   -> Text
   -> ValidatedSettings
   -> UnencryptedBasics
+  -> HostedZoneId
   -> Either
        String
        ( CleanupRunId
@@ -241,7 +242,7 @@ qualificationComposition
        , CascadeCandidateEnvironment
        , RetainedNameBinding
        )
-qualificationComposition repoRoot environment cycleLabel settings basics = do
+qualificationComposition repoRoot environment cycleLabel settings basics dnsZone = do
   runId <-
     first
       Text.unpack
@@ -279,10 +280,6 @@ qualificationComposition repoRoot environment cycleLabel settings basics = do
           senderDomain
           Registry.awsEksProvisionedClusterName
       )
-  dnsZone <-
-    traverse
-      (first show . mkHostedZoneId . route53ZoneIdText)
-      (coordinateAwsSubstrateZoneId coordinates)
   let composition =
         HostCleanupCompositionInputs
           { hostCleanupRepositoryRoot = repoRoot
@@ -299,7 +296,7 @@ qualificationComposition repoRoot environment cycleLabel settings basics = do
           , cascadeCandidateOwner = owner
           , cascadeCandidateFoundation =
               homeLinuxRke2FoundationId (basicsClusterId basics)
-          , cascadeCandidateAwsDnsZone = dnsZone
+          , cascadeCandidateAwsDnsZone = Just dnsZone
           , cascadeCandidateTerminalPermitId = terminalPermit
           , cascadeCandidateDeclaredLeaseMicros = declaredLeaseMicros
           }
@@ -341,6 +338,16 @@ qualificationComposition repoRoot environment cycleLabel settings basics = do
             currentSettings
             SubstrateHomeLocal
             component
+
+-- | The qualification graph needs the exact provisioned AWS subzone even
+-- when the operator intentionally leaves the authored override empty.  Use
+-- the same config-or-live-stack-output resolver as every other AWS-substrate
+-- consumer, then retain the typed coordinate in the durable descriptor.
+resolveQualificationDnsZone
+  :: FilePath -> ValidatedSettings -> IO (Either String HostedZoneId)
+resolveQualificationDnsZone repoRoot settings = do
+  resolved <- resolveSubstrateHostedZoneId repoRoot settings SubstrateAws
+  pure (resolved >>= first show . mkHostedZoneId)
 
 observeComponentImageInventory
   :: FilePath -> [(String, String)] -> IO (Either String [Text])

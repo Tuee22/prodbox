@@ -72,8 +72,15 @@ module Prodbox.ControlPlane.Runtime
   , lifecycleAuthorityFirstReconcileRequestMaximum
   , lifecycleAuthorityReconcileAttemptRequestMaximum
   , lifecycleAuthorityReplayCapacity
+  , providerWorkerQualificationAttemptRequestMaximum
+  , providerWorkerReplayCapacity
+  , providerWorkerReplayMaximumEncodedBytes
   , authorityBackupReconcileAttemptRequestMaximum
+  , authorityBackupQualificationPreludeRequestMaximum
+  , authorityBackupCascadeCandidateRequestMaximum
+  , authorityBackupQualificationAttemptRequestMaximum
   , authorityBackupReplayCapacity
+  , authorityBackupReplayMaximumEncodedBytes
   , targetSecretAgentReconcileAttemptRequestMaximum
   , targetSecretAgentReplayCapacity
   , targetSecretAgentReplayMaximumEncodedBytes
@@ -92,6 +99,7 @@ module Prodbox.ControlPlane.Runtime
   , controlPlaneCapacityInputs
   , controlPlaneCapacityPlan
   , controlPlaneRequestBudget
+  , controlPlaneRequestBudgetFor
   , lifecycleAuthorityProviderHttpConfig
   , lifecycleAuthorityTargetObservationHttpConfig
   , lifecycleAuthorityTargetOneShotHttpConfig
@@ -205,8 +213,7 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   , serveAuthorityOperationSubmit
   )
 import Prodbox.ControlPlane.AuthorityBackupAdapter
-  ( authorityBackupAdapterReady
-  , authorityBackupRepository
+  ( authorityBackupRepository
   )
 import Prodbox.ControlPlane.AuthorityBackupClient
   ( AuthorityCheckpointBackupClient (copyCheckpointBackup)
@@ -322,12 +329,16 @@ import Prodbox.ControlPlane.DedicatedAdapterStore
   ( AuthorityBackupStoreConfig
   , DedicatedAdapterBinding
   , DedicatedAdapterKind (AuthorityBackupAdapter, TlsRetentionAdapter)
+  , DedicatedAdapterReadiness (..)
   , DedicatedAdapterStoreError (..)
   , TlsRetentionStoreConfig
+  , adapterBindingTransport
+  , adapterObjectStoreReadiness
   , mkAuthorityBackupStoreConfig
   , mkTlsRetentionStoreConfig
   , newAuthorityBackupAdapterBinding
   , newTlsRetentionAdapterBinding
+  , renderDedicatedAdapterReadinessCause
   )
 import Prodbox.ControlPlane.EksDrainIntentClient
   ( lifecycleAuthorityEksDrainIntentClient
@@ -657,8 +668,7 @@ import Prodbox.ControlPlane.TargetSecretWorkerProtocol
   , targetWorkerOperationRequestDigest
   )
 import Prodbox.ControlPlane.TlsRetentionAdapter
-  ( tlsRetentionAdapterReady
-  , tlsRetentionRepository
+  ( tlsRetentionRepository
   )
 import Prodbox.ControlPlane.TlsRetentionAuthority
   ( modelBTlsRetentionAuthorityRepository
@@ -3592,9 +3602,47 @@ lifecycleAuthorityReplayCapacity =
   -- supported unchanged retry therefore needs a second complete envelope.
   immediateSupportedAttemptCount = 2
 
+-- | One complete cascade qualification reaches Provider Worker through the
+-- exact closed Provider envelope. It first proves the operational AWS scope.
+-- Six non-EKS Provider-owned registered targets each perform the program
+-- observation, the reconcile decision observation, the mutation, and the
+-- mandatory absence read-back. DNS01 performs the same three observations but
+-- deletes through its Kubernetes owner. EKS performs the program observation,
+-- fresh observations for drain commit, drain, drain read-back, and destroy,
+-- then the destroy mutation and absence read-back. The terminal audit issues
+-- the five queries in its closed catalog.
+providerWorkerQualificationAttemptRequestMaximum :: Natural
+providerWorkerQualificationAttemptRequestMaximum =
+  providerAwsScopeObservationRequests
+    + providerMutatedNonEksTargetCount * requestsPerProviderMutatedNonEksTarget
+    + dns01TargetRequests
+    + eksTargetRequests
+    + terminalAuditQueryRequests
+ where
+  providerAwsScopeObservationRequests = 1
+  providerMutatedNonEksTargetCount = 6
+  requestsPerProviderMutatedNonEksTarget = 4
+  dns01TargetRequests = 3
+  eksTargetRequests = 7
+  terminalAuditQueryRequests = 5
+
+providerWorkerReplayCapacity :: Natural
+providerWorkerReplayCapacity =
+  immediateSupportedAttemptCount * providerWorkerQualificationAttemptRequestMaximum
+ where
+  -- A complete attempt may remain inside the replay horizon when its immediate
+  -- unchanged retry begins, so the retry receives a second complete envelope.
+  immediateSupportedAttemptCount = 2
+
+-- Eighty maximum-size Provider responses plus replay metadata remain below the
+-- generic 12 MiB retained-object ceiling. The transport suite constructs and
+-- round-trips that exact worst-case projection.
+providerWorkerReplayMaximumEncodedBytes :: Int
+providerWorkerReplayMaximumEncodedBytes = standardReplayMaximumEncodedBytes
+
 -- | The Authority Backup Adapter sees a different request envelope from the
--- Lifecycle Authority that calls it. A complete attempt can repair the
--- retained aggregate (observe, copy, and final health observation), then
+-- Lifecycle Authority that calls it. A complete ordinary reconcile can repair
+-- the retained aggregate (observe, copy, and final health observation), then
 -- advance config (initial observation, copy, copy read-back, promotion
 -- read-back, marker observation, and final in-force load).
 authorityBackupReconcileAttemptRequestMaximum :: Natural
@@ -3604,11 +3652,60 @@ authorityBackupReconcileAttemptRequestMaximum =
   authorityBackupAdmissionRequestMaximum = 3
   authorityBackupConfigRequestMaximum = 6
 
+-- | A qualification recovery begins while the ordinary reconcile envelope
+-- and four recovery-boundary observations may still be inside the six-minute
+-- replay horizon.  They are part of the supported caller schedule, not spare
+-- capacity: a clean deployment that reaches the cascade immediately exercises
+-- this overlap.
+authorityBackupQualificationPreludeRequestMaximum :: Natural
+authorityBackupQualificationPreludeRequestMaximum =
+  authorityBackupReconcileAttemptRequestMaximum
+    + qualificationRecoveryBoundaryObservationMaximum
+ where
+  qualificationRecoveryBoundaryObservationMaximum = 4
+
+-- | The closed 59-node cascade performs eight backup calls while registering
+-- the descriptor-bound run, six while claiming it, six while recording the
+-- primary outcome, eight for each begin/complete node pair, and thirteen for
+-- terminal report backup, run/index tombstoning, and independent read-back.
+-- Keep the node count explicit here and prove it against the compiled graph in
+-- the transport suite so registry growth cannot silently under-size replay.
+authorityBackupCascadeCandidateRequestMaximum :: Natural
+authorityBackupCascadeCandidateRequestMaximum =
+  registrationRequests
+    + claimRequests
+    + primaryOutcomeRequests
+    + cascadeNodeCount * requestsPerNode
+    + terminalReportRequests
+ where
+  registrationRequests = 8
+  claimRequests = 6
+  primaryOutcomeRequests = 6
+  cascadeNodeCount = 59
+  requestsPerNode = 8
+  terminalReportRequests = 13
+
+authorityBackupQualificationAttemptRequestMaximum :: Natural
+authorityBackupQualificationAttemptRequestMaximum =
+  authorityBackupQualificationPreludeRequestMaximum
+    + authorityBackupCascadeCandidateRequestMaximum
+
 authorityBackupReplayCapacity :: Natural
 authorityBackupReplayCapacity =
-  immediateSupportedAttemptCount * authorityBackupReconcileAttemptRequestMaximum
+  immediateSupportedAttemptCount * authorityBackupQualificationAttemptRequestMaximum
  where
+  -- The first attempt can be interrupted after any response has been retained.
+  -- Its immediate unchanged retry therefore receives a second complete
+  -- prelude-plus-candidate envelope without discarding the first prefix.
   immediateSupportedAttemptCount = 2
+
+-- | The actual descriptor-bound 59-node aggregate remains below 24 KiB at
+-- every transition.  Two complete qualification envelopes, including a
+-- rounded 224 KiB allowance for each prelude response, plus canonical replay
+-- metadata fit below 32 MiB; the transport suite constructs that exact graph
+-- and response shape and rejects the former 12 MiB ceiling.
+authorityBackupReplayMaximumEncodedBytes :: Int
+authorityBackupReplayMaximumEncodedBytes = 32 * 1024 * 1024
 
 -- | One complete qualification attempt can observe the provider credential and
 -- an already committed external-material source, then perform the retained
@@ -3619,7 +3716,10 @@ authorityBackupReplayCapacity =
 -- the worker can run, so both calls reach this same retained replay coordinate.
 -- The one-time pre-outbox adoption path replaces the ordinary home-wrap call
 -- with selected prepare, home rewrap, and selected restore, adding two calls to
--- the largest complete attempt.
+-- the largest complete attempt. If an exact version-2 collision cannot
+-- authenticate at home, that branch stops before selected restore and then
+-- performs fresh home prepare, selected retain, and home wrap for fixed version
+-- 3: two requests beyond the already-sized successful collision branch.
 targetSecretAgentReconcileAttemptRequestMaximum :: Natural
 targetSecretAgentReconcileAttemptRequestMaximum =
   providerCredentialTargetObservationRequests
@@ -3629,6 +3729,8 @@ targetSecretAgentReconcileAttemptRequestMaximum =
     + tlsRestoreRequests
     + tlsRetainOnReadyRequests
     + legacyTlsAdoptionAdditionalRequests
+    + legacyTlsRecoveryAdditionalRequests
+    + legacyTlsUnopenableCollisionSuccessorAdditionalRequests
  where
   providerCredentialTargetObservationRequests = 1
   committedExternalMaterialRecoveryObservationRequests = 1
@@ -3637,6 +3739,8 @@ targetSecretAgentReconcileAttemptRequestMaximum =
   tlsRestoreRequests = 2 * 3
   tlsRetainOnReadyRequests = 2 * 4
   legacyTlsAdoptionAdditionalRequests = 2
+  legacyTlsRecoveryAdditionalRequests = 3
+  legacyTlsUnopenableCollisionSuccessorAdditionalRequests = 2
 
 targetSecretAgentReplayCapacity :: Natural
 targetSecretAgentReplayCapacity =
@@ -3644,12 +3748,12 @@ targetSecretAgentReplayCapacity =
  where
   immediateSupportedAttemptCount = 2
 
--- Fifty-eight maximum-size responses plus their retained replay metadata fit
--- below fifty-nine response-widths. The corresponding Vault listener request
+-- Sixty-eight maximum-size responses plus their retained replay metadata fit
+-- below sixty-nine response-widths. The corresponding Vault listener request
 -- ceiling includes the Base64/JSON expansion of this finite bound.
 targetSecretAgentReplayMaximumEncodedBytes :: Int
 targetSecretAgentReplayMaximumEncodedBytes =
-  59 * standardAuthenticatedResponseMaximumBytes
+  69 * standardAuthenticatedResponseMaximumBytes
 
 -- Replay stores the bounded response, not the potentially large checkpoint
 -- request.  Keeping this limit independent from the request frame prevents a
@@ -3730,7 +3834,7 @@ classifyTlsRetentionWorkflowFailure failure = case failure of
   TlsWorkflowLegacyEnvelopeCorrupt ->
     TlsRetentionWorkflowAuthorityRestoreRefused
   TlsWorkflowLegacySourceMissing ->
-    TlsRetentionWorkflowAuthoritySourceReadBackMismatch
+    TlsRetentionWorkflowAuthorityLegacySourceMissing
   TlsWorkflowLegacyAdoptionNotIdempotent ->
     TlsRetentionWorkflowAuthoritySourceReadBackMismatch
   TlsWorkflowPendingWithoutCurrent ->
@@ -3848,7 +3952,7 @@ authorityBackupRuntimeInterpreter binding = do
   observer <-
     dedicatedAdapterReadinessObserver
       "authority-backup-store"
-      (authorityBackupAdapterReady binding)
+      (adapterObjectStoreReadiness (adapterBindingTransport binding))
   pure
     ( authorityBackupInterpreter
         controlPlaneMaximumBodyBytes
@@ -3864,7 +3968,7 @@ tlsRetentionRuntimeInterpreter binding = do
   observer <-
     dedicatedAdapterReadinessObserver
       "tls-retention-store"
-      (tlsRetentionAdapterReady binding)
+      (adapterObjectStoreReadiness (adapterBindingTransport binding))
   pure
     ( tlsRetentionInterpreter
         controlPlaneMaximumBodyBytes
@@ -3877,7 +3981,10 @@ tlsRetentionRuntimeInterpreter binding = do
 -- S3 probe against their own registered prefix. It runs in the background now,
 -- and a refusal is a labelled non-terminal observation rather than a bare
 -- 'False' the projection cannot describe.
-dedicatedAdapterReadinessObserver :: Text -> IO Bool -> IO RoleReadinessObserver
+dedicatedAdapterReadinessObserver
+  :: Text
+  -> IO DedicatedAdapterReadiness
+  -> IO RoleReadinessObserver
 dedicatedAdapterReadinessObserver label observe =
   newRoleReadinessObserver
     controlPlaneRoleReadinessSchedule
@@ -3885,14 +3992,23 @@ dedicatedAdapterReadinessObserver label observe =
     monotonicNowMicros
     ( do
         observed <- observe
-        pure
-          [
-            ( label
-            , if observed
-                then RoleDependencyReady
-                else RoleDependencyUnavailable "the dedicated adapter store did not answer"
-            )
-          ]
+        case observed of
+          DedicatedAdapterReady -> pure [(label, RoleDependencyReady)]
+          DedicatedAdapterUnavailable cause -> do
+            let renderedCause = renderDedicatedAdapterReadinessCause cause
+            writeClosedDiagnostic
+              ( "dedicated-adapter-readiness store="
+                  ++ Text.unpack label
+                  ++ " cause="
+                  ++ Text.unpack renderedCause
+              )
+            pure
+              [
+                ( label
+                , RoleDependencyUnavailable
+                    ("dedicated-adapter-readiness/" <> renderedCause)
+                )
+              ]
     )
 
 validateControlPlaneConfig
@@ -4166,7 +4282,7 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
             largeAuthenticatedFrameMaximumBytes
             standardAuthenticatedResponseMaximumBytes
             authorityBackupReplayCapacity
-            standardReplayMaximumEncodedBytes
+            authorityBackupReplayMaximumEncodedBytes
     (TlsRetentionRuntime, ValidatedTlsRetentionStore storeConfig) -> do
       bindingResult <- newTlsRetentionAdapterBinding vaultSession storeConfig
       case bindingResult of
@@ -4197,9 +4313,9 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
             authentication
             handler
             standardAuthenticatedFrameMaximumBytes
-            standardAuthenticatedResponseMaximumBytes
-            standardReplayCapacity
-            standardReplayMaximumEncodedBytes
+            providerWorkerResponseMaximumBytes
+            providerWorkerReplayCapacity
+            providerWorkerReplayMaximumEncodedBytes
     (TargetSecretAgentRuntime, ValidatedTargetSecretAgentStore) -> do
       handlerResult <-
         targetSecretAgentRuntimeHandler
@@ -4973,6 +5089,17 @@ controlPlaneCapacityPlan = mkServiceCapacityPlan controlPlaneCapacityInputs
 controlPlaneRequestBudget :: RemainingDuration
 controlPlaneRequestBudget = RemainingDuration (300 * 1000 * 1000)
 
+-- | The Lifecycle Authority contains the nested Provider call, so its server
+-- envelope must retain the same finite response margin as the host client
+-- waiting on that call. The Provider Worker and every sibling role keep the
+-- established five-minute server bound.
+controlPlaneRequestBudgetFor :: RuntimeRole -> RemainingDuration
+controlPlaneRequestBudgetFor role = case role of
+  LifecycleAuthorityRuntime ->
+    RemainingDuration
+      (fromIntegral ProviderWorkerBudget.providerWorkerResponseTimeoutMicros)
+  _ -> controlPlaneRequestBudget
+
 -- | An accepted connection with the instant it was accepted.
 --
 -- The instant is stamped at @accept@ rather than at dequeue, so queue wait is
@@ -5044,7 +5171,7 @@ runControlPlaneServer role interpreter = case controlPlaneCapacityPlan of
       requestId <- stateTVar nextRequestId (\value -> (RequestId value, value + 1))
       queue <- readTVar admission
       let (verdict, evolved) =
-            admit queue (AdmissionRequest requestId controlPlaneRequestBudget)
+            admit queue (AdmissionRequest requestId (controlPlaneRequestBudgetFor role))
       case verdict of
         AdmissionAdmit _ -> do
           writeTVar admission evolved
@@ -5088,7 +5215,7 @@ controlPlaneWorkerLoop role interpreter admission pending = forever $ do
       ( serveControlPlaneConnection
           role
           interpreter
-          (deadlineAtOffset (queuedControlPlaneAcceptedAt queued) controlPlaneRequestBudget)
+          (deadlineAtOffset (queuedControlPlaneAcceptedAt queued) (controlPlaneRequestBudgetFor role))
           (queuedControlPlaneSocket queued)
           `finally` do
             close (queuedControlPlaneSocket queued)

@@ -1763,7 +1763,8 @@ adminActionRunnerAuditorPolicy =
 -- | Ephemeral Target materializer authority.  Every KV coordinate comes from
 -- the closed target registry and this policy is bound only to the one-shot
 -- worker ServiceAccount.  There is no control-plane signing/replay capability,
--- generic KV wildcard, list, delete, or Transit decrypt authority.
+-- generic KV wildcard, list, delete, or arbitrary Transit decrypt authority;
+-- decrypt is limited to the exact TLS-retention DEK key below.
 targetSecretWorkerPolicy :: Text
 targetSecretWorkerPolicy =
   Text.concat (fmap targetRules targetWorkerTargetIds)

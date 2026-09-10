@@ -410,6 +410,12 @@ post-schema invalid-credential boundary at a 966,365,184-byte peak with zero OOM
 idle headroom: workload draw becomes 6,210m / 9,984Mi / 15,456Mi / 155,648Mi inside the unchanged
 7,000m / 13,312Mi / 80,032Mi / 177,952Mi allocatable host budget. No other workload envelope or
 host capacity changes. AWS CLI calls additionally carry a narrower physical 30-second/output bound.
+Authority Backup independently uses a `144 MiB` request-equals-limit envelope. Its role-specific
+replay codec admits at most 32 MiB of canonical bytes for the complete 59-node qualification
+envelope and immediate retry; the additional 64 MiB over its former container limit covers the
+simultaneous encoded input, decoded retained responses, replacement encoding, and native runtime
+headroom. This raises the steady workload memory draw from 9,984 MiB to 10,048 MiB, still within the
+unchanged 13,312 MiB allocatable host budget.
 The Lifecycle Authority's Provider-route HTTP response budget is derived from the same admitted
 schedule maximum: 300 seconds of child execution plus 30 seconds of bounded authenticated
 framing/projection/encoding/socket overhead yields 330 seconds. Both synchronous transport legs,
@@ -417,7 +423,10 @@ host-to-Authority and Authority-to-Provider, consume that one typed bound for ex
 admit-and-execute; admission-only keeps the ordinary Authority budget because it cannot run the
 child. Capacity validation rejects a configured Provider child deadline above the 300-second
 maximum, so neither transport leg can time out before an admitted schedule by construction. The
-independently long-running retained-material
+Lifecycle Authority server also uses the typed 330-second accepted-connection upper bound so the
+nested Provider response can be projected after the Provider Worker's unchanged 300-second server
+envelope terminates. Every sibling role retains that 300-second server bound, and unrelated clients
+keep their shorter wait budgets. The independently long-running retained-material
 delivery route derives the same finite 330-second bound from its five-minute persisted operation
 lifetime plus 30 seconds of response overhead; both the host EAB client and in-cluster SES worker
 client consume that one constant. Unrelated HTTP clients retain their existing budgets, including

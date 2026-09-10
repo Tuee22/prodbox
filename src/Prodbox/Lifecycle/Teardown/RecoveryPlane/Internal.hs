@@ -19,6 +19,7 @@ module Prodbox.Lifecycle.Teardown.RecoveryPlane.Internal
   , RecoveryPlaneComponentFailure
   , recoveryPlaneComponentFailureIdentity
   , recoveryPlaneComponentFailureKind
+  , renderRecoveryPlaneComponentFailures
   , RecoveryPlaneIdentity
   , recoveryPlaneIdentitySurface
   , recoveryPlaneIdentityRunId
@@ -83,9 +84,12 @@ module Prodbox.Lifecycle.Teardown.RecoveryPlane.Internal
   , recoveryPlaneFixtureProfileCanonical
   , recoveryPlaneFixtureProfileTargetAgentSeparated
   , recoveryPlaneFixtureIdentityCanonical
+  , recoveryPlaneFixtureDnsZoneCanonical
+  , recoveryPlaneFixtureLegacyV1RestartReadable
   , recoveryPlaneFixtureExactCompletenessEnforced
   , recoveryPlaneFixtureEveryFailureRefused
   , recoveryPlaneFixtureDiagnosticsNormalized
+  , recoveryPlaneFixtureFailureRenderingBounded
   , recoveryPlaneFixtureInitialReadyExact
   , recoveryPlaneFixtureEstablishedFromReady
   , recoveryPlaneFixtureEstablishedAfterInitialFailure
@@ -159,6 +163,11 @@ import Prodbox.Lifecycle.CleanupRun
   , mkCleanupOperationId
   , mkCleanupRunId
   )
+import Prodbox.Lifecycle.DnsRecord
+  ( HostedZoneId
+  , hostedZoneIdText
+  , mkHostedZoneId
+  )
 import Prodbox.Lifecycle.Teardown.Graph
   ( CompiledDesiredAbsenceProgram
   , compileDesiredAbsenceGraph
@@ -179,6 +188,7 @@ import Prodbox.Lifecycle.Teardown.Model
   , LinuxRke2FoundationId (..)
   , ObservationEvidenceScope
   , RegistryRevision (..)
+  , evidenceAwsDnsZone
   , evidenceAwsScope
   , evidenceCleanupSurface
   , evidenceDurableRunScope
@@ -186,6 +196,7 @@ import Prodbox.Lifecycle.Teardown.Model
   , evidenceLinuxRke2Foundation
   , evidenceRegistryRevision
   , mkObservationEvidenceScope
+  , mkObservationEvidenceScopeWithDnsZone
   )
 import Prodbox.Lifecycle.Teardown.Model qualified as TeardownModel
 import Prodbox.Lifecycle.Teardown.Program
@@ -240,6 +251,31 @@ recoveryPlaneComponentFailureIdentity = internalRecoveryPlaneFailureIdentity
 recoveryPlaneComponentFailureKind
   :: RecoveryPlaneComponentFailure -> RecoveryPlaneComponentFailureKind
 recoveryPlaneComponentFailureKind = internalRecoveryPlaneFailureKind
+
+-- | Render the already-normalized, non-authorizing failure view for terminal
+-- diagnostics. Raw observer details are deliberately absent from
+-- 'RecoveryPlaneComponentFailure', so this projection can identify the failed
+-- fixed-profile member without leaking transport responses or credentials.
+renderRecoveryPlaneComponentFailures
+  :: NonEmpty RecoveryPlaneComponentFailure -> Text
+renderRecoveryPlaneComponentFailures failures =
+  Text.take
+    1024
+    ( Text.intercalate
+        ","
+        [ recoveryPlaneComponentIdentityText
+            (recoveryPlaneComponentFailureIdentity failure)
+            <> ":"
+            <> renderKind (recoveryPlaneComponentFailureKind failure)
+        | failure <- NonEmpty.toList failures
+        ]
+    )
+ where
+  renderKind kind = case kind of
+    RecoveryPlaneComponentMissing -> "missing"
+    RecoveryPlaneComponentPartial -> "partial"
+    RecoveryPlaneComponentUnavailable -> "unavailable"
+    RecoveryPlaneComponentUnobservable -> "unobservable"
 
 data RecoveryPlaneProfile = RecoveryPlaneProfile
   { internalRecoveryPlaneProfileTargetAgent :: !OrdinaryTeardownTargetAgent
@@ -929,15 +965,28 @@ scopeFromIdentityWire surface wire = do
       (Left (RecoveryPlaneStoredIdentityInvalid "invalid lifecycle operation"))
       Right
       (lifecycleOperationFromTag (identityWireLifecycleOperation wire))
-  pure
-    ( mkObservationEvidenceScope
+  dnsZone <-
+    traverse
+      (first (RecoveryPlaneStoredIdentityInvalid . Text.pack . show) . mkHostedZoneId)
+      (identityWireAwsDnsZone wire)
+  pure $ case dnsZone of
+    Nothing ->
+      mkObservationEvidenceScope
         surface
         (RegistryRevision (identityWireRegistryRevision wire))
         (DurableObservationRunScope (identityWireRunScope wire))
         (LinuxRke2FoundationId (identityWireFoundation wire))
         awsScope
         operation
-    )
+    Just zone ->
+      mkObservationEvidenceScopeWithDnsZone
+        surface
+        (RegistryRevision (identityWireRegistryRevision wire))
+        (DurableObservationRunScope (identityWireRunScope wire))
+        (LinuxRke2FoundationId (identityWireFoundation wire))
+        awsScope
+        zone
+        operation
 
 data RecoveryPlaneOperationRole
   = RecoveryPlaneEstablishRole
@@ -1203,6 +1252,7 @@ data RecoveryPlaneIdentityWire = RecoveryPlaneIdentityWire
   , identityWireFoundation :: !Text
   , identityWireAwsAccount :: !(Maybe Text)
   , identityWireAwsRegion :: !(Maybe Text)
+  , identityWireAwsDnsZone :: !(Maybe Text)
   , identityWireLifecycleOperation :: !Int
   , identityWireCapabilityCatalogDigest :: !Text
   , identityWireRequirementDigest :: !Text
@@ -1215,11 +1265,36 @@ data RecoveryPlaneIdentityWire = RecoveryPlaneIdentityWire
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- | Superseded v1 identity wire. It remains restart-readable so a retained
+-- zoneless aggregate cannot be stranded by the v2 DNS-zone scope binding.
+data LegacyRecoveryPlaneIdentityWire = LegacyRecoveryPlaneIdentityWire
+  { legacyIdentityWireFormatVersion :: !Int
+  , legacyIdentityWireSurface :: !Int
+  , legacyIdentityWireRunId :: !Text
+  , legacyIdentityWireDescriptorDigest :: !Text
+  , legacyIdentityWireGraphDigest :: !Text
+  , legacyIdentityWireRegistryRevision :: !Text
+  , legacyIdentityWireRunScope :: !Text
+  , legacyIdentityWireFoundation :: !Text
+  , legacyIdentityWireAwsAccount :: !(Maybe Text)
+  , legacyIdentityWireAwsRegion :: !(Maybe Text)
+  , legacyIdentityWireLifecycleOperation :: !Int
+  , legacyIdentityWireCapabilityCatalogDigest :: !Text
+  , legacyIdentityWireRequirementDigest :: !Text
+  , legacyIdentityWireTargetAgent :: !Int
+  , legacyIdentityWireProfileDigest :: !Text
+  , legacyIdentityWireEstablishOperationId :: !Text
+  , legacyIdentityWireReadBackOperationId :: !Text
+  , legacyIdentityWireDispositionOperationId :: !Text
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
 maximumRecoveryPlaneIdentityBytes :: Int
 maximumRecoveryPlaneIdentityBytes = 16 * 1024
 
 recoveryPlaneIdentityFormatVersion :: Int
-recoveryPlaneIdentityFormatVersion = 1
+recoveryPlaneIdentityFormatVersion = 2
 
 encodeRecoveryPlaneIdentityWireInternal
   :: RecoveryPlaneIdentity surface -> ByteString
@@ -1233,15 +1308,64 @@ decodeRecoveryPlaneIdentityWireInternal bytes = do
   when
     (ByteString.length bytes > maximumRecoveryPlaneIdentityBytes)
     (Left "recovery-plane identity exceeds its encoded bound")
-  wire <-
-    first
-      (Text.pack . show)
-      (deserialiseOrFail (LazyByteString.fromStrict bytes))
+  (wire, canonicalBytes) <- decodeIdentityWire bytes
   unless
-    (LazyByteString.toStrict (serialise wire) == bytes)
+    (canonicalBytes == bytes)
     (Left "recovery-plane identity is non-canonical")
   validateIdentityWire wire
   pure wire
+
+decodeIdentityWire :: ByteString -> Either Text (RecoveryPlaneIdentityWire, ByteString)
+decodeIdentityWire bytes =
+  case deserialiseOrFail encoded of
+    Right wire
+      | identityWireFormatVersion wire == recoveryPlaneIdentityFormatVersion ->
+          Right (wire, LazyByteString.toStrict (serialise wire))
+      | otherwise -> Left "recovery-plane identity version is unsupported"
+    Left currentError ->
+      case deserialiseOrFail encoded of
+        Right legacy
+          | legacyIdentityWireFormatVersion legacy == 1 ->
+              Right
+                ( upgradeLegacyIdentityWire legacy
+                , LazyByteString.toStrict (serialise legacy)
+                )
+          | otherwise -> Left "recovery-plane identity version is unsupported"
+        Left legacyError ->
+          Left
+            ( Text.pack (show currentError)
+                <> "; legacy v1: "
+                <> Text.pack (show legacyError)
+            )
+ where
+  encoded = LazyByteString.fromStrict bytes
+
+upgradeLegacyIdentityWire
+  :: LegacyRecoveryPlaneIdentityWire -> RecoveryPlaneIdentityWire
+upgradeLegacyIdentityWire legacy =
+  RecoveryPlaneIdentityWire
+    { identityWireFormatVersion = legacyIdentityWireFormatVersion legacy
+    , identityWireSurface = legacyIdentityWireSurface legacy
+    , identityWireRunId = legacyIdentityWireRunId legacy
+    , identityWireDescriptorDigest = legacyIdentityWireDescriptorDigest legacy
+    , identityWireGraphDigest = legacyIdentityWireGraphDigest legacy
+    , identityWireRegistryRevision = legacyIdentityWireRegistryRevision legacy
+    , identityWireRunScope = legacyIdentityWireRunScope legacy
+    , identityWireFoundation = legacyIdentityWireFoundation legacy
+    , identityWireAwsAccount = legacyIdentityWireAwsAccount legacy
+    , identityWireAwsRegion = legacyIdentityWireAwsRegion legacy
+    , identityWireAwsDnsZone = Nothing
+    , identityWireLifecycleOperation = legacyIdentityWireLifecycleOperation legacy
+    , identityWireCapabilityCatalogDigest =
+        legacyIdentityWireCapabilityCatalogDigest legacy
+    , identityWireRequirementDigest = legacyIdentityWireRequirementDigest legacy
+    , identityWireTargetAgent = legacyIdentityWireTargetAgent legacy
+    , identityWireProfileDigest = legacyIdentityWireProfileDigest legacy
+    , identityWireEstablishOperationId = legacyIdentityWireEstablishOperationId legacy
+    , identityWireReadBackOperationId = legacyIdentityWireReadBackOperationId legacy
+    , identityWireDispositionOperationId =
+        legacyIdentityWireDispositionOperationId legacy
+    }
 
 identityToWire :: RecoveryPlaneIdentity surface -> RecoveryPlaneIdentityWire
 identityToWire identity =
@@ -1258,6 +1382,7 @@ identityToWire identity =
     , identityWireFoundation = foundationText scope
     , identityWireAwsAccount = awsAccountText <$> evidenceAwsScope scope
     , identityWireAwsRegion = awsRegionText <$> evidenceAwsScope scope
+    , identityWireAwsDnsZone = hostedZoneIdText <$> evidenceAwsDnsZone scope
     , identityWireLifecycleOperation =
         lifecycleOperationTag (evidenceLifecycleOperation scope)
     , identityWireCapabilityCatalogDigest =
@@ -1285,8 +1410,11 @@ identityToWire identity =
 validateIdentityWire :: RecoveryPlaneIdentityWire -> Either Text ()
 validateIdentityWire wire = do
   unless
-    (identityWireFormatVersion wire == recoveryPlaneIdentityFormatVersion)
+    (identityWireFormatVersion wire `elem` [1, recoveryPlaneIdentityFormatVersion])
     (Left "recovery-plane identity version is unsupported")
+  when
+    (identityWireFormatVersion wire == 1 && identityWireAwsDnsZone wire /= Nothing)
+    (Left "recovery-plane identity v1 cannot carry an AWS DNS zone")
   surface <-
     maybe
       (Left "recovery-plane identity surface is invalid")
@@ -1306,6 +1434,9 @@ validateIdentityWire wire = do
       validateBounded "AWS account" account
       validateBounded "AWS region" region
     _ -> Left "recovery-plane identity requires complete AWS scope"
+  mapM_
+    (\raw -> void (first (Text.pack . show) (mkHostedZoneId raw)))
+    (identityWireAwsDnsZone wire)
   unless
     ( identityWireLifecycleOperation wire
         == lifecycleOperationTag ReconcileDesiredAbsent
@@ -1349,9 +1480,12 @@ data RecoveryPlaneFixtureRegression = RecoveryPlaneFixtureRegression
   { recoveryPlaneFixtureProfileCanonical :: !Bool
   , recoveryPlaneFixtureProfileTargetAgentSeparated :: !Bool
   , recoveryPlaneFixtureIdentityCanonical :: !Bool
+  , recoveryPlaneFixtureDnsZoneCanonical :: !Bool
+  , recoveryPlaneFixtureLegacyV1RestartReadable :: !Bool
   , recoveryPlaneFixtureExactCompletenessEnforced :: !Bool
   , recoveryPlaneFixtureEveryFailureRefused :: !Bool
   , recoveryPlaneFixtureDiagnosticsNormalized :: !Bool
+  , recoveryPlaneFixtureFailureRenderingBounded :: !Bool
   , recoveryPlaneFixtureInitialReadyExact :: !Bool
   , recoveryPlaneFixtureEstablishedFromReady :: !Bool
   , recoveryPlaneFixtureEstablishedAfterInitialFailure :: !Bool
@@ -1381,6 +1515,8 @@ fixedRecoveryPlaneFixtureRegression = do
           withRecovery
       )
   identity <- fixedIdentity withoutProfile fixtureRunId fixtureGraphDigest fixtureScope
+  zonedIdentity <-
+    fixedIdentity withoutProfile fixtureRunId fixtureGraphDigest fixtureZonedScope
   otherIdentity <-
     fixedIdentity
       withoutProfile
@@ -1389,6 +1525,8 @@ fixedRecoveryPlaneFixtureRegression = do
       fixtureOtherScope
   dynamicProfileRestored <-
     dynamicProfileRestoreRegression withProfile withoutProfile
+  legacyV1RestartReadable <-
+    legacyV1RestartRegression withProfile
   establishAttempt <- firstShow (mkCleanupAttemptId "recovery-establish-attempt")
   readBackAttempt <- firstShow (mkCleanupAttemptId "recovery-read-back-attempt")
   dispositionAttempt <- firstShow (mkCleanupAttemptId "recovery-disposition-attempt")
@@ -1543,6 +1681,7 @@ fixedRecoveryPlaneFixtureRegression = do
         internalRecoveryPlaneProfileDigest withoutProfile
           /= internalRecoveryPlaneProfileDigest withProfile
       encodedIdentity = encodeRecoveryPlaneIdentityWireInternal identity
+      encodedZonedIdentity = encodeRecoveryPlaneIdentityWireInternal zonedIdentity
       identityCanonical =
         ByteString.length encodedIdentity <= maximumRecoveryPlaneIdentityBytes
           && decodeRecoveryPlaneIdentityWireInternal encodedIdentity
@@ -1551,6 +1690,13 @@ fixedRecoveryPlaneFixtureRegression = do
             (const True)
             (const False)
             (decodeRecoveryPlaneIdentityWireInternal (encodedIdentity <> "trailing"))
+      dnsZoneCanonical =
+        decodeRecoveryPlaneIdentityWireInternal encodedZonedIdentity
+          == Right (identityToWire zonedIdentity)
+          && case decodeRecoveryPlaneIdentityWireInternal encodedZonedIdentity of
+            Left _ -> False
+            Right wire ->
+              scopeFromIdentityWire Cascade wire == Right fixtureZonedScope
       completeness =
         isDuplicate
           (normalizeRecoveryPlaneComponentFactsInternal readBackBinding duplicateObservation)
@@ -1601,6 +1747,14 @@ fixedRecoveryPlaneFixtureRegression = do
             lost
       lostHidesReady =
         maybe True (const False) (recoveryPlaneFinalEstablishedReady lost)
+      failureRenderingBounded =
+        case recoveryPlaneInitialFailures failedInitial of
+          Nothing -> False
+          Just failures ->
+            let rendered = renderRecoveryPlaneComponentFailures failures
+             in rendered == "component/cluster_base:missing"
+                  && not ("first diagnostic" `Text.isInfixOf` rendered)
+                  && Text.length rendered <= 1024
       crossBindingRefused =
         isIdentityMismatch
           ( normalizeRecoveryPlaneComponentFactsInternal
@@ -1617,10 +1771,13 @@ fixedRecoveryPlaneFixtureRegression = do
       { recoveryPlaneFixtureProfileCanonical = profileCanonical
       , recoveryPlaneFixtureProfileTargetAgentSeparated = targetSeparated
       , recoveryPlaneFixtureIdentityCanonical = identityCanonical
+      , recoveryPlaneFixtureDnsZoneCanonical = dnsZoneCanonical
+      , recoveryPlaneFixtureLegacyV1RestartReadable = legacyV1RestartReadable
       , recoveryPlaneFixtureExactCompletenessEnforced = completeness
       , recoveryPlaneFixtureEveryFailureRefused = everyFailureRefused
       , recoveryPlaneFixtureDiagnosticsNormalized =
           missingFacts == missingFactsAlternate
+      , recoveryPlaneFixtureFailureRenderingBounded = failureRenderingBounded
       , recoveryPlaneFixtureInitialReadyExact = initialReadyExact
       , recoveryPlaneFixtureEstablishedFromReady = establishedFromReadyExact
       , recoveryPlaneFixtureEstablishedAfterInitialFailure =
@@ -1680,6 +1837,69 @@ dynamicProfileRestoreRegression withProfile withoutProfile = do
           (encodeRecoveryPlaneIdentityWireInternal withIdentity)
       )
   pure (restored == withIdentity && restored /= withoutIdentity)
+
+legacyV1RestartRegression
+  :: RecoveryPlaneProfile
+  -> Either Text Bool
+legacyV1RestartRegression profile = do
+  compiled <-
+    firstShow
+      ( compileDesiredAbsenceGraph
+          fixtureRunId
+          fixtureFoundation
+          (Just fixtureAwsScope)
+          Nothing
+          TeardownModel.CascadeSurface
+      )
+  identity <-
+    compiledFixtureIdentity profile (Text.replicate 64 "8") compiled
+  let legacyBytes = encodeLegacyRecoveryPlaneIdentityWire identity
+  restored <-
+    firstShow
+      ( restoreRecoveryPlaneIdentityFromCompiledInternal
+          fixtureDescriptorDigest
+          CascadeRecoverySurface
+          compiled
+          legacyBytes
+      )
+  pure (restored == identity)
+
+encodeLegacyRecoveryPlaneIdentityWire
+  :: RecoveryPlaneIdentity surface -> ByteString
+encodeLegacyRecoveryPlaneIdentityWire identity =
+  LazyByteString.toStrict . serialise $
+    LegacyRecoveryPlaneIdentityWire
+      { legacyIdentityWireFormatVersion = 1
+      , legacyIdentityWireSurface = fromEnum (recoveryPlaneIdentitySurface identity)
+      , legacyIdentityWireRunId = cleanupRunIdText (recoveryPlaneIdentityRunId identity)
+      , legacyIdentityWireDescriptorDigest =
+          cleanupDigestText (recoveryPlaneIdentityDescriptorDigest identity)
+      , legacyIdentityWireGraphDigest =
+          cleanupDigestText (recoveryPlaneIdentityGraphDigest identity)
+      , legacyIdentityWireRegistryRevision = registryRevisionText scope
+      , legacyIdentityWireRunScope = durableRunScopeText scope
+      , legacyIdentityWireFoundation = foundationText scope
+      , legacyIdentityWireAwsAccount = awsAccountText <$> evidenceAwsScope scope
+      , legacyIdentityWireAwsRegion = awsRegionText <$> evidenceAwsScope scope
+      , legacyIdentityWireLifecycleOperation =
+          lifecycleOperationTag (evidenceLifecycleOperation scope)
+      , legacyIdentityWireCapabilityCatalogDigest =
+          recoveryPlaneIdentityCapabilityCatalogDigest identity
+      , legacyIdentityWireRequirementDigest =
+          recoveryPlaneIdentityRequirementDigest identity
+      , legacyIdentityWireTargetAgent =
+          targetAgentTag (recoveryPlaneIdentityTargetAgent identity)
+      , legacyIdentityWireProfileDigest =
+          recoveryPlaneProfileDigestText (recoveryPlaneIdentityProfileDigest identity)
+      , legacyIdentityWireEstablishOperationId =
+          cleanupOperationIdText (recoveryPlaneIdentityEstablishOperationId identity)
+      , legacyIdentityWireReadBackOperationId =
+          cleanupOperationIdText (recoveryPlaneIdentityReadBackOperationId identity)
+      , legacyIdentityWireDispositionOperationId =
+          cleanupOperationIdText (recoveryPlaneIdentityDispositionOperationId identity)
+      }
+ where
+  scope = recoveryPlaneIdentityObservationScope identity
 
 compiledFixtureIdentity
   :: RecoveryPlaneProfile
@@ -1925,6 +2145,20 @@ fixtureAwsScope =
 
 fixtureScope :: ObservationEvidenceScope
 fixtureScope = scopeFor fixtureRunId "foundation/home"
+
+fixtureDnsZone :: HostedZoneId
+fixtureDnsZone = mustRight (mkHostedZoneId "ZRECOVERY123")
+
+fixtureZonedScope :: ObservationEvidenceScope
+fixtureZonedScope =
+  mkObservationEvidenceScopeWithDnsZone
+    Cascade
+    (RegistryRevision "registry/v1")
+    (DurableObservationRunScope (cleanupRunIdText fixtureRunId))
+    fixtureFoundation
+    (Just fixtureAwsScope)
+    fixtureDnsZone
+    ReconcileDesiredAbsent
 
 fixtureOtherScope :: ObservationEvidenceScope
 fixtureOtherScope = scopeFor fixtureOtherRunId "foundation/other"

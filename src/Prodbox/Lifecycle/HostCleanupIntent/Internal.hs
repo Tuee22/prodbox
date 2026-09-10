@@ -54,6 +54,7 @@ module Prodbox.Lifecycle.HostCleanupIntent.Internal
   , hostCleanupReadyBinding
   , hostCleanupIntentPhase
   , hostCleanupCompletionReceiptDigest
+  , hostCleanupIntentSameBaseBinding
   , bindHostCleanupReady
   , hostCleanupReadyMatches
   , advanceHostCleanupIntent
@@ -79,6 +80,9 @@ module Prodbox.Lifecycle.HostCleanupIntent.Internal
   , hostCleanupIntentRetirementDigestText
   , HostCleanupIntentRetirement (..)
   , retireHostCleanupIntent
+  , HostCleanupIntentFailureRetirement (..)
+  , hostCleanupIntentFailureRetiredPath
+  , retireHostCleanupIntentAfterTerminalFailure
   , HostCleanupIntentRegression
   , fixedHostCleanupIntentRegression
   , hostCleanupIntentRegressionBoundCodec
@@ -108,6 +112,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isAscii, isAsciiLower, isAsciiUpper, isDigit)
+import Data.Map.Strict qualified as Map
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -124,14 +129,21 @@ import Prodbox.Config.LocalRetainedRoot
   )
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDigest
+  , CleanupNodeOutcome (..)
+  , CleanupNodeState (..)
   , CleanupOperationId
   , CleanupRun (cleanupRunGraph, cleanupRunGraphDigest, cleanupRunId)
   , CleanupRunCodecError
   , CleanupRunId
+  , CleanupRunReport (..)
+  , cleanupDigestOfBytes
+  , cleanupDigestText
   , cleanupGraphDigest
   , cleanupRunIdText
   , decodeCleanupRun
+  , decodeCleanupRunReport
   , encodeCleanupRun
+  , encodeCleanupRunReport
   , mkCleanupDigest
   )
 import Prodbox.Lifecycle.Teardown.CascadeEvidence
@@ -976,6 +988,21 @@ data HostCleanupIntentError
   | HostCleanupIntentRetirementRequiresComplete !HostCleanupIntentPhase
   | HostCleanupIntentRetirementReceiptMismatch
   | HostCleanupIntentRetirementArchiveConflict
+  | HostCleanupIntentFailureReportInvalid !CleanupRunCodecError
+  | HostCleanupIntentFailureReportRunIdMismatch
+  | HostCleanupIntentFailureReportGraphDigestMismatch
+  | HostCleanupIntentFailureReportHasNoFailedNode
+  | HostCleanupIntentFailureReportReadBackMismatch
+  | HostCleanupIntentFailureRetirementRequiresIncomplete
+      !HostCleanupIntentPhase
+  | HostCleanupIntentFailureRetirementEncodedTooLarge !Int !Int
+  | HostCleanupIntentFailureRetirementArchiveInvalid
+  | HostCleanupIntentFailureRetirementArchiveNonCanonical
+  | HostCleanupIntentFailureRetirementArchiveConflict
+  | HostCleanupIntentFailureRetirementUnsupportedVersion !Word16
+  | HostCleanupIntentFailureRetirementIntentMismatch
+  | HostCleanupIntentFailureRetirementDescriptorMismatch
+  | HostCleanupIntentFailureRetirementReportMismatch
   | HostCleanupIntentIoFailure !String
   deriving stock (Eq, Show)
 
@@ -1494,6 +1521,10 @@ sameIntentBaseBinding left right =
     && hostCleanupScope left == hostCleanupScope right
     && hostCleanupTerminalIdentity left == hostCleanupTerminalIdentity right
 
+hostCleanupIntentSameBaseBinding
+  :: HostCleanupIntent -> HostCleanupIntent -> Bool
+hostCleanupIntentSameBaseBinding = sameIntentBaseBinding
+
 newtype HostCleanupIntentRetirementDigest = HostCleanupIntentRetirementDigest
   { hostCleanupIntentRetirementDigestText :: Text
   }
@@ -1658,6 +1689,486 @@ durableRetire store archivePath archiveMissing = do
   pure $ case result :: Either IOException () of
     Left err -> Left (HostCleanupIntentIoFailure (show err))
     Right () -> Right ()
+
+-- | A terminally failed Authority run cannot advance its host intent to
+-- 'HostCleanupComplete', but it must not occupy the single active slot
+-- forever.  Its retirement archive therefore carries the exact active intent
+-- together with the independently observed descriptor and report bindings
+-- that explain why a later run may replace it.
+data HostCleanupIntentFailureRetirementEnvelope
+  = HostCleanupIntentFailureRetirementEnvelope
+  { failureRetirementVersion :: !Word16
+  , failureRetirementIntentBytes :: !ByteString
+  , failureRetirementDescriptorDigest :: !CleanupDigest
+  , failureRetirementReportBytes :: !ByteString
+  , failureRetirementReportDigest :: !CleanupDigest
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data HostCleanupIntentFailureRetirement
+  = HostCleanupIntentFailureRetirement
+  { failedRetiredHostCleanupIntentDigest
+      :: !HostCleanupIntentRetirementDigest
+  , failedRetiredHostCleanupDescriptorDigest :: !CleanupDigest
+  , failedRetiredHostCleanupReportDigest :: !CleanupDigest
+  }
+  deriving stock (Eq, Show)
+
+hostCleanupIntentFailureRetirementVersion :: Word16
+hostCleanupIntentFailureRetirementVersion = 1
+
+maximumHostCleanupFailureReportBytes :: Int
+maximumHostCleanupFailureReportBytes = 3 * 1024 * 1024
+
+maximumHostCleanupFailureRetirementBytes :: Int
+maximumHostCleanupFailureRetirementBytes =
+  maximumHostCleanupIntentBytes
+    + maximumHostCleanupFailureReportBytes
+    + (128 * 1024)
+
+hostCleanupIntentFailureRetiredPath
+  :: HostCleanupIntentStore
+  -> HostCleanupIntent
+  -> CleanupRunReport
+  -> Either HostCleanupIntentError FilePath
+hostCleanupIntentFailureRetiredPath store intent report = do
+  reportBytes <-
+    either
+      (Left . HostCleanupIntentFailureReportInvalid)
+      Right
+      (encodeCleanupRunReport maximumHostCleanupFailureReportBytes report)
+  let runDigest =
+        TextEncoding.decodeUtf8
+          (hexSha256 (TextEncoding.encodeUtf8 (cleanupRunIdText (hostCleanupRunId intent))))
+      reportDigest = cleanupDigestText (cleanupDigestOfBytes reportBytes)
+  Right
+    ( hostCleanupIntentDirectory store
+        </> ( "failed-"
+                ++ Text.unpack runDigest
+                ++ "-"
+                ++ Text.unpack reportDigest
+                ++ ".cbor"
+            )
+    )
+
+hostCleanupIntentFailureTemporaryPath
+  :: HostCleanupIntentStore
+  -> HostCleanupIntent
+  -> CleanupRunReport
+  -> Either HostCleanupIntentError FilePath
+hostCleanupIntentFailureTemporaryPath store intent report =
+  (<> ".tmp") <$> hostCleanupIntentFailureRetiredPath store intent report
+
+-- | Archive and release an incomplete active host intent only when an
+-- authenticated caller has already joined it to the exact immutable terminal
+-- failure report.  This internal primitive revalidates all representable
+-- bindings and publishes the explanatory envelope durably before unlinking
+-- the active slot.  Exact replay closes response loss; a foreign active intent
+-- or archive is never replaced.
+retireHostCleanupIntentAfterTerminalFailure
+  :: HostCleanupIntentStore
+  -> HostCleanupIntent
+  -> CleanupDigest
+  -> CleanupRunReport
+  -> IO
+       ( Either
+           HostCleanupIntentError
+           HostCleanupIntentFailureRetirement
+       )
+retireHostCleanupIntentAfterTerminalFailure
+  store
+  expectedBase
+  descriptorDigest
+  report =
+    case validateFailureReportBinding expectedBase report of
+      Left err -> pure (Left err)
+      Right reportBytes ->
+        withHostCleanupIntentLock
+          store
+          ( retireFailedPreparedStore
+              expectedBase
+              descriptorDigest
+              report
+              reportBytes
+          )
+
+retireFailedPreparedStore
+  :: HostCleanupIntent
+  -> CleanupDigest
+  -> CleanupRunReport
+  -> ByteString
+  -> HostCleanupIntentStore
+  -> IO
+       ( Either
+           HostCleanupIntentError
+           HostCleanupIntentFailureRetirement
+       )
+retireFailedPreparedStore expectedBase descriptorDigest report reportBytes preparedStore =
+  case hostCleanupIntentFailureRetiredPath preparedStore expectedBase report of
+    Left err -> pure (Left err)
+    Right archivePath -> do
+      active <- readStoredIntent (hostCleanupIntentPath preparedStore)
+      archived <- readStoredFailureRetirement archivePath
+      case (active, archived) of
+        (Left err, _) -> pure (Left err)
+        (_, Left err) -> pure (Left err)
+        (Right StoredIntentMissing, Right StoredFailureRetirementMissing) ->
+          pure (Left HostCleanupIntentMissing)
+        (Right StoredIntentMissing, Right (StoredFailureRetirementPresent envelopeBytes envelope)) ->
+          finishFailureRetirementReadBack
+            preparedStore
+            archivePath
+            expectedBase
+            descriptorDigest
+            report
+            reportBytes
+            envelopeBytes
+            envelope
+        (Right (StoredIntentPresent activeBytes activeIntent), Right storedArchive)
+          | not (sameIntentBaseBinding expectedBase activeIntent) ->
+              pure (Left HostCleanupIntentActiveConflict)
+          | hostCleanupIntentPhase activeIntent == HostCleanupComplete ->
+              pure
+                ( Left
+                    ( HostCleanupIntentFailureRetirementRequiresIncomplete
+                        HostCleanupComplete
+                    )
+                )
+          | otherwise ->
+              retireActiveFailureIntent
+                preparedStore
+                archivePath
+                expectedBase
+                descriptorDigest
+                report
+                reportBytes
+                activeBytes
+                storedArchive
+
+retireActiveFailureIntent
+  :: HostCleanupIntentStore
+  -> FilePath
+  -> HostCleanupIntent
+  -> CleanupDigest
+  -> CleanupRunReport
+  -> ByteString
+  -> ByteString
+  -> StoredFailureRetirement
+  -> IO
+       ( Either
+           HostCleanupIntentError
+           HostCleanupIntentFailureRetirement
+       )
+retireActiveFailureIntent
+  preparedStore
+  archivePath
+  expectedBase
+  descriptorDigest
+  report
+  reportBytes
+  activeBytes
+  storedArchive = do
+    let reportDigest = cleanupDigestOfBytes reportBytes
+        envelope =
+          HostCleanupIntentFailureRetirementEnvelope
+            { failureRetirementVersion =
+                hostCleanupIntentFailureRetirementVersion
+            , failureRetirementIntentBytes = activeBytes
+            , failureRetirementDescriptorDigest = descriptorDigest
+            , failureRetirementReportBytes = reportBytes
+            , failureRetirementReportDigest = reportDigest
+            }
+        envelopeBytes = LazyByteString.toStrict (serialise envelope)
+    if ByteString.length envelopeBytes > maximumHostCleanupFailureRetirementBytes
+      then
+        pure
+          ( Left
+              ( HostCleanupIntentFailureRetirementEncodedTooLarge
+                  (ByteString.length envelopeBytes)
+                  maximumHostCleanupFailureRetirementBytes
+              )
+          )
+      else case storedArchive of
+        StoredFailureRetirementPresent archivedBytes archivedEnvelope
+          | archivedBytes /= envelopeBytes || archivedEnvelope /= envelope ->
+              pure (Left HostCleanupIntentFailureRetirementArchiveConflict)
+        _ -> do
+          published <-
+            if storedArchive == StoredFailureRetirementMissing
+              then
+                publishFailureRetirement
+                  preparedStore
+                  expectedBase
+                  report
+                  archivePath
+                  envelopeBytes
+              else pure (Right ())
+          case published of
+            Left err -> pure (Left err)
+            Right () -> do
+              removed <- removeFailureRetirementActive preparedStore
+              case removed of
+                Left err -> pure (Left err)
+                Right () ->
+                  finishFailureRetirementReadBack
+                    preparedStore
+                    archivePath
+                    expectedBase
+                    descriptorDigest
+                    report
+                    reportBytes
+                    envelopeBytes
+                    envelope
+
+validateFailureReportBinding
+  :: HostCleanupIntent
+  -> CleanupRunReport
+  -> Either HostCleanupIntentError ByteString
+validateFailureReportBinding intent report = do
+  if cleanupReportRunId report == hostCleanupRunId intent
+    then Right ()
+    else Left HostCleanupIntentFailureReportRunIdMismatch
+  if cleanupReportGraphDigest report == hostCleanupGraphDigest intent
+    then Right ()
+    else Left HostCleanupIntentFailureReportGraphDigestMismatch
+  if all cleanupNodeSucceeded (Map.elems (cleanupReportNodeStates report))
+    then Left HostCleanupIntentFailureReportHasNoFailedNode
+    else Right ()
+  reportBytes <-
+    either
+      (Left . HostCleanupIntentFailureReportInvalid)
+      Right
+      (encodeCleanupRunReport maximumHostCleanupFailureReportBytes report)
+  decoded <-
+    either
+      (Left . HostCleanupIntentFailureReportInvalid)
+      Right
+      (decodeCleanupRunReport maximumHostCleanupFailureReportBytes reportBytes)
+  if decoded == report
+    then Right reportBytes
+    else Left HostCleanupIntentFailureReportReadBackMismatch
+ where
+  cleanupNodeSucceeded state = case state of
+    CleanupNodeCompleted _ CleanupNodeSucceeded -> True
+    CleanupNodePending -> False
+    CleanupNodeRunning _ -> False
+    CleanupNodeCompleted _ (CleanupNodeFailed _) -> False
+    CleanupNodeCompleted _ (CleanupNodeEffectUnconfirmed _) -> False
+    CleanupNodeBlocked _ -> False
+
+data StoredFailureRetirement
+  = StoredFailureRetirementMissing
+  | StoredFailureRetirementPresent
+      !ByteString
+      !HostCleanupIntentFailureRetirementEnvelope
+  deriving stock (Eq)
+
+readStoredFailureRetirement
+  :: FilePath
+  -> IO (Either HostCleanupIntentError StoredFailureRetirement)
+readStoredFailureRetirement path = do
+  result <-
+    try
+      ( bracket
+          (openFd path ReadOnly defaultFileFlags {nofollow = True, cloexec = True})
+          safeCloseFd
+          readOpenFailureRetirement
+      )
+  pure $ case result of
+    Left (err :: IOException)
+      | isDoesNotExistError err -> Right StoredFailureRetirementMissing
+      | otherwise -> Left (HostCleanupIntentIoFailure (show err))
+    Right value -> value
+
+readOpenFailureRetirement
+  :: Fd
+  -> IO (Either HostCleanupIntentError StoredFailureRetirement)
+readOpenFailureRetirement fd = do
+  status <- getFdStatus fd
+  if not (isRegularFile status)
+    then pure (Left HostCleanupIntentFileNotRegular)
+    else
+      if fileMode status `intersectFileModes` accessModes /= ownerFileMode
+        then pure (Left HostCleanupIntentFileModeInvalid)
+        else do
+          bytes <-
+            readFdBounded fd (maximumHostCleanupFailureRetirementBytes + 1)
+          pure $
+            if ByteString.length bytes > maximumHostCleanupFailureRetirementBytes
+              then
+                Left
+                  ( HostCleanupIntentFailureRetirementEncodedTooLarge
+                      (ByteString.length bytes)
+                      maximumHostCleanupFailureRetirementBytes
+                  )
+              else case deserialiseOrFail (LazyByteString.fromStrict bytes) of
+                Left _ ->
+                  Left HostCleanupIntentFailureRetirementArchiveInvalid
+                Right envelope
+                  | LazyByteString.toStrict (serialise envelope) /= bytes ->
+                      Left HostCleanupIntentFailureRetirementArchiveNonCanonical
+                  | otherwise ->
+                      Right (StoredFailureRetirementPresent bytes envelope)
+
+publishFailureRetirement
+  :: HostCleanupIntentStore
+  -> HostCleanupIntent
+  -> CleanupRunReport
+  -> FilePath
+  -> ByteString
+  -> IO (Either HostCleanupIntentError ())
+publishFailureRetirement store intent report archivePath bytes =
+  case hostCleanupIntentFailureTemporaryPath store intent report of
+    Left err -> pure (Left err)
+    Right temporaryPath -> do
+      result <- try . mask_ $ do
+        bracket
+          ( openFd
+              temporaryPath
+              WriteOnly
+              defaultFileFlags
+                { trunc = True
+                , creat = Just ownerFileMode
+                , nofollow = True
+                , cloexec = True
+                }
+          )
+          safeCloseFd
+          ( \fd -> do
+              setFdMode fd ownerFileMode
+              status <- getFdStatus fd
+              if not (isRegularFile status)
+                then
+                  ioError
+                    (userError "cleanup failure retirement temporary path is not regular")
+                else do
+                  writeAll fd bytes
+                  fileSynchronise fd
+          )
+        createLink temporaryPath archivePath
+        syncIntentDirectory store
+        removeLink temporaryPath
+        syncIntentDirectory store
+      pure $ case result :: Either IOException () of
+        Left err -> Left (HostCleanupIntentIoFailure (show err))
+        Right () -> Right ()
+
+removeFailureRetirementActive
+  :: HostCleanupIntentStore
+  -> IO (Either HostCleanupIntentError ())
+removeFailureRetirementActive store = do
+  result <- try . mask_ $ do
+    removeLink (hostCleanupIntentPath store)
+    syncIntentDirectory store
+  pure $ case result :: Either IOException () of
+    Left err -> Left (HostCleanupIntentIoFailure (show err))
+    Right () -> Right ()
+
+finishFailureRetirementReadBack
+  :: HostCleanupIntentStore
+  -> FilePath
+  -> HostCleanupIntent
+  -> CleanupDigest
+  -> CleanupRunReport
+  -> ByteString
+  -> ByteString
+  -> HostCleanupIntentFailureRetirementEnvelope
+  -> IO
+       ( Either
+           HostCleanupIntentError
+           HostCleanupIntentFailureRetirement
+       )
+finishFailureRetirementReadBack
+  store
+  archivePath
+  expectedBase
+  descriptorDigest
+  report
+  reportBytes
+  expectedEnvelopeBytes
+  expectedEnvelope = do
+    synced <- try (syncIntentDirectory store)
+    case synced of
+      Left (err :: IOException) ->
+        pure (Left (HostCleanupIntentIoFailure (show err)))
+      Right () -> do
+        active <- readStoredIntent (hostCleanupIntentPath store)
+        archived <- readStoredFailureRetirement archivePath
+        pure $ case (active, archived) of
+          (Right StoredIntentMissing, Right (StoredFailureRetirementPresent actualBytes actualEnvelope))
+            | actualBytes == expectedEnvelopeBytes
+                && actualEnvelope == expectedEnvelope ->
+                failureRetirementReceipt
+                  expectedBase
+                  descriptorDigest
+                  report
+                  reportBytes
+                  actualEnvelope
+          (Left err, _) -> Left err
+          (_, Left err) -> Left err
+          _ -> Left HostCleanupIntentFailureRetirementArchiveConflict
+
+failureRetirementReceipt
+  :: HostCleanupIntent
+  -> CleanupDigest
+  -> CleanupRunReport
+  -> ByteString
+  -> HostCleanupIntentFailureRetirementEnvelope
+  -> Either HostCleanupIntentError HostCleanupIntentFailureRetirement
+failureRetirementReceipt
+  expectedBase
+  descriptorDigest
+  report
+  reportBytes
+  envelope = do
+    if failureRetirementVersion envelope
+      == hostCleanupIntentFailureRetirementVersion
+      then Right ()
+      else
+        Left
+          ( HostCleanupIntentFailureRetirementUnsupportedVersion
+              (failureRetirementVersion envelope)
+          )
+    archivedIntent <- decodeHostCleanupIntent (failureRetirementIntentBytes envelope)
+    if sameIntentBaseBinding expectedBase archivedIntent
+      then Right ()
+      else Left HostCleanupIntentFailureRetirementIntentMismatch
+    if hostCleanupIntentPhase archivedIntent /= HostCleanupComplete
+      then Right ()
+      else
+        Left
+          ( HostCleanupIntentFailureRetirementRequiresIncomplete
+              HostCleanupComplete
+          )
+    if failureRetirementDescriptorDigest envelope == descriptorDigest
+      then Right ()
+      else Left HostCleanupIntentFailureRetirementDescriptorMismatch
+    if failureRetirementReportBytes envelope == reportBytes
+      && failureRetirementReportDigest envelope
+        == cleanupDigestOfBytes reportBytes
+      then Right ()
+      else Left HostCleanupIntentFailureRetirementReportMismatch
+    decodedReport <-
+      either
+        (Left . HostCleanupIntentFailureReportInvalid)
+        Right
+        ( decodeCleanupRunReport
+            maximumHostCleanupFailureReportBytes
+            (failureRetirementReportBytes envelope)
+        )
+    if decodedReport == report
+      then Right ()
+      else Left HostCleanupIntentFailureRetirementReportMismatch
+    _ <- validateFailureReportBinding archivedIntent decodedReport
+    Right
+      HostCleanupIntentFailureRetirement
+        { failedRetiredHostCleanupIntentDigest =
+            intentRetirementDigest (failureRetirementIntentBytes envelope)
+        , failedRetiredHostCleanupDescriptorDigest = descriptorDigest
+        , failedRetiredHostCleanupReportDigest =
+            cleanupDigestOfBytes reportBytes
+        }
 
 instance Eq StoredIntent where
   StoredIntentMissing == StoredIntentMissing = True

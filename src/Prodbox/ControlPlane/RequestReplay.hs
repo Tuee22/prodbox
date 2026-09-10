@@ -532,10 +532,10 @@ data RequestReplayValueWire
   deriving anyclass (Serialise)
 
 requestReplayCodecVersion :: Word16
-requestReplayCodecVersion = 9
+requestReplayCodecVersion = 13
 
 legacyRequestReplayCodecVersions :: [Word16]
-legacyRequestReplayCodecVersions = [2, 3, 4, 5, 6, 7, 8]
+legacyRequestReplayCodecVersions = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
 encodeRequestReplayProjection
   :: Int
@@ -636,18 +636,27 @@ validateReplayProjection expectedLimits projection
 envelopeLimitsCompatible :: RequestReplayLimits -> RequestReplayEnvelope -> Bool
 envelopeLimitsCompatible limits envelope =
   capacityCompatible
-    && replayEnvelopeMaximumResponseBytes envelope
-      == requestReplayMaximumResponseBytes limits
+    && responseMaximumCompatible
     && replayEnvelopeClockSkewMicros envelope
       == authorityDurationMicros (requestReplayClockSkew limits)
  where
-  capacityCompatible = case replayEnvelopeVersion envelope of
+  storedVersion = replayEnvelopeVersion envelope
+  isLegacyVersion = storedVersion `elem` legacyRequestReplayCodecVersions
+  capacityCompatible = case storedVersion of
     version
       | version == requestReplayCodecVersion ->
           replayEnvelopeCapacity envelope == requestReplayCapacity limits
-      | version `elem` legacyRequestReplayCodecVersions ->
+      | isLegacyVersion ->
           replayEnvelopeCapacity envelope <= requestReplayCapacity limits
       | otherwise -> False
+  responseMaximumCompatible
+    | storedVersion == requestReplayCodecVersion =
+        replayEnvelopeMaximumResponseBytes envelope
+          == requestReplayMaximumResponseBytes limits
+    | isLegacyVersion =
+        requestReplayMaximumResponseBytes limits
+          <= replayEnvelopeMaximumResponseBytes envelope
+    | otherwise = False
 
 entryToWire :: (RequestReplayKey, ReplayEntry) -> RequestReplayEntryWire
 entryToWire (key, value) =

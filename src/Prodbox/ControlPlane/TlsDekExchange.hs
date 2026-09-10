@@ -9,6 +9,7 @@
 -- envelope, or a retained-home Transit ciphertext; it never receives a DEK.
 module Prodbox.ControlPlane.TlsDekExchange
   ( TlsDekTransitBoundary (..)
+  , TlsDekTransitFailure (..)
   , TlsDekPrepared
   , TlsDekPublicKey
   , TlsDekEnvelope
@@ -49,9 +50,44 @@ import Prodbox.Crypto.Aead
   )
 
 data TlsDekTransitBoundary m = TlsDekTransitBoundary
-  { tlsDekTransitEncrypt :: ByteString -> m (Either Text Text)
-  , tlsDekTransitDecrypt :: Text -> m (Either Text ByteString)
+  { tlsDekTransitEncrypt :: ByteString -> m (Either TlsDekTransitFailure Text)
+  , tlsDekTransitDecrypt :: Text -> m (Either TlsDekTransitFailure ByteString)
   }
+
+-- | Value-free failure taxonomy for the authenticated Vault Transit boundary.
+-- No token, ciphertext, response body, exception detail, or transport address
+-- crosses into the exchange state machine or its protected diagnostics.
+data TlsDekTransitFailure
+  = TlsDekTransitSessionAcquisitionSealed
+  | TlsDekTransitSessionAcquisitionForbidden
+  | TlsDekTransitSessionAcquisitionUnavailable
+  | TlsDekTransitSessionReloginSealed
+  | TlsDekTransitSessionReloginForbidden
+  | TlsDekTransitSessionReloginUnavailable
+  | TlsDekTransitRequestBadRequestMissingCiphertext
+  | TlsDekTransitRequestBadRequestKeyNotFound
+  | TlsDekTransitRequestBadRequestCiphertextNoPrefix
+  | TlsDekTransitRequestBadRequestCiphertextWrongFields
+  | TlsDekTransitRequestBadRequestCiphertextVersionUndecodable
+  | TlsDekTransitRequestBadRequestCiphertextVersionTooNew
+  | TlsDekTransitRequestBadRequestCiphertextVersionTooOld
+  | TlsDekTransitRequestBadRequestConvergentNonceInvalid
+  | TlsDekTransitRequestBadRequestCiphertextBase64Invalid
+  | TlsDekTransitRequestBadRequestCiphertextLengthInvalid
+  | TlsDekTransitRequestBadRequestCiphertextAuthenticationFailed
+  | TlsDekTransitRequestBadRequestOther
+  | TlsDekTransitRequestUnauthorized
+  | TlsDekTransitRequestForbidden
+  | TlsDekTransitRequestNotFound
+  | TlsDekTransitRequestThrottled
+  | TlsDekTransitRequestClientFailure
+  | TlsDekTransitRequestServerFailure
+  | TlsDekTransitRequestUnexpectedStatus
+  | TlsDekTransitRequestConnectionFailure
+  | TlsDekTransitRequestTimeout
+  | TlsDekTransitRequestDecodeFailure
+  | TlsDekTransitUnexpectedException
+  deriving stock (Bounded, Enum, Eq, Show)
 
 data TlsDekPrepared = TlsDekPrepared
   { internalTlsDekPreparedPublicKey :: !TlsDekPublicKey
@@ -101,12 +137,12 @@ data TlsDekExchangeError
   | TlsDekPublicKeyInvalid
   | TlsDekSecretKeyInvalid
   | TlsDekPrivateTokenInvalid
-  | TlsDekPrivateTokenUnavailable
+  | TlsDekPrivateTokenUnavailable !TlsDekTransitFailure
   | TlsDekEnvelopeBindingMismatch
   | TlsDekEnvelopeVersionUnsupported !Word16
   | TlsDekCipherFailed !AeadError
-  | TlsDekTransitWrapUnavailable
-  | TlsDekTransitUnwrapUnavailable
+  | TlsDekTransitWrapUnavailable !TlsDekTransitFailure
+  | TlsDekTransitUnwrapUnavailable !TlsDekTransitFailure
   | TlsDekWrappedCiphertextInvalid
   deriving stock (Eq, Show)
 
@@ -144,7 +180,7 @@ prepareTlsDekExchange transit = do
           ]
   encrypted <- tlsDekTransitEncrypt transit protected
   pure $ do
-    token <- first (const TlsDekPrivateTokenUnavailable) encrypted
+    token <- first TlsDekPrivateTokenUnavailable encrypted
     validateTransitCiphertext TlsDekPrivateTokenInvalid token
     Right (TlsDekPrepared public token)
 
@@ -187,7 +223,7 @@ wrapTlsDekAtRetainedHome transit prepared envelope = do
     Right dek -> do
       wrapped <- tlsDekTransitEncrypt transit (retainedDekDomain <> dek)
       pure $ do
-        ciphertext <- first (const TlsDekTransitWrapUnavailable) wrapped
+        ciphertext <- first TlsDekTransitWrapUnavailable wrapped
         validateTransitCiphertext TlsDekWrappedCiphertextInvalid ciphertext
         Right (TlsWrappedDek ciphertext)
 
@@ -199,7 +235,7 @@ rewrapTlsDekFromRetainedHome
 rewrapTlsDekFromRetainedHome transit wrapped destination = do
   decrypted <- tlsDekTransitDecrypt transit (tlsWrappedDekText wrapped)
   case decrypted of
-    Left _ -> pure (Left TlsDekTransitUnwrapUnavailable)
+    Left failure -> pure (Left (TlsDekTransitUnwrapUnavailable failure))
     Right plaintext -> case ByteString.stripPrefix retainedDekDomain plaintext of
       Nothing -> pure (Left TlsDekWrappedCiphertextInvalid)
       Just dek
@@ -227,7 +263,7 @@ openTlsDekAtDestination transit prepared envelope
       decrypted <-
         tlsDekTransitDecrypt transit (internalTlsDekPreparedPrivateToken prepared)
       pure $ do
-        tokenBytes <- first (const TlsDekPrivateTokenUnavailable) decrypted
+        tokenBytes <- first TlsDekPrivateTokenUnavailable decrypted
         secret <- decodePrivateToken prepared tokenBytes
         sender <-
           cryptoValue

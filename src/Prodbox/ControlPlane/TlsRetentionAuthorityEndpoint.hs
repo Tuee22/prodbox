@@ -10,11 +10,13 @@
 module Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
   ( TlsAuthorityObserveRequest (..)
   , TlsAuthorityStageRequest (..)
+  , TlsAuthorityLegacyRecoveryStageRequest (..)
   , TlsAuthorityPromoteRequest (..)
   , TlsAuthorityResponse (..)
   , TlsAuthorityRepositoryResolver
   , serveTlsAuthorityObserveRequest
   , serveTlsAuthorityStageRequest
+  , serveTlsAuthorityLegacyRecoveryStageRequest
   , serveTlsAuthorityPromoteRequest
   , tlsAuthorityResponseHttpStatus
   , tlsAuthorityResponseBody
@@ -32,7 +34,8 @@ import Prodbox.ControlPlane.Codec
   , encodeControlPlaneResponse
   )
 import Prodbox.ControlPlane.TlsRetentionAuthority
-  ( TlsRetentionAuthorityError (..)
+  ( TlsLegacyRecoveryStagingResult (..)
+  , TlsRetentionAuthorityError (..)
   , TlsRetentionAuthorityRepository
   , TlsRetentionPromotionResult (..)
   , TlsRetentionSlot
@@ -40,6 +43,7 @@ import Prodbox.ControlPlane.TlsRetentionAuthority
   , mkTlsRetentionSlot
   , observeTlsRetentionAuthority
   , promoteTlsRetentionAuthority
+  , stageTlsLegacyRecoveryAuthority
   , stageTlsRetentionAuthority
   )
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
@@ -47,6 +51,10 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   ( KeyRotationApproval
   , PromotionEvidence
   , RetainedTlsRef
+  , TlsLegacyRecoveryCollisionEvidence
+  , TlsLegacyRecoveryEvidence
+  , TlsLegacyRecoveryStagingDecision (..)
+  , TlsLegacyRecoveryStagingRefusal (..)
   , TlsPromotionDecision (..)
   , TlsPromotionRefusal (..)
   , TlsRetentionState
@@ -78,6 +86,18 @@ data TlsAuthorityStageRequest = TlsAuthorityStageRequest
   , tlsAuthorityStageApproval :: !KeyRotationApproval
   , tlsAuthorityStageCandidate :: !RetainedTlsRef
   , tlsAuthorityStageEnvelope :: !TlsSealedEnvelope
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data TlsAuthorityLegacyRecoveryStageRequest = TlsAuthorityLegacyRecoveryStageRequest
+  { tlsAuthorityLegacyRecoveryStageSubstrate :: !Text
+  , tlsAuthorityLegacyRecoveryStageScope :: !Text
+  , tlsAuthorityLegacyRecoveryStageApproval :: !KeyRotationApproval
+  , tlsAuthorityLegacyRecoveryStageEvidence :: !TlsLegacyRecoveryEvidence
+  , tlsAuthorityLegacyRecoveryStageCollision :: !(Maybe TlsLegacyRecoveryCollisionEvidence)
+  , tlsAuthorityLegacyRecoveryStageCandidate :: !RetainedTlsRef
+  , tlsAuthorityLegacyRecoveryStageEnvelope :: !TlsSealedEnvelope
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -141,6 +161,31 @@ serveTlsAuthorityStageRequest maximumBytes resolve body =
                 (tlsAuthorityStageEnvelope request)
         )
 
+serveTlsAuthorityLegacyRecoveryStageRequest
+  :: (Monad m)
+  => Int
+  -> TlsAuthorityRepositoryResolver m revision
+  -> LazyByteString.ByteString
+  -> m TlsAuthorityResponse
+serveTlsAuthorityLegacyRecoveryStageRequest maximumBytes resolve body =
+  case decodeControlPlaneRequest maximumBytes body of
+    Left _ -> pure TlsAuthorityRequestRefused
+    Right request ->
+      withRepository
+        resolve
+        (tlsAuthorityLegacyRecoveryStageSubstrate request)
+        (tlsAuthorityLegacyRecoveryStageScope request)
+        ( \repository ->
+            legacyRecoveryStagingResponse
+              <$> stageTlsLegacyRecoveryAuthority
+                repository
+                (tlsAuthorityLegacyRecoveryStageApproval request)
+                (tlsAuthorityLegacyRecoveryStageEvidence request)
+                (tlsAuthorityLegacyRecoveryStageCollision request)
+                (tlsAuthorityLegacyRecoveryStageCandidate request)
+                (tlsAuthorityLegacyRecoveryStageEnvelope request)
+        )
+
 serveTlsAuthorityPromoteRequest
   :: (Monad m)
   => Int
@@ -199,6 +244,24 @@ stagingResponse result = case result of
     TlsStagingRefused refusal ->
       TlsAuthorityStagingRefused (stagingRefusalToken refusal)
 
+legacyRecoveryStagingResponse
+  :: Either TlsRetentionAuthorityError TlsLegacyRecoveryStagingResult
+  -> TlsAuthorityResponse
+legacyRecoveryStagingResponse result = case result of
+  Left TlsRetentionAuthorityConcurrentWrite -> TlsAuthorityConcurrentWrite
+  Left _ -> TlsAuthorityUnavailable
+  Right staging -> case tlsLegacyRecoveryStagingDecision staging of
+    TlsLegacyRecoveryStaged _ ->
+      TlsAuthorityStagingApplied (tlsLegacyRecoveryStagingState staging)
+    TlsLegacyRecoveryCollisionRebased _ _ ->
+      TlsAuthorityStagingApplied (tlsLegacyRecoveryStagingState staging)
+    TlsLegacyRecoveryCollisionSuccessorStaged _ _ ->
+      TlsAuthorityStagingApplied (tlsLegacyRecoveryStagingState staging)
+    TlsLegacyRecoveryStagingNoop _ ->
+      TlsAuthorityStagingNoop (tlsLegacyRecoveryStagingState staging)
+    TlsLegacyRecoveryStagingRefused refusal ->
+      TlsAuthorityStagingRefused (legacyRecoveryStagingRefusalToken refusal)
+
 promotionResponse
   :: Either TlsRetentionAuthorityError TlsRetentionPromotionResult
   -> TlsAuthorityResponse
@@ -232,6 +295,18 @@ stagingRefusalToken refusal = case refusal of
   TlsStageValidityRegression -> "validity-regression"
   TlsStageUnapprovedKeyChange -> "unapproved-key-change"
   TlsStageConcurrentPending -> "concurrent-pending"
+
+legacyRecoveryStagingRefusalToken :: TlsLegacyRecoveryStagingRefusal -> Text
+legacyRecoveryStagingRefusalToken refusal = case refusal of
+  TlsLegacyRecoveryStageStateNotEmpty -> "legacy-recovery-state-not-empty"
+  TlsLegacyRecoveryStageConcurrentPending -> "legacy-recovery-concurrent-pending"
+  TlsLegacyRecoveryStageEvidenceInvalid -> "legacy-recovery-evidence-invalid"
+  TlsLegacyRecoveryStageEnvelopeInvalid -> "legacy-recovery-envelope-invalid"
+  TlsLegacyRecoveryStageReferenceInvalid -> "legacy-recovery-reference-invalid"
+  TlsLegacyRecoveryStageDigestMismatch -> "legacy-recovery-digest-mismatch"
+  TlsLegacyRecoveryStageVersionMismatch -> "legacy-recovery-version-mismatch"
+  TlsLegacyRecoveryStageCollisionEvidenceInvalid ->
+    "legacy-recovery-collision-evidence-invalid"
 
 tlsAuthorityResponseHttpStatus :: TlsAuthorityResponse -> ReplyStatus
 tlsAuthorityResponseHttpStatus response = case response of

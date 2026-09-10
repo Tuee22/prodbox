@@ -13,6 +13,7 @@ module Prodbox.ControlPlane.TlsRetentionEndpoint
   , TlsStorePayload (..)
   , TlsRestorePayload (..)
   , TlsObserveVersionPayload (..)
+  , TlsObserveAuthorityVersionPayload
   , TlsRetentionReceipt (..)
   , TlsEnvelopeObservation (..)
   , TlsVersionEnvelopeObservation (..)
@@ -37,6 +38,7 @@ module Prodbox.ControlPlane.TlsRetentionEndpoint
   , tlsMaximumCertificateCiphertextBytes
   , tlsMaximumWrappedDekBytes
   , mkTlsSealedEnvelope
+  , tlsObserveAuthorityVersionPayload
   , tlsCertificateCiphertextBytes
   , tlsWrappedDekBytes
   , tlsSealedEnvelopeDigest
@@ -64,7 +66,7 @@ import Data.Text (Text)
 import Data.Text.Encoding qualified as TextEncoding
 import GHC.Generics (Generic)
 import Prodbox.ControlPlane.Codec
-  ( ControlPlaneRequestCodecError
+  ( ControlPlaneRequestCodecError (..)
   , controlPlaneRequestCodecToken
   , decodeControlPlaneRequest
   , encodeControlPlaneResponse
@@ -101,6 +103,21 @@ newtype TlsObserveVersionPayload = TlsObserveVersionPayload
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+-- | Distinguishable payload for observations in the Authority-owned immutable
+-- lane.  Keeping this separate leaves the established single-field legacy
+-- payload's canonical wire encoding unchanged.
+data TlsObserveAuthorityVersionPayload = TlsObserveAuthorityVersionPayload
+  { tlsObserveAuthorityLane :: !Text
+  , tlsObserveAuthorityVersion :: !RetentionVersion
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+tlsObserveAuthorityVersionPayload
+  :: RetentionVersion -> TlsObserveAuthorityVersionPayload
+tlsObserveAuthorityVersionPayload =
+  TlsObserveAuthorityVersionPayload "authority-v1"
 
 data TlsRetentionReceipt = TlsRetentionReceipt
   { tlsRetentionReceiptReference :: !RetainedTlsRef
@@ -222,6 +239,9 @@ data TlsRetentionRepository m = TlsRetentionRepository
       :: RetainedTlsRef
       -> m (Either TlsRestoreRepositoryFailure TlsEnvelopeObservation)
   , observeTlsEnvelopeVersion
+      :: RetentionVersion
+      -> m (Either TlsRestoreRepositoryFailure TlsVersionEnvelopeObservation)
+  , observeTlsAuthorityEnvelopeVersion
       :: RetentionVersion
       -> m (Either TlsRestoreRepositoryFailure TlsVersionEnvelopeObservation)
   }
@@ -396,12 +416,23 @@ serveTlsObserveVersionRequest
   -> m TlsObserveVersionResult
 serveTlsObserveVersionRequest maximumBytes repository body =
   case decodeControlPlaneRequest maximumBytes body of
-    Left err -> pure (TlsObserveVersionBadRequest err)
-    Right payload -> do
-      observed <- observeTlsEnvelopeVersion repository (tlsObserveVersion payload)
-      pure $ case observed of
-        Left failure -> TlsObserveVersionReadFailed failure
-        Right observation -> TlsObserveVersionObserved observation
+    Right authorityPayload
+      | tlsObserveAuthorityLane authorityPayload == "authority-v1" ->
+          observe
+            (observeTlsAuthorityEnvelopeVersion repository)
+            (tlsObserveAuthorityVersion authorityPayload)
+      | otherwise ->
+          pure (TlsObserveVersionBadRequest ControlPlaneRequestInvalid)
+    Left _ -> case decodeControlPlaneRequest maximumBytes body of
+      Left err -> pure (TlsObserveVersionBadRequest err)
+      Right (TlsObserveVersionPayload version) ->
+        observe (observeTlsEnvelopeVersion repository) version
+ where
+  observe observeVersion version = do
+    observed <- observeVersion version
+    pure $ case observed of
+      Left failure -> TlsObserveVersionReadFailed failure
+      Right observation -> TlsObserveVersionObserved observation
 
 tlsStoreHttpStatus :: TlsStoreResult -> ReplyStatus
 tlsStoreHttpStatus result = case result of

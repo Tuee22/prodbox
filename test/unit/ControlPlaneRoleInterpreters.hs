@@ -584,6 +584,17 @@ freshTlsInterpreter initial ready = do
                             "fixture-etag"
                         )
                 _ -> Right TlsVersionEnvelopeMissing
+          , observeTlsAuthorityEnvelopeVersion = \version -> do
+              observed <- readIORef stateRef
+              pure $ case observed of
+                Just (storedReference, envelope)
+                  | retainedVersion storedReference == version ->
+                      Right
+                        ( TlsVersionEnvelopePresent
+                            envelope
+                            "fixture-etag"
+                        )
+                _ -> Right TlsVersionEnvelopeMissing
           }
   pure
     ( tlsRetentionInterpreter

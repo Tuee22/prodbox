@@ -553,17 +553,24 @@ gateway readiness. Normal Authority mutation additionally requires the exact fre
 reported ready for normal work. Credential Provisioner/Admin Action Runner readiness is permit-
 specific Pod UID/image/ServiceAccount attestation, never a standing component label.
 
-Authority Backup has two ordered observations during genesis. Its release desired state and
-authenticated listener liveness are established before the long-lived backup credential exists;
-neither is store readiness and neither admits an S3 effect. `EstablishAuthorityBackup` then owns
-credential materialization and the initial copy/read-back. Only the later component-readiness node
-may observe the Adapter's exact credential-backed signed store probe as Ready. Credential absence,
-Vault failure, invalid fields, region mismatch, and S3 refusal all keep that cached projection
-not-ready without terminating the listener.
-The local establishment transport therefore waits only for the Adapter's bounded `/healthz`
-listener response before issuing the authenticated genesis program. Waiting on `/readyz` there is
-a graph cycle, because that endpoint represents the credential-backed store that the genesis
-program is about to create. Every non-genesis readiness consumer retains `/readyz`.
+Authority Backup has three ordered convergence barriers around genesis. After the no-wait release
+apply, the graph first observes only the exact requested Deployment revision; it does not require
+`DeploymentAvailable` and that revision observation is not dependency admission. The local
+establishment transport then owns the Adapter's bounded `/healthz` listener observation before it
+issues the authenticated genesis program. Neither observation is store readiness and neither
+admits an S3 effect. `EstablishAuthorityBackup` owns credential materialization and the initial
+copy/read-back. Once establishment succeeds, a second non-admitting Kubernetes observation requires
+the requested revision and `DeploymentAvailable` before Lifecycle Authority may call the Adapter
+through its Service for config backup. This routing barrier is distinct from the Pod-local
+establishment transport: a running Recreate Pod can answer a direct port-forward before Kubernetes
+publishes it in the Service EndpointSlice. The later component-readiness node, after settings
+reload, repeats the requested-revision-plus-availability observation as the graph-owned dependency
+admission and may observe the Adapter's exact credential-backed signed store probe as Ready.
+Credential absence, Vault failure, invalid fields, region mismatch, and S3 refusal all keep that
+cached projection not-ready without terminating the listener. Waiting on `/readyz` or
+`DeploymentAvailable` before establishment is a graph cycle, because both represent the
+credential-backed store that the genesis program is about to create. Every non-genesis readiness
+consumer retains `/readyz`.
 
 The AWS projection validates the complete role/transport registry before its first platform
 effect. Its readiness order is capability-first: EKS Broker and target transports, retained-home

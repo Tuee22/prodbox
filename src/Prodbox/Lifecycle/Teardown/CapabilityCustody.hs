@@ -38,6 +38,7 @@ module Prodbox.Lifecycle.Teardown.CapabilityCustody
   , capabilityCustodyInertnessOnlyFromEmptiness
   , capabilityCustodyRetirementRotatesOntoRetained
   , capabilityCustodyRevocationIsInertnessOnly
+  , capabilityCustodyStackNameLookupExact
   )
 where
 

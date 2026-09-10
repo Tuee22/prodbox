@@ -153,7 +153,7 @@ to it, and the Kubernetes service account that consumes it via Vault Kubernetes 
 | Gateway-DNS AWS identity | `secret/aws/gateway-dns` (KV) | `policy/aws-gateway-dns` | configured home Gateway DNS writer only; `LongLived` and scoped to the exact registered A record |
 | cert-manager DNS01 AWS identity | `secret/aws/cert-manager/<substrate>/dns01` (KV) | `policy/aws-cert-manager-<substrate>` | that substrate's `cert-manager:cert-manager`, scoped to DNS01 TXT operations; home is `LongLived`, AWS is `Operational` |
 | Internal TLS certs (any chart) | `pki/issue/<role>` (PKI) | `policy/pki-<role>` | per-chart workload SA |
-| Retained public-edge TLS wrapping key | `transit/keys/prodbox-tls-envelope` | home Target Agent TLS-envelope policy only | retained home Target Secret Agent's separate one-shot DEK lane; never the TLS Adapter or selected substrate's long-lived controller |
+| Retained public-edge TLS wrapping key | `transit/keys/prodbox-tls-retention-dek` | home Target Agent TLS-envelope policy only | retained home Target Secret Agent's separate one-shot DEK lane; never the TLS Adapter or selected substrate's long-lived controller |
 | Object-store envelope DEKs | per-domain Transit keys, including lifecycle aggregate/checkpoint and gateway-runtime domains | one policy per capability domain | Lifecycle Authority or Gateway Runtime only for its own domain; never a shared generic accessor |
 | Target seal receipts | target-scoped receipt KV plus assigned Transit key | per-target receipt/materialization policy | selected Target Secret Agent only; ciphertext-to-bounded-memory materialization/read-back, then idempotency-window GC |
 | Service-account tokens | n/a — Kubernetes-managed | n/a | k8s generates and rotates automatically |
@@ -282,7 +282,7 @@ read-only AWS discovery:
    [cluster_federation_doctrine.md](./cluster_federation_doctrine.md).
 4. The Bootstrap Broker reconciles and reads back the allowlisted KV/Transit/PKI engines,
    policies, Kubernetes-auth roles, the genesis-signing key, and the retained-home
-   `prodbox-tls-envelope` key. Initial root use is revoked; no generic root/provisioner role remains.
+   `prodbox-tls-retention-dek` key. Initial root use is revoked; no generic root/provisioner role remains.
 5. The home Target Secret Agent, Lifecycle Authority, and Authority Backup Adapter start with
    Authority in `GenesisFrozen`; the physically separate Provider Worker exists but cannot admit
    normal work. Authority journals `EstablishAuthorityBackup` and signs a one-time

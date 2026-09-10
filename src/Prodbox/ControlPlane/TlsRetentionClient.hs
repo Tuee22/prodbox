@@ -54,7 +54,7 @@ import Prodbox.ControlPlane.Codec
   )
 import Prodbox.ControlPlane.TlsRetentionEndpoint
   ( TlsEnvelopeObservation (..)
-  , TlsObserveVersionPayload (..)
+  , TlsObserveVersionPayload (TlsObserveVersionPayload)
   , TlsRestorePayload (..)
   , TlsRetentionPlainResponseCause
   , TlsRetentionPlainResponseObservation (..)
@@ -64,6 +64,7 @@ import Prodbox.ControlPlane.TlsRetentionEndpoint
   , TlsVersionEnvelopeObservation (..)
   , classifyTlsRetentionPlainResponse
   , renderTlsRetentionPlainResponseCause
+  , tlsObserveAuthorityVersionPayload
   , tlsSealedEnvelopeDigest
   , validateTlsSealedEnvelope
   )
@@ -82,6 +83,9 @@ data TlsRetentionClient m = TlsRetentionClient
       :: RetainedTlsRef
       -> m (Either TlsRetentionClientError TlsEnvelopeObservation)
   , observeTlsRetentionVersion
+      :: RetentionVersion
+      -> m (Either TlsRetentionClientError TlsVersionEnvelopeObservation)
+  , observeTlsRetentionAuthorityVersion
       :: RetentionVersion
       -> m (Either TlsRetentionClientError TlsVersionEnvelopeObservation)
   }
@@ -173,7 +177,9 @@ clientFromCall call =
   TlsRetentionClient
     { storeTlsRetention = store
     , restoreTlsRetention = restore
-    , observeTlsRetentionVersion = observeVersion
+    , observeTlsRetentionVersion = observeVersion TlsObserveVersionPayload
+    , observeTlsRetentionAuthorityVersion =
+        observeVersion tlsObserveAuthorityVersionPayload
     }
  where
   store reference envelope = case validateTlsSealedEnvelope envelope of
@@ -235,11 +241,11 @@ clientFromCall call =
               validateReceipt reference envelope receipt
               Right present
 
-  observeVersion version = do
+  observeVersion payloadFor version = do
     attempted <-
       call
         TlsRetentionObserveVersionRoute
-        (strictRequest (TlsObserveVersionPayload version))
+        (strictRequest (payloadFor version))
     pure $ do
       ControlPlaneResponse status body <-
         first TlsRetentionClientTransportFailed attempted

@@ -10,6 +10,13 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-09-08 on Sprint `4.91` (Standards A/L/P).** Sprint `6.5`'s live cascade
+recovery found a Phase-4 checkpoint-custody identity mismatch. The corrected boundary selects the
+canonical registered resource key, refuses the distinct Provider-facing Pulumi stack ID, and is
+covered exhaustively including the load-bearing `aws-eks` / `aws-eks-test` unequal-name case.
+Focused, full-unit, documentation, diff, and canonical quality gates pass. The corrected live
+cascade recovery remains Phase-6 deployment-qualification evidence under Standard P.
+
 ✅ **Reclosed 2026-08-23 on Sprint `4.90`.** Host and Pulumi Vault probes now project the
 validated deployment context, retained lifecycle resolution compares exact cluster/Vault identity
 before any effect, lower gates consume sealed Tier-0 basics, and every state-store consumer imports
@@ -3748,6 +3755,91 @@ directly for post-bootstrap lifecycle work.
 
 - None for Phase `4`. Sprint `7.30` now owns and closes the non-lifecycle object-store/Pulumi
   daemon API; Sprint `5.14` owns the canonical no-legacy-transport regression proof.
+
+## Sprint 4.91: Checkpoint Custody Uses the Registry Identity [✅ Done]
+
+**Status**: Done — registered and closed 2026-09-08 from live counterexample
+`CASCADE-AWS-EKS-PROVIDER-CHECKPOINT-STACK-DESCRIPTOR-MISSING-2026-09-08`.
+**Implementation**: `src/Prodbox/Lifecycle/Teardown/CapabilityCustody/{Internal.hs,hs}`,
+`test/unit/LifecycleTeardownCapabilityCustody.hs`, and the exact checkpoint-custody callers in
+`src/Prodbox/{Pulumi/EncryptedBackend,Lifecycle/LiveResidue}.hs`.
+**Deployment qualification**: delegated to active Sprint `6.5` — this changes the destructive
+cleanup and retained checkpoint-custody path, so prior aggregate evidence does not qualify the
+corrected composition; Phase 6 owns the already-required live cascade recovery and qualification
+campaign.
+**Independent Validation**: a pure exhaustive lookup regression covers every registered stack key,
+explicitly refuses the EKS Pulumi-ID alias, and runs through the focused unit suite, complete unit
+gate, and canonical `prodbox dev check` without live infrastructure.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, and this phase file.
+
+### Objective
+
+Make checkpoint capability lookup consume the canonical registry identity carried by
+`RegisteredPulumiCheckpoint`, never the Provider-facing Pulumi stack ID. The EKS descriptor is the
+load-bearing unequal-name case: registry key `aws-eks`, Pulumi stack ID `aws-eks-test`.
+
+### Deliverables
+
+- Derive the checkpoint capability from the exact registered resource-key text of each Stack
+  descriptor in `managedResourceRegistry`; do not infer it from the Provider coordinate.
+- Keep unknown keys and the provider-facing `aws-eks-test` alias unrecognized, so a caller cannot
+  retire custody by naming a different identity that happens to select the same Pulumi program.
+- Add a pure regression proving the complete registered stack inventory maps one-to-one and the
+  unequal EKS provider alias maps to nothing.
+- Align lifecycle doctrine and component inventory with the registry-key/Provider-coordinate
+  distinction. No checkpoint codec, object coordinate, disposition, retry, or mutation semantics
+  change.
+
+### Validation
+
+1. Freeze the pre-correction failure: `checkpointCapabilityForStackName "aws-eks"` is absent while
+   `checkpointCapabilityForStackName "aws-eks-test"` incorrectly selects `AwsEksKey`.
+2. The corrected exhaustive regression maps every registered stack key to its own
+   `CheckpointCapability`, maps no duplicates, and refuses `aws-eks-test` as a custody identity.
+3. Run the focused capability-custody suite and the complete canonical unit command.
+4. Run documentation checks, diff validation, and canonical `prodbox dev check`.
+5. Return execution to Sprint `6.5`; live cascade recovery is its Standard-P campaign and is not a
+   code-local closure gate for this sprint.
+
+### Remaining Work
+
+- The registry-key lookup, exact exhaustive regression, governed doctrine, and component inventory
+  are aligned. The focused custody group passes **13/13**; repository-pinned formatting and HLint
+  pass with `No hints`; generated-documentation check, documentation lint, and `git diff --check`
+  pass. Evidence: `/tmp/prodbox-sprint-4.91-checkpoint-custody-registry-key-focused.log`
+  (`sha256:1296bcdb4e9fa70870580cac3349b82365abd051601d473d27e67a592301f7bc`) and
+  `/tmp/prodbox-sprint-4.91-checkpoint-custody-registry-key-format.log`
+  (`sha256:342976bcbfa163d512b11fb6622e45f4bc0ac01eb0112aeb633c896c94380ef8`); both empty
+  documentation transcripts hash to
+  `sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+- The complete unit command passes **4,891/4,891** primary cases plus auxiliary suites **27/27**,
+  **35/35**, and **36/36**. Canonical `prodbox dev check` passes repository policy, the pinned
+  formatter, HLint (`No hints`), generated/documentation checks, and warning-clean all-target
+  compilation. Evidence: `/tmp/prodbox-sprint-4.91-checkpoint-custody-registry-key-unit.log`
+  (`sha256:86a3c762e1eeeb75619e6716751de688327d8fb1400916f3be9b7491730ef6c2`) and
+  `/tmp/prodbox-sprint-4.91-checkpoint-custody-registry-key-dev-check.log`
+  (`sha256:54778f97f7a52f52b2dd1ea7c79ef58cb06a2f343933ee95a304aa56dc2584e0`). The synchronized
+  executable is
+  `sha256:5a355593fbd84e932e51b0e9946a02bac0102a99cde05b0ddbd8afc2292c18e1`.
+- None. Sprint `6.5` owns deployment of this revision and the corrected live cascade recovery as
+  part of its existing Standard-P campaign.
+
+### Closure Record
+
+- `checkpointCapabilityForStackName` derives custody only from Stack descriptors whose canonical
+  registered resource-key text equals the supplied checkpoint registration name. It imports no
+  Provider coordinate.
+- Every registered stack key maps to its own checkpoint capability, while the EKS Pulumi stack ID
+  alias `aws-eks-test` maps to no capability.
+- Focused custody **13/13**, primary unit **4,891/4,891**, auxiliaries **27/27**, **35/35**, and
+  **36/36**, generated-documentation check, documentation lint, `git diff --check`, and canonical
+  `prodbox dev check` all pass. Exact transcript hashes and executable identity are recorded above.
+- The ledger-inclusive canonical rerun also passes at
+  `/tmp/prodbox-sprint-4.91-checkpoint-custody-registry-key-ledger-inclusive-dev-check.log`
+  (`sha256:f1ca6775524a18bc1a6584b1d7d95b62ad9e2a3813696d64ddd7b75b7953734c`); its executable
+  remains byte-identical to the recorded synchronized binary.
 
 ## Documentation Requirements
 
@@ -12208,14 +12300,14 @@ convergence, records it durably, and can construct a local-uninstall plan only a
   sessions through the host composition root; builds the cloud runtime and the cascade host runtime
   over the same transport; and runs the total dispatcher across the durable descriptor-bound run.
 - **The entrypoint is non-public and stays that way.** It is Cabal-hidden and its facade exposes
-  four booleans, exactly as the dispatcher and the cascade host runtime do; nothing in the
+  only non-authorizing booleans, exactly as the dispatcher and the cascade host runtime do; nothing in the
   repository calls it. Activating it as the sole public writer and deleting the legacy route is
   Sprint `6.5`'s qualified cutover, which this sprint makes no claim about.
 - **The durable-cascade entry protocol was on the wrong side of a boundary, and that is the finding
   this increment opened with.** Capturing the program descriptor, preparing the host intent
-  *before* any mutation, observing-or-creating the run, claiming it, attaching the primary outcome,
-  and reading the terminal report back independently before compacting are what **any** caller of
-  the descriptor-bound protocol must do — none of it is validation-specific. It lived in
+  *before* any mutation, observing-or-creating the run, performing the surface-owned primary/claim
+  ordering, and reading the terminal report back independently before compacting are what **any**
+  caller of the descriptor-bound protocol must do — none of it is validation-specific. It lived in
   `Prodbox.Test.*`, and the Sprint-`4.85` harness-namespace gate refused the first production caller
   outright. The remedy the gate itself names is "express the obligation in lifecycle-owned types",
   so the module moved to `Prodbox.Lifecycle.CleanupRunEntry` rather than the allowlist being

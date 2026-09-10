@@ -106,6 +106,7 @@ data TlsTargetAgentPlainResponseCause
   | TlsTargetVerifyMissingResponse
   | TlsTargetVerifyMismatchResponse !TlsTargetVerifyMismatchCause
   | TlsTargetVerifyOneShotUnavailable
+  | TlsHomeRewrapCiphertextAuthenticationFailedResponse
   deriving stock (Eq, Show)
 
 data TlsTargetAgentPlainResponseObservation
@@ -129,6 +130,7 @@ allTlsTargetAgentPlainResponseCauses =
     <> [TlsTargetVerifyMissingResponse]
     <> (TlsTargetVerifyMismatchResponse <$> [minBound .. maxBound])
     <> [TlsTargetVerifyOneShotUnavailable]
+    <> [TlsHomeRewrapCiphertextAuthenticationFailedResponse]
  where
   allCodecErrors = [minBound .. maxBound]
 
@@ -163,6 +165,8 @@ tlsTargetAgentPlainResponse cause = case cause of
     tlsVerifyResponse (TlsTargetVerifyMismatch mismatch)
   TlsTargetVerifyOneShotUnavailable ->
     (ReplyServiceUnavailable, "tls-target-verify:one-shot-operation-unavailable")
+  TlsHomeRewrapCiphertextAuthenticationFailedResponse ->
+    tlsRewrapResponse TlsHomeRewrapCiphertextAuthenticationFailed
 
 classifyTlsTargetAgentPlainResponse
   :: Int -> ByteString -> TlsTargetAgentPlainResponseObservation
@@ -194,6 +198,8 @@ renderTlsTargetAgentPlainResponseCause cause = case cause of
   TlsTargetVerifyMismatchResponse mismatch ->
     "verify/mismatch/" <> renderTlsTargetVerifyMismatchCause mismatch
   TlsTargetVerifyOneShotUnavailable -> "verify/one-shot-operation-unavailable"
+  TlsHomeRewrapCiphertextAuthenticationFailedResponse ->
+    "home-rewrap/ciphertext-authentication-failed"
  where
   codec = controlPlaneRequestCodecToken
 
@@ -262,6 +268,9 @@ targetOneShotOperationAuthenticatedHandler maximumBytes boundary inner =
           pure $ case result of
             Right (TargetWorkerTlsHomeRewrappedResult envelope) ->
               tlsRewrapResponse (TlsHomeRewrapped envelope)
+            Right TargetWorkerTlsHomeRewrapCiphertextAuthenticationFailedResult ->
+              tlsTargetAgentPlainResponse
+                TlsHomeRewrapCiphertextAuthenticationFailedResponse
             _ -> tlsTargetAgentPlainResponse TlsHomeRewrapOneShotUnavailable
       pure (Just response)
     TargetTlsRestore -> do

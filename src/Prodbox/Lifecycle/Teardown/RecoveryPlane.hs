@@ -11,6 +11,7 @@ module Prodbox.Lifecycle.Teardown.RecoveryPlane
   , RecoveryPlaneComponentFailure
   , recoveryPlaneComponentFailureIdentity
   , recoveryPlaneComponentFailureKind
+  , renderRecoveryPlaneComponentFailures
   , RecoveryPlaneIdentity
   , recoveryPlaneIdentitySurface
   , recoveryPlaneIdentityRunId
@@ -52,9 +53,12 @@ module Prodbox.Lifecycle.Teardown.RecoveryPlane
   , recoveryPlaneFixtureProfileCanonical
   , recoveryPlaneFixtureProfileTargetAgentSeparated
   , recoveryPlaneFixtureIdentityCanonical
+  , recoveryPlaneFixtureDnsZoneCanonical
+  , recoveryPlaneFixtureLegacyV1RestartReadable
   , recoveryPlaneFixtureExactCompletenessEnforced
   , recoveryPlaneFixtureEveryFailureRefused
   , recoveryPlaneFixtureDiagnosticsNormalized
+  , recoveryPlaneFixtureFailureRenderingBounded
   , recoveryPlaneFixtureInitialReadyExact
   , recoveryPlaneFixtureEstablishedFromReady
   , recoveryPlaneFixtureEstablishedAfterInitialFailure

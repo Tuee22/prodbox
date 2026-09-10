@@ -920,6 +920,7 @@ routeCode route = case route of
   LifecycleControllerOwner -> 59
   LifecycleTlsRetentionWorkflow -> 60
   LifecycleTlsRetentionStage -> 61
+  LifecycleTlsRetentionLegacyRecoveryStage -> 63
   TlsRetentionObserveVersion -> 62
   LifecycleFederationRegister -> 47
   LifecycleAwsAdminProvisioner -> 48
@@ -1001,4 +1002,5 @@ routeFromCode code = case code of
   60 -> Just LifecycleTlsRetentionWorkflow
   61 -> Just LifecycleTlsRetentionStage
   62 -> Just TlsRetentionObserveVersion
+  63 -> Just LifecycleTlsRetentionLegacyRecoveryStage
   _ -> Nothing

@@ -8,6 +8,7 @@ module Prodbox.Lib.ChartPlatform
   , HelmUpgradeFailureDisposition (..)
   , PerconaPatroniClaim (..)
   , PublicEdgePreserveOutcome (..)
+  , PublicEdgeTlsRetainResult (..)
   , PublicEdgeTlsNamespaceObservation (..)
   , ResolvedCustomImage (..)
   , buildChartDeletePlan
@@ -23,6 +24,7 @@ module Prodbox.Lib.ChartPlatform
   , readKubernetesApiEgressCoordinate
   , parseKubernetesApiEgressCoordinate
   , classifyPublicEdgePreserve
+  , classifyPublicEdgeTlsRetainResponse
   , classifyPublicEdgeTlsNamespaceObservation
   , classifyPublicEdgeTlsRestoreSlotCreate
   , deleteChartPlan
@@ -177,14 +179,15 @@ import Prodbox.ControlPlane.TlsRetentionClient
   )
 import Prodbox.ControlPlane.TlsRetentionWorkflow
   ( TlsRetentionWorkflow (..)
-  , TlsRetentionWorkflowError
+  , TlsRetentionWorkflowError (..)
   , TlsWorkflowRestoreOutcome (..)
   , TlsWorkflowRetainOutcome (..)
   , restorePublicEdgeTlsWorkflow
   , retainPublicEdgeTlsWorkflow
   )
 import Prodbox.ControlPlane.TlsRetentionWorkflowAuthorityEndpoint
-  ( TlsRetentionWorkflowAuthorityRequest (..)
+  ( TlsRetentionWorkflowAuthorityFailure (..)
+  , TlsRetentionWorkflowAuthorityRequest (..)
   , TlsRetentionWorkflowAuthorityResponse (..)
   , requestTlsRetentionWorkflowAuthority
   )
@@ -4572,6 +4575,15 @@ data PublicEdgePreserveOutcome
     PreserveNothingToRetain
   deriving (Eq, Show)
 
+-- | Closed result of the Authority-backed retain operation.  The legacy
+-- source-missing arm remains distinct so only delete's exact non-secret
+-- Certificate observation may classify the surrounding partial state.
+data PublicEdgeTlsRetainResult
+  = PublicEdgeTlsRetainNothing
+  | PublicEdgeTlsRetainSucceeded
+  | PublicEdgeTlsRetainLegacySourceMissing
+  deriving (Eq, Show)
+
 data PublicEdgeTlsNamespaceObservation
   = PublicEdgeTlsNamespaceAbsent
   | PublicEdgeTlsNamespacePresent
@@ -4708,8 +4720,9 @@ preservePublicEdgeTlsSecretBeforeDelete plan
         scopeSet
     case retained of
       Left err -> pure (Left err)
-      Right True -> pure (Right PreservedToRetentionStore)
-      Right False -> classifyMissingSource
+      Right PublicEdgeTlsRetainSucceeded -> pure (Right PreservedToRetentionStore)
+      Right PublicEdgeTlsRetainNothing -> classifyMissingSource
+      Right PublicEdgeTlsRetainLegacySourceMissing -> classifyMissingSource
 
   classifyMissingSource = do
     observed <-
@@ -4752,8 +4765,10 @@ retainReadyPublicEdgeCertificate repoRoot substrate = do
                   scopeSet
               pure $ case retained of
                 Left err -> Left err
-                Right False -> Right PreserveNothingToRetain
-                Right True -> Right PreservedToRetentionStore
+                Right PublicEdgeTlsRetainNothing -> Right PreserveNothingToRetain
+                Right PublicEdgeTlsRetainSucceeded -> Right PreservedToRetentionStore
+                Right PublicEdgeTlsRetainLegacySourceMissing ->
+                  Left "public-edge TLS source disappeared after readiness"
 
 restorePublicEdgeTlsSecretAfterNamespaceCreate :: ChartDeploymentPlan -> IO (Either String ())
 restorePublicEdgeTlsSecretAfterNamespaceCreate plan
@@ -4766,7 +4781,11 @@ restorePublicEdgeTlsSecretAfterNamespaceCreate plan
           (chartDeploymentPlanSubstrate plan)
           scopeSet
 
-retainPublicEdgeTls :: FilePath -> Substrate -> CertScopeSet -> IO (Either String Bool)
+retainPublicEdgeTls
+  :: FilePath
+  -> Substrate
+  -> CertScopeSet
+  -> IO (Either String PublicEdgeTlsRetainResult)
 retainPublicEdgeTls repoRoot substrate scopeSet = case substrate of
   SubstrateHomeLocal -> do
     response <-
@@ -4777,23 +4796,27 @@ retainPublicEdgeTls repoRoot substrate scopeSet = case substrate of
             (renderCertScopeSet scopeSet)
             KeyRotationNotApproved
         )
-    pure $ case response of
-      Left err -> Left err
-      Right TlsRetentionWorkflowAuthorityNothingToRetain -> Right False
-      Right TlsRetentionWorkflowAuthorityRetained -> Right True
-      Right (TlsRetentionWorkflowAuthorityRefused failure) -> Left (show failure)
-      Right other -> Left ("Lifecycle Authority TLS retain response mismatch: " ++ show other)
+    pure (response >>= classifyPublicEdgeTlsRetainResponse)
   SubstrateAws -> do
-    retained <-
-      runDirectPublicEdgeTlsWorkflow
-        repoRoot
-        substrate
-        scopeSet
-        (`retainPublicEdgeTlsWorkflow` KeyRotationNotApproved)
-    pure $ case retained of
-      Left err -> Left err
-      Right TlsWorkflowNothingToRetain -> Right False
-      Right (TlsWorkflowRetained _) -> Right True
+    runDirectPublicEdgeTlsWorkflow repoRoot substrate scopeSet $ \workflow -> do
+      retained <- retainPublicEdgeTlsWorkflow workflow KeyRotationNotApproved
+      pure $ case retained of
+        Left TlsWorkflowLegacySourceMissing ->
+          Right PublicEdgeTlsRetainLegacySourceMissing
+        Left err -> Left err
+        Right TlsWorkflowNothingToRetain -> Right PublicEdgeTlsRetainNothing
+        Right (TlsWorkflowRetained _) -> Right PublicEdgeTlsRetainSucceeded
+
+classifyPublicEdgeTlsRetainResponse
+  :: TlsRetentionWorkflowAuthorityResponse
+  -> Either String PublicEdgeTlsRetainResult
+classifyPublicEdgeTlsRetainResponse response = case response of
+  TlsRetentionWorkflowAuthorityNothingToRetain -> Right PublicEdgeTlsRetainNothing
+  TlsRetentionWorkflowAuthorityRetained -> Right PublicEdgeTlsRetainSucceeded
+  TlsRetentionWorkflowAuthorityRefused TlsRetentionWorkflowAuthorityLegacySourceMissing ->
+    Right PublicEdgeTlsRetainLegacySourceMissing
+  TlsRetentionWorkflowAuthorityRefused failure -> Left (show failure)
+  other -> Left ("Lifecycle Authority TLS retain response mismatch: " ++ show other)
 
 restorePublicEdgeTls :: FilePath -> Substrate -> CertScopeSet -> IO (Either String ())
 restorePublicEdgeTls repoRoot substrate scopeSet = case substrate of

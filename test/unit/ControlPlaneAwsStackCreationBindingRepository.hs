@@ -276,6 +276,28 @@ controlPlaneAwsStackCreationBindingRepositorySuite =
 
       recovered <- readBackAwsStackCreationBindingByIdentity client identity
       assertCommitted fixture recovered
+      recoveredByCreationScope <-
+        readBackCommittedAwsStackCreationBindingForCreationScope
+          client
+          AwsTestKey
+          fixtureCreationScope
+      assertCommitted fixture recoveredByCreationScope
+      readBackCommittedAwsStackCreationBindingForCreationScope
+        client
+        AwsTestKey
+        fixtureCleanupScope
+        `shouldReturnSatisfying` isLeft
+      recoveredByCleanupScope <-
+        readBackCommittedAwsStackCreationBindingForScope
+          client
+          AwsTestKey
+          fixtureCleanupScope
+      assertCommitted fixture recoveredByCleanupScope
+      readBackCommittedAwsStackCreationBindingForScope
+        client
+        AwsTestKey
+        fixtureCreationScope
+        `shouldReturnSatisfying` isLeft
       let otherIdentity =
             awsStackCreationBindingIdentity
               ( mustRight

@@ -26,20 +26,27 @@ import Data.Text.Encoding qualified as TextEncoding
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler (..)
+  , AuthenticatedRolePlainResponseObservation (..)
+  , allAuthenticatedRolePlainResponseCauses
+  , authenticatedRolePlainResponse
   )
 import Prodbox.ControlPlane.CallerPrincipal
   ( CallerPrincipal (CallerService)
   )
+import Prodbox.ControlPlane.Client (ControlPlaneResponse (..))
 import Prodbox.ControlPlane.Coordinate (AuthorityEpoch (..))
 import Prodbox.ControlPlane.ProviderCredentialSession
 import Prodbox.ControlPlane.ProviderNarrowSession
 import Prodbox.ControlPlane.ProviderWorkerClient
-  ( providerWorkerExecutionAuthenticatedHandler
+  ( ProviderWorkerClientError (..)
+  , decodeProviderWorkerResponse
+  , providerWorkerExecutionAuthenticatedHandler
   , providerWorkerExecutionAuthenticatedHandlerObserved
   )
 import Prodbox.ControlPlane.ProviderWorkerDiagnostic
 import Prodbox.ControlPlane.ProviderWorkerExecution
 import Prodbox.ControlPlane.Route (ControlPlaneRoute (ProviderWorkApply))
+import Prodbox.Http.ReplyStatus (replyStatusCode)
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
   , FencingToken
@@ -420,6 +427,27 @@ controlPlaneProviderWorkerExecutionSuite =
           ProviderWorkApply
           "not-cbor"
       observedMalformed `shouldBe` baselineMalformed
+
+    it "preserves every authenticated-runtime plaintext refusal without retaining its body" $ do
+      mapM_
+        ( \cause -> do
+            let (status, body) = authenticatedRolePlainResponse cause
+            case decodeProviderWorkerResponse
+              (ControlPlaneResponse (replyStatusCode status) body) of
+              Left
+                ( ProviderWorkerAuthenticatedRoleResponse
+                    (AuthenticatedRolePlainResponseKnown actual)
+                  ) -> actual `shouldBe` cause
+              other ->
+                expectationFailure
+                  ("authenticated response lost its closed cause: " <> show other)
+        )
+        allAuthenticatedRolePlainResponseCauses
+      case decodeProviderWorkerResponse (ControlPlaneResponse 503 "unknown-plaintext\n") of
+        Left (ProviderWorkerResponseInvalid _) -> pure ()
+        other ->
+          expectationFailure
+            ("unknown response crossed the Provider client boundary: " <> show other)
 
     it "rejects invalid intent identities, resource values, revision binding, and action bounds" $ do
       mkProviderIssuerKeyGeneration 0

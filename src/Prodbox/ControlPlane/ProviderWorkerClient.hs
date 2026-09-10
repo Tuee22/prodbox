@@ -13,6 +13,7 @@ module Prodbox.ControlPlane.ProviderWorkerClient
   , providerWorkerResponseMaximumBytes
   , providerWorkerExecutionAuthenticatedHandler
   , providerWorkerExecutionAuthenticatedHandlerObserved
+  , decodeProviderWorkerResponse
   , dispatchProviderCommittedIntent
   )
 where
@@ -26,6 +27,8 @@ import Data.Text qualified as Text
 import GHC.Generics (Generic)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler (..)
+  , AuthenticatedRolePlainResponseObservation (..)
+  , classifyAuthenticatedRolePlainResponse
   )
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError
@@ -84,6 +87,7 @@ data ProviderWorkerResponse
 data ProviderWorkerClientError
   = ProviderWorkerTransportFailed !AuthenticatedClientError
   | ProviderWorkerResponseInvalid !ControlPlaneResponseCodecError
+  | ProviderWorkerAuthenticatedRoleResponse !AuthenticatedRolePlainResponseObservation
   | ProviderWorkerResponseStatusMismatch !Int
   | ProviderWorkerRemoteRefused !Int !Text
   deriving stock (Eq, Show)
@@ -197,13 +201,7 @@ dispatchProviderCommittedIntent transport body = do
   pure $ do
     ControlPlaneResponse status responseBytes <-
       first ProviderWorkerTransportFailed response
-    decoded <-
-      first
-        ProviderWorkerResponseInvalid
-        ( decodeControlPlaneResponse
-            providerWorkerResponseMaximumBytes
-            (LazyByteString.fromStrict responseBytes)
-        )
+    decoded <- decodeProviderWorkerResponse (ControlPlaneResponse status responseBytes)
     case decoded of
       ProviderWorkerExecuted result
         | status == 200 -> Right result
@@ -212,3 +210,22 @@ dispatchProviderCommittedIntent transport body = do
         Left (ProviderWorkerRemoteRefused status detail)
       ProviderWorkerExecutionFailed detail ->
         Left (ProviderWorkerRemoteRefused status detail)
+
+-- | Decode the role-specific response while preserving every closed plaintext
+-- refusal emitted by the authenticated runtime outside the Provider handler.
+-- Unknown bytes remain an ordinary codec failure and no response payload is
+-- retained in the diagnostic.
+decodeProviderWorkerResponse
+  :: ControlPlaneResponse
+  -> Either ProviderWorkerClientError ProviderWorkerResponse
+decodeProviderWorkerResponse (ControlPlaneResponse status responseBytes) =
+  case decodeControlPlaneResponse
+    providerWorkerResponseMaximumBytes
+    (LazyByteString.fromStrict responseBytes) of
+    Right response -> Right response
+    Left codecError ->
+      case classifyAuthenticatedRolePlainResponse status responseBytes of
+        known@(AuthenticatedRolePlainResponseKnown _) ->
+          Left (ProviderWorkerAuthenticatedRoleResponse known)
+        AuthenticatedRolePlainResponseOther ->
+          Left (ProviderWorkerResponseInvalid codecError)

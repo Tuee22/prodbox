@@ -86,7 +86,7 @@ import Prodbox.ControlPlane.AwsStackCreationBindingRepository
   ( committedAwsStackCreationConfig
   , committedAwsStackCreationOperationId
   , committedAwsStackCreationRevision
-  , readBackCommittedAwsStackCreationBindingForScope
+  , readBackCommittedAwsStackCreationBindingForCreationScope
   )
 import Prodbox.ControlPlane.AwsStackCreationBindingTransportClient
   ( lifecycleAuthorityAwsStackCreationBindingAuthenticatedClient
@@ -181,7 +181,9 @@ import Prodbox.Lifecycle.Teardown.ExecutionIdentity
   )
 import Prodbox.Lifecycle.Teardown.Model
   ( LifecycleOperation (ReconcileDesiredPresent)
+  , ObservationEvidenceScope
   , ObservationRevision
+  , RegisteredResourceKey
   , evidenceCleanupSurface
   , mkObservationEvidenceScope
   )
@@ -322,6 +324,8 @@ productionCloudRuntime inputs transport runId graphDigest = do
       registered =
         AwsRegisteredTargetInterpreter
           { awsRegisteredTargetProviderBoundary = providerBoundary
+          , awsRegisteredTargetReadStackCreationBinding =
+              readProviderCreationBindingAt inputs transport
           , awsRegisteredTargetReadStackDecisionInputs =
               readBackAwsStackDecisionInputs stackReaderClient
           , awsRegisteredTargetReadStackProviderBinding =
@@ -473,6 +477,25 @@ readProviderCreationBinding
   -> CleanupOperationId
   -> IO (Either Text AwsStackProviderBinding)
 readProviderCreationBinding inputs transport context target operationId = do
+  readProviderCreationBindingAt
+    inputs
+    transport
+    operationId
+    (registeredTargetKey target)
+    (teardownExecutionObservationScope context)
+
+-- | Reconstruct the retained creation binding at the operation identity of a
+-- pre-bundle observation. The stack-reader bundle deliberately does not exist
+-- yet at that point; both sources remain independently read back from the
+-- Lifecycle Authority.
+readProviderCreationBindingAt
+  :: ProductionCloudRuntimeInputs
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> CleanupOperationId
+  -> RegisteredResourceKey
+  -> ObservationEvidenceScope
+  -> IO (Either Text AwsStackProviderBinding)
+readProviderCreationBindingAt inputs transport operationId key cleanupScope = do
   selected <-
     withHostLifecycleAuthorityAuthentication
       (productionCloudCaller inputs)
@@ -500,7 +523,7 @@ readProviderCreationBinding inputs transport context target operationId = do
               (Just (stackGenerationKeyAwsScope generationKey))
               ReconcileDesiredPresent
       observed <-
-        readBackCommittedAwsStackCreationBindingForScope
+        readBackCommittedAwsStackCreationBindingForCreationScope
           (lifecycleAuthorityAwsStackCreationBindingAuthenticatedClient transport)
           key
           creationScope
@@ -523,9 +546,6 @@ readProviderCreationBinding inputs transport context target operationId = do
               (committedAwsStackCreationRevision committed)
               (committedAwsStackCreationConfig committed)
           )
- where
-  key = registeredTargetKey target
-  cleanupScope = teardownExecutionObservationScope context
 
 revisionFor
   :: TeardownExecutionIdentity

@@ -58,10 +58,15 @@ import Prodbox.ControlPlane.DedicatedAdapterStore
   , AdapterObjectVersion
   , AdapterPutResult (..)
   , DedicatedAdapterKind (AuthorityBackupAdapter)
+  , DedicatedAdapterReadiness (..)
+  , DedicatedAdapterReadinessCause (..)
   , DedicatedAdapterStoreError (..)
   , DedicatedAdapterTransport (..)
   , adapterBindingTransport
   , adapterObjectNameText
+  , adapterObjectStoreReadiness
+  , adapterObjectStoreReady
+  , allDedicatedAdapterReadinessCauses
   , authorityBackupBlobObjectName
   , authorityBackupCredentialPath
   , authorityBackupStorePrefix
@@ -70,6 +75,7 @@ import Prodbox.ControlPlane.DedicatedAdapterStore
   , mkAdapterObjectVersion
   , mkAuthorityBackupStoreConfig
   , mkTlsRetentionStoreConfig
+  , renderDedicatedAdapterReadinessCause
   , tlsRetentionCredentialPath
   )
 import Prodbox.ControlPlane.TargetSecretAgentExecution (mkTargetAgentIdentity)
@@ -119,6 +125,27 @@ controlPlaneAuthorityBackupEndpointSuite =
                   "authority-backup-store/home"
               )
       authorityBackupStorePrefix config `shouldBe` "authority-backup-store/home"
+    it "renders one finite value-free dedicated-store readiness vocabulary" $ do
+      allDedicatedAdapterReadinessCauses
+        `shouldBe` [ DedicatedAdapterCredentialUnavailable
+                   , DedicatedAdapterTransportUnavailable
+                   , DedicatedAdapterHttpRedirect
+                   , DedicatedAdapterHttpBadRequest
+                   , DedicatedAdapterHttpUnauthorized
+                   , DedicatedAdapterHttpForbidden
+                   , DedicatedAdapterHttpNotFound
+                   , DedicatedAdapterHttpOther
+                   ]
+      map renderDedicatedAdapterReadinessCause allDedicatedAdapterReadinessCauses
+        `shouldBe` [ "credential-unavailable"
+                   , "transport-unavailable"
+                   , "http-redirect"
+                   , "http-bad-request"
+                   , "http-unauthorized"
+                   , "http-forbidden"
+                   , "http-not-found"
+                   , "http-other"
+                   ]
     it "rejects a generic endpoint and cross-role prefix substitution" $ do
       mkAuthorityBackupStoreConfig
         "home"
@@ -170,17 +197,20 @@ controlPlaneAuthorityBackupEndpointSuite =
             mustRight
               (authorityBackupBlobObjectName "checkpoint" (Text.replicate 64 "a"))
       adapterObjectStoreReady transport `shouldReturn` False
+      adapterObjectStoreReadiness transport
+        `shouldReturn` DedicatedAdapterUnavailable DedicatedAdapterCredentialUnavailable
       putAdapterObjectIfAbsent transport objectName "before-genesis"
         `shouldReturn` Left "Authority Backup store credential is unavailable"
       readIORef putCount `shouldReturn` 0
       writeIORef available True
       adapterObjectStoreReady transport `shouldReturn` True
+      adapterObjectStoreReadiness transport `shouldReturn` DedicatedAdapterReady
       putAdapterObjectIfAbsent transport objectName "after-genesis"
         `shouldReturn` Right AdapterPutApplied
       observed <- observeAdapterObject transport objectName
       observed `shouldSatisfy` isObservedBytes "after-genesis"
       readIORef putCount `shouldReturn` 1
-      readIORef loadCount `shouldReturn` 5
+      readIORef loadCount `shouldReturn` 7
     it "copies opaque ciphertext and returns a canonical binary receipt" $ do
       (transport, _, _) <- freshMemoryTransport False
       let repository = authorityBackupRepositoryWithTransport transport
@@ -666,7 +696,7 @@ freshMemoryTransport loseFirstResponse = do
                   writeIORef objectsRef (Map.insert key (version, bytes) objects)
                   lose <- atomicModifyIORef' loseResponseRef (False,)
                   pure $ if lose then Left "PUT response lost" else Right AdapterPutApplied
-          , adapterObjectStoreReady = pure True
+          , adapterObjectStoreReadiness = pure DedicatedAdapterReady
           }
   pure (transport, objectsRef, putCount)
 

@@ -49,6 +49,7 @@ module Prodbox.Lifecycle.CleanupRunEntry
   , adoptExplicitPerRunLifecycleCleanup
   , claimLifecycleCleanupRun
   , attachLifecycleCleanupPrimaryOutcome
+  , retireTerminalLifecycleCleanupHostIntent
   , LifecycleCleanupResult (..)
   , LifecycleCleanupIncomplete (..)
   , LifecycleCleanupReobserveDiagnostic (..)
@@ -59,6 +60,7 @@ module Prodbox.Lifecycle.CleanupRunEntry
   )
 where
 
+import Control.Monad (void)
 import Data.Bifunctor (first)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict (Map)
@@ -81,7 +83,8 @@ import Prodbox.ControlPlane.CleanupRunClient
   , withDescriptorBoundCleanupProgram
   )
 import Prodbox.ControlPlane.CleanupRunEndpoint
-  ( cleanupRunMaximumBytes
+  ( CleanupRunDescriptorRefusal (CleanupRunDescriptorMissing)
+  , cleanupRunMaximumBytes
   )
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDigest
@@ -108,11 +111,23 @@ import Prodbox.Lifecycle.CleanupRun
 import Prodbox.Lifecycle.HostCleanupIntent
   ( HostCleanupIntent
   , HostCleanupIntentError
+  , HostCleanupIntentPhase (HostCleanupComplete)
   , HostCleanupIntentStore
   , HostTerminalPermitId
+  , hostCleanupCompletionReceiptDigest
+  , hostCleanupGraphDigest
+  , hostCleanupIntentPhase
+  , hostCleanupRun
+  , hostCleanupRunId
   , mkHostCleanupIntent
   , mkHostCleanupScope
   , mkHostCleanupTerminalIdentity
+  , observeHostCleanupIntent
+  , retireHostCleanupIntent
+  )
+import Prodbox.Lifecycle.HostCleanupIntent.Internal
+  ( hostCleanupIntentSameBaseBinding
+  , retireHostCleanupIntentAfterTerminalFailure
   )
 import Prodbox.Lifecycle.HostCleanupRunner
   ( HostCleanupRunnerError
@@ -381,6 +396,13 @@ data LifecycleCleanupReobserveDiagnostic
 
 data LifecycleCleanupClientError
   = LifecycleCleanupHostRunnerFailed !HostCleanupRunnerError
+  | LifecycleCleanupHostIntentObservationFailed !HostCleanupIntentError
+  | LifecycleCleanupHostIntentMissing
+  | LifecycleCleanupHostIntentAuthorityRunNotTerminal !CleanupRunId
+  | LifecycleCleanupHostIntentAuthorityBindingMismatch
+  | LifecycleCleanupHostIntentTerminalSuccessIncomplete
+      !HostCleanupIntentPhase
+  | LifecycleCleanupHostIntentRetirementFailed !HostCleanupIntentError
   | LifecycleCleanupSurfaceMismatch !CleanupSurface !CleanupSurface
   | LifecycleCleanupAuthorityFailed !CleanupRunClientError
   | LifecycleCleanupAuthorityIndependentReadBackFailed !CleanupRunClientError
@@ -439,12 +461,151 @@ registerLifecycleCleanupRun
            (RegisteredLifecycleCleanup surface)
        )
 registerLifecycleCleanupRun preparation client descriptor = do
-  prepared <- prepareDescriptor preparation descriptor
-  case prepared of
+  reconciled <- reconcileForeignHostIntent preparation client descriptor
+  case reconciled of
     Left err -> pure (Left err)
-    Right hostRecord -> do
-      registered <- observeOrCreate client descriptor
-      pure (registeredFromDescriptor descriptor hostRecord <$> registered)
+    Right () -> do
+      prepared <- prepareDescriptor preparation descriptor
+      case prepared of
+        Left err -> pure (Left err)
+        Right hostRecord -> do
+          registered <- observeOrCreate client descriptor
+          pure (registeredFromDescriptor descriptor hostRecord <$> registered)
+
+-- | Release a foreign single-slot host intent only after its own immutable
+-- terminal evidence has been recovered. A complete host intent already owns
+-- its exact completion receipt; an incomplete one additionally requires the
+-- authenticated descriptor-bound Authority report to contain at least one
+-- failed, unconfirmed, pending, running, or blocked node. Nonterminal and
+-- unobservable runs remain fail-closed in the active slot.
+reconcileForeignHostIntent
+  :: CleanupHostPreparation surface
+  -> DescriptorBoundCleanupRunClient IO
+  -> LifecycleCleanupDescriptor surface
+  -> IO (Either LifecycleCleanupClientError ())
+reconcileForeignHostIntent preparation client descriptor =
+  case (preparation, lifecycleCleanupDescriptorHostRecord descriptor) of
+    (NoHostPreparation, NoHostIntent) -> pure (Right ())
+    (PrepareHostUninstallRecord store, CascadeHostIntent expected) -> do
+      observed <- observeHostCleanupIntent store
+      case observed of
+        Left err ->
+          pure (Left (LifecycleCleanupHostIntentObservationFailed err))
+        Right Nothing -> pure (Right ())
+        Right (Just active)
+          | hostCleanupIntentSameBaseBinding expected active -> pure (Right ())
+          | hostCleanupIntentPhase active == HostCleanupComplete ->
+              retireCompletedHostIntent store active
+          | otherwise -> do
+              authorityRun <-
+                observeDescriptorBoundCleanupRun
+                  client
+                  (hostCleanupRunId active)
+              case authorityRun of
+                Left err -> pure (Left (LifecycleCleanupAuthorityFailed err))
+                Right bound -> retireObservedHostIntent store active bound
+
+-- | Retire this cascade's exact active host intent after the cleanup driver
+-- has reached a terminal Authority run. Callers must do this before report
+-- compaction, so a restart never needs to infer failure from a tombstone.
+retireTerminalLifecycleCleanupHostIntent
+  :: CleanupHostPreparation surface
+  -> DescriptorBoundCleanupRunClient IO
+  -> RegisteredLifecycleCleanup surface
+  -> IO (Either LifecycleCleanupClientError ())
+retireTerminalLifecycleCleanupHostIntent preparation client registered =
+  case (preparation, registeredLifecycleCleanupHostRecord registered) of
+    (NoHostPreparation, NoHostIntent) -> pure (Right ())
+    (PrepareHostUninstallRecord store, CascadeHostIntent expected) -> do
+      refreshed <- observeRegisteredBoundRun client registered
+      case refreshed of
+        Left err -> pure (Left err)
+        Right bound -> do
+          observed <- observeHostCleanupIntent store
+          case observed of
+            Left err ->
+              pure (Left (LifecycleCleanupHostIntentObservationFailed err))
+            Right Nothing -> pure (Left LifecycleCleanupHostIntentMissing)
+            Right (Just active)
+              | hostCleanupIntentSameBaseBinding expected active ->
+                  retireObservedHostIntent store active bound
+              | otherwise ->
+                  pure (Left LifecycleCleanupHostIntentAuthorityBindingMismatch)
+
+retireObservedHostIntent
+  :: HostCleanupIntentStore
+  -> HostCleanupIntent
+  -> DescriptorBoundCleanupRun
+  -> IO (Either LifecycleCleanupClientError ())
+retireObservedHostIntent store active bound
+  | descriptorBoundCleanupRunId bound /= hostCleanupRunId active =
+      pure (Left LifecycleCleanupHostIntentAuthorityBindingMismatch)
+  | descriptorBoundCleanupRunGraphDigest bound /= hostCleanupGraphDigest active =
+      pure (Left LifecycleCleanupHostIntentAuthorityBindingMismatch)
+  | descriptorBoundCleanupRunGraph bound /= cleanupRunGraph (hostCleanupRun active) =
+      pure (Left LifecycleCleanupHostIntentAuthorityBindingMismatch)
+  | not (descriptorBoundCleanupRunTerminal bound) =
+      pure
+        ( Left
+            ( LifecycleCleanupHostIntentAuthorityRunNotTerminal
+                (hostCleanupRunId active)
+            )
+        )
+  | otherwise = case descriptorBoundCleanupRunReport bound of
+      Left err -> pure (Left (LifecycleCleanupReportInvalid err))
+      Right report
+        | cleanupReportRunId report /= hostCleanupRunId active ->
+            pure (Left LifecycleCleanupHostIntentAuthorityBindingMismatch)
+        | cleanupReportGraphDigest report /= hostCleanupGraphDigest active ->
+            pure (Left LifecycleCleanupHostIntentAuthorityBindingMismatch)
+        | cleanupReportNodesSucceeded report ->
+            if hostCleanupIntentPhase active == HostCleanupComplete
+              then retireCompletedHostIntent store active
+              else
+                pure
+                  ( Left
+                      ( LifecycleCleanupHostIntentTerminalSuccessIncomplete
+                          (hostCleanupIntentPhase active)
+                      )
+                  )
+        | otherwise -> do
+            retired <-
+              retireHostCleanupIntentAfterTerminalFailure
+                store
+                active
+                (descriptorBoundCleanupRunDescriptorDigest bound)
+                report
+            pure
+              (first LifecycleCleanupHostIntentRetirementFailed (void retired))
+
+retireCompletedHostIntent
+  :: HostCleanupIntentStore
+  -> HostCleanupIntent
+  -> IO (Either LifecycleCleanupClientError ())
+retireCompletedHostIntent store active =
+  case hostCleanupCompletionReceiptDigest active of
+    Nothing ->
+      pure
+        ( Left
+            ( LifecycleCleanupHostIntentTerminalSuccessIncomplete
+                (hostCleanupIntentPhase active)
+            )
+        )
+    Just receipt -> do
+      retired <- retireHostCleanupIntent store active receipt
+      pure (first LifecycleCleanupHostIntentRetirementFailed (void retired))
+
+cleanupReportNodesSucceeded :: CleanupRunReport -> Bool
+cleanupReportNodesSucceeded =
+  all nodeSucceeded . Map.elems . cleanupReportNodeStates
+ where
+  nodeSucceeded state = case state of
+    CleanupNodeCompleted _ CleanupNodeSucceeded -> True
+    CleanupNodePending -> False
+    CleanupNodeRunning _ -> False
+    CleanupNodeCompleted _ (CleanupNodeFailed _) -> False
+    CleanupNodeCompleted _ (CleanupNodeEffectUnconfirmed _) -> False
+    CleanupNodeBlocked _ -> False
 
 -- | Adopt one nonterminal explicit-per-run run returned by the Authority's
 -- descriptor-bound scan.  The opaque handle is rejoined to its committed
@@ -682,9 +843,12 @@ lifecycleCleanupNodesSucceeded result = case result of
     CleanupNodeCompleted _ (CleanupNodeEffectUnconfirmed _) -> False
     CleanupNodeBlocked _ -> False
 
--- | Observe terminal state, then ask the Authority to compact and read back
--- its backed-up report.  A lost compaction response is retried against the
--- same tombstoned run id; any unresolved arm is an explicit incomplete result.
+-- | Independently observe terminal state and return its exact report.  While
+-- the run's retention window remains live, that backup-receipted active
+-- revision is the terminal read-back and compaction is deliberately deferred.
+-- Once eligible, ask the Authority to compact and read back the immutable
+-- report tombstone.  A lost compaction response is retried against the same
+-- tombstoned run id; any unresolved arm is an explicit incomplete result.
 observeLifecycleCleanupResult
   :: DescriptorBoundCleanupRunClient IO
   -> Natural
@@ -717,45 +881,48 @@ observeLifecycleCleanupResult client now retention registered = do
                       (descriptorBoundCleanupRunPrimaryOutcome run)
                       (LifecycleCleanupReportEncodeFailed err :| [])
                   )
-              Right reportBytes -> do
-                attempted <-
-                  compactDescriptorBoundCleanupRun
-                    client
-                    run
-                    now
-                    retention
-                observedAfterAttempt <-
-                  observeDescriptorBoundCleanupRun client runId
-                let tombstone =
-                      validateCompactionReadBack
-                        binding
-                        (cleanupDigestOfBytes reportBytes)
-                        observedAfterAttempt
-                pure $ case attempted of
-                  Right report -> case validateReport expected report of
-                    Left err ->
-                      incomplete
-                        (descriptorBoundCleanupRunPrimaryOutcome run)
-                        (err :| [])
-                    Right exact -> case tombstone of
-                      Left diagnostic ->
-                        incomplete
-                          (descriptorBoundCleanupRunPrimaryOutcome run)
-                          ( LifecycleCleanupAuthorityIndependentReadBackRejected
-                              diagnostic
-                              :| []
-                          )
-                      Right () -> LifecycleCleanupReportObserved exact
-                  Left firstFailure -> case tombstone of
-                    Right () -> LifecycleCleanupReportObserved expected
-                    Left diagnostic ->
-                      incomplete
-                        (descriptorBoundCleanupRunPrimaryOutcome run)
-                        ( LifecycleCleanupAuthorityResponseUnconfirmed
-                            firstFailure
-                            diagnostic
-                            :| []
-                        )
+              Right reportBytes
+                | not (descriptorBoundCompactionEligible now retention run) ->
+                    pure (LifecycleCleanupReportObserved expected)
+                | otherwise -> do
+                    attempted <-
+                      compactDescriptorBoundCleanupRun
+                        client
+                        run
+                        now
+                        retention
+                    observedAfterAttempt <-
+                      observeDescriptorBoundCleanupRun client runId
+                    let tombstone =
+                          validateCompactionReadBack
+                            binding
+                            (cleanupDigestOfBytes reportBytes)
+                            observedAfterAttempt
+                    pure $ case attempted of
+                      Right report -> case validateReport expected report of
+                        Left err ->
+                          incomplete
+                            (descriptorBoundCleanupRunPrimaryOutcome run)
+                            (err :| [])
+                        Right exact -> case tombstone of
+                          Left diagnostic ->
+                            incomplete
+                              (descriptorBoundCleanupRunPrimaryOutcome run)
+                              ( LifecycleCleanupAuthorityIndependentReadBackRejected
+                                  diagnostic
+                                  :| []
+                              )
+                          Right () -> LifecycleCleanupReportObserved exact
+                      Left firstFailure -> case tombstone of
+                        Right () -> LifecycleCleanupReportObserved expected
+                        Left diagnostic ->
+                          incomplete
+                            (descriptorBoundCleanupRunPrimaryOutcome run)
+                            ( LifecycleCleanupAuthorityResponseUnconfirmed
+                                firstFailure
+                                diagnostic
+                                :| []
+                            )
  where
   binding = internalRegisteredLifecycleCleanupBinding registered
   runId = registeredBindingRunId binding
@@ -783,6 +950,16 @@ observeLifecycleCleanupResult client now retention registered = do
     | observed /= expected =
         Left (LifecycleCleanupReportReadBackMismatch expected observed)
     | otherwise = Right observed
+
+descriptorBoundCompactionEligible
+  :: Natural
+  -> Natural
+  -> DescriptorBoundCleanupRun
+  -> Bool
+descriptorBoundCompactionEligible now retention run =
+  now
+    >= cleanupLeaseExpiresAtMicros (descriptorBoundCleanupRunLease run)
+      + retention
 
 -- | Persist and read back the host record for the surface that has one.
 --
@@ -812,6 +989,7 @@ observeOrCreate client descriptor = do
   case observed of
     Right run -> pure (validateBoundRun descriptor run)
     Left CleanupRunClientDescriptorMissing -> create
+    Left (CleanupRunClientDescriptorRefused CleanupRunDescriptorMissing) -> create
     Left err -> pure (Left (LifecycleCleanupAuthorityFailed err))
  where
   runId = lifecycleCleanupDescriptorRunId descriptor

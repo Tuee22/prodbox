@@ -17,6 +17,7 @@ module Prodbox.Lifecycle.Teardown.RecoveryPlaneInterpreter
   , recoveryPlaneInterpreterWrongPredecessorRefused
   , recoveryPlaneInterpreterTwoSurfaceRestartDispatch
   , recoveryPlaneInterpreterCompleteObservationSet
+  , recoveryPlaneInterpreterCrossPhaseIdentityStable
   , recoveryPlaneInterpreterOpacityClosed
   )
 where

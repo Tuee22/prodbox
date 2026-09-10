@@ -32,11 +32,13 @@ import Prodbox.ControlPlane.DedicatedAdapterStore
   , AdapterObjectVersion
   , AdapterPutResult (..)
   , DedicatedAdapterKind (TlsRetentionAdapter)
+  , DedicatedAdapterReadiness (DedicatedAdapterReady)
   , DedicatedAdapterTransport (..)
   , adapterObjectNameText
   , awsS3EndpointForRegion
   , mkAdapterObjectVersion
   , mkTlsRetentionStoreConfig
+  , tlsLegacyRetentionEnvelopeObjectName
   , tlsRetentionEnvelopeObjectName
   , tlsRetentionStorePrefix
   , tlsRetentionStoreScopeKey
@@ -51,7 +53,8 @@ import Prodbox.ControlPlane.TargetMaterializationProduction
   ( classifyTargetIntentIssueError
   )
 import Prodbox.ControlPlane.TargetOneShotOperationEndpoint
-  ( allTlsTargetAgentPlainResponseCauses
+  ( TlsTargetAgentPlainResponseCause (..)
+  , allTlsTargetAgentPlainResponseCauses
   , renderTlsTargetAgentPlainResponseCause
   , tlsTargetAgentPlainResponse
   )
@@ -74,6 +77,7 @@ import Prodbox.ControlPlane.TlsRetentionAuthorityClient
 import Prodbox.ControlPlane.TlsRetentionClient
   ( TlsRetentionClient (..)
   , TlsRetentionClientError (..)
+  , TlsRetentionHttpResponseObservation (..)
   , classifyTlsRetentionHttpStatus
   , renderTlsRetentionClientCause
   )
@@ -87,6 +91,7 @@ import Prodbox.ControlPlane.TlsRetentionWorkflow
 import Prodbox.ControlPlane.TlsRetentionWorkflowAuthorityEndpoint
 import Prodbox.ControlPlane.TlsTargetAgentClient
   ( TlsTargetAgentClient (..)
+  , TlsTargetAgentClientError (..)
   , classifyTlsTargetAgentHttpStatus
   , renderTlsTargetAgentClientCause
   )
@@ -113,17 +118,28 @@ import Prodbox.ControlPlane.TlsTargetAgentProduction
 import Prodbox.Http.ReplyStatus (ReplyStatus (..), replyStatusCode)
 import Prodbox.K8s.InCluster (K8sSecretOps (..))
 import Prodbox.K8s.InCluster qualified as K8s
+import Prodbox.Lib.ChartPlatform
+  ( PublicEdgePreserveOutcome (..)
+  , PublicEdgeTlsRetainResult (..)
+  , classifyPublicEdgePreserve
+  , classifyPublicEdgeTlsRetainResponse
+  )
 import Prodbox.Lifecycle.Authority.TlsRetention
   ( CertIdentity (..)
   , KeyRotationApproval (..)
   , RetainedTlsRef (..)
   , RetentionVersion (..)
   , SourceSecretRef (..)
+  , TlsLegacyRecoveryEvidence (..)
+  , TlsLegacyRecoveryStagingDecision (..)
   , TlsPromotionDecision (..)
+  , TlsRetentionPending (..)
   , TlsRetentionState (..)
   , TlsStagingDecision (..)
+  , applyTlsLegacyRecoveryStaging
   , applyTlsPromotion
   , applyTlsStaging
+  , decideTlsLegacyRecoveryStaging
   , decideTlsPromotion
   , decideTlsStaging
   , pendingTlsRetention
@@ -345,7 +361,7 @@ controlPlaneTlsRetentionEndpointSuite =
               ( DedicatedAdapterTransport
                   { observeAdapterObject = \_ -> pure (Right AdapterObjectMissing)
                   , putAdapterObjectIfAbsent = \_ _ -> pure (Left detail)
-                  , adapterObjectStoreReady = pure True
+                  , adapterObjectStoreReadiness = pure DedicatedAdapterReady
                   }
               )
           expected =
@@ -380,175 +396,204 @@ controlPlaneTlsRetentionEndpointSuite =
       first `shouldSatisfy` isRight
       second `shouldSatisfy` isRight
       readIORef putCount `shouldReturn` 2
-    it "stages before PUT and resumes the byte-identical pending envelope after interruption" $ do
-      events <- newIORef ([] :: [String])
-      authorityState <- newIORef TlsRetentionEmpty
-      stageCount <- newIORef (0 :: Int)
-      storeCount <- newIORef (0 :: Int)
-      storeInputs <- newIORef ([] :: [(RetainedTlsRef, TlsSealedEnvelope)])
-      promotionApprovals <- newIORef ([] :: [KeyRotationApproval])
-      protectedPrivate <- newIORef ByteString.empty
-      let transit =
-            TlsDekTransitBoundary
-              { tlsDekTransitEncrypt = \bytes -> do
-                  writeIORef protectedPrivate bytes
-                  pure (Right "vault:v1:prepared")
-              , tlsDekTransitDecrypt = \_ -> Right <$> readIORef protectedPrivate
-              }
-      prepared <- mustRight <$> prepareTlsDekExchange transit
-      dekEnvelope <-
-        mustRight
-          <$> sealTlsDekForDestination
-            (tlsDekPreparedPublicKey prepared)
-            (ByteString.replicate 32 7)
-      let wrapped = mustRight (mkTlsWrappedDek "vault:v1:retained")
-          certificate = CertIdentity "serial" "spki-digest" 2000000000
-          source = SourceSecretRef "secret-uid" "resource-version"
-          retained =
-            TlsTargetRetainReceipt
-              { tlsTargetRetainedVersion = RetentionVersion 1
-              , tlsTargetRetainedCertificate = certificate
-              , tlsTargetRetainedSource = source
-              , tlsTargetRetainedCertificateCiphertext = "fresh-ciphertext"
-              , tlsTargetRetainedDekEnvelope = dekEnvelope
-              }
-          authorityClient =
-            TlsRetentionAuthorityClient
-              { observeTlsRetentionCurrent = do
-                  recordEvent events "observe-authority"
-                  Right <$> readIORef authorityState
-              , stageTlsRetentionCurrent = \stageApproval candidate envelope -> do
-                  recordEvent events "stage"
-                  modifyIORef' stageCount (+ 1)
-                  state <- readIORef authorityState
-                  let decision = decideTlsStaging stageApproval state candidate envelope
-                      next = applyTlsStaging decision state
-                  case decision of
-                    TlsStaged _ -> do
-                      writeIORef authorityState next
-                      pure (Right (TlsAuthorityStagingCommitted next))
-                    TlsStagingNoop _ ->
-                      pure (Right (TlsAuthorityStagingAlreadyPending next))
-                    TlsStagingRefused refusal ->
-                      pure
-                        ( Left
-                            ( TlsRetentionAuthorityClientRemoteRefused
-                                (Text.pack (show refusal))
-                            )
-                        )
-              , promoteTlsRetentionCurrent = \promoteApproval evidence candidate -> do
-                  recordEvent events "promote"
-                  modifyIORef' promotionApprovals (<> [promoteApproval])
-                  state <- readIORef authorityState
-                  let decision = decideTlsPromotion promoteApproval evidence state candidate
-                      next = applyTlsPromotion decision state
-                  case decision of
-                    TlsPromoted _ -> do
-                      writeIORef authorityState next
-                      pure (Right (TlsAuthorityPromotionCommitted next))
-                    TlsPromotionNoop _ ->
-                      pure (Right (TlsAuthorityPromotionAlreadyCurrent next))
-                    TlsPromotionRefused refusal ->
-                      pure
-                        ( Left
-                            ( TlsRetentionAuthorityClientRemoteRefused
-                                (Text.pack (show refusal))
-                            )
-                        )
-              }
-          adapterClient =
-            TlsRetentionClient
-              { observeTlsRetentionVersion = \_ -> do
-                  recordEvent events "observe-version"
-                  pure (Right TlsVersionEnvelopeMissing)
-              , storeTlsRetention = \candidate envelope -> do
-                  recordEvent events "store"
-                  modifyIORef' storeInputs (<> [(candidate, envelope)])
-                  attempt <- atomicModifyIORef' storeCount (\count -> (count + 1, count))
-                  if attempt == 0
-                    then pure (Left TlsRetentionClientReceiptVersionInvalid)
-                    else pure (Right (receiptForFixture candidate envelope))
-              , restoreTlsRetention = \candidate -> do
-                  recordEvent events "restore"
-                  inputs <- readIORef storeInputs
-                  pure $ case reverse inputs of
-                    (_, envelope) : _ ->
-                      Right
-                        ( TlsEnvelopePresent
-                            envelope
-                            (receiptForFixture candidate envelope)
-                        )
-                    [] -> Left TlsRetentionClientReceiptVersionInvalid
-              }
-          homeAgent =
-            TlsTargetAgentClient
-              { prepareTlsDekDestination = do
-                  recordEvent events "prepare-home"
-                  pure (Right prepared)
-              , retainSelectedPublicEdgeTls = \_ _ -> error "unused home retain"
-              , wrapRetainedHomeTlsDek = \_ _ -> do
-                  recordEvent events "wrap"
-                  pure (Right wrapped)
-              , rewrapRetainedHomeTlsDek = \_ _ -> error "unused home rewrap"
-              , restoreSelectedPublicEdgeTls = \_ _ _ _ -> error "unused home restore"
-              , verifySelectedPublicEdgeTlsSource = \_ -> error "unused home verify"
-              }
-          selectedAgent =
-            TlsTargetAgentClient
-              { prepareTlsDekDestination = error "unused selected prepare"
-              , retainSelectedPublicEdgeTls = \_ _ -> do
-                  recordEvent events "retain"
-                  pure (Right retained)
-              , wrapRetainedHomeTlsDek = \_ _ -> error "unused selected wrap"
-              , rewrapRetainedHomeTlsDek = \_ _ -> error "unused selected rewrap"
-              , restoreSelectedPublicEdgeTls = \_ _ _ _ -> error "unused selected restore"
-              , verifySelectedPublicEdgeTlsSource = \reference -> do
-                  recordEvent events "verify"
-                  pure
-                    ( Right
-                        TlsTargetVerifyReceipt
-                          { tlsTargetVerifiedCertificate = retainedCert reference
-                          , tlsTargetVerifiedSource = retainedSourceSecret reference
-                          }
-                    )
-              }
-          workflow =
-            TlsRetentionWorkflow
-              { tlsWorkflowAuthority = authorityClient
-              , tlsWorkflowAdapter = adapterClient
-              , tlsWorkflowRetainedHomeAgent = homeAgent
-              , tlsWorkflowSelectedAgent = selectedAgent
-              }
-      first <- retainPublicEdgeTlsWorkflow workflow KeyRotationNotApproved
-      first
-        `shouldBe` Left
-          (TlsWorkflowAdapterFailed TlsRetentionClientReceiptVersionInvalid)
-      readIORef authorityState >>= (`shouldSatisfy` pendingState)
-      second <- retainPublicEdgeTlsWorkflow workflow KeyRotationApproved
-      case second of
-        Right (TlsWorkflowRetained reference) ->
-          readIORef authorityState `shouldReturn` TlsRetentionCurrent reference
-        other -> expectationFailure ("expected resumed retention, got " <> show other)
-      inputs <- readIORef storeInputs
-      case inputs of
-        [firstInput, secondInput] -> firstInput `shouldBe` secondInput
-        other -> expectationFailure ("expected exactly two store inputs, got " <> show other)
-      readIORef stageCount `shouldReturn` 1
-      readIORef promotionApprovals `shouldReturn` [KeyRotationNotApproved]
-      readIORef events
-        `shouldReturn` [ "observe-authority"
-                       , "observe-version"
-                       , "prepare-home"
-                       , "retain"
-                       , "wrap"
-                       , "stage"
-                       , "store"
-                       , "observe-authority"
-                       , "store"
-                       , "restore"
-                       , "verify"
-                       , "promote"
-                       ]
+    it
+      "TLS-AUTHORITY-RETAIN-READBACK-MISMATCH-SELECTED-AGENT-UNAVAILABLE-2026-09-08 stages before PUT, resumes pending bytes, and never re-enters legacy adoption after promotion"
+      $ do
+        events <- newIORef ([] :: [String])
+        authorityState <- newIORef TlsRetentionEmpty
+        stageCount <- newIORef (0 :: Int)
+        storeCount <- newIORef (0 :: Int)
+        storeInputs <- newIORef ([] :: [(RetainedTlsRef, TlsSealedEnvelope)])
+        promotionApprovals <- newIORef ([] :: [KeyRotationApproval])
+        protectedPrivate <- newIORef ByteString.empty
+        let transit =
+              TlsDekTransitBoundary
+                { tlsDekTransitEncrypt = \bytes -> do
+                    writeIORef protectedPrivate bytes
+                    pure (Right "vault:v1:prepared")
+                , tlsDekTransitDecrypt = \_ -> Right <$> readIORef protectedPrivate
+                }
+        prepared <- mustRight <$> prepareTlsDekExchange transit
+        dekEnvelope <-
+          mustRight
+            <$> sealTlsDekForDestination
+              (tlsDekPreparedPublicKey prepared)
+              (ByteString.replicate 32 7)
+        let wrapped = mustRight (mkTlsWrappedDek "vault:v1:retained")
+            certificate = CertIdentity "serial" "spki-digest" 2000000000
+            source = SourceSecretRef "secret-uid" "resource-version"
+            retained =
+              TlsTargetRetainReceipt
+                { tlsTargetRetainedVersion = RetentionVersion 1
+                , tlsTargetRetainedCertificate = certificate
+                , tlsTargetRetainedSource = source
+                , tlsTargetRetainedCertificateCiphertext = "fresh-ciphertext"
+                , tlsTargetRetainedDekEnvelope = dekEnvelope
+                }
+            authorityClient =
+              TlsRetentionAuthorityClient
+                { observeTlsRetentionCurrent = do
+                    recordEvent events "observe-authority"
+                    Right <$> readIORef authorityState
+                , stageTlsRetentionCurrent = \stageApproval candidate envelope -> do
+                    recordEvent events "stage"
+                    modifyIORef' stageCount (+ 1)
+                    state <- readIORef authorityState
+                    let decision = decideTlsStaging stageApproval state candidate envelope
+                        next = applyTlsStaging decision state
+                    case decision of
+                      TlsStaged _ -> do
+                        writeIORef authorityState next
+                        pure (Right (TlsAuthorityStagingCommitted next))
+                      TlsStagingNoop _ ->
+                        pure (Right (TlsAuthorityStagingAlreadyPending next))
+                      TlsStagingRefused refusal ->
+                        pure
+                          ( Left
+                              ( TlsRetentionAuthorityClientRemoteRefused
+                                  (Text.pack (show refusal))
+                              )
+                          )
+                , stageTlsRetentionAfterUnrecoverableLegacy = \_ _ _ _ _ ->
+                    error "ordinary retention must not stage legacy recovery"
+                , promoteTlsRetentionCurrent = \promoteApproval evidence candidate -> do
+                    recordEvent events "promote"
+                    modifyIORef' promotionApprovals (<> [promoteApproval])
+                    state <- readIORef authorityState
+                    let decision = decideTlsPromotion promoteApproval evidence state candidate
+                        next = applyTlsPromotion decision state
+                    case decision of
+                      TlsPromoted _ -> do
+                        writeIORef authorityState next
+                        pure (Right (TlsAuthorityPromotionCommitted next))
+                      TlsPromotionNoop _ ->
+                        pure (Right (TlsAuthorityPromotionAlreadyCurrent next))
+                      TlsPromotionRefused refusal ->
+                        pure
+                          ( Left
+                              ( TlsRetentionAuthorityClientRemoteRefused
+                                  (Text.pack (show refusal))
+                              )
+                          )
+                }
+            adapterClient =
+              TlsRetentionClient
+                { observeTlsRetentionVersion = \_ -> do
+                    state <- readIORef authorityState
+                    case state of
+                      TlsRetentionCurrent _ ->
+                        error "a promoted Authority current must not re-enter legacy observation"
+                      _ -> do
+                        recordEvent events "observe-version"
+                        pure (Right TlsVersionEnvelopeMissing)
+                , observeTlsRetentionAuthorityVersion = \_ ->
+                    error "ordinary retention must not observe an Authority collision"
+                , storeTlsRetention = \candidate envelope -> do
+                    recordEvent events "store"
+                    modifyIORef' storeInputs (<> [(candidate, envelope)])
+                    attempt <- atomicModifyIORef' storeCount (\count -> (count + 1, count))
+                    if attempt == 0
+                      then pure (Left TlsRetentionClientReceiptVersionInvalid)
+                      else pure (Right (receiptForFixture candidate envelope))
+                , restoreTlsRetention = \candidate -> do
+                    recordEvent events "restore"
+                    inputs <- readIORef storeInputs
+                    pure $ case reverse inputs of
+                      (_, envelope) : _ ->
+                        Right
+                          ( TlsEnvelopePresent
+                              envelope
+                              (receiptForFixture candidate envelope)
+                          )
+                      [] -> Left TlsRetentionClientReceiptVersionInvalid
+                }
+            homeAgent =
+              TlsTargetAgentClient
+                { prepareTlsDekDestination = do
+                    recordEvent events "prepare-home"
+                    pure (Right prepared)
+                , retainSelectedPublicEdgeTls = \_ _ -> error "unused home retain"
+                , wrapRetainedHomeTlsDek = \_ _ -> do
+                    recordEvent events "wrap"
+                    pure (Right wrapped)
+                , rewrapRetainedHomeTlsDek = \_ _ -> error "unused home rewrap"
+                , restoreSelectedPublicEdgeTls = \_ _ _ _ -> error "unused home restore"
+                , verifySelectedPublicEdgeTlsSource = \_ -> error "unused home verify"
+                }
+            selectedAgent =
+              TlsTargetAgentClient
+                { prepareTlsDekDestination = error "unused selected prepare"
+                , retainSelectedPublicEdgeTls = \_ _ -> do
+                    recordEvent events "retain"
+                    pure (Right retained)
+                , wrapRetainedHomeTlsDek = \_ _ -> error "unused selected wrap"
+                , rewrapRetainedHomeTlsDek = \_ _ -> error "unused selected rewrap"
+                , restoreSelectedPublicEdgeTls = \_ _ _ _ -> error "unused selected restore"
+                , verifySelectedPublicEdgeTlsSource = \reference -> do
+                    recordEvent events "verify"
+                    pure
+                      ( Right
+                          TlsTargetVerifyReceipt
+                            { tlsTargetVerifiedCertificate = retainedCert reference
+                            , tlsTargetVerifiedSource = retainedSourceSecret reference
+                            }
+                      )
+                }
+            workflow =
+              TlsRetentionWorkflow
+                { tlsWorkflowAuthority = authorityClient
+                , tlsWorkflowAdapter = adapterClient
+                , tlsWorkflowRetainedHomeAgent = homeAgent
+                , tlsWorkflowSelectedAgent = selectedAgent
+                }
+        first <- retainPublicEdgeTlsWorkflow workflow KeyRotationNotApproved
+        first
+          `shouldBe` Left
+            (TlsWorkflowAdapterFailed TlsRetentionClientReceiptVersionInvalid)
+        readIORef authorityState >>= (`shouldSatisfy` pendingState)
+        second <- retainPublicEdgeTlsWorkflow workflow KeyRotationApproved
+        case second of
+          Right (TlsWorkflowRetained reference) ->
+            readIORef authorityState `shouldReturn` TlsRetentionCurrent reference
+          other -> expectationFailure ("expected resumed retention, got " <> show other)
+        inputs <- readIORef storeInputs
+        case inputs of
+          [firstInput, secondInput] -> firstInput `shouldBe` secondInput
+          other -> expectationFailure ("expected exactly two store inputs, got " <> show other)
+        readIORef stageCount `shouldReturn` 1
+        readIORef promotionApprovals `shouldReturn` [KeyRotationNotApproved]
+        readIORef events
+          `shouldReturn` [ "observe-authority"
+                         , "observe-version"
+                         , "prepare-home"
+                         , "retain"
+                         , "wrap"
+                         , "stage"
+                         , "store"
+                         , "observe-authority"
+                         , "store"
+                         , "restore"
+                         , "verify"
+                         , "promote"
+                         ]
+        writeIORef events []
+        third <- retainPublicEdgeTlsWorkflow workflow KeyRotationNotApproved
+        case third of
+          Right (TlsWorkflowRetained reference) -> do
+            retainedVersion reference `shouldBe` RetentionVersion 2
+            readIORef authorityState `shouldReturn` TlsRetentionCurrent reference
+          other -> expectationFailure ("expected a fresh Authority successor, got " <> show other)
+        readIORef events
+          `shouldReturn` [ "observe-authority"
+                         , "prepare-home"
+                         , "retain"
+                         , "wrap"
+                         , "stage"
+                         , "store"
+                         , "restore"
+                         , "verify"
+                         , "promote"
+                         ]
     it "adopts a pre-outbox version only after exact Agent apply/read-back proof" $ do
       events <- newIORef ([] :: [String])
       authorityState <- newIORef TlsRetentionEmpty
@@ -602,6 +647,8 @@ controlPlaneTlsRetentionEndpointSuite =
                                 (Text.pack (show refusal))
                             )
                         )
+              , stageTlsRetentionAfterUnrecoverableLegacy = \_ _ _ _ _ ->
+                  error "idempotent legacy adoption must not stage recovery"
               , promoteTlsRetentionCurrent = \promoteApproval evidence candidate -> do
                   recordEvent events "promote"
                   state <- readIORef authorityState
@@ -627,6 +674,8 @@ controlPlaneTlsRetentionEndpointSuite =
                   recordEvent events "observe-version"
                   version `shouldBe` RetentionVersion 1
                   pure (Right (TlsVersionEnvelopePresent legacyEnvelope "legacy-etag"))
+              , observeTlsRetentionAuthorityVersion = \_ ->
+                  error "legacy adoption must not observe an Authority collision"
               , storeTlsRetention = \candidate envelope -> do
                   recordEvent events "store"
                   modifyIORef' storeInputs (<> [(candidate, envelope)])
@@ -746,6 +795,593 @@ controlPlaneTlsRetentionEndpointSuite =
                        , "rewrap"
                        , "restore-legacy"
                        ]
+    it "stages a fresh version after an exact legacy Transit authentication failure" $ do
+      events <- newIORef ([] :: [String])
+      authorityState <- newIORef TlsRetentionEmpty
+      storedEnvelope <- newIORef Nothing
+      protectedPrivate <- newIORef ByteString.empty
+      let transit =
+            TlsDekTransitBoundary
+              { tlsDekTransitEncrypt = \bytes -> do
+                  writeIORef protectedPrivate bytes
+                  pure (Right "vault:v1:prepared")
+              , tlsDekTransitDecrypt = \_ -> Right <$> readIORef protectedPrivate
+              }
+      prepared <- mustRight <$> prepareTlsDekExchange transit
+      dekEnvelope <-
+        mustRight
+          <$> sealTlsDekForDestination
+            (tlsDekPreparedPublicKey prepared)
+            (ByteString.replicate 32 11)
+      let legacyEnvelope =
+            sampleEnvelope
+              "legacy-certificate-ciphertext"
+              "vault:v1:prior-home-key"
+          certificate = CertIdentity "current-serial" "current-spki" 2000000000
+          source = SourceSecretRef "current-uid" "current-rv"
+          retained version =
+            TlsTargetRetainReceipt
+              { tlsTargetRetainedVersion = version
+              , tlsTargetRetainedCertificate = certificate
+              , tlsTargetRetainedSource = source
+              , tlsTargetRetainedCertificateCiphertext = "fresh-certificate-ciphertext"
+              , tlsTargetRetainedDekEnvelope = dekEnvelope
+              }
+          authorityClient =
+            TlsRetentionAuthorityClient
+              { observeTlsRetentionCurrent = do
+                  recordEvent events "observe-authority"
+                  Right <$> readIORef authorityState
+              , stageTlsRetentionCurrent = \_ _ _ ->
+                  error "legacy recovery must use its evidence-bearing stage"
+              , stageTlsRetentionAfterUnrecoverableLegacy =
+                  \stageApproval evidence collision candidate envelope -> do
+                    recordEvent events "stage-legacy-recovery"
+                    state <- readIORef authorityState
+                    let decision =
+                          decideTlsLegacyRecoveryStaging
+                            stageApproval
+                            state
+                            evidence
+                            collision
+                            candidate
+                            envelope
+                        next =
+                          applyTlsLegacyRecoveryStaging evidence decision state
+                    case decision of
+                      TlsLegacyRecoveryStaged _ -> do
+                        writeIORef authorityState next
+                        pure (Right (TlsAuthorityStagingCommitted next))
+                      TlsLegacyRecoveryCollisionRebased _ _ -> do
+                        writeIORef authorityState next
+                        pure (Right (TlsAuthorityStagingCommitted next))
+                      TlsLegacyRecoveryCollisionSuccessorStaged _ _ ->
+                        error "initial legacy recovery cannot stage collision successor"
+                      TlsLegacyRecoveryStagingNoop _ ->
+                        pure (Right (TlsAuthorityStagingAlreadyPending next))
+                      TlsLegacyRecoveryStagingRefused refusal ->
+                        pure
+                          ( Left
+                              ( TlsRetentionAuthorityClientRemoteRefused
+                                  (Text.pack (show refusal))
+                              )
+                          )
+              , promoteTlsRetentionCurrent = \promoteApproval evidence candidate -> do
+                  recordEvent events "promote"
+                  state <- readIORef authorityState
+                  let decision = decideTlsPromotion promoteApproval evidence state candidate
+                      next = applyTlsPromotion decision state
+                  case decision of
+                    TlsPromoted _ -> do
+                      writeIORef authorityState next
+                      pure (Right (TlsAuthorityPromotionCommitted next))
+                    TlsPromotionNoop _ ->
+                      pure (Right (TlsAuthorityPromotionAlreadyCurrent next))
+                    TlsPromotionRefused refusal ->
+                      pure
+                        ( Left
+                            ( TlsRetentionAuthorityClientRemoteRefused
+                                (Text.pack (show refusal))
+                            )
+                        )
+              }
+          adapterClient =
+            TlsRetentionClient
+              { observeTlsRetentionVersion = \version -> do
+                  recordEvent events "observe-version"
+                  version `shouldBe` RetentionVersion 1
+                  pure (Right (TlsVersionEnvelopePresent legacyEnvelope "legacy-etag"))
+              , observeTlsRetentionAuthorityVersion = \_ ->
+                  error "initial recovery must not observe an Authority collision"
+              , storeTlsRetention = \candidate envelope -> do
+                  recordEvent events "store"
+                  retainedVersion candidate `shouldBe` RetentionVersion 2
+                  writeIORef storedEnvelope (Just (candidate, envelope))
+                  pure (Right (receiptForFixture candidate envelope))
+              , restoreTlsRetention = \candidate -> do
+                  recordEvent events "restore-adapter"
+                  stored <- readIORef storedEnvelope
+                  pure $ case stored of
+                    Just (storedCandidate, envelope)
+                      | storedCandidate == candidate ->
+                          Right
+                            ( TlsEnvelopePresent
+                                envelope
+                                (receiptForFixture candidate envelope)
+                            )
+                    _ -> Right TlsEnvelopeMissing
+              }
+          homeAgent =
+            TlsTargetAgentClient
+              { prepareTlsDekDestination = do
+                  recordEvent events "prepare-home"
+                  pure (Right prepared)
+              , retainSelectedPublicEdgeTls = \_ _ -> error "unused home retain"
+              , wrapRetainedHomeTlsDek = \_ _ -> do
+                  recordEvent events "wrap"
+                  pure (Right (mustRight (mkTlsWrappedDek "vault:v1:current-home")))
+              , rewrapRetainedHomeTlsDek = \_ _ -> do
+                  recordEvent events "rewrap"
+                  pure (Left TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed)
+              , restoreSelectedPublicEdgeTls = \_ _ _ _ -> error "unused home restore"
+              , verifySelectedPublicEdgeTlsSource = \_ -> error "unused home verify"
+              }
+          selectedAgent =
+            TlsTargetAgentClient
+              { prepareTlsDekDestination = do
+                  recordEvent events "prepare-selected"
+                  pure (Right prepared)
+              , retainSelectedPublicEdgeTls = \version _ -> do
+                  recordEvent events ("retain-" <> show version)
+                  pure (Right (retained version))
+              , wrapRetainedHomeTlsDek = \_ _ -> error "unused selected wrap"
+              , rewrapRetainedHomeTlsDek = \_ _ -> error "unused selected rewrap"
+              , restoreSelectedPublicEdgeTls = \_ _ _ _ ->
+                  error "unopenable legacy bytes must never be applied"
+              , verifySelectedPublicEdgeTlsSource = \reference -> do
+                  recordEvent events "verify"
+                  pure
+                    ( Right
+                        TlsTargetVerifyReceipt
+                          { tlsTargetVerifiedCertificate = retainedCert reference
+                          , tlsTargetVerifiedSource = retainedSourceSecret reference
+                          }
+                    )
+              }
+          workflow =
+            TlsRetentionWorkflow
+              { tlsWorkflowAuthority = authorityClient
+              , tlsWorkflowAdapter = adapterClient
+              , tlsWorkflowRetainedHomeAgent = homeAgent
+              , tlsWorkflowSelectedAgent = selectedAgent
+              }
+      result <- retainPublicEdgeTlsWorkflow workflow KeyRotationNotApproved
+      recovered <- case result of
+        Right (TlsWorkflowRetained reference) -> pure reference
+        other -> do
+          expectationFailure ("expected recovery retention, got " <> show other)
+          pure
+            RetainedTlsRef
+              { retainedVersion = RetentionVersion 2
+              , retainedCert = certificate
+              , retainedCiphertextDigest = tlsSealedEnvelopeDigest legacyEnvelope
+              , retainedSourceSecret = source
+              }
+      retainedVersion recovered `shouldBe` RetentionVersion 2
+      readIORef authorityState `shouldReturn` TlsRetentionCurrent recovered
+      readIORef events
+        `shouldReturn` [ "observe-authority"
+                       , "observe-version"
+                       , "prepare-home"
+                       , "retain-RetentionVersion 1"
+                       , "prepare-selected"
+                       , "rewrap"
+                       , "prepare-home"
+                       , "retain-RetentionVersion 2"
+                       , "wrap"
+                       , "stage-legacy-recovery"
+                       , "store"
+                       , "restore-adapter"
+                       , "verify"
+                       , "promote"
+                       ]
+    it "rebases an exact occupied-v2 collision before ordinary read-back and promotion" $ do
+      events <- newIORef ([] :: [String])
+      protectedPrivate <- newIORef ByteString.empty
+      let transit =
+            TlsDekTransitBoundary
+              { tlsDekTransitEncrypt = \bytes -> do
+                  writeIORef protectedPrivate bytes
+                  pure (Right "vault:v1:prepared")
+              , tlsDekTransitDecrypt = \_ -> Right <$> readIORef protectedPrivate
+              }
+      prepared <- mustRight <$> prepareTlsDekExchange transit
+      selectedDekEnvelope <-
+        mustRight
+          <$> sealTlsDekForDestination
+            (tlsDekPreparedPublicKey prepared)
+            (ByteString.replicate 32 17)
+      let legacyEnvelope = sampleEnvelope "legacy-certificate" "vault:v1:old-home"
+          pendingEnvelope = sampleEnvelope "pending-certificate" "vault:v1:new-home-a"
+          occupiedEnvelope = sampleEnvelope "occupied-certificate" "vault:v1:new-home-b"
+          certificate = CertIdentity "current-serial" "current-spki" 2000000000
+          source = SourceSecretRef "current-uid" "current-rv"
+          reference envelope =
+            RetainedTlsRef
+              { retainedVersion = RetentionVersion 2
+              , retainedCert = certificate
+              , retainedCiphertextDigest = tlsSealedEnvelopeDigest envelope
+              , retainedSourceSecret = source
+              }
+          pendingCandidate = reference pendingEnvelope
+          occupiedCandidate = reference occupiedEnvelope
+          recoveryEvidence =
+            TlsLegacyRecoveryEvidence
+              { tlsLegacyRecoveryVersion = RetentionVersion 1
+              , tlsLegacyRecoveryEnvelopeDigest = tlsSealedEnvelopeDigest legacyEnvelope
+              }
+          initialPending =
+            TlsRetentionPending
+              { tlsPendingPrevious = Nothing
+              , tlsPendingApproval = KeyRotationNotApproved
+              , tlsPendingCandidate = pendingCandidate
+              , tlsPendingEnvelope = pendingEnvelope
+              }
+          initialState = TlsRetentionLegacyRecoveryPendingState recoveryEvidence initialPending
+          exactCollision =
+            TlsRetentionClientHttpStatus
+              ( TlsRetentionEndpointResponse
+                  ( TlsRetentionStoreRepositoryFailed
+                      ( TlsStoreRepositoryConfirmationFailed
+                          TlsStorePutConflict
+                          TlsStoreConfirmationBytesMismatch
+                      )
+                  )
+              )
+      authorityState <- newIORef initialState
+      let authorityClient =
+            TlsRetentionAuthorityClient
+              { observeTlsRetentionCurrent = do
+                  recordEvent events "observe-authority"
+                  Right <$> readIORef authorityState
+              , stageTlsRetentionCurrent = \_ _ _ -> error "collision recovery uses legacy staging"
+              , stageTlsRetentionAfterUnrecoverableLegacy =
+                  \approval evidence collision candidate envelope -> do
+                    recordEvent events "stage-collision"
+                    state <- readIORef authorityState
+                    let decision =
+                          decideTlsLegacyRecoveryStaging
+                            approval
+                            state
+                            evidence
+                            collision
+                            candidate
+                            envelope
+                        next = applyTlsLegacyRecoveryStaging evidence decision state
+                    case decision of
+                      TlsLegacyRecoveryCollisionRebased _ _ -> do
+                        writeIORef authorityState next
+                        pure (Right (TlsAuthorityStagingCommitted next))
+                      TlsLegacyRecoveryStagingNoop _ ->
+                        pure (Right (TlsAuthorityStagingAlreadyPending next))
+                      refusal ->
+                        pure
+                          ( Left
+                              (TlsRetentionAuthorityClientRemoteRefused (Text.pack (show refusal)))
+                          )
+              , promoteTlsRetentionCurrent = \approval evidence candidate -> do
+                  recordEvent events "promote"
+                  state <- readIORef authorityState
+                  let decision = decideTlsPromotion approval evidence state candidate
+                      next = applyTlsPromotion decision state
+                  case decision of
+                    TlsPromoted _ -> do
+                      writeIORef authorityState next
+                      pure (Right (TlsAuthorityPromotionCommitted next))
+                    refusal ->
+                      pure
+                        ( Left
+                            (TlsRetentionAuthorityClientRemoteRefused (Text.pack (show refusal)))
+                        )
+              }
+          adapterClient =
+            TlsRetentionClient
+              { storeTlsRetention = \candidate envelope ->
+                  if candidate == pendingCandidate && envelope == pendingEnvelope
+                    then do
+                      recordEvent events "store-pending-collision"
+                      pure (Left exactCollision)
+                    else
+                      if candidate == occupiedCandidate && envelope == occupiedEnvelope
+                        then do
+                          recordEvent events "store-occupied"
+                          pure (Right (receiptForFixture candidate envelope))
+                        else error "unexpected collision store candidate"
+              , restoreTlsRetention = \candidate -> do
+                  recordEvent events "restore-adapter"
+                  candidate `shouldBe` occupiedCandidate
+                  pure
+                    ( Right
+                        ( TlsEnvelopePresent
+                            occupiedEnvelope
+                            (receiptForFixture occupiedCandidate occupiedEnvelope)
+                        )
+                    )
+              , observeTlsRetentionVersion = \_ ->
+                  error "pending recovery must not repeat legacy observation"
+              , observeTlsRetentionAuthorityVersion = \version -> do
+                  recordEvent events "observe-version-2"
+                  version `shouldBe` RetentionVersion 2
+                  pure (Right (TlsVersionEnvelopePresent occupiedEnvelope "occupied-etag"))
+              }
+          homeAgent =
+            TlsTargetAgentClient
+              { prepareTlsDekDestination = error "collision recovery does not prepare home"
+              , retainSelectedPublicEdgeTls = \_ _ -> error "collision recovery does not retain"
+              , wrapRetainedHomeTlsDek = \_ _ -> error "collision recovery does not wrap"
+              , rewrapRetainedHomeTlsDek = \_ _ -> do
+                  recordEvent events "rewrap-occupied"
+                  pure (Right selectedDekEnvelope)
+              , restoreSelectedPublicEdgeTls = \_ _ _ _ -> error "home does not restore selected"
+              , verifySelectedPublicEdgeTlsSource = \_ -> error "home does not verify selected"
+              }
+          selectedAgent =
+            TlsTargetAgentClient
+              { prepareTlsDekDestination = do
+                  recordEvent events "prepare-selected"
+                  pure (Right prepared)
+              , retainSelectedPublicEdgeTls = \_ _ -> error "collision recovery does not retain"
+              , wrapRetainedHomeTlsDek = \_ _ -> error "selected does not wrap"
+              , rewrapRetainedHomeTlsDek = \_ _ -> error "selected does not rewrap"
+              , restoreSelectedPublicEdgeTls = \candidate _ _ ciphertext -> do
+                  recordEvent events "apply-occupied"
+                  candidate `shouldBe` occupiedCandidate
+                  ciphertext `shouldBe` tlsCertificateCiphertextBytes occupiedEnvelope
+                  pure
+                    ( Right
+                        TlsTargetRestoreReceipt
+                          { tlsTargetRestoredReference = candidate
+                          , tlsTargetRestoredReadBackSource = source
+                          }
+                    )
+              , verifySelectedPublicEdgeTlsSource = \candidate -> do
+                  recordEvent events "verify"
+                  candidate `shouldBe` occupiedCandidate
+                  pure
+                    ( Right
+                        TlsTargetVerifyReceipt
+                          { tlsTargetVerifiedCertificate = certificate
+                          , tlsTargetVerifiedSource = source
+                          }
+                    )
+              }
+          workflow =
+            TlsRetentionWorkflow
+              { tlsWorkflowAuthority = authorityClient
+              , tlsWorkflowAdapter = adapterClient
+              , tlsWorkflowRetainedHomeAgent = homeAgent
+              , tlsWorkflowSelectedAgent = selectedAgent
+              }
+      retainPublicEdgeTlsWorkflow workflow KeyRotationNotApproved
+        `shouldReturn` Right (TlsWorkflowRetained occupiedCandidate)
+      readIORef authorityState `shouldReturn` TlsRetentionCurrent occupiedCandidate
+      readIORef events
+        `shouldReturn` [ "observe-authority"
+                       , "store-pending-collision"
+                       , "observe-version-2"
+                       , "prepare-selected"
+                       , "rewrap-occupied"
+                       , "apply-occupied"
+                       , "stage-collision"
+                       , "store-occupied"
+                       , "restore-adapter"
+                       , "verify"
+                       , "promote"
+                       ]
+    it
+      "TLS-LEGACY-RECOVERY-V2-COLLISION-CIPHERTEXT-AUTHENTICATION-FAILED-2026-09-08 stages fresh fixed v3 before PUT"
+      $ do
+        events <- newIORef ([] :: [String])
+        protectedPrivate <- newIORef ByteString.empty
+        let transit =
+              TlsDekTransitBoundary
+                { tlsDekTransitEncrypt = \bytes -> do
+                    writeIORef protectedPrivate bytes
+                    pure (Right "vault:v1:prepared")
+                , tlsDekTransitDecrypt = \_ -> Right <$> readIORef protectedPrivate
+                }
+        prepared <- mustRight <$> prepareTlsDekExchange transit
+        selectedDekEnvelope <-
+          mustRight
+            <$> sealTlsDekForDestination
+              (tlsDekPreparedPublicKey prepared)
+              (ByteString.replicate 32 19)
+        let legacyEnvelope = sampleEnvelope "legacy-certificate" "vault:v1:old-home"
+            pendingEnvelope = sampleEnvelope "pending-certificate" "vault:v1:new-home-a"
+            occupiedEnvelope = sampleEnvelope "occupied-certificate" "vault:v1:foreign-home"
+            successorEnvelope = sampleEnvelope "successor-certificate" "vault:v1:successor-home"
+            certificate = CertIdentity "current-serial" "current-spki" 2000000000
+            source = SourceSecretRef "current-uid" "current-rv"
+            reference version envelope =
+              RetainedTlsRef
+                { retainedVersion = version
+                , retainedCert = certificate
+                , retainedCiphertextDigest = tlsSealedEnvelopeDigest envelope
+                , retainedSourceSecret = source
+                }
+            pendingCandidate = reference (RetentionVersion 2) pendingEnvelope
+            successorCandidate = reference (RetentionVersion 3) successorEnvelope
+            recoveryEvidence =
+              TlsLegacyRecoveryEvidence
+                { tlsLegacyRecoveryVersion = RetentionVersion 1
+                , tlsLegacyRecoveryEnvelopeDigest = tlsSealedEnvelopeDigest legacyEnvelope
+                }
+            initialPending =
+              TlsRetentionPending
+                { tlsPendingPrevious = Nothing
+                , tlsPendingApproval = KeyRotationNotApproved
+                , tlsPendingCandidate = pendingCandidate
+                , tlsPendingEnvelope = pendingEnvelope
+                }
+            initialState = TlsRetentionLegacyRecoveryPendingState recoveryEvidence initialPending
+            exactCollision =
+              TlsRetentionClientHttpStatus
+                ( TlsRetentionEndpointResponse
+                    ( TlsRetentionStoreRepositoryFailed
+                        ( TlsStoreRepositoryConfirmationFailed
+                            TlsStorePutConflict
+                            TlsStoreConfirmationBytesMismatch
+                        )
+                    )
+                )
+        authorityState <- newIORef initialState
+        let authorityClient =
+              TlsRetentionAuthorityClient
+                { observeTlsRetentionCurrent = do
+                    recordEvent events "observe-authority"
+                    Right <$> readIORef authorityState
+                , stageTlsRetentionCurrent = \_ _ _ -> error "successor recovery uses legacy staging"
+                , stageTlsRetentionAfterUnrecoverableLegacy =
+                    \approval evidence collision candidate envelope -> do
+                      recordEvent events "stage-successor"
+                      state <- readIORef authorityState
+                      let decision =
+                            decideTlsLegacyRecoveryStaging
+                              approval
+                              state
+                              evidence
+                              collision
+                              candidate
+                              envelope
+                          next = applyTlsLegacyRecoveryStaging evidence decision state
+                      case decision of
+                        TlsLegacyRecoveryCollisionSuccessorStaged _ _ -> do
+                          writeIORef authorityState next
+                          pure (Right (TlsAuthorityStagingCommitted next))
+                        TlsLegacyRecoveryStagingNoop _ ->
+                          pure (Right (TlsAuthorityStagingAlreadyPending next))
+                        refusal ->
+                          pure
+                            ( Left
+                                (TlsRetentionAuthorityClientRemoteRefused (Text.pack (show refusal)))
+                            )
+                , promoteTlsRetentionCurrent = \approval evidence candidate -> do
+                    recordEvent events "promote"
+                    state <- readIORef authorityState
+                    let decision = decideTlsPromotion approval evidence state candidate
+                        next = applyTlsPromotion decision state
+                    case decision of
+                      TlsPromoted _ -> do
+                        writeIORef authorityState next
+                        pure (Right (TlsAuthorityPromotionCommitted next))
+                      refusal ->
+                        pure
+                          ( Left
+                              (TlsRetentionAuthorityClientRemoteRefused (Text.pack (show refusal)))
+                          )
+                }
+            storeSuccessor candidate envelope
+              | candidate == pendingCandidate && envelope == pendingEnvelope = do
+                  recordEvent events "store-pending-collision"
+                  pure (Left exactCollision)
+              | candidate == successorCandidate && envelope == successorEnvelope = do
+                  recordEvent events "store-successor"
+                  pure (Right (receiptForFixture candidate envelope))
+              | otherwise = error "unexpected successor-recovery store candidate"
+            adapterClient =
+              TlsRetentionClient
+                { storeTlsRetention = storeSuccessor
+                , restoreTlsRetention = \candidate -> do
+                    recordEvent events "restore-adapter"
+                    candidate `shouldBe` successorCandidate
+                    pure
+                      ( Right
+                          ( TlsEnvelopePresent
+                              successorEnvelope
+                              (receiptForFixture successorCandidate successorEnvelope)
+                          )
+                      )
+                , observeTlsRetentionVersion = \_ ->
+                    error "successor recovery must not repeat legacy observation"
+                , observeTlsRetentionAuthorityVersion = \version -> do
+                    recordEvent events "observe-version-2"
+                    version `shouldBe` RetentionVersion 2
+                    pure (Right (TlsVersionEnvelopePresent occupiedEnvelope "occupied-etag"))
+                }
+            homeAgent =
+              TlsTargetAgentClient
+                { prepareTlsDekDestination = do
+                    recordEvent events "prepare-home-successor"
+                    pure (Right prepared)
+                , retainSelectedPublicEdgeTls = \_ _ -> error "home does not retain"
+                , wrapRetainedHomeTlsDek = \_ envelope -> do
+                    recordEvent events "wrap-successor"
+                    envelope `shouldBe` selectedDekEnvelope
+                    pure (Right (mustRight (mkTlsWrappedDek "vault:v1:successor-home")))
+                , rewrapRetainedHomeTlsDek = \_ _ -> do
+                    recordEvent events "rewrap-occupied-auth-failed"
+                    pure (Left TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed)
+                , restoreSelectedPublicEdgeTls = \_ _ _ _ -> error "home does not restore selected"
+                , verifySelectedPublicEdgeTlsSource = \_ -> error "home does not verify selected"
+                }
+            selectedAgent =
+              TlsTargetAgentClient
+                { prepareTlsDekDestination = do
+                    recordEvent events "prepare-selected-occupied"
+                    pure (Right prepared)
+                , retainSelectedPublicEdgeTls = \version _ -> do
+                    recordEvent events "retain-successor-v3"
+                    version `shouldBe` RetentionVersion 3
+                    pure
+                      ( Right
+                          TlsTargetRetainReceipt
+                            { tlsTargetRetainedVersion = version
+                            , tlsTargetRetainedCertificate = certificate
+                            , tlsTargetRetainedSource = source
+                            , tlsTargetRetainedCertificateCiphertext = "successor-certificate"
+                            , tlsTargetRetainedDekEnvelope = selectedDekEnvelope
+                            }
+                      )
+                , wrapRetainedHomeTlsDek = \_ _ -> error "selected does not wrap"
+                , rewrapRetainedHomeTlsDek = \_ _ -> error "selected does not rewrap"
+                , restoreSelectedPublicEdgeTls = \_ _ _ _ ->
+                    error "unopenable occupied version 2 must never be applied"
+                , verifySelectedPublicEdgeTlsSource = \candidate -> do
+                    recordEvent events "verify"
+                    candidate `shouldBe` successorCandidate
+                    pure
+                      ( Right
+                          TlsTargetVerifyReceipt
+                            { tlsTargetVerifiedCertificate = certificate
+                            , tlsTargetVerifiedSource = source
+                            }
+                      )
+                }
+            workflow =
+              TlsRetentionWorkflow
+                { tlsWorkflowAuthority = authorityClient
+                , tlsWorkflowAdapter = adapterClient
+                , tlsWorkflowRetainedHomeAgent = homeAgent
+                , tlsWorkflowSelectedAgent = selectedAgent
+                }
+        retainPublicEdgeTlsWorkflow workflow KeyRotationNotApproved
+          `shouldReturn` Right (TlsWorkflowRetained successorCandidate)
+        readIORef authorityState `shouldReturn` TlsRetentionCurrent successorCandidate
+        readIORef events
+          `shouldReturn` [ "observe-authority"
+                         , "store-pending-collision"
+                         , "observe-version-2"
+                         , "prepare-selected-occupied"
+                         , "rewrap-occupied-auth-failed"
+                         , "prepare-home-successor"
+                         , "retain-successor-v3"
+                         , "wrap-successor"
+                         , "stage-successor"
+                         , "store-successor"
+                         , "restore-adapter"
+                         , "verify"
+                         , "promote"
+                         ]
     it "refuses corrupt, unobservable, and missing-source legacy occupation before staging" $ do
       events <- newIORef ([] :: [String])
       protectedPrivate <- newIORef ByteString.empty
@@ -766,6 +1402,8 @@ controlPlaneTlsRetentionEndpointSuite =
               , stageTlsRetentionCurrent = \_ _ _ -> do
                   recordEvent events "stage"
                   error "legacy refusal must precede Authority staging"
+              , stageTlsRetentionAfterUnrecoverableLegacy = \_ _ _ _ _ ->
+                  error "legacy refusal must precede Authority recovery staging"
               , promoteTlsRetentionCurrent = \_ _ _ ->
                   error "legacy refusal must precede Authority promotion"
               }
@@ -774,6 +1412,8 @@ controlPlaneTlsRetentionEndpointSuite =
               { observeTlsRetentionVersion = \_ -> do
                   recordEvent events "observe-version"
                   pure observation
+              , observeTlsRetentionAuthorityVersion = \_ ->
+                  error "legacy refusal must not observe an Authority collision"
               , storeTlsRetention = \_ _ ->
                   error "legacy refusal must precede Adapter storage"
               , restoreTlsRetention = \_ ->
@@ -836,6 +1476,34 @@ controlPlaneTlsRetentionEndpointSuite =
                        , "prepare-home"
                        , "retain"
                        ]
+    it
+      "TLS-RETENTION-AUTHORITY-SOURCE-READBACK-MISMATCH-2026-09-07 projects only exact legacy source absence to delete's existing Certificate classifier"
+      $ do
+        ControlPlaneRuntime.classifyTlsRetentionWorkflowFailure TlsWorkflowLegacySourceMissing
+          `shouldBe` TlsRetentionWorkflowAuthorityLegacySourceMissing
+        ControlPlaneRuntime.classifyTlsRetentionWorkflowFailure TlsWorkflowSourceReadBackMismatch
+          `shouldBe` TlsRetentionWorkflowAuthoritySourceReadBackMismatch
+        ControlPlaneRuntime.classifyTlsRetentionWorkflowFailure TlsWorkflowLegacyAdoptionNotIdempotent
+          `shouldBe` TlsRetentionWorkflowAuthoritySourceReadBackMismatch
+        classifyPublicEdgeTlsRetainResponse
+          ( TlsRetentionWorkflowAuthorityRefused
+              TlsRetentionWorkflowAuthorityLegacySourceMissing
+          )
+          `shouldBe` Right PublicEdgeTlsRetainLegacySourceMissing
+        classifyPublicEdgeTlsRetainResponse
+          ( TlsRetentionWorkflowAuthorityRefused
+              TlsRetentionWorkflowAuthoritySourceReadBackMismatch
+          )
+          `shouldSatisfy` isLeft
+        classifyPublicEdgeTlsRetainResponse
+          ( TlsRetentionWorkflowAuthorityRefused
+              TlsRetentionWorkflowAuthoritySelectedAgentUnavailable
+          )
+          `shouldSatisfy` isLeft
+        classifyPublicEdgePreserve Nothing (Just (object []))
+          `shouldBe` PreserveDeferredIssuanceInFlight
+        classifyPublicEdgePreserve Nothing Nothing
+          `shouldBe` PreserveNothingToRetain
     it "rejects same-version substitution with different envelope bytes" $ do
       (transport, _, _) <- freshMemoryTransport False
       let repository = tlsRetentionRepositoryWithTransport transport
@@ -850,6 +1518,13 @@ controlPlaneTlsRetentionEndpointSuite =
               TlsStorePutConflict
               TlsStoreConfirmationBytesMismatch
           )
+    it
+      "TLS-LEGACY-RECOVERY-V3-IMMUTABLE-COLLISION-2026-09-08 keeps legacy observation disjoint from the Authority-owned immutable lane"
+      $ do
+        adapterObjectNameText (mustRight (tlsRetentionEnvelopeObjectName 3))
+          `shouldBe` "authority-v1/versions/3.envelope"
+        adapterObjectNameText (mustRight (tlsLegacyRetentionEnvelopeObjectName 3))
+          `shouldBe` "versions/3.envelope"
     it "distinguishes missing and corrupt immutable versions" $ do
       (transport, objectsRef, _) <- freshMemoryTransport False
       let repository = tlsRetentionRepositoryWithTransport transport
@@ -872,6 +1547,7 @@ controlPlaneTlsRetentionEndpointSuite =
           envelope = sampleEnvelope "legacy-certificate" "legacy-wrapped"
           reference = referenceFor 12 envelope
           request = TlsObserveVersionPayload (RetentionVersion 12)
+          authorityRequest = tlsObserveAuthorityVersionPayload (RetentionVersion 12)
       missing <-
         serveTlsObserveVersionRequest
           4096
@@ -881,6 +1557,24 @@ controlPlaneTlsRetentionEndpointSuite =
         `shouldBe` TlsObserveVersionObserved TlsVersionEnvelopeMissing
       tlsObserveVersionHttpStatus missing `shouldBe` ReplyNotFound
       _ <- storeTlsEnvelope repository reference envelope
+      authorityPresent <-
+        serveTlsObserveVersionRequest
+          4096
+          repository
+          (encodeControlPlaneRequest authorityRequest)
+      case authorityPresent of
+        TlsObserveVersionObserved (TlsVersionEnvelopePresent observed _) ->
+          observed `shouldBe` envelope
+        other -> expectationFailure ("expected Authority-lane envelope, got " <> show other)
+      authorityObjects <- readIORef objectsRef
+      let authorityObjectName = mustRight (tlsRetentionEnvelopeObjectName 12)
+          legacyObjectName = mustRight (tlsLegacyRetentionEnvelopeObjectName 12)
+      case Map.lookup (adapterObjectNameText authorityObjectName) authorityObjects of
+        Nothing -> expectationFailure "Authority-lane store did not create its exact object"
+        Just authorityObject ->
+          writeIORef
+            objectsRef
+            (Map.singleton (adapterObjectNameText legacyObjectName) authorityObject)
       present <-
         serveTlsObserveVersionRequest
           4096
@@ -892,7 +1586,7 @@ controlPlaneTlsRetentionEndpointSuite =
           objectVersion `shouldSatisfy` (not . Text.null)
         other -> expectationFailure ("expected exact-version envelope, got " <> show other)
       tlsObserveVersionHttpStatus present `shouldBe` ReplyOk
-      let objectName = mustRight (tlsRetentionEnvelopeObjectName 12)
+      let objectName = mustRight (tlsLegacyRetentionEnvelopeObjectName 12)
           objectVersion = mustRight (mkAdapterObjectVersion "corrupt-etag")
       writeIORef
         objectsRef
@@ -1023,7 +1717,10 @@ controlPlaneTlsRetentionEndpointSuite =
                       (replyStatusCode endpointStatus)
                       endpointBody
               renderTlsTargetAgentClientCause classified
-                `shouldBe` ("http-status/target/" <> renderTlsTargetAgentPlainResponseCause cause)
+                `shouldBe` case cause of
+                  TlsHomeRewrapCiphertextAuthenticationFailedResponse ->
+                    "home-rewrap-ciphertext-authentication-failed"
+                  _ -> "http-status/target/" <> renderTlsTargetAgentPlainResponseCause cause
               show classified `shouldNotContain` ByteString8.unpack endpointBody
           )
           allTlsTargetAgentPlainResponseCauses
@@ -1224,7 +1921,7 @@ freshMemoryTransport loseFirstResponse = do
                   writeIORef objectsRef (Map.insert key (version, bytes) objects)
                   lose <- atomicModifyIORef' loseResponseRef (False,)
                   pure $ if lose then Left "PUT response lost" else Right AdapterPutApplied
-          , adapterObjectStoreReady = pure True
+          , adapterObjectStoreReadiness = pure DedicatedAdapterReady
           }
   pure (transport, objectsRef, putCount)
 

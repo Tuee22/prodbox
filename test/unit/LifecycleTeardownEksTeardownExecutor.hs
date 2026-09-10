@@ -193,6 +193,8 @@ registeredInterpreter environment =
           pure (TeardownProviderCompleted "registered EKS cluster is absent")
     , awsRegisteredTargetReadStackDecisionInputs = \_ _ _ ->
         pure (Left "not used by EKS intent commit")
+    , awsRegisteredTargetReadStackCreationBinding = \_ _ _ ->
+        pure (Left "not used by EKS intent commit")
     , awsRegisteredTargetReadStackProviderBinding = \_ _ _ ->
         pure (Left "not used by EKS intent commit")
     , awsRegisteredTargetPresentEksDestroyBoundary =

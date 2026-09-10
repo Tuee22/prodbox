@@ -235,10 +235,10 @@ Requirements:
 - The Vault chart defaults to root Shamir mode. Child clusters set `seal.mode = transit`, render a
   `seal "transit"` stanza pointing at the parent Vault, and source the parent Transit token from
   `VAULT_TOKEN` rather than from the ConfigMap.
-- The TCP listener carries an explicit finite 160 MiB request ceiling. This admits the Target
-  Agent's 118 MiB replay projection after its at-most 157.34 MiB Base64 expansion and bounded KV
-  JSON envelope; it is not an unbounded listener override. The replay projection itself remains
-  limited independently by its 58-entry and 2 MiB-per-response bounds. The StatefulSet Pod
+- The TCP listener carries an explicit finite 192 MiB request ceiling. This admits the Target
+  Agent's 138 MiB replay projection after Base64 expansion and its bounded KV JSON envelope; it is
+  not an unbounded listener override. The replay projection itself remains limited independently
+  by its 68-entry, 2 MiB-per-response, and 138 MiB encoded bounds. The StatefulSet Pod
   template binds a deterministic digest of the rendered Vault ConfigMap: an unchanged effective
   configuration keeps the template stable, while any listener, storage, or transit-seal change
   rolls the Vault process before the reconcile's StatefulSet rollout wait can succeed.
@@ -967,7 +967,7 @@ and only the Vault policy, logical coordinates, and operations assigned to that 
 - the **Target Secret Agent** has no MinIO authority. It performs only allowlisted,
   generation-checked Vault KV read/CAS/read-back for its substrate. Independently scoped one-shot
   workers own any plaintext-bearing seal/materialize step and exact TLS Secret RBAC; only the home
-  Agent has the separately queued `transit/keys/prodbox-tls-envelope` lane;
+  Agent has the separately queued `transit/keys/prodbox-tls-retention-dek` lane;
 - the **Gateway Runtime** has no MinIO, lifecycle CAS, checkpoint, bootstrap, config-blob, or
   target-secret authority. It consumes a role-scoped config projection and an encrypted local
   identity-bound journal whose key-wrap policy cannot be used as a general object-store route;
@@ -1229,7 +1229,7 @@ Public-edge issuance remains cert-manager/ZeroSSL-owned, but retention has an in
 path. The selected substrate's Target Secret Agent starts a one-shot worker with RBAC for the exact
 TLS Secret, validates the certificate/key pair, and encrypts those bytes locally. A distinct
 one-shot lane in the retained home Agent obtains a fresh data key from the non-exportable
-`transit/keys/prodbox-tls-envelope` key and encrypts that data key to the selected worker's attested
+`transit/keys/prodbox-tls-retention-dek` key and encrypts that data key to the selected worker's attested
 ephemeral public key. Authority transports only bounded ciphertext, the home-Transit-wrapped data
 key, validated metadata, and ciphertext digests. The TLS Retention Adapter writes/read-backs that
 exact envelope at `public-edge-tls/<substrate>/<canonical-scope-key>` and never sees certificate plaintext, private
@@ -1345,7 +1345,7 @@ materializes it through Kubernetes auth. The control-plane identities are disjoi
   receipt-named materialization in bounded memory. Plaintext seal/materialize work runs in a
   separately scoped one-shot worker; TLS Secret observe/seal/materialize uses exact Kubernetes RBAC,
   not generic Vault KV. Only the home Agent has a separate
-  `transit/keys/prodbox-tls-envelope` generate/unwrap lane and a separately queued non-exportable
+  `transit/keys/prodbox-tls-retention-dek` generate/unwrap lane and a separately queued non-exportable
   retained-material custody/rewrap Transit lane. The latter accepts only closed `SesSmtpMaterial`
   and `AcmeEabMaterial` receipts and rewraps only to an attested selected Agent for exact
   `secret/keycloak/smtp` or `secret/acme/eab` materialization. An Agent cannot read
@@ -1641,7 +1641,7 @@ Plan.
 | 2 | Init and root-session custody | Before `/sys/init`, read back a password-AEAD `PreparedInitEnvelope` containing the generated share-recipient private key and exact pristine observation, transaction/storage generation, share count/threshold, ordered `pgp_keys` array/digest, recovery fingerprint, and both burn-key pins. Persist/read back Vault's PGP-encrypted response, atomically promote the final unlock bundle, then delete/read back the prepared envelope. Encrypt Vault's initial root token to the compiled/pinned, provenance-audited burn public key; its private material existed only inside the isolated destructive certification ceremony, was never exported, was destroyed before adoption, and is never accepted, retained, or accessible to prodbox. Prodbox never decrypts/uses the token ciphertext. Use only separately generated, operation-PGP-encrypted short-lived root sessions for baseline/break-glass; inventory stale accessors, repair/read back, revoke, and observe absence (§6, §16). |
 | 3 | Opaque object names / indexes | Model B encryption (§9): capability-owned accessors share one pure envelope codec, opaque `objects/<vault-keyed-HMAC>.enc` names, Vault-encrypted indexes, hashed stored AAD, decoy count, and size buckets. Sharing the format grants no cross-capability authority. |
 | 4 | Pulumi encrypted-backend approach | Decrypt-to-scratch interposition (§10): a fenced provider worker hydrates RAM-tmpfs `file://` state, runs Pulumi with no passphrase, writes an immutable encrypted blob, and commits its digest through the Lifecycle Authority aggregate. |
-| 5 | TLS private-key custody and retention | cert-manager remains the public-edge issuer. The selected Agent encrypts exact TLS Secret bytes locally with a DEK supplied through the retained home Agent's `prodbox-tls-envelope` Transit lane; the TLS Retention Adapter stores ciphertext only under exact registered prefixes. Native Vault PKI remains the internal-cert authority (§11). |
+| 5 | TLS private-key custody and retention | cert-manager remains the public-edge issuer. The selected Agent encrypts exact TLS Secret bytes locally with a DEK supplied through the retained home Agent's `prodbox-tls-retention-dek` Transit lane; the TLS Retention Adapter stores ciphertext only under exact registered prefixes. Native Vault PKI remains the internal-cert authority (§11). |
 | 6 | Fail-closed strictness for running workloads | Already-running workloads continue only while they need no new Vault operation; security-sensitive paths fail their capability/readiness gate rather than reconstructing a fallback (§2). |
 | 7 | Federation depth + child-registration surface | Parent custody uses a dedicated typed Vault capability. Gateway Runtime receives only the bounded peer projection and exposes no child-secret listing or bootstrap proxy (§16). |
 | 8 | In-force config ownership | Lifecycle Authority owns `ConfigObserve`/`ConfigProposeCas`, immutable encrypted config blobs, and the aggregate generation/digest/reference; host and Gateway direct object access is removed. |

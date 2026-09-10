@@ -28,6 +28,7 @@ import Prodbox.ControlPlane.EksDrainIntentClient
 import Prodbox.ControlPlane.EksDrainIntentEndpoint
   ( EksDrainIntentConfirmationKind (..)
   , EksDrainIntentEndpointResponseError (..)
+  , EksDrainIntentWireRefusal (EksDrainIntentWireRecoveryMissing)
   , confirmEksDrainIntentEndpointResponse
   , confirmEksDrainIntentRecoveryResponse
   , decodeEksDrainIntentEndpointResponse
@@ -103,7 +104,7 @@ lifecycleAuthorityEksDrainIntentAuthenticatedClient transport =
       if status == expectedStatus
         then
           first
-            endpointResponseError
+            recoveryEndpointResponseError
             (confirmEksDrainIntentRecoveryResponse identity response)
         else
           Left
@@ -126,3 +127,10 @@ endpointResponseError err = case err of
   EksDrainIntentEndpointResponseRecoveryIdentityMismatch {} -> invalidProof
  where
   invalidProof = EksDrainIntentClientRemoteProofInvalid (Text.pack (show err))
+
+recoveryEndpointResponseError
+  :: EksDrainIntentEndpointResponseError -> EksDrainIntentClientError
+recoveryEndpointResponseError err = case err of
+  EksDrainIntentEndpointResponseRefused EksDrainIntentWireRecoveryMissing ->
+    EksDrainIntentClientRecoveryMissing
+  _ -> endpointResponseError err

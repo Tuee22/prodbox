@@ -41,6 +41,10 @@ lifecycleTeardownCapabilityCustodySuite =
       -- one.
       capabilityCustodyDependantsDerived regression `shouldBe` True
 
+    it "binds every checkpoint capability to its registry key, not its Provider stack id" $ do
+      regression <- fixedCapabilityCustodyRegression
+      capabilityCustodyStackNameLookupExact regression `shouldBe` True
+
     it "reports an undeclared family as underivable rather than as empty" $ do
       regression <- fixedCapabilityCustodyRegression
       -- No capability derives an empty set. An empty derived set discharges

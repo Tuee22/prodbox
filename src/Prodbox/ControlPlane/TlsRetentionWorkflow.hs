@@ -33,11 +33,16 @@ import Prodbox.ControlPlane.TlsRetentionAuthorityClient
   )
 import Prodbox.ControlPlane.TlsRetentionClient
   ( TlsRetentionClient (..)
-  , TlsRetentionClientError
+  , TlsRetentionClientError (..)
+  , TlsRetentionHttpResponseObservation (..)
   )
 import Prodbox.ControlPlane.TlsRetentionEndpoint
   ( TlsEnvelopeObservation (..)
+  , TlsRetentionPlainResponseCause (..)
   , TlsRetentionReceipt (..)
+  , TlsStoreConfirmationFailure (..)
+  , TlsStorePutDisposition (..)
+  , TlsStoreRepositoryFailure (..)
   , TlsVersionEnvelopeObservation (..)
   )
 import Prodbox.ControlPlane.TlsTargetAgentClient
@@ -54,9 +59,14 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   , PromotionEvidence (..)
   , RestoreObservation (..)
   , RetainedTlsRef (..)
+  , RetentionVersion (..)
+  , TlsLegacyRecoveryCollisionEvidence (..)
+  , TlsLegacyRecoveryEvidence (..)
+  , TlsLegacyRecoverySuccessorEvidence (..)
   , TlsRestoreDecision (..)
   , TlsRestoreRefusal
   , TlsRetentionPending (..)
+  , TlsRetentionState (..)
   , TlsSealedEnvelope
   , currentRetainedRef
   , decideTlsRestore
@@ -112,20 +122,23 @@ retainPublicEdgeTlsWorkflow workflow approval = do
   case first TlsWorkflowAuthorityFailed observed of
     Left err -> pure (Left err)
     Right state -> case pendingTlsRetention state of
-      Just pending -> resumePending pending
+      Just pending -> resumePending state pending
       Nothing -> do
         let version = nextRetentionVersion state
-        occupied <-
-          observeTlsRetentionVersion
-            (tlsWorkflowAdapter workflow)
-            version
-        case first TlsWorkflowAdapterFailed occupied of
-          Left err -> pure (Left err)
-          Right TlsVersionEnvelopeMissing -> createFresh state version
-          Right TlsVersionEnvelopeCorrupt ->
-            pure (Left TlsWorkflowLegacyEnvelopeCorrupt)
-          Right (TlsVersionEnvelopePresent envelope _) ->
-            adoptLegacy state version envelope
+        case currentRetainedRef state of
+          Just _ -> createFresh state version
+          Nothing -> do
+            occupied <-
+              observeTlsRetentionVersion
+                (tlsWorkflowAdapter workflow)
+                version
+            case first TlsWorkflowAdapterFailed occupied of
+              Left err -> pure (Left err)
+              Right TlsVersionEnvelopeMissing -> createFresh state version
+              Right TlsVersionEnvelopeCorrupt ->
+                pure (Left TlsWorkflowLegacyEnvelopeCorrupt)
+              Right (TlsVersionEnvelopePresent envelope _) ->
+                adoptLegacy state version envelope
  where
   createFresh state version = do
     homePreparedResult <-
@@ -181,6 +194,11 @@ retainPublicEdgeTlsWorkflow workflow approval = do
             let candidate = referenceFor version retained envelope
             applied <- applyTlsEnvelopeAtSelected workflow candidate envelope
             case applied of
+              Left
+                ( TlsWorkflowHomeAgentFailed
+                    TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed
+                  ) ->
+                  recoverUnopenableLegacy state version envelope
               Left err -> pure (Left err)
               Right receipt
                 | tlsTargetRestoredReadBackSource receipt
@@ -188,6 +206,52 @@ retainPublicEdgeTlsWorkflow workflow approval = do
                     stageAndResume state approval candidate envelope
                 | otherwise ->
                     pure (Left TlsWorkflowLegacyAdoptionNotIdempotent)
+
+  recoverUnopenableLegacy state version legacyEnvelope =
+    case (state, version) of
+      (TlsRetentionEmpty, RetentionVersion 1) -> do
+        let recoveryEvidence =
+              TlsLegacyRecoveryEvidence
+                { tlsLegacyRecoveryVersion = version
+                , tlsLegacyRecoveryEnvelopeDigest =
+                    tlsSealedEnvelopeDigest legacyEnvelope
+                }
+            recoveryVersion = RetentionVersion 2
+        homePreparedResult <-
+          prepareTlsDekDestination (tlsWorkflowRetainedHomeAgent workflow)
+        case first TlsWorkflowHomeAgentFailed homePreparedResult of
+          Left err -> pure (Left err)
+          Right homePrepared -> do
+            retainedResult <-
+              retainSelectedPublicEdgeTls
+                (tlsWorkflowSelectedAgent workflow)
+                recoveryVersion
+                (tlsDekPreparedPublicKey homePrepared)
+            case retainedResult of
+              Left (TlsTargetAgentClientHttpStatus 404 _) ->
+                pure (Left TlsWorkflowLegacySourceMissing)
+              Left err -> pure (Left (TlsWorkflowSelectedAgentFailed err))
+              Right retained -> do
+                wrappedResult <-
+                  wrapRetainedHomeTlsDek
+                    (tlsWorkflowRetainedHomeAgent workflow)
+                    homePrepared
+                    (tlsTargetRetainedDekEnvelope retained)
+                case first TlsWorkflowHomeAgentFailed wrappedResult of
+                  Left err -> pure (Left err)
+                  Right wrapped ->
+                    case mkTlsSealedEnvelope
+                      (tlsTargetRetainedCertificateCiphertext retained)
+                      (TextEncoding.encodeUtf8 (tlsWrappedDekText wrapped)) of
+                      Left detail -> pure (Left (TlsWorkflowEnvelopeInvalid detail))
+                      Right envelope ->
+                        stageLegacyRecoveryAndResume
+                          approval
+                          recoveryEvidence
+                          Nothing
+                          (referenceFor recoveryVersion retained envelope)
+                          envelope
+      _ -> pure (Left TlsWorkflowLegacyAdoptionNotIdempotent)
 
   referenceFor version retained envelope =
     RetainedTlsRef
@@ -216,17 +280,166 @@ retainPublicEdgeTlsWorkflow workflow approval = do
                 }
          in case validateStaging expected outcome of
               Left err -> pure (Left err)
-              Right pending -> resumePending pending
+              Right pending -> resumePending (stagingOutcomeState outcome) pending
 
-  resumePending pending = do
+  stageLegacyRecoveryAndResume stagedApproval evidence collision candidate envelope = do
+    staged <-
+      stageTlsRetentionAfterUnrecoverableLegacy
+        (tlsWorkflowAuthority workflow)
+        stagedApproval
+        evidence
+        collision
+        candidate
+        envelope
+    case first TlsWorkflowAuthorityFailed staged of
+      Left err -> pure (Left err)
+      Right outcome ->
+        let expected =
+              TlsRetentionPending
+                { tlsPendingPrevious = Nothing
+                , tlsPendingApproval = stagedApproval
+                , tlsPendingCandidate = candidate
+                , tlsPendingEnvelope = envelope
+                }
+         in case validateLegacyRecoveryStaging evidence expected outcome of
+              Left err -> pure (Left err)
+              Right pending -> resumePending (stagingOutcomeState outcome) pending
+
+  resumePending state pending = do
     stored <-
       storeTlsRetention
         (tlsWorkflowAdapter workflow)
         (tlsPendingCandidate pending)
         (tlsPendingEnvelope pending)
-    case first TlsWorkflowAdapterFailed stored of
-      Left err -> pure (Left err)
+    case stored of
+      Left clientError
+        | isExactImmutableCollision clientError ->
+            recoverImmutableCollision state pending clientError
+        | otherwise -> pure (Left (TlsWorkflowAdapterFailed clientError))
       Right _ -> confirmAndPromote pending
+
+  recoverImmutableCollision state pending originalError = case state of
+    TlsRetentionLegacyRecoveryPendingState evidence durablePending
+      | durablePending == pending -> do
+          let pendingCandidate = tlsPendingCandidate pending
+              version = retainedVersion pendingCandidate
+          observed <-
+            observeTlsRetentionAuthorityVersion
+              (tlsWorkflowAdapter workflow)
+              version
+          case first TlsWorkflowAdapterFailed observed of
+            Left err -> pure (Left err)
+            Right (TlsVersionEnvelopePresent occupiedEnvelope _) -> do
+              let occupiedCandidate =
+                    pendingCandidate
+                      { retainedCiphertextDigest = tlsSealedEnvelopeDigest occupiedEnvelope
+                      }
+                  collision =
+                    TlsLegacyRecoveryCollisionEvidence
+                      { tlsLegacyRecoveryCollisionVersion = version
+                      , tlsLegacyRecoveryPendingEnvelopeDigest =
+                          retainedCiphertextDigest pendingCandidate
+                      , tlsLegacyRecoveryObservedEnvelopeDigest =
+                          retainedCiphertextDigest occupiedCandidate
+                      }
+              applied <- applyTlsEnvelopeAtSelected workflow occupiedCandidate occupiedEnvelope
+              case applied of
+                Left
+                  ( TlsWorkflowHomeAgentFailed
+                      TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed
+                    ) ->
+                    recoverUnopenableCollision evidence collision pending
+                Left err -> pure (Left err)
+                Right receipt
+                  | tlsTargetRestoredReadBackSource receipt
+                      == retainedSourceSecret occupiedCandidate ->
+                      stageLegacyRecoveryAndResume
+                        (tlsPendingApproval pending)
+                        evidence
+                        (Just collision)
+                        occupiedCandidate
+                        occupiedEnvelope
+                  | otherwise -> pure (Left TlsWorkflowSourceReadBackMismatch)
+            Right _ -> pure (Left (TlsWorkflowAdapterFailed originalError))
+    _ -> pure (Left (TlsWorkflowAdapterFailed originalError))
+
+  recoverUnopenableCollision evidence collision displaced = do
+    let successorVersion = RetentionVersion 3
+        displacedApproval = tlsPendingApproval displaced
+    homePreparedResult <-
+      prepareTlsDekDestination (tlsWorkflowRetainedHomeAgent workflow)
+    case first TlsWorkflowHomeAgentFailed homePreparedResult of
+      Left err -> pure (Left err)
+      Right homePrepared -> do
+        retainedResult <-
+          retainSelectedPublicEdgeTls
+            (tlsWorkflowSelectedAgent workflow)
+            successorVersion
+            (tlsDekPreparedPublicKey homePrepared)
+        case retainedResult of
+          Left (TlsTargetAgentClientHttpStatus 404 _) ->
+            pure (Left TlsWorkflowLegacySourceMissing)
+          Left err -> pure (Left (TlsWorkflowSelectedAgentFailed err))
+          Right retained -> do
+            wrappedResult <-
+              wrapRetainedHomeTlsDek
+                (tlsWorkflowRetainedHomeAgent workflow)
+                homePrepared
+                (tlsTargetRetainedDekEnvelope retained)
+            case first TlsWorkflowHomeAgentFailed wrappedResult of
+              Left err -> pure (Left err)
+              Right wrapped ->
+                case mkTlsSealedEnvelope
+                  (tlsTargetRetainedCertificateCiphertext retained)
+                  (TextEncoding.encodeUtf8 (tlsWrappedDekText wrapped)) of
+                  Left detail -> pure (Left (TlsWorkflowEnvelopeInvalid detail))
+                  Right envelope ->
+                    stageLegacyRecoverySuccessorAndResume
+                      displacedApproval
+                      evidence
+                      collision
+                      displaced
+                      (referenceFor successorVersion retained envelope)
+                      envelope
+
+  stageLegacyRecoverySuccessorAndResume
+    stagedApproval
+    evidence
+    collision
+    displaced
+    candidate
+    envelope = do
+      staged <-
+        stageTlsRetentionAfterUnrecoverableLegacy
+          (tlsWorkflowAuthority workflow)
+          stagedApproval
+          evidence
+          (Just collision)
+          candidate
+          envelope
+      case first TlsWorkflowAuthorityFailed staged of
+        Left err -> pure (Left err)
+        Right outcome ->
+          let expectedPending =
+                TlsRetentionPending
+                  { tlsPendingPrevious = Nothing
+                  , tlsPendingApproval = stagedApproval
+                  , tlsPendingCandidate = candidate
+                  , tlsPendingEnvelope = envelope
+                  }
+              expectedSuccessor =
+                TlsLegacyRecoverySuccessorEvidence
+                  { tlsLegacyRecoverySuccessorCollision = collision
+                  , tlsLegacyRecoveryDisplacedApproval = tlsPendingApproval displaced
+                  , tlsLegacyRecoveryDisplacedCandidate = tlsPendingCandidate displaced
+                  }
+           in case validateLegacyRecoverySuccessorStaging
+                evidence
+                expectedSuccessor
+                expectedPending
+                outcome of
+                Left err -> pure (Left err)
+                Right pending -> resumePending (stagingOutcomeState outcome) pending
 
   confirmAndPromote pending = do
     let candidate = tlsPendingCandidate pending
@@ -259,6 +472,22 @@ retainPublicEdgeTlsWorkflow workflow approval = do
                   Right (TlsWorkflowRetained candidate)
         | otherwise -> pure (Left TlsWorkflowAdapterReadBackMismatch)
       Right _ -> pure (Left TlsWorkflowAdapterReadBackMismatch)
+
+  stagingOutcomeState outcome = case outcome of
+    TlsAuthorityStagingCommitted value -> value
+    TlsAuthorityStagingAlreadyPending value -> value
+
+  isExactImmutableCollision clientError = case clientError of
+    TlsRetentionClientHttpStatus
+      ( TlsRetentionEndpointResponse
+          ( TlsRetentionStoreRepositoryFailed
+              ( TlsStoreRepositoryConfirmationFailed
+                  TlsStorePutConflict
+                  TlsStoreConfirmationBytesMismatch
+                )
+            )
+        ) -> True
+    _ -> False
 
 applyTlsEnvelopeAtSelected
   :: TlsRetentionWorkflow IO
@@ -339,6 +568,40 @@ validateStaging expected outcome =
    in case pendingTlsRetention state of
         Just pending
           | pending == expected -> Right pending
+        _ -> Left TlsWorkflowStagingStateMismatch
+
+validateLegacyRecoveryStaging
+  :: TlsLegacyRecoveryEvidence
+  -> TlsRetentionPending
+  -> TlsAuthorityStagingOutcome
+  -> Either TlsRetentionWorkflowError TlsRetentionPending
+validateLegacyRecoveryStaging expectedEvidence expectedPending outcome =
+  let state = case outcome of
+        TlsAuthorityStagingCommitted value -> value
+        TlsAuthorityStagingAlreadyPending value -> value
+   in case state of
+        TlsRetentionLegacyRecoveryPendingState evidence pending
+          | evidence == expectedEvidence && pending == expectedPending -> Right pending
+        TlsRetentionLegacyRecoveryCollisionPendingState evidence _ pending
+          | evidence == expectedEvidence && pending == expectedPending -> Right pending
+        _ -> Left TlsWorkflowStagingStateMismatch
+
+validateLegacyRecoverySuccessorStaging
+  :: TlsLegacyRecoveryEvidence
+  -> TlsLegacyRecoverySuccessorEvidence
+  -> TlsRetentionPending
+  -> TlsAuthorityStagingOutcome
+  -> Either TlsRetentionWorkflowError TlsRetentionPending
+validateLegacyRecoverySuccessorStaging expectedEvidence expectedSuccessor expectedPending outcome =
+  let state = case outcome of
+        TlsAuthorityStagingCommitted value -> value
+        TlsAuthorityStagingAlreadyPending value -> value
+   in case state of
+        TlsRetentionLegacyRecoverySuccessorPendingState evidence successor pending
+          | evidence == expectedEvidence
+              && successor == expectedSuccessor
+              && pending == expectedPending ->
+              Right pending
         _ -> Left TlsWorkflowStagingStateMismatch
 
 validatePromotion

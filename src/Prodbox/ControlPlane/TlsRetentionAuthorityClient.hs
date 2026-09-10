@@ -25,7 +25,8 @@ import Prodbox.ControlPlane.AuthenticatedTransport
 import Prodbox.ControlPlane.Client
   ( ControlPlaneResponse (..)
   , ControlPlaneRouteFor
-    ( LifecycleTlsRetentionObserveRoute
+    ( LifecycleTlsRetentionLegacyRecoveryStageRoute
+    , LifecycleTlsRetentionObserveRoute
     , LifecycleTlsRetentionPromoteRoute
     , LifecycleTlsRetentionStageRoute
     )
@@ -40,7 +41,8 @@ import Prodbox.ControlPlane.TlsRetentionAuthority
   , mkTlsRetentionSlot
   )
 import Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
-  ( TlsAuthorityObserveRequest (..)
+  ( TlsAuthorityLegacyRecoveryStageRequest (..)
+  , TlsAuthorityObserveRequest (..)
   , TlsAuthorityPromoteRequest (..)
   , TlsAuthorityResponse (..)
   , TlsAuthorityStageRequest (..)
@@ -52,6 +54,8 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   ( KeyRotationApproval
   , PromotionEvidence
   , RetainedTlsRef
+  , TlsLegacyRecoveryCollisionEvidence
+  , TlsLegacyRecoveryEvidence
   , TlsRetentionState
   , TlsSealedEnvelope
   )
@@ -62,6 +66,17 @@ data TlsRetentionAuthorityClient m = TlsRetentionAuthorityClient
       :: m (Either TlsRetentionAuthorityClientError TlsRetentionState)
   , stageTlsRetentionCurrent
       :: KeyRotationApproval
+      -> RetainedTlsRef
+      -> TlsSealedEnvelope
+      -> m
+           ( Either
+               TlsRetentionAuthorityClientError
+               TlsAuthorityStagingOutcome
+           )
+  , stageTlsRetentionAfterUnrecoverableLegacy
+      :: KeyRotationApproval
+      -> TlsLegacyRecoveryEvidence
+      -> Maybe TlsLegacyRecoveryCollisionEvidence
       -> RetainedTlsRef
       -> TlsSealedEnvelope
       -> m
@@ -112,6 +127,7 @@ mkTlsRetentionAuthorityClient transport substrate scope = do
     TlsRetentionAuthorityClient
       { observeTlsRetentionCurrent = observe
       , stageTlsRetentionCurrent = stage
+      , stageTlsRetentionAfterUnrecoverableLegacy = stageLegacyRecovery
       , promoteTlsRetentionCurrent = promote
       }
  where
@@ -139,6 +155,28 @@ mkTlsRetentionAuthorityClient transport substrate scope = do
           , tlsAuthorityStageApproval = approval
           , tlsAuthorityStageCandidate = candidate
           , tlsAuthorityStageEnvelope = envelope
+          }
+    pure $ do
+      decoded <- response
+      case decoded of
+        TlsAuthorityStagingApplied state ->
+          Right (TlsAuthorityStagingCommitted state)
+        TlsAuthorityStagingNoop state ->
+          Right (TlsAuthorityStagingAlreadyPending state)
+        other -> Left (remoteError other)
+
+  stageLegacyRecovery approval evidence collision candidate envelope = do
+    response <-
+      call
+        LifecycleTlsRetentionLegacyRecoveryStageRoute
+        TlsAuthorityLegacyRecoveryStageRequest
+          { tlsAuthorityLegacyRecoveryStageSubstrate = substrate
+          , tlsAuthorityLegacyRecoveryStageScope = scope
+          , tlsAuthorityLegacyRecoveryStageApproval = approval
+          , tlsAuthorityLegacyRecoveryStageEvidence = evidence
+          , tlsAuthorityLegacyRecoveryStageCollision = collision
+          , tlsAuthorityLegacyRecoveryStageCandidate = candidate
+          , tlsAuthorityLegacyRecoveryStageEnvelope = envelope
           }
     pure $ do
       decoded <- response

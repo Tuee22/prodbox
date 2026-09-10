@@ -21,7 +21,12 @@ module Prodbox.ControlPlane.DedicatedAdapterStore
   , AdapterObjectVersion
   , AdapterObjectObservation (..)
   , AdapterPutResult (..)
+  , DedicatedAdapterReadiness (..)
+  , DedicatedAdapterReadinessCause (..)
+  , allDedicatedAdapterReadinessCauses
+  , renderDedicatedAdapterReadinessCause
   , DedicatedAdapterTransport (..)
+  , adapterObjectStoreReady
   , adapterObjectVersionText
   , mkAdapterObjectVersion
   , adapterBindingCoordinate
@@ -45,6 +50,7 @@ module Prodbox.ControlPlane.DedicatedAdapterStore
   , tlsRetentionStoreScopeKey
   , authorityBackupBlobObjectName
   , tlsRetentionEnvelopeObjectName
+  , tlsLegacyRetentionEnvelopeObjectName
   , deferredAuthorityBackupBinding
   , newAuthorityBackupAdapterBinding
   , newTlsRetentionAdapterBinding
@@ -132,6 +138,36 @@ data AdapterPutResult
   | AdapterPutConflict
   deriving stock (Eq, Show)
 
+data DedicatedAdapterReadinessCause
+  = DedicatedAdapterCredentialUnavailable
+  | DedicatedAdapterTransportUnavailable
+  | DedicatedAdapterHttpRedirect
+  | DedicatedAdapterHttpBadRequest
+  | DedicatedAdapterHttpUnauthorized
+  | DedicatedAdapterHttpForbidden
+  | DedicatedAdapterHttpNotFound
+  | DedicatedAdapterHttpOther
+  deriving stock (Bounded, Enum, Eq, Show)
+
+data DedicatedAdapterReadiness
+  = DedicatedAdapterReady
+  | DedicatedAdapterUnavailable !DedicatedAdapterReadinessCause
+  deriving stock (Eq, Show)
+
+allDedicatedAdapterReadinessCauses :: [DedicatedAdapterReadinessCause]
+allDedicatedAdapterReadinessCauses = [minBound .. maxBound]
+
+renderDedicatedAdapterReadinessCause :: DedicatedAdapterReadinessCause -> Text
+renderDedicatedAdapterReadinessCause cause = case cause of
+  DedicatedAdapterCredentialUnavailable -> "credential-unavailable"
+  DedicatedAdapterTransportUnavailable -> "transport-unavailable"
+  DedicatedAdapterHttpRedirect -> "http-redirect"
+  DedicatedAdapterHttpBadRequest -> "http-bad-request"
+  DedicatedAdapterHttpUnauthorized -> "http-unauthorized"
+  DedicatedAdapterHttpForbidden -> "http-forbidden"
+  DedicatedAdapterHttpNotFound -> "http-not-found"
+  DedicatedAdapterHttpOther -> "http-other"
+
 -- | Prefix-confined immutable object transport.  There is deliberately no
 -- replace operation: both backup blobs and TLS envelope versions are immutable.
 data DedicatedAdapterTransport (kind :: DedicatedAdapterKind) m
@@ -143,8 +179,15 @@ data DedicatedAdapterTransport (kind :: DedicatedAdapterKind) m
       :: AdapterObjectName kind
       -> ByteString
       -> m (Either Text AdapterPutResult)
-  , adapterObjectStoreReady :: m Bool
+  , adapterObjectStoreReadiness :: m DedicatedAdapterReadiness
   }
+
+adapterObjectStoreReady
+  :: (Functor m)
+  => DedicatedAdapterTransport kind m
+  -> m Bool
+adapterObjectStoreReady transport =
+  (== DedicatedAdapterReady) <$> adapterObjectStoreReadiness transport
 
 data DedicatedAdapterBinding (kind :: DedicatedAdapterKind)
   = DedicatedAdapterBinding
@@ -346,6 +389,15 @@ tlsRetentionEnvelopeObjectName
   :: Natural
   -> Either Text (AdapterObjectName 'TlsRetentionAdapter)
 tlsRetentionEnvelopeObjectName version =
+  Right (AdapterObjectName ("authority-v1/versions/" <> Text.pack (show version) <> ".envelope"))
+
+-- | The pre-Authority writer used the unqualified @versions/@ lane.  This
+-- constructor exists only for the bounded exact-version compatibility read;
+-- new store and restore operations use 'tlsRetentionEnvelopeObjectName'.
+tlsLegacyRetentionEnvelopeObjectName
+  :: Natural
+  -> Either Text (AdapterObjectName 'TlsRetentionAdapter)
+tlsLegacyRetentionEnvelopeObjectName version =
   Right (AdapterObjectName ("versions/" <> Text.pack (show version) <> ".envelope"))
 
 newAuthorityBackupAdapterBinding
@@ -591,11 +643,11 @@ deferredTransport loadTransport =
     , putAdapterObjectIfAbsent = \objectName bytes ->
         withCurrentTransport
           (\transport -> putAdapterObjectIfAbsent transport objectName bytes)
-    , adapterObjectStoreReady = do
+    , adapterObjectStoreReadiness = do
         current <- loadTransport
         case current of
-          Left _ -> pure False
-          Right transport -> adapterObjectStoreReady transport
+          Left _ -> pure (DedicatedAdapterUnavailable DedicatedAdapterCredentialUnavailable)
+          Right transport -> adapterObjectStoreReadiness transport
     }
  where
   withCurrentTransport action = do
@@ -663,7 +715,7 @@ nativeTransport config =
   DedicatedAdapterTransport
     { observeAdapterObject = observeNativeObject config
     , putAdapterObjectIfAbsent = putNativeObjectIfAbsent config
-    , adapterObjectStoreReady = probeNativePrefix config
+    , adapterObjectStoreReadiness = probeNativePrefixReadiness config
     }
 
 observeNativeObject
@@ -702,8 +754,8 @@ putNativeObjectIfAbsent config objectName bytes = do
       | status == 409 || status == 412 -> Right AdapterPutConflict
       | otherwise -> Left (statusFailure "immutable PUT" status body)
 
-probeNativePrefix :: NativeS3Config -> IO Bool
-probeNativePrefix config = do
+probeNativePrefixReadiness :: NativeS3Config -> IO DedicatedAdapterReadiness
+probeNativePrefixReadiness config = do
   response <-
     performNativeS3
       config
@@ -716,8 +768,16 @@ probeNativePrefix config = do
       ""
       []
   pure $ case response of
-    Right (status, _, _) -> status >= 200 && status < 300
-    Left _ -> False
+    Left _ -> DedicatedAdapterUnavailable DedicatedAdapterTransportUnavailable
+    Right (status, _, _)
+      | status >= 200 && status < 300 -> DedicatedAdapterReady
+      | status >= 300 && status < 400 ->
+          DedicatedAdapterUnavailable DedicatedAdapterHttpRedirect
+      | status == 400 -> DedicatedAdapterUnavailable DedicatedAdapterHttpBadRequest
+      | status == 401 -> DedicatedAdapterUnavailable DedicatedAdapterHttpUnauthorized
+      | status == 403 -> DedicatedAdapterUnavailable DedicatedAdapterHttpForbidden
+      | status == 404 -> DedicatedAdapterUnavailable DedicatedAdapterHttpNotFound
+      | otherwise -> DedicatedAdapterUnavailable DedicatedAdapterHttpOther
 
 data S3Timestamp = S3Timestamp
   { s3AmzDate :: !ByteString

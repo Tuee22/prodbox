@@ -32,6 +32,7 @@ import Prodbox.ControlPlane.DedicatedAdapterStore
   , DedicatedAdapterKind (AuthorityBackupAdapter)
   , DedicatedAdapterTransport (..)
   , adapterBindingTransport
+  , adapterObjectStoreReady
   , adapterObjectVersionText
   , authorityBackupBlobObjectName
   )

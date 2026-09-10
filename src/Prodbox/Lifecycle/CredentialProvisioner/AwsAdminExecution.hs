@@ -92,6 +92,11 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   , renderAwsAdminWorkerTerminalLineDisposition
   , renderAwsAdminWorkerReceiptTransportObservation
   , validateAwsAdminWorkerReceiptForPermit
+  , AwsAdminInstallAttempt (..)
+  , AwsAdminInstallPlanBinding (..)
+  , AwsAdminInstallInventory (..)
+  , AwsAdminInstallInventoryDecision (..)
+  , decideAwsAdminInstallInventory
   , executeAwsAdminPermit
   , AwsAdminExecutionError (..)
   , classifyAwsAdminExecutionError
@@ -153,12 +158,15 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecutionJournal
   , stepAwsAdminExecutionJournal
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
-  ( SignedAwsAdminPermit
+  ( AwsAdminCleanupRecoveryProgram (..)
+  , AwsAdminPermitKind (..)
+  , SignedAwsAdminPermit
   , awsAdminPermitIntentAction
   , awsAdminPermitIntentCredentialClass
   , awsAdminPermitIntentDeadline
   , awsAdminPermitIntentGeneration
   , awsAdminPermitIntentIamParameters
+  , awsAdminPermitIntentKind
   , awsAdminPermitIntentPermitId
   , awsAdminPermitIntentPlanBinding
   , awsAdminPermitIntentPreparedTarget
@@ -1530,6 +1538,58 @@ isCanonicalReceiptEnvelope line =
       Left _ -> False
       Right _ -> True
 
+data AwsAdminInstallAttempt
+  = AwsAdminInstallInitialAttempt
+  | AwsAdminInstallRemintAttempt
+  deriving (Bounded, Enum, Eq, Show)
+
+data AwsAdminInstallPlanBinding
+  = AwsAdminInstallWithoutPlanBinding
+  | AwsAdminInstallWithFirstReconcileBinding
+  deriving (Bounded, Enum, Eq, Show)
+
+data AwsAdminInstallInventory
+  = AwsAdminInstallInventoryEmpty
+  | AwsAdminInstallInventoryNonempty
+  deriving (Bounded, Enum, Eq, Show)
+
+data AwsAdminInstallInventoryDecision
+  = AwsAdminInstallProceed
+  | AwsAdminInstallRequireCleanup
+  | AwsAdminInstallRefuseNonempty
+  | AwsAdminInstallRefuseRemint
+  deriving (Bounded, Enum, Eq, Show)
+
+-- | A plan-unbound ordinary initial install cannot claim or delete a
+-- pre-existing key. Exceptional Genesis and exact retained first-reconcile
+-- members own deterministic identities and therefore enter the existing
+-- journaled stable-cleanup/remint program. No fresh key is created until that
+-- program has positively observed stable absence.
+decideAwsAdminInstallInventory
+  :: AwsAdminPermitKind
+  -> AwsAdminInstallPlanBinding
+  -> AwsAdminInstallAttempt
+  -> AwsAdminInstallInventory
+  -> AwsAdminInstallInventoryDecision
+decideAwsAdminInstallInventory kind planBinding attempt inventory =
+  case inventory of
+    AwsAdminInstallInventoryEmpty -> AwsAdminInstallProceed
+    AwsAdminInstallInventoryNonempty -> case attempt of
+      AwsAdminInstallRemintAttempt -> AwsAdminInstallRefuseRemint
+      AwsAdminInstallInitialAttempt -> case (kind, planBinding) of
+        (NormalOperatorMaterialKind, AwsAdminInstallWithFirstReconcileBinding) ->
+          AwsAdminInstallRequireCleanup
+        (GenesisBackupKind _, AwsAdminInstallWithFirstReconcileBinding) ->
+          AwsAdminInstallRequireCleanup
+        (NormalOperatorMaterialKind, AwsAdminInstallWithoutPlanBinding) ->
+          AwsAdminInstallRefuseNonempty
+        (GenesisBackupKind _, AwsAdminInstallWithoutPlanBinding) ->
+          AwsAdminInstallRefuseNonempty
+        (BackupRepairFrozenKind _, _) -> AwsAdminInstallRefuseNonempty
+        (CleanupRecoveryKind program _, _) -> case program of
+          NormalOperatorMaterialCleanupProgram -> AwsAdminInstallRefuseNonempty
+          GenesisBackupCleanupProgram _ -> AwsAdminInstallRequireCleanup
+
 executeAwsAdminPermit
   :: (Monad m)
   => AwsAdminExecutionJournalBoundary m
@@ -1576,15 +1636,38 @@ executeAwsAdminPermit journalBoundary iam delivery permit = do
                     case inventory of
                       Left err -> pure (Left err)
                       Right keys -> case action of
-                        InstallOperatorMaterial
-                          | null keys -> prepareAttempt remaining journal [] recoveryUsed
-                          | recoveryUsed ->
+                        InstallOperatorMaterial ->
+                          case decideAwsAdminInstallInventory
+                            (awsAdminPermitIntentKind intent)
+                            ( case awsAdminPermitIntentPlanBinding intent of
+                                Nothing -> AwsAdminInstallWithoutPlanBinding
+                                Just _ -> AwsAdminInstallWithFirstReconcileBinding
+                            )
+                            ( if recoveryUsed
+                                then AwsAdminInstallRemintAttempt
+                                else AwsAdminInstallInitialAttempt
+                            )
+                            ( if null keys
+                                then AwsAdminInstallInventoryEmpty
+                                else AwsAdminInstallInventoryNonempty
+                            ) of
+                            AwsAdminInstallProceed ->
+                              prepareAttempt remaining journal [] recoveryUsed
+                            AwsAdminInstallRequireCleanup ->
                               requireCleanup
                                 remaining
                                 journal
                                 recoveryUsed
                                 AwsAdminRecoveryRemintIntentInventoryNotEmpty
-                          | otherwise -> pure (Left AwsAdminInstallRequiresEmptyInventory)
+                            AwsAdminInstallRefuseNonempty ->
+                              pure (Left AwsAdminInstallRequiresEmptyInventory)
+                            AwsAdminInstallRefuseRemint ->
+                              pure
+                                ( Left
+                                    ( AwsAdminRecoveryRemintAmbiguous
+                                        AwsAdminRecoveryRemintIntentInventoryNotEmpty
+                                    )
+                                )
                         RotateOperatorMaterial
                           | recoveryUsed && null keys ->
                               prepareAttempt remaining journal [] recoveryUsed

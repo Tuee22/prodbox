@@ -18,6 +18,9 @@ module Prodbox.ControlPlane.EksClientAuthProjection.Internal
   , eksClientAuthPublicKeyBytes
   , mkEksClientAuthPublicKey
   , mkEksClientAuthProjection
+  , eksClientAuthEvidenceMarker
+  , maximumEksClientAuthEvidenceCharacters
+  , maximumEnvelopeBytes
   , validateEksClusterArnBinding
   , eksClientAuthAccountId
   , eksClientAuthRegion
@@ -120,8 +123,36 @@ data EksClientAuthProjectionError
 projectionVersion :: Word16
 projectionVersion = 2
 
+-- | Sprint 6.5: the exact marker every issued client-auth evidence carries.
+--
+-- Named here rather than spelled in the producer and the consumer separately,
+-- because the character bound below is derived from its length.
+eksClientAuthEvidenceMarker :: Text
+eksClientAuthEvidenceMarker = "eks-client-auth-envelope:"
+
+-- | Sprint 6.5: the envelope bound, chosen so its Base64 evidence fits the
+-- Provider response with margin.
+--
+-- The field maxima below sum, with CBOR framing and the AEAD prefix, to well
+-- under this value; a live envelope measured 3,468 bytes. 24 KiB Base64-expands
+-- to 32,768 characters, half the 64 KiB Provider response maximum.
 maximumEnvelopeBytes :: Int
-maximumEnvelopeBytes = 64 * 1024
+maximumEnvelopeBytes = 24 * 1024
+
+-- | Sprint 6.5: the exact character bound an 'IssueEksClientAuth' evidence
+-- string may reach.
+--
+-- Derived rather than declared: it is the marker plus the Base64 expansion of
+-- the largest envelope this module can seal, so any envelope the sealer accepts
+-- produces admissible evidence. A live run measured 4,649 characters against a
+-- generic 4,096-character bound, which is a bound no successful client-auth
+-- execution could ever have satisfied.
+maximumEksClientAuthEvidenceCharacters :: Int
+maximumEksClientAuthEvidenceCharacters =
+  Text.length eksClientAuthEvidenceMarker + base64Characters maximumEnvelopeBytes
+
+base64Characters :: Int -> Int
+base64Characters bytes = 4 * ((bytes + 2) `div` 3)
 
 prepareEksClientAuthDestination :: IO (EksClientAuthDestination, EksClientAuthPublicKey)
 prepareEksClientAuthDestination = do
@@ -155,8 +186,8 @@ mkEksClientAuthProjection account region cluster clusterArn endpoint caData bear
   validate "cluster-arn" 2048 clusterArn
   validateEksClusterArnBinding account region cluster clusterArn
   validate "endpoint" 2048 endpoint
-  validate "certificate-authority" 32768 caData
-  validate "bearer" 16384 bearer
+  validate "certificate-authority" 8192 caData
+  validate "bearer" 8192 bearer
   if expires <= 0
     then Left (EksClientAuthFieldInvalid "expires")
     else

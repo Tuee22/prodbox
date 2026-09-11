@@ -22,6 +22,7 @@
 module Prodbox.Lifecycle.Teardown.EksDrainInterpreter
   ( EksDrainInventoryResult (..)
   , EksDrainKubernetesUidObservation (..)
+  , parseKubernetesNamespaceUid
   , EksDrainPvcObservation (..)
   , EksDrainMutationResponse (..)
   , EksDrainClientEffects (..)
@@ -58,12 +59,15 @@ module Prodbox.Lifecycle.Teardown.EksDrainInterpreter
   )
 where
 
+import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Kind (Type)
 import Data.List (group, sort)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.ControlPlane.EksClientAuthClient
   ( EksClientAuthClientError (..)
   , withEksClientAuthProjectionForTeardownExecution
@@ -99,6 +103,7 @@ import Prodbox.Lifecycle.Teardown.EksDrainSession
 import Prodbox.Lifecycle.Teardown.EphemeralKubectl
   ( EphemeralKubectl
   , EphemeralKubectlUnavailable (..)
+  , ephemeralKubectlRequestTimeoutArgument
   , runEphemeralKubectl
   , withEphemeralKubectlForProjection
   )
@@ -2024,24 +2029,53 @@ controllerOwnerApiAbsent =
 
 observeProductionUid
   :: EphemeralKubectl -> IO EksDrainKubernetesUidObservation
+
+-- | Sprint 6.5: read the cluster identity through the resource's own API path.
+--
+-- @kubectl get namespace@ performs API-group discovery first, and discovery
+-- retries a measured five times at the per-request bound before the resource is
+-- ever requested: 10.04 s at a 2-second timeout, 15.04 s at 3 seconds, 25.05 s
+-- at 5 seconds against an unreachable endpoint. A live EKS drain selection
+-- exceeded its whole wall clock there on 2026-09-11 without reaching the
+-- namespace at all. The UID is a core @v1@ object, so nothing here needs
+-- discovery; @--raw@ addresses it directly and costs exactly one request, which
+-- the same probe measured at 5.04 s unreachable and 51 ms against a healthy API
+-- server returning the identical UID.
 observeProductionUid client = do
   observed <-
     runProductionKubectl
       client
       [ "get"
-      , "namespace"
-      , "kube-system"
-      , "--request-timeout=5s"
-      , "-o"
-      , "jsonpath={.metadata.uid}"
+      , "--raw"
+      , "/api/v1/namespaces/kube-system"
       ]
   pure $ case observed of
     Left failures -> EksDrainKubernetesUidUnobservable failures
-    Right output -> case filter (not . Text.null) (map Text.strip (Text.lines (Text.pack output))) of
-      [uid] -> EksDrainKubernetesUidPresent uid
-      _ ->
-        EksDrainKubernetesUidUnobservable
-          (ObservationFailure "Kubernetes UID response was empty or ambiguous" :| [])
+    Right output -> case parseKubernetesNamespaceUid (Text.pack output) of
+      Right uid -> EksDrainKubernetesUidPresent uid
+      Left failure -> EksDrainKubernetesUidUnobservable (failure :| [])
+
+-- | The exact @metadata.uid@ of the canonical namespace document.
+--
+-- The document is addressed by path rather than selected by a client-side
+-- expression, so the response shape is the API's own and a missing, empty, or
+-- non-object body is a closed refusal rather than a silently absent UID.
+parseKubernetesNamespaceUid :: Text -> Either ObservationFailure Text
+parseKubernetesNamespaceUid raw =
+  case Aeson.eitherDecodeStrict (TextEncoding.encodeUtf8 raw) of
+    Left detail ->
+      Left
+        ( ObservationFailure
+            ("Kubernetes namespace document did not parse: " <> Text.pack detail)
+        )
+    Right value -> case value of
+      Aeson.Object document -> case AesonKeyMap.lookup "metadata" document of
+        Just (Aeson.Object metadata) -> case AesonKeyMap.lookup "uid" metadata of
+          Just (Aeson.String uid)
+            | not (Text.null uid) -> Right uid
+          _ -> Left (ObservationFailure "Kubernetes namespace document carried no UID")
+        _ -> Left (ObservationFailure "Kubernetes namespace document carried no metadata")
+      _ -> Left (ObservationFailure "Kubernetes namespace document was not an object")
 
 observeNamespacedClass
   :: EphemeralKubectl
@@ -2111,9 +2145,16 @@ runProductionMutation client arguments = do
       EksDrainMutationResponseLost
         (combineObservationFailures "kubectl mutation result unknown" failures)
 
+-- | Sprint 6.5: every ephemeral call carries the named per-request bound.
+--
+-- Without one the outer wall clock is a call's only bound, so its own exact
+-- error can never be the reported cause. The wall clock is derived from this
+-- value in 'Prodbox.Lifecycle.Teardown.EphemeralKubectl' so the inner failure
+-- always wins.
 runProductionKubectl
   :: EphemeralKubectl -> [String] -> IO (Either (NonEmpty ObservationFailure) String)
-runProductionKubectl = runEphemeralKubectl
+runProductionKubectl client arguments =
+  runEphemeralKubectl client (arguments <> [ephemeralKubectlRequestTimeoutArgument])
 
 namespacedJsonPath :: String
 namespacedJsonPath =

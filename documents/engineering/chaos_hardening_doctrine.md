@@ -554,8 +554,11 @@ schedules.
 the concrete `Control.Concurrent.STM`, `Control.Concurrent.Async`, and `threadDelay` calls in `Daemon.hs`
 become a polymorphic `m` with `MonadSTM m`, `MonadAsync m`, `MonadTimer m` constraints — and that
 abstraction then propagates through *every* concurrency-touching signature: a **standing tax on all future
-change**, not a one-time edit. (prodbox starts from a good place — structured concurrency is already the
-rule: `withAsync`, not `forkIO`, which `CheckCode.hs` forbids — so the shapes lift cleanly.) And the move
+change**, not a one-time edit. (prodbox starts from a better place than most — `withAsync`, not
+`forkIO`. **Corrected 2026-09-11:** the premise is weaker than it reads. `CheckCode.hs` forbids
+`forkIO` in two files, and `withAsync` with a discarded handle is unstructured in effect — the very
+failure mode the `forkIO` ban exists to prevent. The shapes lift cleanly only once Sprint `2.134`
+makes supervision a property of the type rather than of the spawning primitive's name.) And the move
 has a fidelity ceiling: its marquee scenario, several simulated actors racing, only faithfully reproduces
 production when they genuinely share *in-process* state. The gateway daemons do **not** — they coordinate
 through the network and replicated semantic state — so an `IOSim` run of one daemon rests on a hand-built stub of its
@@ -712,6 +715,15 @@ and R9 is purely cross-boundary and lives there.)
   them, and proves owned residue empty before `Stopped`; an elapsed join deadline is explicit
   `ShutdownIncomplete`. Discarding cancellation/join results recreates unstructured ownership behind a
   structured API and is forbidden.
+  **Enforcement, recorded 2026-09-11 (Standard C).** This rule is review guidance today, not a gate.
+  The only mechanical check is `checkSupervisedWorkers` in `src/Prodbox/CheckCode.hs`, which refuses
+  an *unqualified* `withAsync` import in `src/Prodbox/Gateway/Daemon.hs` alone — one file, and a
+  qualified import sidesteps it by design. Nothing anywhere requires a spawned handle to be linked
+  or joined, and five long-lived threads under `src/` discard theirs: the Bootstrap Broker's
+  readiness observer, the Gateway port-forward supervisor, the workload config watcher, the
+  control-plane request-worker pool, and the Broker worker pool. Sprint `2.134` repairs all five,
+  lifts supervision into a type whose only constructor links, and replaces the one-file import scan
+  with a repo-wide rule. Until it lands, read this bullet as a target.
 - **R7 — Impossibility-bounded invariants are stated conditionally, with the failure mode chosen
   explicitly.** Some safety invariants *cannot* hold unconditionally in an asynchronous system that
   admits partitions. **FLP** (Fischer, Lynch & Paterson, JACM 1985) showed that no deterministic protocol
@@ -1208,6 +1220,26 @@ a conversion is unavoidable — a file format, a wire protocol, a socket — the
 § 22's: name the region, say the proofs end at its edge, and put one derived encoder there.
 
 ---
+
+**A second worked instance, recorded 2026-09-11: eighteen encoders for one type.**
+`ObservationEvidenceScope` is the durable coordinate every teardown observation is bound to. Sprint
+`7.36` added the run's DNS hosted zone to it and Sprint `7.38` sealed that field into compiled
+identity — inside the region. Outside it, the type has roughly **eighteen independently authored
+byte-level codecs, of which fifteen erase the zone**, because each decoder rebuilds the scope
+through the zone-less minter; five of eight digest and equality projections erase it too, including
+both audit re-scopers, so the cascade's terminal escape audit runs under a zoneless scope while
+claiming to be scoped to the run.
+
+This is the section's thesis in its purest form. Every coordinate the type earned inside the region
+is discarded at the boundary, and the discard is silent because the zone-less result is a perfectly
+well-typed scope. It has already cost one exact-identity refusal on a bundle the same run had just
+committed, and the repair applied there — adding the field to that one codec — is precisely the
+repair this section warns is insufficient: it leaves seventeen other authors free to forget.
+
+The remedy is the one [pure_fp_standards.md](./pure_fp_standards.md) § 2.3a already states: a
+record has one decoder and must have exactly one encoder, derived rather than restated. Sprint
+`4.92` owns it, and Sprint `5.46` adds the round-trip properties that make a forgotten field fail
+rather than pass.
 
 ## 24. An observation has a layer
 

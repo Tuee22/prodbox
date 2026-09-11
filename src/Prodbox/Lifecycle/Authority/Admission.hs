@@ -234,7 +234,10 @@ import Prodbox.Lifecycle.Authority.Submission
   )
 import Prodbox.Lifecycle.CleanupRun (CleanupOperationId)
 import Prodbox.Lifecycle.Decommission.Frame (FrameDigest (FrameDigest))
-import Prodbox.Lifecycle.ProviderWorker.ProviderWork (ProviderIntent)
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent
+  , validateProviderIntentEvidence
+  )
 import Prodbox.Lifecycle.PulumiCheckpoint
   ( PulumiCheckpointDigest
   , PulumiCheckpointOperationRef
@@ -1508,8 +1511,12 @@ stepRegisteredProviderSettlement caller generation operation intent evidence agg
           , aggregate
           )
   settle key (AuthorityProviderPending digest retainedIntent owner)
-    | not (validProviderEvidence evidence) =
-        pure (AuthorityProviderSettlementRefused "provider completion evidence is invalid", aggregate)
+    | Left rule <- validateProviderIntentEvidence intent evidence =
+        pure
+          ( AuthorityProviderSettlementRefused
+              ("provider completion evidence is invalid: " <> rule)
+          , aggregate
+          )
     | otherwise =
         case completeSubmission
           (operationIdClient operation)
@@ -1540,12 +1547,6 @@ stepRegisteredProviderSettlement caller generation operation intent evidence agg
 providerOperationKey :: OperationId -> (ClientId, ClientSequence)
 providerOperationKey operation =
   (operationIdClient operation, operationIdSequence operation)
-
-validProviderEvidence :: Text -> Bool
-validProviderEvidence evidence =
-  not (Text.null evidence)
-    && Text.length evidence <= 4096
-    && not (Text.any (\character -> character <= '\x1f' || character == '\x7f') evidence)
 
 -- | Derive the sole checkpoint token for an admitted operation identity.  The
 -- canonical tuple is hashed so no caller-controlled client or request text is

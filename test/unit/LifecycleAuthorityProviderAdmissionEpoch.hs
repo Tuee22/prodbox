@@ -73,12 +73,28 @@ import Prodbox.Lifecycle.CleanupRun
   , mkCleanupRunId
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
-  ( ProviderIntent (ObserveOperationalIdentity)
+  ( ProviderIntent (IssueEksClientAuth, ObserveOperationalIdentity)
+  , maximumProviderIntentEvidenceCharacters
+  , mkEksClientAuthRequest
+  , providerIntentEvidenceMaximumCharacters
+  , validateProviderIntentEvidence
   )
 import Prodbox.Runtime.Role (RuntimeRole (ProviderWorkerRuntime))
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath (takeExtension, (</>))
 import TestSupport
+
+-- | Sprint 6.5: the one intent whose evidence is a sealed capability
+-- projection rather than a short observation.
+issueEksClientAuthIntent :: ProviderIntent
+issueEksClientAuthIntent =
+  case mkEksClientAuthRequest
+    "123456789012"
+    (fixtureAwsRegion FixtureCaCentral1)
+    "aws-eks-test-cluster"
+    (ByteString.replicate 32 7) of
+    Left err -> error ("expected an EKS client-auth request, got " <> show err)
+    Right request -> IssueEksClientAuth request
 
 lifecycleAuthorityProviderAdmissionEpochSuite :: SuiteBuilder ()
 lifecycleAuthorityProviderAdmissionEpochSuite =
@@ -164,6 +180,80 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
               "canonical-terminal-evidence"
           , completed
           )
+
+    -- Sprint 6.5: the Authority carried its own copy of the Provider evidence
+    -- bound, so correcting the Provider Worker alone only moved the live
+    -- refusal from a 503 to a 409. Both now read one per-intent function, and
+    -- the Authority refusal names the rule and the length it measured.
+    it "settles per-intent evidence bounds and names the rule that refused" $ do
+      closed <-
+        expectRightIO
+          (initialCleanInstallAuthorityWithRegisteredClients 4 4 registry)
+      let initial = openAdmission closed
+      (accepted, pending) <-
+        expectRightIO
+          ( stepRegisteredProviderSubmission
+              initial
+              providerCaller
+              providerGeneration
+              providerSubmissionKey
+              providerDigest
+              ObserveOperationalIdentity
+              ProviderOperationUnownedByCleanupRun
+          )
+      operation <- acceptedOperation accepted
+      (refused, _) <-
+        expectRightIO
+          ( stepRegisteredProviderSettlement
+              providerCaller
+              providerGeneration
+              operation
+              ObserveOperationalIdentity
+              (Text.replicate 4097 "e")
+              pending
+          )
+      refused
+        `shouldBe` AuthorityProviderSettlementRefused
+          "provider completion evidence is invalid: provider evidence is 4097 characters, over the maximum of 4096"
+      (empty, _) <-
+        expectRightIO
+          ( stepRegisteredProviderSettlement
+              providerCaller
+              providerGeneration
+              operation
+              ObserveOperationalIdentity
+              ""
+              pending
+          )
+      empty
+        `shouldBe` AuthorityProviderSettlementRefused
+          "provider completion evidence is invalid: the provider returned no evidence"
+      (admitted, _) <-
+        expectRightIO
+          ( stepRegisteredProviderSettlement
+              providerCaller
+              providerGeneration
+              operation
+              ObserveOperationalIdentity
+              (Text.replicate 4096 "e")
+              pending
+          )
+      admitted `shouldBe` AuthorityProviderSettlementCompleted
+      -- The sealed client-auth projection the live run measured at 4,649
+      -- characters settles, and the same string under a short-observation
+      -- intent still does not.
+      validateProviderIntentEvidence
+        (issueEksClientAuthIntent)
+        (Text.replicate 4649 "e")
+        `shouldBe` Right (Text.replicate 4649 "e")
+      validateProviderIntentEvidence
+        ObserveOperationalIdentity
+        (Text.replicate 4649 "e")
+        `shouldBe` Left "provider evidence is 4649 characters, over the maximum of 4096"
+      providerIntentEvidenceMaximumCharacters issueEksClientAuthIntent
+        `shouldBe` 32793
+      providerIntentEvidenceMaximumCharacters ObserveOperationalIdentity
+        `shouldBe` maximumProviderIntentEvidenceCharacters
 
     it "covers hidden serving, pending, Frozen, and Revoked shapes without returning them" $ do
       regression <- expectRightIO fixedProviderAdmissionEpochRegression

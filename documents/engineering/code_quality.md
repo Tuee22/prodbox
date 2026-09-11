@@ -159,10 +159,22 @@ Current enforced quality surfaces:
 - repo-local style-tool bootstrap under `.build/prodbox-style-tools/bin/` through
   `src/Prodbox/Lint.hs`, pinned to formatter GHC `9.12.4`, Fourmolu `0.19.0.1`, and
   HLint `3.10`
-- HLint through `.hlint.yaml`, including the doctrine-owned marker set for nested-case and
-  daemon-path negative-space rules
+- HLint through `.hlint.yaml`. **Corrected 2026-09-11 (Sprint `0.33`):** that file contributes no
+  enforcement. It holds zero custom hints and only `ignore:` entries, so the hard gate is HLint's
+  own `default` plus `extra` groups *minus* those suppressions. The "doctrine-owned marker set" it
+  was credited with is a comment block, and the check that reads it, `checkHlintDoctrineCoverage` in
+  `src/Prodbox/CheckCode.hs`, asserts only that the comment text exists. The nested-case and
+  daemon-path rules it names are enforced by `checkNestedCaseViolations` and
+  `checkDaemonRuntimeImports`, which are ordinary Haskell checks and owe nothing to `.hlint.yaml`.
+  Sprint `2.134` retires the coverage check, its marker block, and the style-suite case that asserts
+  the same markers — all three together, because they are mutually load-bearing.
 - daemon-path guardrails for forbidden filesystem readiness markers, `sd_notify`, module-local
   mutable metrics counters, and unrestricted Async primitives outside the closed daemon set.
+  **The region, recorded 2026-09-11 (Standard C):** the "closed daemon set" is two files —
+  `src/Prodbox/Gateway/Daemon.hs` and `src/Prodbox/Workload.hs` — and the guardrail forbids `forkIO`,
+  not an unsupervised `withAsync`. A spawned handle that is neither linked nor joined is permitted
+  everywhere, including inside that set, and five long-lived threads under `src/` take that option.
+  Sprint `2.134` lands the repo-wide rule.
   Filesystem-watch reload primitives (`fsnotify` / `hinotify`) are **not** forbidden: they are
   the *required* config-reload mechanism per
   [config_doctrine.md § 7](./config_doctrine.md#7-file-watch-reload-trigger). The former blanket
@@ -498,7 +510,7 @@ enforcement are structured.
 | Tool | Role |
 |---|---|
 | `fourmolu` | Haskell source formatter — canonical format with configurable column limit |
-| `hlint` | Haskell linter — code-smell detection, including project-defined nesting hints |
+| `hlint` | Haskell linter — code-smell detection from its own `default` and `extra` groups. **There are no project-defined hints (2026-09-11)**; `.hlint.yaml` carries only suppressions |
 | `cabal format` | Cabal manifest formatter — single canonical layout for `.cabal` |
 | `<project>.Lint.Files` | Trailing whitespace, final newline, blocked tracked-generated paths |
 | `<project>.Lint.Docs` | Governed-document metadata, relative links, generated-section drift |
@@ -714,9 +726,15 @@ Automated enforcement is partial:
 2. **Existing hlint hints (free wins).** `Use guards`, `Redundant case`,
    `Use let`, `Eta reduce`, `Avoid lambda`, `Use bracket`, `Use when`,
    `Use unless`. Run hlint in `--with-group=default` plus
-   `--with-group=extra`.
-3. **Project-specific hlint custom warnings** in `.hlint.yaml` accumulate
-   warning rules for nesting anti-patterns observed in code review.
+   `--with-group=extra`. **Corrected 2026-09-11:** four of those eight —
+   `Use let`, `Eta reduce`, `Avoid lambda`, and `Use when` — are explicitly
+   disabled in `.hlint.yaml`, so this list named as active precisely the
+   hints the configuration turns off. Either re-enable them or shorten the
+   list; do not leave it describing a state that is not the case.
+3. **Project-specific hlint custom warnings** in `.hlint.yaml`. **Corrected
+   2026-09-11: none have ever accumulated.** The file has only suppressions.
+   Sprint `2.134` decides whether real hints are written or the claim is
+   withdrawn.
 4. **Code-review checklist.** *"Does any function exceed two levels of
    nested case/if? If so, can it be flattened?"*
 

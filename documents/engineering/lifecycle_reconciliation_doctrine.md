@@ -1110,6 +1110,19 @@ exact observer must return the same indexed scope it received. Checkpoint-pair a
 manifest wrappers retain that value rather than relying on an ambient caller or a later string
 comparison.
 
+> **Target, not current revision (recorded 2026-09-11, Sprint `0.33`).** The opacity claim and the
+> zone-sealing paragraph below describe the intended end state. In the current revision the scope
+> has roughly eighteen independently authored byte-level codecs, and **fifteen of them mint it
+> through the zone-less minter**, so a scope that carried a hosted zone decodes without one. Five of
+> eight digest and equality projections drop it as well, including `auditEvidenceScope` and
+> `cascadeAuditScope`, which means the cascade's terminal escape audit runs under a zoneless scope
+> while this document describes it as scoped to the run. The consequences are real and observed: an
+> exact-identity read-back refused a bundle its own run had just committed, and a zoned cascade
+> cannot match its own ready-to-uninstall binding. Sprint `4.92` derives one canonical encoder per
+> [pure_fp_standards.md § 2.3a](./pure_fp_standards.md#23a-encode-at-exactly-one-boundary); Sprint
+> `5.46` adds the round-trip properties that make a forgotten field fail. Implementation status
+> lives in [DEVELOPMENT_PLAN/README.md → Resume Here](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
 The optional DNS hosted zone is a durable coordinate, not observer input. Graph compilation takes
 it beside the AWS account/region scope and, when present, seals it into every operation identity,
 the graph digest, and cleanup-program descriptor wire. A zoneless program appends no identity
@@ -2307,6 +2320,13 @@ The nodes have these contracts:
    short-lived authentication token from the provider under an account/region/cluster/deadline-bound
    session. It does not materialize the session from Pulumi outputs or from a host kubeconfig.
    Owners are deleted while controllers are live and exact child-family absence is read back.
+   **Target, not current revision (recorded 2026-09-11, Sprint `0.33`):** the legacy public cascade
+   does not use this path. `prodbox cluster delete --cascade` on the AWS substrate materializes a
+   kubeconfig through `withEksKubeconfig` and drains through `src/Prodbox/Lifecycle/K8sDrain.hs`,
+   which has no session and no absolute deadline — its `kubectl` calls run through the unbounded
+   capture, and the five-minute drain timeout bounds only the completion poll, so a blocked call
+   hangs past it rather than refusing. Sprint `4.93` bounds those subprocesses; Sprint `6.5` owns
+   the cutover that makes this paragraph describe the public path.
 4. **Run every eligible desired-absence program.** Drain failure or unavailability remains a typed
    failure but opens `RequiresAttempt` edges to exact controller-family backstops and provider
    destroys. Each stack uses the §3.2 decision: verified primary, restored backup, complete

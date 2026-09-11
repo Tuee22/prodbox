@@ -1144,6 +1144,23 @@ token served through a FIFO so the credential never lands on disk; an environmen
 `KUBECONFIG` and every ambient AWS credential variable; and a client scoped to the continuation it is
 handed to. Two statements of that machinery would be two statements of a security property.
 
+> **Target, not current revision (recorded 2026-09-11, Sprint `0.33`).** Two clauses above are false
+> of the tree. There are **three** statements of the machinery, not one: `withEksKubeconfig` in
+> `src/Prodbox/Infra/AwsEksTestStack.hs` was never converted, is reached from the legacy public
+> cascade's AWS drain, and has already drifted from its sibling in pipe mode. And the FIFO **has
+> never served a token**: GHC opens a FIFO non-blocking, so the writer fails with `ENXIO` before
+> `kubectl` starts and dies unobserved, leaving every invocation blocked until its wall clock. On
+> that evidence no AWS teardown path has ever authenticated to an EKS API server. Counterexample
+> `CASCADE-QUALIFICATION-EPHEMERAL-KUBECTL-TOKEN-FIFO-UNSERVED-2026-09-11`.
+>
+> The argument the last sentence makes is sound, and is why the claim needed a gate rather than a
+> sentence: nothing bound the machinery to one file, so a third copy survived the sprint that
+> recorded the consolidation. Sprint `7.39` establishes the credential mechanism — and must decide
+> whether a FIFO earns its complexity at all, given that the kubeconfig beside it is already a
+> regular owner-only file in an owner-only directory — and Sprint `7.40` removes the third statement
+> and lands the gate. Status lives in
+> [DEVELOPMENT_PLAN/README.md → Resume Here](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
 
 ## 6. Required Command Surfaces
 

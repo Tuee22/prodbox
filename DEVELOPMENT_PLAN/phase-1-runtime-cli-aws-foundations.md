@@ -11,6 +11,12 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-08-22 on Sprint `1.92` (Standards A/N); header corrected 2026-09-11.** The entry
+below was left in its reopened form after `1.92` reached `Done`, which is the drift this plan names
+at [README.md](README.md): the phase-document header is the only place a reclose must be written by
+hand in a second location, so it is the one place that drifts. Sprint `0.33` corrected it. The
+reopen narrative is retained verbatim beneath, because it records why the phase reopened.
+
 🔄 **Reopened 2026-08-22 on Sprint `1.92` (Standards A/N).** The configuration-ownership audit
 found decoded deployment fields that still lose to compiled answers, plus fixed product/protocol
 identities exposed as operator fields. This phase owns the Tier-0 schema, validation, builders, and

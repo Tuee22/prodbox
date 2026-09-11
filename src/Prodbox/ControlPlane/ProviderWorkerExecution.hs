@@ -206,6 +206,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , sesRuleSetCaptureBucket
   , sesRuleSetRecipient
   , sesRuleSetRefText
+  , validateProviderIntentEvidence
   , validateProviderStackConfig
   )
 import Prodbox.Lifecycle.TargetCommitIntent
@@ -1931,7 +1932,7 @@ executeVerifiedProviderIntentBoundWith observeStage boundary verified = do
       Left detail -> Left (ProviderIntentExecutionReadOnlyUnavailable detail)
       Right evidence ->
         ProviderIntentExecutionObserved coordinate
-          <$> validateExecutionEvidence evidence
+          <$> validateExecutionEvidence intent evidence
 
   executeMutation session operation = do
     before <- observeProviderMutation operation session coordinate
@@ -1939,7 +1940,7 @@ executeVerifiedProviderIntentBoundWith observeStage boundary verified = do
       ProviderEffectSatisfied evidence ->
         pure
           ( ProviderIntentExecutionAlreadySatisfied coordinate
-              <$> validateExecutionEvidence evidence
+              <$> validateExecutionEvidence intent evidence
           )
       ProviderEffectUnobservable detail ->
         pure (Left (ProviderIntentExecutionObservationUnavailable detail))
@@ -1949,7 +1950,7 @@ executeVerifiedProviderIntentBoundWith observeStage boundary verified = do
         pure $ case after of
           ProviderEffectSatisfied evidence ->
             ProviderIntentExecutionApplied coordinate
-              <$> validateExecutionEvidence evidence
+              <$> validateExecutionEvidence intent evidence
           ProviderEffectNeedsApply detail ->
             Left
               ( ProviderIntentExecutionMutationNotConfirmed
@@ -1961,16 +1962,21 @@ executeVerifiedProviderIntentBoundWith observeStage boundary verified = do
                   (attemptDetail attempted <> detail)
               )
 
+-- | Sprint 6.5: the refusal names which rule rejected the evidence.
+--
+-- A single \"provider evidence is invalid\" text could not distinguish an
+-- empty observation from one over the character bound or one carrying a
+-- control character, so a live 503 carried no attributable cause. The rule
+-- name and the measured length are safe to publish; the evidence itself is a
+-- sealed capability projection and never appears in the refusal.
 validateExecutionEvidence
-  :: Text
+  :: ProviderIntent
+  -> Text
   -> Either ProviderIntentExecutionError Text
-validateExecutionEvidence evidence
-  | Text.null evidence = invalid
-  | Text.length evidence > 4096 = invalid
-  | Text.any isControl evidence = invalid
-  | otherwise = Right evidence
- where
-  invalid = Left (ProviderIntentExecutionEvidenceInvalid "provider evidence is invalid")
+validateExecutionEvidence intent evidence =
+  first
+    (ProviderIntentExecutionEvidenceInvalid . ("provider evidence is invalid: " <>))
+    (validateProviderIntentEvidence intent evidence)
 
 attemptDetail :: Either Text () -> Text
 attemptDetail result = case result of

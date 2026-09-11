@@ -367,10 +367,13 @@ implements that registry in `src/Prodbox/CheckCode.hs` as `TrackedGeneratedPath`
 - `share/completion/fish/prodbox.fish`
 
 The current registry contents are the authoritative source; future fully generated paths must
-be added there in the same change that introduces them. The `prodbox-haskell-style` suite also
-checks the renderer-source modules named by the registry for forbidden nondeterministic inputs
-such as timestamps, random IDs, locale-dependent ordering, terminal-width state, and
-environment-derived paths.
+be added there in the same change that introduces them. The renderer-source modules named by the
+registry are also checked for forbidden nondeterministic inputs — timestamps, random IDs,
+locale-dependent ordering, terminal-width state, environment-derived paths. **Attribution corrected
+2026-09-11 (Sprint `0.33`):** that check reaches you through `prodbox dev lint haskell`, which calls
+the shared function. The `prodbox-haskell-style` suite exposes the same function but is executed by
+no `prodbox test` scope, so crediting the guarantee to the suite named a proof surface that does not
+run. Sprint `5.45` owns routing or retiring it.
 
 ---
 

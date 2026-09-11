@@ -300,6 +300,14 @@ alongside `Prodbox.Infra.AwsEksTestStack.withEksKubeconfig` for substrate-aware 
 materialization), the prerequisite DAG, and the lifecycle gates all enforce this
 contract.
 
+**Correction 2026-09-11 (Sprint `0.33`).** `withEksKubeconfig` does not enforce that contract and
+cannot be cited as enforcing it. It is a third, undocumented statement of the ephemeral Kubernetes
+client machinery that Sprint `7.36` recorded as consolidated; it raises rather than refusing on four
+of its arms; and its bearer-token path has never authenticated, because the writer fails with
+`ENXIO` before `kubectl` starts and dies unobserved. The no-fallback contract is carried by the
+substrate-aware helpers, the prerequisite DAG, and the lifecycle gates. This helper is scheduled for
+conversion or deletion by Sprint `7.40`, and should leave this sentence when it lands.
+
 "Substrate-agnostic suite content" means validation logic does not branch on substrate
 identity. It does **not** mean substrates share defaults, and it does **not** reduce the
 suite to a single substrate's coverage. The aggregate command surface (`prodbox test all`) is

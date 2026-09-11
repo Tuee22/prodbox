@@ -11,6 +11,7 @@ import Data.List (isInfixOf, isSuffixOf, sort)
 import Data.Text qualified as Text
 import Prodbox.ControlPlane.AwsStackReaderRepository
 import Prodbox.Lifecycle.CleanupRun
+import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Registry
 import System.Directory (doesDirectoryExist, listDirectory)
@@ -33,7 +34,7 @@ controlPlaneAwsStackReaderRepositorySuite =
       awsStackReaderAuthorityCoordinateDigest identity
         `shouldBe` registeredIdentityCoordinateDigest (mustIdentity AwsTestKey)
       awsStackReaderAuthorityScope identity `shouldBe` fixtureScope
-      submission `shouldSatisfy` Text.isPrefixOf "aws-stack-reader-v1-"
+      submission `shouldSatisfy` Text.isPrefixOf "aws-stack-reader-v2-"
       Text.length submission `shouldBe` 84
       awsStackReaderAuthorityLogicalName identity
         `shouldBe` ("authority/aws-stack-readers/" <> submission)
@@ -42,6 +43,43 @@ controlPlaneAwsStackReaderRepositorySuite =
       decodeAwsStackReaderAuthorityIdentity encoded `shouldBe` Right identity
       decodeAwsStackReaderAuthorityIdentity (encoded <> "trailing")
         `shouldSatisfy` isIdentityDecodeFailure
+
+    -- Sprint 6.5: the live cascade committed a bundle and then refused its own
+    -- read-back, because the encoded scope carried no DNS hosted zone and the
+    -- exact identity comparator required one.  The zone is part of the scope,
+    -- so it has to survive the wire and separate two otherwise identical
+    -- identities.
+    it "binds the run DNS hosted zone into the encoded scope and the submission key" $ do
+      let zonedIdentity = fixtureZonedIdentity
+          zonedEncoded = encodeAwsStackReaderAuthorityIdentity zonedIdentity
+          zonedSubmission =
+            awsStackReaderSubmissionKeyText
+              (awsStackReaderAuthoritySubmissionKey zonedIdentity)
+          plainSubmission =
+            awsStackReaderSubmissionKeyText
+              (awsStackReaderAuthoritySubmissionKey fixtureIdentity)
+          otherZonedSubmission =
+            awsStackReaderSubmissionKeyText
+              (awsStackReaderAuthoritySubmissionKey (zonedIdentityFor "Z9999999999999"))
+      evidenceAwsDnsZone (awsStackReaderAuthorityScope zonedIdentity)
+        `shouldBe` Just fixtureHostedZone
+      evidenceAwsDnsZone (awsStackReaderAuthorityScope fixtureIdentity)
+        `shouldBe` Nothing
+      decodeAwsStackReaderAuthorityIdentity zonedEncoded `shouldBe` Right zonedIdentity
+      fmap
+        (evidenceAwsDnsZone . awsStackReaderAuthorityScope)
+        (decodeAwsStackReaderAuthorityIdentity zonedEncoded)
+        `shouldBe` Right (Just fixtureHostedZone)
+      fmap
+        (evidenceAwsDnsZone . awsStackReaderAuthorityScope)
+        ( decodeAwsStackReaderAuthorityIdentity
+            (encodeAwsStackReaderAuthorityIdentity fixtureIdentity)
+        )
+        `shouldBe` Right Nothing
+      zonedSubmission `shouldSatisfy` (/= plainSubmission)
+      zonedSubmission `shouldSatisfy` (/= otherZonedSubmission)
+      ByteString.length zonedEncoded
+        `shouldSatisfy` (<= maximumAwsStackReaderAuthorityIdentityBytes)
 
     it "exposes only a structurally fail-only public diagnostic client" $ do
       let expected = AwsStackReaderClientTransportFailed "diagnostic refusal"
@@ -141,6 +179,28 @@ fixtureIdentity =
         fixtureScope
     )
 
+fixtureZonedIdentity :: AwsStackReaderAuthorityIdentity
+fixtureZonedIdentity = zonedIdentityFor "Z00231272QFGWVE1AJI2G"
+
+zonedIdentityFor :: Text.Text -> AwsStackReaderAuthorityIdentity
+zonedIdentityFor rawZone =
+  mustRight
+    ( awsStackReaderAuthorityIdentity
+        fixtureRunId
+        fixtureGraphDigest
+        fixtureOperationId
+        AwsTestKey
+        (fixtureScopeWithZone (mustZone rawZone))
+    )
+
+fixtureHostedZone :: HostedZoneId
+fixtureHostedZone = mustZone "Z00231272QFGWVE1AJI2G"
+
+mustZone :: Text.Text -> HostedZoneId
+mustZone raw = case mkHostedZoneId raw of
+  Left err -> error ("expected a hosted zone, got " <> show err)
+  Right zone -> zone
+
 fixtureRunId :: CleanupRunId
 fixtureRunId = mustRight (mkCleanupRunId "cleanup-run/stack-reader-opacity")
 
@@ -164,6 +224,22 @@ fixtureScope =
             (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
         )
     )
+    ReconcileDesiredAbsent
+
+fixtureScopeWithZone :: HostedZoneId -> ObservationEvidenceScope
+fixtureScopeWithZone zone =
+  mkObservationEvidenceScopeWithDnsZone
+    Cascade
+    lifecycleRegistryRevision
+    (DurableObservationRunScope "cleanup-run/stack-reader-opacity")
+    (LinuxRke2FoundationId "linux-rke2/home")
+    ( Just
+        ( AwsScope
+            (AwsAccountId "111122223333")
+            (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
+        )
+    )
+    zone
     ReconcileDesiredAbsent
 
 isIdentityDecodeFailure :: Either AwsStackReaderError value -> Bool

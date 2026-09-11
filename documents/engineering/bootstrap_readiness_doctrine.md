@@ -119,6 +119,14 @@ a healthy system project `Starting` and evict itself. The bound is therefore **d
 observer period and its per-pass budget, never authored beside them** — see
 `Prodbox.Bootstrap.Broker.Readiness`.
 
+**That argument covers a slow observer, not a dead one (recorded 2026-09-11, Sprint `0.33`).** The
+derivation makes an unmeetable bound unconstructible, which is the right property and is not the
+only one required. The thread that refreshes the cache is spawned in `src/Prodbox/Bootstrap/Broker.hs`
+with its handle discarded, so if a refresh pass throws, the observer dies, nothing observes the
+death, and the record staleness-expires with no attributable cause — the Pod evicts itself and the
+log says only that readiness went stale. A dead observer meets no bound. Sprint `2.134` brings the
+observer into a supervision tree whose constructor links it.
+
 The Target Secret Agent preserves that same request-path contract while making its protected
 diagnostic distinguishable. Its resolver reads the composed cached facts once, computes the
 ordinary readiness state, projects only a closed starting/stale or dependency-family cause, and

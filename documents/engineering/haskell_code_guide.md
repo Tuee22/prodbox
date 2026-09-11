@@ -89,6 +89,20 @@ The current supported worktree has started converging on a small shared foundati
   publish `Stopped`. Terminal completion requires joined children, resolved waiters, and an empty
   owned-resource postcondition. The Bootstrap Broker contract is authoritative in
   [Lifecycle Control-Plane Architecture §7.1](./lifecycle_control_plane_architecture.md#71-shutdown-completion-is-proof-carrying).
+  **Enforcement, recorded 2026-09-11 (Standard C): none.** No check requires a spawned handle to be
+  linked or joined, and five long-lived threads under `src/` never obtain a result to discard
+  because they never join at all. Sprint `2.134` lifts supervision into a type and gates it
+  repo-wide; until then this bullet is review guidance.
+- **A credential handed to a subprocess needs a delivery mechanism with a proof obligation.** Passing
+  a secret by a side channel — a named pipe, an inherited descriptor, a file the child is told to
+  read — is a rendezvous, and a rendezvous either happened or did not. If the mechanism's success is
+  not a value the caller holds, the caller cannot tell a delivered credential from an undelivered
+  one, and neither can a test. The 2026-09-11 counterexample
+  `CASCADE-QUALIFICATION-EPHEMERAL-KUBECTL-TOKEN-FIFO-UNSERVED-2026-09-11` is the worked instance:
+  a bearer token served through a FIFO by a background writer that died before the child started,
+  unobserved, on every run for weeks. Prefer a mechanism whose failure is a typed result at the
+  boundary; where that is impossible, the client must not be constructible until delivery has been
+  proven once.
 
 These modules are closed doctrine-adoption surfaces. New code should prefer them over ad-hoc
 reimplementations.
@@ -98,13 +112,17 @@ reimplementations.
 The current repository-owned Haskell style and lint inputs are:
 
 - [`fourmolu.yaml`](../../fourmolu.yaml) for formatting
-- [`.hlint.yaml`](../../.hlint.yaml) for lint policy
+- [`.hlint.yaml`](../../.hlint.yaml) for lint **suppressions** — it carries no rules of its own
 - [`.editorconfig`](../../.editorconfig) for editor ergonomics only
 
 Important distinction:
 
 - `fourmolu.yaml` is a hard-gate input
-- `.hlint.yaml` is a hard-gate input
+- `.hlint.yaml` is a hard-gate **suppression** input. **Corrected 2026-09-11 (Sprint `0.33`):** it
+  holds zero custom hints and only `ignore:` entries, so it subtracts from the gate rather than
+  adding to it. HLint itself still gates, through its `default` and `extra` groups. The check that
+  reads the file, `checkHlintDoctrineCoverage` in `src/Prodbox/CheckCode.hs`, verifies only that a
+  comment block exists; Sprint `2.134` retires it
 - `.editorconfig` is not a build-acceptance input
 
 ## 4. Canonical Commands

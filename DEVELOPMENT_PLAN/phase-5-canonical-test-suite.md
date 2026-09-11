@@ -11,6 +11,14 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-09-11 on Sprints `5.44`–`5.46` (Standards A/N).** Own-surface reopen on the
+canonical suite's boundary coverage, assertion vocabulary, runner contract, and property coverage.
+Sprint `6.5`'s investigation proved a credential path that has never worked and that no test could
+have caught: every assertion about the bearer token was an absence assertion, no helper anywhere in
+`test/` measures elapsed time, three declared suites are compiled by the gate and run by no scope,
+and § 3.2's mandated codec round-trip properties do not exist. The phase recloses when all three
+reach `Done`; until then this entry records an open reopen, not a closure.
+
 ✅ **Reclosed 2026-08-31 on Sprint `5.43` (Standards A/N).** Sprints `5.38` through `5.43` are
 Done: fake Helm status, Docker retention/repository identity, Credential Provisioner substrate
 observations, and Authority Backup target/startup/liveness/teardown now project their exact
@@ -4228,6 +4236,171 @@ None.
   [00-overview.md](00-overview.md); update the test-configuration inventory in
   [system-components.md](system-components.md); register the compiled harness defaults in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 5.44: A Fake That Never Authenticates Cannot Prove Authentication [📋 Planned]
+
+**Status**: Planned. Phase `5` own-surface reopen (Standard A/N) on the canonical suite's boundary
+coverage and its assertion vocabulary.
+**Doctrine**: [Unit Testing Policy § 0, Canonical Statement
+10](../documents/engineering/unit_testing_policy.md#0-canonical-statements) and [§ 1.1, "Core
+rule"](../documents/engineering/unit_testing_policy.md#11-core-rule).
+**Implementation**: `test/support/TestSupport.hs`, a new real-child process-boundary harness under
+`test/`, and `prodbox.cabal`.
+**Blocked by**: none.
+**Live-proof**: not applicable; the surface is local test vocabulary.
+**Deployment qualification**: not applicable; this sprint changes no production composition.
+**Independent Validation**: the harness proves itself against a fixture whose credential delivery
+works and against one that does not; the elapsed-time assertion is exercised by a deliberately slow
+fixture; full unit suite; `prodbox dev check`.
+**Docs to update**: `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/integration_fixture_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Two gaps in the canonical suite let a credential path that has never worked pass every gate.
+
+**The suite cannot assert that a secret arrived.** Every test that covered the ephemeral Kubernetes
+client's bearer token asserted only that it was absent — from argv, from the environment, from
+retained evidence, from the rendered kubeconfig. A suite of absence assertions about a secret is
+satisfied perfectly by a secret that is never produced. The deleted real-subprocess case spawned a
+fake `kubectl` that logged its arguments and printed a cluster UID; it never opened the token file,
+so the writer's death was invisible to it by construction.
+
+**The suite cannot assert how long something took.** The defect was found because elapsed time
+tracked the supervisor's bound rather than the work — thirty seconds under a thirty-second bound,
+forty under forty. That is the signature of a call that never completes, and it is not expressible
+anywhere in `test/`: no helper reads a clock before and after an operation.
+
+Unit-tier fakes substitute above the process boundary, so no unit case reaches the bounded
+subprocess runner; integration-tier fakes are real binaries on `PATH` but those suites never reach
+the EKS or DNS01 teardown paths. The boundary sat in the gap between the two tiers.
+
+### Deliverables
+
+- A real-child process-boundary harness: a child that parses the kubeconfig it is given, reads the
+  credential by the mechanism production uses, and echoes it, so the assertion is that the exact
+  credential **arrived**. Reuse the self-exec idiom the journal tests already use rather than
+  inventing a second one, and give the child a real environment — the runner passes an explicit
+  environment, so an empty list leaves the child without a `PATH`.
+- Elapsed-time vocabulary in `TestSupport`, with the accompanying rule: a test of a bounded
+  subprocess asserts elapsed time, not merely the returned `Either`, because "returned an error
+  eventually" cannot distinguish slow from wedged. Do not apply a blanket ratio retroactively; at
+  least one existing case has a one-second bound a naive ratio would fail.
+- A negative control that pins the wedge signature — elapsed equal to the bound, and the exact
+  wall-clock refusal — so the shape is named in the suite rather than rediscovered.
+- Record the tier decision against the policy's own table, which already carries a real-process row.
+
+### Validation
+
+1. The harness fails against a fixture whose credential never arrives and passes against one whose
+   credential does, proving it can disagree with its subject.
+2. The elapsed-time assertion fails a deliberately slow fixture and passes a fast one.
+3. New modules are registered in `prodbox.cabal`, so the suite actually compiles them.
+4. Full unit suite and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+All deliverables above.
+
+## Sprint 5.45: Three Suites The Gate Compiles And Nothing Runs [📋 Planned]
+
+**Status**: Planned. Phase `5` own-surface reopen (Standard A/N) on the public runner contract this
+phase owns.
+**Implementation**: `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, and
+`src/Prodbox/CheckCode.hs`.
+**Blocked by**: none.
+**Live-proof**: not applicable.
+**Deployment qualification**: not applicable.
+**Independent Validation**: the runner's scope tables are pure values and are asserted exhaustively
+against the Cabal stanza list; a gate case proves a newly added suite cannot be left unrouted; full
+unit suite; `prodbox dev check`.
+**Docs to update**: `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/code_quality.md`,
+`documents/engineering/integration_fixture_doctrine.md`, `documents/documentation_standards.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+The package declares eight test suites. `prodbox test unit` and `prodbox test all` name five.
+`prodbox-haskell-style`, `prodbox-daemon-lifecycle`, and `prodbox-pulumi` are compiled by the
+canonical gate and executed by no `prodbox test` scope — including the one suite that starts a real
+daemon process. The gate's own honest note says it proves the suites compile and still does not run
+them; what it does not say is that for three of them, nothing else does either.
+
+Several governed documents attribute guarantees to those suites. The renderer-determinism check and
+the daemon-lifecycle behavioural contract are both cited as proven by a suite that never executes.
+
+### Deliverables
+
+- Route the three suites into a `prodbox test` scope, or delete any that no longer earns its
+  compile cost — and say which, rather than leaving the choice implicit.
+- Gate the condition so a ninth suite cannot be added without a runner, extending the existing
+  Cabal-stanza check rather than adding a parallel one.
+- Reattribute, in the owning documents, every guarantee currently credited to an unrun suite to the
+  mechanism that actually provides it.
+
+### Validation
+
+1. Every declared suite is named by at least one `prodbox test` scope, asserted as a table rather
+   than narrated.
+2. Adding a suite without a runner fails the gate, proven by a synthetic stanza case.
+3. Full unit suite and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+All deliverables above.
+
+## Sprint 5.46: The Property The Policy Already Mandates [⏸️ Blocked]
+
+**Status**: Blocked. Phase `5` own-surface reopen (Standard A/N) on the canonical suite's property
+coverage.
+**Doctrine**: [Unit Testing Policy § 3.2,
+"Properties"](../documents/engineering/unit_testing_policy.md#32-properties).
+**Implementation**: `test/unit/` property modules and `prodbox.cabal`.
+**Blocked by**: Sprint `4.92`, which lands the single canonical scope codec these properties are
+written against; writing them first would pin eighteen hand-authored shapes this project is about to
+replace with one.
+**Live-proof**: not applicable.
+**Deployment qualification**: not applicable.
+**Independent Validation**: the properties are pure and exhaustively generated; a mutation that
+drops a field fails them; full unit suite; `prodbox dev check`.
+**Docs to update**: `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/pure_fp_standards.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+[Unit Testing Policy](../documents/engineering/unit_testing_policy.md) § 3.2 requires
+`decode . encode == id` properties for bounded valid values, "at minimum". The tree contains roughly
+five property registrations in total, of which two are genuine wire round trips, and both live
+outside the primary unit suite. The policy's own tier table places codec properties in a suite that
+has none.
+
+That gap is not academic: it is precisely why fifteen codecs could erase a scope field for weeks
+without a single failing test. The rule existed; the test did not.
+
+### Deliverables
+
+- The round-trip properties § 3.2 mandates, over the canonical codec Sprint `4.92` lands, with
+  generators that produce both zoned and zoneless values and that discriminate fields from one
+  another so no two same-typed fields can collide and no field can hold a decoder's default.
+- Correct the policy's own tier table to say where codec properties live.
+- State honestly, in the policy, which of § 3.2's bullets are met and which remain targets, rather
+  than leaving the whole list in the indicative.
+
+### Validation
+
+1. A mutation that drops any scope field from any projection fails a property.
+2. The properties run in the suite the policy's table names.
+3. Full unit suite and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+All deliverables above.
 
 ## Related Documents
 

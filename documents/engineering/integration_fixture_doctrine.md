@@ -360,6 +360,22 @@ type-checked only when `prodbox test integration cli` / `env` compiled it, and n
 those. What remains outside the gate is fixture *behaviour*: a fixture that compiles against a
 changed type and asserts the wrong thing still needs the suite to run.
 
+**Extended 2026-09-11 (Sprint `0.33`): for three of the eight suites, nothing runs them at all.**
+`prodbox-haskell-style`, `prodbox-daemon-lifecycle`, and `prodbox-pulumi` are compiled here and
+named by no `prodbox test` scope, so the "nothing routine ran those" observation above is still
+literally true of them today. Sprint `5.45` owns routing or retiring them.
+
+**A fixture must exercise the mechanism it stands in for.** The 2026-09-11 counterexample
+`CASCADE-QUALIFICATION-EPHEMERAL-KUBECTL-TOKEN-FIFO-UNSERVED-2026-09-11` is the worked case. A fake
+`kubectl` logged its argument vector and printed a cluster UID, which made it a faithful fixture of
+*argument construction* and no fixture at all of *authentication*: it never opened the credential
+file the real binary reads, so a token-delivery mechanism that has never worked passed through it
+unchanged, in a case whose own name claimed it drained through an ephemeral kubeconfig. A fixture
+standing in for a boundary that consumes a credential consumes it the same way production does, and
+the case asserts the exact value arrived. Absence assertions about the credential — that it is not
+in the log, not in the environment, not in the rendered config — do not substitute, because they
+pass most convincingly when the credential was never produced.
+
 Four consequences bind this doctrine:
 
 - **A fixture that hand-authors a serialized form of a production type is a second encoder of that

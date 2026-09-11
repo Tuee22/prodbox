@@ -57,6 +57,18 @@ current-revision deployment evidence are owned only by the
     The corollary for reviewers is a question rather than a rule: *what input would make this node
     fail?* If the answer is "none", the node is a renderer, and calling it a validation is the
     defect — not the code it renders.
+
+    **The absence-assertion corollary (added 2026-09-11, Sprint `0.33`).** The question has a
+    standard wrong answer when the subject is a secret. Every test covering the ephemeral Kubernetes
+    client's bearer token asserted that the token was *absent* — from argv, from the environment,
+    from retained evidence, from the rendered kubeconfig. Not one asserted that it arrived. **A
+    suite of absence assertions about a secret is satisfied perfectly by a secret that is never
+    produced**, which is what the tree shipped: the token writer failed before `kubectl` started on
+    every run for weeks, and no test could notice. When a case asserts that a credential did not
+    leak, ask separately what proves it was delivered; if the answer is another absence assertion,
+    the pair is still a renderer. This is not a demand that every redaction assertion acquire a
+    partner — it is a demand that *somewhere* in the suite a positive delivery assertion exists for
+    each credential path, and that a reviewer can name it.
 11. **A registration is an assertion, and a lint can hold a defect in place** (Sprint `4.76`,
     2026-08-11). A `shouldNotContain` over source text asserts an absence as an invariant. The
     legacy-adapter scan in `test/unit/Main.hs` forbade `discoverClusterTaggedAwsResources` in
@@ -86,6 +98,22 @@ Boundary substitutions are appropriate for:
 A boundary fake returns the same typed observation/result as production. Tests must not add a
 test-only Boolean success path that production cannot produce.
 
+**A fake must exercise the mechanism it stands in for (added 2026-09-11, Sprint `0.33`).** A fake
+`kubectl` that logs its arguments and prints a cluster UID is a faithful fake of *argument
+construction* and no fake at all of *authentication*: it never opens the credential file, so a
+credential mechanism that has never worked passes through it unchanged. That is what happened. When
+a fake stands in for a boundary that consumes a credential, it must consume the credential by the
+same mechanism production uses, and the case must assert the exact value arrived. Sprint `5.44`
+lands the harness.
+
+**A bounded call asserts elapsed time, not only its result.** "Returned an error eventually" cannot
+distinguish slow from wedged, and the distinction is the whole diagnosis: a call whose duration
+tracks its supervisor's bound — thirty seconds under a thirty-second bound, forty under forty — is
+not slow, it never completes. Any case exercising a bounded subprocess asserts that it finished in a
+small fraction of that bound. Sprint `5.44` lands the vocabulary; note that a blanket ratio applied
+retroactively produces false positives, because at least one existing case carries a one-second
+bound.
+
 ### 1.2 Test hooks
 
 Long-running daemons may expose boundary-owned no-op production hooks for deterministic lifecycle
@@ -101,14 +129,14 @@ must not change domain decisions. Direct `threadDelay` for race coordination is 
 | Pure unit tables | Parsing, validation, ADTs, graph rejection, `decide`/`evolve`, admission, deadline, cleanup scheduling | `test/unit/` |
 | Conformance tier | Cross-artifact agreement between compiled registries and their projections | `prodbox-unit` plus the canonical quality gate |
 | Parser tests | `argv -> Command` via `execParserPure`, including rejection | `test/unit/Parser.hs` |
-| Property tests | Codec/replay/idempotency/monotonicity/bounds/deadline laws | `prodbox-unit` |
+| Property tests | Codec/replay/idempotency/monotonicity/bounds/deadline laws | `prodbox-unit` — **target, not current (2026-09-11)**: the tree holds roughly five property registrations in total, and the only two genuine wire round trips live outside `prodbox-unit`. Sprint `5.46` |
 | Deterministic concurrency simulation | Actor interleavings, saturation, cancellation, restart, response loss | dedicated pure/simulation test module |
 | Built-frontend integration | Real binary routing and fake boundary behavior | `test/integration/` |
-| Daemon lifecycle | Real process/config/health/admission/drain/restart contract | `test/daemon-lifecycle/` |
+| Daemon lifecycle | Real process/config/health/admission/drain/restart contract | `test/daemon-lifecycle/` — **compiled by the gate and executed by no `prodbox test` scope (2026-09-11)**, so this contract is unproven rather than merely unexercised. Sprint `5.45` |
 | Production-adapter composition | Real binary with native MinIO/Vault/CAS clients and exact identity binding | named integration validation |
 | Load qualification | Authored steady rate plus burst under exact cgroups | named integration validation |
 | Chaos qualification | Kill/isolate/restart at every durable transition boundary | named integration validation |
-| Pulumi infrastructure | Provision, assert, always-run cleanup, residue re-observation | `test/pulumi/` and named validations |
+| Pulumi infrastructure | Provision, assert, always-run cleanup, residue re-observation | `test/pulumi/` — **executed by no `prodbox test` scope (2026-09-11)**; only the named validations run. Sprint `5.45` |
 | Golden tests | CLI, plans, health/ready/metrics, generated docs | `test/golden/` |
 
 The canonical named-validation inventory is defined in `src/Prodbox/TestValidation.hs`; phase and
@@ -134,7 +162,14 @@ and was recorded as `Done`.
 
 The gate now proves the suites **compile**. It still does not **run** them, and a conformance suite
 proves agreement only once something runs it: `prodbox test unit` for the four unit suites,
-`prodbox test integration cli` / `env` for the integration suite. **A sprint that records `dev check`
+`prodbox test integration cli` / `env` for the integration suite. **Recorded 2026-09-11 (Standard
+C): that sentence enumerates five of the eight, and the other three are run by nothing.**
+`prodbox-haskell-style`, `prodbox-daemon-lifecycle`, and `prodbox-pulumi` are compiled here and
+named by no `prodbox test` scope in `src/Prodbox/TestPlan.hs`, so running the whole documented local
+baseline executes none of them. Where this document or
+[code_quality.md](./code_quality.md) credits a guarantee to one of those suites, the guarantee is
+today obtained — if at all — by the shared function the corresponding `prodbox dev lint` leaf calls,
+not by the suite. Sprint `5.45` owns routing or retiring them and gating the condition. **A sprint that records `dev check`
 and `prodbox test unit` as its validation has still not exercised the integration suite**, and a
 sprint touching a contract that suite exercises must name that command in its Validation section.
 
@@ -203,6 +238,15 @@ Use `tasty-quickcheck` for, at minimum:
 
 Happy-path chronological generators alone are insufficient. Generate duplicate, reordered,
 conflicting, stale, truncated, malformed, unobservable, and response-lost cases.
+
+**What this list currently is, recorded 2026-09-11 (Standard C).** § 3.1's exhaustive tables are
+largely met. **This section is not.** The tree holds roughly five `testProperty` registrations in
+total, of which two are genuine wire round trips, and both live outside `prodbox-unit`. Against that
+density, the `decode . encode == id` bullet is a target rather than a description: fifteen codecs
+for one durable type erased a field for weeks without a single failing test, which is precisely the
+class the first bullet exists to prevent. Sprint `5.46` lands the round-trip properties over the
+canonical codec Sprint `4.92` derives. Read the bullets above as required, not as achieved, until
+that sprint closes and this paragraph is rewritten to say which of them hold.
 
 ### 3.3 Deterministic concurrency simulation
 
@@ -563,11 +607,17 @@ Each tier remains a separate Cabal test stanza:
 
 ```text
 test-suite prodbox-unit
+test-suite prodbox-authority-admission-unit
+test-suite prodbox-control-plane-authentication-unit
+test-suite prodbox-control-plane-authenticated-transport-unit
 test-suite prodbox-integration
 test-suite prodbox-haskell-style
 test-suite prodbox-daemon-lifecycle
 test-suite prodbox-pulumi
 ```
+
+Eight stanzas, of which `prodbox test` scopes name five; the last three are compiled by the
+canonical gate and executed by nothing (Sprint `5.45`).
 
 `cabal test` runs the package suites. `prodbox test all` is the developer-facing orchestration
 entrypoint and composes package tests with named validations; it is not a second independent test

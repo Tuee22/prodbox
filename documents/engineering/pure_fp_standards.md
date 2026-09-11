@@ -160,6 +160,21 @@ The general statement, its worked instance, and the ring-region qualifier are in
 [chaos_hardening_doctrine.md § 23](./chaos_hardening_doctrine.md) and
 [resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md).
 
+**Worked instance, recorded 2026-09-11: eighteen encoders for one type.**
+`ObservationEvidenceScope` is the durable coordinate every teardown observation binds to. Sprint
+`7.36` added the run's DNS hosted zone to it; Sprint `7.38` sealed that field into compiled
+identity. Neither reached the boundary: the type has roughly eighteen independently authored
+byte-level codecs, and **fifteen rebuild the scope through the zone-less smart constructor**, so a
+zoned scope decodes without its zone and compares equal to a zoneless predecessor. Five of eight
+digest and equality projections drop it too.
+
+Two things make this the canonical illustration of this section. First, the erasure is invisible
+precisely because the result is well-typed — a scope without a zone is a legal scope, so nothing
+fails until an exact identity comparison much later refuses a value the same run produced. Second,
+the repair already applied to one codec — adding the field there — is the repair this section says
+is insufficient: seventeen other authors remain free to forget. The remedy is the rule above,
+literally: one decoder, exactly one encoder, every other rendering derived. Sprint `4.92` owns it.
+
 ### 2.4 Durability-indexed coordinates
 
 When stored objects outlive different scopes — a chart release, the cluster, the fleet — the
@@ -399,7 +414,11 @@ Pure-functional structure determines the proof layers:
 
 - unit tables cover every ADT constructor and refusal;
 - property tests cover codecs, replay, idempotency, monotonic epochs/fences/generations, bounds,
-  deadline monotonicity, and cleanup scheduling;
+  deadline monotonicity, and cleanup scheduling — **target, not current revision (2026-09-11): the
+  tree holds roughly five property registrations in total and no codec round trip in the primary
+  unit suite, which is why fifteen codecs for one type erased a field for weeks without a failing
+  test. Sprint `5.46` closes it; see
+  [unit_testing_policy.md § 3.2](./unit_testing_policy.md#32-properties)**;
 - deterministic concurrency simulation covers actor interleavings, cancellation, saturation,
   response loss, and restart at every durable boundary;
 - production-adapter composition tests use the real binary and native MinIO/Vault clients;

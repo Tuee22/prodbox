@@ -250,6 +250,39 @@ controlPlaneTargetSecretWorkerSuite =
       diagnostic "private-detail-a" `shouldBe` "attach-failed/other"
       diagnostic "private-detail-b" `shouldBe` "attach-failed/other"
 
+    -- Sprint 6.5: a live TLS prepare refused at bare `session-cleanup-failed`,
+    -- and nothing anywhere recorded which close step failed. Session close now
+    -- classifies exactly as session prepare already does, and an unrecognized
+    -- shape says so instead of echoing interpreter text.
+    it "refines retained session cleanup to one closed value-free stage" $ do
+      let diagnostic detail =
+            renderTargetWorkerCoordinatorDiagnostic
+              (TargetWorkerCoordinatorSessionCleanupFailed detail)
+      diagnostic "cleanup-threw" `shouldBe` "session-cleanup-failed/cleanup-threw"
+      map
+        (diagnostic . Text.pack . show)
+        [ ServiceSessionLifecycleBindingRoleMismatch
+        , ServiceSessionLifecycleRoleOccupied
+        , ServiceSessionLifecycleAccessorInvalid
+        , ServiceSessionLifecycleAccessorIdentityMismatch
+        , ServiceSessionLifecycleCleanupThrew
+        , ServiceSessionLifecycleLoginAmbiguityCleaned
+        , ServiceSessionLifecycleUnhandledException
+        ]
+        `shouldBe` [ "session-cleanup-failed/binding-role-mismatch"
+                   , "session-cleanup-failed/role-occupied"
+                   , "session-cleanup-failed/accessor-invalid"
+                   , "session-cleanup-failed/accessor-identity-mismatch"
+                   , "session-cleanup-failed/accessor-cleanup-threw"
+                   , "session-cleanup-failed/login-ambiguity-cleaned"
+                   , "session-cleanup-failed/unhandled-exception"
+                   ]
+      diagnostic (Text.pack (show (ServiceSessionLifecycleJournalUnavailable "private")))
+        `shouldBe` "session-cleanup-failed/journal-unavailable"
+      diagnostic (Text.pack (show (ServiceSessionLifecycleActionFailed "private")))
+        `shouldBe` "session-cleanup-failed/action-failed"
+      diagnostic "private-detail" `shouldBe` "session-cleanup-failed/unrecognized"
+
     it "refines retained session preparation to one closed value-free stage" $ do
       let causes = [minBound .. maxBound] :: [TargetWorkerSessionPrepareCause]
           diagnostic =

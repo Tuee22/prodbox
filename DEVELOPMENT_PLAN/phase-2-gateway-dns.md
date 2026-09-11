@@ -11,6 +11,15 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-09-11 on Sprint `2.134` (Standards A/N/P).** Own-surface reopen on the daemon,
+workload, bootstrap-broker, and control-plane runtime concurrency this phase owns. Sprint `6.5`'s
+live investigation proved a token writer that died silently because its `withAsync` handle was
+discarded, and found five further long-lived threads under `src/` with the same shape — including
+the sole refresher of the cache `/readyz` serves. [Chaos Hardening
+Doctrine](../documents/engineering/chaos_hardening_doctrine.md) rule R6 already forbids discarding a
+join result; nothing enforced it. The phase recloses when `2.134` reaches `Done`; until then this
+entry records an open reopen, not a closure.
+
 ✅ **Reclosed 2026-08-31 on Sprint `2.133` (Standards A/N/P).** Generation 157 reuses the exact
 Generation-156 runtime identity, reads back the current Lifecycle Authority config, receives the
 Provider response beyond the former generic ten-second timeout, advances through Gateway and
@@ -14543,6 +14552,95 @@ None.
 - Record the Phase `2` own-surface reopen in [README.md](README.md) and
   [00-overview.md](00-overview.md); register the fallback in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 2.134: A Spawned Thread Whose Handle Is Discarded Cannot Report Its Own Death [🔄 Active]
+
+**Status**: Active. Phase `2` own-surface reopen (Standard A/N) on the daemon, workload, bootstrap
+broker, and control-plane runtime concurrency this phase owns.
+**Doctrine**: [Chaos Hardening Doctrine, rule R6 "Structured concurrency
+only"](../documents/engineering/chaos_hardening_doctrine.md), and [Distributed Gateway
+Architecture](../documents/engineering/distributed_gateway_architecture.md)'s supervised-worker
+statement.
+**Implementation**: `src/Prodbox/Bootstrap/Broker.hs`, `src/Prodbox/Bootstrap/Broker/Server.hs`,
+`src/Prodbox/Gateway/PortForward.hs`, `src/Prodbox/Workload.hs`,
+`src/Prodbox/ControlPlane/Runtime.hs`, `src/Prodbox/Gateway/Daemon.hs`, and
+`src/Prodbox/CheckCode.hs`.
+**Blocked by**: none.
+**Live-proof**: pending and non-blocking for code-local closure. A daemon that survives an injected
+worker fault is a live observation and does not gate the code-owned surface.
+**Deployment qualification**: pending — **invalidated** on process topology. Bringing unowned
+children into a supervision tree changes which thread failures terminate a role, so no identity
+captured before this sprint describes the resulting process behaviour.
+**Independent Validation**: pure supervision-combinator tables; a fault-injection case per repaired
+site proving the parent observes the child's death rather than continuing; the new policy check's
+own violation table exercised against synthetic sources; full unit suite; and `prodbox dev check`.
+No item needs live infrastructure or a later phase.
+**Docs to update**: `documents/engineering/chaos_hardening_doctrine.md`,
+`documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/haskell_code_guide.md`, `documents/engineering/code_quality.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+[Chaos Hardening Doctrine](../documents/engineering/chaos_hardening_doctrine.md) rule R6 already
+states that discarding a cancellation or join result "recreates unstructured ownership behind a
+structured API and is forbidden". Nothing enforces it. Five long-lived threads under `src/` discard
+their handle, so each can die silently and leave its parent running on stale assumptions:
+
+1. `src/Prodbox/Bootstrap/Broker.hs` — the readiness observer, the only thing refreshing the cache
+   `/readyz` serves. It is spawned outside the worker tree, so the proof-carrying shutdown witness
+   in [Lifecycle Control-Plane
+   Architecture](../documents/engineering/lifecycle_control_plane_architecture.md) cannot see its
+   death either.
+2. `src/Prodbox/Gateway/PortForward.hs` — the port-forward restart supervisor.
+3. `src/Prodbox/Workload.hs` — the config-file watcher.
+4. `src/Prodbox/ControlPlane/Runtime.hs` — the request-worker pool, reaped only by cancellation at
+   shutdown while the accept loop keeps enqueueing.
+5. `src/Prodbox/Bootstrap/Broker/Server.hs` — the broker worker pool, invisible until drain.
+
+The repository already contains the answer, in one module. `withSupervisedWorkers` in
+`src/Prodbox/Gateway/Daemon.hs` links every handle it spawns, and its roster comment states the
+principle this sprint generalises: the roster and the spawn set are the same list, so a worker
+cannot exist without a readiness entry. The existing policy check binds that rule to one file by
+refusing an unqualified import, which a qualified import sidesteps by design.
+
+This sprint is ordered first deliberately. The ephemeral Kubernetes client's token writer is a sixth
+member of this class, and linking it converts the silent wedge Sprint `7.39` exists to fix into a
+loud refusal at first execution.
+
+### Deliverables
+
+- Repair all five sites so the parent observes the child's exit on every path, using the shape
+  `withSupervisedWorkers` already proves.
+- Lift supervision into a type rather than a convention: a constructor that cannot produce a
+  long-lived child without linking or joining it, so an unsupervised thread is unconstructible
+  rather than merely discouraged.
+- Land a repo-wide policy check over `src/` that refuses a spawned handle which is neither linked
+  nor waited, replacing the single-file import scan. The rule lands as an error with no admission
+  registry, because every site it fires on is repaired first.
+- Retire the `.hlint.yaml` doctrine-coverage check, whose twenty-four assertions are satisfied by a
+  comment block, together with the marker block it reads and the style-suite case that asserts the
+  same markers. All three are mutually load-bearing and must move in one change.
+
+### Validation
+
+1. Every repaired site has a fault-injection case proving the parent observes the child's death; a
+   mutation that restores the discard fails that case.
+2. The supervision type admits no long-lived child without linking or joining it, proven by a
+   compile-refusal case.
+3. The new policy check's violation table is exercised against synthetic sources covering the
+   discard shape, the linked shape, the waited shape, and the qualified-import evasion the current
+   check permits.
+4. `prodbox dev check` exits 0 with no admission registry for the new rule.
+5. The retired hlint coverage check, its marker block, and the style-suite case are absent together,
+   and `prodbox dev lint haskell` still gates HLint itself.
+
+### Remaining Work
+
+All deliverables above.
 
 ## Related Documents
 

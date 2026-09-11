@@ -29,6 +29,13 @@
 > the only way to run one: it links the `Async`, stamps a heartbeat, and records exit on every path
 > including an exception. Readiness folds the roster against a heartbeat bound derived from the beat
 > interval, and `prodbox dev check` refuses raw `withAsync` in `src/Prodbox/Gateway/Daemon.hs`.
+> **The region, recorded 2026-09-11 (Standard C):** that fix and that gate are one file. The check
+> is `checkSupervisedWorkers` in `src/Prodbox/CheckCode.hs`, it refuses an *unqualified* import, and
+> a qualified `Async.withAsync` sidesteps it by design. The identical defect class survives in five
+> other modules — the Bootstrap Broker's readiness observer and worker pool, the Gateway
+> port-forward supervisor, the workload config watcher, and the control-plane request-worker pool.
+> Read this statement as true of the Gateway daemon and as a target elsewhere until Sprint `2.134`
+> lands the repo-wide rule.
 
 Partition semantics for gateway leadership and DNS write gating must be formally verified by TLA+ before implementation changes are accepted.
 
@@ -1428,6 +1435,14 @@ data ErrorKind
 Worker loops handle `Recoverable` errors by logging at warn level and
 retrying with exponential backoff (capped). `Fatal` errors propagate to
 the top-level supervisor, which begins drain and exits.
+
+**That propagation is a property of `link`, not of `withAsync` (recorded 2026-09-11, Sprint
+`0.33`).** A child spawned with its handle discarded cannot propagate anything: its exception stays
+in an `Async` nobody waits on. The rationale given above for forbidding `forkIO` — that it cannot
+propagate exceptions — therefore applies unchanged to an unlinked `withAsync`, and five long-lived
+threads under `src/` are in exactly that state, including the Gateway port-forward supervisor and
+the workload config watcher named in this document. Sprint `2.134` makes supervision a property of
+the type so the sentence above becomes true by construction.
 
 ### Logging and observability
 

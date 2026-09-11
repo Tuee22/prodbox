@@ -26,6 +26,7 @@ import Prodbox.ControlPlane.EksClientAuthProjection
   , decodeEksClientAuthEnvelope
   , eksClientAuthAccountId
   , eksClientAuthClusterName
+  , eksClientAuthEvidenceMarker
   , eksClientAuthExpiresAtEpochSeconds
   , eksClientAuthPublicKeyBytes
   , eksClientAuthRegion
@@ -251,7 +252,7 @@ decodeEvidence retainedEvidence = do
     maybe
       (Left EksClientAuthEvidenceInvalid)
       Right
-      (Text.stripPrefix "eks-client-auth-envelope:" retainedEvidence)
+      (Text.stripPrefix eksClientAuthEvidenceMarker retainedEvidence)
   bytes <-
     either
       (const (Left EksClientAuthEvidenceInvalid))

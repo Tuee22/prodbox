@@ -17,7 +17,11 @@ provenance, not a parallel status ledger.
   root (default `.data/`). No other operator-host state is preserved across cluster
   wipes. The legacy `.prodbox-state/` repo-local cache is removed; chart secrets, gateway
   event-key files, stack-output caches, EKS kubeconfig snapshots, and HA-RKE2 SSH key
-  material no longer live on disk outside `.data/`.
+  material no longer live on disk outside `.data/`. **Qualification, recorded 2026-09-11 (Sprint
+  `0.33`):** checkpoint-derived EKS kubeconfig materialization is not retired. `withEksKubeconfig`
+  in `src/Prodbox/Infra/AwsEksTestStack.hs` still materializes one per call — into a private
+  temporary directory rather than `.prodbox-state/`, so the durable-root rule above holds — and is
+  reached from the legacy public cascade's AWS drain. Sprint `7.40` converts or deletes it.
 - Retained storage is reconciled via the static `manual` no-provisioner `StorageClass`
   plus deterministic PV resources to guarantee stable PVC-to-PV rebinding across cluster
   delete/reinstall.

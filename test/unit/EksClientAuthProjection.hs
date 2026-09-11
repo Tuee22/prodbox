@@ -5,11 +5,14 @@ module EksClientAuthProjection (eksClientAuthProjectionSuite) where
 import Control.Monad (filterM)
 import Data.Aeson (encode)
 import Data.ByteString qualified as ByteString
+import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy.Char8 qualified as LazyByteString
 import Data.List (isInfixOf, isSuffixOf, sort)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import EksClientAuthProjectionFixture
 import Prodbox.ControlPlane.EksClientAuthProjection
+import Prodbox.ControlPlane.ProviderWorkerClient (providerWorkerResponseMaximumBytes)
 import Prodbox.Infra.AwsEksTestStack (eksKubeconfig)
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath ((</>))
@@ -82,6 +85,98 @@ eksClientAuthProjectionSuite =
       rendered `shouldContain` "tokenFile"
       rendered `shouldContain` "/tmp/token-fifo"
       rendered `shouldNotContain` Text.unpack bearer
+    -- Sprint 6.5: a live Provider execution returned 4,649 characters of
+    -- client-auth evidence against a generic 4,096-character bound, so this
+    -- intent could never have succeeded.  The bound is now derived from the
+    -- envelope the sealer may produce, and this case proves the whole chain:
+    -- maximal projection fields seal within the envelope bound, that envelope's
+    -- marker-prefixed Base64 evidence sits within the derived character bound,
+    -- and that bound sits within the Provider response maximum.
+    it "derives an evidence bound that admits every sealable envelope and fits the response" $ do
+      let maximalCa = Text.replicate 8192 "Y"
+          maximalBearer = "k8s-aws-v1." <> Text.replicate (8192 - 11) "b"
+      maximalFixture <-
+        testEksClientAuthProjectionFixture
+          "123456789012"
+          (fixtureAwsRegion FixtureCaCentral1)
+          (Text.replicate 256 "c")
+          ( "arn:aws:eks:"
+              <> fixtureAwsRegion FixtureCaCentral1
+              <> ":123456789012:cluster/"
+              <> Text.replicate 256 "c"
+          )
+          ("https://" <> Text.replicate 2000 "e")
+          maximalCa
+          maximalBearer
+          2000000000
+      case maximalFixture of
+        Left err -> expectationFailure (show err)
+        Right (_, envelope, _) -> do
+          let encoded = encodeEksClientAuthEnvelope envelope
+              evidence =
+                eksClientAuthEvidenceMarker
+                  <> TextEncoding.decodeUtf8 (Base64.encode encoded)
+          ByteString.length encoded `shouldSatisfy` (<= maximumEnvelopeBytes)
+          Text.length evidence
+            `shouldSatisfy` (<= maximumEksClientAuthEvidenceCharacters)
+          maximumEksClientAuthEvidenceCharacters
+            `shouldSatisfy` (< providerWorkerResponseMaximumBytes)
+          maximumEksClientAuthEvidenceCharacters `shouldBe` 32793
+          maximumEnvelopeBytes `shouldBe` (24 * 1024)
+
+      -- The live measurement: a realistic cluster's evidence is well over the
+      -- generic bound and well under the derived one.
+      liveShapedFixture <-
+        testEksClientAuthProjectionFixture
+          "123456789012"
+          (fixtureAwsRegion FixtureCaCentral1)
+          "aws-eks-test-cluster"
+          ( "arn:aws:eks:"
+              <> fixtureAwsRegion FixtureCaCentral1
+              <> ":123456789012:cluster/aws-eks-test-cluster"
+          )
+          "https://example.eks.amazonaws.com"
+          (Text.replicate 1900 "Y")
+          ("k8s-aws-v1." <> Text.replicate 1289 "b")
+          2000000000
+      case liveShapedFixture of
+        Left err -> expectationFailure (show err)
+        Right (_, envelope, _) -> do
+          let evidence =
+                eksClientAuthEvidenceMarker
+                  <> TextEncoding.decodeUtf8
+                    (Base64.encode (encodeEksClientAuthEnvelope envelope))
+          Text.length evidence `shouldSatisfy` (> 4096)
+          Text.length evidence
+            `shouldSatisfy` (<= maximumEksClientAuthEvidenceCharacters)
+
+      testEksClientAuthProjection
+        "123456789012"
+        (fixtureAwsRegion FixtureCaCentral1)
+        "aws-eks-test-cluster"
+        ( "arn:aws:eks:"
+            <> fixtureAwsRegion FixtureCaCentral1
+            <> ":123456789012:cluster/aws-eks-test-cluster"
+        )
+        "https://example.eks.amazonaws.com"
+        (Text.replicate 8193 "Y")
+        "bearer"
+        2000000000
+        `shouldBe` Left (EksClientAuthFieldInvalid "certificate-authority")
+      testEksClientAuthProjection
+        "123456789012"
+        (fixtureAwsRegion FixtureCaCentral1)
+        "aws-eks-test-cluster"
+        ( "arn:aws:eks:"
+            <> fixtureAwsRegion FixtureCaCentral1
+            <> ":123456789012:cluster/aws-eks-test-cluster"
+        )
+        "https://example.eks.amazonaws.com"
+        "Y2E="
+        (Text.replicate 8193 "b")
+        2000000000
+        `shouldBe` Left (EksClientAuthFieldInvalid "bearer")
+
     it "admits cleanup issuance only from an opaque durable execution context" $ do
       source <- readFile "src/Prodbox/ControlPlane/EksClientAuthClient.hs"
       source `shouldContain` "CleanupNodeExecutionContext"

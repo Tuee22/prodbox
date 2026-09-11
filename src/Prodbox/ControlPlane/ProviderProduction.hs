@@ -66,7 +66,8 @@ import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientTransport
   )
 import Prodbox.ControlPlane.EksClientAuthProjection
-  ( encodeEksClientAuthEnvelope
+  ( eksClientAuthEvidenceMarker
+  , encodeEksClientAuthEnvelope
   , validateEksClusterArnBinding
   )
 import Prodbox.ControlPlane.EksClientAuthProjection.Internal
@@ -1982,7 +1983,7 @@ eksClientAuthObservation request = ProviderReadOnly $ \session _ -> do
           pure $ do
             envelope <- firstShow sealed
             Right
-              ( "eks-client-auth-envelope:"
+              ( eksClientAuthEvidenceMarker
                   <> TextEncoding.decodeUtf8 (Base64.encode (encodeEksClientAuthEnvelope envelope))
               )
  where

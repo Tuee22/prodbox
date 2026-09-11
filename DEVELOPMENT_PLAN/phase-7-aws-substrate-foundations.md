@@ -11,6 +11,15 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-09-11 on Sprints `7.39`–`7.40` (Standards A/L/P).** Own-surface reopen on the
+ephemeral Kubernetes client this phase created. Sprint `6.5`'s live investigation proved that the
+client's bearer-token writer dies with `ENXIO` before `kubectl` starts and that its death is silent,
+so the client has never authenticated on any live run and no AWS teardown path has ever reached an
+EKS API server. It also found a third statement of the machinery, in
+`src/Prodbox/Infra/AwsEksTestStack.hs`, which Sprint `7.36` recorded as consolidated and which is
+reachable from the legacy public cascade's AWS drain. The phase recloses when both reach `Done`;
+until then this entry records an open reopen, not a closure.
+
 ✅ **Reclosed 2026-08-23 on Sprint `7.38`.** The compiled desired-absence program and its durable
 descriptor now carry the optional operator-authored DNS hosted zone, bind a present value into the
 operation/graph and descriptor identities, preserve zoneless graph identity, and reconstruct the
@@ -5130,6 +5139,18 @@ authenticate EKS drain without checkpoint-derived kubeconfig materialization.
   was the only teardown path that reached Kubernetes. `Prodbox.Lifecycle.Teardown.EphemeralKubectl`
   owns it now and both callers use it: two statements of that machinery would be two statements of a
   security property.
+  **Correction 2026-09-11 (Standard C) — this deliverable was not met, and neither was the
+  Objective's first half.** A third statement survives in `src/Prodbox/Infra/AwsEksTestStack.hs`
+  (`withEksKubeconfig`), reachable from the legacy public cascade's AWS drain, two harness
+  validations, and the substrate-aware `kubectl` wrapper; the two copies have drifted in their pipe
+  mode. The Objective's *"authenticate EKS drain without checkpoint-derived kubeconfig
+  materialization"* was delivered on neither half: the checkpoint-derived path is still live, and
+  Sprint `6.5` proved that the replacement's token writer dies before `kubectl` starts, so it has
+  never authenticated. The argument this deliverable rests on remains correct — two statements of
+  that machinery are two statements of a security property — which is why it needed a gate and not
+  a sentence. Sprint `7.40` completes the consolidation and lands that gate; Sprint `7.39` owns the
+  credential mechanism. This sprint stays `Done` on its other deliverables, whose evidence is
+  unaffected.
   **The registration's follow-on compiled scope is now closed.** At this sprint's closure,
   `compileDesiredAbsenceGraph` took no DNS hosted zone and every compiled DNS01 node correctly
   refused with `Dns01ChallengeHostedZoneMissing`. Sprint `7.38` carried the optional zone through
@@ -5910,6 +5931,155 @@ actually enters.
 - Record the Phase `7` own-surface reopen in [README.md](README.md) and
   [00-overview.md](00-overview.md), and update the compiled-program evidence-scope row in
   [system-components.md](system-components.md).
+
+## Sprint 7.39: The Token That Was Never Served [⏸️ Blocked]
+
+**Status**: Blocked. Phase `7` own-surface reopen (Standard A/L/P) on the ephemeral Kubernetes client
+this phase created and owns.
+**Doctrine**: [AWS Integration Environment
+Doctrine](../documents/engineering/aws_integration_environment_doctrine.md)'s AWS adapter contract
+and [Haskell Code Guide](../documents/engineering/haskell_code_guide.md)'s subprocess boundary.
+**Implementation**: `src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs` and, if the chosen
+mechanism requires it, `src/Prodbox/Subprocess.hs`.
+**Blocked by**: Sprint `5.44`, which lands the real-child process-boundary harness and the
+elapsed-time assertion this sprint's counterexample is written in. Without them the reproducer
+cannot state its own failure condition.
+**Live-proof**: pending and non-blocking for code-local closure. The live proof is a
+cascade-qualification cycle whose EKS drain reaches and passes the Kubernetes UID observation.
+**Deployment qualification**: pending — **invalidated** on capability wiring. How a bearer
+credential reaches a subprocess is a Standard-P composition surface, so no identity captured before
+this sprint describes the replacement.
+**Independent Validation**: the counterexample reproducer, observed to fail against the current
+implementation and to pass against the replacement; byte-exact credential arrival; a second read
+proving the mechanism's re-read semantics; elapsed time well under the bound; full unit suite;
+`prodbox dev check`. None of these needs AWS.
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/haskell_code_guide.md`,
+`documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Stable counterexample `CASCADE-QUALIFICATION-EPHEMERAL-KUBECTL-TOKEN-FIFO-UNSERVED-2026-09-11`.
+The client serves its bearer token through a FIFO whose writer is a `forever` loop around a plain
+file write. GHC opens files non-blocking, and a non-blocking write-open of a FIFO with no reader
+fails `ENXIO` rather than waiting, so the writer throws on its very first attempt — before `kubectl`
+starts — and dies. Nothing waits on the spawn, so the death is silent, and every `kubectl`
+invocation then blocks in `open` on a FIFO that will never have a writer until the bounded
+subprocess wall clock kills it. On this evidence the ephemeral Kubernetes client has never
+authenticated on any live run, and no AWS teardown path has ever reached an EKS API server.
+
+Measured, holding the runner, kubeconfig and arguments constant and varying only credential
+delivery: a plain private token file completes the identical call in 54 ms; through this FIFO it
+consumes the entire bound, 40.00 s of a 40-second budget, on both a threaded and a non-threaded
+runtime, with kernel task state showing `kubectl` parked in the FIFO-open wait and the FIFO absent
+from its descriptor table.
+
+Two replacements were built and both were refused by measurement: retrying the non-blocking open
+still lost the race about half the time, and a blocking open hung outright. Neither dead end is a
+licence to drop the FIFO, and neither is a licence to keep it.
+
+### Deliverables
+
+- **Answer the design question rather than assume it.** The kubeconfig, carrying the cluster CA and
+  endpoint, is already written to a regular owner-only file in an owner-only directory beside the
+  FIFO. Against a same-uid attacker the marginal exposure difference is small, and the rendezvous
+  cost a total outage of every EKS path. The sprint records which mechanism it chose and why,
+  weighing at least: a credential file with the same protections the kubeconfig already has; the
+  token on standard input through the already-sanctioned bounded exact-input runner; an inherited
+  descriptor; and a corrected blocking open.
+- **Take the gating measurement first**: whether `kubectl` reads the token file once per invocation
+  or once per request. A stream and a file differ exactly there, and the choice is not decidable
+  from the doctrine.
+- **Do not add `-threaded` to the executable.** It is a Standard-P process-topology change, and the
+  defect reproduces under it, so it buys no detection here.
+- **Re-derive the client's wall clock.** Its current margin is justified by a measurement of a FIFO
+  rendezvous that never occurs in production; the derivation must rest on the mechanism that ships.
+- Make the client unconstructible without a working credential server, so "client alive, writer
+  dead" stops being a representable state.
+
+### Validation
+
+1. The reproducer fails against the current implementation with the wedge signature — elapsed equal
+   to the bound and the exact wall-clock refusal — and that observation is recorded as the
+   counterexample's expected-failure half.
+2. The replacement delivers the byte-exact credential, and a second read establishes the re-read
+   semantics the chosen mechanism promises.
+3. Elapsed time is a small fraction of the bound, asserted rather than inferred.
+4. No path constructs a usable client when the credential server is unavailable.
+5. Full unit suite and `prodbox dev check` exit 0.
+6. Live: one cascade-qualification cycle whose EKS drain reaches and passes the Kubernetes UID
+   observation. Non-blocking for code-local closure under Standard O.
+
+### Remaining Work
+
+All deliverables above.
+
+## Sprint 7.40: One Statement, Asserted In Four Documents And Enforced In None [⏸️ Blocked]
+
+**Status**: Blocked. Phase `7` own-surface reopen (Standard A/L/P) completing the consolidation
+Sprint `7.36` recorded as finished.
+**Implementation**: `src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/CLI/Rke2.hs`,
+`src/Prodbox/TestValidation.hs`, `src/Prodbox/Infra/SubstrateKubectl.hs`, and
+`src/Prodbox/CheckCode.hs`.
+**Blocked by**: Sprint `7.39`, which establishes the credential mechanism this sprint routes the
+surviving copy onto. Converting the duplicate before the mechanism is chosen would move a known
+defect rather than remove it.
+**Live-proof**: pending and non-blocking.
+**Deployment qualification**: pending — **invalidated** on capability wiring and substrate routing,
+because the legacy public cascade's AWS drain changes which client it authenticates through.
+**Independent Validation**: a policy check proving the machinery has exactly one statement,
+exercised against a synthetic second statement; the converted call sites' existing tables; full unit
+suite; `prodbox dev check`.
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/development_plan_standards.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Sprint `7.36` consolidated the ephemeral Kubernetes client and recorded, in four documents, that the
+machinery is now one statement — on the sound argument that two statements of it would be two
+statements of a security property. It missed a third. `withEksKubeconfig` in
+`src/Prodbox/Infra/AwsEksTestStack.hs` still builds its own named pipe and its own unsupervised
+writer, and is reached from the legacy public cascade's AWS drain, two harness validations, and the
+substrate-aware `kubectl` wrapper. The copies have already drifted: one creates its pipe
+owner-read-write, the other owner-all.
+
+The claim was true of intent and false of the tree, and nothing could tell the difference, because
+no gate binds the machinery to one file. The named-pipe primitive has exactly two call sites
+repository-wide, so the rule that would have caught this is cheap; it was simply never written.
+
+Sprint `7.36` stays `Done` on its other deliverables under Standard C, which scopes status to the
+owned surface. What is corrected is the claim, where a reader meets it.
+
+### Deliverables
+
+- Route `withEksKubeconfig` onto the single owning module, or delete it with its callers — and say
+  which, rather than leaving a fourth statement possible.
+- Land a policy check binding the credential machinery to one file, in the ordinary violation-list
+  idiom rather than the legacy-escape registry, whose categories are a closed set describing paths
+  scheduled for deletion and whose rules require a source marker this machinery does not carry.
+- Correct the four documents that record the singular claim, and the standards document that names
+  the duplicate as a load-bearing no-fallback enforcement mechanism.
+- Correct the retirement note in `src/Prodbox/CheckCode.hs` that records the deleted unit module as
+  having exercised only an unreachable duplicate. The duplicate's writer was identical to the
+  survivor's, and that module was the tree's only real-subprocess executor of it.
+
+### Validation
+
+1. The named-pipe primitive has exactly one call site, and a synthetic second statement fails the
+   gate.
+2. Every converted call site's existing behaviour is unchanged, proven by its own tables.
+3. The four singular-claim documents and the standards reference are corrected in the same change.
+4. Full unit suite and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+All deliverables above.
 
 ## Related Documents
 

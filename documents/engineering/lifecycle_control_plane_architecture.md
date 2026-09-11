@@ -2715,6 +2715,15 @@ before publishing terminal completion. A join deadline that elapses produces
 `ShutdownIncomplete` and leaves the runtime in the nonterminal force-draining state; it must never
 publish `Stopped`, fill the public completion cell, or discard unfinished ownership.
 
+**One child is outside the tree this witness quantifies over (recorded 2026-09-11, Sprint `0.33`).**
+The readiness observer in `src/Prodbox/Bootstrap/Broker.hs` — the only thread refreshing the cache
+`/readyz` serves — is spawned beside the server call rather than inside the worker tree, and its
+handle is discarded. "Every worker has joined" is therefore true and insufficient: the observer is
+not among the workers, so a `ShutdownComplete` witness can be produced while that thread has already
+died unobserved. Either the observer joins the tree the witness quantifies over, or this section
+names it as an explicitly unowned child and says what its death means. Sprint `2.134` owns the
+choice; until it lands, read the witness as covering the worker tree rather than the role.
+
 This rule applies to every long-running prodbox role: a lifecycle phase may summarize owned
 resources only when its constructor carries the evidence needed for that summary. Independent
 phase flags and counters are observations during execution, not authority to construct a terminal

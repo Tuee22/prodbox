@@ -20,6 +20,9 @@ module Prodbox.ControlPlane.EksClientAuthProjection
   , eksClientAuthCertificateAuthorityData
   , eksClientAuthBearerToken
   , eksClientAuthExpiresAtEpochSeconds
+  , eksClientAuthEvidenceMarker
+  , maximumEksClientAuthEvidenceCharacters
+  , maximumEnvelopeBytes
   , openEksClientAuthProjection
   , encodeEksClientAuthEnvelope
   , decodeEksClientAuthEnvelope
@@ -39,10 +42,13 @@ import Prodbox.ControlPlane.EksClientAuthProjection.Internal
   , eksClientAuthClusterArn
   , eksClientAuthClusterName
   , eksClientAuthEndpoint
+  , eksClientAuthEvidenceMarker
   , eksClientAuthExpiresAtEpochSeconds
   , eksClientAuthPublicKeyBytes
   , eksClientAuthRegion
   , encodeEksClientAuthEnvelope
+  , maximumEksClientAuthEvidenceCharacters
+  , maximumEnvelopeBytes
   , openEksClientAuthProjection
   , prepareEksClientAuthDestination
   , validateEksClusterArnBinding

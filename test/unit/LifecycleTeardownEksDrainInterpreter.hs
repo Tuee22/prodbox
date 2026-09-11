@@ -31,6 +31,13 @@ import Prodbox.Lifecycle.Teardown.Decision
 import Prodbox.Lifecycle.Teardown.EksDrainIntent
 import Prodbox.Lifecycle.Teardown.EksDrainInterpreter
 import Prodbox.Lifecycle.Teardown.EksDrainSession
+import Prodbox.Lifecycle.Teardown.EphemeralKubectl
+  ( ephemeralKubectlDiscoveryAttempts
+  , ephemeralKubectlLimits
+  , ephemeralKubectlRequestTimeoutArgument
+  , ephemeralKubectlRequestTimeoutSeconds
+  , ephemeralKubectlWallClockSeconds
+  )
 import Prodbox.Lifecycle.Teardown.Execution
 import Prodbox.Lifecycle.Teardown.ExecutionIdentity
 import Prodbox.Lifecycle.Teardown.Graph
@@ -43,11 +50,50 @@ import Prodbox.Lifecycle.Teardown.ProviderDispatch
   , observationRevisionForProviderDispatchKey
   )
 import Prodbox.Lifecycle.Teardown.Registry
+import Prodbox.Subprocess (BoundedSubprocessLimits (boundedSubprocessTimeoutMicros))
 import TestSupport
 
 lifecycleTeardownEksDrainInterpreterSuite :: SuiteBuilder ()
 lifecycleTeardownEksDrainInterpreterSuite =
   describe "Sprint 7.36 exact EKS drain interpreter" $ do
+    -- Sprint 6.5: a live drain selection burned its whole wall clock inside
+    -- kubectl API-group discovery without ever reaching the namespace. The
+    -- measured numbers are pinned here because the wall clock is derived from
+    -- them: discovery retries exactly five times at the per-request bound
+    -- (10.04 s at 2 s, 15.04 s at 3 s, 25.05 s at 5 s against an unreachable
+    -- endpoint), so a discovery-bearing call's worst case is six request
+    -- timeouts and the outer bound has to exceed that or it fires first and
+    -- replaces kubectl's own error with an opaque subprocess timeout.
+    it "derives the ephemeral kubectl wall clock from the measured discovery retry cost" $ do
+      ephemeralKubectlRequestTimeoutSeconds `shouldBe` 5
+      ephemeralKubectlDiscoveryAttempts `shouldBe` 5
+      ephemeralKubectlRequestTimeoutArgument `shouldBe` "--request-timeout=5s"
+      let worstCase =
+            (ephemeralKubectlDiscoveryAttempts + 1)
+              * ephemeralKubectlRequestTimeoutSeconds
+      worstCase `shouldBe` 30
+      ephemeralKubectlWallClockSeconds `shouldSatisfy` (> worstCase)
+      boundedSubprocessTimeoutMicros ephemeralKubectlLimits
+        `shouldBe` (ephemeralKubectlWallClockSeconds * 1000 * 1000)
+
+    -- The UID is a core v1 object, so the observation is addressed by path and
+    -- pays no discovery at all. The document shape is the API's own, and a
+    -- missing or malformed body is a closed refusal rather than an absent UID.
+    it "reads the cluster UID from the namespace document without client-side selection" $ do
+      parseKubernetesNamespaceUid
+        "{\"kind\":\"Namespace\",\"metadata\":{\"name\":\"kube-system\",\"uid\":\"16522627-932a-43b6-a7b4-0e566895ab88\"}}"
+        `shouldBe` Right "16522627-932a-43b6-a7b4-0e566895ab88"
+      parseKubernetesNamespaceUid "{\"metadata\":{\"name\":\"kube-system\"}}"
+        `shouldBe` Left (ObservationFailure "Kubernetes namespace document carried no UID")
+      parseKubernetesNamespaceUid "{\"metadata\":{\"uid\":\"\"}}"
+        `shouldBe` Left (ObservationFailure "Kubernetes namespace document carried no UID")
+      parseKubernetesNamespaceUid "{\"kind\":\"Namespace\"}"
+        `shouldBe` Left (ObservationFailure "Kubernetes namespace document carried no metadata")
+      parseKubernetesNamespaceUid "[]"
+        `shouldBe` Left (ObservationFailure "Kubernetes namespace document was not an object")
+      parseKubernetesNamespaceUid ""
+        `shouldSatisfy` isNamespaceDocumentParseFailure
+
     it "mints selection only after complete UID, owner, Service, Ingress, and Delete-policy PVC queries" $ do
       (arms, cluster, calls) <- fixtureArms
       selected <-
@@ -2266,3 +2312,9 @@ classesAbsent state =
     , fakeIngressInventory = EksDrainInventoryComplete []
     , fakeControllerOwnerInventory = EksDrainInventoryComplete []
     }
+
+isNamespaceDocumentParseFailure :: Either ObservationFailure Text -> Bool
+isNamespaceDocumentParseFailure result = case result of
+  Left (ObservationFailure detail) ->
+    "Kubernetes namespace document did not parse: " `Text.isPrefixOf` detail
+  Right _ -> False

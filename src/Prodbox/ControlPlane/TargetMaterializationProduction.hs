@@ -491,6 +491,13 @@ renderTargetWorkerCoordinatorDiagnostic err = case err of
     "session-prepare-failed/" <> renderTargetWorkerSessionPrepareCause cause
   TargetWorkerCoordinatorMaterializationRefused detail ->
     classifyTargetWorkerMaterializationRefusal detail
+  -- Sprint 6.5: a live TLS prepare refused at bare @session-cleanup-failed@,
+  -- and the 256-character cause the coordinator had already captured fell
+  -- through the wildcard below into the payload-free wire code. Session close
+  -- now classifies exactly as session prepare already does, so the one place
+  -- the cause exists -- the agent's own protected diagnostic -- records it.
+  TargetWorkerCoordinatorSessionCleanupFailed detail ->
+    "session-cleanup-failed/" <> classifyTargetWorkerSessionCleanupFailure detail
   _ -> renderAwsAdminTargetWorkerCause (classifyTargetWorkerError err)
 
 renderTargetWorkerSessionPrepareCause :: TargetWorkerSessionPrepareCause -> Text
@@ -526,6 +533,36 @@ renderTargetWorkerSessionPrepareCause cause = case cause of
 
 -- | Refine only the closed production attach failures. Arbitrary
 -- injected detail collapses before it reaches the protected diagnostic.
+-- | Sprint 6.5: the closed agent-local cause of a failed session close.
+--
+-- The coordinator captures a bounded @show@ of 'ServiceSessionLifecycleError',
+-- so the constructor name is the leading token. Classification keeps the
+-- diagnostic closed: an unrecognized shape reports that it was unrecognized
+-- rather than echoing interpreter text that could carry a Vault accessor or
+-- journal value.
+classifyTargetWorkerSessionCleanupFailure :: Text -> Text
+classifyTargetWorkerSessionCleanupFailure detail
+  | detail == "cleanup-threw" = "cleanup-threw"
+  | otherwise = case leadingToken of
+      "ServiceSessionLifecycleJournalFailed" -> "journal-write-failed"
+      "ServiceSessionLifecycleJournalUnavailable" -> "journal-unavailable"
+      "ServiceSessionLifecycleBindingRoleMismatch" -> "binding-role-mismatch"
+      "ServiceSessionLifecycleRoleOccupied" -> "role-occupied"
+      "ServiceSessionLifecycleBindingInvalid" -> "binding-invalid"
+      "ServiceSessionLifecyclePrecleanFailed" -> "preclean-failed"
+      "ServiceSessionLifecycleLoginFailedCleaned" -> "login-failed-cleaned"
+      "ServiceSessionLifecycleLoginAmbiguityCleaned" -> "login-ambiguity-cleaned"
+      "ServiceSessionLifecycleAccessorInvalid" -> "accessor-invalid"
+      "ServiceSessionLifecycleAccessorIdentityMismatch" -> "accessor-identity-mismatch"
+      "ServiceSessionLifecycleCleanupFailed" -> "accessor-audit-failed"
+      "ServiceSessionLifecycleCleanupThrew" -> "accessor-cleanup-threw"
+      "ServiceSessionLifecycleCleanupJournalFailed" -> "cleanup-journal-failed"
+      "ServiceSessionLifecycleActionFailed" -> "action-failed"
+      "ServiceSessionLifecycleUnhandledException" -> "unhandled-exception"
+      _ -> "unrecognized"
+ where
+  leadingToken = Text.takeWhile (/= ' ') (Text.dropWhile (== '(') detail)
+
 classifyTargetWorkerAttachFailure :: Text -> Text
 classifyTargetWorkerAttachFailure detail = case detail of
   "Target worker attach limits validation failed" -> "limits-invalid"

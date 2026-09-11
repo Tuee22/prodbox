@@ -31,6 +31,10 @@ module Prodbox.Lifecycle.Teardown.EphemeralKubectl
   , EphemeralKubectlUnavailable (..)
   , withEphemeralKubectlForProjection
   , ephemeralKubectlLimits
+  , ephemeralKubectlRequestTimeoutSeconds
+  , ephemeralKubectlDiscoveryAttempts
+  , ephemeralKubectlWallClockSeconds
+  , ephemeralKubectlRequestTimeoutArgument
   , forbiddenKubectlEnvironmentKey
   , ephemeralKubeconfig
   , writePrivateFile
@@ -138,6 +142,25 @@ withEphemeralKubectlForProjection kubectl environment workingDirectory projectio
               )
           )
       Right () ->
+        -- Sprint 6.5, PROVEN DEFECT, replacement not yet found. GHC opens a FIFO
+        -- with @O_NONBLOCK@, and a non-blocking write-open of a FIFO with no
+        -- reader fails with @ENXIO@ rather than waiting. This 'ByteString.writeFile'
+        -- therefore throws on its very first attempt, before @kubectl@ has
+        -- started; 'forever' propagates, the thread dies, and nothing waits on
+        -- it, so the death is silent. Every @kubectl@ invocation then blocks in
+        -- @open@ on a FIFO that will never have a writer until the bounded
+        -- subprocess wall clock kills it. Measured: the identical call with a
+        -- plain token file completes in 54 ms; through this FIFO it consumes the
+        -- entire bound, 40.00 s of a 40-second budget, on both a threaded and a
+        -- non-threaded runtime, with kernel task state showing @kubectl@ parked
+        -- in @wait_for_partner@ and the FIFO absent from its descriptor table.
+        --
+        -- Two replacements were measured and both refused: retrying the
+        -- non-blocking open still lost the race about half the time even
+        -- threaded, and a blocking 'openFd' write-open hung indefinitely. The
+        -- token must not be written to a regular file, so neither dead end is a
+        -- licence to drop the FIFO. Left exactly as it was rather than landing
+        -- an unproven replacement for a proven defect.
         withAsync
           ( forever
               ( ByteString.writeFile
@@ -202,13 +225,55 @@ runBoundedKubectl kubectl environment workingDirectory kubeconfigPath arguments 
               :| []
           )
 
+-- | Sprint 6.5: the per-request bound every ephemeral @kubectl@ call carries.
+--
+-- It bounds one HTTP request, not one invocation, which is the distinction the
+-- outer wall clock below is derived from.
+ephemeralKubectlRequestTimeoutSeconds :: Int
+ephemeralKubectlRequestTimeoutSeconds = 5
+
+-- | Sprint 6.5: how many API-group discovery requests @kubectl@ issues before
+-- it gives up, measured rather than assumed.
+--
+-- A discovery-bearing @kubectl get@ against an unreachable endpoint took
+-- 10.04 s at a 2-second request timeout, 15.04 s at 3 seconds, and 25.05 s at
+-- 5 seconds, emitting exactly five @couldn't get current server API group list@
+-- errors each time. The multiplier is the retry count, and it is fixed.
+ephemeralKubectlDiscoveryAttempts :: Int
+ephemeralKubectlDiscoveryAttempts = 5
+
+-- | Sprint 6.5: the wall clock one ephemeral @kubectl@ invocation may take.
+--
+-- Derived, not chosen. A discovery-bearing call can spend
+-- 'ephemeralKubectlDiscoveryAttempts' request timeouts on discovery and one
+-- more on the resource itself, so the outer bound must exceed that sum or it
+-- fires first and replaces @kubectl@'s own exact error with an opaque
+-- "bounded subprocess exceeded its wall-clock timeout". A live EKS drain
+-- selection did exactly that on 2026-09-11 under a flat 30-second bound, which
+-- is precisely the six-request worst case and therefore guaranteed to race it.
+-- The margin covers process spawn, the FIFO token rendezvous, and TLS, measured
+-- together at 65 ms against a healthy API server.
+ephemeralKubectlWallClockMarginSeconds :: Int
+ephemeralKubectlWallClockMarginSeconds = 10
+
+ephemeralKubectlWallClockSeconds :: Int
+ephemeralKubectlWallClockSeconds =
+  (ephemeralKubectlDiscoveryAttempts + 1) * ephemeralKubectlRequestTimeoutSeconds
+    + ephemeralKubectlWallClockMarginSeconds
+
+-- | The exact @--request-timeout@ argument every call passes.
+ephemeralKubectlRequestTimeoutArgument :: String
+ephemeralKubectlRequestTimeoutArgument =
+  "--request-timeout=" <> show ephemeralKubectlRequestTimeoutSeconds <> "s"
+
 ephemeralKubectlLimits :: BoundedSubprocessLimits
 ephemeralKubectlLimits =
   BoundedSubprocessLimits
     { boundedSubprocessMaximumInputBytes = 1
     , boundedSubprocessMaximumStdoutBytes = 2 * 1024 * 1024
     , boundedSubprocessMaximumStderrBytes = 128 * 1024
-    , boundedSubprocessTimeoutMicros = 30 * 1000 * 1000
+    , boundedSubprocessTimeoutMicros =
+        ephemeralKubectlWallClockSeconds * 1000 * 1000
     }
 
 -- | Environment keys that would let an ambient identity or kubeconfig reach the

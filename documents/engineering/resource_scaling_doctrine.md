@@ -410,6 +410,10 @@ post-schema invalid-credential boundary at a 966,365,184-byte peak with zero OOM
 idle headroom: workload draw becomes 6,210m / 9,984Mi / 15,456Mi / 155,648Mi inside the unchanged
 7,000m / 13,312Mi / 80,032Mi / 177,952Mi allocatable host budget. No other workload envelope or
 host capacity changes. AWS CLI calls additionally carry a narrower physical 30-second/output bound.
+**Stated as an absence, recorded 2026-09-11 (Sprint `0.33`):** `kubectl` calls on the teardown drain
+path carry no such bound. `src/Prodbox/Lifecycle/K8sDrain.hs` runs them through the unbounded
+capture, and the drain's five-minute timeout bounds only its completion poll, so a blocked call
+hangs rather than refusing. Sprint `4.93` brings them under the bounded runner.
 Authority Backup independently uses a `144 MiB` request-equals-limit envelope. Its role-specific
 replay codec admits at most 32 MiB of canonical bytes for the complete 59-node qualification
 envelope and immediate retry; the additional 64 MiB over its former container limit covers the

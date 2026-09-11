@@ -25,21 +25,171 @@ dependency licenses the deviation ([Standard N.2](development_plan_standards.md#
 
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
-| 1 | `6.5` | 6 | Next | — |
+| 1 | `2.134` | 2 | Next | — |
+| 2 | `4.92` | 4 | Parked | — |
+| 3 | `4.93` | 4 | Parked | — |
+| 4 | `4.94` | 4 | Parked | — |
+| 5 | `5.44` | 5 | Parked | — |
+| 6 | `5.45` | 5 | Parked | — |
+| 7 | `5.46` | 5 | Blocked | `4.92` |
+| 8 | `7.39` | 7 | Blocked | `5.44` |
+| 9 | `7.40` | 7 | Blocked | `7.39` |
+| 10 | `6.5` | 6 | Parked | `7.40` |
 
-**Resume at Sprint `6.5`: close
-`CASCADE-QUALIFICATION-PROVIDER-WORKER-REPLAY-LIMIT-MIGRATION-UNADMITTED-2026-09-10`.** Live
-`recovery-provider-worker-replay-envelope` deploys the capacity-80/64 KiB runtime but leaves its
-Provider Worker Running with zero restarts, liveness 200, and readiness 503. The retained codec is
-still v12: a current-v12 capacity-four object cannot widen at all, and every admitted prior version
-requires response-limit equality, so the simultaneous 2 MiB-to-64 KiB narrowing is refused before
-the role can become Ready. Advance to v13 and admit canonical v2-through-v12 state only when stored
-capacity is no greater than the new capacity, stored response maximum is no smaller than the new
-maximum, clock skew is exact, and every retained response validates under the new maximum; preserve
-every entry and refuse shrink, response widening, or an oversized retained response. Then run
-distinct live cycle `recovery-provider-worker-replay-envelope-v13`. No candidate cycle qualifies
+**Resume at Sprint `2.134`: repair the five discarded spawn handles, then gate the rule repo-wide.**
+Sprint `0.33` (2026-09-11) scheduled the remediation the ephemeral-Kubernetes-client investigation
+opened and corrected the governed record. The queue now leads with supervision rather than with the
+token defect, and that is deliberate as well as derived: the writer that has never served a
+credential is the sixth member of a class of long-lived threads whose handles are discarded, so
+linking them converts a silent forty-second wedge into a loud refusal at first execution — and
+repairs five other sites, including the sole refresher of the cache `/readyz` serves.
+
+The chain behind it is `4.92`–`4.94` (one canonical observation-scope codec, a bounded drain, and a
+result-indexed teardown operation), `5.44`–`5.46` (a real-child process-boundary harness and
+elapsed-time vocabulary, the three unrouted suites, and the codec round-trip properties § 3.2
+already mandates), then `7.39` and `7.40` (the credential mechanism, and the third statement of the
+machinery that Sprint `7.36` recorded as consolidated). Sprint `6.5` is last, held there by the plan
+suite's only currently live declared backward dependency: activating the replacement as sole public
+writer while its AWS drain cannot authenticate would strand every EKS teardown path behind a writer
+with no rollback.
+
+**No further live cascade-qualification cycle should be run until Sprint `7.39` lands.** Every cycle
+reproduces the same wedge, at roughly an hour each.
+
+The prior cycles recorded here for continuity. Live `recovery-eks-drain-uid-raw` refuted the discovery
+explanation and proved the real cause. The EKS drain UID observation fails identically under a
+one-request `--raw` call and a 40-second bound, and its duration tracks the bound rather than the
+work — 30 s under 30, 40 s under 40 — which is the signature of a call that never completes. Holding
+the runner, kubeconfig, and argv constant and changing only token delivery, a plain private file
+completes the identical call in 54 ms while the FIFO consumes the whole bound on both runtimes, with
+`kubectl` parked in the kernel's FIFO-open wait. The mechanism is proven: GHC opens a FIFO
+non-blocking, so the standing writer throws `ENXIO` on its first attempt before `kubectl` starts, the
+thread dies silently, and every invocation then blocks on a FIFO with no writer. On this evidence the
+ephemeral Kubernetes client has never authenticated on any live run. Stable counterexample
+`CASCADE-QUALIFICATION-EPHEMERAL-KUBECTL-TOKEN-FIFO-UNSERVED-2026-09-11` owns it and **no
+replacement is landed**: two were built and both refused by measurement, a retrying non-blocking open
+still losing the race about half the time and a blocking open hanging outright. The token must never
+reach a regular file, and credential delivery to a subprocess is a Standard-P surface, so the writer
+stays exactly as it was with the proof recorded at its definition. The discovery-free UID read, the
+per-request bound on every ephemeral call, and the derived wall clock are kept because they are
+correct independently. Focused **25/25**, primary unit **4,911/4,911**, auxiliaries **27/27**,
+**35/35**, **39/39**, and canonical `prodbox dev check` exits 0. Four registered-target observations
+and one intermittent restore hazard stay deliberately unattributed. No candidate cycle qualifies
+until the campaign itself emits its successful governed artifact, and the legacy public writer
+remains sole. The EKS drain UID
+observation is measured and corrected. A read-only probe reproducing the exact ephemeral-kubectl
+mechanism showed the mechanism itself costs 40-52 ms against a healthy API server, while `kubectl
+get namespace` spends five fixed API-group discovery retries at the per-request bound before
+reaching the resource — 10.04 s at a 2-second timeout, 15.04 s at 3 seconds, 25.05 s at 5 seconds
+against an unreachable endpoint — and the same read through `--raw` costs one request, 5.04 s
+unreachable and 51 ms healthy, returning the identical UID. The live failure exceeded 30 s, which is
+more than the unreachable worst case, so the endpoint was not simply gone and the discovery walk
+itself is the cost. The UID is now read by path with no discovery, every ephemeral call carries the
+named per-request bound so its own error can surface, and the outer wall clock is derived as the
+six-request worst case plus a bounded margin rather than sitting exactly on it. The focused exact
+EKS drain interpreter group passes **25/25**, exact-state full unit passes primary **4,911/4,911**
+and auxiliaries **27/27**, **35/35**, and **39/39**, and canonical `prodbox dev check` exits 0. Run
+distinct live cycle `recovery-eks-drain-uid-raw` on that revision. Four registered-target
+observations and one intermittent restore hazard stay deliberately unattributed. No candidate cycle
+qualifies until the campaign itself emits its successful governed artifact, and the legacy public
+writer remains sole.
+
+The prior cycles recorded here for continuity. Live
+`recovery-session-cleanup-cause` live-closed
+`CASCADE-QUALIFICATION-AUTHORITY-EVIDENCE-BOUND-DUPLICATED-2026-09-10`. The 409 is gone, the sealed
+EKS client-auth projection now settles end to end, and the EKS drain commit advanced past auth
+acquisition for the first time in this series. It stops at the next step, observing the EKS
+cluster's Kubernetes UID, where a bounded `kubectl` exceeded its wall-clock timeout. Stable
+counterexample `CASCADE-QUALIFICATION-EKS-DRAIN-UID-KUBECTL-TIMEOUT-2026-09-11` owns that, and
+**no code change is licensed for it yet**: unlike the four attribution defects this campaign closed,
+this refusal is already exact, so it needs a measurement rather than a diagnostic. Establish whether
+the bounded `kubectl` reached the EKS API server at all, what the observed round-trip is from the
+home control plane, and what the step's current bound is, before touching a budget or recovery
+semantics. `CASCADE-QUALIFICATION-TLS-SESSION-CLEANUP-CAUSE-DISCARDED-2026-09-10` stays closed
+code-locally but not live-closed; its refusal did not recur and it remains the campaign's one known
+intermittent restore hazard. Four registered-target observations stay deliberately unattributed. No
+candidate cycle qualifies until the campaign itself emits its successful governed artifact, and the
+legacy public writer remains sole.
+
+The prior cycles recorded here for continuity. Live
+`recovery-authority-evidence-bound` stopped earlier than any prior cycle in this series, inside the
+retained-home restore and before candidate dispatch, so the Authority evidence-bound correction
+remains unproven live. The vscode chart reconcile failed with
+`TlsRetentionWorkflowAuthoritySelectedAgentUnavailable` as its entire output, the public-edge
+certificate was never created, and the restore's public-edge wait exhausted its budget. Assembling
+the real cause took three separate protected logs and still ended in an opaque token, which
+registered `CASCADE-QUALIFICATION-TLS-SESSION-CLEANUP-CAUSE-DISCARDED-2026-09-10`. That is closed:
+the Target Agent's coordinator had already captured a bounded cause for the failed session close and
+the agent-local renderer discarded it through a wildcard, while the symmetric prepare failure
+already had an exact closed classification. Session close now classifies the same way; the wire
+projection stays payload-free and an unrecognized shape says so. The focused attested one-shot
+Target materializer group passes **42/42**, exact-state full unit passes primary **4,909/4,909** and
+auxiliaries **27/27**, **35/35**, and **39/39**, and canonical `prodbox dev check` exits 0. Run
+distinct live cycle `recovery-session-cleanup-cause` on that revision; it must read the newly
+classified session-close cause if the refusal recurs, and otherwise carry the unproven Authority
+evidence-bound correction through to the EKS drain commit. Four registered-target observations stay
+deliberately unattributed until a run reports an exact cause for them. No candidate cycle qualifies
 until the campaign itself emits its successful governed artifact, and the legacy public writer
 remains sole.
+
+The prior cycles recorded here for continuity. Live
+`recovery-eks-client-auth-evidence-bound` live-closed the Provider side of the evidence bound: the
+worker now produces and returns the sealed client-auth projection and its 503 is gone. The same
+commit still refuses one hop later, from the Lifecycle Authority, at `409 "provider completion
+evidence is invalid"`, because the Authority carried its own duplicate copy of the 4,096-character
+rule as a bare boolean with no diagnostic. Stable counterexample
+`CASCADE-QUALIFICATION-AUTHORITY-EVIDENCE-BOUND-DUPLICATED-2026-09-10` owns that, and is closed: the
+rule is now one total function beside the intent it classifies, called by both the worker that
+produces the evidence and the authority that settles it, and the Authority refusal names the rule
+and the length it measured. The focused Lifecycle Provider admission epoch group passes **12/12**,
+exact-state full unit passes primary **4,908/4,908** and auxiliaries **27/27**, **35/35**, and
+**39/39**, and canonical `prodbox dev check` exits 0. Run distinct live cycle
+`recovery-authority-evidence-bound` on that revision. Four registered-target observations and one
+non-fatal TLS-retention narration that did not reproduce stay deliberately unattributed until a run
+reports an exact cause for them. No candidate cycle qualifies until the campaign itself emits its
+successful governed artifact, and the legacy public writer remains sole.
+
+The prior cycles recorded here for continuity. Live
+`recovery-stack-reader-dns-zone` live-closed both counterexamples the prior cycle registered: the
+Authority AWS stack-reader read-back now agrees with its own commit on the complete scope including
+the run's hosted zone, and the Provider refusal that blocks the EKS drain branch now reports an
+attributable cause — `provider evidence is 4649 characters, over the maximum of 4096`. That
+measurement registered and closed
+`CASCADE-QUALIFICATION-EKS-CLIENT-AUTH-EVIDENCE-OVER-BOUND-2026-09-10`: `IssueEksClientAuth` is the
+only intent whose evidence is a sealed capability projection, and it shared a 4,096-character bound
+no successful execution could satisfy. The bound is now per intent and total over the closed intent
+set, with every other constructor unchanged and the client-auth bound derived from the envelope its
+sealer may produce — field maxima 8,192, envelope maximum 24 KiB, evidence bound 32,793 characters,
+all under the 64 KiB Provider response maximum. The focused encrypted EKS client-auth projection
+group passes **9/9**, exact-state full unit passes primary **4,907/4,907** and auxiliaries
+**27/27**, **35/35**, and **39/39**, and canonical `prodbox dev check` exits 0. Run distinct live
+cycle `recovery-eks-client-auth-evidence-bound` on that revision. Four registered-target
+observations and one non-fatal TLS-retention narration stay deliberately unattributed until a run
+reports an exact cause for them. No candidate cycle qualifies until the campaign itself emits its
+successful governed artifact, and the legacy public writer remains sole.
+
+The prior cycle recorded here for continuity. Live
+`recovery-provider-worker-replay-envelope-v13` closed the retained-codec migration boundary: the
+v13 codec admitted the retained capacity-four/2 MiB Provider projection into the capacity-80/64 KiB
+runtime, Provider Worker reached 1/1 Ready with zero restarts, the run reached candidate dispatch,
+and the candidate emitted its first governed evidence artifact on this envelope. It still exited 1
+without exact terminal cleanup, and registered two stable counterexamples on distinct branches.
+`CASCADE-QUALIFICATION-AWS-STACK-READER-SCOPE-DNS-ZONE-ERASED-2026-09-10` blocked the complete
+cascade tail: the Authority AWS stack-reader wire carried no DNS hosted zone, so a bundle the run
+had just committed decoded to a zone-less scope and the exact identity comparator refused its own
+read-back. `CASCADE-QUALIFICATION-PROVIDER-EVIDENCE-REFUSAL-UNDIAGNOSABLE-2026-09-10` blocked the
+EKS drain branch: the Provider Worker refused an `IssueEksClientAuth` execution with a single
+closed text that could not say which evidence rule fired. Both are now closed code-locally — the
+zone travels in the stack-reader scope, joins the canonical identity, and advances both encodings
+to format version 2; and each evidence rule names itself and reports the length it measured, with
+the 4,096-character bound deliberately unchanged so the next run measures rather than infers. The
+focused Authority stack-reader group passes **12/12**, the focused Provider Worker execution
+boundary group passes **28/28**, exact-state full unit passes primary **4,906/4,906** and
+auxiliaries **27/27**, **35/35**, and **39/39**, and canonical `prodbox dev check` exits 0. Run
+distinct live cycle `recovery-stack-reader-dns-zone` on that revision. Four further node failures
+from the last run stay deliberately unattributed until a run reports an exact cause for them. No
+candidate cycle qualifies until the campaign itself emits its successful governed artifact, and the
+legacy public writer remains sole.
 
 Sprints `2.129` through `2.133` are Done and live-proven on their owned surfaces.
 Generation 150 publishes local runtime image
@@ -5864,6 +6014,448 @@ documentation, documentation policy/lint, and `git diff --check` pass with empty
   is `sha256:1f439943b13caa429284ddc4faf7f5cd3dd2201ccc7ac7502f6be7cbe86e550b`. Run distinct live cycle
   `recovery-provider-worker-replay-envelope-v13` after code-local closure; the legacy public writer
   remains sole.
+- Code-local closure for
+  `CASCADE-QUALIFICATION-PROVIDER-WORKER-REPLAY-LIMIT-MIGRATION-UNADMITTED-2026-09-10` advances the
+  retained request-replay codec to **v13** and admits canonical **v2 through v12** state under one
+  exact migration rule: stored capacity no greater than the compiled capacity, stored response
+  maximum no smaller than the compiled maximum, exact clock-skew equality, and every retained
+  response revalidated against the new maximum before the projection is accepted. Current-version
+  state still requires exact capacity and exact response maximum, so the widening is legacy-only.
+  Capacity shrink, response widening, skew drift, unsupported versions, duplicate keys, malformed
+  or noncanonical bytes, and an oversized retained response all remain closed refusals, and every
+  admitted entry is preserved and rewritten as v13 only on the next CAS. This lets the retained
+  capacity-four/2 MiB Provider Worker projection enter the capacity-80/64 KiB runtime that Sprint
+  `6.5`'s complete-attempt envelope requires. The focused authenticated-transport suite passes
+  **39/39** at `/tmp/prodbox-sprint-6.5-provider-worker-replay-v13-focused.log`,
+  `sha256:7af1c1842d8ee14876ce3a110c72b06838720ad2d8922fdcdf56fbce52528e3b`, including the exact
+  v2-through-v12 widening case, the oversized-retained-response refusal, and the unsupported-version
+  refusal. Exact-state full unit passes primary **4,904/4,904** and auxiliaries **27/27**,
+  **35/35**, and **39/39** at `/tmp/prodbox-sprint-6.5-provider-worker-replay-v13-unit.log`,
+  `sha256:56eba521581b5e232c293e35cfe1576e9758088b30c0a89fd9f6bc1ee386c2f7`. Canonical `prodbox dev
+  check` exits **0** with pinned Fourmolu, HLint `No hints`, generated-artifact and documentation
+  checks, and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-provider-worker-replay-v13-dev-check.log`,
+  `sha256:853c1b518d48c807973e43c0cad22fda263fcdd5f14b526f0cab7791525ffb2a`; the synchronized
+  executable is exact at
+  `sha256:52c9ba0343ee19f3d4fefc4f3438123fcef7eae856419f5db03184fbe0e5613c`. Run distinct live cycle
+  `recovery-provider-worker-replay-envelope-v13` next; the legacy public writer remains sole and no
+  qualification artifact or activation witness exists.
+- Live `recovery-provider-worker-replay-envelope-v13` runs **2026-09-10 16:25:47–17:28:58 EDT** and
+  live-closes `CASCADE-QUALIFICATION-PROVIDER-WORKER-REPLAY-LIMIT-MIGRATION-UNADMITTED-2026-09-10`.
+  It builds local image
+  `sha256:bfc3004b4b0872470ad23bcfd199b19abeb65cdb44a374261d4f18f6f0e0efe2` in **1,134.5 s**,
+  publishes Registry manifest
+  `sha256:1c3cfd0b398e622a944ae35b85112db44153685413c6a284cc0af13e256c46af`, and imports OCI manifest
+  `sha256:6fd48a0a257579bab836764991a57e478b4f3aa9df74e070a584ec0daa49851e` in **95.3 s**; retention
+  removes only the immediately superseded Registry manifest `sha256:12d5e52e...` and local image
+  `sha256:f49c57f3...`. The v13 codec admits the retained capacity-four/2 MiB Provider projection
+  into the capacity-80/64 KiB runtime: Provider Worker becomes **1/1 Ready with zero restarts**,
+  and the run reaches Phase 2 candidate dispatch for the first time on this envelope. The candidate
+  emits governed evidence
+  `.test-data/qualification/cascade-c8cf66cc7cf766aa7ae8b52f.evidence` with governed digest
+  `1d475bcf4c34b0a06b7c54bfc56358e99976b610c9957479672e60ec582179e0` and file SHA-256
+  `29805a3f32e874666dfec6b468c71fe93afec79bdbf36f45b8e6a90fc2132bbb`, under run
+  `cascade-qualification-recovery-provider-worker-replay-envelope-v13`, graph digest
+  `f206b7ca054f9f11741afd31fa9d78937368b29c58603eb75a0e671675fb5f52`, and primary outcome
+  `CleanupPrimarySucceeded`. The recovery-plane trio, the per-run test EBS family, the EKS load
+  balancer controller family, the validation hosted zone, and the `aws-eks` observe, checkpoint-pair
+  observe, checkpoint restore, checkpoint-recovery read-back, and stack-reader commit all succeed.
+  The run nevertheless exits **1** at `cascade qualification did not reach exact terminal success`,
+  preserves operational credentials, and produces no qualification or activation witness; the
+  legacy public writer remains sole. The transcript is
+  `/tmp/prodbox-sprint-6.5-provider-worker-replay-v13-live-recovery-provider-worker-replay-envelope-v13.log`
+  at `sha256:81580fb2a1d5680858294ce077da0580e5eabcdf42e0c0528cc02bde8462f4c6`.
+- That run registers two stable counterexamples on distinct branches, both proven from the exact
+  node states in the same report.
+  `CASCADE-QUALIFICATION-AWS-STACK-READER-SCOPE-DNS-ZONE-ERASED-2026-09-10` owns the branch that
+  blocks the complete cascade tail: `lifecycle/target/aws-eks/commit-aws-stack-reader-bundle`
+  succeeds and `lifecycle/target/aws-eks/read-back-aws-stack-reader-bundle` then refuses with
+  `AwsStackReaderIdentityMismatch` between two identities that share submission key, run id, graph
+  digest, operation id, registered key, coordinate digest, and every other scope field, and differ
+  only in `internalEvidenceAwsDnsZone` — `Just (HostedZoneId "Z00231272QFGWVE1AJI2G")` expected
+  against `Nothing` stored. Because `reconcile-absent`, `read-back-absent`,
+  `retire-checkpoint-pair`, `read-back-checkpoint-retirement`, `audit-escapes`,
+  `commit-pre-uninstall-report`, `uninstall-local`, and `commit-completion` are each transitively
+  blocked on that read-back, no local uninstall or completion receipt is reachable.
+  `CASCADE-QUALIFICATION-PROVIDER-EVIDENCE-REFUSAL-UNDIAGNOSABLE-2026-09-10` owns the drain branch:
+  `lifecycle/target/aws-eks/commit-eks-drain-intent` refuses at
+  `EksDrainCommitSelectionAccessUnobservable` carrying
+  `AuthorityProviderRemoteRefused 503 "ProviderWorkerRemoteRefused 503
+  \"ProviderIntentExecutionEvidenceInvalid \\\"provider evidence is invalid\\\"\""`, and that single
+  closed text cannot say whether the observation was empty, over the character bound, or
+  control-bearing, so the 503 carries no attributable cause. The three dependent drain nodes then
+  report the derived `EksDrainIntentClientRecoveryMissing`. Four further node failures are recorded
+  but deliberately **unattributed** pending an attributable cause: the `aws-eks-iam-role-family`,
+  `aws-eks-subzone`, and `dns-aws-dns01-challenge-records` observations report only
+  `registered resource is unobservable`, and `aws-test/observe` reports
+  `AwsStackCreationWireSelectRefused` because no cycle was ever reserved for its
+  registered-stack-generation series. No counterexample is registered for those until a run reports
+  an exact cause for them.
+- `CASCADE-QUALIFICATION-AWS-STACK-READER-SCOPE-DNS-ZONE-ERASED-2026-09-10` is closed code-locally.
+  Sprint `7.36` added the run's retained DNS hosted zone to `ObservationEvidenceScope` and Sprint
+  `7.38` sealed it into the compiled observation scope, but the Authority AWS stack-reader
+  projection was never widened for it: its `ScopeWire` carried no zone field, so `scopeToWire`
+  dropped the zone and `scopeFromWire` rebuilt every decoded scope through the zone-less minter.
+  The bundle a run had just committed therefore decoded to a different scope than the one the
+  caller held, and the exact identity comparator correctly refused it. The zone now travels in
+  `ScopeWire` and is rebuilt through `mkObservationEvidenceScopeWithDnsZone`, an invalid encoded
+  zone is a closed field refusal, and the zone joins the canonical identity fields so two scopes
+  differing only by zone no longer share a submission key. Both encodings advance to format
+  version **2** and refuse version 1 rather than upgrading it, because a version-1 object's
+  submission key was derived from the zone-less canonical identity and no version-2 read ever
+  addresses one. The focused Authority stack-reader group passes **12/12** at
+  `/tmp/prodbox-sprint-6.5-stack-reader-dns-zone-focused.log`,
+  `sha256:299b82e2db81eb1ca0c42fd7c6e6161143030ab3659245a219cc990e49673d55`, proving zone-bearing
+  round trip, zone-less round trip, and distinct submission keys for absent, present, and different
+  zones.
+- `CASCADE-QUALIFICATION-PROVIDER-EVIDENCE-REFUSAL-UNDIAGNOSABLE-2026-09-10` is closed code-locally
+  without changing a single bound. `validateExecutionEvidence` applied three rules — empty, over
+  4,096 characters, and control-bearing — and collapsed all three into one text, which is why the
+  live 503 could not be attributed. Each rule now names itself and the oversize rule reports the
+  length it measured against the named maximum; the evidence itself is a sealed capability
+  projection and never enters the refusal. The bound stays at exactly 4,096 characters, so the next
+  live run reports which rule fired and by how much and any bound change is made against a
+  measurement rather than an inference. The focused Provider Worker execution boundary group passes
+  **28/28** at `/tmp/prodbox-sprint-6.5-provider-evidence-rule-focused.log`,
+  `sha256:ebcb92dd8bc845d1db2d7a1b12bc077dbe26e13c91059ff1ffe566c7b38fb88c`, covering the empty,
+  oversize, control-character, and exactly-at-bound cases.
+- Exact-state full unit passes primary **4,906/4,906** and auxiliaries **27/27**, **35/35**, and
+  **39/39** at `/tmp/prodbox-sprint-6.5-stack-reader-dns-zone-unit.log`,
+  `sha256:4a687c5bf3ebfa9e14a96c4cf5427cca3d90a9c02bc6cbe8b03f86303ae0857a`. Canonical `prodbox dev
+  check` exits **0** with pinned Fourmolu, HLint `No hints`, generated-artifact and documentation
+  checks, and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-stack-reader-dns-zone-dev-check.log`,
+  `sha256:3fca7af5be9f21d7e6cba67eeb5268e48744a4441a215cb0170ebce16913505c`; the synchronized
+  executable is exact at
+  `sha256:23f0c13d781f7e49d14463e1e745e7eb4432365e7230c9cd3328ff83ff57afc8`. Run distinct live cycle
+  `recovery-stack-reader-dns-zone` next; the legacy public writer remains sole and no qualification
+  artifact or activation witness exists.
+- Live `recovery-stack-reader-dns-zone` runs **2026-09-10 18:15:29–19:17:52 EDT** and live-closes
+  both counterexamples the prior cycle registered. It builds local image
+  `sha256:2fd0be08ba958743ebcb58f2905c799954fdcdb652f5ef5235640ecab51c0467` in **1,132.0 s**,
+  publishes Registry manifest
+  `sha256:aedec5b08bfa7cf5e54cfab99ec71b42ffdeff154a7992199b9e01ee8387c2ae`, and imports OCI
+  manifest `sha256:f34a1eafc252266d8f1c63332ead2e8e4e24f00ebcc50df1569f364cbc92c8d4` in **97.0 s**;
+  retention removes only the immediately superseded Registry manifest `sha256:1c3cfd0b...` and local
+  image `sha256:bfc3004b...`. Provider Worker is again **1/1 Ready with zero restarts**.
+  `lifecycle/target/aws-eks/read-back-aws-stack-reader-bundle` now **succeeds**, which live-closes
+  `CASCADE-QUALIFICATION-AWS-STACK-READER-SCOPE-DNS-ZONE-ERASED-2026-09-10`: the committed bundle
+  and its independent read-back agree on the complete scope including the run's hosted zone.
+  `lifecycle/target/aws-eks/commit-eks-drain-intent` still refuses, but now with an attributable
+  cause — `ProviderIntentExecutionEvidenceInvalid "provider evidence is invalid: provider evidence
+  is 4649 characters, over the maximum of 4096"` — which live-closes
+  `CASCADE-QUALIFICATION-PROVIDER-EVIDENCE-REFUSAL-UNDIAGNOSABLE-2026-09-10` and replaces the prior
+  inference with a measurement. `lifecycle/target/aws-eks/reconcile-absent` is now blocked on
+  `read-back-eks-kubernetes-drain` rather than on the stack-reader read-back, so the cascade tail
+  moved one branch closer. The candidate emits governed evidence
+  `.test-data/qualification/cascade-2f1acdac14071d5af50554fb.evidence` with governed digest
+  `3ef98fafce089400416eb2bd320d01e19033385628901f70a9ffe52da79d2ee0` and file SHA-256
+  `d5255bb8bf3d0ead3b12bea5f25fe09c554933b0cae014187d425e51d3873e72`, under run
+  `cascade-qualification-recovery-stack-reader-dns-zone`, graph digest
+  `c58cd5b59ce7e7e6f4c5b01e36e455253022125f134416f79c64ba913ba7658d`, and primary outcome
+  `CleanupPrimarySucceeded`. The run exits **1** without exact terminal cleanup and preserves
+  operational credentials; no qualification artifact or activation witness exists and the legacy
+  public writer remains sole. The transcript is
+  `/tmp/prodbox-sprint-6.5-stack-reader-dns-zone-live-recovery-stack-reader-dns-zone.log` at
+  `sha256:5b8c574eaa43b0ae0d7e4a67be6053e9435e6908195cfb88cb741509f40a4bac`. This run also emits one
+  new non-fatal narration, `public-edge cert retain-on-ready failed (non-fatal):
+  TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`, which is recorded and deliberately
+  unattributed; it did not stop the restore or the candidate.
+- Stable counterexample `CASCADE-QUALIFICATION-EKS-CLIENT-AUTH-EVIDENCE-OVER-BOUND-2026-09-10` owns
+  the measured boundary and is closed code-locally. `IssueEksClientAuth` is the only Provider intent
+  whose evidence is a sealed capability projection rather than a short observation, and it shared a
+  4,096-character bound with every other intent, so no successful client-auth execution could ever
+  have satisfied it. The bound is now per intent and total over the closed intent set: every other
+  constructor keeps exactly 4,096, and `IssueEksClientAuth` gets a bound **derived** from the
+  envelope its sealer may produce rather than a chosen number. The derivation is made exact in both
+  directions. Certificate-authority and bearer field maxima drop to 8,192 characters each, roughly
+  four and six times the largest values a real EKS cluster returns; the sealed-envelope maximum
+  drops to **24 KiB**, above the complete maximal-field plaintext with its framing; and the evidence
+  bound is the marker plus the Base64 expansion of that envelope, exactly **32,793** characters,
+  which is under the 64 KiB Provider response maximum with roughly half of it to spare. The evidence
+  marker itself is now one named constant that the producer and the consumer both use, so the bound
+  cannot drift from the string it measures. The focused encrypted EKS client-auth projection group
+  passes **9/9** at `/tmp/prodbox-sprint-6.5-eks-client-auth-evidence-bound-focused.log`,
+  `sha256:1ffc41fd5be8b2b091d4c7d85ed6e0f1e1d543260244dda3d02c8a051416603e`, proving the complete
+  chain: a maximal-field projection seals within the envelope bound, its marker-prefixed evidence
+  sits within the derived character bound, that bound sits under the Provider response maximum, a
+  live-shaped projection exceeds the superseded 4,096-character bound while fitting the derived one,
+  and one character past either field maximum is a closed field refusal.
+- Exact-state full unit passes primary **4,907/4,907** and auxiliaries **27/27**, **35/35**, and
+  **39/39** at `/tmp/prodbox-sprint-6.5-eks-client-auth-evidence-bound-unit.log`,
+  `sha256:06c000d28e1a67d9a45d1b74842fc03295f1e03fb044c1c1ae5bf380333b8026`. Canonical `prodbox dev
+  check` exits **0** with pinned Fourmolu, HLint `No hints`, generated-artifact and documentation
+  checks, and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-eks-client-auth-evidence-bound-dev-check.log`,
+  `sha256:fc3f30b3cb0b28737e232329f7f1074ca58fd26c9aee7f9f6219c735d2d76652`; the synchronized
+  executable is exact at
+  `sha256:1f078a9af909f84088a999b5197725766efdc4965df434c500dd9bdcba196445`. Run distinct live cycle
+  `recovery-eks-client-auth-evidence-bound` next; the legacy public writer remains sole and no
+  qualification artifact or activation witness exists.
+- Live `recovery-eks-client-auth-evidence-bound` runs **2026-09-10 19:52:13–20:55:28 EDT**. It builds
+  local image `sha256:4d7dc7d71d09a2b6b2cb372c759ea497448f5848743db06c39219a7ccd3b24dd` in
+  **1,143.5 s**, publishes Registry manifest
+  `sha256:e6f2ea22dfbdff2785b7d8dd61622b9d7ee8e23c52095dcf9b71fd61bd158690`, and imports OCI manifest
+  `sha256:93aede445a8a59708f8a9d25c88a26a65e69612a057acbecddc98f42b44517f7` in **98.8 s**; retention
+  removes only the immediately superseded Registry manifest `sha256:aedec5b0...` and local image
+  `sha256:2fd0be08...`. Provider Worker is Ready and the restore's public-edge certificate retains
+  cleanly again, so the prior run's non-fatal TLS-retention narration does not reproduce and remains
+  unattributed. The Provider **503** is gone: the worker now produces and returns the sealed
+  client-auth evidence, which live-closes
+  `CASCADE-QUALIFICATION-EKS-CLIENT-AUTH-EVIDENCE-OVER-BOUND-2026-09-10` on the Provider side.
+  `lifecycle/target/aws-eks/commit-eks-drain-intent` nevertheless still refuses, one hop later and
+  from the other side of the boundary, at `AuthorityProviderRemoteRefused 409 "provider completion
+  evidence is invalid"`. The candidate emits governed evidence
+  `.test-data/qualification/cascade-ddd397a428449ec81018e576.evidence` with governed digest
+  `487d31deee4dcc0d9c01179f7c8aad08a7d9addf2ea983fca7eb36ed4e51ef83` and file SHA-256
+  `60eb375859edda92e4991f662fd3d7e3e0c3756340e003de135134c1cb1cf4cf`, under run
+  `cascade-qualification-recovery-eks-client-auth-evidence-bound`, graph digest
+  `ab15364449a176032df60116033c4b6db686292d04546b41cd892dbac3a34efd`, and primary outcome
+  `CleanupPrimarySucceeded`. The run exits **1** without exact terminal cleanup and preserves
+  operational credentials; no qualification artifact or activation witness exists and the legacy
+  public writer remains sole. The transcript is
+  `/tmp/prodbox-sprint-6.5-eks-client-auth-evidence-bound-live-recovery-eks-client-auth-evidence-bound.log`
+  at `sha256:6b4824af0baa10e1f5e89ef8543520151fb0a145b8d91aa8230c3714c91a5891`.
+- Stable counterexample `CASCADE-QUALIFICATION-AUTHORITY-EVIDENCE-BOUND-DUPLICATED-2026-09-10` owns
+  that 409 and is closed code-locally. The Provider Worker and the Lifecycle Authority each carried
+  their **own** copy of the 4,096-character evidence rule — the Authority's as a bare `Bool` with no
+  diagnostic — so correcting the Provider alone moved the refusal from a 503 to a 409 without
+  changing the outcome, and the Authority's copy said nothing about why. The rule is now one total
+  function beside the intent it classifies: both the worker that produces the evidence and the
+  authority that settles it call it, so the two bounds cannot drift again, and the Authority refusal
+  names the rule and the length it measured exactly as the worker's does. No bound changes in this
+  correction beyond the per-intent derivation the prior one established. The focused Lifecycle
+  Provider admission epoch group passes **12/12** at
+  `/tmp/prodbox-sprint-6.5-authority-evidence-bound-focused.log`,
+  `sha256:d2684e7f4297262249419071b72cdf55170833930b68ba6c433703825a9e5b49`, proving that the
+  Authority refuses an empty and an over-bound observation by name, admits one exactly at the bound,
+  admits the live-measured 4,649-character sealed projection under `IssueEksClientAuth`, still
+  refuses the same string under a short-observation intent, and reads exactly 32,793 and 4,096 for
+  the two bounds.
+- Exact-state full unit passes primary **4,908/4,908** and auxiliaries **27/27**, **35/35**, and
+  **39/39** at `/tmp/prodbox-sprint-6.5-authority-evidence-bound-unit.log`,
+  `sha256:3d16e83d73409ae517173a858c772538a8cb16fd6b952b8a9c1c1b3dc3b07882`. Canonical `prodbox dev
+  check` exits **0** with pinned Fourmolu, HLint `No hints`, generated-artifact and documentation
+  checks, and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-authority-evidence-bound-dev-check.log`,
+  `sha256:6a3095f200f491704bacdfbfa4ad62f6c87a35f6d507d74cf52856ede3524ce6`; the synchronized
+  executable is exact at
+  `sha256:731c1210169ff4cc8e7e1ce882013568a66f06c8277faa3fefaae8e64f94f72a`. Run distinct live cycle
+  `recovery-authority-evidence-bound` next; the legacy public writer remains sole and no
+  qualification artifact or activation witness exists.
+- Live `recovery-authority-evidence-bound` runs **2026-09-10 21:35:16–22:37 EDT** and stops earlier
+  than any prior cycle in this series, inside the retained-home restore and before candidate
+  dispatch, so it neither proves nor disproves the Authority evidence-bound correction. It builds
+  local image `sha256:245d7df84baf50beee081a4a9abbb2604a92544ba2a5a3abe36bdb8fba392bec` in
+  **1,142.1 s**, publishes Registry manifest
+  `sha256:6764b40e1512a1415a04596794df58eb1fbff00b0eaa5e55236a87edde7e3bb3`, and imports OCI manifest
+  `sha256:fc5aa0273815c94979a40d888b038444b34ab4044e53b37f17937187e633c891` in **95.9 s**; retention
+  removes only the immediately superseded Registry manifest `sha256:e6f2ea22...` and local image
+  `sha256:4d7dc7d7...`. `RestoreNodeReconcileChart RestoreChartVscode` then fails with
+  `TlsRetentionWorkflowAuthoritySelectedAgentUnavailable` as its entire output, the public-edge
+  Gateway and Certificate are never created, and `RestoreNodeWaitForPublicEdge` exhausts its budget
+  at `CLASSIFICATION=certificate-not-ready` with `CERTIFICATE_READY=missing`. The run exits **1**,
+  preserves operational credentials, emits no governed evidence, and leaves the legacy public writer
+  sole. The transcript is
+  `/tmp/prodbox-sprint-6.5-authority-evidence-bound-live-recovery-authority-evidence-bound.log` at
+  `sha256:e00a1ecb2f9cc56b91fdf93a90585a5acde51b2bf0112482b93a72181b599d73`. The same selected-agent
+  refusal appeared once before as a **non-fatal** retain-on-ready narration and once not at all, so
+  its severity, not its existence, is what varies with where in the restore it lands.
+- Stable counterexample `CASCADE-QUALIFICATION-TLS-SESSION-CLEANUP-CAUSE-DISCARDED-2026-09-10` owns
+  the exact attribution failure this exposed, and is closed code-locally. Assembling the cause
+  required reading three separate protected logs, and the chain still ended in an opaque token. The
+  host transcript carried only the deliberately payload-free
+  `TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`; the Lifecycle Authority's protected log
+  narrowed it to `selected-agent/http-status/target/prepare/one-shot-operation-unavailable`; the
+  Target Agent's own protected log narrowed it to
+  `target-one-shot/tls-prepare failure=coordinator/session-cleanup-failed`, and stopped there. The
+  coordinator had in fact captured a bounded 256-character cause for the failed session close, and
+  the agent-local protected renderer discarded it through a wildcard arm into the payload-free wire
+  code — while the symmetric *prepare* failure already had an exact closed classification that the
+  same renderer prints in full. Session close now classifies exactly as session prepare does, so the
+  one place the cause can legitimately be observed records it. The wire projection is unchanged and
+  remains payload-free, and an unrecognized shape reports that it was unrecognized rather than
+  echoing interpreter text that could carry a Vault accessor or journal value. The focused attested
+  one-shot Target materializer group passes **42/42** at
+  `/tmp/prodbox-sprint-6.5-session-cleanup-cause-focused.log`,
+  `sha256:016bf9407d48245112544179710e3cd39571db56b55fc51bc18911b1b1757aa0`, covering every
+  lifecycle-error shape, the thrown-cleanup case, and the unrecognized case.
+- This is the fourth member of one defect class the campaign has now closed at four successive
+  layers: an exact typed failure discarded at a classification boundary, leaving a live refusal with
+  no attributable cause. The Provider Worker's collapsed evidence refusal, the Lifecycle Authority's
+  duplicated bare-boolean copy of the same rule, and now the Target Agent's discarded session-close
+  cause were each found only because the layer beneath had already been made to say what it knew.
+  No further member of the class is registered speculatively; the next one, if it exists, is
+  expected to surface the same way.
+- Exact-state full unit passes primary **4,909/4,909** and auxiliaries **27/27**, **35/35**, and
+  **39/39** at `/tmp/prodbox-sprint-6.5-session-cleanup-cause-unit.log`,
+  `sha256:afcd1076388f448a6917a2696a916b7f081c1d4df5a79535601496e0e289430e`. Canonical `prodbox dev
+  check` exits **0** with pinned Fourmolu, HLint `No hints`, generated-artifact and documentation
+  checks, and warning-clean all-target compilation at
+  `/tmp/prodbox-sprint-6.5-session-cleanup-cause-dev-check.log`,
+  `sha256:3c8de69f7c0832f479db2904aa56e60a8c448a8f0068a77f45e2c8d56a595c75`; the synchronized
+  executable is exact at
+  `sha256:0270147d0cf9a9ee6eff5a1daff9d0abbc1253ff683a6b31a603e7874197e8e2`. Run distinct live cycle
+  `recovery-session-cleanup-cause` next. It must do two things: read the newly classified
+  session-close cause if the selected-agent refusal recurs, and, if the restore instead completes,
+  carry the still-unproven Authority evidence-bound correction through to the EKS drain commit. The
+  legacy public writer remains sole and no qualification artifact or activation witness exists.
+- Live `recovery-session-cleanup-cause` runs **2026-09-10 23:07:53 – 2026-09-11 00:10:44 EDT** and
+  live-closes `CASCADE-QUALIFICATION-AUTHORITY-EVIDENCE-BOUND-DUPLICATED-2026-09-10`. It builds local
+  image `sha256:3c765f2b575f977f8e64cb7be5ed3add805a6c58aa569194a597cb1bf4745ac1` in **1,126.6 s**,
+  publishes Registry manifest
+  `sha256:064af5d1c4b7dc89a033f7d2aa829fb3ed68c4ccefcafe327a3a652292ec475c`, and imports OCI manifest
+  `sha256:99bb8f7c5eb5ea067df0f0de7703833605f966c8ff8ed34b9d992491579ea6a8` in **90.2 s**; retention
+  removes only the immediately superseded Registry manifest `sha256:6764b40e...` and local image
+  `sha256:245d7df8...`. The prior cycle's selected-agent refusal does **not** recur: the vscode chart
+  reconciles, the public edge comes up, and the run reaches candidate dispatch. The **409** is gone.
+  The EKS client-auth projection now settles end to end, which proves both halves of the evidence
+  bound live — the Provider Worker produces the sealed projection and the Lifecycle Authority
+  accepts it — and `lifecycle/target/aws-eks/commit-eks-drain-intent` advances past auth acquisition
+  for the first time in this series. It then stops at the **next** step, observing the EKS cluster's
+  Kubernetes UID, with `EksDrainCommitSelectionKubernetesUidUnobservable (ObservationFailure "failed
+  to execute bounded kubectl: AppError {errorKind = Fatal, errorMsg = \"bounded subprocess exceeded
+  its wall-clock timeout\", errorCause = Nothing}")`. The candidate emits governed evidence
+  `.test-data/qualification/cascade-59f753a756cc23d3a1536197.evidence` with governed digest
+  `1ea8a7bba084c8add50af225b3f9b57dce4bf72f699a63194f4736ce289a8ebc` and file SHA-256
+  `2797b76472fe4fe0c07e45a5eee1b0c7a705caa6e8a27a5a0c5126eb23b7f874`, under run
+  `cascade-qualification-recovery-session-cleanup-cause`, graph digest
+  `d5a0934309d2ab277f48e0af85e7276b0ca5457e8b2931b92e26a825f2c1e167`, and primary outcome
+  `CleanupPrimarySucceeded`. The run exits **1** without exact terminal cleanup and preserves
+  operational credentials; no qualification artifact or activation witness exists and the legacy
+  public writer remains sole. The transcript is
+  `/tmp/prodbox-sprint-6.5-session-cleanup-cause-live-recovery-session-cleanup-cause.log` at
+  `sha256:2c045baf11b343d60eba3c3075bfb8b59788714dfa7d1980a24b95b2967e962b`.
+  `CASCADE-QUALIFICATION-TLS-SESSION-CLEANUP-CAUSE-DISCARDED-2026-09-10` stays code-locally closed
+  and **not** live-closed: its refusal did not recur, so the newly classified session-close cause was
+  never exercised live. Its severity, not its existence, varies with where in the restore it lands,
+  and it remains the campaign's one known intermittent restore hazard.
+- Stable counterexample `CASCADE-QUALIFICATION-EKS-DRAIN-UID-KUBECTL-TIMEOUT-2026-09-11` owns that
+  new boundary and no code change is licensed for it yet. The refusal is already exact and
+  attributable — a named selection step, a named subprocess, and a named wall-clock exhaustion — so
+  unlike the four preceding members of the attribution class this one needs measurement rather than
+  diagnostics. Establish, before changing any budget or recovery semantics, whether the bounded
+  `kubectl` reached the EKS API server at all, what the observed round-trip is against a live
+  cluster from the home control plane, and what the step's current wall-clock bound is; a bound
+  raised without that measurement would be the same inference this campaign has twice replaced with
+  a number.
+- `CASCADE-QUALIFICATION-EKS-DRAIN-UID-KUBECTL-TIMEOUT-2026-09-11` is measured, and the measurement
+  refutes the obvious reading. A read-only probe reproduced the exact `EphemeralKubectl` mechanism —
+  private kubeconfig, FIFO `tokenFile`, forever-reopening writer, bounded subprocess — against the
+  home API server and against a blackholed endpoint. Three results. **Falsified 2026-09-11 — the
+  first of the three is wrong, and the error is instructive.** The probe reproduced the mechanism
+  from its doctrine description rather than by linking the compiled module: its writer was a shell
+  loop, whose blocking open waits for a reader, where production's Haskell writer opens non-blocking
+  and dies. The shell reproduction therefore exonerated a mechanism that has never worked, and cost
+  a wrong root cause, a landed correction, and a live cycle. A reproduction probe must link the
+  compiled module or re-exec the shipped binary. The sentence as written read: the mechanism itself
+  is not a suspect: five consecutive authenticated calls through the FIFO token path completed in
+  **40–52 ms**, and the resulting `403` proves the token was read and accepted. `kubectl get namespace … -o
+  jsonpath=` against an unreachable endpoint costs **25.05 s**, emitting exactly five `couldn't get
+  current server API group list` errors and never reaching the namespace; the same call at a
+  2-second request timeout costs **10.04 s** and at 3 seconds **15.04 s**, always with exactly five
+  discovery errors, so the multiplier is a fixed retry count and the cost is
+  `attempts × request-timeout`. The same resource read through `kubectl get --raw
+  /api/v1/namespaces/kube-system` costs **5.04 s** unreachable with **zero** discovery requests, and
+  **51 ms** against the healthy API server returning the byte-identical UID
+  `16522627-932a-43b6-a7b4-0e566895ab88`.
+- Two conclusions follow, and the second is the one that matters. First, the step spent its budget on
+  API-group discovery it never needed: the cluster UID is a core `v1` object addressable by path.
+  Second, the live failure exceeded **30 s**, which is *more* than the 25.05 s an unreachable
+  endpoint costs — so the endpoint was not simply unreachable, and discovery was making partial
+  progress against a real API surface at latency, issuing more bounded requests than the
+  unreachable case ever reaches. That rules out "the cluster was gone" as the explanation and leaves
+  the discovery walk itself as the cost.
+- The correction is derived from those numbers rather than chosen. The UID observation now addresses
+  the namespace document directly through `--raw` and parses `metadata.uid` from the API's own
+  response, so it pays one request instead of six and a missing, empty, or non-object body is a
+  closed refusal rather than an absent UID. Every ephemeral `kubectl` call now carries the named
+  per-request bound, because a call without one leaves the outer wall clock as its only bound and its
+  own exact error can then never be the reported cause. The wall clock is itself derived:
+  `(discovery attempts + 1) × request timeout` is the six-request worst case at exactly **30 s**,
+  which is precisely the flat bound the live run raced, so the bound is now that sum plus a bounded
+  **10 s** margin covering process spawn, the FIFO rendezvous, and TLS — measured together at 65 ms.
+  **Falsified 2026-09-11:** there is no FIFO rendezvous in production — the open never completes —
+  so this margin is derived from a measurement of a mechanism that does not occur. Sprint `7.39`
+  re-derives the bound against the credential mechanism that ships.
+  Any inner failure therefore surfaces before the outer bound, which is what makes the next such
+  refusal attributable instead of opaque.
+- The focused exact EKS drain interpreter group passes **25/25** at
+  `/tmp/prodbox-sprint-6.5-eks-drain-uid-focused.log`,
+  `sha256:8d395e4f28653430349f76c577dd5cf4f335bd6dd6c81fc7424756d7ba7319cd`, pinning the measured
+  retry count and per-request bound, asserting the wall clock strictly exceeds the six-request worst
+  case and equals the subprocess limit, and covering the namespace-document parse for the exact UID,
+  a missing UID, an empty UID, missing metadata, a non-object body, and unparseable bytes. Exact-state
+  full unit passes primary **4,911/4,911** and auxiliaries **27/27**, **35/35**, and **39/39** at
+  `/tmp/prodbox-sprint-6.5-eks-drain-uid-unit.log`,
+  `sha256:4e8992b8b4b3c5302c150c5e0009de74dd741b353b3e5b71fa87170ba9f6dd7d`. Canonical `prodbox dev
+  check` exits **0** at `/tmp/prodbox-sprint-6.5-eks-drain-uid-dev-check.log`,
+  `sha256:ab5c3827e50aade46556707e13049ddc820a64a9c3b4fef8d44db1131ea608d9`; the synchronized
+  executable is exact at
+  `sha256:81e8503c936a517e5e87dc1825748ae9278a1f8603e8d187ebcde189ab848556`. That gate first failed
+  on an unrelated governed-document defect: `documents/engineering/vault_doctrine.md` carried two
+  leading spaces on its mandatory `**Status**:` field. The indent was removed and nothing else in
+  that file changed. Run distinct live cycle `recovery-eks-drain-uid-raw` next; the legacy public
+  writer remains sole and no qualification artifact or activation witness exists.
+- Live `recovery-eks-drain-uid-raw` runs **2026-09-11 08:28:40–09:32:51 EDT** and refutes the
+  discovery explanation. It builds local image
+  `sha256:3b599e09ec0081f1d28c801a0e055f06f7c2b8f57854cbbde5aaba5b0bf968fb` in **1,139.0 s**,
+  publishes Registry manifest
+  `sha256:23872663d9724009e1add2ae5d5d22c3a21e8f27209fc477b87bc098063b26b0`, and imports OCI manifest
+  `sha256:c5f1a1b2d9a9bfefec7c031e6e2db43f10c38ed4ab3a7b10b9158ab23d3f2cb2` in **103.6 s**; retention
+  removes only the immediately superseded Registry manifest `sha256:064af5d1...` and local image
+  `sha256:3c765f2b...`. The restore completes, the candidate dispatches, and governed evidence
+  `.test-data/qualification/cascade-3bde7f0f0e7ad2093eb4f135.evidence` is emitted with governed
+  digest `1d5aaf04012aed53f41e218b813ca5a4cb321b4927c04cc368ee5f99c22d2f66` and file SHA-256
+  `ecef4243fdd2e91287dc3d75eb7149ea66f24ea83859b43fe5f9f50ae970b8b5`, under graph digest
+  `c66518269b5d92055ec7f9b1f743c3de5e72e68e2645d543ecead64a400dcf96`. But
+  `lifecycle/target/aws-eks/commit-eks-drain-intent` still fails at exactly the same
+  `EksDrainCommitSelectionKubernetesUidUnobservable … bounded subprocess exceeded its wall-clock
+  timeout`, now with a one-request `--raw` call under a 40-second bound. The run exits **1**,
+  preserves credentials, and leaves the legacy public writer sole. The transcript is
+  `/tmp/prodbox-sprint-6.5-eks-drain-uid-live-recovery-eks-drain-uid-raw.log` at
+  `sha256:33d5300ab05471328f9eb4d5984bba6bbb238bbbc50139eddcb4c74b5cf9de10`.
+- The decisive observation is that the duration tracks the bound rather than the work: 30 s under a
+  30-second bound, 40 s under a 40-second bound. A call doing bounded HTTP work does not scale with
+  its supervisor's timeout; a call that never completes does. The cause is the bearer-token FIFO, not
+  the network, and it is now proven rather than inferred. Holding the subprocess runner, the
+  kubeconfig, and the argv constant and changing only how the token is delivered, a plain private
+  token file completes the identical call in **54 ms** and the FIFO consumes the entire bound,
+  **40.00 s**, on both a threaded and a non-threaded runtime. Kernel task state during the hang shows
+  `kubectl` parked in `wait_for_partner` with the FIFO absent from its descriptor table, which is the
+  open of a FIFO that has no writer. A direct probe supplies the mechanism: GHC opens a FIFO with
+  `O_NONBLOCK`, so `ByteString.writeFile` on one with no reader does not wait — it throws `ENXIO`
+  immediately. The standing `forever (ByteString.writeFile …)` writer therefore throws on its very
+  first attempt, before `kubectl` has started; `forever` propagates it, the thread dies, and nothing
+  waits on the `withAsync`, so the death is silent and every subsequent invocation blocks in `open`
+  until its supervisor kills it. On this evidence the ephemeral Kubernetes client has never
+  authenticated on any live run.
+- Stable counterexample `CASCADE-QUALIFICATION-EPHEMERAL-KUBECTL-TOKEN-FIFO-UNSERVED-2026-09-11`
+  owns it. **No replacement is landed, deliberately.** Two were built and measured, and both were
+  refused by their own measurement: retrying the non-blocking open still lost the race roughly half
+  the time even on a threaded runtime, and a blocking `openFd` write-open hung indefinitely and
+  produced no result at all. The bearer token must never reach a regular file, so neither dead end
+  licenses dropping the FIFO, and a change to how a credential is delivered to a subprocess is a
+  Standard-P process-topology surface that an unproven design must not touch. The writer is left
+  exactly as it was, carrying the proof at its definition, so the next attempt starts from evidence
+  and two eliminated designs rather than from scratch. The supporting `-threaded` change made for the
+  blocking-open design was reverted with it.
+- What the prior measurement did license is kept, because it is correct independently of this. The
+  UID observation reads the namespace document by path with no API-group discovery, every ephemeral
+  `kubectl` call carries the named per-request bound so its own error can surface, and the outer wall
+  clock is derived as the six-request worst case plus a bounded margin rather than sitting exactly on
+  it. The focused exact EKS drain interpreter group passes **25/25** at
+  `/tmp/prodbox-sprint-6.5-eks-drain-uid-focused.log`,
+  `sha256:39b24a86dfb29cab7c8c320319a0309a0cdfcde7012457177dcdfba9779cd7d9`. Exact-state full unit
+  passes primary **4,911/4,911** and auxiliaries **27/27**, **35/35**, and **39/39** at
+  `/tmp/prodbox-sprint-6.5-eks-drain-uid-unit.log`,
+  `sha256:c5b8b9da29fc85582a0931679a7e028d615169f2c855021f76bd2fb40bdfacf6`. Canonical `prodbox dev
+  check` exits **0** at `/tmp/prodbox-sprint-6.5-eks-drain-uid-dev-check.log`,
+  `sha256:9645d65b9491ffcd3879bc7677584bda551220c434735cf6cfcbc223ac390e6a`; the synchronized
+  executable is exact at
+  `sha256:7d4d9ced753a7aa8d56d4d8ae6bc19bf37e83e0120accbbf479248314b18f756`. Design and prove a
+  token-delivery mechanism that pairs reader and writer without a regular file before running another
+  live cycle; a cycle run before that reproduces this same hang.
 
 
 Generation
@@ -8576,6 +9168,12 @@ served through a FIFO so it never lands on disk, and the ambient-credential scru
 inside the drain interpreter, because the drain was the only teardown path that reached Kubernetes.
 `Prodbox.Lifecycle.Teardown.EphemeralKubectl` owns them now and both callers use it: two statements
 of that machinery would be two statements of a security property.
+**Falsified 2026-09-11 (Standard C).** A third statement survives in
+`src/Prodbox/Infra/AwsEksTestStack.hs`, reachable from the legacy public cascade's AWS drain, and
+the surviving one has never served a token: its writer fails with `ENXIO` before `kubectl` starts
+and dies silently. The proof is in this file's own lead, above. The argument quoted here is sound —
+two statements of that machinery are two statements of a security property — which is exactly why it
+needed a gate rather than a sentence. Sprints `7.39` and `7.40` own the correction.
 
 **The follow-on compiled-scope work is closed.** At Sprint `7.36` closure, every compiled DNS01 node
 correctly refused with `Dns01ChallengeHostedZoneMissing` because the graph had no producer for its
@@ -12397,6 +12995,27 @@ counterexample; it cannot satisfy either qualification row. The replacement rows
 key/scope/cardinality, minimal recovery, write-ahead and confirmed-legacy ownership-manifest
 recovery, stable-run resume, backed-up
 pre-uninstall readiness, uninstall-last, and scoped post-uninstall completion evidence.
+
+**Correction 2026-09-11 — the AWS row cannot be qualified, because its Kubernetes-reaching teardown
+has never authenticated.** Sprint `6.5`'s sixth live cascade-qualification cycle proved that the
+ephemeral Kubernetes client's bearer-token writer fails with `ENXIO` before `kubectl` starts and
+that its death is silent, so every `kubectl` invocation on an EKS path blocks until its wall clock
+kills it. Measured, holding the runner, kubeconfig and arguments constant and varying only
+credential delivery: a plain private token file completes the identical call in 54 ms, and the FIFO
+consumes the entire bound — 40.00 s of a 40-second budget — on both a threaded and a non-threaded
+runtime. On this evidence **no AWS teardown path has ever reached an EKS API server**, on either the
+replacement candidate or the legacy public cascade, whose AWS drain routes through a third,
+undocumented statement of the same machinery.
+
+Three consequences for this ledger. First, the AWS row's replacement identity is not merely
+unproven, it is unreachable: the exercise its Canonical-commands cell describes cannot complete.
+Second, Sprint `7.39` changes how a bearer credential reaches a subprocess, which is capability
+wiring under Standard P, so no identity captured before it lands can satisfy either row afterwards.
+Third, the cleanup/residue column is directly implicated — a drain that cannot authenticate cannot
+have drained, so any historical run recording AWS cleanup crossed that step without evidence. Sprints
+`7.39` and `7.40` own the correction, `2.134` owns the supervision defect that made the failure
+silent, and `4.93` owns the unbounded drain subprocess that turns any such block into a hang rather
+than a refusal.
 
 ### First campaign attempt (2026-08-13) — home local
 

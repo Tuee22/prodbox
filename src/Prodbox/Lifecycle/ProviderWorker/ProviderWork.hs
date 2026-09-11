@@ -120,6 +120,9 @@ module Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderOwnedTagQuery (..)
   , providerOwnedTagQueryKey
   , providerIntentResourceKey
+  , maximumProviderIntentEvidenceCharacters
+  , providerIntentEvidenceMaximumCharacters
+  , validateProviderIntentEvidence
   , ProviderIntentCoordinate
   , providerIntentCoordinate
   , providerIntentCoordinateFromText
@@ -154,6 +157,9 @@ import Data.Text qualified as Text
 import GHC.Generics (Generic)
 import Numeric (showHex)
 import Numeric.Natural (Natural)
+import Prodbox.ControlPlane.EksClientAuthProjection
+  ( maximumEksClientAuthEvidenceCharacters
+  )
 import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
 import Prodbox.Settings.AwsSubstrateProfile
   ( AwsSubstrateProfile
@@ -794,6 +800,84 @@ providerOwnedTagQueryKey :: ProviderOwnedTagQuery -> Text
 providerOwnedTagQueryKey query = case query of
   ProviderOwnedTagKeyQuery key -> key
   ProviderOwnedTagPairQuery key value -> key <> "=" <> value
+
+-- | The character bound a Provider evidence string shares with every intent
+-- whose evidence is a short observation.
+--
+-- Named rather than inlined so a refusal can report the value it measured
+-- against.
+maximumProviderIntentEvidenceCharacters :: Int
+maximumProviderIntentEvidenceCharacters = 4096
+
+-- | Sprint 6.5: the character bound one intent's evidence may reach.
+--
+-- 'IssueEksClientAuth' is the sole intent whose evidence is a sealed capability
+-- projection rather than a short observation, and its bound is derived from the
+-- envelope the sealer may produce. A live run measured 4,649 characters against
+-- the shared 4,096-character bound, which no successful client-auth execution
+-- could ever have satisfied. Every other intent keeps the shared bound exactly.
+--
+-- It lives beside the intent so the Provider Worker that produces the evidence
+-- and the Lifecycle Authority that settles it read the same number; the two
+-- carried independent copies of the shared bound, and the Provider's copy alone
+-- being corrected only moved the refusal one hop.
+providerIntentEvidenceMaximumCharacters :: ProviderIntent -> Int
+providerIntentEvidenceMaximumCharacters intent = case intent of
+  IssueEksClientAuth {} -> maximumEksClientAuthEvidenceCharacters
+  ReconcileRegisteredStack {} -> shared
+  DestroyRegisteredStack {} -> shared
+  ObserveRegisteredStack {} -> shared
+  ReadBackRegisteredStack {} -> shared
+  BoundedScratchCheckpoint {} -> shared
+  ReconcileSesSendingIdentity {} -> shared
+  ReconcileSesDkim {} -> shared
+  ReconcileSesReceiptRules {} -> shared
+  ReconcileSesCaptureBucket {} -> shared
+  ReconcileSesDns {} -> shared
+  ObservePublicARecord {} -> shared
+  ReconcilePublicARecord {} -> shared
+  ReapTestEbsVolumes {} -> shared
+  ObserveSpotPrice {} -> shared
+  ObserveOperationalIdentity -> shared
+  ObserveProviderReadiness {} -> shared
+  ObserveTestEbsVolumes {} -> shared
+  ObserveValidationHostedZones {} -> shared
+  ReapValidationHostedZones {} -> shared
+  ObserveRetainedEbsVolumes {} -> shared
+  ReapRetainedEbsVolumes {} -> shared
+  ObserveDns01ChallengeRecords {} -> shared
+  ObserveEksIamRoleFamily {} -> shared
+  ReapEksIamRoleFamily {} -> shared
+  ObserveEksLoadBalancerControllerFamily {} -> shared
+  ReapEksLoadBalancerControllerFamily {} -> shared
+  ObserveEksClusterIdentity {} -> shared
+  ObserveProviderAwsScope -> shared
+  ObserveOwnedResourceTags {} -> shared
+  ObserveNativeStackFamily {} -> shared
+  ReapNativeStackFamily {} -> shared
+ where
+  shared = maximumProviderIntentEvidenceCharacters
+
+-- | Sprint 6.5: apply that bound and the two shape rules, naming the rule that
+-- refused.
+--
+-- The evidence itself is never echoed: an 'IssueEksClientAuth' observation is a
+-- sealed capability projection.
+validateProviderIntentEvidence :: ProviderIntent -> Text -> Either Text Text
+validateProviderIntentEvidence intent evidence
+  | Text.null evidence = Left "the provider returned no evidence"
+  | Text.length evidence > maximumCharacters =
+      Left
+        ( "provider evidence is "
+            <> Text.pack (show (Text.length evidence))
+            <> " characters, over the maximum of "
+            <> Text.pack (show maximumCharacters)
+        )
+  | Text.any control evidence = Left "provider evidence carries a control character"
+  | otherwise = Right evidence
+ where
+  maximumCharacters = providerIntentEvidenceMaximumCharacters intent
+  control character = character <= '\x1f' || character == '\x7f'
 
 -- | The registered-resource key an intent draws on (the granularity at which the
 -- Authority registers what the committed provider intent authorizes).

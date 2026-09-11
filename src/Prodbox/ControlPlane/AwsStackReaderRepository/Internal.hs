@@ -95,6 +95,7 @@ import Prodbox.Lifecycle.CleanupRun
   , mkCleanupOperationId
   , mkCleanupRunId
   )
+import Prodbox.Lifecycle.DnsRecord (hostedZoneIdText, mkHostedZoneId)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderStackConfig
   , ProviderStackConfigView (..)
@@ -411,7 +412,7 @@ awsStackReaderAuthorityIdentity runId graphDigest operationId key scope = do
   let coordinate = registeredIdentityCoordinateDigest identity
       submission =
         AwsStackReaderSubmissionKey
-          ( "aws-stack-reader-v1-"
+          ( "aws-stack-reader-v2-"
               <> TextEncoding.decodeUtf8
                 (hexSha256 (TextEncoding.encodeUtf8 canonicalIdentity))
           )
@@ -431,7 +432,7 @@ awsStackReaderAuthorityIdentity runId graphDigest operationId key scope = do
     Text.concat
       ( map
           frame
-          ( [ "aws-stack-reader/v1"
+          ( [ "aws-stack-reader/v2"
             , cleanupRunIdText runId
             , cleanupDigestText graphDigest
             , cleanupOperationIdText operationId
@@ -624,6 +625,12 @@ confirmReadBack expected observation = case observation of
                   )
               )
 
+-- | Sprint 6.5: the encoded projection of an 'ObservationEvidenceScope'.
+--
+-- @scopeWireAwsDnsZone@ carries the run's retained DNS hosted zone. Without it
+-- an encode/decode round trip silently returned a zone-less scope, and the
+-- exact identity comparison that guards every read-back then refused a bundle
+-- this same run had just committed.
 data ScopeWire = ScopeWire
   { scopeWireSurface :: !Int
   , scopeWireRegistryRevision :: !Text
@@ -631,6 +638,7 @@ data ScopeWire = ScopeWire
   , scopeWireFoundation :: !Text
   , scopeWireAwsAccount :: !(Maybe Text)
   , scopeWireAwsRegion :: !(Maybe Text)
+  , scopeWireAwsDnsZone :: !(Maybe Text)
   , scopeWireOperation :: !Int
   }
   deriving stock (Eq, Show, Generic)
@@ -647,6 +655,13 @@ data AwsStackReaderIdentityWire = AwsStackReaderIdentityWire
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+-- | Sprint 6.5: version 2 is the first encoding whose scope carries the run's
+-- retained DNS hosted zone. Version 1 bytes are refused rather than upgraded:
+-- their submission key was derived from a zone-less canonical identity, so no
+-- version-2 read ever addresses a version-1 object.
+awsStackReaderWireFormatVersion :: Int
+awsStackReaderWireFormatVersion = 2
 
 maximumAwsStackReaderAuthorityIdentityBytes :: Int
 maximumAwsStackReaderAuthorityIdentityBytes = 16 * 1024
@@ -676,7 +691,7 @@ decodeAwsStackReaderAuthorityIdentity bytes = do
     (LazyByteString.toStrict (serialise wire) == bytes)
     (Left AwsStackReaderNonCanonical)
   unless
-    (identityWireVersion wire == 1)
+    (identityWireVersion wire == awsStackReaderWireFormatVersion)
     (Left (AwsStackReaderVersionUnsupported (identityWireVersion wire)))
   runId <- decodeText "run ID" mkCleanupRunId (identityWireRunId wire)
   graphDigest <- decodeText "graph digest" mkCleanupDigest (identityWireGraphDigest wire)
@@ -695,7 +710,7 @@ decodeAwsStackReaderAuthorityIdentity bytes = do
 identityToWire :: AwsStackReaderAuthorityIdentity -> AwsStackReaderIdentityWire
 identityToWire identity =
   AwsStackReaderIdentityWire
-    { identityWireVersion = 1
+    { identityWireVersion = awsStackReaderWireFormatVersion
     , identityWireRunId = cleanupRunIdText (awsStackReaderAuthorityRunId identity)
     , identityWireGraphDigest =
         cleanupDigestText (awsStackReaderAuthorityGraphDigest identity)
@@ -780,7 +795,7 @@ wireFromValues identity decisionInputs providerBinding = do
   let pair = awsStackDecisionInputsCheckpointPair decisionInputs
   pure
     AwsStackReaderWire
-      { readerWireVersion = 1
+      { readerWireVersion = awsStackReaderWireFormatVersion
       , readerWireRunId = cleanupRunIdText (internalAwsStackReaderRunId identity)
       , readerWireGraphDigest = cleanupDigestText (internalAwsStackReaderGraphDigest identity)
       , readerWireOperationId = cleanupOperationIdText (internalAwsStackReaderOperationId identity)
@@ -813,7 +828,7 @@ decodeAwsStackReaderBundle bytes = do
       (deserialiseOrFail (LazyByteString.fromStrict bytes))
   unless (canonicalBytes wire == bytes) (Left AwsStackReaderNonCanonical)
   unless
-    (readerWireVersion wire == 1)
+    (readerWireVersion wire == awsStackReaderWireFormatVersion)
     (Left (AwsStackReaderVersionUnsupported (readerWireVersion wire)))
   runId <- decodeText "run ID" mkCleanupRunId (readerWireRunId wire)
   graphDigest <- decodeText "graph digest" mkCleanupDigest (readerWireGraphDigest wire)
@@ -1042,6 +1057,7 @@ scopeToWire scope =
     , scopeWireFoundation = foundationText (evidenceLinuxRke2Foundation scope)
     , scopeWireAwsAccount = accountText <$> evidenceAwsScope scope
     , scopeWireAwsRegion = regionText <$> evidenceAwsScope scope
+    , scopeWireAwsDnsZone = hostedZoneIdText <$> evidenceAwsDnsZone scope
     , scopeWireOperation = lifecycleOperationTag (evidenceLifecycleOperation scope)
     }
 
@@ -1061,12 +1077,30 @@ scopeFromWire wire = do
                 <*> (AwsRegion <$> checkedText "AWS region" 128 region)
             )
     _ -> Left (AwsStackReaderFieldInvalid "AWS scope was only partially encoded")
+  dnsZone <- case scopeWireAwsDnsZone wire of
+    Nothing -> Right Nothing
+    Just raw ->
+      Just
+        <$> first
+          (const (AwsStackReaderFieldInvalid "AWS DNS zone is invalid"))
+          (mkHostedZoneId raw)
   operation <- case scopeWireOperation wire of
     0 -> Right ReconcileDesiredAbsent
     1 -> Right ReconcileDesiredPresent
     2 -> Right RunTerminalEscapeAudit
     other -> Left (AwsStackReaderFieldInvalid ("invalid lifecycle operation " <> Text.pack (show other)))
-  pure (mkObservationEvidenceScope surface revision runScope foundation awsScope operation)
+  pure $ case dnsZone of
+    Nothing ->
+      mkObservationEvidenceScope surface revision runScope foundation awsScope operation
+    Just zone ->
+      mkObservationEvidenceScopeWithDnsZone
+        surface
+        revision
+        runScope
+        foundation
+        awsScope
+        zone
+        operation
 
 providerConfigToWire :: ProviderStackConfig -> ProviderConfigWire
 providerConfigToWire config = case providerStackConfigView config of
@@ -1188,6 +1222,8 @@ scopeIdentityFields scope =
   , maybe "aws/absent" (const "aws/present") (evidenceAwsScope scope)
   , maybe "" accountText (evidenceAwsScope scope)
   , maybe "" regionText (evidenceAwsScope scope)
+  , maybe "zone/absent" (const "zone/present") (evidenceAwsDnsZone scope)
+  , maybe "" hostedZoneIdText (evidenceAwsDnsZone scope)
   , Text.pack (show (evidenceLifecycleOperation scope))
   ]
 

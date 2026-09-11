@@ -9,6 +9,14 @@
 
 ## Phase Status
 
+✅ **Sprint `0.33` (2026-09-11) schedules the ephemeral-Kubernetes-client remediation and corrects
+the governed record on the same already-reclosed Phase 0 documentation/governance surface** — it
+neither re-closes nor reopens the phase. It opens nine code sprints in Phases `2`, `4`, `5`, and
+`7`, declares the only currently live `**Backward dependency**` on Sprint `6.5`, and corrects seventy
+located claims across twenty governed documents in four families: the ephemeral client's "one
+statement", `.hlint.yaml` as a hard gate, structured concurrency as an enforced rule, and the
+observation scope's DNS hosted zone as sealed into identity.
+
 ✅ **Sprint `0.20` (2026-08-03) adopts repository value hygiene on the same already-reclosed Phase 0
 documentation/governance surface** — it neither re-closes nor reopens the phase (Sprint `0.17`'s
 reclosure below stands unchanged). Every committed value that stands in for real-world data is
@@ -3253,6 +3261,94 @@ rather than as an unstated extension of this one.
 
 - [system-components.md](system-components.md) — the plan-governance gate family gains the
   backward-dependency bijection and the derived execution order.
+
+## Sprint 0.33: A Test That Asserts Only Absence Is Satisfied By A Secret That Is Never Produced ✅
+
+**Status**: Done (2026-09-11; documentation/governance surface). Landed on the already-reclosed
+Phase 0 documentation surface; it neither re-closes nor reopens the phase.
+**Implementation**: this documentation change — `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/development_plan_standards.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, the phase documents for Phases `1` / `2` / `4` /
+`5` / `6` / `7`, and the governed engineering docs listed below.
+**Blocked by**: none.
+**Deployment qualification**: pending — this sprint records a qualification correction; it changes
+no production-composition surface itself.
+**Independent Validation**: documentation-only surface; `prodbox dev check`, `prodbox dev lint
+docs`, and `prodbox dev docs check` exit 0, and a read-through confirms Standard C / H / I / J
+compliance for every added sprint block, ledger row, and queue row.
+**Docs to update**: `documents/engineering/chaos_hardening_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/code_quality.md`, `documents/engineering/haskell_code_guide.md`,
+`documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/pure_fp_standards.md`,
+`documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/documentation_standards.md`, and root `README.md`.
+
+### Objective
+
+Six live cascade-qualification cycles on 2026-09-10/11 proved that the ephemeral Kubernetes client
+has never delivered its bearer token, and therefore that no AWS teardown path has ever authenticated
+to an EKS API server. The proof is recorded under Sprint `6.5`. This sprint does not fix the defect.
+It schedules the fix, and it corrects the governed record, which currently asserts the opposite of
+much of what the investigation established.
+
+The lesson this sprint is named for is the transferable one. The tests that covered the credential
+path asserted only that the bearer never appeared — in argv, in the environment, in retained
+evidence, in the rendered kubeconfig. Not one asserted that it arrived. A suite of absence
+assertions about a secret is satisfied perfectly by a secret that is never produced, which is
+exactly what [unit_testing_policy.md](../documents/engineering/unit_testing_policy.md) § 0 Canonical
+Statement 10 already forbids: *"what input would make this node fail? If the answer is 'none', the
+node is a renderer, and calling it a validation is the defect."* The rule was written on
+2026-08-11, nine days after the writer landed, and was never applied to it.
+
+### Deliverables
+
+- Open the nine sprints that own the code work, in the phases that own each surface: `2.134`
+  (spawn-handle supervision), `4.92` (one canonical observation-scope codec), `4.93` (bound the
+  drain's subprocesses), `4.94` (result-indexed teardown operations), `5.44` (real-child
+  process-boundary harness and elapsed-time vocabulary), `5.45` (route the three unrun suites),
+  `5.46` (the codec round-trip properties § 3.2 already mandates), `7.39` (ephemeral Kubernetes
+  client token delivery), and `7.40` (eliminate the third statement and gate it).
+- Reopen Phases `2`, `4`, `5`, and `7` on their own owned surfaces under
+  [Standard A](development_plan_standards.md#a-continuous-clean-room-narrative), and record each
+  reopen in `README.md` and `00-overview.md` under
+  [Standard C](development_plan_standards.md#c-honest-completion-tracking).
+- Declare Sprint `6.5`'s closure dependency on Sprint `7.40` with the matching
+  `**Backward dependency**` admission required by
+  [Standard N.2](development_plan_standards.md#n-phase-independence-and-execution-order). It is the
+  only such declaration currently live — Sprint `5.36`'s, on the sprints it composed, closed with it
+  — and its physical ground is that activating a sole public writer whose AWS drain cannot
+  authenticate would strand every EKS teardown path behind a writer with no rollback.
+- Correct the governed record. Seventy located claims across twenty documents are false or
+  materially misleading, in four families: the ephemeral client is "one statement" (it is three, and
+  the surviving one has never authenticated); `.hlint.yaml` is a "hard gate" (it holds no rule, only
+  suppressions); structured concurrency is "already the rule" (nothing requires a spawned handle to
+  be linked or waited, and five long-lived threads discard theirs); and the observation scope's DNS
+  hosted zone is "sealed into every operation identity" (fifteen of eighteen codecs erase it).
+- Record the qualification consequence in the one ledger that owns it, and mark this session's own
+  superseded measurements as falsified where they still read as current.
+
+### Validation
+
+1. `prodbox dev lint docs` exits 0 — unique `Resume Here`, exact open-row coverage, derived
+   execution order, dependency direction and the backward-dependency bijection, unique sprint IDs,
+   Pending-Removal ownership and prerequisite direction, relative links, cited source paths, and
+   doctrine section citations.
+2. `prodbox dev docs check` exits 0 — no generated-section drift.
+3. `prodbox dev check` exit 0 — by no-op for the docs-only part.
+4. Every new sprint block carries `**Implementation**` and `**Docs to update**`, and every claim of
+   enforcement added to a governed document names its violation function, per
+   [documentation_standards.md](../documents/documentation_standards.md) § 12.2.
+
+### Remaining Work
+
+None. The code work this sprint schedules belongs to the nine sprints it opened.
 
 ## Related Documents
 

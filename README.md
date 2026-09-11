@@ -346,6 +346,17 @@ remaining-work ownership live in the
 boundaries live in
 [Lifecycle Control-Plane Architecture](./documents/engineering/lifecycle_control_plane_architecture.md).
 
+**Measured 2026-09-11 — no AWS teardown path has ever authenticated to an EKS API server.** The
+ephemeral Kubernetes client both teardown paths use serves its bearer token through a named pipe
+whose writer fails before `kubectl` starts and dies unobserved, so every `kubectl` invocation on an
+EKS path blocks until its wall clock ends it. Holding everything else constant and varying only
+credential delivery, the identical call completes in 54 ms with a private token file and consumes
+its entire 40-second budget through the pipe. A third, undocumented copy of the same machinery sits
+on the legacy public cascade's AWS drain, whose `kubectl` calls are additionally unbounded. This is
+a measured current fact, not a qualification status; ownership and remaining work live in the
+[Development Plan](./DEVELOPMENT_PLAN/README.md#resume-here) under Sprints `7.39`, `7.40`, and
+`4.93`.
+
 The measured-capacity recorder is available as
 `prodbox test integration gateway-pods --record-profile`. It writes
 `dhall/capacity/measured/gateway.dhall` only after a healthy 30-minute/300-sample window; committing
@@ -958,7 +969,11 @@ Fourmolu, HLint, a warning-clean Cabal build, and syncs the built executable to 
 
 The four commands above are **separate surfaces, not redundant ones**. `dev check` formats and lints
 `app src test` and type-checks all of it, but type-checking is not running: a suite that compiles
-still has to be executed to prove anything. Run all four before calling a change validated. Which
+still has to be executed to prove anything. Run all four before calling a change validated — and
+note what all four still do not reach: three declared test suites (`prodbox-haskell-style`,
+`prodbox-daemon-lifecycle`, `prodbox-pulumi`) are compiled by `dev check` and executed by no
+`prodbox test` scope, so the four commands together run none of them (measured 2026-09-11; Sprint
+`5.45` owns routing or retiring them). Which
 components that build actually selects — the *region* of the guarantee — is owned by
 [resource_scaling_doctrine.md](./documents/engineering/resource_scaling_doctrine.md) under "The
 region of Ring 2", along with the outage that established the rule. This guide states the operator

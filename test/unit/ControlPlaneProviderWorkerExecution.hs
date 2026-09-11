@@ -853,7 +853,56 @@ controlPlaneProviderWorkerExecutionSuite =
       evidenceVerified <- mustAdmitDefault evidenceFixture evidenceIntent
       executeVerifiedProviderIntent (fixtureBoundary evidenceFixture) evidenceVerified
         `shouldReturn` Left
-          (ProviderIntentExecutionEvidenceInvalid "provider evidence is invalid")
+          ( ProviderIntentExecutionEvidenceInvalid
+              "provider evidence is invalid: the provider returned no evidence"
+          )
+
+    -- Sprint 6.5: a live Provider 503 reported only "provider evidence is
+    -- invalid", so the refusal could not say whether the observation was
+    -- empty, over the character bound, or control-bearing. Each rule now
+    -- reports itself, and the oversize rule reports the length it measured.
+    it "names the exact evidence rule that refused and the length it measured" $ do
+      oversizeFixture <- freshFixture
+      let oversizeIntent = ReconcileSesDkim (identityRef "mail")
+          oversizeCoordinate = providerIntentCoordinate oversizeIntent
+          oversizeEvidence = Text.replicate 4097 "e"
+      writeIORef (fixtureApplied oversizeFixture) [oversizeCoordinate]
+      writeIORef
+        (fixtureSubstituteEvidence oversizeFixture)
+        [(oversizeCoordinate, oversizeEvidence)]
+      oversizeVerified <- mustAdmitDefault oversizeFixture oversizeIntent
+      executeVerifiedProviderIntent (fixtureBoundary oversizeFixture) oversizeVerified
+        `shouldReturn` Left
+          ( ProviderIntentExecutionEvidenceInvalid
+              "provider evidence is invalid: provider evidence is 4097 characters, over the maximum of 4096"
+          )
+
+      controlFixture <- freshFixture
+      let controlIntent = ReconcileSesDkim (identityRef "mail")
+          controlCoordinate = providerIntentCoordinate controlIntent
+      writeIORef (fixtureApplied controlFixture) [controlCoordinate]
+      writeIORef
+        (fixtureSubstituteEvidence controlFixture)
+        [(controlCoordinate, "evidence:\nsecond-line")]
+      controlVerified <- mustAdmitDefault controlFixture controlIntent
+      executeVerifiedProviderIntent (fixtureBoundary controlFixture) controlVerified
+        `shouldReturn` Left
+          ( ProviderIntentExecutionEvidenceInvalid
+              "provider evidence is invalid: provider evidence carries a control character"
+          )
+
+      admittedFixture <- freshFixture
+      let admittedIntent = ReconcileSesDkim (identityRef "mail")
+          admittedCoordinate = providerIntentCoordinate admittedIntent
+          admittedEvidence = Text.replicate 4096 "e"
+      writeIORef (fixtureApplied admittedFixture) [admittedCoordinate]
+      writeIORef
+        (fixtureSubstituteEvidence admittedFixture)
+        [(admittedCoordinate, admittedEvidence)]
+      admittedVerified <- mustAdmitDefault admittedFixture admittedIntent
+      executeVerifiedProviderIntent (fixtureBoundary admittedFixture) admittedVerified
+        `shouldReturn` Right
+          (ProviderIntentExecutionAlreadySatisfied admittedCoordinate admittedEvidence)
 
     it "binds operation and idempotency identity into the action digest" $ do
       let first = defaultSpec defaultIntent
@@ -956,6 +1005,7 @@ data Fixture = Fixture
   , fixtureNeverConfirm :: !(IORef [ProviderIntentCoordinate])
   , fixtureReadOnlyFailure :: !(IORef [ProviderIntentCoordinate])
   , fixtureInvalidEvidence :: !(IORef [ProviderIntentCoordinate])
+  , fixtureSubstituteEvidence :: !(IORef [(ProviderIntentCoordinate, Text)])
   }
 
 freshFixture :: IO Fixture
@@ -967,6 +1017,7 @@ freshFixture =
     <*> newIORef 0
     <*> newIORef 0
     <*> newIORef Nothing
+    <*> newIORef []
     <*> newIORef []
     <*> newIORef []
     <*> newIORef []
@@ -1093,6 +1144,7 @@ mutation fixture label =
         postUnavailable <- elem coordinate <$> readIORef (fixturePostApplyUnobservable fixture)
         neverConfirm <- elem coordinate <$> readIORef (fixtureNeverConfirm fixture)
         invalidEvidence <- elem coordinate <$> readIORef (fixtureInvalidEvidence fixture)
+        substitute <- lookup coordinate <$> readIORef (fixtureSubstituteEvidence fixture)
         pure $
           if unavailable || (applied && postUnavailable)
             then
@@ -1100,7 +1152,12 @@ mutation fixture label =
                 (if applied then "injected read-back outage" else "injected observation outage")
             else
               if applied && not neverConfirm
-                then ProviderEffectSatisfied (if invalidEvidence then "" else "evidence:" <> label)
+                then
+                  ProviderEffectSatisfied
+                    ( case substitute of
+                        Just evidence -> evidence
+                        Nothing -> if invalidEvidence then "" else "evidence:" <> label
+                    )
                 else ProviderEffectNeedsApply "still missing"
     , applyProviderMutation = \_session coordinate -> do
         modifyIORef' (fixtureCalls fixture) (("apply:" <> label, coordinate) :)

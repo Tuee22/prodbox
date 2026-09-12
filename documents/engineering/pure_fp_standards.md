@@ -160,20 +160,27 @@ The general statement, its worked instance, and the ring-region qualifier are in
 [chaos_hardening_doctrine.md § 23](./chaos_hardening_doctrine.md) and
 [resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md).
 
-**Worked instance, recorded 2026-09-11: eighteen encoders for one type.**
+**Worked instance, recorded 2026-09-11, closed by Sprint `4.92`: eighteen encoders for one type.**
 `ObservationEvidenceScope` is the durable coordinate every teardown observation binds to. Sprint
 `7.36` added the run's DNS hosted zone to it; Sprint `7.38` sealed that field into compiled
-identity. Neither reached the boundary: the type has roughly eighteen independently authored
-byte-level codecs, and **fifteen rebuild the scope through the zone-less smart constructor**, so a
-zoned scope decodes without its zone and compares equal to a zoneless predecessor. Five of eight
-digest and equality projections drop it too.
+identity. Neither reached the boundary: the type had roughly eighteen independently authored
+byte-level codecs, and **fifteen rebuilt the scope through the zone-less smart constructor**, so a
+zoned scope decoded without its zone and compared equal to a zoneless predecessor. Five of eight
+digest and equality projections dropped it too.
 
-Two things make this the canonical illustration of this section. First, the erasure is invisible
+Two things make this the canonical illustration of this section. First, the erasure was invisible
 precisely because the result is well-typed — a scope without a zone is a legal scope, so nothing
-fails until an exact identity comparison much later refuses a value the same run produced. Second,
+failed until an exact identity comparison much later refused a value the same run produced. Second,
 the repair already applied to one codec — adding the field there — is the repair this section says
-is insufficient: seventeen other authors remain free to forget. The remedy is the rule above,
-literally: one decoder, exactly one encoder, every other rendering derived. Sprint `4.92` owns it.
+is insufficient: seventeen other authors remained free to forget.
+
+`Prodbox.Lifecycle.Teardown.ScopeCodec` is the remedy this section names, applied literally: one
+decoder, exactly one encoder, every other rendering derived. It is also worth recording *how* the
+rule is kept, because "derive every other rendering" is a discipline until something enforces it.
+The scope's complete field set is a record that is constructed by name in exactly one function and
+destructured **positionally** by every projection, so adding a field is a missing-field error at the
+constructor and a constructor-arity error at each projection. The rule is a type error rather than a
+review note.
 
 ### 2.4 Durability-indexed coordinates
 
@@ -359,6 +366,35 @@ Use GADTs for either:
 2. **authoritative in-process state**, where this process is the sole writer of the indexed
    transition, such as an actor's accepting/draining/stopped mailbox lifecycle.
 
+**Worked instance, closed by Sprint `4.94` (2026-09-11): index on result, not only on surface.**
+`TeardownOperation` was a forty-constructor GADT indexed on cleanup surface alone, which is case 1
+above applied to the input half and abandoned at the output half. The type therefore permitted an
+operation to return another operation's result, and the interpreter carried twenty catch-all arms
+that existed only to say so — all twenty collapsing into one string, *"lifecycle interpreter
+returned the wrong result kind"*. That is § 2.2's forbidden catch-all over a closed ADT, and its
+cost was concrete: when a checkpoint interpreter returned the wrong typed result, its exact
+`AwsCheckpointInterpreterError` was discarded and an operator received a sentence about kinds.
+
+Three properties of the repair are worth stating, because each is a decision rather than a
+consequence.
+
+- **The index is a coarsening, deliberately.** Twelve operations legally produce a mutation
+  attempt and six a durable receipt, so the result universe has twenty inhabitants to the
+  operation universe's forty. A one-to-one index would have been a restatement of the operation
+  type; a many-to-one one is what makes the catch-alls unrepresentable while leaving every legal
+  pairing expressible.
+- **Heterogeneity moves to an existential, and the existential is where the index is recovered.**
+  A program's node list is heterogeneous in result by construction, so it holds
+  `SomeTeardownOperation`. Unpacking it at the single point that also holds the result is what
+  gives the two a shared skolem — which is the whole mechanism, and is worth reading as the
+  positive form of the runtime-discovery rule below.
+- **A result index proves less than it appears to.** It proves that an operation and the answer
+  handed back describe the same kind of answer. It does not prove that an external effect
+  occurred, that the answer belongs to this attempt, or that it was produced under the expected
+  observation scope. The separate binding and read-back checks remain, and their distinct
+  refusal survives; collapsing them into the index would have been the same mistake in the other
+  direction.
+
 Do not use a GADT to claim that externally authoritative or replicated state changed. External
 readiness, leases, provider state, target generations, durable operation records, gateway
 ownership, and residue are flat exhaustive ADTs computed by pure projection/fold.
@@ -414,11 +450,11 @@ Pure-functional structure determines the proof layers:
 
 - unit tables cover every ADT constructor and refusal;
 - property tests cover codecs, replay, idempotency, monotonic epochs/fences/generations, bounds,
-  deadline monotonicity, and cleanup scheduling — **target, not current revision (2026-09-11): the
-  tree holds roughly five property registrations in total and no codec round trip in the primary
-  unit suite, which is why fifteen codecs for one type erased a field for weeks without a failing
-  test. Sprint `5.46` closes it; see
-  [unit_testing_policy.md § 3.2](./unit_testing_policy.md#32-properties)**;
+  deadline monotonicity, and cleanup scheduling — **partly current revision (2026-09-11): Sprint
+  `5.46` landed the codec round trip for the observation-evidence scope in the primary unit suite,
+  which is the type whose fifteen codecs erased a field for weeks without a failing test. The other
+  laws in this bullet remain table-covered rather than property-covered;
+  [unit_testing_policy.md § 3.2](./unit_testing_policy.md#32-properties) says which is which**;
 - deterministic concurrency simulation covers actor interleavings, cancellation, saturation,
   response loss, and restart at every durable boundary;
 - production-adapter composition tests use the real binary and native MinIO/Vault clients;

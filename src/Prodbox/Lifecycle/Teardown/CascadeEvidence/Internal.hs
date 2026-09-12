@@ -176,6 +176,13 @@ import Prodbox.Lifecycle.Teardown.RetainedInventory
   , terminalAuditQueryCatalog
   , terminalAuditQueryDigestFor
   )
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ScopeWire
+  , renderScopeWireError
+  , scopeForCascadeTerminalAudit
+  , scopeFromWire
+  , scopeToWire
+  )
 
 newtype CascadeReportDigest = CascadeReportDigest Text
   deriving (Eq, Ord, Show)
@@ -452,7 +459,7 @@ mkCascadeRunConvergenceEvidence compiled states = do
   let expectedAbsence = cascadeExpectedAbsenceKeys compiled
       absenceReadBacks =
         [ (registeredTargetKey target, nodeId)
-        | (nodeId, ReadBackRegisteredTargetAbsent target) <-
+        | (nodeId, SomeTeardownOperation (ReadBackRegisteredTargetAbsent target)) <-
             compiledDesiredAbsenceOperations compiled
         ]
       absenceKeys = sort (map fst absenceReadBacks)
@@ -471,7 +478,7 @@ mkCascadeRunConvergenceEvidence compiled states = do
   let expectedCapabilities = cascadeExpectedCustodialCapabilities compiled
       retirementReadBacks =
         [ (CheckpointCapability (registeredTargetKey target), nodeId)
-        | (nodeId, ReadBackStackCheckpointRetirement target) <-
+        | (nodeId, SomeTeardownOperation (ReadBackStackCheckpointRetirement target)) <-
             compiledDesiredAbsenceOperations compiled
         ]
       actualCapabilities = sort (map fst retirementReadBacks)
@@ -922,17 +929,23 @@ data DurableReadyToUninstallBinding = DurableReadyToUninstallBinding
   }
   deriving (Eq, Show)
 
+-- | The durable Ready envelope.
+--
+-- Sprint 4.92: the observation scope is one nested 'ScopeWire' here, where this
+-- record used to flatten six of the scope's fields among its own.  Those six
+-- were an independent statement of the scope's field set, and like fourteen
+-- others in the tree they had no field at all for the run's retained DNS hosted
+-- zone.  The cost was not theoretical: 'captureDurableReadyToUninstallBinding'
+-- encodes and immediately decodes, so a readiness binding captured under a
+-- zone-carrying scope came back zone-less, and the exact scope comparison in
+-- 'restoreReadyToUninstallEvidence' then raised
+-- 'CascadeReadyBindingScopeMismatch' against the very run that had just written
+-- it.  Nesting leaves this envelope with only its own fields to state.
 data DurableReadyToUninstallEnvelope = DurableReadyToUninstallEnvelope
   { durableReadyEnvelopeVersion :: !Word16
   , durableReadyEnvelopeRunId :: !CleanupRunId
   , durableReadyEnvelopeGraphDigest :: !CleanupDigest
-  , durableReadyEnvelopeSurface :: !Word16
-  , durableReadyEnvelopeRegistryRevision :: !Text
-  , durableReadyEnvelopeRunScope :: !Text
-  , durableReadyEnvelopeFoundation :: !Text
-  , durableReadyEnvelopeAwsAccount :: !(Maybe Text)
-  , durableReadyEnvelopeAwsRegion :: !(Maybe Text)
-  , durableReadyEnvelopeLifecycleOperation :: !Word16
+  , durableReadyEnvelopeScope :: !ScopeWire
   , durableReadyEnvelopeReportDigest :: !Text
   , durableReadyEnvelopePermitId :: !Text
   , durableReadyEnvelopeUninstallOperation :: !CleanupOperationId
@@ -941,8 +954,13 @@ data DurableReadyToUninstallEnvelope = DurableReadyToUninstallEnvelope
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- | Version 2 is the first encoding that nests the scope and therefore the
+-- first whose scope carries the retained DNS hosted zone.  Version 1 bytes stay
+-- refused rather than upgraded, because a version-1 envelope has no zone field
+-- to recover: upgrading one could only re-assert the absent zone that was the
+-- defect, and would present a re-minted scope as the one the run committed.
 durableReadyToUninstallBindingVersion :: Word16
-durableReadyToUninstallBindingVersion = 1
+durableReadyToUninstallBindingVersion = 2
 
 maximumDurableReadyToUninstallBindingBytes :: Int
 maximumDurableReadyToUninstallBindingBytes = 16 * 1024
@@ -1085,14 +1103,8 @@ encodeReadyBindingObservation observation =
       , durableReadyEnvelopeRunId = readyBindingObservationRunId observation
       , durableReadyEnvelopeGraphDigest =
           readyBindingObservationGraphDigest observation
-      , durableReadyEnvelopeSurface = encodeReadyCleanupSurface (evidenceCleanupSurface scope)
-      , durableReadyEnvelopeRegistryRevision = registryRevisionText revision
-      , durableReadyEnvelopeRunScope = durableObservationRunScopeText runScope
-      , durableReadyEnvelopeFoundation = linuxRke2FoundationIdText foundation
-      , durableReadyEnvelopeAwsAccount = awsAccountIdText <$> awsAccount
-      , durableReadyEnvelopeAwsRegion = awsRegionText <$> awsRegion
-      , durableReadyEnvelopeLifecycleOperation =
-          encodeReadyLifecycleOperation (evidenceLifecycleOperation scope)
+      , durableReadyEnvelopeScope =
+          scopeToWire (readyBindingObservationScope observation)
       , durableReadyEnvelopeReportDigest =
           cascadeReportDigestText (readyBindingObservationReportDigest observation)
       , durableReadyEnvelopePermitId =
@@ -1103,26 +1115,13 @@ encodeReadyBindingObservation observation =
           cascadeLocalCompletionOperationId operations
       }
  where
-  scope = readyBindingObservationScope observation
-  revision = evidenceRegistryRevision scope
-  runScope = evidenceDurableRunScope scope
-  foundation = evidenceLinuxRke2Foundation scope
-  (awsAccount, awsRegion) = case evidenceAwsScope scope of
-    Nothing -> (Nothing, Nothing)
-    Just (AwsScope account region) -> (Just account, Just region)
   operations = readyBindingObservationOperationReferences observation
 
 decodeReadyBindingEnvelope
   :: DurableReadyToUninstallEnvelope
   -> Either CascadeEvidenceError ReadyToUninstallBindingObservation
 decodeReadyBindingEnvelope envelope = do
-  surface <- decodeReadyCleanupSurface (durableReadyEnvelopeSurface envelope)
-  operation <-
-    decodeReadyLifecycleOperation (durableReadyEnvelopeLifecycleOperation envelope)
-  awsScope <-
-    decodeReadyAwsScope
-      (durableReadyEnvelopeAwsAccount envelope)
-      (durableReadyEnvelopeAwsRegion envelope)
+  scope <- decodeScopeWire (durableReadyEnvelopeScope envelope)
   report <-
     either
       (Left . CascadeReadyBindingDecodeInvalid)
@@ -1133,14 +1132,6 @@ decodeReadyBindingEnvelope envelope = do
       (Left . CascadeReadyBindingDecodeInvalid)
       Right
       (mkLocalCompletionPermitId (durableReadyEnvelopePermitId envelope))
-  let scope =
-        mkObservationEvidenceScope
-          surface
-          (RegistryRevision (durableReadyEnvelopeRegistryRevision envelope))
-          (DurableObservationRunScope (durableReadyEnvelopeRunScope envelope))
-          (LinuxRke2FoundationId (durableReadyEnvelopeFoundation envelope))
-          awsScope
-          operation
   Right
     ReadyToUninstallBindingObservation
       { readyBindingObservationRunId = durableReadyEnvelopeRunId envelope
@@ -1191,24 +1182,24 @@ validateReadyBindingObservation observation = do
             expectedRunScope
             (evidenceDurableRunScope scope)
         )
+  -- This function no longer restates the scope's per-field syntax rules: the
+  -- twelve-digit AWS account rule, the AWS region label rule, and the
+  -- non-empty/bounded rules on the registry revision, the durable run scope,
+  -- and the foundation all now live in 'scopeFromWire'.  They are rules about a
+  -- scope field rather than about this envelope, and a second copy of them here
+  -- could only drift from the canonical one, which is the same class of defect
+  -- as this envelope having carried a scope with no zone field.  Nothing is
+  -- weakened by the move: every observation that reaches this function has
+  -- passed through that decoder or is about to, because
+  -- 'captureDurableReadyToUninstallBinding' round-trips through it and a
+  -- 'DurableReadyToUninstallBinding' cannot be built any other way.
+  --
+  -- What stays is the rule the canonical decoder deliberately does not have,
+  -- because it belongs to this surface rather than to the scope: a cascade
+  -- readiness binding must carry an AWS scope at all.
   case evidenceAwsScope scope of
     Nothing -> Left CascadeCompiledAwsScopeMissing
-    Just (AwsScope (AwsAccountId account) (AwsRegion region)) -> do
-      if Text.length account == 12
-        && Text.all (\character -> isAscii character && isDigit character) account
-        then Right ()
-        else
-          Left
-            ( CascadeReadyBindingDecodeInvalid
-                "durable Ready AWS account must contain exactly 12 ASCII digits"
-            )
-      validateReadyIdentity "AWS region" region
-  let RegistryRevision revision = evidenceRegistryRevision scope
-      DurableObservationRunScope runScope = evidenceDurableRunScope scope
-      LinuxRke2FoundationId foundation = evidenceLinuxRke2Foundation scope
-  validateReadyIdentity "registry revision" revision
-  validateReadyIdentity "durable run scope" runScope
-  validateReadyIdentity "Linux RKE2 foundation" foundation
+    Just _ -> Right ()
 
 validateReadyOperation
   :: CleanupOperationId -> Either CascadeEvidenceError ()
@@ -1257,63 +1248,17 @@ operationForCleanupRunNode expectedNode run = case matchingOperations of
     , cleanupNodeIdText (cleanupNodeId node) == expectedNode
     ]
 
-encodeReadyCleanupSurface :: CleanupSurface -> Word16
-encodeReadyCleanupSurface surface = case surface of
-  LocalOnly -> 0
-  Cascade -> 1
-  ExplicitPerRun -> 2
-  OperationalTeardown -> 3
-  ExplicitLongLived -> 4
-  TotalDecommission -> 5
-
-decodeReadyCleanupSurface
-  :: Word16 -> Either CascadeEvidenceError CleanupSurface
-decodeReadyCleanupSurface tag = case tag of
-  0 -> Right LocalOnly
-  1 -> Right Cascade
-  2 -> Right ExplicitPerRun
-  3 -> Right OperationalTeardown
-  4 -> Right ExplicitLongLived
-  5 -> Right TotalDecommission
-  _ -> Left (CascadeReadyBindingDecodeInvalid "unknown cleanup surface tag")
-
-encodeReadyLifecycleOperation :: LifecycleOperation -> Word16
-encodeReadyLifecycleOperation operation = case operation of
-  ReconcileDesiredAbsent -> 0
-  ReconcileDesiredPresent -> 1
-  RunTerminalEscapeAudit -> 2
-
-decodeReadyLifecycleOperation
-  :: Word16 -> Either CascadeEvidenceError LifecycleOperation
-decodeReadyLifecycleOperation tag = case tag of
-  0 -> Right ReconcileDesiredAbsent
-  1 -> Right ReconcileDesiredPresent
-  2 -> Right RunTerminalEscapeAudit
-  _ -> Left (CascadeReadyBindingDecodeInvalid "unknown lifecycle operation tag")
-
-decodeReadyAwsScope
-  :: Maybe Text -> Maybe Text -> Either CascadeEvidenceError (Maybe AwsScope)
-decodeReadyAwsScope account region = case (account, region) of
-  (Nothing, Nothing) -> Right Nothing
-  (Just accountId, Just regionId) ->
-    Right (Just (AwsScope (AwsAccountId accountId) (AwsRegion regionId)))
-  _ ->
-    Left
-      ( CascadeReadyBindingDecodeInvalid
-          "AWS account and region must both be present or both be absent"
-      )
-
-durableObservationRunScopeText :: DurableObservationRunScope -> Text
-durableObservationRunScopeText (DurableObservationRunScope value) = value
-
-linuxRke2FoundationIdText :: LinuxRke2FoundationId -> Text
-linuxRke2FoundationIdText (LinuxRke2FoundationId value) = value
-
-awsAccountIdText :: AwsAccountId -> Text
-awsAccountIdText (AwsAccountId value) = value
-
-awsRegionText :: AwsRegion -> Text
-awsRegionText (AwsRegion value) = value
+-- | The canonical scope decoder, mapped into this module's error type.
+--
+-- The rules themselves live in "Prodbox.Lifecycle.Teardown.ScopeCodec".  The
+-- surface tag, operation tag, AWS-pair and field-shape decoders this module
+-- used to keep here were one of roughly eighteen independent statements of the
+-- same thing, and the one that silently defined the scope to have no DNS zone.
+decodeScopeWire
+  :: ScopeWire -> Either CascadeEvidenceError ObservationEvidenceScope
+decodeScopeWire =
+  either (Left . CascadeReadyBindingDecodeInvalid . renderScopeWireError) Right
+    . scopeFromWire
 
 -- | The proof that a local RKE2 foundation is absent, indexed by the surface
 -- whose compiled program licensed the uninstall.
@@ -1599,19 +1544,24 @@ cascadeExpectedAbsenceKeys =
     . desiredAbsenceProgramNodes
     . compiledDesiredAbsenceProgram
  where
+  targetForNode :: ProgramNode 'Cascade -> [RegisteredTargetBinding]
   targetForNode node = case programNodeOperation node of
-    ReadBackRegisteredTargetAbsent target -> [target]
-    _ -> []
+    SomeTeardownOperation (ReadBackRegisteredTargetAbsent target) -> [target]
+    SomeTeardownOperation _ -> []
 
+-- | The scope a cascade's terminal escape audit runs under.
+--
+-- Sprint 4.92: this was a field-by-field re-mint that copied five of the
+-- scope's six then-known fields and rebuilt the rest through
+-- 'mkObservationEvidenceScope', whose contract hardcodes the DNS hosted zone to
+-- absent.  The audit therefore swept for escaped AWS resources under a
+-- zone-less scope while claiming to be the audit of a run compiled against a
+-- zone — precisely where the run's DNS01 challenge records live — and its
+-- scope could not match the reservation it belonged to.  The canonical
+-- re-scoper is a total record update over the whole field set, so it cannot
+-- drop a field that the scope gains later.
 cascadeAuditScope :: ObservationEvidenceScope -> ObservationEvidenceScope
-cascadeAuditScope scope =
-  mkObservationEvidenceScope
-    Cascade
-    (evidenceRegistryRevision scope)
-    (evidenceDurableRunScope scope)
-    (evidenceLinuxRke2Foundation scope)
-    (evidenceAwsScope scope)
-    RunTerminalEscapeAudit
+cascadeAuditScope = scopeForCascadeTerminalAudit
 
 validateReceipt
   :: CascadeProofBinding
@@ -1650,7 +1600,7 @@ validateReceipt binding expectedKind receipt
 
 operationIdFor
   :: CompiledDesiredAbsenceProgram 'Cascade
-  -> TeardownOperation 'Cascade
+  -> TeardownOperation 'Cascade result
   -> Either CascadeEvidenceError CleanupOperationId
 operationIdFor compiled expectedOperation = case matchingNodeIds of
   [] -> Left (CascadeLocalOperationMissing operationTag)
@@ -1663,7 +1613,7 @@ operationIdFor compiled expectedOperation = case matchingNodeIds of
   matchingNodeIds =
     [ nodeId
     | (nodeId, operation) <- compiledDesiredAbsenceOperations compiled
-    , operation == expectedOperation
+    , operation == SomeTeardownOperation expectedOperation
     ]
   graphNodes = cleanupGraphNodes (compiledDesiredAbsenceGraph compiled)
 
@@ -1688,9 +1638,6 @@ terminalAuditBinding (CascadeTerminalAuditEvidence binding) = binding
 capabilityCustodyBinding
   :: CascadeCapabilityCustodyEvidence -> CascadeProofBinding
 capabilityCustodyBinding (CascadeCapabilityCustodyEvidence binding) = binding
-
-registryRevisionText :: RegistryRevision -> Text
-registryRevisionText (RegistryRevision revision) = revision
 
 -- | A fixed package-private fixture used only to exercise closed production
 -- boundaries without publishing an authority-bearing value to a dependent

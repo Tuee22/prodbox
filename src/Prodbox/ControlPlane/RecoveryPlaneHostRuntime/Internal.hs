@@ -66,6 +66,7 @@ import Prodbox.Lifecycle.Teardown.Graph
 import Prodbox.Lifecycle.Teardown.Model (CleanupSurfaceWitness)
 import Prodbox.Lifecycle.Teardown.Program
   ( RecoverySurfaceWitness (CascadeRecoverySurface)
+  , SomeTeardownOperation (SomeTeardownOperation)
   , TeardownOperation (..)
   , teardownOperationTag
   )
@@ -117,7 +118,10 @@ dispatchRecoveryPlaneHostNode transport running _ compiled context plan =
     Left err -> pure (refusalOutcome err)
     Right () -> case operationForPlan compiled plan of
       Left err -> pure (refusalOutcome err)
-      Right operation -> case classifyOperation operation of
+      -- Sprint 4.94: the operation is unpacked here, under the alternative
+      -- that also holds the plan, because a node list forgets the result index
+      -- and the phase classification never needed it.
+      Right (SomeTeardownOperation operation) -> case classifyOperation operation of
         Left err -> pure (refusalOutcome err)
         Right RecoveryPlaneHostEstablish ->
           recoveryPlaneDescriptorBoundNodeAction
@@ -165,7 +169,7 @@ validateContext running context plan
 operationForPlan
   :: CompiledDesiredAbsenceProgram surface
   -> CleanupNodePlan
-  -> Either RecoveryPlaneHostRuntimeError (TeardownOperation surface)
+  -> Either RecoveryPlaneHostRuntimeError (SomeTeardownOperation surface)
 operationForPlan compiled plan =
   case [ operation
        | (nodeId, operation) <- compiledDesiredAbsenceOperations compiled
@@ -176,7 +180,7 @@ operationForPlan compiled plan =
     _ -> Left RecoveryPlaneHostRuntimeOperationDuplicated
 
 classifyOperation
-  :: TeardownOperation surface
+  :: TeardownOperation surface result
   -> Either RecoveryPlaneHostRuntimeError RecoveryPlaneHostPhase
 classifyOperation operation = case operation of
   EstablishRecoveryPlane _ -> Right RecoveryPlaneHostEstablish

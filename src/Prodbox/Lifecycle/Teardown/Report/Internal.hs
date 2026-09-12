@@ -140,8 +140,9 @@ import Prodbox.Lifecycle.Teardown.Model
   )
 import Prodbox.Lifecycle.Teardown.Program
   ( RecoverySurfaceWitness (..)
+  , SomeTeardownOperation (..)
   , TeardownOperation (..)
-  , teardownOperationTag
+  , someTeardownOperationTag
   )
 import Prodbox.Lifecycle.Teardown.RecoveryPlane
   ( RecoveryPlaneFinalDisposition (..)
@@ -1777,8 +1778,8 @@ exactRecoveryOperation compiled role = case candidates of
   graphNodes = cleanupGraphNodes (compiledDesiredAbsenceGraph compiled)
   roleName = recoveryOperationRoleName role
 
-operationHasRole :: RecoveryOperationRole -> TeardownOperation surface -> Bool
-operationHasRole role operation = case (role, operation) of
+operationHasRole :: RecoveryOperationRole -> SomeTeardownOperation surface -> Bool
+operationHasRole role (SomeTeardownOperation operation) = case (role, operation) of
   (RecoveryEstablishRole, EstablishRecoveryPlane _) -> True
   (RecoveryReadBackRole, ReadBackRecoveryPlane _) -> True
   (RecoveryDispositionRole, ObserveRecoveryPlaneDisposition _) -> True
@@ -1853,7 +1854,7 @@ classifyDesiredAbsenceReportInternal witness compiled report finalEvidence = do
         ]
       failures = collectFailures operationStates
       missingReadBacks =
-        [ TeardownMandatoryReadBackMissing (teardownOperationTag operation)
+        [ TeardownMandatoryReadBackMissing (someTeardownOperationTag operation)
         | (_, operation, state) <- operationStates
         , operationIsMandatoryReadBack operation
         , not (stateSucceeded state)
@@ -1914,7 +1915,7 @@ validateReportBinding compiled report
   observedNodes = Map.keys (cleanupReportNodeStates report)
 
 collectFailures
-  :: [(CleanupNodeId, TeardownOperation surface, CleanupNodeState)]
+  :: [(CleanupNodeId, SomeTeardownOperation surface, CleanupNodeState)]
   -> [TeardownFailure]
 collectFailures operationStates = concatMap failureFor operationStates
  where
@@ -1930,8 +1931,8 @@ collectFailures operationStates = concatMap failureFor operationStates
     CleanupNodeRunning _ -> [TeardownNodeRunning nodeId]
 
 operationConfirmed
-  :: [(CleanupNodeId, TeardownOperation surface, CleanupNodeState)]
-  -> TeardownOperation surface
+  :: [(CleanupNodeId, SomeTeardownOperation surface, CleanupNodeState)]
+  -> SomeTeardownOperation surface
   -> Bool
 operationConfirmed operationStates operation =
   case confirmationOperation operation of
@@ -1941,33 +1942,36 @@ operationConfirmed operationStates operation =
         Just (_, _, state) -> stateSucceeded state
         Nothing -> False
 
+-- | Sprint 4.94: an effect and the read-back that confirms it answer
+-- differently, so this pairing crosses result kinds and is expressible only
+-- over the existential.
 confirmationOperation
-  :: TeardownOperation surface -> Maybe (TeardownOperation surface)
-confirmationOperation operation = case operation of
-  EstablishRecoveryPlane recovery -> Just (ReadBackRecoveryPlane recovery)
+  :: SomeTeardownOperation surface -> Maybe (SomeTeardownOperation surface)
+confirmationOperation (SomeTeardownOperation operation) = case operation of
+  EstablishRecoveryPlane recovery -> Just (SomeTeardownOperation (ReadBackRecoveryPlane recovery))
   ReconcileRegisteredTargetAbsent target ->
-    Just (ReadBackRegisteredTargetAbsent target)
+    Just (SomeTeardownOperation (ReadBackRegisteredTargetAbsent target))
   ReconcileStackCheckpointRestore target ->
-    Just (ReadBackStackCheckpointRecovery target)
+    Just (SomeTeardownOperation (ReadBackStackCheckpointRecovery target))
   CommitAwsStackReaderBundle target ->
-    Just (ReadBackAwsStackReaderBundle target)
-  CommitEksDrainIntent target -> Just (ReadBackEksDrainIntent target)
+    Just (SomeTeardownOperation (ReadBackAwsStackReaderBundle target))
+  CommitEksDrainIntent target -> Just (SomeTeardownOperation (ReadBackEksDrainIntent target))
   DrainEksKubernetesResources target ->
-    Just (ReadBackEksKubernetesDrain target)
+    Just (SomeTeardownOperation (ReadBackEksKubernetesDrain target))
   RetireStackCheckpointPair target ->
-    Just (ReadBackStackCheckpointRetirement target)
-  CommitCascadePreUninstallReport -> Just ReadBackCascadePreUninstallReport
-  UninstallCascadeLocalFoundation -> Just ReadBackCascadeLocalAbsence
-  CommitCascadeCompletion -> Just ReadBackCascadeCompletion
-  UninstallLocalOnlyFoundation -> Just ReadBackLocalOnlyAbsence
-  CommitLocalOnlyCompletion -> Just ReadBackLocalOnlyCompletion
-  CommitOrdinarySurfaceReport -> Just ReadBackOrdinarySurfaceReport
+    Just (SomeTeardownOperation (ReadBackStackCheckpointRetirement target))
+  CommitCascadePreUninstallReport -> Just (SomeTeardownOperation ReadBackCascadePreUninstallReport)
+  UninstallCascadeLocalFoundation -> Just (SomeTeardownOperation ReadBackCascadeLocalAbsence)
+  CommitCascadeCompletion -> Just (SomeTeardownOperation ReadBackCascadeCompletion)
+  UninstallLocalOnlyFoundation -> Just (SomeTeardownOperation ReadBackLocalOnlyAbsence)
+  CommitLocalOnlyCompletion -> Just (SomeTeardownOperation ReadBackLocalOnlyCompletion)
+  CommitOrdinarySurfaceReport -> Just (SomeTeardownOperation ReadBackOrdinarySurfaceReport)
   RevokeOperationalCredential witness ->
-    Just (ReadBackOperationalCredentialRevocation witness)
-  UninstallDecommissionLocalFoundation -> Just ReadBackDecommissionLocalAbsence
+    Just (SomeTeardownOperation (ReadBackOperationalCredentialRevocation witness))
+  UninstallDecommissionLocalFoundation -> Just (SomeTeardownOperation ReadBackDecommissionLocalAbsence)
   ApplyDecommissionLocalDataDisposition ->
-    Just ReadBackDecommissionLocalDataDisposition
-  CommitDecommissionTerminalReceipt -> Just ReadBackDecommissionTerminalReceipt
+    Just (SomeTeardownOperation ReadBackDecommissionLocalDataDisposition)
+  CommitDecommissionTerminalReceipt -> Just (SomeTeardownOperation ReadBackDecommissionTerminalReceipt)
   ReadBackRecoveryPlane _ -> Nothing
   ObserveRecoveryPlaneDisposition _ -> Nothing
   ObserveRegisteredTarget _ -> Nothing
@@ -1994,25 +1998,25 @@ confirmationOperation operation = case operation of
 
 -- | Sprint 4.85: the two obligations that make an explicit per-run completion
 -- claim non-empty -- registered-target absence and checkpoint disposition.
-operationIsTargetAbsenceReadBack :: TeardownOperation surface -> Bool
-operationIsTargetAbsenceReadBack operation = case operation of
+operationIsTargetAbsenceReadBack :: SomeTeardownOperation surface -> Bool
+operationIsTargetAbsenceReadBack (SomeTeardownOperation operation) = case operation of
   ReadBackRegisteredTargetAbsent _ -> True
   _ -> False
 
-operationIsCheckpointRetirementReadBack :: TeardownOperation surface -> Bool
-operationIsCheckpointRetirementReadBack operation = case operation of
+operationIsCheckpointRetirementReadBack :: SomeTeardownOperation surface -> Bool
+operationIsCheckpointRetirementReadBack (SomeTeardownOperation operation) = case operation of
   ReadBackStackCheckpointRetirement _ -> True
   _ -> False
 
 -- | Sprint 4.85: the obligation that makes an operational completion claim
 -- non-empty even with zero registered targets.
-operationIsCredentialRevocationReadBack :: TeardownOperation surface -> Bool
-operationIsCredentialRevocationReadBack operation = case operation of
+operationIsCredentialRevocationReadBack :: SomeTeardownOperation surface -> Bool
+operationIsCredentialRevocationReadBack (SomeTeardownOperation operation) = case operation of
   ReadBackOperationalCredentialRevocation _ -> True
   _ -> False
 
-operationIsMandatoryReadBack :: TeardownOperation surface -> Bool
-operationIsMandatoryReadBack operation = case operation of
+operationIsMandatoryReadBack :: SomeTeardownOperation surface -> Bool
+operationIsMandatoryReadBack (SomeTeardownOperation operation) = case operation of
   ReadBackRecoveryPlane _ -> True
   ObserveRecoveryPlaneDisposition _ -> True
   ReadBackRegisteredTargetAbsent _ -> True

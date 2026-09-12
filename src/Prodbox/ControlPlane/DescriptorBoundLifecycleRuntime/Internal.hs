@@ -199,7 +199,9 @@ import Prodbox.Lifecycle.Teardown.Model
   , RegisteredResourceKey (..)
   )
 import Prodbox.Lifecycle.Teardown.Program
-  ( TeardownOperation (..)
+  ( SomeTeardownOperation (..)
+  , TeardownOperation (..)
+  , someTeardownOperationTag
   , teardownOperationTag
   )
 import Prodbox.Lifecycle.Teardown.ProviderDispatch
@@ -352,7 +354,10 @@ dispatchDescriptorBoundLifecycleNode
   plan =
     case operationForPlan compiled plan of
       Left err -> pure (refusalOutcome err)
-      Right operation -> case routeOperation operation of
+      -- Sprint 4.94: unpacked here rather than in a wrapper, because the
+      -- three unavailable-runtime refusals below also name the operation and
+      -- need the skolem this alternative introduces.
+      Right (SomeTeardownOperation operation) -> case routeOperation operation of
         DescriptorBoundLifecycleRecoveryRoute ->
           recoveryPlaneHostDescriptorBoundNodeActionInternal
             transport
@@ -407,7 +412,7 @@ dispatchDescriptorBoundLifecycleNode
 operationForPlan
   :: CompiledDesiredAbsenceProgram surface
   -> CleanupNodePlan
-  -> Either DescriptorBoundLifecycleRuntimeError (TeardownOperation surface)
+  -> Either DescriptorBoundLifecycleRuntimeError (SomeTeardownOperation surface)
 operationForPlan compiled plan =
   case [ operation
        | (nodeId, operation) <- compiledDesiredAbsenceOperations compiled
@@ -418,12 +423,12 @@ operationForPlan compiled plan =
     _ -> Left DescriptorBoundLifecycleOperationDuplicated
 
 routeOperation
-  :: TeardownOperation surface
+  :: TeardownOperation surface result
   -> DescriptorBoundLifecycleRoute
 routeOperation = routeOperationShape . operationShape
 
 operationShape
-  :: TeardownOperation surface
+  :: TeardownOperation surface result
   -> DescriptorBoundLifecycleOperationShape
 operationShape operation = case operation of
   EstablishRecoveryPlane _ -> DescriptorBoundLifecycleEstablishRecoveryPlane
@@ -708,9 +713,9 @@ instance LifecycleTeardownEffects OrdinaryReportEffects where
     OrdinaryReportEffects (runOrdinaryReportOperation operation)
 
 runOrdinaryReportOperation
-  :: TeardownOperation surface
+  :: TeardownOperation surface result
   -> OrdinaryReportRuntime
-  -> IO (TeardownNodeResult surface)
+  -> IO (TeardownNodeResult surface result)
 runOrdinaryReportOperation operation runtime = case operation of
   CommitOrdinarySurfaceReport ->
     pure (TeardownMutationAttempt TeardownMutationApplied)
@@ -761,7 +766,8 @@ ordinaryReportReceiptResult
   -> DurableReceiptObservationResult
 ordinaryReportReceiptResult running compiled =
   case [ nodeId
-       | (nodeId, CommitOrdinarySurfaceReport) <- compiledDesiredAbsenceOperations compiled
+       | (nodeId, SomeTeardownOperation CommitOrdinarySurfaceReport) <-
+           compiledDesiredAbsenceOperations compiled
        ] of
     [commitNode] -> case Map.lookup commitNode (descriptorBoundCleanupRunNodeStates running) of
       Just (CleanupNodeCompleted _ CleanupNodeSucceeded) -> DurableReceiptObserved
@@ -1009,7 +1015,8 @@ shapesFor rawRunId witness maybeAwsScope = do
   pure
     ( Set.fromList
         [ operationShape operation
-        | (_, operation) <- compiledDesiredAbsenceOperations compiled
+        | (_, SomeTeardownOperation operation) <-
+            compiledDesiredAbsenceOperations compiled
         ]
     )
 
@@ -1245,7 +1252,7 @@ operationTagForPlan
   -> CleanupNodePlan
   -> Either Text Text
 operationTagForPlan compiled plan =
-  case [ teardownOperationTag operation
+  case [ someTeardownOperationTag operation
        | (nodeId, operation) <- compiledDesiredAbsenceOperations compiled
        , nodeId == cleanupNodeId plan
        ] of

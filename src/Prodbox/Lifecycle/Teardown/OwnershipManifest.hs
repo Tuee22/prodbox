@@ -150,6 +150,11 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest.Internal
   , registeredStackClusters
   )
 import Prodbox.Lifecycle.Teardown.Registry
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ObservationEvidenceScopeFields (ObservationEvidenceScopeFields)
+  , observationEvidenceScopeFields
+  , scopeIdentityText
+  )
 
 data OwnershipManifestPurpose
   = WriteAheadOwnership
@@ -971,14 +976,56 @@ manifestReadBackVersion observation = case ownershipManifestReadBackResult obser
   OwnershipManifestReadBackUnobservable failures ->
     Left (OwnershipManifestReadBackUnobservableFailure failures)
 
+-- | Whether a manifest read back for cleanup was written under this run's scope.
+--
+-- __Sprint 4.92: one field ignored, not two.__ This was a hand-rolled
+-- conjunction over five of the scope's seven fields, and the two it left out
+-- were not left out for the same reason. The run's retained DNS hosted zone was
+-- simply forgotten, so a write-ahead manifest committed against one zone bound
+-- for cleanup against another and the mismatch had no way to surface. The
+-- comparison now destructures 'ObservationEvidenceScopeFields' positionally, so
+-- a field added to the scope is a constructor-arity error here rather than a
+-- seventh silent omission.
+--
+-- The lifecycle operation is the one field deliberately ignored, and it has to
+-- be. A write-ahead manifest is written under 'ReconcileDesiredPresent' and read
+-- back for cleanup under 'ReconcileDesiredAbsent' — the two scopes never agree
+-- on it by construction, so comparing it would refuse every legitimate bind.
+-- The operation each side must carry is not unchecked, though: 'manifestBindingFor'
+-- fixes it when the binding is minted, which is the only place that knows which
+-- side of the lifecycle it is on.
 sameDurableManifestScope
   :: ObservationEvidenceScope -> ObservationEvidenceScope -> Bool
 sameDurableManifestScope left right =
-  evidenceCleanupSurface left == evidenceCleanupSurface right
-    && evidenceRegistryRevision left == evidenceRegistryRevision right
-    && evidenceDurableRunScope left == evidenceDurableRunScope right
-    && evidenceLinuxRke2Foundation left == evidenceLinuxRke2Foundation right
-    && evidenceAwsScope left == evidenceAwsScope right
+  sameFields
+    (observationEvidenceScopeFields left)
+    (observationEvidenceScopeFields right)
+ where
+  sameFields
+    ( ObservationEvidenceScopeFields
+        leftSurface
+        leftRevision
+        leftRunScope
+        leftFoundation
+        leftAwsScope
+        leftDnsZone
+        _leftOperation
+      )
+    ( ObservationEvidenceScopeFields
+        rightSurface
+        rightRevision
+        rightRunScope
+        rightFoundation
+        rightAwsScope
+        rightDnsZone
+        _rightOperation
+      ) =
+      leftSurface == rightSurface
+        && leftRevision == rightRevision
+        && leftRunScope == rightRunScope
+        && leftFoundation == rightFoundation
+        && leftAwsScope == rightAwsScope
+        && leftDnsZone == rightDnsZone
 
 canonicalManifestEntries :: [OwnershipManifestEntry] -> [OwnershipManifestEntry]
 canonicalManifestEntries =
@@ -999,8 +1046,13 @@ digestManifestDocument
 digestManifestDocument purpose binding entries =
   OwnershipManifestDigest (hashText (Text.intercalate "\NUL" canonical))
  where
+  -- Sprint 4.92: @v2@ because the binding's scope projection now carries the
+  -- run's retained DNS hosted zone and its lifecycle operation, which @v1@
+  -- dropped. Every manifest digest moves, and that is the point: a @v1@ digest
+  -- was computed over a scope that could not distinguish two runs differing only
+  -- in the zone they were compiled against.
   canonical =
-    [ "ownership-manifest/v1"
+    [ "ownership-manifest/v2"
     , renderPurpose purpose
     , renderManifestBinding binding
     ]
@@ -1018,7 +1070,7 @@ renderManifestBinding binding =
     [ registeredResourceKeyText (manifestBindingStackKey binding)
     , renderSurface (manifestBindingSurface binding)
     , managedResourceCoordinateDigestText (manifestBindingCoordinateDigest binding)
-    , renderScope (manifestBindingScope binding)
+    , scopeIdentityText (manifestBindingScope binding)
     ]
 
 renderManifestEntry :: OwnershipManifestEntry -> Text
@@ -1034,17 +1086,6 @@ renderManifestEntry entry =
 renderObservedIdentity :: ObservedResourceIdentity -> Text
 renderObservedIdentity (ObservedResourceIdentity identity) = identity
 
-renderScope :: ObservationEvidenceScope -> Text
-renderScope scope =
-  Text.intercalate
-    "/"
-    [ renderSurface (evidenceCleanupSurface scope)
-    , renderRegistryRevision (evidenceRegistryRevision scope)
-    , renderRunScope (evidenceDurableRunScope scope)
-    , renderFoundation (evidenceLinuxRke2Foundation scope)
-    , maybe "no-aws" renderAwsScope (evidenceAwsScope scope)
-    ]
-
 renderSurface :: CleanupSurface -> Text
 renderSurface surface = case surface of
   LocalOnly -> "local-only"
@@ -1053,19 +1094,6 @@ renderSurface surface = case surface of
   OperationalTeardown -> "operational"
   ExplicitLongLived -> "explicit-long-lived"
   TotalDecommission -> "total-decommission"
-
-renderRegistryRevision :: RegistryRevision -> Text
-renderRegistryRevision (RegistryRevision revision) = revision
-
-renderRunScope :: DurableObservationRunScope -> Text
-renderRunScope (DurableObservationRunScope runScope) = runScope
-
-renderFoundation :: LinuxRke2FoundationId -> Text
-renderFoundation (LinuxRke2FoundationId foundation) = foundation
-
-renderAwsScope :: AwsScope -> Text
-renderAwsScope (AwsScope (AwsAccountId accountId) (AwsRegion region)) =
-  accountId <> "/" <> region
 
 hashText :: Text -> Text
 hashText = TextEncoding.decodeUtf8 . hexSha256 . TextEncoding.encodeUtf8

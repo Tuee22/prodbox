@@ -379,7 +379,7 @@ planForTag tag = case matching of
     [ plan
     | plan <- cleanupGraphNodes (compiledDesiredAbsenceGraph fixtureCompiled)
     , Just operation <- [compiledOperationForNode (cleanupNodeId plan) fixtureCompiled]
-    , teardownOperationTag operation == tag
+    , someTeardownOperationTag operation == tag
     ]
 
 fixtureRunId :: CleanupRunId

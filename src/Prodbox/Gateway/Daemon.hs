@@ -17,7 +17,6 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (race, replicateConcurrently)
-import Control.Concurrent.Async qualified as Async
 import Control.Concurrent.STM
   ( STM
   , TBQueue
@@ -426,6 +425,7 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   )
 import Prodbox.Substrate qualified as Substrate
+import Prodbox.Supervision (withSupervisedChild)
 import Prodbox.Vault.Client
   ( KvV2Cas (KvV2Cas)
   , VaultAddress (..)
@@ -3675,24 +3675,25 @@ daemonWorkerHeartbeatBoundMicros = 3 * daemonWorkerHeartbeatIntervalMicros
 -- than being swallowed by an unlinked handle, records the worker as running with
 -- a heartbeat, and records its exit __on every path__ — including an exception —
 -- so the roster cannot claim a dead worker is running. Eight workers used to be
--- spawned through raw 'withAsync' with their handles discarded; @prodbox dev
--- check@ now refuses raw 'withAsync' in this module.
+-- spawned through raw 'withAsync' with their handles discarded.
+--
+-- Sprint 2.134 generalised the linking half of that argument into
+-- 'withSupervisedChild', whose private constructor makes an unlinked long-lived
+-- child unconstructible rather than merely refused by a single-file import scan.
+-- What stays here is what is genuinely daemon-specific: the roster entry and the
+-- heartbeat, which is why the roster and the spawn set remain the same list.
 withSupervisedWorkers :: DaemonEnv -> [(Text.Text, IO ())] -> IO ()
 withSupervisedWorkers env = go
  where
   go [] = forever (threadDelay 1000000)
   go ((name, action) : rest) =
-    Async.withAsync (supervise name action) $ \handle -> do
-      Async.link handle
-      go rest
+    withSupervisedChild (supervise name action) (\_ -> go rest)
 
   supervise name action =
     finally
       ( do
           beat name
-          Async.withAsync (heartbeatFor name) $ \beater -> do
-            Async.link beater
-            action
+          withSupervisedChild (heartbeatFor name) (\_ -> action)
       )
       (recordExit name)
 

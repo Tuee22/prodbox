@@ -13,7 +13,7 @@ module Prodbox.Workload
 where
 
 import Control.Concurrent (forkFinally, threadDelay)
-import Control.Concurrent.Async (concurrently_, race_, withAsync)
+import Control.Concurrent.Async (concurrently_, race_)
 import Control.Concurrent.STM
   ( TQueue
   , TVar
@@ -113,6 +113,7 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessResult
   )
+import Prodbox.Supervision (withSupervisedChild)
 import Prodbox.Vault.Client
   ( VaultAddress (..)
   , vaultKubernetesLogin
@@ -367,9 +368,12 @@ runWorkloadServer options =
                         -- the accept loop, the fsnotify config-watch loop,
                         -- and the live-reload loop run as managed children;
                         -- a boot-field change drains-and-exits the whole set.
+                        -- Sprint 2.134: the watcher's handle used to be
+                        -- discarded, so a dead watcher meant a Pod that served
+                        -- on for ever against a config it had stopped reloading.
                         race_
                           (drainCoordinator env)
-                          ( withAsync (configFileWatchLoop env) $ \_ ->
+                          ( withSupervisedChild (configFileWatchLoop env) $ \_ ->
                               concurrently_
                                 (reloadLoop env)
                                 (acceptLoop env boundSocket)

@@ -132,6 +132,16 @@ import Prodbox.Lifecycle.Teardown.Registry
   , registeredIdentityCoordinateDigest
   , registeredIdentityKind
   )
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ObservationEvidenceScopeFields (..)
+  , ScopeWire
+  , observationEvidenceScopeFields
+  , observationEvidenceScopeFromFields
+  , renderScopeWireError
+  , scopeFromWire
+  , scopeIdentityFields
+  , scopeToWire
+  )
 import Prodbox.Settings.AwsSubstrateProfile (AwsSubstrateProfile)
 
 data ObservedAwsStackCreationOperation = ObservedAwsStackCreationOperation
@@ -165,15 +175,32 @@ observedAwsStackCreationConfig
   :: ObservedAwsStackCreationOperation -> ProviderStackConfig
 observedAwsStackCreationConfig = internalObservedAwsStackCreationConfig
 
+-- | The exact retained identity of one creation binding.
+--
+-- Sprint 4.92: the run's evidence scope is held whole here, where it used to be
+-- flattened into five of this record's own fields.  The flattened form is what
+-- made this module one of the codecs that erased the run's retained DNS hosted
+-- zone: there was no field to put it in, so every value that passed through the
+-- record lost it, and both wire codecs below could only re-mint a zone-less
+-- scope on the way back out.
+--
+-- The stored scope is pinned to 'ReconcileDesiredPresent' by
+-- 'creationBindingScope'.  One retained binding is committed by the creating
+-- half of a run and read back by its cleaning-up half, which holds the same
+-- scope under 'ReconcileDesiredAbsent'; both halves must address and compare
+-- equal to the same record.  Pinning the one field the two halves deliberately
+-- disagree about is what lets every other field — the zone included — be
+-- carried whole and compared by the derived 'Eq'.
 data AwsStackCreationAuthorityIdentity = AwsStackCreationAuthorityIdentity
   { internalAwsStackCreationSubmissionKey :: !Text
   , internalAwsStackCreationKey :: !RegisteredResourceKey
   , internalAwsStackCreationCoordinateDigest :: !ManagedResourceCoordinateDigest
-  , internalAwsStackCreationSurface :: !CleanupSurface
-  , internalAwsStackCreationRegistryRevision :: !RegistryRevision
-  , internalAwsStackCreationRunScope :: !DurableObservationRunScope
-  , internalAwsStackCreationFoundation :: !LinuxRke2FoundationId
+  , internalAwsStackCreationScope :: !ObservationEvidenceScope
   , internalAwsStackCreationAwsScope :: !AwsScope
+  -- ^ The AWS scope 'identityFor' proved present.  It deliberately duplicates
+  -- the stored scope's own optional field: this record's contract is that an
+  -- account and a region were observed, and retaining the witness is what keeps
+  -- 'awsStackCreationAuthorityAwsScope' total for its callers.
   }
   deriving stock (Eq, Show)
 
@@ -192,20 +219,23 @@ awsStackCreationAuthorityCoordinateDigest =
 
 awsStackCreationAuthoritySurface
   :: AwsStackCreationAuthorityIdentity -> CleanupSurface
-awsStackCreationAuthoritySurface = internalAwsStackCreationSurface
+awsStackCreationAuthoritySurface =
+  evidenceCleanupSurface . internalAwsStackCreationScope
 
 awsStackCreationAuthorityRegistryRevision
   :: AwsStackCreationAuthorityIdentity -> RegistryRevision
 awsStackCreationAuthorityRegistryRevision =
-  internalAwsStackCreationRegistryRevision
+  evidenceRegistryRevision . internalAwsStackCreationScope
 
 awsStackCreationAuthorityRunScope
   :: AwsStackCreationAuthorityIdentity -> DurableObservationRunScope
-awsStackCreationAuthorityRunScope = internalAwsStackCreationRunScope
+awsStackCreationAuthorityRunScope =
+  evidenceDurableRunScope . internalAwsStackCreationScope
 
 awsStackCreationAuthorityFoundation
   :: AwsStackCreationAuthorityIdentity -> LinuxRke2FoundationId
-awsStackCreationAuthorityFoundation = internalAwsStackCreationFoundation
+awsStackCreationAuthorityFoundation =
+  evidenceLinuxRke2Foundation . internalAwsStackCreationScope
 
 awsStackCreationAuthorityAwsScope
   :: AwsStackCreationAuthorityIdentity -> AwsScope
@@ -217,19 +247,31 @@ awsStackCreationAuthorityLogicalName identity =
   "authority/aws-stack-creations/"
     <> internalAwsStackCreationSubmissionKey identity
 
+-- | The retained identity's durable wire form.
+--
+-- Sprint 4.92: the scope is one nested 'ScopeWire' where six of this envelope's
+-- own fields used to spell it out.  Flattening is how the run's DNS hosted zone
+-- was lost: there was no field for it, and the decoder rebuilt the scope through
+-- 'mkObservationEvidenceScope', whose documented contract hardcodes the zone to
+-- absent.
 data AwsStackCreationIdentityWire = AwsStackCreationIdentityWire
   { creationIdentityWireVersion :: !Int
-  , creationIdentityWireRegistryRevision :: !Text
   , creationIdentityWireKey :: !Int
   , creationIdentityWireCoordinateDigest :: !Text
-  , creationIdentityWireSurface :: !Int
-  , creationIdentityWireRunScope :: !Text
-  , creationIdentityWireFoundation :: !Text
-  , creationIdentityWireAwsAccount :: !Text
-  , creationIdentityWireAwsRegion :: !Text
+  , creationIdentityWireScope :: !ScopeWire
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+-- | Bumped to @2@ by Sprint 4.92, because the encoded identity now carries the
+-- run's retained DNS hosted zone.
+--
+-- Version 1 bytes are refused rather than upgraded.  A version-1 identity's
+-- submission key was derived from a zone-blind canonical text, so no version-2
+-- read ever addresses a version-1 object and there is nothing for an upgrade to
+-- reach.
+awsStackCreationIdentityWireFormatVersion :: Int
+awsStackCreationIdentityWireFormatVersion = 2
 
 maximumAwsStackCreationAuthorityIdentityBytes :: Int
 maximumAwsStackCreationAuthorityIdentityBytes = 16 * 1024
@@ -260,43 +302,18 @@ decodeAwsStackCreationAuthorityIdentity bytes = do
     (LazyByteString.toStrict (serialise wire) == bytes)
     (Left AwsStackCreationNonCanonical)
   unless
-    (creationIdentityWireVersion wire == 1)
+    (creationIdentityWireVersion wire == awsStackCreationIdentityWireFormatVersion)
     ( Left
         ( AwsStackCreationVersionUnsupported
             (creationIdentityWireVersion wire)
         )
     )
-  unless
-    ( creationIdentityWireRegistryRevision wire
-        == registryRevisionText lifecycleRegistryRevision
-    )
-    (Left (AwsStackCreationFieldInvalid "registry revision mismatch"))
   key <- decodeBoundedKey (creationIdentityWireKey wire)
-  surface <- decodeBoundedSurface (creationIdentityWireSurface wire)
-  runScope <-
-    DurableObservationRunScope
-      <$> checkedText
-        "durable run scope"
-        512
-        (creationIdentityWireRunScope wire)
-  foundation <-
-    LinuxRke2FoundationId
-      <$> checkedText
-        "Linux RKE2 foundation"
-        512
-        (creationIdentityWireFoundation wire)
-  let awsScope =
-        AwsScope
-          (AwsAccountId (creationIdentityWireAwsAccount wire))
-          (AwsRegion (creationIdentityWireAwsRegion wire))
-      creationScope =
-        mkObservationEvidenceScope
-          surface
-          lifecycleRegistryRevision
-          runScope
-          foundation
-          (Just awsScope)
-          ReconcileDesiredPresent
+  -- The registry revision, surface, run scope, foundation, AWS coordinates, and
+  -- DNS zone all arrive inside the nested scope and are checked by the one
+  -- canonical decoder; 'identityFor' re-checks the revision against this
+  -- binary's own compiled registry.
+  creationScope <- decodeScopeWire (creationIdentityWireScope wire)
   identity <- identityFor ReconcileDesiredPresent key creationScope
   unless
     ( creationIdentityWireCoordinateDigest wire
@@ -310,23 +327,13 @@ creationIdentityToWire
   :: AwsStackCreationAuthorityIdentity -> AwsStackCreationIdentityWire
 creationIdentityToWire identity =
   AwsStackCreationIdentityWire
-    { creationIdentityWireVersion = 1
-    , creationIdentityWireRegistryRevision =
-        registryRevisionText (awsStackCreationAuthorityRegistryRevision identity)
+    { creationIdentityWireVersion = awsStackCreationIdentityWireFormatVersion
     , creationIdentityWireKey = fromEnum (awsStackCreationAuthorityKey identity)
     , creationIdentityWireCoordinateDigest =
         managedResourceCoordinateDigestText
           (awsStackCreationAuthorityCoordinateDigest identity)
-    , creationIdentityWireSurface =
-        fromEnum (awsStackCreationAuthoritySurface identity)
-    , creationIdentityWireRunScope =
-        durableRunScopeText (awsStackCreationAuthorityRunScope identity)
-    , creationIdentityWireFoundation =
-        foundationText (awsStackCreationAuthorityFoundation identity)
-    , creationIdentityWireAwsAccount =
-        awsAccountText (awsStackCreationAuthorityAwsScope identity)
-    , creationIdentityWireAwsRegion =
-        awsRegionText (awsStackCreationAuthorityAwsScope identity)
+    , creationIdentityWireScope =
+        scopeToWire (internalAwsStackCreationScope identity)
     }
 
 data AwsStackCreationBinding = AwsStackCreationBinding
@@ -488,16 +495,17 @@ data ProviderConfigWire
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- | The retained binding's durable wire form.
+--
+-- Sprint 4.92: as with 'AwsStackCreationIdentityWire', the scope is one nested
+-- 'ScopeWire' rather than six flattened fields of this envelope's own, so the
+-- run's DNS hosted zone survives the round trip that this record's exact
+-- identity comparison then depends on.
 data AwsStackCreationWire = AwsStackCreationWire
   { creationWireVersion :: !Int
-  , creationWireRegistryRevision :: !Text
   , creationWireKey :: !Int
   , creationWireCoordinateDigest :: !Text
-  , creationWireSurface :: !Int
-  , creationWireRunScope :: !Text
-  , creationWireFoundation :: !Text
-  , creationWireAwsAccount :: !Text
-  , creationWireAwsRegion :: !Text
+  , creationWireScope :: !ScopeWire
   , creationWireOperationEpoch :: !Integer
   , creationWireOperationClient :: !Text
   , creationWireOperationSequence :: !Integer
@@ -507,6 +515,16 @@ data AwsStackCreationWire = AwsStackCreationWire
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+-- | Bumped to @2@ by Sprint 4.92, for the same reason as the identity wire: the
+-- encoded binding now carries the run's retained DNS hosted zone.
+--
+-- Version 1 bytes are refused rather than upgraded.  The record is addressed by
+-- a submission key this sprint also re-derived, so a version-1 object is not
+-- reachable from a version-2 read and an upgrade path would have nothing to
+-- open.
+awsStackCreationBindingWireFormatVersion :: Int
+awsStackCreationBindingWireFormatVersion = 2
 
 observeAuthorityAwsStackCreationOperation
   :: (Monad m)
@@ -776,10 +794,8 @@ identityFor
     unless
       (evidenceRegistryRevision scope == lifecycleRegistryRevision)
       (Left (AwsStackCreationFieldInvalid "registry revision mismatch"))
-    let runScope@(DurableObservationRunScope runScopeValue) =
-          evidenceDurableRunScope scope
-        foundation@(LinuxRke2FoundationId foundationValue) =
-          evidenceLinuxRke2Foundation scope
+    let DurableObservationRunScope runScopeValue = evidenceDurableRunScope scope
+        LinuxRke2FoundationId foundationValue = evidenceLinuxRke2Foundation scope
         surface = evidenceCleanupSurface scope
     awsScope@(AwsScope (AwsAccountId account) (AwsRegion region)) <-
       maybe
@@ -806,24 +822,27 @@ identityFor
     unless
       (cleanupSurfaceAllows surface identity)
       (Left (AwsStackCreationFieldInvalid "cleanup surface excludes stack"))
+    -- Sprint 4.92: the scope half of the canonical text is the one canonical
+    -- identity projection, not a field list restated here.  The list this
+    -- replaces named six of the scope's seven fields and omitted the DNS hosted
+    -- zone, so two runs that differed only in the zone they were compiled
+    -- against were handed the same submission key and therefore the same
+    -- retained object.
     let coordinate = registeredIdentityCoordinateDigest identity
+        bindingScope = creationBindingScope scope
         canonicalIdentity =
           Text.concat
             ( map
                 frame
-                [ "aws-stack-creation/v1"
-                , registryRevisionText lifecycleRegistryRevision
-                , Text.pack (show surface)
-                , registeredResourceKeyText key
-                , managedResourceCoordinateDigestText coordinate
-                , runScopeValue
-                , foundationValue
-                , account
-                , region
-                ]
+                ( [ "aws-stack-creation/v2"
+                  , registeredResourceKeyText key
+                  , managedResourceCoordinateDigestText coordinate
+                  ]
+                    ++ scopeIdentityFields bindingScope
+                )
             )
         submissionKey =
-          "aws-stack-creation-v1-"
+          "aws-stack-creation-v2-"
             <> TextEncoding.decodeUtf8
               (hexSha256 (TextEncoding.encodeUtf8 canonicalIdentity))
     Right
@@ -831,12 +850,27 @@ identityFor
         { internalAwsStackCreationSubmissionKey = submissionKey
         , internalAwsStackCreationKey = key
         , internalAwsStackCreationCoordinateDigest = coordinate
-        , internalAwsStackCreationSurface = surface
-        , internalAwsStackCreationRegistryRevision = lifecycleRegistryRevision
-        , internalAwsStackCreationRunScope = runScope
-        , internalAwsStackCreationFoundation = foundation
+        , internalAwsStackCreationScope = bindingScope
         , internalAwsStackCreationAwsScope = awsScope
         }
+
+-- | The scope one creation binding is retained and addressed under.
+--
+-- Sprint 4.92: a record update on the canonical field set, so a field added to
+-- 'ObservationEvidenceScope' later cannot be dropped here the way the DNS hosted
+-- zone was.  The lifecycle operation is pinned rather than carried because the
+-- creating half of a run commits this record under 'ReconcileDesiredPresent'
+-- while the same run's cleaning-up half reads it back under
+-- 'ReconcileDesiredAbsent': the two must reach one object, so the one field they
+-- deliberately disagree about cannot enter the submission key or the identity
+-- comparison.  Neither entrypoint loosens as a result — 'identityFor' still
+-- refuses a scope whose operation is not the one its caller declared.
+creationBindingScope :: ObservationEvidenceScope -> ObservationEvidenceScope
+creationBindingScope scope =
+  observationEvidenceScopeFromFields (pinned (observationEvidenceScopeFields scope))
+ where
+  pinned :: ObservationEvidenceScopeFields -> ObservationEvidenceScopeFields
+  pinned fields = fields {scopeFieldLifecycleOperation = ReconcileDesiredPresent}
 
 registeredStackForRef
   :: ProviderStackRef
@@ -859,20 +893,12 @@ wireFromObserved
   -> AwsStackCreationWire
 wireFromObserved identity observed =
   AwsStackCreationWire
-    { creationWireVersion = 1
-    , creationWireRegistryRevision = registryRevisionText lifecycleRegistryRevision
+    { creationWireVersion = awsStackCreationBindingWireFormatVersion
     , creationWireKey = fromEnum (awsStackCreationAuthorityKey identity)
     , creationWireCoordinateDigest =
         managedResourceCoordinateDigestText
           (awsStackCreationAuthorityCoordinateDigest identity)
-    , creationWireSurface =
-        fromEnum (awsStackCreationAuthoritySurface identity)
-    , creationWireRunScope =
-        durableRunScopeText (awsStackCreationAuthorityRunScope identity)
-    , creationWireFoundation =
-        foundationText (awsStackCreationAuthorityFoundation identity)
-    , creationWireAwsAccount = awsAccountText scope
-    , creationWireAwsRegion = awsRegionText scope
+    , creationWireScope = scopeToWire (internalAwsStackCreationScope identity)
     , creationWireOperationEpoch =
         toInteger
           ( authorityEpochValue
@@ -894,8 +920,6 @@ wireFromObserved identity observed =
     , creationWireProviderConfig =
         providerConfigToWire (observedAwsStackCreationConfig observed)
     }
- where
-  scope = awsStackCreationAuthorityAwsScope identity
 
 decodeAwsStackCreationBinding
   :: ByteString -> Either AwsStackCreationBindingError AwsStackCreationBinding
@@ -915,28 +939,10 @@ decodeAwsStackCreationBinding bytes = do
       (deserialiseOrFail (LazyByteString.fromStrict bytes))
   unless (canonicalBytes wire == bytes) (Left AwsStackCreationNonCanonical)
   unless
-    (creationWireVersion wire == 1)
+    (creationWireVersion wire == awsStackCreationBindingWireFormatVersion)
     (Left (AwsStackCreationVersionUnsupported (creationWireVersion wire)))
-  unless
-    (creationWireRegistryRevision wire == registryRevisionText lifecycleRegistryRevision)
-    (Left (AwsStackCreationFieldInvalid "registry revision mismatch"))
   key <- decodeBoundedKey (creationWireKey wire)
-  surface <- decodeBoundedSurface (creationWireSurface wire)
-  let awsScope =
-        AwsScope
-          (AwsAccountId (creationWireAwsAccount wire))
-          (AwsRegion (creationWireAwsRegion wire))
-  runScopeValue <- checkedText "durable run scope" 512 (creationWireRunScope wire)
-  foundationValue <-
-    checkedText "Linux RKE2 foundation" 512 (creationWireFoundation wire)
-  let creationScope =
-        mkObservationEvidenceScope
-          surface
-          lifecycleRegistryRevision
-          (DurableObservationRunScope runScopeValue)
-          (LinuxRke2FoundationId foundationValue)
-          (Just awsScope)
-          ReconcileDesiredPresent
+  creationScope <- decodeScopeWire (creationWireScope wire)
   identity <- identityFor ReconcileDesiredPresent key creationScope
   unless
     ( creationWireCoordinateDigest wire
@@ -1045,13 +1051,17 @@ decodeBoundedKey raw
       Left (AwsStackCreationFieldInvalid "registered key is outside the closed registry")
   | otherwise = Right (toEnum raw)
 
-decodeBoundedSurface
-  :: Int -> Either AwsStackCreationBindingError CleanupSurface
-decodeBoundedSurface raw
-  | raw < fromEnum (minBound :: CleanupSurface)
-      || raw > fromEnum (maxBound :: CleanupSurface) =
-      Left (AwsStackCreationFieldInvalid "cleanup surface is outside the closed enum")
-  | otherwise = Right (toEnum raw)
+-- | Sprint 4.92: the canonical scope decoder, mapped into this module's error
+-- type.
+--
+-- The field rules live in "Prodbox.Lifecycle.Teardown.ScopeCodec" rather than
+-- here.  Both of this module's decoders used to restate a subset of them and
+-- then rebuild the scope through 'mkObservationEvidenceScope', which is exactly
+-- how the run's DNS hosted zone was erased on every read back.
+decodeScopeWire
+  :: ScopeWire -> Either AwsStackCreationBindingError ObservationEvidenceScope
+decodeScopeWire =
+  first (AwsStackCreationFieldInvalid . renderScopeWireError) . scopeFromWire
 
 validateAwsAccount :: Text -> Either AwsStackCreationBindingError ()
 validateAwsAccount value
@@ -1099,12 +1109,6 @@ checkedDigest label value
 canonicalBytes :: AwsStackCreationWire -> ByteString
 canonicalBytes = LazyByteString.toStrict . serialise
 
-durableRunScopeText :: DurableObservationRunScope -> Text
-durableRunScopeText (DurableObservationRunScope value) = value
-
-foundationText :: LinuxRke2FoundationId -> Text
-foundationText (LinuxRke2FoundationId value) = value
-
 existingDisposition
   :: AwsStackCreationBinding -> ByteString -> AwsStackCreationCommitResult
 existingDisposition candidate existing
@@ -1136,15 +1140,6 @@ repositoryFailure category detail =
 
 frame :: Text -> Text
 frame value = Text.pack (show (Text.length value)) <> ":" <> value
-
-registryRevisionText :: RegistryRevision -> Text
-registryRevisionText (RegistryRevision value) = value
-
-awsAccountText :: AwsScope -> Text
-awsAccountText (AwsScope (AwsAccountId value) _) = value
-
-awsRegionText :: AwsScope -> Text
-awsRegionText (AwsScope _ (AwsRegion value)) = value
 
 clientIdText :: ClientId -> Text
 clientIdText (ClientId value) = value

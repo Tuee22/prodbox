@@ -80,7 +80,7 @@ import Prodbox.Lifecycle.Lease
 import Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor
 import Prodbox.Lifecycle.Teardown.Graph
 import Prodbox.Lifecycle.Teardown.Model
-import Prodbox.Lifecycle.Teardown.Program (teardownOperationTag)
+import Prodbox.Lifecycle.Teardown.Program (someTeardownOperationTag)
 import Prodbox.Lifecycle.Teardown.Registry (lifecycleRegistryRevision)
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath (takeExtension, (</>))
@@ -527,7 +527,7 @@ operationTagForPlan
   -> CleanupNodePlan
   -> Either Text.Text Text.Text
 operationTagForPlan compiled plan =
-  case [ teardownOperationTag operation
+  case [ someTeardownOperationTag operation
        | (nodeId, operation) <- compiledDesiredAbsenceOperations compiled
        , nodeId == cleanupNodeId plan
        ] of

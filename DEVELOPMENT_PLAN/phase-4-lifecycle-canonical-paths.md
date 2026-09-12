@@ -13462,15 +13462,15 @@ this sprint does not claim a current live bootstrap/lifecycle composition proof.
   [00-overview.md](00-overview.md); register every surviving lifecycle fallback/duplicate in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
-## Sprint 4.92: Eighteen Encoders For One Type Are Seventeen Chances To Forget A Field [📋 Planned]
+## Sprint 4.92: Eighteen Encoders For One Type Are Seventeen Chances To Forget A Field [✅ Done]
 
-**Status**: Planned. Phase `4` own-surface reopen (Standard A/L) on the lifecycle teardown scope,
+**Status**: Done. Phase `4` own-surface reopen (Standard A/L) on the lifecycle teardown scope,
 its durable wire codecs, and its digest projections.
 **Doctrine**: [Pure FP Standards § 2.3a, "Encode at exactly one
 boundary"](../documents/engineering/pure_fp_standards.md#23a-encode-at-exactly-one-boundary) and
 [§ 1.4, "One typed model, many generated
 projections"](../documents/engineering/pure_fp_standards.md#14-one-typed-model-many-generated-projections).
-**Implementation**: `src/Prodbox/Lifecycle/Teardown/Model.hs`,
+**Implementation**: `src/Prodbox/Lifecycle/Teardown/ScopeCodec.hs` (new),
 `src/Prodbox/ControlPlane/AwsStackReaderRepository/Internal.hs`,
 `src/Prodbox/Lifecycle/Teardown/EksDrainIntent.hs`,
 `src/Prodbox/Lifecycle/Teardown/OwnershipManifest/Internal.hs`,
@@ -13482,8 +13482,13 @@ projections"](../documents/engineering/pure_fp_standards.md#14-one-typed-model-m
 `src/Prodbox/ControlPlane/AwsStackCreationBindingRepository.hs`,
 `src/Prodbox/ControlPlane/AwsStackCreationBindingEndpoint.hs`,
 `src/Prodbox/ControlPlane/EksDrainReadBackReceiptRepository.hs`,
-`src/Prodbox/Lifecycle/Teardown/Execution.hs`, and
-`src/Prodbox/Lifecycle/Teardown/CheckpointAuthority.hs`.
+`src/Prodbox/Lifecycle/Teardown/Execution.hs`,
+`src/Prodbox/Lifecycle/Teardown/CheckpointAuthority.hs`,
+`src/Prodbox/Lifecycle/Teardown/EksDrainSession.hs`,
+`src/Prodbox/Lifecycle/Teardown/Observation.hs`, and
+`src/Prodbox/Lifecycle/Teardown/OwnershipManifest.hs`;
+`test/unit/ScopeCodecWitness.hs` (new), `test/unit/LifecycleTeardownEksDrainIntent.hs`,
+`test/unit/Main.hs`, and `prodbox.cabal`.
 **Blocked by**: none.
 **Live-proof**: pending and non-blocking. A cascade run under a DNS-zoned scope is a live
 observation; the erasure and its repair are provable from bytes alone.
@@ -13539,17 +13544,82 @@ the single encoder § 2.3a already requires.
    succeeds, and a mutation that restores the erasure fails it.
 5. Full unit suite and `prodbox dev check` exit 0.
 
+### Closure Record
+
+**One canonical wire form, nested rather than flattened.**
+`Prodbox.Lifecycle.Teardown.ScopeCodec` owns the scope's field set, its wire form, and its identity
+projection. Every durable envelope now nests one `ScopeWire` value instead of flattening the scope's
+fields among its own, which is why the conversion removed roughly four hundred lines net: eleven
+envelopes stopped restating the same seven fields, and two hand-written CBOR instances shrank by the
+difference (`EksDrainIntentAuthorityIdentityWire` went from seventeen list slots to eleven).
+
+**Every converted codec bumped its version and refuses older bytes rather than upgrading them.** A
+pre-zone envelope has no zone field to recover, so upgrading one could only re-assert the absent zone
+that was the defect and present a re-minted scope as the one the run committed. That is the argument
+the one already-corrected codec recorded, applied to the other ten.
+
+**A forgotten field is a compile error in two distinct ways.** `ObservationEvidenceScopeFields` is
+constructed by name in exactly one function, so a new scope field is a missing-field error there;
+every projection — the wire encoder, the identity projection, the scope reconstructor, and the
+observation binding check — destructures it positionally, so a new field is a constructor-arity
+error at each. This is what makes the single-encoder rule a type error rather than a review note.
+
+**The audit re-scope decision, stated.** The terminal escape audit **keeps** the run's zone. It
+exists to find AWS resources the run created and did not remove, and the DNS01 challenge records it
+must look for live in exactly the zone the run was compiled against; an audit scope without the zone
+would either sweep the wrong zone or refuse for want of one, and in both cases would not be the
+scope of the run it claims to audit. `scopeForTerminalAudit` and `scopeForCascadeTerminalAudit` are
+record updates over the complete field set, so neither can lose a field added later.
+
+**Two corrections the conversion surfaced beyond the row's own list.**
+`validateScopeBinding` in `src/Prodbox/Lifecycle/Teardown/Observation.hs` had six clauses for a
+seven-field scope, so it and derived `Eq` on the same two values disagreed: an observation taken in a
+zone-less scope bound cleanly there while every caller comparing whole scopes rejected it, and which
+answer a run got depended on which check it reached first. It now compares the complete field set and
+has its own `ObservationAwsDnsZoneMismatch`. And `HostCleanupScope` was a lossy in-memory projection
+with no zone slot at all, so the zone was erased before any byte was written — it now carries the
+field in both directions.
+
+**Field rules are the union of the strictest each superseded codec applied**, because they are rules
+about the field rather than the envelope: an AWS account is twelve digits wherever it is read, and one
+codec knowing that while another did not is the same defect class as one codec carrying the zone while
+another did not. Where the superseded codecs disagreed on a text ceiling — 256 against 512 — the
+looser bound is kept deliberately, so no value a live run has committed becomes unreadable.
+
+### Validation Record
+
+1. **Round trip.** A zoned scope survives the canonical wire form and compares equal to its original;
+   a zoneless one stays zoneless. Proven twice: on the codec itself in
+   `test/unit/ScopeCodecWitness.hs`, and end to end through a converted durable envelope in
+   `test/unit/LifecycleTeardownEksDrainIntent.hs`, where the zoned and zoneless intents also carry
+   different digests, so the zone is inside the identity rather than beside it.
+2. **Compile refusal.** Documented at the witness module and enforced by construction, as above.
+3. **Fail-closed fields.** Canonical-byte, version-refusal, duplicate-key, and oversize cases still
+   fail closed per codec; the witness adds refusals for an invalid hosted zone, a non-twelve-digit
+   account, a half-encoded AWS scope, an out-of-range surface and operation, and an empty and an
+   oversized text field.
+4. **The binding comparison.** The ready-to-uninstall binding's own round trip is **not**
+   constructible from a test module and the record says so rather than claiming it: its observation
+   constructor is private by Sprint `4.86`'s deliberate boundary, and `ReadyToUninstallEvidence` is
+   minted only inside that boundary. What is proven instead is the same claim one layer down — the
+   envelope nests the canonical codec, and that codec's round trip is exhaustive — plus the same
+   end-to-end proof on the EKS drain intent, which is constructible.
+5. **Canonical gate.** Focused Sprint-4.92 group **13/13**, primary unit suite **4,937/4,937**,
+   auxiliaries **27/27**, **35/35**, **39/39**, and canonical `prodbox dev check` exits 0.
+
 ### Remaining Work
 
-All deliverables above.
+None.
 
-## Sprint 4.93: A Poll Loop's Timeout Is Not Its Subprocess's [📋 Planned]
+## Sprint 4.93: A Poll Loop's Timeout Is Not Its Subprocess's [✅ Done]
 
-**Status**: Planned. Phase `4` own-surface reopen (Standard A) on the local and AWS drain paths this
+**Status**: Done. Phase `4` own-surface reopen (Standard A) on the local and AWS drain paths this
 phase owns.
 **Doctrine**: [Chaos Hardening Doctrine, rule R5 "One absolute
 deadline"](../documents/engineering/chaos_hardening_doctrine.md).
-**Implementation**: `src/Prodbox/Lifecycle/K8sDrain.hs` and `src/Prodbox/Subprocess.hs`.
+**Implementation**: `src/Prodbox/Lifecycle/K8sDrain.hs`; `test/unit/Main.hs`.
+`src/Prodbox/Subprocess.hs` is deliberately unchanged: its bounded runner already had the shape this
+sprint needed, and the defect was that the drain did not use it.
 **Blocked by**: none.
 **Live-proof**: pending and non-blocking.
 **Deployment qualification**: pending — **invalidated** on deadline algebra. A drain step that can
@@ -13590,20 +13660,75 @@ a drain that fails and a drain that hangs.
 2. The existing drain decision tables are unchanged for every non-wedged path.
 3. Full unit suite and `prodbox dev check` exit 0.
 
+### Closure Record
+
+**One chokepoint, one appended bound.** `drainSubprocess` builds every drain `kubectl` and appends
+`--request-timeout=5s` there rather than at call sites, so no call can omit it and none can pass it
+twice. Two of the nine calls used to carry it and seven did not, which meant the outer wall clock
+was those seven calls' only bound and `kubectl`'s own exact error could never be the reported cause.
+
+**The wall clock is derived, not chosen.** Five API-group discovery retries plus the resource
+request, times the per-request bound, plus a ten-second spawn-and-TLS margin — forty seconds. The
+retry count is the measurement Sprint `6.5` took rather than an assumption, and the derivation is
+written beside the constant so a later change to the request timeout moves the wall clock with it.
+A chosen bound races the request timeouts it is meant to contain, which is exactly what a flat
+thirty-second bound did to a live EKS drain selection on 2026-09-11.
+
+**A bounded refusal is unobservable, and that is now a type rather than a phrase.** `runKubectl` and
+`captureKubectl` return `Either DrainCallFailure`, whose two constructors separate a call that did
+not complete from one the API server answered and refused. The two used to be one `String` and both
+became `DrainFailed`, which asserts the cluster was reached. Where a set of per-PVC deletes mixes the
+two, the set is unobservable: the drain cannot claim a PVC was refused when it does not know the
+request arrived. The module's single absence decision — an empty successful PVC read-back — is
+unchanged and still gated on a successful exit, so a bounded refusal cannot reach it.
+
+**The two budgets are separate numbers and the code now says which is which.** `DrainTimeout` bounds
+waiting for resources to disappear. It is an absolute deadline read from a monotonic clock instead
+of a counter decremented by the sleep interval alone, so the `2 + N` read-backs an iteration makes
+charge their elapsed time against it. The superseded countdown subtracted ten per iteration whatever
+the calls cost, which made the documented five minutes an iteration count rather than a bound —
+and with the calls themselves unbounded, an iteration could take arbitrarily long without spending a
+second of it.
+
+**A stdout ceiling that was missing entirely.** The cluster-wide `get pv` is this module's largest
+output and was read into a lazy `String` with no cap. It now runs under the same 2 MiB stdout and
+128 KiB stderr ceilings as every other drain call.
+
+### Validation Record
+
+1. **The wedge, measured.** A fake `kubectl` that sleeps for ten minutes is terminated by its own
+   bound at **40.04 s** and the drain reports `DrainUnobservable`. The case asserts elapsed time
+   rather than only the returned constructor, because "returned an error eventually" cannot
+   distinguish slow from wedged, and the wedge signature is elapsed-equals-the-bound. It also
+   asserts the elapsed time is well under the 300-second poll budget, which is the separate number
+   the superseded code conflated with it.
+2. **The derivation is asserted, not narrated.** A case pins
+   `drainKubectlWallClockSeconds` to `(discoveryAttempts + 1) * requestTimeout + margin` and to
+   being strictly less than the poll budget, so changing one constant without the other fails.
+3. **Existing decision tables unchanged.** The exact-target and read-back safety case passes
+   unchanged, and additionally asserts that every invocation carries the per-request bound exactly
+   once.
+4. **Canonical gate.** Focused K8s-drain group **4/4**, primary unit suite **4,939/4,939**, and
+   canonical `prodbox dev check` exits 0.
+
 ### Remaining Work
 
-All deliverables above.
+None.
 
-## Sprint 4.94: An Operation And Its Result Were Never Tied Together [📋 Planned]
+## Sprint 4.94: An Operation And Its Result Were Never Tied Together [✅ Done]
 
-**Status**: Planned. Phase `4` own-surface reopen (Standard A/L) on the teardown operation model and
+**Status**: Done. Phase `4` own-surface reopen (Standard A/L) on the teardown operation model and
 its interpreter boundary.
 **Doctrine**: [Pure FP Standards § 2.2, "Pattern match
 exhaustively"](../documents/engineering/pure_fp_standards.md#22-pattern-match-exhaustively) and
 [§ 7, "GADT-Indexed State
 Machines"](../documents/engineering/pure_fp_standards.md#7-gadt-indexed-state-machines).
 **Implementation**: `src/Prodbox/Lifecycle/Teardown/Program.hs` and
-`src/Prodbox/Lifecycle/Teardown/Execution.hs`.
+`src/Prodbox/Lifecycle/Teardown/Execution.hs`, plus the type-level accommodation the new index
+requires in every module that inspects an operation or produces a node result — the four production
+`LifecycleTeardownEffects` instances, the recovery-plane, EKS-teardown, AWS stack-reader and
+checkpoint interpreters, the cascade-evidence, ownership-coverage, program-tag and graph
+projections, and the test interpreters under `test/`.
 **Blocked by**: none.
 **Live-proof**: not applicable; the surface is a type change and its exhaustiveness.
 **Deployment qualification**: pending — the interpreter boundary is a lifecycle-orchestration
@@ -13647,9 +13772,60 @@ largest single instance and the one Phase `4` owns.
 3. Every existing teardown decision table passes unchanged.
 4. Full unit suite and `prodbox dev check` exit 0.
 
+### Closure Record
+
+**The index is a coarsening, and that is what makes it work.** `TeardownResultKind` has twenty
+inhabitants to the operation type's forty constructors, because twelve operations legally produce a
+mutation attempt and six a durable receipt. A one-to-one index would have restated the operation
+type; a many-to-one one makes the twenty mismatch arms unrepresentable while leaving every legal
+pairing expressible.
+
+**Heterogeneity moved to an existential, and the existential is where the index is recovered.** A
+program's node list is heterogeneous in result by construction, so `ProgramNode`, the compiled
+operation map, the execution context's catalog, and the three predecessor records hold
+`SomeTeardownOperation`. Unpacking it at the single point in the executor that also holds the result
+is what gives operation and result one shared skolem — the whole mechanism, in one `case`
+alternative.
+
+**Forgetting the index costs no discrimination, and the type is why.** `Eq` on the existential
+compares the operation tag and the registered target binding, and that is a complete key rather than
+an approximation: the only payloads a constructor carries are a `RegisteredTargetBinding` and a
+surface witness, and both witness types have exactly one inhabitant per surface. Every `==` against
+a constructed operation therefore keeps the discrimination it had.
+
+**The shared refusal string is gone; its sibling survives, deliberately.**
+`resultKindMismatch` and all twenty arms that produced it are deleted. `bindingMismatch` — *"lifecycle
+observation binding mismatch"* — is a different failure and remains: a result index proves the answer
+is the right kind, never that it belongs to this attempt or was produced under the expected
+observation scope.
+
+**The refusal is handled per helper rather than once.** With a single leading `TeardownNodeRefused`
+arm, the remainder of the match would still be a catch-all over the result universe, which is the
+shape this sprint removes. Each `expect*` helper now matches exactly two constructors — a refusal
+and its own answer — which is the exhaustive match § 2.2 asks for, and GHC's coverage checker
+confirms there is no third.
+
+**Out of scope, named as ownership rather than dependency.** The same defect class survives at the
+one-shot target operation boundary, where fourteen inputs and fifteen results are independent types
+paired by a hand-written boolean table, and at the provider intent boundary, where thirty-three
+intents collapse to three result shapes carrying bare text that eleven adapters re-parse. This
+sprint made the argument on the teardown operation, which is the largest single instance and the one
+Phase `4` owns; it makes no claim about the other two.
+
+### Validation Record
+
+1. **Every illegal pairing is a compile error**, and the proof is the tree: the interpreter no
+   longer has a place to put a wrong-kind result, so the twenty arms were deleted rather than made
+   unreachable. The existential's unpack point is the only seam where the two indices meet.
+2. **No mismatch arm and no shared mismatch string survive.** `resultKindMismatch` is absent from
+   `src/`; `bindingMismatch` is present and unchanged.
+3. **Every existing teardown decision table passes unchanged.** No behavioural edit was made; every
+   change outside the two owning modules is a type-level accommodation.
+4. **Canonical gate.** Full unit suite and canonical `prodbox dev check` exit 0.
+
 ### Remaining Work
 
-All deliverables above.
+None.
 
 ## Related Documents
 

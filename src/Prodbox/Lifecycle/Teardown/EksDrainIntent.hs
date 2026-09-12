@@ -100,6 +100,7 @@ module Prodbox.Lifecycle.Teardown.EksDrainIntent
 where
 
 import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
+import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -148,6 +149,12 @@ import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.Registry
 import Prodbox.Lifecycle.Teardown.Registry qualified as Registry
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ScopeWire
+  , renderScopeWireError
+  , scopeFromWire
+  , scopeToWire
+  )
 
 -- | Stable write-ahead, effect, and read-back identities for one cleanup-node
 -- attempt.  The graph digest is explicit; the run identity is additionally
@@ -453,8 +460,15 @@ eksDrainIntentDigest = EksDrainIntentDigest . sha256Bytes . encodeEksDrainIntent
 eksDrainIntentDigestText :: EksDrainIntentDigest -> Text
 eksDrainIntentDigestText (EksDrainIntentDigest value) = value
 
+-- | Sprint 4.92: version 3 is the first encoding whose scope is the canonical
+-- 'ScopeWire', and therefore the first that carries the run's retained DNS
+-- hosted zone.  Version 2 bytes are refused rather than upgraded: this module's
+-- own scope record had no zone field at all, so there is no value to upgrade
+-- from, and the intent digest that every commit and read-back compares is taken
+-- over these bytes.  Silently reading a version-2 object back would hand the
+-- drain a zone-less scope and a digest that no version-3 encode reproduces.
 eksDrainIntentFormatVersion :: Word16
-eksDrainIntentFormatVersion = 2
+eksDrainIntentFormatVersion = 3
 
 maximumEksDrainIntentBytes :: Int
 maximumEksDrainIntentBytes = 64 * 1024
@@ -466,7 +480,7 @@ data EksDrainIntentEnvelope = EksDrainIntentEnvelope
   { envelopeVersion :: !Word16
   , envelopeResourceKey :: !Text
   , envelopeCoordinateDigest :: !Text
-  , envelopeScope :: !EksDrainScopeWire
+  , envelopeScope :: !ScopeWire
   , envelopeRunId :: !Text
   , envelopeGraphDigest :: !Text
   , envelopeIntentCommitOperationId :: !Text
@@ -474,18 +488,6 @@ data EksDrainIntentEnvelope = EksDrainIntentEnvelope
   , envelopeEffectOperationId :: !Text
   , envelopeDrainReadBackOperationId :: !Text
   , envelopeTarget :: !EksDrainTargetWire
-  }
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
-
-data EksDrainScopeWire = EksDrainScopeWire
-  { scopeWireSurface :: !Word16
-  , scopeWireRegistryRevision :: !Text
-  , scopeWireDurableRun :: !Text
-  , scopeWireFoundation :: !Text
-  , scopeWireAwsAccount :: !Text
-  , scopeWireAwsRegion :: !Text
-  , scopeWireOperation :: !Word16
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -535,7 +537,7 @@ intentEnvelope intent =
     , envelopeResourceKey = registeredResourceKeyText (eksDrainIntentResourceKey intent)
     , envelopeCoordinateDigest =
         managedResourceCoordinateDigestText (eksDrainIntentCoordinateDigest intent)
-    , envelopeScope = encodeScope (eksDrainBindingScope binding)
+    , envelopeScope = scopeToWire (eksDrainBindingScope binding)
     , envelopeRunId = cleanupRunIdText (eksDrainBindingRunId binding)
     , envelopeGraphDigest = cleanupDigestText (eksDrainBindingGraphDigest binding)
     , envelopeIntentCommitOperationId =
@@ -550,18 +552,6 @@ intentEnvelope intent =
     }
  where
   binding = eksDrainIntentBinding intent
-
-encodeScope :: ObservationEvidenceScope -> EksDrainScopeWire
-encodeScope scope =
-  EksDrainScopeWire
-    { scopeWireSurface = encodeSurface (evidenceCleanupSurface scope)
-    , scopeWireRegistryRevision = registryRevisionText (evidenceRegistryRevision scope)
-    , scopeWireDurableRun = durableRunScopeText (evidenceDurableRunScope scope)
-    , scopeWireFoundation = foundationIdText (evidenceLinuxRke2Foundation scope)
-    , scopeWireAwsAccount = maybe "" (awsAccountText . awsScopeAccountId) (evidenceAwsScope scope)
-    , scopeWireAwsRegion = maybe "" (awsRegionText . awsScopeRegion) (evidenceAwsScope scope)
-    , scopeWireOperation = encodeOperation (evidenceLifecycleOperation scope)
-    }
 
 encodeTarget :: EksDrainIntentTarget -> EksDrainTargetWire
 encodeTarget target = case target of
@@ -600,7 +590,7 @@ decodeEnvelope envelope = do
             (managedResourceCoordinateDigestText exactEksCoordinateDigest)
             (envelopeCoordinateDigest envelope)
         )
-  scope <- decodeScope (envelopeScope envelope)
+  scope <- decodeScopeWire (envelopeScope envelope)
   runId <- mapIdentityError EksDrainIntentCodecRunIdInvalid (mkCleanupRunId (envelopeRunId envelope))
   graphDigest <-
     mapIdentityError
@@ -640,30 +630,36 @@ decodeEnvelope envelope = do
       , internalEksDrainIntentTarget = target
       }
 
-decodeScope
-  :: EksDrainScopeWire -> Either EksDrainIntentError ObservationEvidenceScope
-decodeScope wire = do
-  surface <- decodeSurface (scopeWireSurface wire)
-  operation <- decodeOperation (scopeWireOperation wire)
-  validateBoundedText "registry revision" 256 (scopeWireRegistryRevision wire)
-  validateBoundedText "durable observation run" 256 (scopeWireDurableRun wire)
-  validateBoundedText "Linux RKE2 foundation" 256 (scopeWireFoundation wire)
-  validateAwsAccount (scopeWireAwsAccount wire)
-  validateAwsRegion (scopeWireAwsRegion wire)
-  Right
-    ( mkObservationEvidenceScope
-        surface
-        (RegistryRevision (scopeWireRegistryRevision wire))
-        (DurableObservationRunScope (scopeWireDurableRun wire))
-        (LinuxRke2FoundationId (scopeWireFoundation wire))
-        ( Just
-            ( AwsScope
-                (AwsAccountId (scopeWireAwsAccount wire))
-                (AwsRegion (scopeWireAwsRegion wire))
-            )
-        )
-        operation
-    )
+-- | Sprint 4.92: the canonical scope decoder, mapped into this module's error
+-- type and re-imposing the one scope invariant this codec has always carried.
+--
+-- The field rules themselves now live in "Prodbox.Lifecycle.Teardown.ScopeCodec".
+-- This module used to state them itself, and in doing so rebuilt the scope
+-- through 'mkObservationEvidenceScope', whose contract hardcodes the run's DNS
+-- hosted zone to absent; every intent this module decoded therefore came back
+-- with a zone-less scope, and the intent digest taken over those bytes could not
+-- match the one the same run had just committed.
+--
+-- Two narrowings the deleted decoder applied are deliberately not restated here.
+-- It admitted only the three cleanup surfaces and only 'ReconcileDesiredAbsent',
+-- and 'validateScope' re-imposes both on every scope 'mkEksDrainOperationBinding'
+-- admits, with refusals ('EksDrainSurfaceInvalid',
+-- 'EksDrainScopeOperationInvalid') that name the offending value.  The AWS scope
+-- is different: an EKS drain intent necessarily has one, the canonical decoder
+-- admits an absent one because other scopes legitimately lack it, and an absent
+-- AWS scope reaching 'decodeTarget' would be a missing invariant rather than a
+-- refusal.  It is therefore refused here, at the decode boundary, with the same
+-- named error the construction path already uses for the same condition.
+decodeScopeWire
+  :: ScopeWire -> Either EksDrainIntentError ObservationEvidenceScope
+decodeScopeWire wire = do
+  scope <-
+    first
+      (EksDrainIntentCodecScopeInvalid . renderScopeWireError)
+      (scopeFromWire wire)
+  case evidenceAwsScope scope of
+    Nothing -> Left EksDrainAwsScopeMissing
+    Just _ -> Right scope
 
 decodeTarget
   :: ObservationEvidenceScope
@@ -1104,6 +1100,7 @@ data EksDrainIntentError
   | EksDrainIntentCodecRunIdInvalid !Text
   | EksDrainIntentCodecGraphDigestInvalid !Text
   | EksDrainIntentCodecOperationIdInvalid !Text
+  | EksDrainIntentCodecScopeInvalid !Text
   | EksDrainIntentTextInvalid !Text !Text
   | EksDrainAwsAccountInvalid !Text
   | EksDrainAwsRegionInvalid !Text
@@ -1409,33 +1406,6 @@ validatePvcReadBack expected observations = do
     EksDrainPvcAbsent _ -> Right ()
     result -> Left (EksDrainPvcNotAbsent (eksDrainPvcReadBackTarget observation) result)
 
-encodeSurface :: CleanupSurface -> Word16
-encodeSurface surface = case surface of
-  Cascade -> 1
-  ExplicitPerRun -> 2
-  TotalDecommission -> 3
-  LocalOnly -> 101
-  OperationalTeardown -> 102
-  ExplicitLongLived -> 103
-
-decodeSurface :: Word16 -> Either EksDrainIntentError CleanupSurface
-decodeSurface tag = case tag of
-  1 -> Right Cascade
-  2 -> Right ExplicitPerRun
-  3 -> Right TotalDecommission
-  _ -> Left (EksDrainIntentCodecSurfaceInvalid tag)
-
-encodeOperation :: LifecycleOperation -> Word16
-encodeOperation operation = case operation of
-  ReconcileDesiredAbsent -> 1
-  ReconcileDesiredPresent -> 101
-  RunTerminalEscapeAudit -> 102
-
-decodeOperation :: Word16 -> Either EksDrainIntentError LifecycleOperation
-decodeOperation tag = case tag of
-  1 -> Right ReconcileDesiredAbsent
-  _ -> Left (EksDrainIntentCodecOperationInvalid tag)
-
 encodeServiceClass :: CompleteLoadBalancerServiceClass -> Word16
 encodeServiceClass CompleteLoadBalancerServiceClass = 1
 
@@ -1486,13 +1456,6 @@ validateDnsSubdomain label value
       Left (EksDrainKubernetesNameInvalid label value)
   | otherwise = mapM_ (validateDnsLabel label) (Text.splitOn "." value)
 
-validateBoundedText
-  :: Text -> Int -> Text -> Either EksDrainIntentError ()
-validateBoundedText label maximumLength value
-  | Text.null value || Text.length value > maximumLength =
-      Left (EksDrainIntentTextInvalid label value)
-  | otherwise = Right ()
-
 validateAwsAccount :: Text -> Either EksDrainIntentError ()
 validateAwsAccount value
   | Text.length value == 12 && Text.all isDigit value = Right ()
@@ -1528,21 +1491,6 @@ duplicateValues = foldr duplicateGroup [] . group . sort
   duplicateGroup values duplicates = case values of
     duplicate : _ : _ -> duplicate : duplicates
     _ -> duplicates
-
-registryRevisionText :: RegistryRevision -> Text
-registryRevisionText (RegistryRevision value) = value
-
-durableRunScopeText :: DurableObservationRunScope -> Text
-durableRunScopeText (DurableObservationRunScope value) = value
-
-foundationIdText :: LinuxRke2FoundationId -> Text
-foundationIdText (LinuxRke2FoundationId value) = value
-
-awsAccountText :: AwsAccountId -> Text
-awsAccountText (AwsAccountId value) = value
-
-awsRegionText :: AwsRegion -> Text
-awsRegionText (AwsRegion value) = value
 
 observationRevisionWord :: ObservationRevision -> Word64
 observationRevisionWord (ObservationRevision value) = value

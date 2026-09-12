@@ -27,6 +27,7 @@ module Prodbox.Bootstrap.Broker.Readiness
   , BrokerReadinessFacts (..)
   , BrokerReadinessState (..)
   , unobservedBrokerReadinessFacts
+  , raisedBrokerReadinessFacts
   , ObservationSchedule
   , ObservationScheduleError (..)
   , renderObservationScheduleError
@@ -102,6 +103,33 @@ unobservedBrokerReadinessFacts =
     , brokerFactControllerImage = BrokerDependencyUnobserved
     , brokerFactObservedAtMicros = Nothing
     }
+
+-- | The fail-closed record for an observation pass that raised.
+--
+-- Sprint 2.134 links the readiness observer, so a pass that escapes would newly
+-- kill the broker process. An observation that throws is still an observation:
+-- it says the dependencies are not usable right now. Recording it as a
+-- non-terminal unavailable — the shape
+-- 'Prodbox.ControlPlane.RoleReadinessObserver' already uses — degrades readiness
+-- and names the cause, leaving the link to cover the residual case of the loop
+-- itself dying.
+--
+-- The instant is stamped because a raised pass is a completed pass: the
+-- staleness bound must not read a failing observer as a fresh one, and it must
+-- not read it as a hung one either.
+raisedBrokerReadinessFacts :: Text -> Natural -> BrokerReadinessFacts
+raisedBrokerReadinessFacts cause observedAtMicros =
+  BrokerReadinessFacts
+    { brokerFactCapabilityInventory = raised
+    , brokerFactBootstrapStore = raised
+    , brokerFactVaultSeal = raised
+    , brokerFactOpenPgp = raised
+    , brokerFactBootstrapLease = raised
+    , brokerFactControllerImage = raised
+    , brokerFactObservedAtMicros = Just observedAtMicros
+    }
+ where
+  raised = BrokerDependencyUnavailable ("readiness observation raised: " <> cause)
 
 -- | The complete labelled dependency inventory, in projection order. Adding a
 -- field to 'BrokerReadinessFacts' without adding it here leaves it out of the

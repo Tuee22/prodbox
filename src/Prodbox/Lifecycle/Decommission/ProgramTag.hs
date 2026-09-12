@@ -37,15 +37,17 @@
 -- producing it.
 --
 -- The measurement was the finding: the two images were __disjoint__ across all
--- twenty-one tags. Sprint @4.85@ has since closed three of them --
--- 'TotalDecommissionEscapeAuditTag', 'HomeSubstrateUninstallTag', and
--- 'LocalDataDispositionTag' are implemented on both sides, because the final
--- no-retention audit, the home-substrate uninstall, and the operator's
--- retained-local-data disposition are now the ordered terminal phase of the
--- signed receipt graph. The compiled program still names no SES, TLS,
--- Authority-backup, custody, or shared-bucket work, and the runner still names
--- no terminal receipt. Recording that as a derived value rather than as prose
--- is what makes closing each one a change the build notices.
+-- twenty-two tags. Sprint @4.85@ has since closed four of them --
+-- 'TotalDecommissionEscapeAuditTag', 'HomeSubstrateUninstallTag',
+-- 'LocalDataDispositionTag' and 'TerminalReceiptTag' are implemented on both
+-- sides, because the final no-retention audit, the home-substrate uninstall,
+-- the operator's retained-local-data disposition and the receipt that closes
+-- them are now the ordered terminal phase of the signed receipt graph. The
+-- compiled program still names no SES, TLS, Authority-backup, custody, or
+-- shared-bucket work, and the runner still names none of the registered-target
+-- observation, recovery, drain, absence, retirement, external-receipt or
+-- credential-revocation operations. Recording that as a derived value rather
+-- than as prose is what makes closing each one a change the build notices.
 module Prodbox.Lifecycle.Decommission.ProgramTag
   ( DecommissionProgramTag (..)
   , decommissionProgramTagText
@@ -92,6 +94,7 @@ import Prodbox.Lifecycle.Teardown.Model
   )
 import Prodbox.Lifecycle.Teardown.Program
   ( DesiredAbsenceProgramError
+  , SomeTeardownOperation (..)
   , TeardownOperation (..)
   , compileDesiredAbsenceProgram
   , desiredAbsenceProgramNodes
@@ -219,7 +222,7 @@ decommissionNodeProgramTag node = case node of
 -- expected absence, and 'validateDecommissionProgramTagParity' reports it as
 -- one.
 totalDecommissionOperationProgramTag
-  :: TeardownOperation 'TotalDecommission -> Maybe DecommissionProgramTag
+  :: TeardownOperation 'TotalDecommission result -> Maybe DecommissionProgramTag
 totalDecommissionOperationProgramTag operation = case operation of
   ObserveRegisteredTarget {} -> Just RegisteredTargetObservationTag
   ObserveStackCheckpointPair {} -> Just RegisteredStackCheckpointRecoveryTag
@@ -253,6 +256,13 @@ totalDecommissionOperationProgramTag operation = case operation of
   CommitOrdinarySurfaceReport -> Nothing
   ReadBackOrdinarySurfaceReport -> Nothing
 
+-- | Sprint 4.94: the same classification over a node's operation, whose result
+-- index a program node deliberately forgets.
+someOperationProgramTag
+  :: SomeTeardownOperation 'TotalDecommission -> Maybe DecommissionProgramTag
+someOperationProgramTag (SomeTeardownOperation operation) =
+  totalDecommissionOperationProgramTag operation
+
 -- | Which side of the total-decommission universe implements a tag.
 --
 -- This is the authored claim. It is checked against the two measured images
@@ -273,14 +283,17 @@ data DecommissionTagImplementation
 
 -- | The current claim, tag by tag.
 --
--- Three tags are two-sided: the final no-retention audit, the home-substrate
--- uninstall, and the retained-local-data disposition are each both a compiled
--- operation and a signed manifest node. Every other tag remains one-sided, and
--- that is the measured state of validation item 10 rather than an accepted
--- design -- the compiled program would destroy the registered AWS targets
--- while never touching SES, the retained TLS material, the Authority backup,
--- or the shared object bucket, and the runner would do the converse while
--- never appending a terminal receipt.
+-- Four of the twenty-two tags are two-sided: the final no-retention audit, the
+-- home-substrate uninstall, the retained-local-data disposition and the
+-- terminal receipt are each both a compiled operation and a signed manifest
+-- node. The other eighteen remain one-sided -- eight compiled-only and ten
+-- runner-only -- and that is the measured state of validation item 10 rather
+-- than an accepted design: the compiled program would destroy the registered
+-- AWS targets while never touching SES, the retained TLS material, the
+-- Authority backup, or the shared object bucket, and the runner would do the
+-- converse. Convergence is Sprint @6.5@'s, because making every tag two-sided
+-- requires the compiled desired-absence program and the signed manifest to
+-- become one universe, which is what the single-writer cutover does.
 decommissionProgramTagImplementation
   :: DecommissionProgramTag -> DecommissionTagImplementation
 decommissionProgramTagImplementation tag = case tag of
@@ -321,10 +334,7 @@ measuredCompiledDecommissionTags =
     ( sort
         . nub
         . concatMap
-          ( maybe [] pure
-              . totalDecommissionOperationProgramTag
-              . programNodeOperation
-          )
+          (maybe [] pure . someOperationProgramTag . programNodeOperation)
         . desiredAbsenceProgramNodes
     )
     (compileDesiredAbsenceProgram TotalDecommissionSurface)
@@ -516,7 +526,7 @@ compiledDecommissionTagPrecedes earlier later =
           named tag =
             [ programNodeNameText (programNodeName node)
             | node <- nodes
-            , totalDecommissionOperationProgramTag (programNodeOperation node) == Just tag
+            , someOperationProgramTag (programNodeOperation node) == Just tag
             ]
           dependenciesOf name =
             concat
@@ -633,7 +643,7 @@ validateDecommissionProgramTagParity =
                 (programNodeNameText (programNodeName node))
             | node <- desiredAbsenceProgramNodes program
             , Nothing <-
-                [totalDecommissionOperationProgramTag (programNodeOperation node)]
+                [someOperationProgramTag (programNodeOperation node)]
             ]
           compiled = either (const []) id measuredCompiledDecommissionTags
           runner = measuredRunnerDecommissionTags

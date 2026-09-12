@@ -200,7 +200,7 @@ controlPlaneAwsStackCreationBindingRepositorySuite =
       awsStackCreationAuthorityAwsScope firstIdentity
         `shouldBe` mustAwsScope fixtureCreationScope
       awsStackCreationAuthoritySubmissionKey firstIdentity
-        `shouldSatisfy` Text.isPrefixOf "aws-stack-creation-v1-"
+        `shouldSatisfy` Text.isPrefixOf "aws-stack-creation-v2-"
       Text.length (awsStackCreationAuthoritySubmissionKey firstIdentity) `shouldBe` 86
       awsStackCreationAuthoritySubmissionKey secondIdentity
         `shouldNotBe` awsStackCreationAuthoritySubmissionKey firstIdentity

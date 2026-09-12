@@ -13,7 +13,6 @@ module Prodbox.Bootstrap.Broker
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (withAsync)
 import Control.Monad (forever)
 import Data.Text qualified as Text
 import Prodbox.Bootstrap.Broker.EngineAdapter (engineBrokerInterpreter)
@@ -64,6 +63,7 @@ import Prodbox.CLI.Command
   )
 import Prodbox.CLI.Output (writeError)
 import Prodbox.Error (fatalError)
+import Prodbox.Supervision (withSupervisedChild)
 import System.Exit (ExitCode (..))
 
 runBootstrapBrokerCommand :: FilePath -> BootstrapBrokerCommand -> IO ExitCode
@@ -142,7 +142,7 @@ applyBootstrapBrokerStart settings = do
           -- route, so a slow first pass delays readiness, never liveness.
           brokerReadinessCacheRefresh readinessCache
           result <-
-            withAsync (readinessObserverLoop readinessCache) $ \_ ->
+            withSupervisedChild (readinessObserverLoop readinessCache) $ \_ ->
               runBrokerServer
                 settings
                 authenticator
@@ -153,6 +153,11 @@ applyBootstrapBrokerStart settings = do
 
 -- | Refresh the latched readiness facts forever. Its lifetime is exactly the
 -- server call it brackets, so a returning or failing server reclaims it.
+--
+-- Sprint 2.134: it is the only thing refreshing the cache @\/readyz@ serves, and
+-- its handle used to be discarded — so an observer that died left the broker
+-- serving a latch that stopped being refreshed, with nothing able to say so.
+-- 'withSupervisedChild' links it: its death now raises here instead.
 readinessObserverLoop :: BrokerReadinessCache -> IO ()
 readinessObserverLoop cache = forever $ do
   threadDelay (fromIntegral (observerPeriodMicros brokerReadinessSchedule))

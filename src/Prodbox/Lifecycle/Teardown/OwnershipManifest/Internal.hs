@@ -86,6 +86,12 @@ import Prodbox.Lifecycle.Teardown.Registry
   , registeredIdentityCoordinateDigest
   , registeredIdentityKind
   )
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ScopeWire
+  , renderScopeWireError
+  , scopeFromWire
+  , scopeToWire
+  )
 
 data OwnershipManifestPurposeValue
   = WriteAheadOwnershipValue
@@ -303,16 +309,22 @@ data DurableCompleteOwnershipManifestError
   | DurableCompleteOwnershipManifestLegacyPlanMissing
   deriving (Eq, Show)
 
+-- | The durable envelope of a complete ownership manifest.
+--
+-- __Sprint 4.92.__ The evidence scope is carried as one nested 'ScopeWire'
+-- rather than flattened into seven of this envelope's own fields. The flattened
+-- form had no field for the run's retained DNS hosted zone, and its decoder
+-- rebuilt the scope through 'mkObservationEvidenceScope', whose contract
+-- hardcodes that zone to absent — so every complete manifest that round-tripped
+-- through here came back naming no zone, and the exact scope comparisons that
+-- bind a manifest to its run compared a zone-less scope against the run's real
+-- one. Nesting states the scope's field set once, in
+-- "Prodbox.Lifecycle.Teardown.ScopeCodec", where a field added to the scope is a
+-- compile error rather than a silent omission.
 data DurableCompleteOwnershipManifestWire = DurableCompleteOwnershipManifestWire
   { durableManifestWireVersion :: !Int
-  , durableManifestWireSurface :: !Int
   , durableManifestWireStackKey :: !Int
-  , durableManifestWireRegistryRevision :: !Text
-  , durableManifestWireRunScope :: !Text
-  , durableManifestWireFoundation :: !Text
-  , durableManifestWireAwsAccount :: !(Maybe Text)
-  , durableManifestWireAwsRegion :: !(Maybe Text)
-  , durableManifestWireOperation :: !Int
+  , durableManifestWireScope :: !ScopeWire
   , durableManifestWirePurposeTag :: !Int
   , durableManifestWirePurposeSurface :: !(Maybe Int)
   , durableManifestWireProvenance :: !Text
@@ -321,6 +333,18 @@ data DurableCompleteOwnershipManifestWire = DurableCompleteOwnershipManifestWire
   , durableManifestWireLegacyPlanDigest :: !(Maybe Text)
   }
   deriving (Eq, Show, Generic, Serialise)
+
+-- | Version 2 is the first complete-manifest encoding whose scope carries the
+-- run's retained DNS hosted zone.
+--
+-- Version 1 bytes are refused rather than upgraded, and the refusal is the
+-- honest answer: a version-1 object was written without a zone, so an upgrade
+-- would have to invent one, and the manifest digest committed beside it was
+-- computed over a zone-less scope projection that a version-2 reader no longer
+-- produces. An upgraded value would satisfy no check it was originally
+-- committed against.
+durableCompleteManifestWireFormatVersion :: Int
+durableCompleteManifestWireFormatVersion = 2
 
 captureDurableCompleteOwnershipManifest
   :: CompleteOwnershipManifest surface
@@ -510,21 +534,29 @@ data DurableOwnershipManifestEntryWire = DurableOwnershipManifestEntryWire
   }
   deriving (Eq, Show, Generic, Serialise)
 
+-- | The durable envelope of a write-ahead ownership manifest.
+--
+-- The scope is nested for the reason recorded on
+-- 'DurableCompleteOwnershipManifestWire': this envelope flattened the same seven
+-- fields, omitted the same DNS hosted zone, and rebuilt the same zone-less scope
+-- on read. A write-ahead manifest is the recovery evidence read back when both
+-- checkpoint copies are unusable, so a scope it cannot reproduce exactly is a
+-- scope the recovery path refuses.
 data DurableWriteAheadOwnershipManifestWire
   = DurableWriteAheadOwnershipManifestWire
   { durableWriteAheadWireVersion :: !Int
-  , durableWriteAheadWireSurface :: !Int
   , durableWriteAheadWireStackKey :: !Int
-  , durableWriteAheadWireRegistryRevision :: !Text
-  , durableWriteAheadWireRunScope :: !Text
-  , durableWriteAheadWireFoundation :: !Text
-  , durableWriteAheadWireAwsAccount :: !(Maybe Text)
-  , durableWriteAheadWireAwsRegion :: !(Maybe Text)
-  , durableWriteAheadWireOperation :: !Int
+  , durableWriteAheadWireScope :: !ScopeWire
   , durableWriteAheadWireDigest :: !Text
   , durableWriteAheadWireEntries :: ![DurableOwnershipManifestEntryWire]
   }
   deriving (Eq, Show, Generic, Serialise)
+
+-- | Version 2 is the first write-ahead encoding whose scope carries the run's
+-- retained DNS hosted zone. Version 1 bytes are refused rather than upgraded,
+-- for the reason recorded on 'durableCompleteManifestWireFormatVersion'.
+durableWriteAheadManifestWireFormatVersion :: Int
+durableWriteAheadManifestWireFormatVersion = 2
 
 captureDurableWriteAheadOwnershipManifestInternal
   :: RegisteredResourceKey
@@ -581,56 +613,23 @@ decodeDurableWriteAheadOwnershipManifest bytes = do
     (canonicalWriteAheadBytes wire == bytes)
     (Left DurableWriteAheadOwnershipManifestNonCanonical)
   unless
-    (durableWriteAheadWireVersion wire == 1)
+    (durableWriteAheadWireVersion wire == durableWriteAheadManifestWireFormatVersion)
     ( Left
         ( DurableWriteAheadOwnershipManifestVersionUnsupported
             (durableWriteAheadWireVersion wire)
         )
     )
-  surface <-
-    decodeWriteAheadBoundedEnum
-      "surface"
-      (durableWriteAheadWireSurface wire)
   key <-
     decodeWriteAheadBoundedEnum
       "stack key"
       (durableWriteAheadWireStackKey wire)
-  revision <-
-    RegistryRevision
-      <$> checkedWriteAheadText
-        "registry revision"
-        512
-        (durableWriteAheadWireRegistryRevision wire)
-  runScope <-
-    DurableObservationRunScope
-      <$> checkedWriteAheadText
-        "run scope"
-        512
-        (durableWriteAheadWireRunScope wire)
-  foundation <-
-    LinuxRke2FoundationId
-      <$> checkedWriteAheadText
-        "foundation"
-        512
-        (durableWriteAheadWireFoundation wire)
-  awsScope <- decodeWriteAheadAwsScope wire
-  operation <-
-    decodeWriteAheadLifecycleOperation
-      (durableWriteAheadWireOperation wire)
+  scope <- decodeWriteAheadScopeWire (durableWriteAheadWireScope wire)
   digest <-
     OwnershipManifestDigest
       <$> checkedWriteAheadDigest
         "manifest digest"
         (durableWriteAheadWireDigest wire)
   entries <- mapM writeAheadEntryFromWire (durableWriteAheadWireEntries wire)
-  let scope =
-        mkObservationEvidenceScope
-          surface
-          revision
-          runScope
-          foundation
-          awsScope
-          operation
   validateWriteAheadBinding key scope entries
   Right
     DurableWriteAheadOwnershipManifest
@@ -645,15 +644,9 @@ wireFromComplete
   :: CompleteOwnershipManifest surface -> DurableCompleteOwnershipManifestWire
 wireFromComplete complete =
   DurableCompleteOwnershipManifestWire
-    { durableManifestWireVersion = 1
-    , durableManifestWireSurface = fromEnum (evidenceCleanupSurface scope)
+    { durableManifestWireVersion = durableCompleteManifestWireFormatVersion
     , durableManifestWireStackKey = fromEnum (completeOwnershipManifestStackKey complete)
-    , durableManifestWireRegistryRevision = registryRevisionText (evidenceRegistryRevision scope)
-    , durableManifestWireRunScope = runScopeText (evidenceDurableRunScope scope)
-    , durableManifestWireFoundation = foundationText (evidenceLinuxRke2Foundation scope)
-    , durableManifestWireAwsAccount = accountText <$> evidenceAwsScope scope
-    , durableManifestWireAwsRegion = regionText <$> evidenceAwsScope scope
-    , durableManifestWireOperation = fromEnumLifecycleOperation (evidenceLifecycleOperation scope)
+    , durableManifestWireScope = scopeToWire scope
     , durableManifestWirePurposeTag = purposeTag purpose
     , durableManifestWirePurposeSurface = purposeSurface purpose
     , durableManifestWireProvenance = provenanceText (completeOwnershipManifestProvenance complete)
@@ -674,23 +667,15 @@ restoreWire
        SomeCompleteOwnershipManifest
 restoreWire wire = do
   unless
-    (durableManifestWireVersion wire == 1)
+    (durableManifestWireVersion wire == durableCompleteManifestWireFormatVersion)
     ( Left
         ( DurableCompleteOwnershipManifestVersionUnsupported
             (durableManifestWireVersion wire)
         )
     )
-  surface <- decodeBoundedEnum "surface" (durableManifestWireSurface wire)
   key <- decodeBoundedEnum "stack-key" (durableManifestWireStackKey wire)
-  operation <- decodeLifecycleOperation (durableManifestWireOperation wire)
   purpose <- decodePurpose wire
-  revision <-
-    RegistryRevision <$> checkedText "registry revision" 512 (durableManifestWireRegistryRevision wire)
-  runScope <-
-    DurableObservationRunScope <$> checkedText "run scope" 512 (durableManifestWireRunScope wire)
-  foundation <-
-    LinuxRke2FoundationId <$> checkedText "foundation" 512 (durableManifestWireFoundation wire)
-  awsScope <- decodeAwsScope wire
+  scope <- decodeCompleteScopeWire (durableManifestWireScope wire)
   provenance <-
     OwnershipManifestProvenance
       <$> checkedText "manifest provenance" 1024 (durableManifestWireProvenance wire)
@@ -704,14 +689,11 @@ restoreWire wire = do
     traverse
       (fmap LegacyAdoptionPlanDigest . checkedDigest "legacy plan digest")
       (durableManifestWireLegacyPlanDigest wire)
-  let scope =
-        mkObservationEvidenceScope
-          surface
-          revision
-          runScope
-          foundation
-          awsScope
-          operation
+  -- The surface that selects the witness is the scope's own. It was encoded
+  -- once and used for both before, so 'validateStaticBinding' rechecking the two
+  -- against each other was already a check that could not fire; the fields that
+  -- genuinely needed guarding were the ones the envelope never encoded.
+  let surface = evidenceCleanupSurface scope
   validateStaticBinding surface key scope purpose legacyPlan
   case surface of
     LocalOnly -> restoreWith LocalOnlySurface key scope purpose provenance manifestVersion digest legacyPlan
@@ -851,16 +833,19 @@ decodePurpose wire = case durableManifestWirePurposeTag wire of
     Just raw -> LegacyAdoptionOwnershipValue <$> decodeBoundedEnum "purpose surface" raw
   other -> Left (DurableCompleteOwnershipManifestEnumInvalid "purpose" other)
 
-decodeAwsScope
-  :: DurableCompleteOwnershipManifestWire
-  -> Either DurableCompleteOwnershipManifestError (Maybe AwsScope)
-decodeAwsScope wire = case (durableManifestWireAwsAccount wire, durableManifestWireAwsRegion wire) of
-  (Nothing, Nothing) -> Right Nothing
-  (Just account, Just region) -> do
-    accountId <- AwsAccountId <$> checkedText "AWS account" 128 account
-    awsRegion <- AwsRegion <$> checkedText "AWS region" 128 region
-    Right (Just (AwsScope accountId awsRegion))
-  _ -> Left (DurableCompleteOwnershipManifestFieldInvalid "AWS scope was only partially encoded")
+-- | The canonical scope decoder, mapped into this envelope's error type.
+--
+-- The field rules live in "Prodbox.Lifecycle.Teardown.ScopeCodec" rather than
+-- here. Restating them per envelope is what let this module validate an AWS
+-- account as any bounded printable text while another module required twelve
+-- digits, and what let the DNS hosted zone go unvalidated because it went
+-- unencoded.
+decodeCompleteScopeWire
+  :: ScopeWire
+  -> Either DurableCompleteOwnershipManifestError ObservationEvidenceScope
+decodeCompleteScopeWire =
+  first (DurableCompleteOwnershipManifestFieldInvalid . renderScopeWireError)
+    . scopeFromWire
 
 decodeBoundedEnum
   :: forall value
@@ -872,20 +857,6 @@ decodeBoundedEnum label raw
   | raw < fromEnum (minBound :: value) || raw > fromEnum (maxBound :: value) =
       Left (DurableCompleteOwnershipManifestEnumInvalid label raw)
   | otherwise = Right (toEnum raw)
-
-decodeLifecycleOperation
-  :: Int -> Either DurableCompleteOwnershipManifestError LifecycleOperation
-decodeLifecycleOperation raw = case raw of
-  0 -> Right ReconcileDesiredAbsent
-  1 -> Right ReconcileDesiredPresent
-  2 -> Right RunTerminalEscapeAudit
-  _ -> Left (DurableCompleteOwnershipManifestEnumInvalid "lifecycle operation" raw)
-
-fromEnumLifecycleOperation :: LifecycleOperation -> Int
-fromEnumLifecycleOperation operation = case operation of
-  ReconcileDesiredAbsent -> 0
-  ReconcileDesiredPresent -> 1
-  RunTerminalEscapeAudit -> 2
 
 purposeTag :: OwnershipManifestPurposeValue -> Int
 purposeTag purpose = case purpose of
@@ -936,21 +907,9 @@ writeAheadWireFromValues
   -> DurableWriteAheadOwnershipManifestWire
 writeAheadWireFromValues key scope digest entries =
   DurableWriteAheadOwnershipManifestWire
-    { durableWriteAheadWireVersion = 1
-    , durableWriteAheadWireSurface = fromEnum (evidenceCleanupSurface scope)
+    { durableWriteAheadWireVersion = durableWriteAheadManifestWireFormatVersion
     , durableWriteAheadWireStackKey = fromEnum key
-    , durableWriteAheadWireRegistryRevision =
-        registryRevisionText (evidenceRegistryRevision scope)
-    , durableWriteAheadWireRunScope =
-        runScopeText (evidenceDurableRunScope scope)
-    , durableWriteAheadWireFoundation =
-        foundationText (evidenceLinuxRke2Foundation scope)
-    , durableWriteAheadWireAwsAccount =
-        accountText <$> evidenceAwsScope scope
-    , durableWriteAheadWireAwsRegion =
-        regionText <$> evidenceAwsScope scope
-    , durableWriteAheadWireOperation =
-        fromEnumLifecycleOperation (evidenceLifecycleOperation scope)
+    , durableWriteAheadWireScope = scopeToWire scope
     , durableWriteAheadWireDigest = ownershipManifestDigestText digest
     , durableWriteAheadWireEntries = map writeAheadEntryToWire entries
     }
@@ -1091,38 +1050,13 @@ validateWriteAheadBinding key scope entries = do
       )
       (durableOwnershipManifestEntryObservedIdentities entry)
 
-decodeWriteAheadAwsScope
-  :: DurableWriteAheadOwnershipManifestWire
-  -> Either DurableWriteAheadOwnershipManifestError (Maybe AwsScope)
-decodeWriteAheadAwsScope wire =
-  case ( durableWriteAheadWireAwsAccount wire
-       , durableWriteAheadWireAwsRegion wire
-       ) of
-    (Nothing, Nothing) -> Right Nothing
-    (Just account, Just region) -> do
-      accountId <-
-        AwsAccountId <$> checkedWriteAheadText "AWS account" 128 account
-      awsRegion <-
-        AwsRegion <$> checkedWriteAheadText "AWS region" 128 region
-      Right (Just (AwsScope accountId awsRegion))
-    _ ->
-      Left
-        ( DurableWriteAheadOwnershipManifestFieldInvalid
-            "AWS scope was only partially encoded"
-        )
-
-decodeWriteAheadLifecycleOperation
-  :: Int
-  -> Either DurableWriteAheadOwnershipManifestError LifecycleOperation
-decodeWriteAheadLifecycleOperation raw = case raw of
-  0 -> Right ReconcileDesiredAbsent
-  1 -> Right ReconcileDesiredPresent
-  2 -> Right RunTerminalEscapeAudit
-  _ ->
-    Left
-      ( DurableWriteAheadOwnershipManifestFieldInvalid
-          "lifecycle operation was outside the closed enum"
-      )
+-- | The canonical scope decoder, mapped into the write-ahead error type.
+decodeWriteAheadScopeWire
+  :: ScopeWire
+  -> Either DurableWriteAheadOwnershipManifestError ObservationEvidenceScope
+decodeWriteAheadScopeWire =
+  first (DurableWriteAheadOwnershipManifestFieldInvalid . renderScopeWireError)
+    . scopeFromWire
 
 decodeWriteAheadBoundedEnum
   :: forall value
@@ -1179,21 +1113,6 @@ canonicalWriteAheadBytes = LazyByteString.toStrict . serialise
 
 canonicalBytes :: DurableCompleteOwnershipManifestWire -> ByteString
 canonicalBytes = LazyByteString.toStrict . serialise
-
-registryRevisionText :: RegistryRevision -> Text
-registryRevisionText (RegistryRevision value) = value
-
-runScopeText :: DurableObservationRunScope -> Text
-runScopeText (DurableObservationRunScope value) = value
-
-foundationText :: LinuxRke2FoundationId -> Text
-foundationText (LinuxRke2FoundationId value) = value
-
-accountText :: AwsScope -> Text
-accountText (AwsScope (AwsAccountId value) _) = value
-
-regionText :: AwsScope -> Text
-regionText (AwsScope _ (AwsRegion value)) = value
 
 provenanceText :: OwnershipManifestProvenance -> Text
 provenanceText (OwnershipManifestProvenance value) = value

@@ -554,6 +554,7 @@ library
         Prodbox.Lifecycle.Teardown.Graph
         Prodbox.Lifecycle.Teardown.LocalRke2HostObservation
         Prodbox.Lifecycle.Teardown.Model
+        Prodbox.Lifecycle.Teardown.ScopeCodec
         Prodbox.Lifecycle.Teardown.Observation
         Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
         Prodbox.Lifecycle.Teardown.OperationalCredentialInventory
@@ -641,6 +642,7 @@ library
         Prodbox.Scaling.Spot
         Prodbox.Substrate
         Prodbox.Subprocess
+        Prodbox.Supervision
         Prodbox.TestPlan
         Prodbox.Test.GatewayRuntimeStability
         Prodbox.Test.CounterexampleValidation
@@ -1013,7 +1015,11 @@ test-suite prodbox-unit
         RoleReadinessSuite
         SigV4
         SmtpKeyRepairInterpreter
+        CredentialDeliveryHarness
+        ScopeCodecProperties
+        ScopeCodecWitness
         StoreLifetimeWitness
+        SupervisionWitness
         TargetCommitSmtp
         Tier0Fixture
         TestSupport
@@ -1164,7 +1170,10 @@ test-suite prodbox-daemon-lifecycle
     type:             exitcode-stdio-1.0
     main-is:          Main.hs
     hs-source-dirs:   test/daemon-lifecycle test/support
-    other-modules:    TestSupport
+    other-modules:
+        TestSupport
+        Tier0Fixture
+
     default-language: GHC2021
     ghc-options:      -Wall
     build-depends:

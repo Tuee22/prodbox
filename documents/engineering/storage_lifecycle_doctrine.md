@@ -17,11 +17,16 @@ provenance, not a parallel status ledger.
   root (default `.data/`). No other operator-host state is preserved across cluster
   wipes. The legacy `.prodbox-state/` repo-local cache is removed; chart secrets, gateway
   event-key files, stack-output caches, EKS kubeconfig snapshots, and HA-RKE2 SSH key
-  material no longer live on disk outside `.data/`. **Qualification, recorded 2026-09-11 (Sprint
-  `0.33`):** checkpoint-derived EKS kubeconfig materialization is not retired. `withEksKubeconfig`
-  in `src/Prodbox/Infra/AwsEksTestStack.hs` still materializes one per call — into a private
-  temporary directory rather than `.prodbox-state/`, so the durable-root rule above holds — and is
-  reached from the legacy public cascade's AWS drain. Sprint `7.40` converts or deletes it.
+  material no longer live on disk outside `.data/`. **Qualification (Sprint `7.40`, 2026-09-11):**
+  checkpoint-derived EKS kubeconfig materialization is not retired, but it is no longer restated.
+  `withEksKubeconfig` in `src/Prodbox/Infra/AwsEksTestStack.hs` still materializes a kubeconfig per
+  call and now does it through `Prodbox.Lifecycle.Teardown.EphemeralKubectl`, the one owning module,
+  into a private temporary directory that dies with the continuation rather than into
+  `.prodbox-state/` — so the durable-root rule above holds, and holds for exactly one implementation
+  of it. The bearer credential is written into that same directory rather than served through a
+  FIFO, which is a second short-lived owner-only file under the same lifetime and outside `.data/`.
+  Deleting the checkpoint-derived path itself remains owned by the Sprint `7.36` removal row in
+  [legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
 - Retained storage is reconciled via the static `manual` no-provisioner `StorageClass`
   plus deterministic PV resources to guarantee stable PVC-to-PV rebinding across cluster
   delete/reinstall.

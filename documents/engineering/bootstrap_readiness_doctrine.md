@@ -119,13 +119,21 @@ a healthy system project `Starting` and evict itself. The bound is therefore **d
 observer period and its per-pass budget, never authored beside them** — see
 `Prodbox.Bootstrap.Broker.Readiness`.
 
-**That argument covers a slow observer, not a dead one (recorded 2026-09-11, Sprint `0.33`).** The
-derivation makes an unmeetable bound unconstructible, which is the right property and is not the
-only one required. The thread that refreshes the cache is spawned in `src/Prodbox/Bootstrap/Broker.hs`
-with its handle discarded, so if a refresh pass throws, the observer dies, nothing observes the
-death, and the record staleness-expires with no attributable cause — the Pod evicts itself and the
-log says only that readiness went stale. A dead observer meets no bound. Sprint `2.134` brings the
-observer into a supervision tree whose constructor links it.
+**That argument covers a slow observer, not a dead one (Sprint `0.33`, closed by Sprint `2.134`).**
+The derivation makes an unmeetable bound unconstructible, which is the right property and was not
+the only one required. The thread that refreshes the cache used to be spawned in
+`src/Prodbox/Bootstrap/Broker.hs` with its handle discarded, so a refresh pass that threw killed the
+observer, nothing observed the death, and the record staleness-expired with no attributable cause.
+A dead observer meets no bound.
+
+Two changes close it, and both are needed. The observer is spawned through
+`Prodbox.Supervision.withSupervisedChild`, which links it, so the loop itself dying reaches the
+broker rather than disappearing. And a refresh pass that raises no longer escapes at all: it is
+recorded as `raisedBrokerReadinessFacts`, a fail-closed record whose every dependency is a
+non-terminal unavailable naming the exception, stamped with the instant the pass completed. This is
+the shape `Prodbox.ControlPlane.RoleReadinessObserver` already used, and it is what keeps a
+transient backend blip from becoming a process death now that the handle is linked: the link covers
+the residual case, not the ordinary one.
 
 The Target Secret Agent preserves that same request-path contract while making its protected
 diagnostic distinguishable. Its resolver reads the composed cached facts once, computes the

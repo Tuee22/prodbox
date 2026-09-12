@@ -391,8 +391,10 @@ mismatch exposed by this sprint's live cascade recovery. The former gates are co
 `5.36` landed the lifecycle-kernel `TestRunner` client, Sprint `7.38` sealed the run's DNS hosted
 zone into the compiled observation scope, Sprint `4.89` landed the custodial-capability disposition,
 and Sprint `4.86` landed the non-public candidate entrypoint that drives the total dispatcher over
-a durable descriptor-bound run. Deploy the corrected runtime, recover the registered AWS graph,
-then resume activation qualification.
+a durable descriptor-bound run. Sprints `7.39` and `7.40` closed the last of them on 2026-09-11: the
+ephemeral Kubernetes client's credential mechanism, which this sprint's own live campaign proved had
+never authenticated. Deploy the corrected runtime, recover the registered AWS graph, then resume
+activation qualification. This is the plan suite's only open row.
 **Deployment qualification**: pending — clean-room/destructive evidence from the superseded
 cascade is invalid for the replacement composition.
 **Doctrine**: [Lifecycle Control-Plane Architecture § 12, “Cutover and
@@ -409,13 +411,16 @@ Fixtures”](../documents/engineering/integration_fixture_doctrine.md#7-clean-ro
 `src/Prodbox/Test/Qualification/Evidence.hs`,
 `src/Prodbox/Capacity/ProviderWorkerBudget.hs`, `docker/prodbox.Dockerfile`, the four
 `pulumi/*/Pulumi.yaml` projects, and the registered retired-symbol scanner.
-**Closure dependency**: Sprint `7.40`, which completes the ephemeral Kubernetes client's
-consolidation onto the credential mechanism Sprint `7.39` establishes.
-**Backward dependency**: Sprint `7.40`. Activating the replacement as the sole public writer while
-its AWS drain cannot authenticate would strand every EKS teardown path behind a writer with no
-rollback: the legacy route this sprint deletes is the only one an operator could fall back to, and
-Sprint `6.5` proved on 2026-09-11 that the replacement's ephemeral Kubernetes client has never
-authenticated on any live run.
+**Closure dependency**: none. It was Sprint `7.40`, which completed the ephemeral Kubernetes
+client's consolidation onto the credential mechanism Sprint `7.39` established; both landed
+2026-09-11 and the dependency is discharged.
+**Backward dependency**: Sprint `7.40`, discharged 2026-09-11 and retained here because
+[Standard N.2](development_plan_standards.md#n-phase-independence-and-execution-order) requires the
+admission to stay legible where the deviation happened. Activating the replacement as the sole
+public writer while its AWS drain could not authenticate would have stranded every EKS teardown path
+behind a writer with no rollback: the legacy route this sprint deletes is the only one an operator
+could fall back to, and Sprint `6.5` proved on 2026-09-11 that the replacement's ephemeral
+Kubernetes client had never authenticated on any live run.
 **Live-proof**: pending and non-blocking for code-local closure. Two consecutive destructive home
 cycles run the qualification-only replacement candidate under its exact identity before any public
 activation. Standard P forbids activation and legacy deletion until the current-revision home row is
@@ -537,8 +542,9 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
    partial state Sprint `4.85` closed on, so this item distinguishes convergence achieved from
    convergence assumed.
 9. The EKS drain's Kubernetes UID observation authenticates and returns, rather than exhausting its
-   wall clock. Until Sprint `7.39` lands the credential mechanism and `7.40` removes the third
-   statement of it, no candidate cycle can reach the drain at all, so no cycle can qualify.
+   wall clock. Sprints `7.39` and `7.40` landed the credential mechanism and removed the third
+   statement of it on 2026-09-11, so a candidate cycle can now reach the drain; this item is
+   unsatisfied until a live cycle shows it returning.
 10. Two consecutive home clean-room candidate cycles produce the complete artifacts, uninstall last,
    and leave only intended retained resources. These live results remain non-blocking Standard-P
    evidence and do not themselves make code-local closure contingent on infrastructure.
@@ -6535,6 +6541,124 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
   `sha256:7d4d9ced753a7aa8d56d4d8ae6bc19bf37e83e0120accbbf479248314b18f756`. Design and prove a
   token-delivery mechanism that pairs reader and writer without a regular file before running another
   live cycle; a cycle run before that reproduces this same hang.
+- **Corrected 2026-09-11 (Standard C): the instruction in the bullet above was wrong about the
+  constraint, and Sprints `7.39` and `7.40` are Done.** "The bearer token must never reach a regular
+  file" was a design premise this campaign had been carrying as a finding, and the measurement it
+  lacked overturned it. `kubectl` v1.35.8 opens `users[0].user.tokenFile` **exactly twice per
+  invocation and independently of how many API requests it makes**, measured under `strace` across a
+  zero-request `version`, a one-request `--raw`, and a six-request discovery-bearing `get`. Pairing a
+  reader and a writer without a regular file therefore cannot be done at all here: a rendezvous must
+  serve a reader whose arrival it cannot observe and whose count it cannot know, which is why both
+  eliminated designs failed and why the instruction had no satisfiable solution. The credential is
+  now a private file written with `O_EXCL`, `O_NOFOLLOW`, `CLOEXEC` and mode `0600` beside the
+  kubeconfig, in the same owner-only directory that dies with the continuation, read back and
+  compared before the client value exists. The third statement of the machinery in
+  `src/Prodbox/Infra/AwsEksTestStack.hs` is deleted and
+  `checkEphemeralCredentialMachinery` holds the machinery to one file. Credential delivery to a
+  subprocess remains a Standard-P surface, so this sprint's deployment qualification stays pending
+  and no identity captured before that change qualifies afterwards.
+- **The next live cycle is admissible and is the campaign's next step.** It is a real experiment
+  rather than a rerun of the hang: an EKS drain that reaches and passes
+  `lifecycle/target/aws-eks/commit-eks-drain-intent`'s Kubernetes UID observation would be the first
+  time any AWS teardown path has authenticated to an EKS API server. The legacy public writer remains
+  sole and no qualification artifact or activation witness exists.
+- **Live `recovery-ephemeral-credential-file` runs 2026-09-11 22:55:32 → 2026-09-12 00:00:33 EDT and
+  the EKS drain authenticates for the first time.** The cycle exits **1** and emits non-qualifying
+  evidence `.test-data/qualification/cascade-5fa4e73c9c9b00387639b6a2.evidence`, governed digest
+  `94646c92f7f165040692fcd01ddd1e7c9b5517347f1bde9cb9f01ad0d1438deb`, file SHA-256
+  `d226cd7da0bb2d7d0a2538290d2100313d10acb19c91b50aec27d777d2b6cbf8`, under graph digest
+  `8e5ebb368c01c8a656b4a93b544359eda53f998bb9289992ce1a0d798f5dcb4b`. Transcript
+  `/tmp/prodbox-sprint-6.5-live-recovery-ephemeral-credential-file.log` at
+  `sha256:76320e314a10bb8496d0243006388c590dfede344bed6a28d474f20f059b1c02`; the synchronized
+  executable is exact at
+  `sha256:e4ed6986de6f93197120e22964d6565caf4ac4ecf9808c55fd972e6489db70a8`. Credentials are
+  preserved and the legacy public writer remains sole.
+- **What the run proves, and how the transcript proves it rather than suggesting it.**
+  `lifecycle/target/aws-eks/commit-eks-drain-intent` now fails with
+  `EksTeardownSelectionFailed (EksDrainCommitSelectionSessionInvalid (EksDrainDeadlineInvalid
+  1789184995 1789185895))`. That refusal is reachable only from inside
+  `acquireVerifiedEksDrainSelection`'s `EksDrainKubernetesUidPresent` arm: the interpreter reads the
+  cluster UID through the ephemeral client first, and only on a *present* UID does it build the
+  identity observation and call `mkEksDrainSession`, whose deadline check is the fifth validation in
+  that function and sits after `validateKubernetesIdentity` has already consumed the observation.
+  `EksDrainCommitSelectionKubernetesUidUnobservable` — the refusal every prior cycle in this
+  campaign produced — appears **zero** times in the transcript. The ephemeral Kubernetes client
+  authenticated to the EKS API server and returned the cluster UID, which had never happened on any
+  live run. Sprint `7.39`'s live half and the live half of Sprint `7.40`'s routing are proven on this
+  cycle.
+- **Stable counterexample `CASCADE-QUALIFICATION-EKS-DRAIN-LEASE-EXCEEDS-BEARER-EXPIRY-2026-09-12`
+  owns what it stopped at, and the mechanism is arithmetic rather than environmental.**
+  `mkEksDrainSession` refuses unless `deadline <= projectionExpiry` *and*
+  `deadline <= now + maximumEksDrainLifetimeSeconds`, where the second constant is **900**. The
+  qualification runner asks for `mkEksDrainLeaseSeconds 900` — exactly the ceiling — and the deadline
+  is computed as `now + lease` by `drainDeadline` in
+  `src/Prodbox/Lifecycle/Teardown/CloudRuntimeProduction.hs`, before the Provider-issued projection
+  that has to back it is minted. A bearer signed at any time at or before that `now` therefore
+  expires at or before `now + 900`, so a lease equal to the ceiling can never satisfy the first
+  bound. The observed pair is exactly `deadline - now == 900`. The other production caller,
+  `src/Prodbox/Test/LifecycleCleanupClient.hs`, asks for 300 and would pass, which is why the defect
+  was invisible until a run got this far.
+- **No repair is landed for it here, deliberately.** How long a live EKS drain is authorized for is
+  a Standard-P surface, and the repair is a design choice rather than a transcription: the deadline
+  must be derived from the Provider-issued bearer instead of racing it, which means clamping it at
+  the one site holding both — `selectWithProjectionClient` in
+  `src/Prodbox/Lifecycle/Teardown/EksDrainInterpreter.hs` — and deciding what to do when the clamp
+  leaves less than the drain's own absolute completion deadline of **300 s**
+  (`defaultDrainTimeout`). Silently accepting a too-short window would trade this loud refusal for
+  an obscure mid-drain timeout, so the shortfall needs a refusal of its own. Choose that floor from
+  a measurement of the projection's actual remaining lifetime at this step, which this run did not
+  capture: `EksDrainDeadlineInvalid` carries `now` and `deadline` but not `projectionExpiry`, and
+  `EksDrainProjectionExpired` did not fire, so all that is proven is `now < projectionExpiry < now +
+  900`. Widening that refusal to carry the expiry is the cheapest next measurement.
+- **The rest of the run is unchanged from the prior cycle and is not attributed here.** Four
+  registered-target observations refuse — `aws-eks-iam-role-family` and
+  `dns-aws-dns01-challenge-records` as unobservable, `aws-eks-subzone` and `aws-eks` on
+  `AwsStackCreationConfirmationMissing`, and `aws-test` on a series with no reserved cycle — and the
+  recovery-plane, EBS, load-balancer-controller and validation-hosted-zone families all complete.
+  These stay deliberately unattributed, as they have through this campaign.
+- **Three pre-activation defects in this sprint's own machinery are closed (2026-09-11), and none
+  of them needed infrastructure to find.** They were found by auditing the sprint's deliverables
+  against the tree rather than by a failing run, which is the point: each would have passed every
+  test the sprint had.
+  **The staged plan gated on nothing.** Its deliverable says the activation and deletion stages
+  cannot enter Apply without the matching `QualificationPassed` witness. What existed was an
+  ordering fold over a six-constructor enumeration, so a run containing
+  `PlanActivateSingleReplacementWriter` and `PlanDeleteLegacyRouteAndIdentity` was constructible with
+  no witness in existence anywhere, and `resumeCutoverPlan canonicalCutoverPlan` returned `Right []`
+  — the complete cutover accepted on constructor ordering alone. `AdmittedCutoverStage` is now
+  opaque and produced only by `admitCutoverStage`, which demands the witness the stage requires
+  against the identity it will act on, and the resume fold takes admitted stages rather than named
+  ones. `cutoverStageRequiresWitness` is total over the six, and says why the other four must not
+  require one: they are what produce the witnesses.
+  **`deleteLegacyRoute` took no witness and could leave the identity unchanged.** Being reachable
+  only from a private post-activation constructor made it unreachable without a *prior*
+  qualification, which is not the same as being gated by one — the witness that authorized
+  activation could be for a different identity by the time deletion runs. It now takes the witness
+  and refuses a resulting identity equal to the one deleted, because a deletion that changed nothing
+  would leave `qualifyPostActivation` satisfiable by the very witness that authorized activation, so
+  the deployment would still be called qualified after the source it was qualified on had gone. The
+  unit case that demonstrated the hole — deleting with the same identity and replaying the same
+  witness — is replaced by one that builds a genuine post-deletion source.
+  **The bounded legacy scanner matched substrings and mislabelled a partial removal.** It now
+  matches whole identifier tokens, the same rule `Prodbox.Legacy.EscapeRegistry` applies to its seam
+  symbols, because a substring rule gets the answer wrong in both directions: it invents a site
+  before activation and refuses to call the tree clean after deletion.
+  `LegacyCutoverFragmentAbsentFromPath` separates a fragment gone from one registered path while
+  surviving in others from one gone everywhere — the former is a half-deleted legacy route, which
+  the scan used to report as a duplication carrying a count that was not a duplication count.
+  Correcting the match also removed one registration that was an artifact of it:
+  `src/Prodbox/Lifecycle/ResourceRegistry.hs` mentions `runNativeDeleteCascade` only in a haddock
+  cross-reference, so the two bounded layers now agree — the escape registry's coverage rule for the
+  same symbol never listed that file either. Clean-room handoff **20/20**, installed
+  `clean-room-handoff` exits 0, primary unit **4,972/4,972**, canonical `prodbox dev check` exits 0.
+- **Three current-state claims elsewhere in the tree were false and are corrected (Standard C).**
+  `Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal` said nothing in the repository calls its
+  entrypoint, which `Prodbox.Test.CascadeQualification` has done since Sprint `4.86` closed.
+  `Prodbox.Lifecycle.Decommission.ProgramTag` and its unit case said the images were disjoint across
+  *twenty-one* tags and that *three* are two-sided; the measured universe is twenty-two and four.
+  `documents/engineering/cli_command_surface.md` said seventeen of twenty-one operations are
+  one-sided; it is eighteen of twenty-two, eight compiled-only and ten runner-only. None of the
+  three changes what is owed, and all three would have been read as the current state.
 
 ### Remaining Work
 
@@ -6543,6 +6667,29 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
    tests, bounded pre/post-activation scanner, and the `runNativeDeleteCascade` conversion received
    from Sprint `4.84`. The Authority Backup rollout counterexample is closed; retain its exact
    requested-revision-plus-availability barrier while completing this work.
+
+   **What is left of this item, stated exactly (2026-09-11).** The qualification-only runner exists
+   and is installed; the type-indexed cutover machinery exists, and its staged plan now gates on the
+   witness; the bounded scanner exists and now matches tokens and distinguishes a partial removal.
+   What remains is the part that cannot be done before activation and the part that must be done
+   with it:
+
+   - **No production caller constructs a `CutoverState`.** `initialCutoverState`,
+     `activateReplacement`, `deleteLegacyRoute` and `qualifyPostActivation` have no non-test caller,
+     so the machinery is a compile-time proof with nothing wired to it. Wiring it is the activation.
+   - **The `runNativeDeleteCascade` conversion has not started**, deliberately: this sprint's own
+     Sprint-`4.84` handoff says it lands *with* the activation, because converting the legacy caller
+     first would build the exact-keyed selection on top of the route the activation deletes.
+     `selectRegisteredStackGenerationForCleanup` is reached today only by the replacement path.
+   - **The post-activation scan mode has no runtime surface.** `LegacyScanPostActivation` is
+     constructed only in tests; the installed validation hardcodes the pre-activation mode. Selecting
+     the mode from the cutover phase is part of the activation rather than ahead of it, because
+     before activation the post-activation answer is known to be wrong.
+   - **Program-tag convergence is eighteen of twenty-two tags** and cannot move until the compiled
+     desired-absence program and the signed manifest are one universe, which is what the cutover
+     does.
+   - **The installed fake traces are of the activated public cascade**, which does not exist yet;
+     the five rows that exist today are static constants over the qualification-only summary.
 2. Run the complete code-local validation matrix and keep the legacy public writer sole while the
    home qualification row is pending.
 3. Run two consecutive home candidate cycles, record the exact current-revision Standard-P

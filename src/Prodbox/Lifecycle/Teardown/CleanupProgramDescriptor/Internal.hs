@@ -110,6 +110,7 @@ import Prodbox.Lifecycle.Teardown.Model
   )
 import Prodbox.Lifecycle.Teardown.Program
   ( RegisteredTargetBinding
+  , SomeTeardownOperation (..)
   , TeardownOperation (..)
   , registeredTargetCoordinateDigest
   , registeredTargetKey
@@ -869,7 +870,8 @@ semanticOperations compiled =
       , semanticOperationTag = teardownOperationTag operation
       , semanticOperationTarget = semanticTarget <$> operationTarget operation
       }
-  | (nodeId, operation) <- compiledDesiredAbsenceOperations compiled
+  | (nodeId, SomeTeardownOperation operation) <-
+      compiledDesiredAbsenceOperations compiled
   ]
 
 semanticTarget :: RegisteredTargetBinding -> SemanticTargetWire
@@ -889,7 +891,7 @@ semanticTarget target =
     }
 
 operationTarget
-  :: TeardownOperation surface -> Maybe RegisteredTargetBinding
+  :: TeardownOperation surface result -> Maybe RegisteredTargetBinding
 operationTarget operation = case operation of
   ObserveRegisteredTarget target -> Just target
   ObserveStackCheckpointPair target -> Just target

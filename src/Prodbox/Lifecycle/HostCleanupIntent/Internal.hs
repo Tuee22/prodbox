@@ -108,6 +108,7 @@ import Control.Exception
   )
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
+import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -146,6 +147,7 @@ import Prodbox.Lifecycle.CleanupRun
   , encodeCleanupRunReport
   , mkCleanupDigest
   )
+import Prodbox.Lifecycle.DnsRecord (HostedZoneId)
 import Prodbox.Lifecycle.Teardown.CascadeEvidence
   ( CascadeEvidenceError
   , CascadeReportDigest
@@ -183,13 +185,15 @@ import Prodbox.Lifecycle.Teardown.Model
   , LinuxRke2FoundationId (..)
   , ObservationEvidenceScope
   , RegistryRevision (..)
-  , evidenceAwsScope
-  , evidenceCleanupSurface
-  , evidenceDurableRunScope
-  , evidenceLifecycleOperation
-  , evidenceLinuxRke2Foundation
-  , evidenceRegistryRevision
-  , mkObservationEvidenceScope
+  )
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ObservationEvidenceScopeFields (..)
+  , ScopeWire
+  , observationEvidenceScopeFields
+  , observationEvidenceScopeFromFields
+  , renderScopeWireError
+  , scopeFromWire
+  , scopeToWire
   )
 import System.Directory
   ( canonicalizePath
@@ -300,8 +304,14 @@ hostCleanupIntentLockPath :: HostCleanupIntentStore -> FilePath
 hostCleanupIntentLockPath store =
   hostCleanupIntentDirectory store </> ".host-cleanup-intent.lock"
 
+-- | Version 3 is the first envelope that stores the scope as the one canonical
+-- nested encoding instead of seven flattened fields, and therefore the first
+-- that records the run's retained DNS hosted zone at all.  Version 2 bytes are
+-- refused rather than upgraded: a version-2 envelope never held a zone, so an
+-- upgrade would have to assert that the run had none, and the intent would then
+-- bind the destructive boundary to a scope the run was never compiled against.
 hostCleanupIntentFormatVersion :: Word16
-hostCleanupIntentFormatVersion = 2
+hostCleanupIntentFormatVersion = 3
 
 maximumCleanupRunBytes :: Int
 maximumCleanupRunBytes = 512 * 1024
@@ -310,6 +320,19 @@ maximumCleanupRunBytes = 512 * 1024
 maximumHostCleanupIntentBytes :: Int
 maximumHostCleanupIntentBytes = maximumCleanupRunBytes + (128 * 1024)
 
+-- | The host's narrowed view of the run's observation evidence scope.
+--
+-- Sprint 4.92: the hosted-zone field is the correction.  This record is a lossy
+-- projection that 'mkHostCleanupScope' narrows into and
+-- 'hostCleanupObservationEvidenceScope' widens back out of, and it had no slot
+-- for the run's retained DNS hosted zone, so the zone was erased here — before
+-- any byte was written.  Every scope the durable intent, the execution lease,
+-- and the Ready read-back then compared was zone-less, and a run compiled
+-- against a hosted zone was indistinguishable from one compiled against none.
+-- The zone arrives already validated by @mkHostedZoneId@ wherever the scope was
+-- minted, so it is carried rather than re-checked.  Narrowing is written
+-- against the positional 'ObservationEvidenceScopeFields', so a field added to
+-- the scope later is an arity error here instead of another silent loss.
 data HostCleanupScope = HostCleanupScope
   { internalCleanupSurface :: !CleanupSurface
   , internalRegistryRevision :: !Text
@@ -317,6 +340,7 @@ data HostCleanupScope = HostCleanupScope
   , internalFoundationId :: !Text
   , internalAwsAccountId :: !(Maybe Text)
   , internalAwsRegion :: !(Maybe Text)
+  , internalAwsDnsZone :: !(Maybe HostedZoneId)
   , internalLifecycleOperation :: !LifecycleOperation
   }
   deriving stock (Eq, Show)
@@ -325,35 +349,43 @@ mkHostCleanupScope
   :: CleanupRunId
   -> ObservationEvidenceScope
   -> Either HostCleanupIntentError HostCleanupScope
-mkHostCleanupScope expectedRunId evidence = do
-  let surface = evidenceCleanupSurface evidence
-      RegistryRevision revision = evidenceRegistryRevision evidence
-      DurableObservationRunScope observation = evidenceDurableRunScope evidence
-      LinuxRke2FoundationId foundation = evidenceLinuxRke2Foundation evidence
-      operation = evidenceLifecycleOperation evidence
-  if surface == Cascade
-    then Right ()
-    else Left (HostCleanupIntentScopeSurfaceMismatch surface)
-  if operation == ReconcileDesiredAbsent
-    then Right ()
-    else Left (HostCleanupIntentScopeOperationMismatch operation)
-  if observation == cleanupRunIdText expectedRunId
-    then Right ()
-    else Left HostCleanupIntentScopeRunIdMismatch
-  revision' <- validateIdentity "registry revision" revision
-  foundation' <- validateIdentity "Linux RKE2 foundation id" foundation
-  observation' <- validateIdentity "durable observation run scope" observation
-  (account, region) <- validateAwsScope (evidenceAwsScope evidence)
-  Right
-    HostCleanupScope
-      { internalCleanupSurface = surface
-      , internalRegistryRevision = revision'
-      , internalDurableRunScope = observation'
-      , internalFoundationId = foundation'
-      , internalAwsAccountId = account
-      , internalAwsRegion = region
-      , internalLifecycleOperation = operation
-      }
+mkHostCleanupScope expectedRunId evidence =
+  narrow (observationEvidenceScopeFields evidence)
+ where
+  narrow
+    ( ObservationEvidenceScopeFields
+        surface
+        (RegistryRevision revision)
+        (DurableObservationRunScope observation)
+        (LinuxRke2FoundationId foundation)
+        awsScope
+        dnsZone
+        operation
+      ) = do
+      if surface == Cascade
+        then Right ()
+        else Left (HostCleanupIntentScopeSurfaceMismatch surface)
+      if operation == ReconcileDesiredAbsent
+        then Right ()
+        else Left (HostCleanupIntentScopeOperationMismatch operation)
+      if observation == cleanupRunIdText expectedRunId
+        then Right ()
+        else Left HostCleanupIntentScopeRunIdMismatch
+      revision' <- validateIdentity "registry revision" revision
+      foundation' <- validateIdentity "Linux RKE2 foundation id" foundation
+      observation' <- validateIdentity "durable observation run scope" observation
+      (account, region) <- validateAwsScope awsScope
+      Right
+        HostCleanupScope
+          { internalCleanupSurface = surface
+          , internalRegistryRevision = revision'
+          , internalDurableRunScope = observation'
+          , internalFoundationId = foundation'
+          , internalAwsAccountId = account
+          , internalAwsRegion = region
+          , internalAwsDnsZone = dnsZone
+          , internalLifecycleOperation = operation
+          }
 
 validateAwsScope
   :: Maybe AwsScope
@@ -379,17 +411,23 @@ hostCleanupObservationRunScope =
 
 hostCleanupObservationEvidenceScope :: HostCleanupScope -> ObservationEvidenceScope
 hostCleanupObservationEvidenceScope scope =
-  mkObservationEvidenceScope
-    (internalCleanupSurface scope)
-    (RegistryRevision (internalRegistryRevision scope))
-    (DurableObservationRunScope (internalDurableRunScope scope))
-    (LinuxRke2FoundationId (internalFoundationId scope))
-    ( case (internalAwsAccountId scope, internalAwsRegion scope) of
-        (Just account, Just region) ->
-          Just (AwsScope (AwsAccountId account) (AwsRegion region))
-        _ -> Nothing
-    )
-    (internalLifecycleOperation scope)
+  observationEvidenceScopeFromFields
+    ObservationEvidenceScopeFields
+      { scopeFieldCleanupSurface = internalCleanupSurface scope
+      , scopeFieldRegistryRevision = RegistryRevision (internalRegistryRevision scope)
+      , scopeFieldDurableRunScope =
+          DurableObservationRunScope (internalDurableRunScope scope)
+      , scopeFieldLinuxRke2Foundation =
+          LinuxRke2FoundationId (internalFoundationId scope)
+      , scopeFieldAwsScope = awsScope
+      , scopeFieldAwsDnsZone = internalAwsDnsZone scope
+      , scopeFieldLifecycleOperation = internalLifecycleOperation scope
+      }
+ where
+  awsScope = case (internalAwsAccountId scope, internalAwsRegion scope) of
+    (Just account, Just region) ->
+      Just (AwsScope (AwsAccountId account) (AwsRegion region))
+    _ -> Nothing
 
 newtype HostTerminalPermitId = HostTerminalPermitId Text
   deriving stock (Eq, Ord, Show, Generic)
@@ -758,13 +796,7 @@ data HostCleanupIntentEnvelope = HostCleanupIntentEnvelope
   , envelopeRunId :: !CleanupRunId
   , envelopeGraphDigest :: !CleanupDigest
   , envelopeCleanupRun :: !ByteString
-  , envelopeCleanupSurface :: !Word16
-  , envelopeRegistryRevision :: !Text
-  , envelopeObservationRunScope :: !Text
-  , envelopeFoundationId :: !Text
-  , envelopeAwsAccountId :: !(Maybe Text)
-  , envelopeAwsRegion :: !(Maybe Text)
-  , envelopeLifecycleOperation :: !Word16
+  , envelopeScope :: !ScopeWire
   , envelopeTerminalOperationId :: !CleanupOperationId
   , envelopeTerminalPermitId :: !Text
   , envelopeReadyBinding :: !(Maybe ByteString)
@@ -793,14 +825,8 @@ encodeHostCleanupIntent candidate = do
             , envelopeRunId = hostCleanupRunId intent
             , envelopeGraphDigest = hostCleanupGraphDigest intent
             , envelopeCleanupRun = encodedRun
-            , envelopeCleanupSurface = encodeCleanupSurface (internalCleanupSurface scope)
-            , envelopeRegistryRevision = internalRegistryRevision scope
-            , envelopeObservationRunScope = internalDurableRunScope scope
-            , envelopeFoundationId = internalFoundationId scope
-            , envelopeAwsAccountId = internalAwsAccountId scope
-            , envelopeAwsRegion = internalAwsRegion scope
-            , envelopeLifecycleOperation =
-                encodeLifecycleOperation (internalLifecycleOperation scope)
+            , envelopeScope =
+                scopeToWire (hostCleanupObservationEvidenceScope scope)
             , envelopeTerminalOperationId = hostCleanupTerminalOperationId terminal
             , envelopeTerminalPermitId =
                 hostTerminalPermitIdText (hostCleanupTerminalPermitId terminal)
@@ -846,20 +872,7 @@ decodeHostCleanupIntent bytes
         (Left . HostCleanupIntentCleanupRunInvalid)
         Right
         (decodeCleanupRun maximumCleanupRunBytes (envelopeCleanupRun envelope))
-    surface <- decodeCleanupSurface (envelopeCleanupSurface envelope)
-    operation <- decodeLifecycleOperation (envelopeLifecycleOperation envelope)
-    awsScope <-
-      decodeAwsScope
-        (envelopeAwsAccountId envelope)
-        (envelopeAwsRegion envelope)
-    let evidence =
-          mkObservationEvidenceScope
-            surface
-            (RegistryRevision (envelopeRegistryRevision envelope))
-            (DurableObservationRunScope (envelopeObservationRunScope envelope))
-            (LinuxRke2FoundationId (envelopeFoundationId envelope))
-            awsScope
-            operation
+    evidence <- decodeScopeWire (envelopeScope envelope)
     scope <-
       mkHostCleanupScope
         (envelopeRunId envelope)
@@ -900,53 +913,17 @@ decodeHostCleanupReadyBinding run scope terminal bytes = do
       (decodeDurableReadyToUninstallBinding bytes)
   hostCleanupReadyBindingFromDurable run scope terminal durable
 
-encodeCleanupSurface :: CleanupSurface -> Word16
-encodeCleanupSurface surface = case surface of
-  LocalOnly -> 0
-  Cascade -> 1
-  ExplicitPerRun -> 2
-  OperationalTeardown -> 3
-  ExplicitLongLived -> 4
-  TotalDecommission -> 5
-
-decodeCleanupSurface :: Word16 -> Either HostCleanupIntentError CleanupSurface
-decodeCleanupSurface tag = case tag of
-  0 -> Right LocalOnly
-  1 -> Right Cascade
-  2 -> Right ExplicitPerRun
-  3 -> Right OperationalTeardown
-  4 -> Right ExplicitLongLived
-  5 -> Right TotalDecommission
-  _ -> Left (HostCleanupIntentDecodeInvalid "unknown cleanup surface tag")
-
-encodeLifecycleOperation :: LifecycleOperation -> Word16
-encodeLifecycleOperation operation = case operation of
-  ReconcileDesiredAbsent -> 0
-  ReconcileDesiredPresent -> 1
-  RunTerminalEscapeAudit -> 2
-
-decodeLifecycleOperation
-  :: Word16
-  -> Either HostCleanupIntentError LifecycleOperation
-decodeLifecycleOperation tag = case tag of
-  0 -> Right ReconcileDesiredAbsent
-  1 -> Right ReconcileDesiredPresent
-  2 -> Right RunTerminalEscapeAudit
-  _ -> Left (HostCleanupIntentDecodeInvalid "unknown lifecycle operation tag")
-
-decodeAwsScope
-  :: Maybe Text
-  -> Maybe Text
-  -> Either HostCleanupIntentError (Maybe AwsScope)
-decodeAwsScope account region = case (account, region) of
-  (Nothing, Nothing) -> Right Nothing
-  (Just accountId, Just regionId) ->
-    Right (Just (AwsScope (AwsAccountId accountId) (AwsRegion regionId)))
-  _ ->
-    Left
-      ( HostCleanupIntentDecodeInvalid
-          "AWS account and region must either both be present or both be absent"
-      )
+-- | The canonical scope decoder, mapped into this module's error type.
+--
+-- The field rules live in "Prodbox.Lifecycle.Teardown.ScopeCodec".  This module
+-- used to restate a weaker version of them in its own cleanup-surface,
+-- lifecycle-operation, and AWS-scope codecs, which between them had no field
+-- for the hosted zone at all: the zone was therefore dropped by the decoder as
+-- well as by the record it decoded into.
+decodeScopeWire
+  :: ScopeWire -> Either HostCleanupIntentError ObservationEvidenceScope
+decodeScopeWire =
+  first (HostCleanupIntentDecodeInvalid . renderScopeWireError) . scopeFromWire
 
 data HostCleanupIntentError
   = HostCleanupIntentStoreInvalid !Text
@@ -1176,21 +1153,25 @@ data HostCleanupExecutionLeaseEnvelope = HostCleanupExecutionLeaseEnvelope
   { executionLeaseVersion :: !Word16
   , executionLeaseRunId :: !CleanupRunId
   , executionLeaseGraphDigest :: !CleanupDigest
-  , executionLeaseSurface :: !Word16
-  , executionLeaseRegistryRevision :: !Text
-  , executionLeaseRunScope :: !Text
-  , executionLeaseFoundation :: !Text
-  , executionLeaseAwsAccount :: !(Maybe Text)
-  , executionLeaseAwsRegion :: !(Maybe Text)
-  , executionLeaseLifecycleOperation :: !Word16
+  , executionLeaseScope :: !ScopeWire
   , executionLeaseTerminalOperation :: !CleanupOperationId
   , executionLeaseTerminalPermit :: !Text
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- | Version 2 is the first lease whose scope carries the run's retained DNS
+-- hosted zone.
+--
+-- The lease is not merely stored: its SHA-256 names the on-disk lease file, so
+-- a zone-less lease body meant two runs that differed only in hosted zone
+-- hashed to one pathname and contended for a single terminal-effect lease —
+-- each able to refuse the other's destructive boundary as already held.
+-- Version 1 bodies are refused rather than upgraded, and because the version is
+-- part of the hashed body a version-1 lease is addressed by a different
+-- pathname entirely, so no version-2 run can adopt one.
 hostCleanupExecutionLeaseVersion :: Word16
-hostCleanupExecutionLeaseVersion = 1
+hostCleanupExecutionLeaseVersion = 2
 
 maximumHostCleanupExecutionLeaseBytes :: Int
 maximumHostCleanupExecutionLeaseBytes = 16 * 1024
@@ -1202,14 +1183,7 @@ hostCleanupExecutionLeaseBytes intent =
       { executionLeaseVersion = hostCleanupExecutionLeaseVersion
       , executionLeaseRunId = hostCleanupRunId intent
       , executionLeaseGraphDigest = hostCleanupGraphDigest intent
-      , executionLeaseSurface = encodeCleanupSurface (internalCleanupSurface scope)
-      , executionLeaseRegistryRevision = internalRegistryRevision scope
-      , executionLeaseRunScope = internalDurableRunScope scope
-      , executionLeaseFoundation = internalFoundationId scope
-      , executionLeaseAwsAccount = internalAwsAccountId scope
-      , executionLeaseAwsRegion = internalAwsRegion scope
-      , executionLeaseLifecycleOperation =
-          encodeLifecycleOperation (internalLifecycleOperation scope)
+      , executionLeaseScope = scopeToWire (hostCleanupObservationEvidenceScope scope)
       , executionLeaseTerminalOperation =
           hostCleanupTerminalOperationId terminal
       , executionLeaseTerminalPermit =

@@ -201,6 +201,7 @@ import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Model qualified as TeardownModel
 import Prodbox.Lifecycle.Teardown.Program
   ( RecoverySurfaceWitness (..)
+  , SomeTeardownOperation (..)
   , TeardownOperation (..)
   )
 import Prodbox.Lifecycle.Teardown.RecoveryRequirement
@@ -1028,14 +1029,15 @@ exactRecoveryOperationId witness compiled expectedRole =
   graphNodes = cleanupGraphNodes (compiledDesiredAbsenceGraph compiled)
   candidates =
     [ (nodeId, recoverySurfaceFromWitness operationWitness)
-    | (nodeId, operation) <- compiledDesiredAbsenceOperations compiled
+    | (nodeId, SomeTeardownOperation operation) <-
+        compiledDesiredAbsenceOperations compiled
     , Just (role, operationWitness) <- [recoveryOperationRole operation]
     , role == expectedRole
     ]
   roleText = recoveryOperationRoleText expectedRole
 
 recoveryOperationRole
-  :: TeardownOperation surface
+  :: TeardownOperation surface result
   -> Maybe (RecoveryPlaneOperationRole, RecoverySurfaceWitness surface)
 recoveryOperationRole operation = case operation of
   EstablishRecoveryPlane witness -> Just (RecoveryPlaneEstablishRole, witness)

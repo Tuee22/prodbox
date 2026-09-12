@@ -35,6 +35,11 @@ Hard gates are enforced mechanically. A change that fails one of these gates is 
 Current hard gates:
 
 - repository-owned workflow and hook policy scan through `prodbox dev check`
+- spawned-handle disposition over every module under `src/`: a long-lived child's `Async` handle is
+  linked or joined, never discarded. See
+  [Chaos Hardening Doctrine, rule R6](./chaos_hardening_doctrine.md), whose enforcement paragraph
+  owns the rule's exact scope, and `Prodbox.Supervision`, whose private constructor makes the
+  unsupervised state unconstructible
 - Fourmolu formatting through the checked-in [`fourmolu.yaml`](../../fourmolu.yaml)
 - HLint through the checked-in [`/.hlint.yaml`](../../.hlint.yaml)
 - warning-clean Haskell compilation through
@@ -89,10 +94,12 @@ The current supported worktree has started converging on a small shared foundati
   publish `Stopped`. Terminal completion requires joined children, resolved waiters, and an empty
   owned-resource postcondition. The Bootstrap Broker contract is authoritative in
   [Lifecycle Control-Plane Architecture §7.1](./lifecycle_control_plane_architecture.md#71-shutdown-completion-is-proof-carrying).
-  **Enforcement, recorded 2026-09-11 (Standard C): none.** No check requires a spawned handle to be
-  linked or joined, and five long-lived threads under `src/` never obtain a result to discard
-  because they never join at all. Sprint `2.134` lifts supervision into a type and gates it
-  repo-wide; until then this bullet is review guidance.
+  **Enforcement (Sprint `2.134`, 2026-09-11): a type above a gate.** `Prodbox.Supervision` is the
+  only constructor for a long-lived child, and both of its combinators link before the handle value
+  exists, so a spawned-but-unobserved child is unconstructible rather than discouraged.
+  `checkSpawnedHandleDisposition` refuses a spawned `Async` handle that is neither linked nor joined
+  anywhere under `src/`, with no admission registry. The gate decides whether a handle is disposed
+  of, never when, so the proof-carrying half of this bullet above remains review guidance.
 - **A credential handed to a subprocess needs a delivery mechanism with a proof obligation.** Passing
   a secret by a side channel — a named pipe, an inherited descriptor, a file the child is told to
   read — is a rendezvous, and a rendezvous either happened or did not. If the mechanism's success is
@@ -102,7 +109,17 @@ The current supported worktree has started converging on a small shared foundati
   a bearer token served through a FIFO by a background writer that died before the child started,
   unobserved, on every run for weeks. Prefer a mechanism whose failure is a typed result at the
   boundary; where that is impossible, the client must not be constructible until delivery has been
-  proven once.
+  proven once. Sprint `7.39` repaired that instance the second way: the credential is written to a
+  private file and read back before the client value exists, so "client alive, credential
+  unreadable" is not a representable state.
+- **Measure how many times the child reads before choosing between a stream and a file.** That
+  number is the whole difference between the two, and it is not derivable from the interface. A
+  rendezvous must serve the credential once per read, to a reader whose arrival it cannot observe
+  and whose count it cannot know; a file serves any number of reads and cares about none of them.
+  `kubectl` v1.35.8 was measured under `strace` opening its `tokenFile` exactly twice per
+  invocation, independently of how many API requests that invocation makes — which is why the
+  replacement above is a file. Design arguments about where a secret may live are settled second,
+  after the reader's behaviour is known, because a mechanism the reader wedges on protects nothing.
 
 These modules are closed doctrine-adoption surfaces. New code should prefer them over ad-hoc
 reimplementations.
@@ -121,8 +138,8 @@ Important distinction:
 - `.hlint.yaml` is a hard-gate **suppression** input. **Corrected 2026-09-11 (Sprint `0.33`):** it
   holds zero custom hints and only `ignore:` entries, so it subtracts from the gate rather than
   adding to it. HLint itself still gates, through its `default` and `extra` groups. The check that
-  reads the file, `checkHlintDoctrineCoverage` in `src/Prodbox/CheckCode.hs`, verifies only that a
-  comment block exists; Sprint `2.134` retires it
+  read the file verified only that a comment block existed, and Sprint `2.134` retired it together
+  with the marker block and the style-suite case that asserted the same markers
 - `.editorconfig` is not a build-acceptance input
 
 ## 4. Canonical Commands

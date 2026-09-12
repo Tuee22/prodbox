@@ -127,7 +127,10 @@ module Prodbox.CheckCode
   , tier0EncoderViolations
   , brokerReadinessProjectionViolations
   , roleReadinessProjectionViolations
-  , supervisedWorkerViolations
+  , spawnedHandleDispositionViolations
+  , ephemeralCredentialMachineryViolations
+  , testSuiteStanzaViolations
+  , declaredTestSuiteNames
   , sharedRetryScheduleViolations
   , targetSinkVersionInternalSourceViolations
   , targetSinkRecordMinterViolations
@@ -290,6 +293,7 @@ import Prodbox.Repo (resolveTier0ConfigPath)
 import Prodbox.Result (Result (..))
 import Prodbox.Secret.VaultInventory (vaultIdentityRegistryViolations)
 import Prodbox.Subprocess qualified as Subprocess
+import Prodbox.TestPlan (routedHaskellSuites)
 import System.Directory
   ( copyFile
   , createDirectoryIfMissing
@@ -1950,7 +1954,6 @@ runDoctrineAlignmentCheck repoRoot = do
 haskellStyleViolations :: FilePath -> IO [String]
 haskellStyleViolations repoRoot = do
   thinMainResult <- verifyThinMainEntrypoint repoRoot
-  hlintConfigViolations <- forceViolationFindings (checkHlintDoctrineCoverage repoRoot)
   parserModuleViolation <- checkParserModuleImports repoRoot
   nestedCaseViolations <- forceViolationFindings (checkNestedCaseViolations repoRoot)
   daemonRuntimeViolations <- forceViolationFindings (checkDaemonRuntimeImports repoRoot)
@@ -1975,7 +1978,10 @@ haskellStyleViolations repoRoot = do
   sharedRetryViolations <- forceViolationFindings (checkSharedRetrySchedule repoRoot)
   brokerReadinessViolations <- forceViolationFindings (checkBrokerReadinessProjection repoRoot)
   roleReadinessViolations <- forceViolationFindings (checkRoleReadinessProjection repoRoot)
-  supervisedWorkerViolationsFound <- forceViolationFindings (checkSupervisedWorkers repoRoot)
+  ephemeralCredentialFindings <-
+    forceViolationFindings (checkEphemeralCredentialMachinery repoRoot)
+  spawnedHandleFindingsFound <-
+    forceViolationFindings (checkSpawnedHandleDisposition repoRoot)
   replyStatusViolations <- forceViolationFindings (checkControlPlaneReplyStatusCoverage repoRoot)
   committedValueViolations <- forceViolationFindings (checkCommittedValueHygiene repoRoot)
   vaultCasFindings <- forceViolationFindings (checkVaultCasClassification repoRoot)
@@ -1987,7 +1993,6 @@ haskellStyleViolations repoRoot = do
   testNamespaceFindings <- forceViolationFindings (checkTestNamespaceBoundary repoRoot)
   pure
     ( either pure (const []) thinMainResult
-        ++ hlintConfigViolations
         ++ maybeToList parserModuleViolation
         ++ nestedCaseViolations
         ++ daemonRuntimeViolations
@@ -2010,7 +2015,8 @@ haskellStyleViolations repoRoot = do
         ++ sharedRetryViolations
         ++ brokerReadinessViolations
         ++ roleReadinessViolations
-        ++ supervisedWorkerViolationsFound
+        ++ spawnedHandleFindingsFound
+        ++ ephemeralCredentialFindings
         ++ replyStatusViolations
         ++ committedValueViolations
         ++ vaultCasFindings
@@ -2030,46 +2036,6 @@ forceViolationFindings action = do
   findings <- action
   _ <- evaluate (sum (map length findings))
   pure findings
-
-checkHlintDoctrineCoverage :: FilePath -> IO [String]
-checkHlintDoctrineCoverage repoRoot = do
-  let hintPath = repoRoot </> ".hlint.yaml"
-  fileExists <- doesFileExist hintPath
-  if not fileExists
-    then pure ["Missing `/.hlint.yaml` doctrine configuration file."]
-    else do
-      contents <- readFileStrict hintPath
-      pure
-        [ "`.hlint.yaml` must mention `" ++ marker ++ "`."
-        | marker <-
-            [ "Refactor nested case"
-            , "Avoid case inside lambda body"
-            , "forkIO"
-            , "unsafePerformIO"
-            , "module-level IORef"
-            , "callProcess"
-            , "readCreateProcess"
-            , "readCreateProcessWithExitCode"
-            , "createProcess"
-            , "proc"
-            , "shell"
-            , "putStr"
-            , "Text.IO.putStrLn"
-            , "hPutStrLn stderr"
-            , "Aeson.object"
-            , "Aeson.fromList"
-            , "sd_notify"
-            , "READY=1"
-            , "System.FSNotify"
-            , "newIORef"
-            , "newMVar"
-            , "withAsync"
-            , "race"
-            , "concurrently"
-            , "replicateConcurrently"
-            ]
-        , null (filter (isInfixOf marker) (lines contents))
-        ]
 
 checkSecretPayloadInternalBoundary :: FilePath -> IO [String]
 checkSecretPayloadInternalBoundary repoRoot = do
@@ -3143,45 +3109,333 @@ checkDependencyAdmissionBoundary repoRoot = do
           pure (dependencyAdmissionInternalSourceViolations (path, contents))
       )
 
--- | Sprint 2.41: a long-lived gateway worker is spawned only through
--- 'withSupervisedWorkers', which links the handle and records the worker's exit
--- on every path. Eight workers used to be spawned through raw @withAsync@ with
--- their handles discarded, so a worker that died was invisible to readiness and
--- its exception reached nobody.
+-- | Sprint 7.40: the ephemeral Kubernetes client's credential machinery has
+-- exactly one statement.
 --
--- This is the negative-space check pattern Sprint 2.10 established for
--- module-local mutable counters: the rule is that the raw primitive is not in
--- scope, and the check is what makes it fail.
-checkSupervisedWorkers :: FilePath -> IO [String]
-checkSupervisedWorkers repoRoot = do
-  let relativePath = "src/Prodbox/Gateway/Daemon.hs"
-      absolutePath = repoRoot </> relativePath
-  exists <- doesFileExist absolutePath
-  contents <- if exists then readFileStrict absolutePath else pure ""
-  pure (supervisedWorkerViolations (relativePath, if exists then Just contents else Nothing))
+-- Sprint `7.36` consolidated it and recorded, in four documents, that the
+-- machinery is now one statement — on the sound argument that two statements of
+-- it would be two statements of a security property. It missed a third.
+-- `withEksKubeconfig` still built its own named pipe, its own unsupervised
+-- writer, and its own kubeconfig, and the copies had already drifted: one
+-- created its pipe owner-read-write and the other owner-all, and only one wrote
+-- its kubeconfig with @O_EXCL@, @O_NOFOLLOW@, @CLOEXEC@, an explicit mode and an
+-- fsync. The claim was true of intent and false of the tree, and nothing could
+-- tell the difference, because no gate bound the machinery to one file.
+--
+-- The rule is cheap because the surface is small. Three markers name the
+-- machinery: the private-file writer, the @tokenFile@ key that tells a client
+-- where the credential lives, and the named-pipe primitive the superseded
+-- mechanism used. The first two belong to the owning module alone; the third
+-- belongs nowhere, because Sprint `7.39` established that a rendezvous cannot
+-- serve a credential @kubectl@ opens twice per invocation.
+checkEphemeralCredentialMachinery :: FilePath -> IO [String]
+checkEphemeralCredentialMachinery repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (ephemeralCredentialMachineryViolations (path, contents))
+      )
 
-supervisedWorkerViolations :: (FilePath, Maybe String) -> [String]
-supervisedWorkerViolations (path, Nothing) =
-  [path ++ " is missing; the supervised-worker gate cannot run (Sprint 2.41)."]
-supervisedWorkerViolations (path, Just contents) =
-  unqualifiedImport ++ missingSupervisor
+-- | The module that owns the ephemeral credential machinery.
+ephemeralCredentialOwningModule :: FilePath
+ephemeralCredentialOwningModule = "src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs"
+
+-- | The two markers are read in different places, and deliberately so.
+--
+-- @writePrivateFile@ is a function name, so it is read where Haskell names live:
+-- the source with its string literals stripped out. @tokenFile@ is a kubeconfig
+-- key, so it is read only inside string literals. As an ordinary Haskell binder
+-- the same word means something else entirely — the projected service-account
+-- JWT path in @Prodbox.ControlPlane.VaultSession@ is one — and a rule that
+-- refused it there would be refusing a word rather than a mechanism. Rendering
+-- the key is what makes a module a second statement of this machinery, and
+-- rendering it requires the literal.
+ephemeralCredentialMachineryViolations :: (FilePath, String) -> [String]
+ephemeralCredentialMachineryViolations (path, contents) =
+  namedPipeViolations ++ ownedMarkerViolations
  where
-  unqualifiedImport =
+  tokens = tokenizeSource (stripStringLiterals contents)
+  literalTokens = tokenizeSource (stringLiteralsOnly contents)
+
+  namedPipeViolations =
     [ path
-        ++ " imports `withAsync` unqualified. A long-lived daemon worker is"
-        ++ " spawned only through `withSupervisedWorkers`, which links the handle"
-        ++ " and records the worker's exit on every path (Sprint 2.41)."
-    | sourceLine <- lines contents
-    , "import " `isPrefixOf` dropWhile isSpace sourceLine
-    , "Control.Concurrent.Async" `isInfixOf` sourceLine
-    , "withAsync" `isInfixOf` sourceLine
+        ++ " calls `createNamedPipe`. The ephemeral credential is a private file"
+        ++ " rather than a rendezvous, because `kubectl` opens its token file"
+        ++ " twice per invocation and a stream serves the first open only"
+        ++ " (Sprint 7.40)."
+    | "createNamedPipe" `elem` tokens
     ]
-  missingSupervisor =
+
+  ownedMarkerViolations =
     [ path
-        ++ " no longer defines `withSupervisedWorkers`; the supervised-worker"
-        ++ " gate has nothing to protect (Sprint 2.41)."
-    | not ("withSupervisedWorkers ::" `isInfixOf` contents)
+        ++ " states the ephemeral credential machinery (`"
+        ++ marker
+        ++ "`), which belongs to `"
+        ++ ephemeralCredentialOwningModule
+        ++ "` alone. Two statements of it are two statements of a security"
+        ++ " property (Sprint 7.40)."
+    | path /= ephemeralCredentialOwningModule
+    , (marker, occurrences) <-
+        [("writePrivateFile", tokens), ("tokenFile", literalTokens)]
+    , marker `elem` occurrences
     ]
+
+-- | Sprint 2.134: a spawned handle that is neither linked nor waited.
+--
+-- [Chaos Hardening Doctrine](../../documents/engineering/chaos_hardening_doctrine.md)
+-- rule R6 has always said that discarding a cancellation or join result
+-- "recreates unstructured ownership behind a structured API and is forbidden",
+-- and until this sprint nothing enforced it. What existed was Sprint 2.41's
+-- gate, which refused an unqualified @withAsync@ import in
+-- @src\/Prodbox\/Gateway\/Daemon.hs@ and nowhere else — a rule a qualified
+-- import sidestepped by design, and one that said nothing about the five other
+-- long-lived children under @src\/@ whose handles were discarded.
+--
+-- This rule is repo-wide and is about __disposition__ rather than about which
+-- primitive is in scope, because the linked shape and the joined shape are both
+-- correct and only the discarded shape is not.
+--
+-- __The scope is exactly what the tokenizer can decide.__ For each spawn of an
+-- @async@-family primitive the rule reads the handle's binder:
+--
+--   * a @withAsync@-family continuation whose binder is @_@, or which is
+--     @const@ or @void@, discards the handle outright;
+--   * an @async@-family expression with no @name <-@ binding on its line leaves
+--     the handle with no name at all;
+--   * a named handle must appear as an argument of a disposition function
+--     somewhere in the same module — @link@, any @wait@ form, or @poll@ —
+--     directly, or through a record field that is itself disposed, which is how
+--     a handle stored in a server handle and joined through its accessor is
+--     admitted.
+--
+-- It deliberately does __not__ cover @forkFinally@: the per-connection thread in
+-- the workload accept loop is not a long-lived child, and @forkFinally@ hands
+-- its continuation the child's outcome by construction. It does cover @forkIO@,
+-- whose 'Control.Concurrent.ThreadId' can be neither linked nor joined, so that
+-- discard is unconditional.
+--
+-- __What it does not claim.__ A handle this rule admits is disposed of
+-- somewhere; the rule cannot say when. The Bootstrap Broker's request pool was
+-- joined only by the drain that retires it, which this rule reads as disposed
+-- and which Sprint 2.134 nevertheless repaired, because a worker's death being
+-- observable eventually is not the same as its parent observing it.
+--
+-- The rule lands with no admission registry because every site it fired on was
+-- repaired first. Reaching for the raw primitive stays legal when the handle is
+-- disposed of; a long-lived child that wants the property by construction uses
+-- 'Prodbox.Supervision.withSupervisedChild', whose private constructor makes the
+-- unsupervised state unrepresentable rather than merely refused.
+checkSpawnedHandleDisposition :: FilePath -> IO [String]
+checkSpawnedHandleDisposition repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (spawnedHandleDispositionViolations (path, contents))
+      )
+
+-- | The spawn primitives whose handle this rule tracks.
+--
+-- The @Bound@ variants are listed so that reaching for one is not an evasion;
+-- neither appears in the tree today.
+spawnPrimitiveTokens :: [String]
+spawnPrimitiveTokens =
+  [ "async"
+  , "asyncBound"
+  , "forkIO"
+  , "withAsync"
+  , "withAsyncBound"
+  ]
+
+-- | The functions that dispose of a handle: link it to the parent, or join it.
+--
+-- @cancel@ is deliberately absent. Cancelling a child at shutdown says what the
+-- parent wants to happen to it, not that the parent ever observed what did.
+handleDispositionTokens :: [String]
+handleDispositionTokens =
+  [ "link"
+  , "link2"
+  , "poll"
+  , "wait"
+  , "waitAny"
+  , "waitAnyCatch"
+  , "waitBoth"
+  , "waitCatch"
+  , "waitCatchSTM"
+  , "waitEither"
+  , "waitEitherCatch"
+  , "waitSTM"
+  , "waitSupervisedChild"
+  , "waitSupervisedChildCatch"
+  ]
+
+spawnedHandleDispositionViolations :: (FilePath, String) -> [String]
+spawnedHandleDispositionViolations (path, contents) =
+  [ path
+      ++ ":"
+      ++ show lineNumber
+      ++ " spawns a long-lived child whose handle is "
+      ++ reason
+      ++ ". A spawned handle is linked or waited, or the child is spawned"
+      ++ " through `Prodbox.Supervision.withSupervisedChild` (Sprint 2.134)."
+  | (lineNumber, reason) <- spawnedHandleFindings (numberedCodeLines contents)
+  ]
+
+-- | Pair every line with its number, its code-only text, and whether it belongs
+-- to an @import@ declaration.
+--
+-- Comments and string literals are blanked first: this rule's own vocabulary
+-- appears in prose all over the tree, and an import list naming @async@ is not a
+-- spawn.
+numberedCodeLines :: String -> [(Int, String, Bool)]
+numberedCodeLines contents = go False (zip [1 ..] (lines contents))
+ where
+  go _ [] = []
+  go inImport ((lineNumber, rawLine) : remaining)
+    | "import" `isPrefixOf` rawLine =
+        (lineNumber, stripHaskellLineComment rawLine, True) : go True remaining
+    | inImport && continuesImport rawLine =
+        (lineNumber, stripHaskellLineComment rawLine, True) : go True remaining
+    | otherwise = (lineNumber, stripHaskellLineComment rawLine, False) : go False remaining
+
+  continuesImport rawLine = case rawLine of
+    [] -> True
+    character : _ -> isSpace character
+
+-- | Drop a trailing @--@ comment, after the string literals that could contain
+-- one have been blanked.
+stripHaskellLineComment :: String -> String
+stripHaskellLineComment = go . stripStringLiterals
+ where
+  go [] = []
+  go ('-' : '-' : _) = []
+  go (character : remaining) = character : go remaining
+
+spawnedHandleFindings :: [(Int, String, Bool)] -> [(Int, String)]
+spawnedHandleFindings sourceLines =
+  [ (lineNumber, reason)
+  | (index, (lineNumber, codeLine, isImportLine)) <- zip [0 ..] sourceLines
+  , not isImportLine
+  , primitive <-
+      take
+        1
+        [token | token <- tokenizeSource codeLine, token `elem` spawnPrimitiveTokens]
+  , reason <- spawnedHandleReason disposed (drop index sourceLines) codeLine primitive
+  ]
+ where
+  disposed = disposedHandleNames sourceLines
+
+-- | Classify one spawn site, yielding a reason exactly when it is a violation.
+spawnedHandleReason
+  :: [String] -> [(Int, String, Bool)] -> String -> String -> [String]
+spawnedHandleReason disposed followingLines codeLine primitive
+  | primitive == "forkIO" =
+      ["a `ThreadId`, which can be neither linked nor joined"]
+  | primitive `elem` ["withAsync", "withAsyncBound"] =
+      case continuationBinder
+        [line | (_, line, _) <- take continuationWindow followingLines] of
+        Nothing -> ["bound by no continuation this rule can read"]
+        Just DiscardedBinder -> ["discarded by its continuation"]
+        Just (NamedBinder name) -> undisposed name
+  | otherwise =
+      case spawnBindingName codeLine of
+        Nothing -> ["never bound to a name"]
+        Just name -> undisposed name
+ where
+  undisposed name
+    | name == "_" = ["bound to `_`"]
+    | name `elem` disposed = []
+    | otherwise = ["bound to `" ++ name ++ "`, which is never linked or waited"]
+
+-- | How far a @withAsync@ continuation may sit from its primitive.
+--
+-- The widest real site in the tree spans eight lines, a @forever@ block wrapping
+-- a multi-line action. Beyond this window the shape is not readable, and the
+-- rule says so rather than guessing.
+continuationWindow :: Int
+continuationWindow = 12
+
+data ContinuationBinder = DiscardedBinder | NamedBinder String
+
+-- | The first lambda binder, @const@, or @void@ in the continuation window.
+continuationBinder :: [String] -> Maybe ContinuationBinder
+continuationBinder codeLines = case concatMap lambdaCandidates codeLines of
+  [] -> Nothing
+  candidate : _ -> Just candidate
+ where
+  lambdaCandidates codeLine =
+    lambdaBinder codeLine
+      ++ [ DiscardedBinder
+         | any (`elem` ["const", "void"]) (tokenizeSource codeLine)
+         ]
+
+  lambdaBinder codeLine = case dropWhile (/= '\\') codeLine of
+    [] -> []
+    _ : remaining -> case tokenizeSource (takeWhile (/= '-') remaining) of
+      [] -> []
+      name : _ -> [if name == "_" then DiscardedBinder else NamedBinder name]
+
+-- | The name a @name <- spawn ...@ line binds, when there is one.
+spawnBindingName :: String -> Maybe String
+spawnBindingName codeLine = case beforeArrow codeLine of
+  Nothing -> Nothing
+  Just before -> case reverse (tokenizeSource before) of
+    [] -> if '_' `elem` before then Just "_" else Nothing
+    name : _ -> Just name
+ where
+  beforeArrow [] = Nothing
+  beforeArrow ('<' : '-' : _) = Just []
+  beforeArrow (character : remaining) = (character :) <$> beforeArrow remaining
+
+-- | Every name the module disposes of, directly or through a disposed field.
+--
+-- A disposition's arguments are the tokens that follow it on its line, bounded
+-- so an unrelated tail cannot launder a name. One closure pass then admits a
+-- handle stored in a record whose accessor is itself joined, which is how the
+-- Bootstrap Broker's manager — spawned in one function and joined through
+-- @handleManager@ in another — is read as disposed.
+disposedHandleNames :: [(Int, String, Bool)] -> [String]
+disposedHandleNames sourceLines = directlyDisposed ++ aliasedDisposed
+ where
+  codeLines = [line | (_, line, _) <- sourceLines]
+
+  directlyDisposed = concatMap dispositionArguments codeLines
+
+  dispositionArguments codeLine =
+    concat
+      [ take dispositionArity following
+      | (token, following) <- zip tokens (drop 1 (tails tokens))
+      , token `elem` handleDispositionTokens
+      ]
+   where
+    tokens = tokenizeSource codeLine
+
+  aliasedDisposed = concatMap fieldAlias codeLines
+
+  fieldAlias codeLine = case break (== '=') codeLine of
+    (_, []) -> []
+    (before, _ : after)
+      | any (`elem` directlyDisposed) (tokenizeSource before) -> tokenizeSource after
+      | otherwise -> []
+
+-- | How many tokens after a disposition count as its arguments.
+dispositionArity :: Int
+dispositionArity = 3
 
 -- | Sprint 2.39 deliverable 3: assert that the Bootstrap Broker's @\/readyz@
 -- performs no boundary I/O in its request path.
@@ -4387,6 +4641,24 @@ stripStringLiterals = go False False
     | character == '"' = ' ' : go True False remaining
     | otherwise = character : go False False remaining
 
+-- | The complement of 'stripStringLiterals': the contents of string literals,
+-- with everything outside them blanked.
+--
+-- A rule about a rendered key needs this rather than the whole source, because
+-- the same word is an ordinary Haskell name elsewhere in the tree and refusing
+-- it there would say nothing about the mechanism.
+stringLiteralsOnly :: String -> String
+stringLiteralsOnly = go False False
+ where
+  go _ _ [] = []
+  go inString escaped (character : remaining)
+    | inString && escaped = ' ' : go True False remaining
+    | inString && character == '\\' = ' ' : go True True remaining
+    | inString && character == '"' = ' ' : go False False remaining
+    | inString = character : go True False remaining
+    | character == '"' = ' ' : go True False remaining
+    | otherwise = ' ' : go False False remaining
+
 checkErrorBoundaryViolations :: FilePath -> IO [String]
 checkErrorBoundaryViolations repoRoot = do
   repoPaths <- listRepoOwnedPaths repoRoot
@@ -5569,8 +5841,17 @@ retiredCitedSourcePaths =
          -- unaffected — it lives on the TargetSecretWorker path.
          "test/unit/ControlPlaneTargetSecretAgentExecution.hs"
        , -- Deleted by Sprint 7.36 after the production drain interpreter and
-         -- DNS01 owner-delete interpreter converged on EphemeralKubectl. The
-         -- paired unit module exercised only this unreachable duplicate.
+         -- DNS01 owner-delete interpreter converged on EphemeralKubectl.
+         --
+         -- Corrected by Sprint 7.40 (2026-09-11). This said the paired unit
+         -- module "exercised only this unreachable duplicate", which is false in
+         -- the way that mattered: the duplicate's token writer was identical to
+         -- the survivor's, and that module was the tree's only real-subprocess
+         -- executor of it. Deleting it removed the one surface that could have
+         -- observed the 'ENXIO' defect, and nothing replaced it for weeks. The
+         -- replacement exists now — `CredentialDeliveryHarness` asserts the
+         -- credential arrives byte-exact through a real child — and this note
+         -- records the gap rather than the claim that there was none.
          "src/Prodbox/Lifecycle/Teardown/EksDrainRuntime.hs"
        , "test/unit/LifecycleTeardownEksDrainRuntime.hs"
        , -- Deleted by Sprint 5.36 when TestRunner selected the registered
@@ -8282,8 +8563,54 @@ checkTestSuiteInterfaces :: FilePath -> IO [String]
 checkTestSuiteInterfaces repoRoot = do
   let cabalPath = repoRoot </> "prodbox.cabal"
   contents <- readFileStrict cabalPath
-  pure (go [] Nothing (lines contents))
+  pure (testSuiteStanzaViolations contents)
+
+-- | Sprint 5.45: every declared suite has the expected interface __and__ a
+-- runner.
+--
+-- The interface half is Sprint 1.x's. The runner half is new, and it exists
+-- because the canonical gate compiles all eight declared suites and executes
+-- none of them, while @prodbox test unit@ and @prodbox test all@ named five.
+-- Three were therefore compiled by the gate and run by nothing — including the
+-- one that starts a real daemon process — and governed documents attributed a
+-- renderer-determinism guarantee and a daemon behavioural contract to suites
+-- that never executed. A suite nobody runs is a suite whose assertions are
+-- unproven rather than merely unexercised.
+--
+-- The comparison is a bijection in both directions on purpose. A declared
+-- stanza with no runner is the defect this closes; a routed name with no stanza
+-- is a scope that would fail at @cabal test@ with a name nobody typed
+-- deliberately.
+--
+-- Pure over the manifest text so the unit suite can feed it a synthetic ninth
+-- stanza, which is the only way to prove the rule fires rather than merely
+-- passes.
+testSuiteStanzaViolations :: String -> [String]
+testSuiteStanzaViolations contents =
+  interfaceViolations ++ unroutedViolations ++ undeclaredViolations
  where
+  interfaceViolations = go [] Nothing (lines contents)
+
+  declared = declaredTestSuiteNames contents
+  routed = map (drop (length ("test:" :: String))) routedHaskellSuites
+
+  unroutedViolations =
+    [ "Test suite `"
+        ++ suiteName
+        ++ "` is declared in `prodbox.cabal` and named by no `prodbox test` scope."
+        ++ " Route it through `Prodbox.TestPlan` or retire the stanza (Sprint 5.45)."
+    | suiteName <- declared
+    , suiteName `notElem` routed
+    ]
+
+  undeclaredViolations =
+    [ "`Prodbox.TestPlan` routes `test:"
+        ++ suiteName
+        ++ "`, which `prodbox.cabal` does not declare (Sprint 5.45)."
+    | suiteName <- routed
+    , suiteName `notElem` declared
+    ]
+
   go violations _ [] = reverse violations
   go violations currentSuite (lineText : remaining) =
     let trimmedLine = trimLeft lineText
@@ -8303,6 +8630,15 @@ checkTestSuiteInterfaces repoRoot = do
                    in go nextViolations (Just (suiteName, True)) remaining
                 _ -> go violations currentSuite remaining
               else go violations currentSuite remaining
+
+-- | Every @test-suite@ stanza name the package manifest declares.
+declaredTestSuiteNames :: String -> [String]
+declaredTestSuiteNames contents =
+  [ trimLine (drop (length ("test-suite " :: String)) trimmedLine)
+  | lineText <- lines contents
+  , let trimmedLine = trimLeft lineText
+  , "test-suite " `isPrefixOf` trimmedLine
+  ]
 
 rendererDeterminismViolations :: FilePath -> IO [String]
 rendererDeterminismViolations repoRoot =

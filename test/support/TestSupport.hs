@@ -28,14 +28,18 @@ module TestSupport
   , syntheticConfigFile
   , syntheticProjectConfig
   , verifiedCallerSlotFixture
+  , withElapsedMicros
+  , sleepMicros
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM (atomically)
 import Data.ByteString.Char8 qualified as StrictByteString8
 import Data.ByteString.Lazy (ByteString)
 import Data.List (isInfixOf)
 import Data.String (IsString)
+import GHC.Clock (getMonotonicTimeNSec)
 import GHC.Stack (HasCallStack)
 import Numeric.Natural (Natural)
 import Prodbox.Aws.Region (awsRegionFromParts)
@@ -375,3 +379,38 @@ fixtureRoleReadinessResolver =
     controlPlaneRoleReadinessSchedule
     (pure fixtureReadinessNowMicros)
     atomically
+
+-- | Sprint 5.44: how long an action took, in whole microseconds on a monotonic
+-- clock.
+--
+-- The rule this exists for: __a test of a bounded subprocess asserts elapsed
+-- time, not merely the returned @Either@__, because "returned an error
+-- eventually" cannot distinguish slow from wedged. The signature of a call that
+-- never completes is elapsed equal to its bound — thirty seconds under a
+-- thirty-second bound, forty under forty — and that is only observable with a
+-- clock. Before this sprint nothing in @test\/@ read one: the single monotonic
+-- read in the tree minted a deadline rather than measuring a duration.
+--
+-- A monotonic clock rather than a wall clock, because a duration measured
+-- across a clock adjustment is not a duration. @GHC.Clock@ is in @base@, which
+-- matters here: this module is compiled into five of the eight test suites and
+-- two of them depend on neither @time@ nor @process@.
+--
+-- __Do not apply a blanket ratio retroactively.__ At least one existing case
+-- runs a real child under a one-second bound and finishes in single-digit
+-- milliseconds; a rule saying elapsed must be some fraction of the bound would
+-- make it flaky on a loaded host without proving anything the case does not
+-- already prove. Assert elapsed time where the bound is the thing under test.
+withElapsedMicros :: IO answer -> IO (answer, Integer)
+withElapsedMicros action = do
+  startedAt <- getMonotonicTimeNSec
+  answer <- action
+  finishedAt <- getMonotonicTimeNSec
+  pure (answer, fromIntegral ((finishedAt - startedAt) `div` 1000))
+
+-- | Sleep for a measured number of microseconds.
+--
+-- Present so an elapsed-time assertion can be shown to fail: a measurement that
+-- has never disagreed with anything is a measurement nobody has checked.
+sleepMicros :: Integer -> IO ()
+sleepMicros micros = threadDelay (fromIntegral (max 0 micros))

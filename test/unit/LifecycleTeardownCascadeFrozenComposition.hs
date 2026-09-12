@@ -151,10 +151,14 @@ lifecycleTeardownCascadeFrozenCompositionSuite =
       calls <- newIORef []
       built <- buildRuntime calls
       runtime <- mustRightIO built
-      let auditPlans =
+      -- Sprint 4.94: the signature is required, not decorative.  Matching the
+      -- existential's operation is a GADT match, and a local binding under one
+      -- is monomorphic, so the list's element type has to be written down.
+      let auditPlans :: [CleanupNodePlan]
+          auditPlans =
             [ plan
             | plan <- cleanupGraphNodes (compiledDesiredAbsenceGraph compiledFor)
-            , Just AuditCascadeEscapes <-
+            , Just (SomeTeardownOperation AuditCascadeEscapes) <-
                 [compiledOperationForNode (cleanupNodeId plan) compiledFor]
             ]
       outcomes <-
@@ -195,12 +199,12 @@ isRegionBoundedUnobservable = \case
   regionBound (ObservationFailure detail) =
     Text.isInfixOf "endpoint" detail
 
-isExactStackObserve :: TeardownOperation surface -> Bool
+isExactStackObserve :: SomeTeardownOperation surface -> Bool
 isExactStackObserve = \case
-  ObserveRegisteredTarget target ->
+  SomeTeardownOperation (ObserveRegisteredTarget target) ->
     registeredTargetKey target
       `elem` [AwsEksKey, AwsEksSubzoneKey, AwsTestKey]
-  _ -> False
+  SomeTeardownOperation _ -> False
 
 isFailedNode :: CleanupNodeOutcome -> Bool
 isFailedNode = \case

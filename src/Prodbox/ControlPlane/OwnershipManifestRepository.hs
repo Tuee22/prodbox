@@ -106,15 +106,40 @@ import Prodbox.Lifecycle.Teardown.Registry
   , registeredIdentityCoordinateDigest
   , registeredIdentityKind
   )
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ObservationEvidenceScopeFields (..)
+  , ScopeWire
+  , observationEvidenceScopeFields
+  , observationEvidenceScopeFromFields
+  , renderScopeWireError
+  , scopeFromWire
+  , scopeIdentityFields
+  , scopeToWire
+  )
 
+-- | The authority identity of one write-ahead ownership-manifest slot.
+--
+-- Sprint 4.92: this record used to keep four hand-picked projections of the
+-- run's scope — surface, durable run scope, foundation, AWS scope — and what
+-- that list left out was the run's retained DNS hosted zone.  Two runs that
+-- differed only in the zone they were compiled against therefore minted the
+-- same submission key, and so claimed the same immutable object, for manifests
+-- describing different DNS records.  The whole scope is kept instead, so the
+-- derived 'Eq' and the submission key both move when any scope field moves and
+-- a field added to the scope later cannot be quietly left out of identity.
+--
+-- The scope kept here is the /slot/ scope of 'ownershipManifestSlotScope': the
+-- present\/absent operation is normalised away, because the logical slot
+-- excludes it by design and the derived 'Eq' has to stay blind to it for the
+-- same reason.  The AWS scope stays a field of its own rather than being read
+-- back out of the scope, because it is the refined value 'identityFor' proved
+-- present; it is projected from the same scope, so the two cannot disagree.
 data OwnershipManifestAuthorityIdentity = OwnershipManifestAuthorityIdentity
   { internalOwnershipManifestAuthoritySubmissionKey :: !Text
   , internalOwnershipManifestAuthorityStackKey :: !RegisteredResourceKey
   , internalOwnershipManifestAuthorityCoordinateDigest
       :: !ManagedResourceCoordinateDigest
-  , internalOwnershipManifestAuthoritySurface :: !CleanupSurface
-  , internalOwnershipManifestAuthorityRunScope :: !DurableObservationRunScope
-  , internalOwnershipManifestAuthorityFoundation :: !LinuxRke2FoundationId
+  , internalOwnershipManifestAuthorityScope :: !ObservationEvidenceScope
   , internalOwnershipManifestAuthorityAwsScope :: !AwsScope
   }
   deriving stock (Eq, Show)
@@ -133,19 +158,23 @@ ownershipManifestAuthorityCoordinateDigest
 ownershipManifestAuthorityCoordinateDigest =
   internalOwnershipManifestAuthorityCoordinateDigest
 
+-- | The three scope projections this module publishes are now read out of the
+-- stored scope rather than out of fields copied beside it, so no caller can
+-- observe a projection that the scope itself no longer agrees with.
 ownershipManifestAuthoritySurface
   :: OwnershipManifestAuthorityIdentity -> CleanupSurface
-ownershipManifestAuthoritySurface = internalOwnershipManifestAuthoritySurface
+ownershipManifestAuthoritySurface =
+  evidenceCleanupSurface . internalOwnershipManifestAuthorityScope
 
 ownershipManifestAuthorityRunScope
   :: OwnershipManifestAuthorityIdentity -> DurableObservationRunScope
 ownershipManifestAuthorityRunScope =
-  internalOwnershipManifestAuthorityRunScope
+  evidenceDurableRunScope . internalOwnershipManifestAuthorityScope
 
 ownershipManifestAuthorityFoundation
   :: OwnershipManifestAuthorityIdentity -> LinuxRke2FoundationId
 ownershipManifestAuthorityFoundation =
-  internalOwnershipManifestAuthorityFoundation
+  evidenceLinuxRke2Foundation . internalOwnershipManifestAuthorityScope
 
 ownershipManifestAuthorityAwsScope
   :: OwnershipManifestAuthorityIdentity -> AwsScope
@@ -157,19 +186,40 @@ ownershipManifestAuthorityLogicalName identity =
   "authority/ownership-manifests/"
     <> ownershipManifestAuthoritySubmissionKey identity
 
+-- | The durable encoding of an authority identity.
+--
+-- Sprint 4.92: the scope travels as one nested 'ScopeWire' rather than as five
+-- flattened fields — surface, run scope, foundation, AWS account, AWS region —
+-- beside a separately carried registry revision.  Flattening is what forced the
+-- decoder to rebuild the scope through 'mkObservationEvidenceScope', whose
+-- documented contract hardcodes the DNS hosted zone to absent, so an encode and
+-- decode round trip of an identity minted in a zone-carrying run handed back a
+-- zone-blind one and the exact identity comparison that guards every read-back
+-- then refused a record this authority had just written.
+--
+-- The registry revision is a scope field, so it now travels inside the nested
+-- value; the flat check it used to get here is gone because 'identityFor'
+-- refuses a revision that is not 'lifecycleRegistryRevision' with the same
+-- refusal, on every scope it is given rather than only on decoded ones.
 data OwnershipManifestIdentityWire = OwnershipManifestIdentityWire
   { manifestIdentityWireVersion :: !Int
-  , manifestIdentityWireRegistryRevision :: !Text
   , manifestIdentityWireStackKey :: !Int
   , manifestIdentityWireCoordinateDigest :: !Text
-  , manifestIdentityWireSurface :: !Int
-  , manifestIdentityWireRunScope :: !Text
-  , manifestIdentityWireFoundation :: !Text
-  , manifestIdentityWireAwsAccount :: !Text
-  , manifestIdentityWireAwsRegion :: !Text
+  , manifestIdentityWireScope :: !ScopeWire
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+-- | Version 2 is the first identity encoding that carries the run's retained
+-- DNS hosted zone.
+--
+-- Version 1 bytes are refused rather than upgraded, and could not be upgraded:
+-- the zone is not recoverable from bytes written without it.  Nothing is
+-- stranded by the refusal, because a version-1 submission key was derived from
+-- a zone-blind canonical identity, so no version-2 read addresses a version-1
+-- object in the first place.
+ownershipManifestIdentityWireFormatVersion :: Int
+ownershipManifestIdentityWireFormatVersion = 2
 
 maximumOwnershipManifestAuthorityIdentityBytes :: Int
 maximumOwnershipManifestAuthorityIdentityBytes = 16 * 1024
@@ -209,40 +259,14 @@ decodeOwnershipManifestAuthorityIdentity bytes = do
         )
     )
   unless
-    (manifestIdentityWireVersion wire == 1)
+    (manifestIdentityWireVersion wire == ownershipManifestIdentityWireFormatVersion)
     ( Left
         ( OwnershipManifestRepositoryIdentityInvalid
             "identity version was unsupported"
         )
     )
-  unless
-    ( manifestIdentityWireRegistryRevision wire
-        == registryRevisionText lifecycleRegistryRevision
-    )
-    ( Left
-        ( OwnershipManifestRepositoryIdentityInvalid
-            "registry revision mismatch"
-        )
-    )
   key <- decodeIdentityStackKey (manifestIdentityWireStackKey wire)
-  surface <- decodeIdentitySurface (manifestIdentityWireSurface wire)
-  let scope =
-        mkObservationEvidenceScope
-          surface
-          lifecycleRegistryRevision
-          ( DurableObservationRunScope
-              (manifestIdentityWireRunScope wire)
-          )
-          ( LinuxRke2FoundationId
-              (manifestIdentityWireFoundation wire)
-          )
-          ( Just
-              ( AwsScope
-                  (AwsAccountId (manifestIdentityWireAwsAccount wire))
-                  (AwsRegion (manifestIdentityWireAwsRegion wire))
-              )
-          )
-          ReconcileDesiredPresent
+  scope <- decodeIdentityScope (manifestIdentityWireScope wire)
   identity <- identityFor key scope
   unless
     ( manifestIdentityWireCoordinateDigest wire
@@ -260,24 +284,14 @@ ownershipManifestIdentityToWire
   :: OwnershipManifestAuthorityIdentity -> OwnershipManifestIdentityWire
 ownershipManifestIdentityToWire identity =
   OwnershipManifestIdentityWire
-    { manifestIdentityWireVersion = 1
-    , manifestIdentityWireRegistryRevision =
-        registryRevisionText lifecycleRegistryRevision
+    { manifestIdentityWireVersion = ownershipManifestIdentityWireFormatVersion
     , manifestIdentityWireStackKey =
         fromEnum (ownershipManifestAuthorityStackKey identity)
     , manifestIdentityWireCoordinateDigest =
         managedResourceCoordinateDigestText
           (ownershipManifestAuthorityCoordinateDigest identity)
-    , manifestIdentityWireSurface =
-        fromEnum (ownershipManifestAuthoritySurface identity)
-    , manifestIdentityWireRunScope =
-        runScopeText (ownershipManifestAuthorityRunScope identity)
-    , manifestIdentityWireFoundation =
-        foundationText (ownershipManifestAuthorityFoundation identity)
-    , manifestIdentityWireAwsAccount =
-        accountText (ownershipManifestAuthorityAwsScope identity)
-    , manifestIdentityWireAwsRegion =
-        regionText (ownershipManifestAuthorityAwsScope identity)
+    , manifestIdentityWireScope =
+        scopeToWire (internalOwnershipManifestAuthorityScope identity)
     }
 
 data AuthorityOwnershipManifestWrite = AuthorityOwnershipManifestWrite
@@ -644,6 +658,21 @@ modelBOwnershipManifestRepository authority adapter =
     OwnershipManifestAuthorityReadBackUnobservable
       (repositoryFailure category detail)
 
+-- | Mint the authority identity — and therefore the immutable object name —
+-- of one stack's write-ahead ownership manifest under one run scope.
+--
+-- Sprint 4.92: the canonical identity projects the scope through
+-- 'scopeIdentityFields' instead of naming six of the scope's fields by hand
+-- beside this repository's own two.  That hand list was zone-blind, and a
+-- zone-blind key is a collision whether or not two zones are reachable from
+-- one run today: this key decides which durable object a manifest claims, so
+-- two runs compiled against different hosted zones claimed one object, and the
+-- second was then either told it had replayed the first run's manifest or
+-- refused as a conflict.  Carrying the zone is what makes the key name the run
+-- it was minted for.
+--
+-- The operation is the one scope field the key must ignore, and it is
+-- normalised rather than omitted; see 'ownershipManifestSlotScope'.
 identityFor
   :: RegisteredResourceKey
   -> ObservationEvidenceScope
@@ -678,26 +707,23 @@ identityFor key scope = do
     (foundationText (evidenceLinuxRke2Foundation scope))
   validateAwsScope awsScope
   let coordinate = registeredIdentityCoordinateDigest identity
-      runScope = evidenceDurableRunScope scope
-      foundation = evidenceLinuxRke2Foundation scope
-      surface = evidenceCleanupSurface scope
+      slotScope = ownershipManifestSlotScope scope
+      -- The envelope's own two fields are framed first and the scope's ten
+      -- follow, each length-framed by 'frame' exactly as before, so the
+      -- concatenation of two adjacent components still cannot be read as one.
       canonicalIdentity =
         Text.concat
           ( map
               frame
-              [ "ownership-manifest/v1"
-              , registryRevisionText (evidenceRegistryRevision scope)
-              , Text.pack (show surface)
-              , registeredResourceKeyText key
-              , managedResourceCoordinateDigestText coordinate
-              , runScopeText runScope
-              , foundationText foundation
-              , accountText awsScope
-              , regionText awsScope
-              ]
+              ( [ "ownership-manifest/v2"
+                , registeredResourceKeyText key
+                , managedResourceCoordinateDigestText coordinate
+                ]
+                  ++ scopeIdentityFields slotScope
+              )
           )
       submissionKey =
-        "ownership-manifest-v1-"
+        "ownership-manifest-v2-"
           <> TextEncoding.decodeUtf8
             (hexSha256 (TextEncoding.encodeUtf8 canonicalIdentity))
   Right
@@ -705,10 +731,30 @@ identityFor key scope = do
       { internalOwnershipManifestAuthoritySubmissionKey = submissionKey
       , internalOwnershipManifestAuthorityStackKey = key
       , internalOwnershipManifestAuthorityCoordinateDigest = coordinate
-      , internalOwnershipManifestAuthoritySurface = surface
-      , internalOwnershipManifestAuthorityRunScope = runScope
-      , internalOwnershipManifestAuthorityFoundation = foundation
+      , internalOwnershipManifestAuthorityScope = slotScope
       , internalOwnershipManifestAuthorityAwsScope = awsScope
+      }
+
+-- | The scope as the immutable slot sees it.
+--
+-- The slot excludes the present\/absent operation, and has to: a write-ahead
+-- manifest is committed under 'ReconcileDesiredPresent' and read back during
+-- cleanup under 'ReconcileDesiredAbsent', so if the operation reached the key
+-- the two would address different objects and the record would be unreachable
+-- at exactly the moment it exists to be read.
+--
+-- Sprint 4.92: the operation is therefore normalised to the one value the
+-- write path mints, rather than dropped from the projection.  Omitting a field
+-- is how this key came to be zone-blind in the first place; pinning it keeps
+-- 'scopeIdentityFields' as the whole statement of what identity is, so a field
+-- added to the scope later joins the key on its own.  Record update, not a
+-- field-by-field re-mint, so nothing else here can be dropped either.
+ownershipManifestSlotScope
+  :: ObservationEvidenceScope -> ObservationEvidenceScope
+ownershipManifestSlotScope scope =
+  observationEvidenceScopeFromFields
+    (observationEvidenceScopeFields scope)
+      { scopeFieldLifecycleOperation = ReconcileDesiredPresent
       }
 
 validateCanonicalBytes
@@ -793,31 +839,29 @@ decodeIdentityStackKey raw
         )
   | otherwise = Right (toEnum raw)
 
-decodeIdentitySurface
-  :: Int -> Either OwnershipManifestRepositoryError CleanupSurface
-decodeIdentitySurface raw
-  | raw < fromEnum (minBound :: CleanupSurface)
-      || raw > fromEnum (maxBound :: CleanupSurface) =
-      Left
-        ( OwnershipManifestRepositoryIdentityInvalid
-            "cleanup surface was outside the closed enum"
-        )
-  | otherwise = Right (toEnum raw)
+-- | Sprint 4.92: the canonical scope decoder, mapped into this repository's
+-- error type.
+--
+-- The field rules live in "Prodbox.Lifecycle.Teardown.ScopeCodec" now, which is
+-- why the cleanup-surface bounded-enum check and the flat registry-revision
+-- check this decoder used to state for itself are gone: an envelope restating
+-- the rules for the scope's fields is exactly how this envelope came to state
+-- them for six fields and not for the hosted zone.  The refusals 'identityFor'
+-- applies on top are not rules about the scope's own fields but about this
+-- repository's slot, so they stay, and they cover every scope it is handed
+-- rather than only the decoded ones.
+decodeIdentityScope
+  :: ScopeWire
+  -> Either OwnershipManifestRepositoryError ObservationEvidenceScope
+decodeIdentityScope =
+  first (OwnershipManifestRepositoryIdentityInvalid . renderScopeWireError)
+    . scopeFromWire
 
 frame :: Text -> Text
 frame value = Text.pack (show (Text.length value)) <> ":" <> value
-
-registryRevisionText :: RegistryRevision -> Text
-registryRevisionText (RegistryRevision value) = value
 
 foundationText :: LinuxRke2FoundationId -> Text
 foundationText (LinuxRke2FoundationId value) = value
 
 runScopeText :: DurableObservationRunScope -> Text
 runScopeText (DurableObservationRunScope value) = value
-
-accountText :: AwsScope -> Text
-accountText (AwsScope (AwsAccountId value) _) = value
-
-regionText :: AwsScope -> Text
-regionText (AwsScope _ (AwsRegion value)) = value

@@ -105,29 +105,21 @@ import Prodbox.Lifecycle.Teardown.EksDrainIntent
   , mkEksDrainOperationBinding
   )
 import Prodbox.Lifecycle.Teardown.Model
-  ( AwsAccountId (..)
-  , AwsRegion (..)
-  , AwsScope (..)
-  , CleanupSurface (..)
-  , DurableObservationRunScope (..)
-  , LifecycleOperation (..)
-  , LinuxRke2FoundationId (..)
-  , ManagedResourceCoordinateDigest
+  ( ManagedResourceCoordinateDigest
   , ObservationEvidenceScope
   , ObservationFailure (..)
   , RegisteredResourceKey (AwsEksKey)
-  , RegistryRevision (..)
-  , evidenceAwsScope
-  , evidenceCleanupSurface
-  , evidenceDurableRunScope
-  , evidenceLifecycleOperation
-  , evidenceLinuxRke2Foundation
-  , evidenceRegistryRevision
   , managedResourceCoordinateDigestText
-  , mkObservationEvidenceScope
   , registeredResourceKeyText
   )
 import Prodbox.Lifecycle.Teardown.Registry qualified as Registry
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ScopeWire
+  , renderScopeWireError
+  , scopeFromWire
+  , scopeIdentityFields
+  , scopeToWire
+  )
 
 newtype EksDrainIntentSubmissionKey = EksDrainIntentSubmissionKey Text
   deriving stock (Eq, Ord, Show)
@@ -262,18 +254,22 @@ eksDrainIntentAuthorityDrainReadBackOperationId =
 -- | Canonical, secret-free recovery coordinate carried over the authenticated
 -- Authority route.  The constructor stays private; decode reconstructs the
 -- validated EKS operation binding and checks every mirrored identity field.
+--
+-- Sprint 4.92: the evidence scope travels as one nested 'ScopeWire' instead of
+-- as seven fields flattened among this envelope's own.  The flattened form had
+-- no field for the run's retained DNS hosted zone, and its decoder re-minted the
+-- scope through @mkObservationEvidenceScope@, whose contract hardcodes that zone
+-- to absent.  A recovery identity emitted for a zone-bearing run therefore
+-- decoded back to a materially different scope, and the submission-key
+-- comparison that closes 'decodeAuthorityIdentityWire' then refused the very
+-- coordinate this module had just encoded.  Nesting the canonical wire form
+-- leaves no field list here for a later author to forget to extend.
 data EksDrainIntentAuthorityIdentityWire = EksDrainIntentAuthorityIdentityWire
   { identityWireVersion :: !Word16
   , identityWireSubmissionKey :: !Text
   , identityWireRunId :: !Text
   , identityWireGraphDigest :: !Text
-  , identityWireSurface :: !Word16
-  , identityWireRegistryRevision :: !Text
-  , identityWireDurableRunScope :: !Text
-  , identityWireFoundation :: !Text
-  , identityWireAwsAccount :: !Text
-  , identityWireAwsRegion :: !Text
-  , identityWireLifecycleOperation :: !Word16
+  , identityWireScope :: !ScopeWire
   , identityWireResourceKey :: !Text
   , identityWireCoordinateDigest :: !Text
   , identityWireCommitOperation :: !Text
@@ -285,18 +281,12 @@ data EksDrainIntentAuthorityIdentityWire = EksDrainIntentAuthorityIdentityWire
 
 instance Serialise EksDrainIntentAuthorityIdentityWire where
   encode wire =
-    Cbor.encodeListLen 17
+    Cbor.encodeListLen 11
       <> Cbor.encodeWord16 (identityWireVersion wire)
       <> Cbor.encodeString (identityWireSubmissionKey wire)
       <> Cbor.encodeString (identityWireRunId wire)
       <> Cbor.encodeString (identityWireGraphDigest wire)
-      <> Cbor.encodeWord16 (identityWireSurface wire)
-      <> Cbor.encodeString (identityWireRegistryRevision wire)
-      <> Cbor.encodeString (identityWireDurableRunScope wire)
-      <> Cbor.encodeString (identityWireFoundation wire)
-      <> Cbor.encodeString (identityWireAwsAccount wire)
-      <> Cbor.encodeString (identityWireAwsRegion wire)
-      <> Cbor.encodeWord16 (identityWireLifecycleOperation wire)
+      <> encode (identityWireScope wire)
       <> Cbor.encodeString (identityWireResourceKey wire)
       <> Cbor.encodeString (identityWireCoordinateDigest wire)
       <> Cbor.encodeString (identityWireCommitOperation wire)
@@ -305,20 +295,14 @@ instance Serialise EksDrainIntentAuthorityIdentityWire where
       <> Cbor.encodeString (identityWireDrainReadBackOperation wire)
   decode = do
     fields <- Cbor.decodeListLen
-    unless (fields == 17) $
-      fail "EksDrainIntentAuthorityIdentity: expected 17 fields"
+    unless (fields == 11) $
+      fail "EksDrainIntentAuthorityIdentity: expected 11 fields"
     EksDrainIntentAuthorityIdentityWire
       <$> Cbor.decodeWord16
       <*> Cbor.decodeString
       <*> Cbor.decodeString
       <*> Cbor.decodeString
-      <*> Cbor.decodeWord16
-      <*> Cbor.decodeString
-      <*> Cbor.decodeString
-      <*> Cbor.decodeString
-      <*> Cbor.decodeString
-      <*> Cbor.decodeString
-      <*> Cbor.decodeWord16
+      <*> decode
       <*> Cbor.decodeString
       <*> Cbor.decodeString
       <*> Cbor.decodeString
@@ -342,8 +326,15 @@ data EksDrainIntentAuthorityIdentityError
 maximumEksDrainIntentAuthorityIdentityBytes :: Int
 maximumEksDrainIntentAuthorityIdentityBytes = 4096
 
+-- | Sprint 4.92: version 2 is the first encoding whose scope is nested, and
+-- therefore the first that carries the run's retained DNS hosted zone.  Version
+-- 1 bytes are refused rather than upgraded.  A version-1 identity's submission
+-- key was derived from a zone-blind canonical text, so it names a different
+-- retained Authority object than any version-2 read addresses; upgrading such
+-- bytes in place would hand back an identity whose own submission key no longer
+-- matched the object it came from.
 eksDrainIntentAuthorityIdentityFormatVersion :: Word16
-eksDrainIntentAuthorityIdentityFormatVersion = 1
+eksDrainIntentAuthorityIdentityFormatVersion = 2
 
 encodeEksDrainIntentAuthorityIdentity
   :: EksDrainIntentAuthorityIdentity -> ByteString
@@ -385,22 +376,7 @@ authorityIdentityWire identity =
     , identityWireRunId = cleanupRunIdText (eksDrainIntentAuthorityRunId identity)
     , identityWireGraphDigest =
         cleanupDigestText (eksDrainIntentAuthorityGraphDigest identity)
-    , identityWireSurface =
-        encodeIdentitySurface
-          (evidenceCleanupSurface (eksDrainIntentAuthorityScope identity))
-    , identityWireRegistryRevision =
-        registryRevisionText
-          (evidenceRegistryRevision (eksDrainIntentAuthorityScope identity))
-    , identityWireDurableRunScope =
-        durableRunScopeText
-          (evidenceDurableRunScope (eksDrainIntentAuthorityScope identity))
-    , identityWireFoundation =
-        foundationIdText
-          (evidenceLinuxRke2Foundation (eksDrainIntentAuthorityScope identity))
-    , identityWireAwsAccount = maybe "" awsAccount (evidenceAwsScope scope)
-    , identityWireAwsRegion = maybe "" awsRegion (evidenceAwsScope scope)
-    , identityWireLifecycleOperation =
-        encodeIdentityLifecycleOperation (evidenceLifecycleOperation scope)
+    , identityWireScope = scopeToWire (eksDrainIntentAuthorityScope identity)
     , identityWireResourceKey =
         registeredResourceKeyText (eksDrainIntentAuthorityResourceKey identity)
     , identityWireCoordinateDigest =
@@ -419,10 +395,6 @@ authorityIdentityWire identity =
         cleanupOperationIdText
           (eksDrainIntentAuthorityDrainReadBackOperationId identity)
     }
- where
-  scope = eksDrainIntentAuthorityScope identity
-  awsAccount (AwsScope (AwsAccountId account) _) = account
-  awsRegion (AwsScope _ (AwsRegion region)) = region
 
 decodeAuthorityIdentityWire
   :: EksDrainIntentAuthorityIdentityWire
@@ -434,11 +406,6 @@ decodeAuthorityIdentityWire wire = do
     (identityWireVersion wire == eksDrainIntentAuthorityIdentityFormatVersion)
     (EksDrainIntentAuthorityIdentityVersionUnsupported (identityWireVersion wire))
   requireIdentityText "submission key" 160 (identityWireSubmissionKey wire)
-  requireIdentityText "registry revision" 256 (identityWireRegistryRevision wire)
-  requireIdentityText "durable run scope" 256 (identityWireDurableRunScope wire)
-  requireIdentityText "Linux RKE2 foundation" 256 (identityWireFoundation wire)
-  requireIdentityText "AWS account" 64 (identityWireAwsAccount wire)
-  requireIdentityText "AWS region" 64 (identityWireAwsRegion wire)
   let expectedResourceKey = registeredResourceKeyText AwsEksKey
   unlessIdentity
     (identityWireResourceKey wire == expectedResourceKey)
@@ -471,22 +438,7 @@ decodeAuthorityIdentityWire wire = do
     identityText
       "drain read-back operation"
       (mkCleanupOperationId (identityWireDrainReadBackOperation wire))
-  surface <- decodeIdentitySurface (identityWireSurface wire)
-  lifecycleOperation <-
-    decodeIdentityLifecycleOperation (identityWireLifecycleOperation wire)
-  let scope =
-        mkObservationEvidenceScope
-          surface
-          (RegistryRevision (identityWireRegistryRevision wire))
-          (DurableObservationRunScope (identityWireDurableRunScope wire))
-          (LinuxRke2FoundationId (identityWireFoundation wire))
-          ( Just
-              ( AwsScope
-                  (AwsAccountId (identityWireAwsAccount wire))
-                  (AwsRegion (identityWireAwsRegion wire))
-              )
-          )
-          lifecycleOperation
+  scope <- decodeScopeWire (identityWireScope wire)
   binding <-
     first
       EksDrainIntentAuthorityIdentityBindingInvalid
@@ -543,53 +495,29 @@ unlessIdentity
   -> Either EksDrainIntentAuthorityIdentityError ()
 unlessIdentity condition err = if condition then Right () else Left err
 
-encodeIdentitySurface :: CleanupSurface -> Word16
-encodeIdentitySurface surface = case surface of
-  Cascade -> 1
-  ExplicitPerRun -> 2
-  TotalDecommission -> 3
-  LocalOnly -> localOnlySurfaceTag
-  OperationalTeardown -> operationalTeardownSurfaceTag
-  ExplicitLongLived -> explicitLongLivedSurfaceTag
-
-localOnlySurfaceTag, operationalTeardownSurfaceTag, explicitLongLivedSurfaceTag :: Word16
-localOnlySurfaceTag = 101
-operationalTeardownSurfaceTag = 102
-explicitLongLivedSurfaceTag = 103
-
-decodeIdentitySurface
-  :: Word16
-  -> Either EksDrainIntentAuthorityIdentityError CleanupSurface
-decodeIdentitySurface tag = case tag of
-  1 -> Right Cascade
-  2 -> Right ExplicitPerRun
-  3 -> Right TotalDecommission
-  _ ->
-    Left
-      ( EksDrainIntentAuthorityIdentityFieldInvalid
-          ("unsupported cleanup surface tag " <> Text.pack (show tag))
-      )
-
-encodeIdentityLifecycleOperation :: LifecycleOperation -> Word16
-encodeIdentityLifecycleOperation operation = case operation of
-  ReconcileDesiredAbsent -> 1
-  ReconcileDesiredPresent -> reconcileDesiredPresentOperationTag
-  RunTerminalEscapeAudit -> runTerminalEscapeAuditOperationTag
-
-reconcileDesiredPresentOperationTag, runTerminalEscapeAuditOperationTag :: Word16
-reconcileDesiredPresentOperationTag = 101
-runTerminalEscapeAuditOperationTag = 102
-
-decodeIdentityLifecycleOperation
-  :: Word16
-  -> Either EksDrainIntentAuthorityIdentityError LifecycleOperation
-decodeIdentityLifecycleOperation tag = case tag of
-  1 -> Right ReconcileDesiredAbsent
-  _ ->
-    Left
-      ( EksDrainIntentAuthorityIdentityFieldInvalid
-          ("unsupported lifecycle operation tag " <> Text.pack (show tag))
-      )
+-- | Sprint 4.92: the canonical scope decoder, mapped into this module's error
+-- type.
+--
+-- The field rules live in "Prodbox.Lifecycle.Teardown.ScopeCodec" so that every
+-- envelope reads a scope the same way.  This module used to restate a subset of
+-- them inline and then rebuild the scope through @mkObservationEvidenceScope@,
+-- which is precisely how the run's retained DNS hosted zone was erased on every
+-- recovery decode.
+--
+-- The two hand-written tag decoders replaced here additionally narrowed the
+-- cleanup surface to @Cascade@, @ExplicitPerRun@ or @TotalDecommission@ and the
+-- lifecycle operation to @ReconcileDesiredAbsent@.  That narrowing is not lost:
+-- 'decodeAuthorityIdentityWire' hands the decoded scope straight to
+-- 'mkEksDrainOperationBinding', which refuses exactly the same surfaces and
+-- operations, so an out-of-range value now surfaces as
+-- 'EksDrainIntentAuthorityIdentityBindingInvalid' rather than as a field
+-- refusal, and is refused either way.
+decodeScopeWire
+  :: ScopeWire
+  -> Either EksDrainIntentAuthorityIdentityError ObservationEvidenceScope
+decodeScopeWire =
+  first (EksDrainIntentAuthorityIdentityFieldInvalid . renderScopeWireError)
+    . scopeFromWire
 
 data EksDrainIntentCommitRequest = EksDrainIntentCommitRequest
   { internalEksDrainIntentCommitRequestIdentity
@@ -828,6 +756,18 @@ repositoryFailure category detail =
   ObservationFailure
     ("EKS drain-intent Authority " <> category <> ": " <> detail)
 
+-- | The create-if-absent slot this run's intent must reach.
+--
+-- Sprint 4.92: the scope contributes 'scopeIdentityFields' rather than a
+-- hand-written field list.  The list this replaces was zone-blind, so two runs
+-- that differed only in their retained DNS hosted zone produced byte-identical
+-- canonical text and collided on one Authority submission key: the second run's
+-- commit observed the first run's intent bytes and was reported as a conflict
+-- against an intent it had nothing to do with.  The canonical text is therefore
+-- version @v2@ — the digest genuinely changes, and a v1 key names an object no
+-- v2 read addresses.  The @eks-drain-intent-v1-@ literal below is deliberately
+-- untouched: it names the key scheme rather than the canonical text, and the
+-- new digest already moves every key to an unoccupied object name.
 stableSubmissionKey
   :: CleanupRunId
   -> CleanupDigest
@@ -848,11 +788,11 @@ stableSubmissionKey runId graphDigest scope resourceKey coordinateDigest commitO
  where
   canonical =
     canonicalFields
-      ( [ "prodbox.eks-drain-intent-authority/v1"
+      ( [ "prodbox.eks-drain-intent-authority/v2"
         , cleanupRunIdText runId
         , cleanupDigestText graphDigest
         ]
-          <> scopeFields scope
+          <> scopeIdentityFields scope
           <> [ registeredResourceKeyText resourceKey
              , managedResourceCoordinateDigestText coordinateDigest
              , cleanupOperationIdText commitOperation
@@ -861,46 +801,6 @@ stableSubmissionKey runId graphDigest scope resourceKey coordinateDigest commitO
              , cleanupOperationIdText drainReadBackOperation
              ]
       )
-
-scopeFields :: ObservationEvidenceScope -> [Text]
-scopeFields scope =
-  [ cleanupSurfaceToken (evidenceCleanupSurface scope)
-  , registryRevisionText (evidenceRegistryRevision scope)
-  , durableRunScopeText (evidenceDurableRunScope scope)
-  , foundationIdText (evidenceLinuxRke2Foundation scope)
-  ]
-    <> awsScopeFields (evidenceAwsScope scope)
-    <> [lifecycleOperationToken (evidenceLifecycleOperation scope)]
-
-awsScopeFields :: Maybe AwsScope -> [Text]
-awsScopeFields maybeScope = case maybeScope of
-  Nothing -> ["aws:none"]
-  Just (AwsScope (AwsAccountId account) (AwsRegion region)) ->
-    ["aws:present", account, region]
-
-cleanupSurfaceToken :: CleanupSurface -> Text
-cleanupSurfaceToken surface = case surface of
-  LocalOnly -> "local-only"
-  Cascade -> "cascade"
-  ExplicitPerRun -> "explicit-per-run"
-  OperationalTeardown -> "operational-teardown"
-  ExplicitLongLived -> "explicit-long-lived"
-  TotalDecommission -> "total-decommission"
-
-lifecycleOperationToken :: LifecycleOperation -> Text
-lifecycleOperationToken operation = case operation of
-  ReconcileDesiredAbsent -> "reconcile-desired-absent"
-  ReconcileDesiredPresent -> "reconcile-desired-present"
-  RunTerminalEscapeAudit -> "run-terminal-escape-audit"
-
-registryRevisionText :: RegistryRevision -> Text
-registryRevisionText (RegistryRevision value) = value
-
-durableRunScopeText :: DurableObservationRunScope -> Text
-durableRunScopeText (DurableObservationRunScope value) = value
-
-foundationIdText :: LinuxRke2FoundationId -> Text
-foundationIdText (LinuxRke2FoundationId value) = value
 
 canonicalFields :: [Text] -> Text
 canonicalFields = Text.concat . map frame

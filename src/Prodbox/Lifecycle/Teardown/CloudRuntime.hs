@@ -65,8 +65,8 @@ executeCloudOperation
   :: (Monad m)
   => CloudRuntime m
   -> TeardownExecutionContext surface
-  -> TeardownOperation surface
-  -> m (Maybe (TeardownNodeResult surface))
+  -> TeardownOperation surface result
+  -> m (Maybe (TeardownNodeResult surface result))
 executeCloudOperation runtime context operation = case operation of
   ObserveRegisteredTarget target ->
     fmap
@@ -185,13 +185,13 @@ executeCloudOperation runtime context operation = case operation of
           )
       )
 
-componentError :: (Show err) => Text -> err -> TeardownNodeResult surface
+componentError :: (Show err) => Text -> err -> TeardownNodeResult surface result
 componentError component err =
   TeardownNodeRefused
     (bounded (component <> " component refused: " <> Text.pack (show err)))
 
 componentDeclined
-  :: Text -> TeardownOperation surface -> TeardownNodeResult surface
+  :: Text -> TeardownOperation surface result -> TeardownNodeResult surface result
 componentDeclined component operation =
   TeardownNodeRefused
     ( bounded

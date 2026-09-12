@@ -110,6 +110,7 @@ import Prodbox.Lifecycle.Teardown.Program
   , ProgramDependency (..)
   , ProgramNode
   , ProgramNodeName (..)
+  , SomeTeardownOperation (..)
   , TeardownOperation (..)
   , compileDesiredAbsenceProgram
   , desiredAbsenceProgramNodes
@@ -129,7 +130,7 @@ import Prodbox.Lifecycle.Teardown.ProviderDispatch
 -- narrow answer rather than an obvious one are called out inline, because each
 -- is adjacent to an arm that /does/ open a session.
 teardownOperationCredentialConsumer
-  :: TeardownOperation surface -> Maybe OperationalCredentialGraphConsumer
+  :: TeardownOperation surface result -> Maybe OperationalCredentialGraphConsumer
 teardownOperationCredentialConsumer operation = case operation of
   ObserveRegisteredTarget {} ->
     Just ObserveRegisteredTargetCredentialConsumer
@@ -299,7 +300,7 @@ evidenceDetail blocker = case dispositionBlockerEvidence blocker of
 --
 -- Total, so a new audit operation cannot be added without deciding whether the
 -- \"the surface that disposes has no audit\" blocker still holds.
-teardownOperationIsTerminalAudit :: TeardownOperation surface -> Bool
+teardownOperationIsTerminalAudit :: TeardownOperation surface result -> Bool
 teardownOperationIsTerminalAudit operation = case operation of
   AuditCascadeEscapes -> True
   AuditTotalDecommissionEscapes -> True
@@ -311,7 +312,7 @@ teardownOperationIsTerminalAudit operation = case operation of
 -- is a revoke response, and the canonical read-back protocol exists precisely
 -- to refuse treating one as evidence.
 teardownOperationIsCredentialRevocationReadBack
-  :: TeardownOperation surface -> Bool
+  :: TeardownOperation surface result -> Bool
 teardownOperationIsCredentialRevocationReadBack operation = case operation of
   ReadBackOperationalCredentialRevocation _ -> True
   _ -> False
@@ -324,10 +325,32 @@ teardownOperationIsCredentialRevocationReadBack operation = case operation of
 -- against: the operation now exists, but the surface that owns a terminal
 -- audit does not yet emit one, so the audit-then-dispose order still has no
 -- single surface expressing both halves.
-teardownOperationIsCredentialDisposition :: TeardownOperation surface -> Bool
+teardownOperationIsCredentialDisposition :: TeardownOperation surface result -> Bool
 teardownOperationIsCredentialDisposition operation = case operation of
   RevokeOperationalCredential _ -> True
   _ -> False
+
+-- | Sprint 4.94: the same three predicates over a program node's operation,
+-- whose result index the node deliberately forgets.
+--
+-- A predicate that asks which operation this is cannot depend on the shape of
+-- the answer it produces, which is why forgetting the index costs nothing here.
+someOperationIsTerminalAudit :: SomeTeardownOperation surface -> Bool
+someOperationIsTerminalAudit (SomeTeardownOperation operation) =
+  teardownOperationIsTerminalAudit operation
+
+someOperationIsCredentialDisposition :: SomeTeardownOperation surface -> Bool
+someOperationIsCredentialDisposition (SomeTeardownOperation operation) =
+  teardownOperationIsCredentialDisposition operation
+
+someOperationCredentialConsumer
+  :: SomeTeardownOperation surface -> Maybe OperationalCredentialGraphConsumer
+someOperationCredentialConsumer (SomeTeardownOperation operation) =
+  teardownOperationCredentialConsumer operation
+
+someOperationIsCredentialRevocationReadBack :: SomeTeardownOperation surface -> Bool
+someOperationIsCredentialRevocationReadBack (SomeTeardownOperation operation) =
+  teardownOperationIsCredentialRevocationReadBack operation
 
 -- | Recompute the disposition blockers the sources establish.
 --
@@ -353,8 +376,8 @@ measuredOperationalCredentialDispositionBlockers = do
       -- escape audit and it is the one surface that disposes of the credential
       -- as part of destroying everything.
       auditThenDispositionExpressible =
-        any teardownOperationIsTerminalAudit (operations decommission)
-          && any teardownOperationIsCredentialDisposition (operations decommission)
+        any someOperationIsTerminalAudit (operations decommission)
+          && any someOperationIsCredentialDisposition (operations decommission)
       -- ... and the order actually compiled is the legal one. Every disposition
       -- node on that surface is a strict descendant of the audit, so the
       -- credential is live through the audit and disposed of only afterwards.
@@ -365,12 +388,12 @@ measuredOperationalCredentialDispositionBlockers = do
             auditNames =
               [ programNodeName node
               | node <- nodes
-              , teardownOperationIsTerminalAudit (programNodeOperation node)
+              , someOperationIsTerminalAudit (programNodeOperation node)
               ]
             dispositionNames =
               [ programNodeName node
               | node <- nodes
-              , teardownOperationIsCredentialDisposition
+              , someOperationIsCredentialDisposition
                   (programNodeOperation node)
               ]
          in not (null auditNames)
@@ -383,7 +406,7 @@ measuredOperationalCredentialDispositionBlockers = do
       cascadeAuditConsumesCredential =
         or
           [ True
-          | operation <- operations cascade
+          | SomeTeardownOperation operation <- operations cascade
           , teardownOperationIsTerminalAudit operation
           , Just _ <- [teardownOperationCredentialConsumer operation]
           ]
@@ -398,9 +421,9 @@ measuredOperationalCredentialDispositionBlockers = do
       -- position, including the ones whose completion minters this sprint
       -- already landed. This sprint makes no claim about that activation.
       operationalPathRevokes =
-        any teardownOperationIsCredentialDisposition (operations operational)
+        any someOperationIsCredentialDisposition (operations operational)
           && any
-            teardownOperationIsCredentialRevocationReadBack
+            someOperationIsCredentialRevocationReadBack
             (operations operational)
       legacyMigrationRequired =
         legacyOperationalIdentityStatus legacyOperationalIdentity
@@ -477,7 +500,7 @@ consumerNodes program =
   mapMaybe
     ( \node ->
         (,) (programNodeName node)
-          <$> teardownOperationCredentialConsumer (programNodeOperation node)
+          <$> someOperationCredentialConsumer (programNodeOperation node)
     )
     (desiredAbsenceProgramNodes program)
 
@@ -568,7 +591,7 @@ fixedOperationalCredentialCoverageRegression =
                       , programNodeName node
                           == ProgramNodeName cascadeTerminalAuditNodeName
                       , Just _ <-
-                          [teardownOperationCredentialConsumer (programNodeOperation node)]
+                          [someOperationCredentialConsumer (programNodeOperation node)]
                       ]
                   )
             , coverageRegressionNonConsumersExist =
@@ -578,7 +601,7 @@ fixedOperationalCredentialCoverageRegression =
                   , programNodeName node
                       == ProgramNodeName "cascade/read-back-completion"
                   , Just _ <-
-                      [teardownOperationCredentialConsumer (programNodeOperation node)]
+                      [someOperationCredentialConsumer (programNodeOperation node)]
                   ]
             }
  where
@@ -721,16 +744,16 @@ fixedOperationalCredentialDispositionRegression =
                       /= dispositionBlockerEvidence blocker
                   ]
             , dispositionRegressionCascadeHasAudit =
-                any teardownOperationIsTerminalAudit cascadeOperations
+                any someOperationIsTerminalAudit cascadeOperations
             , dispositionRegressionOperationalSurfaceHasNoAudit =
-                not (any teardownOperationIsTerminalAudit operationalOperations)
+                not (any someOperationIsTerminalAudit operationalOperations)
             , dispositionRegressionAuditPredicateDiscriminates =
                 not
                   ( any
-                      teardownOperationIsTerminalAudit
+                      someOperationIsTerminalAudit
                       [ operation
                       | operation <- cascadeOperations
-                      , operation /= AuditCascadeEscapes
+                      , operation /= SomeTeardownOperation AuditCascadeEscapes
                       ]
                   )
             , dispositionRegressionFreezeRouteIssuesFreeze =
@@ -790,12 +813,12 @@ decommissionOrdering relation =
           auditNames =
             [ programNodeName node
             | node <- nodes
-            , teardownOperationIsTerminalAudit (programNodeOperation node)
+            , someOperationIsTerminalAudit (programNodeOperation node)
             ]
           dispositionNames =
             [ programNodeName node
             | node <- nodes
-            , teardownOperationIsCredentialDisposition (programNodeOperation node)
+            , someOperationIsCredentialDisposition (programNodeOperation node)
             ]
        in not (null auditNames)
             && not (null dispositionNames)

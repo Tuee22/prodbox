@@ -28,7 +28,7 @@ import Control.Concurrent.STM
   , retry
   , tryPutTMVar
   )
-import Control.Exception (bracket, throwIO)
+import Control.Exception (SomeAsyncException (SomeAsyncException), bracket, throwIO)
 import Control.Monad (void)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
@@ -86,6 +86,9 @@ bootstrapBrokerServerSafetySuite =
     it
       "completes a graceful drain after a request has completed"
       gracefulDrainAfterCompletionProof
+    it
+      "observes a request worker's death while the broker is still serving"
+      workerDeathObservedProof
 
 data TestLimits = TestLimits
   { testRequestDeadlineMilliseconds :: !Natural
@@ -353,6 +356,46 @@ gracefulDrainAfterCompletionProof =
     -- The completed binding survives the stop. It is inert replay cache, not
     -- residue, and requiring its absence is what wedged the drain.
     Server.snapshotIdempotencyEntries stopped `shouldBe` 1
+
+-- | Sprint 2.134: a request worker that dies is observed while the broker is
+-- still serving, not only by the drain that eventually joins the pool.
+--
+-- The pool's handles used to be looked at exactly once, by
+-- @stopWorkersNormally@, whose @mapM_ waitCatch@ discarded every result —
+-- rule R6's forbidden shape verbatim. A broker could therefore serve on with
+-- fewer workers than its capacity plan assumes and nothing could say so. The
+-- manager now waits on the listener and the pool together, so the pool's decay
+-- is a terminal fact with its own name.
+--
+-- The fault is injected as an async-tagged exception because that is the only
+-- thing 'Server.workerLoop' rethrows: a synchronous escape is deliberately
+-- absorbed and the worker continues, which is the behaviour under test here
+-- being distinguished from a worker that is actually gone.
+workerDeathObservedProof :: Expectation
+workerDeathObservedProof =
+  withTestServer defaultTestLimits permissiveAuthenticator killedWorkerInterpreter $ \server -> do
+    void
+      ( timeout
+          2_000_000
+          ( bracket (openClient (testServerPort server)) close $ \client -> do
+              sendAll
+                client
+                ( rpcWire
+                    Routes.BrokerVaultInitialize
+                    "worker-death-observed"
+                    "{\"action\":\"initialize\"}"
+                )
+              shutdown client ShutdownSend
+              void (receiveAll client)
+          )
+      )
+    settled <- timeout 5_000_000 (Server.waitBrokerServer (testServerHandle server))
+    settled `shouldBe` Just (Left Server.BrokerWorkerExitedWhileServing)
+
+killedWorkerInterpreter :: Server.BrokerInterpreter
+killedWorkerInterpreter =
+  Server.BrokerInterpreter $ \_context _route _body ->
+    throwIO (SomeAsyncException (userError "injected request-worker fault"))
 
 firstInvocationBlocks
   :: TMVar ()

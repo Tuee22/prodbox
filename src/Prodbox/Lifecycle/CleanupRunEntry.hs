@@ -152,7 +152,8 @@ import Prodbox.Lifecycle.Teardown.Model
   , cleanupSurfaceFromWitness
   )
 import Prodbox.Lifecycle.Teardown.Program
-  ( TeardownOperation (UninstallCascadeLocalFoundation)
+  ( SomeTeardownOperation (SomeTeardownOperation)
+  , TeardownOperation (UninstallCascadeLocalFoundation)
   )
 
 -- | Exact validation binding to the lifecycle-owned program.  The constructor
@@ -347,7 +348,7 @@ compiledTerminalOperationId
 compiledTerminalOperationId compiled =
   case [ cleanupNodeOperationId node
        | (nodeId, operation) <- compiledDesiredAbsenceOperations compiled
-       , operation == UninstallCascadeLocalFoundation
+       , operation == SomeTeardownOperation UninstallCascadeLocalFoundation
        , node <- cleanupGraphNodes (compiledDesiredAbsenceGraph compiled)
        , cleanupNodeId node == nodeId
        ] of

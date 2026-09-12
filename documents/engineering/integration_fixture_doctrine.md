@@ -360,10 +360,21 @@ type-checked only when `prodbox test integration cli` / `env` compiled it, and n
 those. What remains outside the gate is fixture *behaviour*: a fixture that compiles against a
 changed type and asserts the wrong thing still needs the suite to run.
 
-**Extended 2026-09-11 (Sprint `0.33`): for three of the eight suites, nothing runs them at all.**
-`prodbox-haskell-style`, `prodbox-daemon-lifecycle`, and `prodbox-pulumi` are compiled here and
-named by no `prodbox test` scope, so the "nothing routine ran those" observation above is still
-literally true of them today. Sprint `5.45` owns routing or retiring them.
+**Extended 2026-09-11 (Sprint `0.33`), closed by Sprint `5.45` the same day.**
+`prodbox-haskell-style`, `prodbox-daemon-lifecycle`, and `prodbox-pulumi` were compiled here and
+named by no `prodbox test` scope, so the "nothing routine ran those" observation above was literally
+true of them. All three are now routed — the first two into `prodbox test unit`, the daemon suite
+into `prodbox test all`, because it spawns the built binary as a real daemon over real sockets — and
+a gate holds the declared stanzas and the routed names in bijection, so a ninth suite cannot be
+added without a runner.
+
+Running them is what showed why it mattered. `prodbox-haskell-style` had an assertion that was
+simply false about the architecture it claimed to protect, and `prodbox-daemon-lifecycle` failed
+**23 of 27** cases: a later sprint made the daemon refuse to start without a Tier-0 deployment
+context, and this suite's fixture never learned to supply one, so its whole behavioural contract had
+been unproven rather than merely unexercised. Its `/metrics` golden had also gone stale by one
+metric family. None of that is a regression this sprint introduced; all of it is what a suite nobody
+runs accumulates.
 
 **A fixture must exercise the mechanism it stands in for.** The 2026-09-11 counterexample
 `CASCADE-QUALIFICATION-EPHEMERAL-KUBECTL-TOKEN-FIFO-UNSERVED-2026-09-11` is the worked case. A fake
@@ -375,6 +386,29 @@ standing in for a boundary that consumes a credential consumes it the same way p
 the case asserts the exact value arrived. Absence assertions about the credential — that it is not
 in the log, not in the environment, not in the rendered config — do not substitute, because they
 pass most convincingly when the credential was never produced.
+
+**Sprint `5.44` landed the harness (2026-09-11).** `test/unit/CredentialDeliveryHarness.hs` is the
+unit-tier statement of that rule: the child re-execs the test binary, reads the credential through
+the kubeconfig's own `tokenFile` entry, and echoes it, so the assertion is that the exact bytes
+crossed a real `exec`. Two things about it are doctrine rather than implementation. It proves it can
+disagree with its subject — against a writerless FIFO the credential does not arrive and the case
+fails — because a harness that has never disagreed with anything is a harness nobody has checked.
+And it models the child's read mode explicitly: GHC opens non-blocking and gets an immediate empty
+read, while an ordinary C program opens blocking and waits for a writer that never comes. A fixture
+that silently modelled one as the other would be committing the same substitution this section
+forbids, one layer down.
+
+**A fixture also stands in for how many times the boundary reads, and that count is measured on the
+real binary (Sprint `7.39`, 2026-09-11).** A harness that reads the credential once passes a
+mechanism that can serve it once, and the mechanism still wedges the real reader. `strace` on
+`kubectl` v1.35.8 settled it: the binary opens `users[0].user.tokenFile` exactly twice per
+invocation and independently of how many API requests it makes — twice for `version`, which makes
+none; twice for a `--raw` read, which makes one; twice for a discovery-bearing `get`, which makes
+six. Nothing in the kubeconfig contract says so, and no amount of reasoning about the interface
+would have produced the number. The rule this generalizes to is narrow and cheap: before standing in
+for an external boundary that consumes something, measure the consumption — how many times, in what
+order, with what blocking mode — and make the fixture reproduce that, because every property the
+fixture proves is a property of the behaviour it copied.
 
 Four consequences bind this doctrine:
 

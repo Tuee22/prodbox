@@ -13,7 +13,7 @@ import Data.Text.Encoding qualified as TextEncoding
 import EksClientAuthProjectionFixture
 import Prodbox.ControlPlane.EksClientAuthProjection
 import Prodbox.ControlPlane.ProviderWorkerClient (providerWorkerResponseMaximumBytes)
-import Prodbox.Infra.AwsEksTestStack (eksKubeconfig)
+import Prodbox.Lifecycle.Teardown.EphemeralKubectl (ephemeralKubeconfig)
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath ((</>))
 import TestSupport
@@ -79,11 +79,19 @@ eksClientAuthProjectionSuite =
                        <> (fixtureAwsRegion FixtureCaCentral1)
                        <> ":123456789012:cluster/aws-eks-test-cluster"
                    )
-    it "renders kubeconfig with only a FIFO token path, never the bearer" $ do
+    it "renders kubeconfig with only a credential path, never the bearer" $ do
+      -- Sprint 7.40 repointed this at the owning module's renderer. It used to
+      -- exercise a byte-identical duplicate in `Prodbox.Infra.AwsEksTestStack`,
+      -- which is exactly the shape a single-statement claim is supposed to
+      -- exclude, and the path it asserted was a FIFO's because Sprint 7.39's
+      -- measurement had not been taken yet.
       let bearer = "k8s-aws-v1.never-in-kubeconfig"
-          rendered = LazyByteString.unpack (encode (eksKubeconfig (sampleProjection bearer) "/tmp/token-fifo"))
+          credentialPath = "/tmp/bearer-token"
+          rendered =
+            LazyByteString.unpack
+              (encode (ephemeralKubeconfig (sampleProjection bearer) credentialPath))
       rendered `shouldContain` "tokenFile"
-      rendered `shouldContain` "/tmp/token-fifo"
+      rendered `shouldContain` credentialPath
       rendered `shouldNotContain` Text.unpack bearer
     -- Sprint 6.5: a live Provider execution returned 4,649 characters of
     -- client-auth evidence against a generic 4,096-character bound, so this

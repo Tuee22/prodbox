@@ -23,10 +23,16 @@ module Prodbox.Test.CleanRoomHandoff
   , cutoverStateHasReplacementWriter
   , CutoverPlanStage (..)
   , canonicalCutoverPlan
+  , cutoverStageRequiresWitness
+  , AdmittedCutoverStage
+  , admittedCutoverStage
+  , admitCutoverStage
+  , admitCutoverPlan
   , resumeCutoverPlan
   , LegacyScanMode (..)
   , LegacyCutoverResidue (..)
   , registeredLegacyCutoverFragments
+  , legacyCutoverFragmentOccurs
   , legacyCutoverResidueViolations
   , InstalledCascadeFault (..)
   , InstalledCascadeDisposition (..)
@@ -47,6 +53,7 @@ module Prodbox.Test.CleanRoomHandoff
   )
 where
 
+import Data.Char (isAlphaNum)
 import Data.List (isInfixOf, nub, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -109,8 +116,20 @@ data CutoverState (phase :: CutoverPhase) where
 
 deriving instance Show (CutoverState phase)
 
+-- | Why a cutover step was refused.
+--
+-- The three witness-shaped refusals are separate on purpose. A stage offered
+-- with no witness at all and a stage offered with someone else's witness are
+-- different operator mistakes, and a deletion that leaves the identity
+-- unchanged is not a witness problem at all — it is a claim that deleting the
+-- legacy source changed nothing, which would leave the pre-deletion
+-- qualification standing over a deployment that is no longer the one it was
+-- taken on.
 data CutoverRefusal
   = CutoverQualificationIdentityMismatch
+  | CutoverStageWitnessMissing !CutoverPlanStage
+  | CutoverStageWitnessMismatch !CutoverPlanStage
+  | CutoverDeletionIdentityUnchanged
   deriving (Eq, Show)
 
 initialCutoverState
@@ -146,13 +165,31 @@ activateReplacement (QualificationPassed qualified) state = case state of
 -- | Deleting the legacy source changes the source identity.  The replacement
 -- remains the only writer, but the resulting deployment is deliberately not
 -- called qualified until a new exact artifact is consumed below.
+--
+-- It takes the witness for the same reason activation does: deletion is the
+-- other stage that may not enter Apply unqualified.  Being reachable only from
+-- a private post-activation constructor made it unreachable without a prior
+-- qualification, which is not the same thing as being gated by one — the
+-- witness that authorized activation could have been for a different identity
+-- by the time deletion runs.
+--
+-- It also refuses a resulting identity equal to the one being deleted.  A
+-- deletion that changes nothing would leave 'qualifyPostActivation' satisfiable
+-- by the very witness that authorized activation, so the deployment would still
+-- be called qualified after the source it was qualified on had gone.
 deleteLegacyRoute
-  :: QualificationIdentity
+  :: QualificationPassed
+  -> QualificationIdentity
   -> CutoverState 'PostActivation
-  -> CutoverState 'LegacyRouteDeleted
-deleteLegacyRoute resultingIdentity state = case state of
-  CutoverPostActivation _ ReplacementWriterPermit ->
-    CutoverLegacyRouteDeleted resultingIdentity ReplacementWriterPermit
+  -> Either CutoverRefusal (CutoverState 'LegacyRouteDeleted)
+deleteLegacyRoute (QualificationPassed qualified) resultingIdentity state =
+  case state of
+    CutoverPostActivation expected ReplacementWriterPermit
+      | qualified /= expected ->
+          Left (CutoverStageWitnessMismatch PlanDeleteLegacyRouteAndIdentity)
+      | resultingIdentity == expected -> Left CutoverDeletionIdentityUnchanged
+      | otherwise ->
+          Right (CutoverLegacyRouteDeleted resultingIdentity ReplacementWriterPermit)
 
 qualifyPostActivation
   :: QualificationPassed
@@ -200,10 +237,65 @@ data CutoverPlanStage
 canonicalCutoverPlan :: [CutoverPlanStage]
 canonicalCutoverPlan = [minBound .. maxBound]
 
+-- | The two stages that may not enter Apply without a matching witness.
+--
+-- The other four are what produce the witnesses: the first two run the
+-- qualification-only candidate and observe its receipt, and the last two do the
+-- same after deletion.  Requiring a witness there would make the plan
+-- unstartable, which is why this is a rule about two stages rather than a rule
+-- about the plan.
+cutoverStageRequiresWitness :: CutoverPlanStage -> Bool
+cutoverStageRequiresWitness stage = case stage of
+  PlanRunQualificationOnlyCandidate -> False
+  PlanObserveQualificationReceipt -> False
+  PlanActivateSingleReplacementWriter -> True
+  PlanDeleteLegacyRouteAndIdentity -> True
+  PlanRunPostActivationQualification -> False
+  PlanObservePostActivationQualificationReceipt -> False
+
+-- | A stage that has entered Apply.
+--
+-- Its constructor is private, so the only way to hold one is through
+-- 'admitCutoverStage', which demands the witness that stage requires.  That is
+-- what makes the staged plan a gate rather than an ordering: a list of bare
+-- 'CutoverPlanStage' values is constructible by anyone, in any order, with no
+-- witness in existence anywhere, and the resume fold below can no longer be
+-- handed one.
+newtype AdmittedCutoverStage = AdmittedCutoverStage CutoverPlanStage
+  deriving (Eq, Show)
+
+admittedCutoverStage :: AdmittedCutoverStage -> CutoverPlanStage
+admittedCutoverStage (AdmittedCutoverStage stage) = stage
+
+-- | Admit one stage into Apply against the identity it will act on.
+admitCutoverStage
+  :: QualificationIdentity
+  -> Maybe QualificationPassed
+  -> CutoverPlanStage
+  -> Either CutoverRefusal AdmittedCutoverStage
+admitCutoverStage identity witness stage
+  | not (cutoverStageRequiresWitness stage) = Right (AdmittedCutoverStage stage)
+  | otherwise = case witness of
+      Nothing -> Left (CutoverStageWitnessMissing stage)
+      Just (QualificationPassed qualified)
+        | qualified == identity -> Right (AdmittedCutoverStage stage)
+        | otherwise -> Left (CutoverStageWitnessMismatch stage)
+
+-- | Admit a whole run of stages, refusing at the first one that cannot enter
+-- Apply.
+admitCutoverPlan
+  :: QualificationIdentity
+  -> Maybe QualificationPassed
+  -> [CutoverPlanStage]
+  -> Either CutoverRefusal [AdmittedCutoverStage]
+admitCutoverPlan identity witness =
+  traverse (admitCutoverStage identity witness)
+
 resumeCutoverPlan
-  :: [CutoverPlanStage]
+  :: [AdmittedCutoverStage]
   -> Either (CutoverPlanStage, Maybe CutoverPlanStage) [CutoverPlanStage]
-resumeCutoverPlan completed = go canonicalCutoverPlan completed
+resumeCutoverPlan completed =
+  go canonicalCutoverPlan (map admittedCutoverStage completed)
  where
   go remaining [] = Right remaining
   go [] (observed : _) = Left (observed, Nothing)
@@ -218,8 +310,18 @@ data LegacyScanMode
   | LegacyScanPostActivation
   deriving (Eq, Show)
 
+-- | What a bounded legacy scan can find.
+--
+-- @AbsentFromPath@ is separate from @Missing@ because they are different
+-- events. A fragment gone from every path is a registration that has outlived
+-- its subject; a fragment gone from one registered path while surviving in
+-- others is a partial removal, which is the more dangerous of the two — the set
+-- is still bounded, so the pre-activation scan would otherwise report the tree
+-- as unchanged while the legacy route had already been half-deleted underneath
+-- it.
 data LegacyCutoverResidue
   = LegacyCutoverFragmentMissing !Text
+  | LegacyCutoverFragmentAbsentFromPath !FilePath !Text
   | LegacyCutoverFragmentDuplicated !Text !Int
   | LegacyCutoverFragmentUnexpected !FilePath !Text
   | LegacyCutoverFragmentSurvived !FilePath !Text
@@ -228,17 +330,46 @@ data LegacyCutoverResidue
 -- | The exact legacy writer/executor set admitted before activation.  This is
 -- bounded: a new matching site fails the pre-activation scan instead of being
 -- silently grandfathered.
+-- Sprint 6.5: @src\/Prodbox\/Lifecycle\/ResourceRegistry.hs@ left this set when
+-- the scan became token-based.  Its only mention of the symbol is the haddock
+-- cross-reference @\'Prodbox.CLI.Rke2.runNativeDeleteCascade\'@, which a
+-- substring rule read as a site and a token rule correctly does not: a
+-- documentation link is not a caller, and registering one would mean the
+-- post-activation scan could never reach zero without editing a comment. The
+-- two bounded layers now agree — "Prodbox.Legacy.EscapeRegistry"\'s coverage
+-- rule for the same symbol never listed that file either.
 registeredLegacyCutoverFragments :: [(FilePath, Text)]
 registeredLegacyCutoverFragments =
   [ ("src/Prodbox/CLI/Rke2.hs", "runNativeDeleteCascade")
   , ("src/Prodbox/Legacy/EscapeRegistry.hs", "runNativeDeleteCascade")
-  , ("src/Prodbox/Lifecycle/ResourceRegistry.hs", "runNativeDeleteCascade")
   , ("src/Prodbox/Test/CascadeQualification.hs", "runNativeDeleteCascade")
   , ("src/Prodbox/CLI/Rke2.hs", "runAuthorizedDeleteCascade")
   , ("src/Prodbox/CLI/Rke2.hs", "queryAwsLayerForPerRun")
   , ("src/Prodbox/CLI/Rke2.hs", "inferCascadeSubstrate")
   , ("src/Prodbox/CLI/Rke2.hs", "CascadePhaseOutcome")
   ]
+
+-- | Whether @fragment@ occurs in @source@ as a whole identifier token.
+--
+-- Substring matching would report @CascadePhaseOutcome@ as present in any
+-- longer constructor that contains it, which for a scan whose whole purpose is
+-- to be exact is the wrong answer in both directions: it invents a site before
+-- activation and it refuses to declare the tree clean after deletion. This is
+-- the same rule "Prodbox.Legacy.EscapeRegistry" applies to its seam symbols,
+-- stated here over 'Text' rather than shared, because that module's copy is
+-- part of a registry whose categories this scanner deliberately does not use.
+legacyCutoverFragmentOccurs :: Text -> Text -> Bool
+legacyCutoverFragmentOccurs fragment source
+  | Text.null fragment = False
+  | otherwise = any wholeToken (Text.breakOnAll fragment source)
+ where
+  wholeToken (before, match) =
+    not (endsIdentifier before)
+      && not (startsIdentifier (Text.drop (Text.length fragment) match))
+  endsIdentifier text = maybe False (isIdentifierCharacter . snd) (Text.unsnoc text)
+  startsIdentifier text = maybe False (isIdentifierCharacter . fst) (Text.uncons text)
+  isIdentifierCharacter character =
+    isAlphaNum character || character == '_' || character == '\''
 
 legacyCutoverResidueViolations
   :: LegacyScanMode
@@ -250,14 +381,14 @@ legacyCutoverResidueViolations mode sources = case mode of
     [ LegacyCutoverFragmentSurvived path fragment
     | (path, source) <- sources
     , fragment <- registeredFragments
-    , fragment `Text.isInfixOf` source
+    , legacyCutoverFragmentOccurs fragment source
     ]
  where
   registeredFragments = nub (map snd registeredLegacyCutoverFragments)
   occurrences fragment =
     [ path
     | (path, source) <- sources
-    , fragment `Text.isInfixOf` source
+    , legacyCutoverFragmentOccurs fragment source
     ]
   validateRegistered fragment
     | actual == expected = []
@@ -265,6 +396,10 @@ legacyCutoverResidueViolations mode sources = case mode of
     | not (null unexpected) =
         [ LegacyCutoverFragmentUnexpected path fragment
         | path <- unexpected
+        ]
+    | not (null absent) =
+        [ LegacyCutoverFragmentAbsentFromPath path fragment
+        | path <- absent
         ]
     | otherwise = [LegacyCutoverFragmentDuplicated fragment (length actual)]
    where
@@ -276,6 +411,7 @@ legacyCutoverResidueViolations mode sources = case mode of
         , registered == fragment
         ]
     unexpected = filter (`notElem` expected) actual
+    absent = filter (`notElem` actual) expected
 
 -- Installed cascade traces --------------------------------------------------
 

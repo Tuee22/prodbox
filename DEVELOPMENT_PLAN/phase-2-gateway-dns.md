@@ -14553,18 +14553,22 @@ None.
   [00-overview.md](00-overview.md); register the fallback in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
-## Sprint 2.134: A Spawned Thread Whose Handle Is Discarded Cannot Report Its Own Death [🔄 Active]
+## Sprint 2.134: A Spawned Thread Whose Handle Is Discarded Cannot Report Its Own Death [✅ Done]
 
-**Status**: Active. Phase `2` own-surface reopen (Standard A/N) on the daemon, workload, bootstrap
+**Status**: Done. Phase `2` own-surface reopen (Standard A/N) on the daemon, workload, bootstrap
 broker, and control-plane runtime concurrency this phase owns.
 **Doctrine**: [Chaos Hardening Doctrine, rule R6 "Structured concurrency
 only"](../documents/engineering/chaos_hardening_doctrine.md), and [Distributed Gateway
 Architecture](../documents/engineering/distributed_gateway_architecture.md)'s supervised-worker
 statement.
-**Implementation**: `src/Prodbox/Bootstrap/Broker.hs`, `src/Prodbox/Bootstrap/Broker/Server.hs`,
-`src/Prodbox/Gateway/PortForward.hs`, `src/Prodbox/Workload.hs`,
-`src/Prodbox/ControlPlane/Runtime.hs`, `src/Prodbox/Gateway/Daemon.hs`, and
-`src/Prodbox/CheckCode.hs`.
+**Implementation**: `src/Prodbox/Supervision.hs` (new), `src/Prodbox/Bootstrap/Broker.hs`,
+`src/Prodbox/Bootstrap/Broker/Server.hs`, `src/Prodbox/Bootstrap/Broker/Readiness.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`, `src/Prodbox/Gateway/PortForward.hs`,
+`src/Prodbox/Workload.hs`, `src/Prodbox/ControlPlane/Runtime.hs`, `src/Prodbox/Gateway/Daemon.hs`,
+`src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, and
+`src/Prodbox/CheckCode.hs`; `test/unit/SupervisionWitness.hs` (new),
+`test/unit/BootstrapBrokerServerSafety.hs`, `test/unit/Main.hs`, `test/haskell-style/Main.hs`,
+`.hlint.yaml`, and `prodbox.cabal`.
 **Blocked by**: none.
 **Live-proof**: pending and non-blocking for code-local closure. A daemon that survives an injected
 worker fault is a live observation and does not gate the code-owned surface.
@@ -14638,9 +14642,76 @@ loud refusal at first execution.
 5. The retired hlint coverage check, its marker block, and the style-suite case are absent together,
    and `prodbox dev lint haskell` still gates HLint itself.
 
+### Closure Record
+
+**The five sites, and the two the rule found beside them.** The Bootstrap Broker readiness observer,
+the Gateway port-forward supervisor, the workload config watcher, and the control-plane request pool
+are spawned through `withSupervisedChild`, which links before the handle value exists. So are both
+statements of the ephemeral Kubernetes client's token writer — in
+`src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs` and in `withEksKubeconfig`, which the sprint
+record did not enumerate and which the repo-wide rule fired on. Their `ENXIO` death is now loud at
+first execution; Sprints `7.39` and `7.40` still own replacing the mechanism and removing the
+duplicate.
+
+**The Broker's request pool is repaired differently, and the record says why.** Its handles outlive
+the call that spawns them and are joined through the server handle, so the disposition rule reads
+them as disposed and the defect was *when* they were observed, not whether. The manager now waits on
+the listener and the pool together, so a worker that dies while the broker is serving is a terminal
+fact — `BrokerWorkerExitedWhileServing` — rather than silence until drain. Two further R6 discards on
+that path are closed with it: the graceful drain's `mapM_ waitCatch` discarded every join result and
+now surfaces `BrokerWorkerDrainFailed`, and `waitBrokerServer`'s bounded manager join discarded its
+own timeout and now reports the incomplete shutdown it always was.
+
+**Linking the observer required making a raised pass non-fatal.** Before this sprint an escaping
+readiness observation killed an observer nobody watched; linking it without more would have turned a
+transient MinIO or Vault blip into a process death. `raisedBrokerReadinessFacts` records a raised
+pass as a fail-closed record whose every dependency is a non-terminal unavailable naming the
+exception, stamped with the instant the pass completed — the shape
+`Prodbox.ControlPlane.RoleReadinessObserver` already used. The link now covers the residual case, the
+loop itself dying, rather than the ordinary one.
+
+**The rule states its own limits.** `checkSpawnedHandleDisposition` decides *whether* a handle is
+disposed of, never *when*, and it covers the `async` family plus `forkIO` rather than `forkFinally`,
+whose continuation receives the child's outcome by construction and whose only use is a
+per-connection thread. `cancel` is deliberately not a disposition: cancelling a child at shutdown
+says what the parent wants to happen to it, not that the parent ever observed what did. Both limits
+are recorded at the check and in rule R6's enforcement paragraph rather than left for a reader to
+discover.
+
+**One unrelated defect was found and left to its owner.** The `prodbox-haskell-style` suite fails at
+HEAD, and failed before this sprint, on `uses typed-process at the library subprocess boundary`: the
+library stanza carries `process ^>=1.6.19.0`. Nothing runs that suite, which is exactly the condition
+Sprint `5.45` exists to remove, so the failure is recorded here and owned there rather than fixed in
+passing.
+
+### Validation Record
+
+1. **Fault injection per repaired site.** `test/unit/SupervisionWitness.hs` proves the parent
+   observes a child that dies immediately and one that dies long after the body started, that the
+   body's return reclaims a child that is actually running, and that every member of a child set is
+   linked rather than only the first — each of the three positions, exhaustively. Removing the `link`
+   from `withSupervisedChild` turns every one into a hang cut short by its own timeout. A structural
+   case names the exact seven converted modules, so a silent revert to a raw spawn with a
+   correct-looking disposition still fails. The Broker pool carries its own real fault injection in
+   `test/unit/BootstrapBrokerServerSafety.hs`: an async-tagged interpreter exception kills one
+   request worker, and the server settles at `BrokerWorkerExitedWhileServing`.
+2. **The supervision type admits no unlinked long-lived child.** The `SupervisedChild` constructor is
+   private, and the two ill-typed expressions the witness module documents do not compile.
+3. **The violation table.** Eight cases exercise the discard shape, the linked shape, the waited
+   shape, the qualified-import evasion the superseded check permitted by design, a `const` discard, a
+   pool that is only cancelled, `forkIO`, and an import list plus a comment that must not read as a
+   spawn.
+4. **Canonical gate.** Focused Sprint-2.134 group **15/15**, full Bootstrap Broker group **185/185**,
+   primary unit suite **4,923/4,923**, and canonical `prodbox dev check` exits 0 with no admission
+   registry for the new rule.
+5. **The retired triple is gone together.** `checkHlintDoctrineCoverage`, the marker comment block in
+   `.hlint.yaml`, and the style-suite case that asserted the same markers are all absent, while
+   `.hlint.yaml` keeps its `--cpp-simple` argument and its suppressions and `prodbox dev lint haskell`
+   still gates HLint itself.
+
 ### Remaining Work
 
-All deliverables above.
+None.
 
 ## Related Documents
 

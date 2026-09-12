@@ -300,13 +300,19 @@ alongside `Prodbox.Infra.AwsEksTestStack.withEksKubeconfig` for substrate-aware 
 materialization), the prerequisite DAG, and the lifecycle gates all enforce this
 contract.
 
-**Correction 2026-09-11 (Sprint `0.33`).** `withEksKubeconfig` does not enforce that contract and
-cannot be cited as enforcing it. It is a third, undocumented statement of the ephemeral Kubernetes
-client machinery that Sprint `7.36` recorded as consolidated; it raises rather than refusing on four
-of its arms; and its bearer-token path has never authenticated, because the writer fails with
-`ENXIO` before `kubectl` starts and dies unobserved. The no-fallback contract is carried by the
-substrate-aware helpers, the prerequisite DAG, and the lifecycle gates. This helper is scheduled for
-conversion or deletion by Sprint `7.40`, and should leave this sentence when it lands.
+**Correction 2026-09-11 (Sprints `0.33`, `7.39`, `7.40`).** `withEksKubeconfig` does not enforce
+that contract and cannot be cited as enforcing it. Two of the three reasons are now closed and one
+is not. It was a third, undocumented statement of the ephemeral Kubernetes client machinery that
+Sprint `7.36` recorded as consolidated, and Sprint `7.40` routed it onto the one owning module and
+landed the gate that keeps it there; its bearer-token path had never authenticated, because the FIFO
+writer failed with `ENXIO` before `kubectl` started and died unobserved, and Sprint `7.39` replaced
+that delivery with a private file read back before the client exists. What remains true is the part
+that bears on this standard: it still raises rather than refusing on four of its arms, so it cannot
+be a no-fallback enforcement mechanism. The no-fallback contract is carried by the substrate-aware
+helpers, the prerequisite DAG, and the lifecycle gates. The surviving defect is owned by the
+Sprint-`7.36` removal row in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), and this helper should leave the
+sentence above when that row closes.
 
 "Substrate-agnostic suite content" means validation logic does not branch on substrate
 identity. It does **not** mean substrates share defaults, and it does **not** reduce the

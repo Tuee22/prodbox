@@ -67,6 +67,7 @@ import Prodbox.Lifecycle.PulumiCheckpoint
   )
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Registry
+import Prodbox.Lifecycle.Teardown.ScopeCodec (scopeIdentityFields)
 
 data CheckpointAuthorityPurpose
   = CheckpointPrimaryRestore
@@ -510,55 +511,23 @@ purposeText purpose = case purpose of
   CheckpointPrimaryRestore -> "primary-restore"
   CheckpointReferenceRetirement -> "reference-retirement"
 
+-- | The scope portion of both canonical projections above.
+--
+-- Sprint 4.92: the field list was written out here, one accessor per field, and
+-- it never emitted the run's retained DNS hosted zone.  Two runs that differed
+-- only in the zone they were compiled against therefore produced the same
+-- stable identity digest and so the same 'ClientSubmissionKey', which is the
+-- one value the Authority uses to decide that a submission it has already
+-- admitted is the same operation coming back.  The canonical projection emits
+-- every field and a present\/absent discriminator beside every optional one,
+-- and it is destructured positionally, so a field added to the scope later
+-- fails to compile rather than quietly leaving these digests unchanged.
+--
+-- The tag moves to @scope\/v2@ because the emitted fields changed: both of the
+-- canonical projections above yield a new digest for the same inputs, which is
+-- intended and is why the tag exists.
 scopeFields :: ObservationEvidenceScope -> [Text]
-scopeFields scope =
-  [ "scope/v1"
-  , cleanupSurfaceText (evidenceCleanupSurface scope)
-  , registryRevisionText (evidenceRegistryRevision scope)
-  , runScopeText (evidenceDurableRunScope scope)
-  , foundationText (evidenceLinuxRke2Foundation scope)
-  ]
-    <> awsScopeFields (evidenceAwsScope scope)
-    <> [lifecycleOperationText (evidenceLifecycleOperation scope)]
-
-cleanupSurfaceText :: CleanupSurface -> Text
-cleanupSurfaceText surface = case surface of
-  LocalOnly -> "local-only"
-  Cascade -> "cascade"
-  ExplicitPerRun -> "explicit-per-run"
-  OperationalTeardown -> "operational-teardown"
-  ExplicitLongLived -> "explicit-long-lived"
-  TotalDecommission -> "total-decommission"
-
-lifecycleOperationText :: LifecycleOperation -> Text
-lifecycleOperationText operation = case operation of
-  ReconcileDesiredAbsent -> "reconcile-desired-absent"
-  ReconcileDesiredPresent -> "reconcile-desired-present"
-  RunTerminalEscapeAudit -> "run-terminal-escape-audit"
-
-registryRevisionText :: RegistryRevision -> Text
-registryRevisionText (RegistryRevision value) = value
-
-runScopeText :: DurableObservationRunScope -> Text
-runScopeText (DurableObservationRunScope value) = value
-
-foundationText :: LinuxRke2FoundationId -> Text
-foundationText (LinuxRke2FoundationId value) = value
-
-awsScopeFields :: Maybe AwsScope -> [Text]
-awsScopeFields maybeAwsScope = case maybeAwsScope of
-  Nothing -> ["aws-scope/none"]
-  Just awsScope ->
-    [ "aws-scope/some"
-    , accountText (awsScopeAccountId awsScope)
-    , regionText (awsScopeRegion awsScope)
-    ]
-
-accountText :: AwsAccountId -> Text
-accountText (AwsAccountId value) = value
-
-regionText :: AwsRegion -> Text
-regionText (AwsRegion value) = value
+scopeFields scope = "scope/v2" : scopeIdentityFields scope
 
 referenceFields :: VerifiedPulumiCheckpointRef -> [Text]
 referenceFields reference =

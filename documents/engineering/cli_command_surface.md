@@ -695,9 +695,11 @@ that refuses unless the receipt's own committed frames already record every othe
 durably terminal, so its success frame is the record's declaration that the run converged. The
 out-of-band `runNukeTerminalTagSweep` tail that used to run after the receipt runner returned success
 — outside the resumable graph, where a crash or a lost response could not resume through the manifest
-— is gone. The remaining gap is bidirectional program-tag parity: seventeen of the twenty-one
-semantic total-decommission operations are still implemented by exactly one of the two sides, so
-`TotalDecommissionCompleteEvidence` is not yet constructible. Implementation and removal status live only
+— is gone. The remaining gap is bidirectional program-tag parity: eighteen of the twenty-two
+semantic total-decommission operations are still implemented by exactly one of the two sides — eight
+by the compiled program alone and ten by the runner alone — so `TotalDecommissionCompleteEvidence` is
+not yet constructible. Closing it requires the compiled desired-absence program and the signed
+manifest to become one universe, which is what the single-writer teardown cutover does. Implementation and removal status live only
 in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here) and its
 [Pending Removal ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md#pending-removal).
 Like every admin-credentialed flow, it acquires elevated AWS power through the one unified

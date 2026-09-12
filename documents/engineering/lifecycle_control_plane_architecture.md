@@ -2715,14 +2715,25 @@ before publishing terminal completion. A join deadline that elapses produces
 `ShutdownIncomplete` and leaves the runtime in the nonterminal force-draining state; it must never
 publish `Stopped`, fill the public completion cell, or discard unfinished ownership.
 
-**One child is outside the tree this witness quantifies over (recorded 2026-09-11, Sprint `0.33`).**
-The readiness observer in `src/Prodbox/Bootstrap/Broker.hs` — the only thread refreshing the cache
-`/readyz` serves — is spawned beside the server call rather than inside the worker tree, and its
-handle is discarded. "Every worker has joined" is therefore true and insufficient: the observer is
-not among the workers, so a `ShutdownComplete` witness can be produced while that thread has already
-died unobserved. Either the observer joins the tree the witness quantifies over, or this section
-names it as an explicitly unowned child and says what its death means. Sprint `2.134` owns the
-choice; until it lands, read the witness as covering the worker tree rather than the role.
+**One child sits beside the tree this witness quantifies over, and is now linked to it (Sprint
+`0.33`, resolved by Sprint `2.134`).** The readiness observer in
+`src/Prodbox/Bootstrap/Broker.hs` — the only thread refreshing the cache `/readyz` serves — is
+spawned beside the server call rather than inside the worker tree, and its handle used to be
+discarded, so "every worker has joined" was true and insufficient: a `ShutdownComplete` witness
+could be produced while that thread had already died unobserved.
+
+Sprint `2.134` took the second of the two options rather than restructuring the tree. The observer
+stays an explicitly named child of the server call, and it is spawned through
+`Prodbox.Supervision.withSupervisedChild`, so its death raises in the thread that brackets the
+server instead of being absorbed. Its lifetime is exactly that call, so a returning or failing
+server still reclaims it. The witness therefore continues to quantify over the worker tree, and the
+one child outside that tree can no longer die silently — which is what made the gap load-bearing.
+
+The same sprint closed the pool's half of this section's claim. Forced drain joins every worker,
+but the graceful drain's join results were discarded by a `mapM_`, so a worker that escaped was
+indistinguishable from one that took its sentinel and returned; and while the broker was still
+serving, nothing waited on the pool at all. The manager now waits on the listener and the pool
+together, and a worker that did not retire cleanly is its own terminal fact rather than silence.
 
 This rule applies to every long-running prodbox role: a lifecycle phase may summarize owned
 resources only when its constructor carries the evidence needed for that summary. Independent

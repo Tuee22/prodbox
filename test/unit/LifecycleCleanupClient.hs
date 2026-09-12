@@ -120,8 +120,9 @@ import Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor
 import Prodbox.Lifecycle.Teardown.Graph
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Program
-  ( TeardownOperation (..)
-  , teardownOperationTag
+  ( SomeTeardownOperation (..)
+  , TeardownOperation (..)
+  , someTeardownOperationTag
   )
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import System.Directory (doesFileExist, listDirectory)
@@ -524,7 +525,7 @@ lifecycleCleanupClientSuite =
             []
             True
             ( \operation ->
-                if operation == UninstallCascadeLocalFoundation
+                if operation == SomeTeardownOperation UninstallCascadeLocalFoundation
                   then CleanupNodeFailed "local-uninstall-refused"
                   else CleanupNodeSucceeded
             )
@@ -710,7 +711,7 @@ newFakeAuthority
   :: CompiledDesiredAbsenceProgram 'Cascade
   -> [FakeFault]
   -> Bool
-  -> (TeardownOperation 'Cascade -> CleanupNodeOutcome)
+  -> (SomeTeardownOperation 'Cascade -> CleanupNodeOutcome)
   -> IO FakeAuthority
 newFakeAuthority compiled injectedFaults finishAutomatically outcomeFor = do
   storedRun <- newIORef FakeRunMissing
@@ -756,7 +757,7 @@ newFakeAuthority compiled injectedFaults finishAutomatically outcomeFor = do
 fakeAuthorityTransport
   :: CompiledDesiredAbsenceProgram 'Cascade
   -> Bool
-  -> (TeardownOperation 'Cascade -> CleanupNodeOutcome)
+  -> (SomeTeardownOperation 'Cascade -> CleanupNodeOutcome)
   -> IORef FakeStoredRun
   -> IORef [CleanupRunDescriptorCommand]
   -> IORef Int
@@ -814,7 +815,7 @@ fakeAuthorityTransport compiled finishAutomatically outcomeFor storedRun command
 executeFakeDescriptorCommand
   :: CompiledDesiredAbsenceProgram 'Cascade
   -> Bool
-  -> (TeardownOperation 'Cascade -> CleanupNodeOutcome)
+  -> (SomeTeardownOperation 'Cascade -> CleanupNodeOutcome)
   -> IORef FakeStoredRun
   -> IORef Int
   -> IORef [CleanupNodeId]
@@ -971,7 +972,7 @@ transitionRefusal =
 applyFakeTransition
   :: CompiledDesiredAbsenceProgram 'Cascade
   -> Bool
-  -> (TeardownOperation 'Cascade -> CleanupNodeOutcome)
+  -> (SomeTeardownOperation 'Cascade -> CleanupNodeOutcome)
   -> IORef FakeStoredRun
   -> IORef [CleanupNodeId]
   -> (CleanupRun -> Either CleanupRunError CleanupRun)
@@ -1001,7 +1002,7 @@ applyFakeTransition compiled finishAutomatically outcomeFor storedRun nodeEffect
 finishFakeAuthority
   :: FakeAuthority
   -> CompiledDesiredAbsenceProgram 'Cascade
-  -> (TeardownOperation 'Cascade -> CleanupNodeOutcome)
+  -> (SomeTeardownOperation 'Cascade -> CleanupNodeOutcome)
   -> IO ()
 finishFakeAuthority fake compiled outcomeFor = do
   stored <- readIORef (fakeStoredRun fake)
@@ -1017,7 +1018,7 @@ finishFakeAuthority fake compiled outcomeFor = do
 
 finishFakeCleanup
   :: CompiledDesiredAbsenceProgram 'Cascade
-  -> (TeardownOperation 'Cascade -> CleanupNodeOutcome)
+  -> (SomeTeardownOperation 'Cascade -> CleanupNodeOutcome)
   -> CleanupRun
   -> Either Text (CleanupRun, [CleanupNodeId])
 finishFakeCleanup compiled outcomeFor initial =
@@ -1277,7 +1278,7 @@ operationNodeId :: Text -> CleanupNodeId
 operationNodeId tag =
   case [ nodeId
        | (nodeId, operation) <- compiledDesiredAbsenceOperations fixtureCompiled
-       , teardownOperationTag operation == tag
+       , someTeardownOperationTag operation == tag
        ] of
     [nodeId] -> nodeId
     nodes -> error ("unexpected operation node count: " ++ show (length nodes))

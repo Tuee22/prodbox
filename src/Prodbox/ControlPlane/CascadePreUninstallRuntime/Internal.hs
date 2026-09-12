@@ -99,6 +99,7 @@ import Prodbox.Lifecycle.Teardown.PreUninstallStageC
   )
 import Prodbox.Lifecycle.Teardown.Program
   ( TeardownOperation (..)
+  , TeardownResultKind (..)
   , teardownOperationTag
   )
 import Prodbox.Lifecycle.Teardown.ProviderDispatch
@@ -202,9 +203,12 @@ instance LifecycleTeardownEffects CascadePreUninstallEffects where
           )
 
 withCascadeProgram
-  :: DescriptorBoundCleanupRun
-  -> (CompiledDesiredAbsenceProgram 'Cascade -> IO (TeardownNodeResult 'Cascade))
-  -> IO (TeardownNodeResult 'Cascade)
+  :: forall result
+   . DescriptorBoundCleanupRun
+  -> ( CompiledDesiredAbsenceProgram 'Cascade
+       -> IO (TeardownNodeResult 'Cascade result)
+     )
+  -> IO (TeardownNodeResult 'Cascade result)
 withCascadeProgram running consume =
   case withDescriptorBoundCleanupProgram running select of
     Left err -> pure (TeardownNodeRefused (Text.pack (show err)))
@@ -215,7 +219,7 @@ withCascadeProgram running consume =
      . CleanupSurfaceWitness surface
     -> CompiledDesiredAbsenceProgram surface
     -> DescriptorBoundCleanupRun
-    -> IO (TeardownNodeResult 'Cascade)
+    -> IO (TeardownNodeResult 'Cascade result)
   select witness compiled _ = case witness of
     CascadeSurface -> consume compiled
     _ ->
@@ -228,7 +232,7 @@ runAudit
   :: CascadePreUninstallRuntime
   -> CompiledDesiredAbsenceProgram 'Cascade
   -> TeardownExecutionContext 'Cascade
-  -> IO (TeardownNodeResult 'Cascade)
+  -> IO (TeardownNodeResult 'Cascade 'TerminalAuditObservationResult)
 runAudit runtime compiled context = do
   observed <- observeTerminal runtime compiled context
   pure $ case observed of
@@ -241,7 +245,7 @@ runCommit
   -> DescriptorBoundCleanupRun
   -> CompiledDesiredAbsenceProgram 'Cascade
   -> TeardownExecutionContext 'Cascade
-  -> IO (TeardownNodeResult 'Cascade)
+  -> IO (TeardownNodeResult 'Cascade 'MutationAttemptResult)
 runCommit runtime running compiled context = do
   convergence <- convergenceEvidence runtime running compiled context
   case convergence of
@@ -265,7 +269,7 @@ runReadBack
   -> DescriptorBoundCleanupRun
   -> CompiledDesiredAbsenceProgram 'Cascade
   -> TeardownExecutionContext 'Cascade
-  -> IO (TeardownNodeResult 'Cascade)
+  -> IO (TeardownNodeResult 'Cascade 'DurableReceiptObservationResult)
 runReadBack runtime running compiled context = do
   convergence <- convergenceEvidence runtime running compiled context
   case convergence of

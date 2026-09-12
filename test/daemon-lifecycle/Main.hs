@@ -113,6 +113,7 @@ import System.IO (hGetContents)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Timeout (timeout)
 import TestSupport
+import Tier0Fixture (tier0Fixture, writeTier0Fixture)
 
 removedGatewayBootstrapPath :: String
 removedGatewayBootstrapPath = "/v1/bootstrap/vault/ensure"
@@ -726,6 +727,9 @@ withTargetGatewayFixture action =
     writeFile keyPath "key"
     writeFile caPath "ca"
     writeFile ordersPath (renderTargetOrders restPort peerPort peerProxyPort)
+    -- Sprint 5.45: as above, the daemon refuses to start without a Tier-0
+    -- deployment context in its working directory.
+    writeTier0Fixture tmpDir (tier0Fixture syntheticProjectConfig)
     writeFile configPath configText
     decoded <- GatewaySettings.decodeDaemonConfigDhall (Text.pack configText)
     config <-
@@ -1103,6 +1107,15 @@ withGatewayDaemonWithConfig renderConfigFn drainDeadlineSeconds action =
     writeFile keyPath "key"
     writeFile caPath "ca"
     writeFile ordersPath (renderOrders restPort peerPort)
+    -- Sprint 5.45: the daemon resolves its Tier-0 deployment context from a
+    -- binary-sibling or working-directory `prodbox.dhall` and refuses to start
+    -- without one. That requirement landed while nothing ran this suite, so
+    -- every case here spawned a daemon that exited during bounded startup and
+    -- the suite's whole behavioural contract was unproven rather than merely
+    -- unexercised. The fixture supplies the context the same way the unit
+    -- suite's binary-sibling cases do: through the canonical generator, never
+    -- hand-authored text.
+    writeTier0Fixture tmpDir (tier0Fixture syntheticProjectConfig)
     let writeConfig deadlineSeconds maybeLogLevel =
           writeFile
             configPath

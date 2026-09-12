@@ -97,7 +97,8 @@ import Prodbox.Lifecycle.Teardown.Graph
   )
 import Prodbox.Lifecycle.Teardown.Model (CleanupSurfaceWitness)
 import Prodbox.Lifecycle.Teardown.Program
-  ( TeardownOperation (..)
+  ( SomeTeardownOperation (SomeTeardownOperation)
+  , TeardownOperation (..)
   , teardownOperationTag
   )
 
@@ -149,7 +150,10 @@ dispatchCascadeHostNode runtime running _ compiled context plan =
     Left err -> pure (refusalOutcome err)
     Right () -> case operationForPlan compiled plan of
       Left err -> pure (refusalOutcome err)
-      Right operation -> case classifyOperation operation of
+      -- Sprint 4.94: the operation is unpacked here, under the alternative
+      -- that also holds the plan, because a node list forgets the result index
+      -- and the phase classification never needed it.
+      Right (SomeTeardownOperation operation) -> case classifyOperation operation of
         Left err -> pure (refusalOutcome err)
         Right target -> driveToPhase runtime target
 
@@ -221,7 +225,7 @@ validateContext running context plan
 operationForPlan
   :: CompiledDesiredAbsenceProgram surface
   -> CleanupNodePlan
-  -> Either CascadeHostRuntimeError (TeardownOperation surface)
+  -> Either CascadeHostRuntimeError (SomeTeardownOperation surface)
 operationForPlan compiled plan =
   case [ operation
        | (nodeId, operation) <- compiledDesiredAbsenceOperations compiled
@@ -234,7 +238,7 @@ operationForPlan compiled plan =
 -- | The one place a compiled cascade host operation names the durable phase
 -- that performs it.
 classifyOperation
-  :: TeardownOperation surface
+  :: TeardownOperation surface result
   -> Either CascadeHostRuntimeError HostCleanupIntentPhase
 classifyOperation operation = case operation of
   UninstallCascadeLocalFoundation -> Right HostCleanupLocalUninstallIssued

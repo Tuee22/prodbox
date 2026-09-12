@@ -182,24 +182,17 @@ import Prodbox.Lifecycle.Teardown.Execution
   , DurableReceiptObservationResult (DurableReceiptObserved)
   )
 import Prodbox.Lifecycle.Teardown.Model
-  ( AwsAccountId (..)
-  , AwsRegion (..)
-  , AwsScope (..)
-  , CleanupSurface (Cascade)
-  , DurableObservationRunScope (..)
-  , LifecycleOperation (..)
-  , LinuxRke2FoundationId (..)
+  ( CleanupSurface (Cascade)
   , ObservationEvidenceScope
-  , RegistryRevision (..)
-  , evidenceAwsScope
-  , evidenceCleanupSurface
-  , evidenceDurableRunScope
-  , evidenceLifecycleOperation
-  , evidenceLinuxRke2Foundation
-  , evidenceRegistryRevision
-  , mkObservationEvidenceScope
   )
 import Prodbox.Lifecycle.Teardown.Observation (AbsenceEvidence (AbsenceEvidence))
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ScopeWire
+  , renderScopeWireError
+  , scopeFromWire
+  , scopeIdentityText
+  , scopeToWire
+  )
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (isAbsolute, normalise, takeFileName, (<.>), (</>))
 import System.IO.Error (isAlreadyExistsError, isDoesNotExistError, isEOFError)
@@ -320,9 +313,19 @@ data LocalCompletionReference = LocalCompletionReference
 
 -- | The digest that names the reference's journal entry.
 --
--- Every component is length-framed before it is joined, so two different
--- references cannot collapse onto one digest by moving a delimiter between
--- adjacent fields.
+-- Sprint 4.92: the framing claim this comment used to make was true and not
+-- sufficient.  Every component is still length-framed before it is joined, so
+-- no two references collapse onto one digest by moving a delimiter between
+-- adjacent fields — but the scope projection being joined emitted seven fields
+-- and omitted the run's retained DNS hosted zone altogether, so two references
+-- that differed only in hosted zone /did/ collapse onto one digest, and
+-- therefore onto one journal entry: the second run either read the first run's
+-- completion back as its own or was refused as a conflict against it.  The
+-- projection is now 'scopeIdentityText', which emits every scope field and puts
+-- a present\/absent discriminator beside each optional one.  Entries an earlier
+-- binary wrote are named by the old digest, so they are neither found nor
+-- rewritten by this one; their bytes are refused by the entry version in any
+-- case.
 localCompletionReferenceDigest :: LocalCompletionReference -> CleanupDigest
 localCompletionReferenceDigest reference =
   cleanupDigestOfBytes
@@ -333,7 +336,7 @@ localCompletionReferenceDigest reference =
                 [ cleanupRunIdText (localCompletionReferenceRunId reference)
                 , cleanupDigestText (localCompletionReferenceGraphDigest reference)
                 , cleanupOperationIdText (localCompletionReferenceOperationId reference)
-                , scopeText (localCompletionReferenceScope reference)
+                , scopeIdentityText (localCompletionReferenceScope reference)
                 ]
             )
         )
@@ -341,36 +344,6 @@ localCompletionReferenceDigest reference =
 
 frame :: Text -> Text
 frame value = Text.pack (show (Text.length value)) <> ":" <> value
-
-scopeText :: ObservationEvidenceScope -> Text
-scopeText scope =
-  Text.concat
-    ( map
-        frame
-        [ Text.pack (show (fromEnum (evidenceCleanupSurface scope)))
-        , registryRevisionText (evidenceRegistryRevision scope)
-        , durableRunScopeText (evidenceDurableRunScope scope)
-        , foundationIdText (evidenceLinuxRke2Foundation scope)
-        , maybe "" (accountIdText . awsScopeAccountId) (evidenceAwsScope scope)
-        , maybe "" (regionText . awsScopeRegion) (evidenceAwsScope scope)
-        , Text.pack (show (encodeLifecycleOperation (evidenceLifecycleOperation scope)))
-        ]
-    )
-
-registryRevisionText :: RegistryRevision -> Text
-registryRevisionText (RegistryRevision value) = value
-
-durableRunScopeText :: DurableObservationRunScope -> Text
-durableRunScopeText (DurableObservationRunScope value) = value
-
-foundationIdText :: LinuxRke2FoundationId -> Text
-foundationIdText (LinuxRke2FoundationId value) = value
-
-accountIdText :: AwsAccountId -> Text
-accountIdText (AwsAccountId value) = value
-
-regionText :: AwsRegion -> Text
-regionText (AwsRegion value) = value
 
 absenceEvidenceText :: AbsenceEvidence -> Text
 absenceEvidenceText (AbsenceEvidence evidence) = evidence
@@ -429,8 +402,16 @@ prepareLocalCompletion context local =
 -- The on-disk entry
 -- ---------------------------------------------------------------------------
 
+-- | Version 2 is the first entry that stores the scope as the one canonical
+-- nested encoding instead of seven flattened fields, and therefore the first
+-- that records the run's retained DNS hosted zone.  Version 1 bytes are refused
+-- rather than upgraded: a version-1 entry never held a zone, so an upgrade
+-- would have to assert the run had none, and the completion read-back —
+-- which exists so that every identity it carries comes from the durable bytes
+-- rather than from the running context — would then mint a receipt for a scope
+-- no run was ever compiled against.
 localCompletionEntryVersion :: Word16
-localCompletionEntryVersion = 1
+localCompletionEntryVersion = 2
 
 -- | Fixed ceiling for one entry.  The entry is a handful of identities and
 -- digests, so anything larger is a decode refusal rather than a read.
@@ -441,13 +422,7 @@ data LocalCompletionEntryEnvelope = LocalCompletionEntryEnvelope
   { envelopeVersion :: !Word16
   , envelopeRunId :: !Text
   , envelopeGraphDigest :: !Text
-  , envelopeCleanupSurface :: !Int
-  , envelopeRegistryRevision :: !Text
-  , envelopeObservationRunScope :: !Text
-  , envelopeFoundationId :: !Text
-  , envelopeAwsAccountId :: !(Maybe Text)
-  , envelopeAwsRegion :: !(Maybe Text)
-  , envelopeLifecycleOperation :: !Word16
+  , envelopeScope :: !ScopeWire
   , envelopeCompletionOperationId :: !Text
   , envelopePermitId :: !Text
   , envelopeReportDigest :: !Text
@@ -466,14 +441,7 @@ encodeLocalCompletionEntry reference permit report absence =
           , envelopeRunId = cleanupRunIdText (localCompletionReferenceRunId reference)
           , envelopeGraphDigest =
               cleanupDigestText (localCompletionReferenceGraphDigest reference)
-          , envelopeCleanupSurface = fromEnum (evidenceCleanupSurface scope)
-          , envelopeRegistryRevision = registryRevisionText (evidenceRegistryRevision scope)
-          , envelopeObservationRunScope = durableRunScopeText (evidenceDurableRunScope scope)
-          , envelopeFoundationId = foundationIdText (evidenceLinuxRke2Foundation scope)
-          , envelopeAwsAccountId = accountIdText . awsScopeAccountId <$> evidenceAwsScope scope
-          , envelopeAwsRegion = regionText . awsScopeRegion <$> evidenceAwsScope scope
-          , envelopeLifecycleOperation =
-              encodeLifecycleOperation (evidenceLifecycleOperation scope)
+          , envelopeScope = scopeToWire scope
           , envelopeCompletionOperationId =
               cleanupOperationIdText (localCompletionReferenceOperationId reference)
           , envelopePermitId = permit
@@ -510,19 +478,8 @@ decodeLocalCompletionEntry bytes
   decodeEnvelope envelope = do
     runId <- mkCleanupRunId (envelopeRunId envelope)
     graphDigest <- mkCleanupDigest (envelopeGraphDigest envelope)
-    surface <- decodeCleanupSurface (envelopeCleanupSurface envelope)
-    operation <- decodeLifecycleOperation (envelopeLifecycleOperation envelope)
-    awsScope <-
-      decodeAwsScope (envelopeAwsAccountId envelope) (envelopeAwsRegion envelope)
+    scope <- decodeScopeWire (envelopeScope envelope)
     operationId <- mkCleanupOperationId (envelopeCompletionOperationId envelope)
-    let scope =
-          mkObservationEvidenceScope
-            surface
-            (RegistryRevision (envelopeRegistryRevision envelope))
-            (DurableObservationRunScope (envelopeObservationRunScope envelope))
-            (LinuxRke2FoundationId (envelopeFoundationId envelope))
-            awsScope
-            operation
     Right
       ObservedLocalCompletion
         { observedLocalCompletionReference =
@@ -538,32 +495,20 @@ decodeLocalCompletionEntry bytes
         , observedLocalCompletionDigest = cleanupDigestOfBytes bytes
         }
 
-decodeCleanupSurface :: Int -> Either Text CleanupSurface
-decodeCleanupSurface raw
-  | raw < fromEnum (minBound :: CleanupSurface)
-      || raw > fromEnum (maxBound :: CleanupSurface) =
-      Left "cleanup completion entry names a cleanup surface outside the closed enum"
-  | otherwise = Right (toEnum raw)
-
-encodeLifecycleOperation :: LifecycleOperation -> Word16
-encodeLifecycleOperation = \case
-  ReconcileDesiredAbsent -> 0
-  ReconcileDesiredPresent -> 1
-  RunTerminalEscapeAudit -> 2
-
-decodeLifecycleOperation :: Word16 -> Either Text LifecycleOperation
-decodeLifecycleOperation = \case
-  0 -> Right ReconcileDesiredAbsent
-  1 -> Right ReconcileDesiredPresent
-  2 -> Right RunTerminalEscapeAudit
-  _ -> Left "cleanup completion entry names an unknown lifecycle operation"
-
-decodeAwsScope :: Maybe Text -> Maybe Text -> Either Text (Maybe AwsScope)
-decodeAwsScope account region = case (account, region) of
-  (Nothing, Nothing) -> Right Nothing
-  (Just accountId, Just regionId) ->
-    Right (Just (AwsScope (AwsAccountId accountId) (AwsRegion regionId)))
-  _ -> Left "cleanup completion entry carries a partial AWS scope"
+-- | The canonical scope decoder, mapped into this module's refusal text.
+--
+-- The field rules live in "Prodbox.Lifecycle.Teardown.ScopeCodec".  This module
+-- used to restate a weaker version of them across three local tag codecs which
+-- between them had no field for the hosted zone, so the decoder erased it even
+-- for an entry that had somehow carried one.
+decodeScopeWire :: ScopeWire -> Either Text ObservationEvidenceScope
+decodeScopeWire wire = case scopeFromWire wire of
+  Left err ->
+    Left
+      ( "cleanup completion entry carries an invalid scope: "
+          <> renderScopeWireError err
+      )
+  Right scope -> Right scope
 
 -- ---------------------------------------------------------------------------
 -- Appending

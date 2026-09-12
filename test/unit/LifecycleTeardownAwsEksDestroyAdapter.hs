@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module LifecycleTeardownAwsEksDestroyAdapter
@@ -466,7 +467,8 @@ fixtureTargetFor :: RegisteredResourceKey -> RegisteredTargetBinding
 fixtureTargetFor expectedKey =
   case [ target
        | node <- desiredAbsenceProgramNodes program
-       , ReconcileRegisteredTargetAbsent target <- [programNodeOperation node]
+       , SomeTeardownOperation (ReconcileRegisteredTargetAbsent target) <-
+           [programNodeOperation node]
        , registeredTargetKey target == expectedKey
        ] of
     [target] -> target

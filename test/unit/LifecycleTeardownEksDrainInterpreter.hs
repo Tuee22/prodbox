@@ -827,10 +827,7 @@ instance LifecycleTeardownEffects CommitSelectionEffects where
           )
           environment
       writeIORef (commitSelectionCaptured environment) (Just selected)
-      pure
-        ( TeardownMutationAttempt
-            (TeardownMutationRefused "commit selection captured")
-        )
+      pure (TeardownNodeRefused "commit selection captured")
 
 newCommitSelectionEnvironment
   :: RegisteredTargetBinding
@@ -1100,10 +1097,7 @@ instance LifecycleTeardownEffects DestroyAdmissionEffects where
           )
           environment
       writeIORef (destroyAdmissionCaptured environment) (Just admitted)
-      pure
-        ( TeardownMutationAttempt
-            (TeardownMutationRefused "destroy admission captured")
-        )
+      pure (TeardownNodeRefused "destroy admission captured")
 
 newDestroyAdmissionEnvironment
   :: EksClientAuthProjection
@@ -1394,10 +1388,7 @@ instance LifecycleTeardownEffects AttemptExecutionEffects where
               )
               environment
       writeIORef (attemptExecutionCaptured environment) (Just captured)
-      pure
-        ( TeardownMutationAttempt
-            (TeardownMutationRefused "attempt execution captured")
-        )
+      pure (TeardownNodeRefused "attempt execution captured")
 
 newAttemptExecutionEnvironment
   :: AttemptExecutionMode
@@ -1763,7 +1754,7 @@ commitSelectionTargetFor :: RegisteredResourceKey -> RegisteredTargetBinding
 commitSelectionTargetFor key =
   case [ target
        | (_, operation) <- compiledDesiredAbsenceOperations commitSelectionCompiled
-       , ObserveRegisteredTarget target <- [operation]
+       , SomeTeardownOperation (ObserveRegisteredTarget target) <- [operation]
        , registeredTargetKey target == key
        ] of
     [target] -> target
@@ -1783,28 +1774,28 @@ commitSelectionReadBackPlan =
 commitSelectionReconcilePlan =
   commitSelectionPlanFor isCommitSelectionReconcileOperation
 
-isCommitSelectionCommitOperation :: TeardownOperation 'Cascade -> Bool
-isCommitSelectionCommitOperation operation = case operation of
+isCommitSelectionCommitOperation :: SomeTeardownOperation 'Cascade -> Bool
+isCommitSelectionCommitOperation (SomeTeardownOperation operation) = case operation of
   CommitEksDrainIntent target -> target == commitSelectionEksTarget
   _ -> False
 
-isCommitSelectionEffectOperation :: TeardownOperation 'Cascade -> Bool
-isCommitSelectionEffectOperation operation = case operation of
+isCommitSelectionEffectOperation :: SomeTeardownOperation 'Cascade -> Bool
+isCommitSelectionEffectOperation (SomeTeardownOperation operation) = case operation of
   DrainEksKubernetesResources target -> target == commitSelectionEksTarget
   _ -> False
 
-isCommitSelectionReadBackOperation :: TeardownOperation 'Cascade -> Bool
-isCommitSelectionReadBackOperation operation = case operation of
+isCommitSelectionReadBackOperation :: SomeTeardownOperation 'Cascade -> Bool
+isCommitSelectionReadBackOperation (SomeTeardownOperation operation) = case operation of
   ReadBackEksKubernetesDrain target -> target == commitSelectionEksTarget
   _ -> False
 
-isCommitSelectionReconcileOperation :: TeardownOperation 'Cascade -> Bool
-isCommitSelectionReconcileOperation operation = case operation of
+isCommitSelectionReconcileOperation :: SomeTeardownOperation 'Cascade -> Bool
+isCommitSelectionReconcileOperation (SomeTeardownOperation operation) = case operation of
   ReconcileRegisteredTargetAbsent target -> target == commitSelectionEksTarget
   _ -> False
 
 commitSelectionPlanFor
-  :: (TeardownOperation 'Cascade -> Bool) -> CleanupNodePlan
+  :: (SomeTeardownOperation 'Cascade -> Bool) -> CleanupNodePlan
 commitSelectionPlanFor matches =
   case [ plan
        | plan <- cleanupGraphNodes (compiledDesiredAbsenceGraph commitSelectionCompiled)
@@ -1831,13 +1822,14 @@ commitSelectionDrainReadBackOperation =
 commitSelectionDestroyOperation = cleanupNodeOperationId commitSelectionReconcilePlan
 
 isCommitSelectionIntentReadBackOperation
-  :: TeardownOperation 'Cascade -> Bool
-isCommitSelectionIntentReadBackOperation operation = case operation of
-  ReadBackEksDrainIntent target -> target == commitSelectionEksTarget
-  _ -> False
+  :: SomeTeardownOperation 'Cascade -> Bool
+isCommitSelectionIntentReadBackOperation (SomeTeardownOperation operation) =
+  case operation of
+    ReadBackEksDrainIntent target -> target == commitSelectionEksTarget
+    _ -> False
 
 commitSelectionOperationFor
-  :: (TeardownOperation 'Cascade -> Bool) -> CleanupOperationId
+  :: (SomeTeardownOperation 'Cascade -> Bool) -> CleanupOperationId
 commitSelectionOperationFor = cleanupNodeOperationId . commitSelectionPlanFor
 
 commitSelectionBinding, commitSelectionBindingWithWrongEffect :: EksDrainOperationBinding

@@ -325,7 +325,7 @@ mustPlan :: Text -> CleanupNodePlan
 mustPlan tag = case [ plan
                     | plan <- cleanupGraphNodes (compiledDesiredAbsenceGraph fixtureCompiled)
                     , Just operation <- [compiledOperationForNode (cleanupNodeId plan) fixtureCompiled]
-                    , teardownOperationTag operation == tag
+                    , someTeardownOperationTag operation == tag
                     ] of
   [plan] -> plan
   plans -> error ("expected one plan for " <> Text.unpack tag <> ", got " <> show (length plans))

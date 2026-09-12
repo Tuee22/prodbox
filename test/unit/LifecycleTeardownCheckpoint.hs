@@ -539,10 +539,6 @@ lifecycleTeardownCheckpointSuite =
         retirementReadBackPlan
         (FixedCheckpointRetirementReadBack retirementEvidence)
         `shouldBe` CleanupNodeSucceeded
-      executeResult compiled restorePlan (FixedGenericMutation TeardownMutationApplied)
-        `shouldBe` wrongResultKind
-      executeResult compiled retirementPlan (FixedGenericMutation TeardownMutationApplied)
-        `shouldBe` wrongResultKind
       executeResult compiled recoveryPlan (FixedCheckpointRecovery recoveredWrongOperation)
         `shouldBe` bindingMismatch
 
@@ -652,7 +648,6 @@ data FixedResult
   | FixedCheckpointRecovery !CheckpointRecoveryReadBackEvidence
   | FixedCheckpointRetirement !CheckpointRetirementOutcome
   | FixedCheckpointRetirementReadBack !CheckpointRetirementEvidence
-  | FixedGenericMutation !TeardownMutationResult
 
 newtype FixedEffects value = FixedEffects
   { runFixedEffects :: FixedResult -> value
@@ -672,18 +667,33 @@ instance Monad FixedEffects where
     FixedEffects $ \fixed ->
       runFixedEffects (continue (action fixed)) fixed
 
+-- | Sprint 4.94: the fixture selects its answer by the operation it is handed,
+-- because a node result now carries that operation's result index.  A
+-- 'FixedResult' that does not belong to the operation is declined rather than
+-- returned, which is the only way the pairing can still be expressed.
 instance LifecycleTeardownEffects FixedEffects where
-  executeLifecycleTeardownOperation _ _ =
+  executeLifecycleTeardownOperation _ operation =
     FixedEffects fixedTeardownResult
    where
-    fixedTeardownResult fixed = case fixed of
-      FixedCheckpointRestore outcome -> TeardownCheckpointRestore outcome
-      FixedCheckpointRecovery evidence ->
-        TeardownCheckpointRecoveryReadBack evidence
-      FixedCheckpointRetirement outcome -> TeardownCheckpointRetirement outcome
-      FixedCheckpointRetirementReadBack evidence ->
-        TeardownCheckpointRetirementReadBack evidence
-      FixedGenericMutation mutation -> TeardownMutationAttempt mutation
+    fixedTeardownResult fixed = case operation of
+      ReconcileStackCheckpointRestore _ -> case fixed of
+        FixedCheckpointRestore outcome -> TeardownCheckpointRestore outcome
+        _ -> fixtureRefusal
+      ReadBackStackCheckpointRecovery _ -> case fixed of
+        FixedCheckpointRecovery evidence ->
+          TeardownCheckpointRecoveryReadBack evidence
+        _ -> fixtureRefusal
+      RetireStackCheckpointPair _ -> case fixed of
+        FixedCheckpointRetirement outcome -> TeardownCheckpointRetirement outcome
+        _ -> fixtureRefusal
+      ReadBackStackCheckpointRetirement _ -> case fixed of
+        FixedCheckpointRetirementReadBack evidence ->
+          TeardownCheckpointRetirementReadBack evidence
+        _ -> fixtureRefusal
+      _ -> fixtureRefusal
+    fixtureRefusal :: TeardownNodeResult surface result
+    fixtureRefusal =
+      TeardownNodeRefused "fixture result does not belong to this operation"
 
 executeResult
   :: CompiledDesiredAbsenceProgram surface
@@ -694,7 +704,7 @@ executeResult compiled plan result =
   runFixedEffects (runCompiledTeardownNode compiled plan) result
 
 stackOperationPlan
-  :: (TeardownOperation surface -> Bool)
+  :: (SomeTeardownOperation surface -> Bool)
   -> CompiledDesiredAbsenceProgram surface
   -> (RegisteredTargetBinding, CleanupNodePlan)
 stackOperationPlan predicate compiled =
@@ -708,8 +718,8 @@ stackOperationPlan predicate compiled =
     [matched] -> matched
     matches -> error ("expected one stack operation plan, got " ++ show (length matches))
 
-operationTarget :: TeardownOperation surface -> Maybe RegisteredTargetBinding
-operationTarget operation = case operation of
+operationTarget :: SomeTeardownOperation surface -> Maybe RegisteredTargetBinding
+operationTarget (SomeTeardownOperation operation) = case operation of
   ObserveStackCheckpointPair target -> Just target
   ReconcileStackCheckpointRestore target -> Just target
   ReadBackStackCheckpointRecovery target -> Just target
@@ -717,23 +727,23 @@ operationTarget operation = case operation of
   ReadBackStackCheckpointRetirement target -> Just target
   _ -> Nothing
 
-isRestore :: TeardownOperation surface -> Bool
-isRestore operation = case operation of
+isRestore :: SomeTeardownOperation surface -> Bool
+isRestore (SomeTeardownOperation operation) = case operation of
   ReconcileStackCheckpointRestore _ -> True
   _ -> False
 
-isRecoveryReadBack :: TeardownOperation surface -> Bool
-isRecoveryReadBack operation = case operation of
+isRecoveryReadBack :: SomeTeardownOperation surface -> Bool
+isRecoveryReadBack (SomeTeardownOperation operation) = case operation of
   ReadBackStackCheckpointRecovery _ -> True
   _ -> False
 
-isRetirement :: TeardownOperation surface -> Bool
-isRetirement operation = case operation of
+isRetirement :: SomeTeardownOperation surface -> Bool
+isRetirement (SomeTeardownOperation operation) = case operation of
   RetireStackCheckpointPair _ -> True
   _ -> False
 
-isRetirementReadBack :: TeardownOperation surface -> Bool
-isRetirementReadBack operation = case operation of
+isRetirementReadBack :: SomeTeardownOperation surface -> Bool
+isRetirementReadBack (SomeTeardownOperation operation) = case operation of
   ReadBackStackCheckpointRetirement _ -> True
   _ -> False
 
@@ -759,10 +769,6 @@ absenceEvidence = AbsenceEvidence "eks-not-found"
 
 bindingMismatch :: CleanupNodeOutcome
 bindingMismatch = CleanupNodeFailed "lifecycle observation binding mismatch"
-
-wrongResultKind :: CleanupNodeOutcome
-wrongResultKind =
-  CleanupNodeFailed "lifecycle interpreter returned the wrong result kind"
 
 restoreOperation :: CleanupOperationId
 restoreOperation = mustOperation "cleanup-run/checkpoint/restore-primary"

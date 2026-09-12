@@ -135,6 +135,11 @@ import ControlPlaneServer (controlPlaneServerSuite)
 import ControlPlaneTargetSecretWorker (controlPlaneTargetSecretWorkerSuite)
 import ControlPlaneTlsRetentionEndpoint (controlPlaneTlsRetentionEndpointSuite)
 import ControlPlaneVaultSession (controlPlaneVaultSessionSuite)
+import CredentialDeliveryHarness
+  ( credentialDeliveryHarnessSuite
+  , ephemeralKubectlCredentialSuite
+  , runCredentialDeliveryHelper
+  )
 import CredentialProvisioner (credentialProvisionerSuite)
 import CredentialProvisionerAwsAdminAuthority
   ( credentialProvisionerAwsAdminAuthoritySuite
@@ -210,6 +215,7 @@ import ExternalMaterialIngressLifecycle
   ( externalMaterialIngressLifecycleSuite
   )
 import FencedCheckpoint (fencedCheckpointSuite)
+import GHC.Clock (getMonotonicTimeNSec)
 import GatewayAuthority (gatewayAuthoritySuite)
 import GatewayBounded (gatewayBoundedSuite)
 import GatewayChartStatics (gatewayChartStaticsSuite)
@@ -1205,9 +1211,14 @@ import Prodbox.Lifecycle.K8sDrain
   , DrainTimeout (..)
   , cascadeDecisionFromDrainResult
   , classifyClusterProbe
+  , defaultDrainTimeout
   , deleteReclaimPersistentVolumeJsonPath
   , deleteReclaimPvcBindings
   , drainAwsAffectingK8sResources
+  , drainKubectlDiscoveryAttempts
+  , drainKubectlRequestTimeoutSeconds
+  , drainKubectlWallClockMarginSeconds
+  , drainKubectlWallClockSeconds
   , prepareK8sDrainEnvWithKubectl
   )
 import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
@@ -1475,6 +1486,7 @@ import Prodbox.TestPlan
   , validationDeferredPrerequisites
   , validationInitialPrerequisites
   )
+import Prodbox.TestPlan qualified as TestPlan
 import Prodbox.TestRestore
   ( RestoreChart (..)
   , RestoreCyclePlan (..)
@@ -1687,10 +1699,13 @@ import RestoreGraphSuite (restoreGraphSuite)
 import RetainedSesPreparation (retainedSesPreparationSuite)
 import RetainedSesTargetRecovery (retainedSesTargetRecoverySuite)
 import RoleReadinessSuite (roleReadinessSuite)
+import ScopeCodecProperties (scopeCodecPropertiesSuite)
+import ScopeCodecWitness (scopeCodecWitnessSuite)
 import SesWorkflow (sesWorkflowSuite)
 import SigV4 (sigV4Suite)
 import SmtpKeyRepairInterpreter (smtpKeyRepairInterpreterSuite)
 import StoreLifetimeWitness (storeLifetimeWitnessSuite)
+import SupervisionWitness (supervisionWitnessSuite)
 import System.Directory
   ( Permissions (..)
   , copyFile
@@ -2825,9 +2840,11 @@ targetSecretAgentStartupDiagnosticSuite =
 main :: IO ()
 main = do
   arguments <- getArgs
-  helperHandled <- runGatewayEmitterJournalHelper arguments
+  journalHelperHandled <- runGatewayEmitterJournalHelper arguments
+  credentialHelperHandled <-
+    if journalHelperHandled then pure False else runCredentialDeliveryHelper arguments
   unless
-    helperHandled
+    (journalHelperHandled || credentialHelperHandled)
     (withArgs ("--num-threads=1" : arguments) (mainWithSuite "prodbox-unit" unitSuite))
 
 unitSuite :: SuiteBuilder ()
@@ -3062,7 +3079,12 @@ unitSuite = do
   retainedSesPreparationSuite
   retainedSesTargetRecoverySuite
   smtpKeyRepairInterpreterSuite
+  credentialDeliveryHarnessSuite
+  ephemeralKubectlCredentialSuite
+  scopeCodecPropertiesSuite
+  scopeCodecWitnessSuite
   storeLifetimeWitnessSuite
+  supervisionWitnessSuite
   targetCommitSmtpSuite
   tier0PlanAssertSuite
   tier0FixtureSuite
@@ -8721,13 +8743,13 @@ unitSuite = do
       case testExecutionPlan SubstrateHomeLocal TestAll of
         testPlan -> do
           testPlanLabel testPlan `shouldBe` "all"
-          testPlanHaskellSuites testPlan
-            `shouldBe` [ "test:prodbox-unit"
-                       , "test:prodbox-authority-admission-unit"
-                       , "test:prodbox-control-plane-authentication-unit"
-                       , "test:prodbox-control-plane-authenticated-transport-unit"
-                       , "test:prodbox-integration"
-                       ]
+          -- Sprint 5.45: the aggregate scope now names every declared suite.
+          -- Three were compiled by the canonical gate and executed by nothing,
+          -- so the list this used to pin was the defect rather than the
+          -- contract.
+          testPlanHaskellSuites testPlan `shouldBe` TestPlan.aggregateScopeHaskellSuites
+          sort (testPlanHaskellSuites testPlan)
+            `shouldBe` sort TestPlan.routedHaskellSuites
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
               nativeSuiteId suitePlan `shouldBe` "all"
@@ -13940,7 +13962,7 @@ unitSuite = do
       DecommissionProgramTag.measuredRunnerDecommissionTags
         `shouldSatisfy` (not . null)
 
-      -- The two universes were disjoint across all twenty-one tags. Sprint
+      -- The two universes were disjoint across all twenty-two tags. Sprint
       -- 4.85 has closed four overlaps, each by moving an operation the
       -- compiled program already emitted into the signed receipt graph: the
       -- final no-retention audit (previously an out-of-band tail that ran
@@ -14059,9 +14081,10 @@ unitSuite = do
       -- signed identity: the runner gained its first escape-audit interpreter,
       -- so this list and the digest over it genuinely changed, and
       -- 'nukeInterpreterRegistryVersion' was bumped in the same change. It has
-      -- since carried the home uninstall and the retained-local-data
-      -- disposition the same way, taking the version to 4. A receipt signed
-      -- under an earlier version must not verify against this runner.
+      -- since carried the home uninstall, the retained-local-data disposition
+      -- and the terminal receipt the same way. A receipt signed under an
+      -- earlier version must not verify against this runner, so the version
+      -- moves with this list rather than being chosen alongside it.
       DecommissionProgramTag.decommissionRunnerInterpreterRegistry
         `shouldBe` [ "total-decommission-escape-audit-v1"
                    , "home-substrate-uninstall-v1"
@@ -19855,6 +19878,59 @@ unitSuite = do
             logText `shouldContain` " get services "
             logText `shouldContain` " get ingresses "
             logText `shouldContain` " get pvc -n ns claim "
+            -- Sprint 4.93: the per-request bound is appended by the runner, so
+            -- every call carries it and no call carries it twice.
+            forM_ invocations $ \invocation ->
+              length (filter (== "--request-timeout=5s") (words invocation)) `shouldBe` 1
+
+    it "terminates a wedged kubectl by its own bound and calls it unobservable" $
+      withSystemTempDirectory "prodbox-drain-wedged-kubectl" $ \tmpDir -> do
+        -- Sprint 4.93. Every drain `kubectl` used to run through a runner with
+        -- no wall clock and no output ceiling, so a child that blocked held the
+        -- drain open past the five-minute budget an operator reads about, and
+        -- the refusal they are told to expect could not be emitted because the
+        -- code never reached it. `defaultDrainTimeout` bounded only the
+        -- completion poll, and that poll's own countdown was decremented by the
+        -- sleep interval alone, so it never charged a second for time spent
+        -- inside a call.
+        let kubeconfigPath = tmpDir </> "exact-rke2.yaml"
+            kubectlPath = tmpDir </> "kubectl"
+        writeFile kubeconfigPath "apiVersion: v1\nkind: Config\n"
+        writeFile kubectlPath (unlines ["#!/bin/sh", "sleep 600"])
+        makeExecutable kubectlPath
+        prepared <-
+          prepareK8sDrainEnvWithKubectl kubectlPath kubeconfigPath [] (Just tmpDir)
+        case prepared of
+          Left detail -> expectationFailure detail
+          Right drainEnv -> do
+            startedAt <- getMonotonicTimeNSec
+            result <- drainAwsAffectingK8sResources drainEnv defaultDrainTimeout
+            finishedAt <- getMonotonicTimeNSec
+            let elapsedSeconds =
+                  fromIntegral ((finishedAt - startedAt) `div` 1_000_000_000) :: Int
+            -- Unobservable, never absence: the API server did not answer, which
+            -- is not evidence that there is nothing to drain.
+            result `shouldSatisfy` isDrainUnobservable
+            -- Elapsed time, not merely the returned constructor. "Returned an
+            -- error eventually" cannot tell slow from wedged, and the wedge
+            -- signature is exactly elapsed-equals-the-bound.
+            elapsedSeconds `shouldSatisfy` (>= drainKubectlWallClockSeconds)
+            elapsedSeconds `shouldSatisfy` (< 2 * drainKubectlWallClockSeconds)
+            -- And well under the poll budget, which is the separate number the
+            -- superseded code conflated with this one.
+            elapsedSeconds `shouldSatisfy` (< drainTimeoutSeconds defaultDrainTimeout)
+
+    it "derives the call bound from the per-request bound rather than choosing it" $ do
+      -- A chosen wall clock races the request timeouts it is meant to contain.
+      -- This is the same derivation the ephemeral client records, over the same
+      -- measured discovery-retry count.
+      drainKubectlWallClockSeconds
+        `shouldBe` ( (drainKubectlDiscoveryAttempts + 1)
+                       * drainKubectlRequestTimeoutSeconds
+                       + drainKubectlWallClockMarginSeconds
+                   )
+      drainKubectlWallClockSeconds
+        `shouldSatisfy` (< drainTimeoutSeconds defaultDrainTimeout)
 
   describe "Sprint 5.28 dns-aws validation hosted-zone ownership" $ do
     it "projects only validation-owned zones out of a listing" $ do
@@ -20055,41 +20131,199 @@ unitSuite = do
         )
         `shouldSatisfy` isLeft
 
-  describe "Sprint 2.41 supervised-worker negative space" $ do
-    let daemonPath = "src/Prodbox/Gateway/Daemon.hs"
-        supervised =
+  describe "Sprint 5.45 declared-suite routing" $ do
+    let manifest names =
           unlines
-            [ "import Control.Concurrent.Async qualified as Async"
-            , "import Control.Concurrent.Async (race, replicateConcurrently)"
-            , "withSupervisedWorkers :: DaemonEnv -> [(Text.Text, IO ())] -> IO ()"
-            ]
+            (concatMap (\name -> ["test-suite " ++ name, "    type: exitcode-stdio-1.0"]) names)
+        declaredNames = map (drop (length ("test:" :: String))) TestPlan.routedHaskellSuites
 
-    it "admits the daemon as it actually stands" $
-      Prodbox.CheckCode.supervisedWorkerViolations (daemonPath, Just supervised) `shouldBe` []
+    it "admits the package exactly as it stands" $ do
+      repoRoot <- getCurrentDirectory
+      cabalContents <- readFile' (repoRoot </> "prodbox.cabal")
+      Prodbox.CheckCode.testSuiteStanzaViolations cabalContents `shouldBe` []
 
-    it "refuses raw withAsync brought back into scope" $
-      -- Eight workers used to be spawned this way with their handles discarded,
-      -- so a worker that died was invisible to readiness and its exception
-      -- reached nobody.
-      Prodbox.CheckCode.supervisedWorkerViolations
-        ( daemonPath
-        , Just
-            ( unlines
-                [ "import Control.Concurrent.Async (race, withAsync)"
-                , "withSupervisedWorkers :: DaemonEnv -> [(Text.Text, IO ())] -> IO ()"
-                ]
+    it "reads every declared stanza name out of the manifest" $ do
+      repoRoot <- getCurrentDirectory
+      cabalContents <- readFile' (repoRoot </> "prodbox.cabal")
+      sort (Prodbox.CheckCode.declaredTestSuiteNames cabalContents)
+        `shouldBe` sort declaredNames
+
+    it "refuses a ninth suite that no scope runs" $
+      -- The condition this gate exists for. Three declared suites were compiled
+      -- by the canonical gate and executed by no `prodbox test` scope, and
+      -- governed documents credited two of them with guarantees.
+      Prodbox.CheckCode.testSuiteStanzaViolations
+        (manifest (declaredNames ++ ["prodbox-unrouted"]))
+        `shouldSatisfy` ((== 1) . length)
+
+    it "refuses a routed name the package does not declare" $
+      -- The other direction: a scope naming a stanza nobody wrote fails at
+      -- `cabal test` with a name no one typed deliberately.
+      Prodbox.CheckCode.testSuiteStanzaViolations
+        (manifest (filter (/= "prodbox-pulumi") declaredNames))
+        `shouldSatisfy` ((== 1) . length)
+
+    it "still refuses a stanza with the wrong interface" $
+      Prodbox.CheckCode.testSuiteStanzaViolations
+        ( unlines
+            ( concatMap
+                (\name -> ["test-suite " ++ name, "    type: detailed-0.9"])
+                declaredNames
             )
         )
+        `shouldSatisfy` ((== length declaredNames) . length)
+
+  describe "Sprint 7.40 ephemeral credential machinery" $ do
+    let owner = "src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs"
+        elsewhere = "src/Prodbox/Infra/Synthetic.hs"
+        gate path = Prodbox.CheckCode.ephemeralCredentialMachineryViolations . (,) path . unlines
+
+    it "refuses a synthetic second statement of the credential renderer" $
+      -- The exact shape Sprint 7.36 recorded as consolidated and left behind:
+      -- a second module rendering its own kubeconfig with its own credential
+      -- entry. Nothing could tell the difference, because nothing bound the
+      -- machinery to one file.
+      gate
+        elsewhere
+        [ "module Synthetic where"
+        , "kubeconfig token ="
+        , "  object [\"user\" .= object [\"tokenFile\" .= token]]"
+        ]
         `shouldSatisfy` ((== 1) . length)
 
-    it "refuses a daemon that no longer has a supervisor at all" $
-      Prodbox.CheckCode.supervisedWorkerViolations
-        (daemonPath, Just "import Control.Concurrent.Async qualified as Async\n")
+    it "refuses a synthetic second private-file writer" $
+      gate
+        elsewhere
+        [ "module Synthetic where"
+        , "prepare directory bytes = writePrivateFile (directory </> \"token\") bytes"
+        ]
         `shouldSatisfy` ((== 1) . length)
 
-    it "treats a missing daemon module as a finding" $
-      Prodbox.CheckCode.supervisedWorkerViolations (daemonPath, Nothing)
+    it "refuses a rendezvous anywhere under src/, including the owning module" $ do
+      -- `createNamedPipe` is refused unconditionally rather than confined,
+      -- because the measurement that retired it is about the reader rather than
+      -- about which module holds the writer: `kubectl` opens its token file
+      -- twice per invocation, so a stream serves the first open and wedges the
+      -- second.
+      gate elsewhere ["module Synthetic where", "prepare path = createNamedPipe path mode"]
         `shouldSatisfy` ((== 1) . length)
+      gate owner ["module Owner where", "prepare path = createNamedPipe path mode"]
+        `shouldSatisfy` ((== 1) . length)
+
+    it "admits the owning module stating the machinery it owns" $
+      gate
+        owner
+        [ "module Owner where"
+        , "kubeconfig token ="
+        , "  object [\"user\" .= object [\"tokenFile\" .= token]]"
+        , "prepare directory bytes = writePrivateFile (directory </> \"token\") bytes"
+        ]
+        `shouldBe` []
+
+    it "admits a module that touches neither" $
+      gate elsewhere ["module Synthetic where", "render settings = encode settings"]
+        `shouldBe` []
+
+    it "admits `tokenFile` as an ordinary binder outside the owning module" $
+      -- The word is not the mechanism. `Prodbox.ControlPlane.VaultSession` binds
+      -- `tokenFile` for the projected service-account JWT path, which has
+      -- nothing to do with the ephemeral bearer credential, and a rule that
+      -- refused it there would be refusing a name rather than a second statement
+      -- of a security property. Rendering the kubeconfig key needs the literal,
+      -- which is where the rule reads it.
+      gate
+        elsewhere
+        [ "module Synthetic where"
+        , "readProjectedJwt tokenFile = TextIO.readFile tokenFile"
+        ]
+        `shouldBe` []
+
+  describe "Sprint 2.134 spawned-handle disposition" $ do
+    let syntheticPath = "src/Prodbox/Synthetic.hs"
+        source = Prodbox.CheckCode.spawnedHandleDispositionViolations . (,) syntheticPath . unlines
+
+    it "refuses the discard shape" $
+      -- Five long-lived children under src/ were spawned exactly like this, so
+      -- each could die silently and leave its parent running on an assumption
+      -- that had stopped being true.
+      source
+        [ "module Synthetic where"
+        , "import Control.Concurrent.Async (withAsync)"
+        , "run cache = withAsync (observeForever cache) $ \\_ -> serve cache"
+        ]
+        `shouldSatisfy` ((== 1) . length)
+
+    it "admits the linked shape" $
+      source
+        [ "module Synthetic where"
+        , "import Control.Concurrent.Async (link, withAsync)"
+        , "run cache = withAsync (observeForever cache) $ \\handle -> do"
+        , "  link handle"
+        , "  serve cache"
+        ]
+        `shouldBe` []
+
+    it "admits the waited shape" $
+      source
+        [ "module Synthetic where"
+        , "import Control.Concurrent.Async (async, waitCatch)"
+        , "run cache = do"
+        , "  worker <- async (observeForever cache)"
+        , "  outcome <- waitCatch worker"
+        , "  pure outcome"
+        ]
+        `shouldBe` []
+
+    it "refuses the qualified-import evasion the superseded check permitted" $
+      -- Sprint 2.41's gate refused an unqualified `withAsync` import in one
+      -- file. A qualified import sidestepped it by design, and said nothing at
+      -- all about any other module.
+      source
+        [ "module Synthetic where"
+        , "import Control.Concurrent.Async qualified as Async"
+        , "run cache = Async.withAsync (observeForever cache) $ \\_ -> serve cache"
+        ]
+        `shouldSatisfy` ((== 1) . length)
+
+    it "refuses a handle discarded by `const`" $
+      source
+        [ "module Synthetic where"
+        , "import Control.Concurrent.Async (withAsync)"
+        , "run cache = withAsync (observeForever cache) (const (serve cache))"
+        ]
+        `shouldSatisfy` ((== 1) . length)
+
+    it "refuses a pool that is only cancelled, never linked or joined" $
+      -- Cancelling a child at shutdown says what the parent wants to happen to
+      -- it, not that the parent ever observed what did.
+      source
+        [ "module Synthetic where"
+        , "import Control.Concurrent.Async (async, cancel)"
+        , "run = bracket (replicateM 4 (async workerLoop)) (mapM_ cancel) (const accept)"
+        ]
+        `shouldSatisfy` ((== 1) . length)
+
+    it "refuses `forkIO`, whose ThreadId can be neither linked nor joined" $
+      source
+        [ "module Synthetic where"
+        , "import Control.Concurrent (forkIO)"
+        , "run = do"
+        , "  identifier <- forkIO workerLoop"
+        , "  pure identifier"
+        ]
+        `shouldSatisfy` ((== 1) . length)
+
+    it "does not read an import list or a comment as a spawn" $
+      source
+        [ "module Synthetic where"
+        , "import Control.Concurrent.Async"
+        , "  ( async"
+        , "  , withAsync"
+        , "  )"
+        , "-- Eight workers used to be spawned through raw withAsync."
+        , "run = serve"
+        ]
+        `shouldBe` []
 
   describe "Sprint 2.40 derived readiness staleness bound" $ do
     it "derives a bound the observer can actually meet" $ do
@@ -23665,6 +23899,17 @@ parseArgs argv =
           let (message, _) = renderFailure failure "prodbox"
            in Left message
         CompletionInvoked _ -> Left "shell completion requested"
+
+-- | A drain that could not observe, as distinct from one that reached the API
+-- server and was refused. Sprint 4.93: before it, a bounded refusal had only
+-- 'DrainFailed' to land in, and 'DrainFailed' asserts the cluster was reached.
+isDrainUnobservable :: DrainResult -> Bool
+isDrainUnobservable result = case result of
+  DrainUnobservable _ -> True
+  DrainSucceeded -> False
+  DrainSkipped _ -> False
+  DrainTimedOut _ -> False
+  DrainFailed _ -> False
 
 makeExecutable :: FilePath -> IO ()
 makeExecutable path = do

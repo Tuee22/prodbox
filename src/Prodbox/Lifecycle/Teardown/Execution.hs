@@ -1,12 +1,19 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Total execution boundary for compiled lifecycle cleanup programs.  The
 -- effect implementation receives only a closed operation plus its sealed
--- run/graph/scope context.  This driver rejects a result of the wrong kind and
--- validates every proof binding before lowering it to the durable cleanup
--- journal's small outcome algebra.
+-- run\/graph\/scope context, and validates every proof binding before lowering
+-- the result to the durable cleanup journal's small outcome algebra.
+--
+-- Sprint 4.94: a result of the wrong kind is no longer rejected, because it is
+-- no longer constructible.  'TeardownOperation' and 'TeardownNodeResult' share
+-- a result index, so an interpreter handed an operation can return only that
+-- operation's answer or a refusal.  What the driver still checks — and what a
+-- result index deliberately does not prove — is that the answer belongs to this
+-- attempt and was produced under the expected observation scope.
 module Prodbox.Lifecycle.Teardown.Execution
   ( TeardownMutationResult (..)
   , DurableReceiptKind (..)
@@ -148,6 +155,7 @@ import Prodbox.Lifecycle.Teardown.RecoveryPlane
   )
 import Prodbox.Lifecycle.Teardown.RegisteredTargetResult
 import Prodbox.Lifecycle.Teardown.Registry
+import Prodbox.Lifecycle.Teardown.ScopeCodec (scopeForTerminalAudit)
 
 data TeardownMutationResult
   = TeardownMutationApplied
@@ -224,39 +232,83 @@ data OperationalCredentialRevocationObservation
   }
   deriving (Eq, Show)
 
-data TeardownNodeResult surface
-  = TeardownNodeRefused !Text
-  | TeardownMutationAttempt !TeardownMutationResult
-  | TeardownRegisteredTargetReconcile !RegisteredTargetReconcileResult
-  | TeardownExactResourceObservation !ExactResourceObservation
-  | TeardownCheckpointPairObservation !CheckpointPairObservation
-  | TeardownCheckpointRestore !CheckpointRestoreOutcome
-  | TeardownCheckpointRecoveryReadBack !CheckpointRecoveryReadBackEvidence
-  | TeardownAwsStackReaderCommit !AwsStackReaderCommitOutcome
-  | TeardownAwsStackReaderReadBack !AwsStackReaderReadBackEvidence
-  | TeardownCheckpointRetirement !CheckpointRetirementOutcome
-  | TeardownCheckpointRetirementReadBack !CheckpointRetirementEvidence
-  | TeardownEksDrainIntentReadBack
-      !(Either EksDrainIntentError CommittedEksDrainIntent)
-  | TeardownEksDrainAttempt
-      !(Either EksDrainIntentError EksDrainAttemptEvidence)
-  | TeardownEksDrainTargetReadBack
-      !(Either EksDrainIntentError EksDrainTargetsAbsentEvidence)
-  | TeardownRecoveryPlaneInitialReadBack
-      !(RecoveryPlaneInitialReadBack surface)
-  | TeardownRecoveryPlaneFinalEvidence
-      !(RecoveryPlaneFinalEvidence surface)
-  | TeardownTerminalAuditObservation !(TerminalAuditObservation surface)
-  | TeardownDurableReceiptObservation !DurableReceiptObservation
-  | TeardownLocalFoundationObservation !LocalFoundationObservation
-  | TeardownLocalDataDispositionObservation !LocalDataDispositionObservation
-  | TeardownOperationalCredentialRevocationObservation
-      !OperationalCredentialRevocationObservation
+-- | Sprint 4.94: the result of one lifecycle teardown operation, indexed by the
+-- kind of answer the operation asks for.
+--
+-- 'TeardownNodeRefused' stays index-polymorphic, because every interpreter must
+-- be able to decline any operation and a refusal carries its own typed cause.
+-- Every other constructor is pinned, so an interpreter handed an operation can
+-- return only that operation's result. The twenty catch-all arms the executor
+-- used to carry — one per result constructor, all collapsing into
+-- /\"lifecycle interpreter returned the wrong result kind\"/ — guard states that
+-- are no longer representable, and are gone with the string.
+data TeardownNodeResult (surface :: CleanupSurface) (result :: TeardownResultKind) where
+  TeardownNodeRefused :: !Text -> TeardownNodeResult surface result
+  TeardownMutationAttempt
+    :: !TeardownMutationResult
+    -> TeardownNodeResult surface 'MutationAttemptResult
+  TeardownRegisteredTargetReconcile
+    :: !RegisteredTargetReconcileResult
+    -> TeardownNodeResult surface 'RegisteredTargetReconcileResult
+  TeardownExactResourceObservation
+    :: !ExactResourceObservation
+    -> TeardownNodeResult surface 'ExactResourceObservationResult
+  TeardownCheckpointPairObservation
+    :: !CheckpointPairObservation
+    -> TeardownNodeResult surface 'CheckpointPairObservationResult
+  TeardownCheckpointRestore
+    :: !CheckpointRestoreOutcome
+    -> TeardownNodeResult surface 'CheckpointRestoreResult
+  TeardownCheckpointRecoveryReadBack
+    :: !CheckpointRecoveryReadBackEvidence
+    -> TeardownNodeResult surface 'CheckpointRecoveryReadBackResult
+  TeardownAwsStackReaderCommit
+    :: !AwsStackReaderCommitOutcome
+    -> TeardownNodeResult surface 'AwsStackReaderCommitResult
+  TeardownAwsStackReaderReadBack
+    :: !AwsStackReaderReadBackEvidence
+    -> TeardownNodeResult surface 'AwsStackReaderReadBackResult
+  TeardownCheckpointRetirement
+    :: !CheckpointRetirementOutcome
+    -> TeardownNodeResult surface 'CheckpointRetirementResult
+  TeardownCheckpointRetirementReadBack
+    :: !CheckpointRetirementEvidence
+    -> TeardownNodeResult surface 'CheckpointRetirementReadBackResult
+  TeardownEksDrainIntentReadBack
+    :: !(Either EksDrainIntentError CommittedEksDrainIntent)
+    -> TeardownNodeResult surface 'EksDrainIntentReadBackResult
+  TeardownEksDrainAttempt
+    :: !(Either EksDrainIntentError EksDrainAttemptEvidence)
+    -> TeardownNodeResult surface 'EksDrainAttemptResult
+  TeardownEksDrainTargetReadBack
+    :: !(Either EksDrainIntentError EksDrainTargetsAbsentEvidence)
+    -> TeardownNodeResult surface 'EksDrainTargetReadBackResult
+  TeardownRecoveryPlaneInitialReadBack
+    :: !(RecoveryPlaneInitialReadBack surface)
+    -> TeardownNodeResult surface 'RecoveryPlaneInitialReadBackResult
+  TeardownRecoveryPlaneFinalEvidence
+    :: !(RecoveryPlaneFinalEvidence surface)
+    -> TeardownNodeResult surface 'RecoveryPlaneFinalEvidenceResult
+  TeardownTerminalAuditObservation
+    :: !(TerminalAuditObservation surface)
+    -> TeardownNodeResult surface 'TerminalAuditObservationResult
+  TeardownDurableReceiptObservation
+    :: !DurableReceiptObservation
+    -> TeardownNodeResult surface 'DurableReceiptObservationResult
+  TeardownLocalFoundationObservation
+    :: !LocalFoundationObservation
+    -> TeardownNodeResult surface 'LocalFoundationObservationResult
+  TeardownLocalDataDispositionObservation
+    :: !LocalDataDispositionObservation
+    -> TeardownNodeResult surface 'LocalDataDispositionObservationResult
+  TeardownOperationalCredentialRevocationObservation
+    :: !OperationalCredentialRevocationObservation
+    -> TeardownNodeResult surface 'OperationalCredentialRevocationObservationResult
 
 data TeardownSucceededPredecessor surface = TeardownSucceededPredecessor
   { teardownSucceededPredecessorOperationId :: !CleanupOperationId
   , teardownSucceededPredecessorAttemptId :: !CleanupAttemptId
-  , teardownSucceededPredecessorOperation :: !(TeardownOperation surface)
+  , teardownSucceededPredecessorOperation :: !(SomeTeardownOperation surface)
   }
   deriving (Eq, Show)
 
@@ -268,7 +320,7 @@ data TeardownAttemptedPredecessor surface = TeardownAttemptedPredecessor
   { teardownAttemptedPredecessorOperationId :: !CleanupOperationId
   , teardownAttemptedPredecessorAttemptId :: !CleanupAttemptId
   , teardownAttemptedPredecessorOutcome :: !CleanupNodeOutcome
-  , teardownAttemptedPredecessorOperation :: !(TeardownOperation surface)
+  , teardownAttemptedPredecessorOperation :: !(SomeTeardownOperation surface)
   }
   deriving (Eq, Show)
 
@@ -282,7 +334,7 @@ data TeardownTerminalPredecessorResult
 
 data TeardownTerminalPredecessor surface = TeardownTerminalPredecessor
   { teardownTerminalPredecessorOperationId :: !CleanupOperationId
-  , teardownTerminalPredecessorOperation :: !(TeardownOperation surface)
+  , teardownTerminalPredecessorOperation :: !(SomeTeardownOperation surface)
   , teardownTerminalPredecessorResult :: !TeardownTerminalPredecessorResult
   }
   deriving (Eq, Show)
@@ -297,7 +349,7 @@ data TeardownExecutionContext surface = TeardownExecutionContext
   , internalTeardownExecutionObservationScope :: !ObservationEvidenceScope
   , internalTeardownExecutionAttemptOperationIds :: ![CleanupOperationId]
   , internalTeardownExecutionOperationCatalog
-      :: ![(TeardownOperation surface, CleanupOperationId)]
+      :: ![(SomeTeardownOperation surface, CleanupOperationId)]
   , internalTeardownExecutionSuccessfulPredecessors
       :: ![TeardownSucceededPredecessor surface]
   , internalTeardownExecutionAttemptedPredecessors
@@ -360,10 +412,13 @@ teardownExecutionAttemptOperationIds =
 -- recover their stable binding after process loss without a side map.
 teardownExecutionOperationIdFor
   :: TeardownExecutionContext surface
-  -> TeardownOperation surface
+  -> TeardownOperation surface result
   -> Maybe CleanupOperationId
 teardownExecutionOperationIdFor context wanted =
-  snd <$> find ((== wanted) . fst) (internalTeardownExecutionOperationCatalog context)
+  snd
+    <$> find
+      ((== SomeTeardownOperation wanted) . fst)
+      (internalTeardownExecutionOperationCatalog context)
 
 -- | Direct 'RequiresSuccess' predecessors whose success outcome was read from
 -- the durable CleanupRun aggregate before this attempt was admitted.
@@ -388,8 +443,8 @@ teardownExecutionTerminalPredecessors =
 class (Monad m) => LifecycleTeardownEffects m where
   executeLifecycleTeardownOperation
     :: TeardownExecutionContext surface
-    -> TeardownOperation surface
-    -> m (TeardownNodeResult surface)
+    -> TeardownOperation surface result
+    -> m (TeardownNodeResult surface result)
 
 runCompiledTeardownNode
   :: (LifecycleTeardownEffects m)
@@ -662,7 +717,10 @@ runCompiledTeardownNodeWithPredecessors compiled descriptorDigest attempt succee
       | otherwise -> case compiledOperationForNode (cleanupNodeId suppliedPlan) compiled of
           Nothing ->
             pure (CleanupNodeFailed "cleanup node has no closed lifecycle operation")
-          Just operation -> do
+          -- Sprint 4.94: unpacking the existential here is what gives the
+          -- operation and its result one shared result index, so the executor
+          -- can no longer hand a checker the wrong kind of answer.
+          Just (SomeTeardownOperation operation) -> do
             result <- executeLifecycleTeardownOperation context operation
             pure
               ( validateNodeResult
@@ -712,71 +770,85 @@ runCompiledTeardownNodeWithPredecessors compiled descriptorDigest attempt succee
         ((== cleanupDependencyNode dependency) . cleanupNodeId)
         (cleanupGraphNodes graph)
 
+-- | Sprint 4.94: dispatch one operation's result to the check that operation
+-- asks for.
+--
+-- The dispatch is unchanged in shape and entirely changed in what it can be
+-- handed. Matching an operation now refines the result index, so each helper
+-- receives a result that can only be a refusal or that operation's own answer,
+-- and the twenty catch-all arms that used to collapse into
+-- /\"lifecycle interpreter returned the wrong result kind\"/ guard states the type
+-- no longer admits.
+--
+-- The refusal is handled by each helper rather than once here, and that is the
+-- point rather than duplication: with a single leading refusal arm the rest of
+-- the match would still be a catch-all over the result universe, which is the
+-- shape this sprint removes. Two exhaustive arms per helper is the exhaustive
+-- match [Pure FP Standards § 2.2](../../../documents/engineering/pure_fp_standards.md#22-pattern-match-exhaustively)
+-- asks for.
 validateNodeResult
-  :: forall surface
+  :: forall surface result
    . CompiledDesiredAbsenceProgram surface
   -> TeardownExecutionContext surface
-  -> TeardownOperation surface
-  -> TeardownNodeResult surface
+  -> TeardownOperation surface result
+  -> TeardownNodeResult surface result
   -> CleanupNodeOutcome
 validateNodeResult
   compiled
   context
   operation
-  nodeResult = case nodeResult of
-    TeardownNodeRefused detail -> CleanupNodeFailed detail
-    _ -> case operation of
-      EstablishRecoveryPlane _ -> expectRecoveryMutation nodeResult
-      ReadBackRecoveryPlane witness -> expectRecoveryInitial witness nodeResult
-      ObserveRecoveryPlaneDisposition witness ->
-        expectRecoveryFinal witness nodeResult
-      ObserveRegisteredTarget target -> expectExactObservation False target nodeResult
-      ObserveStackCheckpointPair target -> expectCheckpointPair target nodeResult
-      ReconcileStackCheckpointRestore target -> expectCheckpointRestore target nodeResult
-      ReadBackStackCheckpointRecovery target ->
-        expectCheckpointRecoveryReadBack target nodeResult
-      CommitAwsStackReaderBundle target ->
-        expectAwsStackReaderCommit target nodeResult
-      ReadBackAwsStackReaderBundle target ->
-        expectAwsStackReaderReadBack target nodeResult
-      CommitEksDrainIntent _ -> expectMutation nodeResult
-      ReadBackEksDrainIntent target -> expectEksDrainIntent target nodeResult
-      DrainEksKubernetesResources target -> expectEksDrainAttempt target nodeResult
-      ReadBackEksKubernetesDrain target -> expectEksDrainReadBack target nodeResult
-      ReconcileRegisteredTargetAbsent target ->
-        expectRegisteredTargetReconcile target nodeResult
-      ReadBackRegisteredTargetAbsent target -> expectExactObservation True target nodeResult
-      RetireStackCheckpointPair target -> expectCheckpointRetirement target nodeResult
-      ReadBackStackCheckpointRetirement target ->
-        expectCheckpointRetirementReadBack target nodeResult
-      AuditCascadeEscapes -> expectTerminalAudit nodeResult
-      CommitCascadePreUninstallReport -> expectMutation nodeResult
-      ReadBackCascadePreUninstallReport ->
-        expectReceipt CascadePreUninstallReportReceipt nodeResult
-      UninstallCascadeLocalFoundation -> expectMutation nodeResult
-      ReadBackCascadeLocalAbsence -> expectLocalAbsence nodeResult
-      CommitCascadeCompletion -> expectMutation nodeResult
-      ReadBackCascadeCompletion -> expectReceipt CascadeCompletionReceipt nodeResult
-      UninstallLocalOnlyFoundation -> expectMutation nodeResult
-      ReadBackLocalOnlyAbsence -> expectLocalAbsence nodeResult
-      CommitLocalOnlyCompletion -> expectMutation nodeResult
-      ReadBackLocalOnlyCompletion -> expectReceipt LocalOnlyCompletionReceipt nodeResult
-      RevokeOperationalCredential _ -> expectMutation nodeResult
-      ReadBackOperationalCredentialRevocation _ ->
-        expectOperationalCredentialRevocation nodeResult
-      CommitOrdinarySurfaceReport -> expectMutation nodeResult
-      ReadBackOrdinarySurfaceReport ->
-        expectReceipt OrdinarySurfaceReportReceipt nodeResult
-      AuditTotalDecommissionEscapes -> expectTerminalAudit nodeResult
-      ObserveExternalDecommissionReceipt ->
-        expectReceipt ExternalDecommissionReadyReceipt nodeResult
-      UninstallDecommissionLocalFoundation -> expectMutation nodeResult
-      ReadBackDecommissionLocalAbsence -> expectLocalAbsence nodeResult
-      ApplyDecommissionLocalDataDisposition -> expectMutation nodeResult
-      ReadBackDecommissionLocalDataDisposition -> expectLocalDataDisposition nodeResult
-      CommitDecommissionTerminalReceipt -> expectMutation nodeResult
-      ReadBackDecommissionTerminalReceipt ->
-        expectReceipt DecommissionTerminalReceipt nodeResult
+  nodeResult = case operation of
+    EstablishRecoveryPlane _ -> expectRecoveryMutation nodeResult
+    ReadBackRecoveryPlane witness -> expectRecoveryInitial witness nodeResult
+    ObserveRecoveryPlaneDisposition witness ->
+      expectRecoveryFinal witness nodeResult
+    ObserveRegisteredTarget target -> expectExactObservation False target nodeResult
+    ObserveStackCheckpointPair target -> expectCheckpointPair target nodeResult
+    ReconcileStackCheckpointRestore target -> expectCheckpointRestore target nodeResult
+    ReadBackStackCheckpointRecovery target ->
+      expectCheckpointRecoveryReadBack target nodeResult
+    CommitAwsStackReaderBundle target ->
+      expectAwsStackReaderCommit target nodeResult
+    ReadBackAwsStackReaderBundle target ->
+      expectAwsStackReaderReadBack target nodeResult
+    CommitEksDrainIntent _ -> expectMutation nodeResult
+    ReadBackEksDrainIntent target -> expectEksDrainIntent target nodeResult
+    DrainEksKubernetesResources target -> expectEksDrainAttempt target nodeResult
+    ReadBackEksKubernetesDrain target -> expectEksDrainReadBack target nodeResult
+    ReconcileRegisteredTargetAbsent target ->
+      expectRegisteredTargetReconcile target nodeResult
+    ReadBackRegisteredTargetAbsent target -> expectExactObservation True target nodeResult
+    RetireStackCheckpointPair target -> expectCheckpointRetirement target nodeResult
+    ReadBackStackCheckpointRetirement target ->
+      expectCheckpointRetirementReadBack target nodeResult
+    AuditCascadeEscapes -> expectTerminalAudit nodeResult
+    CommitCascadePreUninstallReport -> expectMutation nodeResult
+    ReadBackCascadePreUninstallReport ->
+      expectReceipt CascadePreUninstallReportReceipt nodeResult
+    UninstallCascadeLocalFoundation -> expectMutation nodeResult
+    ReadBackCascadeLocalAbsence -> expectLocalAbsence nodeResult
+    CommitCascadeCompletion -> expectMutation nodeResult
+    ReadBackCascadeCompletion -> expectReceipt CascadeCompletionReceipt nodeResult
+    UninstallLocalOnlyFoundation -> expectMutation nodeResult
+    ReadBackLocalOnlyAbsence -> expectLocalAbsence nodeResult
+    CommitLocalOnlyCompletion -> expectMutation nodeResult
+    ReadBackLocalOnlyCompletion -> expectReceipt LocalOnlyCompletionReceipt nodeResult
+    RevokeOperationalCredential _ -> expectMutation nodeResult
+    ReadBackOperationalCredentialRevocation _ ->
+      expectOperationalCredentialRevocation nodeResult
+    CommitOrdinarySurfaceReport -> expectMutation nodeResult
+    ReadBackOrdinarySurfaceReport ->
+      expectReceipt OrdinarySurfaceReportReceipt nodeResult
+    AuditTotalDecommissionEscapes -> expectTerminalAudit nodeResult
+    ObserveExternalDecommissionReceipt ->
+      expectReceipt ExternalDecommissionReadyReceipt nodeResult
+    UninstallDecommissionLocalFoundation -> expectMutation nodeResult
+    ReadBackDecommissionLocalAbsence -> expectLocalAbsence nodeResult
+    ApplyDecommissionLocalDataDisposition -> expectMutation nodeResult
+    ReadBackDecommissionLocalDataDisposition -> expectLocalDataDisposition nodeResult
+    CommitDecommissionTerminalReceipt -> expectMutation nodeResult
+    ReadBackDecommissionTerminalReceipt ->
+      expectReceipt DecommissionTerminalReceipt nodeResult
    where
     expectedOperationId = teardownExecutionOperationId context
     expectedAttemptId = teardownExecutionAttemptId context
@@ -789,7 +861,7 @@ validateNodeResult
 
     expectEksDrainIntent
       :: RegisteredTargetBinding
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'EksDrainIntentReadBackResult
       -> CleanupNodeOutcome
     expectEksDrainIntent target result = case result of
       TeardownEksDrainIntentReadBack (Left err) ->
@@ -799,11 +871,11 @@ validateNodeResult
             && attemptedOperationMatches (CommitEksDrainIntent target) ->
             CleanupNodeSucceeded
         | otherwise -> bindingMismatch
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     expectEksDrainAttempt
       :: RegisteredTargetBinding
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'EksDrainAttemptResult
       -> CleanupNodeOutcome
     expectEksDrainAttempt target result = case result of
       TeardownEksDrainAttempt (Left err) ->
@@ -826,11 +898,11 @@ validateNodeResult
               CleanupNodeFailed (observationFailureText failure)
             EksDrainMutationUnobservable failure ->
               CleanupNodeEffectUnconfirmed (observationFailureText failure)
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     expectEksDrainReadBack
       :: RegisteredTargetBinding
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'EksDrainTargetReadBackResult
       -> CleanupNodeOutcome
     expectEksDrainReadBack target result = case result of
       TeardownEksDrainTargetReadBack (Left err) ->
@@ -860,7 +932,7 @@ validateNodeResult
             bindingMismatch
         | not (attemptReceiptMatches target evidence) -> bindingMismatch
         | otherwise -> CleanupNodeSucceeded
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     validateEksIntentBinding
       :: RegisteredTargetBinding -> EksDrainIntent -> Bool
@@ -881,11 +953,12 @@ validateNodeResult
      where
       binding = eksDrainIntentBinding intent
 
-    expectedEksOperationId :: TeardownOperation surface -> Maybe CleanupOperationId
+    expectedEksOperationId
+      :: TeardownOperation surface wantedResult -> Maybe CleanupOperationId
     expectedEksOperationId wanted =
       case [ operationId
            | (nodeId, candidate) <- compiledDesiredAbsenceOperations compiled
-           , candidate == wanted
+           , candidate == SomeTeardownOperation wanted
            , node <- cleanupGraphNodes (compiledDesiredAbsenceGraph compiled)
            , cleanupNodeId node == nodeId
            , let operationId = cleanupNodeOperationId node
@@ -893,11 +966,12 @@ validateNodeResult
         [operationId] -> Just operationId
         _ -> Nothing
 
-    attemptedOperationMatches :: TeardownOperation surface -> Bool
+    attemptedOperationMatches :: TeardownOperation surface wantedResult -> Bool
     attemptedOperationMatches wanted =
       any
         ( \predecessor ->
-            teardownAttemptedPredecessorOperation predecessor == wanted
+            teardownAttemptedPredecessorOperation predecessor
+              == SomeTeardownOperation wanted
               && Just (teardownAttemptedPredecessorOperationId predecessor)
                 == expectedEksOperationId wanted
         )
@@ -907,7 +981,7 @@ validateNodeResult
       any
         ( \predecessor ->
             teardownAttemptedPredecessorOperation predecessor
-              == DrainEksKubernetesResources target
+              == SomeTeardownOperation (DrainEksKubernetesResources target)
               && teardownAttemptedPredecessorOperationId predecessor
                 == eksDrainTargetsAbsentEffectOperationId evidence
               && teardownAttemptedPredecessorAttemptId predecessor
@@ -918,22 +992,22 @@ validateNodeResult
     observationFailureText (ObservationFailure detail) = detail
     renderShow = Text.pack . show
 
-    expectMutation :: TeardownNodeResult surface -> CleanupNodeOutcome
+    expectMutation :: TeardownNodeResult surface 'MutationAttemptResult -> CleanupNodeOutcome
     expectMutation result = case result of
       TeardownMutationAttempt mutation -> case mutation of
         TeardownMutationApplied -> CleanupNodeSucceeded
         TeardownMutationResponseLost detail -> CleanupNodeEffectUnconfirmed detail
         TeardownMutationRefused detail -> CleanupNodeFailed detail
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
-    expectRecoveryMutation :: TeardownNodeResult surface -> CleanupNodeOutcome
+    expectRecoveryMutation :: TeardownNodeResult surface 'MutationAttemptResult -> CleanupNodeOutcome
     expectRecoveryMutation result = case teardownExecutionDescriptorDigest context of
       Nothing -> descriptorContextRequired
       Just _ -> expectMutation result
 
     expectRecoveryInitial
       :: RecoverySurfaceWitness surface
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'RecoveryPlaneInitialReadBackResult
       -> CleanupNodeOutcome
     expectRecoveryInitial witness result = case result of
       TeardownRecoveryPlaneInitialReadBack evidence
@@ -960,11 +1034,11 @@ validateNodeResult
                 )
        where
         identity = recoveryPlaneInitialIdentity evidence
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     expectRecoveryFinal
       :: RecoverySurfaceWitness surface
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'RecoveryPlaneFinalEvidenceResult
       -> CleanupNodeOutcome
     expectRecoveryFinal witness result = case result of
       TeardownRecoveryPlaneFinalEvidence evidence
@@ -997,7 +1071,7 @@ validateNodeResult
                 )
        where
         identity = recoveryPlaneFinalIdentity evidence
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     recoveryFailure prefix =
       maybe
@@ -1052,7 +1126,7 @@ validateNodeResult
               && teardownAttemptedPredecessorAttemptId predecessor
                 == recoveryPlaneInitialEstablishAttemptId evidence
               && teardownAttemptedPredecessorOperation predecessor
-                == EstablishRecoveryPlane witness
+                == SomeTeardownOperation (EstablishRecoveryPlane witness)
           _ -> False
      where
       expectedEstablishOperation =
@@ -1068,7 +1142,7 @@ validateNodeResult
         [predecessor] -> case teardownTerminalPredecessorResult predecessor of
           TeardownTerminalPredecessorCompleted attempt _ ->
             teardownTerminalPredecessorOperation predecessor
-              == ReadBackRecoveryPlane witness
+              == SomeTeardownOperation (ReadBackRecoveryPlane witness)
               && attempt == recoveryPlaneFinalInitialReadBackAttemptId evidence
           TeardownTerminalPredecessorBlocked _ -> False
         _ -> False
@@ -1104,7 +1178,7 @@ validateNodeResult
     expectExactObservation
       :: Bool
       -> RegisteredTargetBinding
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'ExactResourceObservationResult
       -> CleanupNodeOutcome
     expectExactObservation requireAbsent target result = case result of
       TeardownExactResourceObservation observation
@@ -1123,11 +1197,11 @@ validateNodeResult
               CleanupNodeFailed "registered resource observation is partial"
             ExactResourceUnobservable _ ->
               CleanupNodeFailed "registered resource is unobservable"
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     expectRegisteredTargetReconcile
       :: RegisteredTargetBinding
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'RegisteredTargetReconcileResult
       -> CleanupNodeOutcome
     expectRegisteredTargetReconcile target result = case result of
       TeardownRegisteredTargetReconcile reconciled
@@ -1143,11 +1217,11 @@ validateNodeResult
         | otherwise ->
             reconcileDispositionOutcome
               (registeredTargetReconcileDisposition reconciled)
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     expectCheckpointPair
       :: RegisteredTargetBinding
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'CheckpointPairObservationResult
       -> CleanupNodeOutcome
     expectCheckpointPair target result = case result of
       TeardownCheckpointPairObservation pair
@@ -1155,11 +1229,11 @@ validateNodeResult
         | otherwise -> case validateCheckpointPair target pair of
             Left _ -> bindingMismatch
             Right _ -> CleanupNodeSucceeded
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     expectCheckpointRestore
       :: RegisteredTargetBinding
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'CheckpointRestoreResult
       -> CleanupNodeOutcome
     expectCheckpointRestore target result = case result of
       TeardownCheckpointRestore outcome
@@ -1182,11 +1256,11 @@ validateNodeResult
                 CleanupNodeEffectUnconfirmed "checkpoint restore response lost"
               CheckpointRestoreRefused _ ->
                 CleanupNodeFailed "checkpoint restore was refused"
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     expectCheckpointRecoveryReadBack
       :: RegisteredTargetBinding
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'CheckpointRecoveryReadBackResult
       -> CleanupNodeOutcome
     expectCheckpointRecoveryReadBack target result = case result of
       TeardownCheckpointRecoveryReadBack evidence
@@ -1200,11 +1274,11 @@ validateNodeResult
         | not (matchesOnlyAttemptOperation (checkpointRecoveryOperationId evidence)) ->
             bindingMismatch
         | otherwise -> CleanupNodeSucceeded
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     expectAwsStackReaderCommit
       :: RegisteredTargetBinding
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'AwsStackReaderCommitResult
       -> CleanupNodeOutcome
     expectAwsStackReaderCommit target result = case result of
       TeardownAwsStackReaderCommit outcome
@@ -1237,11 +1311,11 @@ validateNodeResult
               CleanupNodeEffectUnconfirmed detail
             AwsStackReaderCommitUnavailable (ObservationFailure detail) ->
               CleanupNodeFailed detail
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     expectAwsStackReaderReadBack
       :: RegisteredTargetBinding
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'AwsStackReaderReadBackResult
       -> CleanupNodeOutcome
     expectAwsStackReaderReadBack target result = case result of
       TeardownAwsStackReaderReadBack evidence
@@ -1267,14 +1341,14 @@ validateNodeResult
         | not (stackReaderCommitAttemptMatches target evidence) ->
             bindingMismatch
         | otherwise -> CleanupNodeSucceeded
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     successfulCheckpointRecoveryMatches :: RegisteredTargetBinding -> Bool
     successfulCheckpointRecoveryMatches target =
       case succeededPredecessors of
         [predecessor] ->
           teardownSucceededPredecessorOperation predecessor
-            == ReadBackStackCheckpointRecovery target
+            == SomeTeardownOperation (ReadBackStackCheckpointRecovery target)
             && Just (teardownSucceededPredecessorOperationId predecessor)
               == expectedEksOperationId (ReadBackStackCheckpointRecovery target)
         _ -> False
@@ -1289,7 +1363,7 @@ validateNodeResult
         && case attemptedPredecessors of
           [predecessor] ->
             teardownAttemptedPredecessorOperation predecessor
-              == CommitAwsStackReaderBundle target
+              == SomeTeardownOperation (CommitAwsStackReaderBundle target)
               && teardownAttemptedPredecessorOperationId predecessor
                 == awsStackReaderReadBackCommitOperationId evidence
               && teardownAttemptedPredecessorAttemptId predecessor
@@ -1298,7 +1372,7 @@ validateNodeResult
 
     expectCheckpointRetirement
       :: RegisteredTargetBinding
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'CheckpointRetirementResult
       -> CleanupNodeOutcome
     expectCheckpointRetirement target result = case result of
       TeardownCheckpointRetirement outcome
@@ -1317,11 +1391,11 @@ validateNodeResult
               CleanupNodeEffectUnconfirmed "checkpoint retirement response lost"
             CheckpointRetirementRefused _ ->
               CleanupNodeFailed "checkpoint retirement was refused"
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     expectCheckpointRetirementReadBack
       :: RegisteredTargetBinding
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'CheckpointRetirementReadBackResult
       -> CleanupNodeOutcome
     expectCheckpointRetirementReadBack target result = case result of
       TeardownCheckpointRetirementReadBack evidence
@@ -1339,7 +1413,7 @@ validateNodeResult
             ) ->
             bindingMismatch
         | otherwise -> CleanupNodeSucceeded
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     registeredStackBindingMatches :: RegisteredTargetBinding -> Bool
     registeredStackBindingMatches target =
@@ -1393,7 +1467,8 @@ validateNodeResult
         CleanupNodeEffectUnconfirmed detail
       RegisteredTargetMutationRefused detail -> CleanupNodeFailed detail
 
-    expectTerminalAudit :: TeardownNodeResult surface -> CleanupNodeOutcome
+    expectTerminalAudit
+      :: TeardownNodeResult surface 'TerminalAuditObservationResult -> CleanupNodeOutcome
     expectTerminalAudit result = case result of
       TeardownTerminalAuditObservation observation
         | terminalAuditEvidenceScope (terminalAuditScope observation)
@@ -1405,11 +1480,11 @@ validateNodeResult
               CleanupNodeFailed "terminal lifecycle audit found unexpected resources"
             TerminalAuditUnobservable _ _ ->
               CleanupNodeFailed "terminal lifecycle audit is unobservable"
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     expectReceipt
       :: DurableReceiptKind
-      -> TeardownNodeResult surface
+      -> TeardownNodeResult surface 'DurableReceiptObservationResult
       -> CleanupNodeOutcome
     expectReceipt expectedKind result = case result of
       TeardownDurableReceiptObservation observation
@@ -1421,9 +1496,10 @@ validateNodeResult
             DurableReceiptMissing -> CleanupNodeFailed "durable cleanup receipt is missing"
             DurableReceiptUnobservable _ ->
               CleanupNodeFailed "durable cleanup receipt is unobservable"
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
-    expectLocalAbsence :: TeardownNodeResult surface -> CleanupNodeOutcome
+    expectLocalAbsence
+      :: TeardownNodeResult surface 'LocalFoundationObservationResult -> CleanupNodeOutcome
     expectLocalAbsence result = case result of
       TeardownLocalFoundationObservation observation
         | localFoundationObservationScope observation /= expectedScope -> bindingMismatch
@@ -1432,14 +1508,15 @@ validateNodeResult
             LocalFoundationPresent -> CleanupNodeFailed "local RKE2 foundation is still present"
             LocalFoundationUnobservable _ ->
               CleanupNodeFailed "local RKE2 foundation is unobservable"
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     -- Sprint 4.85: the revocation read-back succeeds only on the canonical
     -- confirmed decision. A refusal is a failure rather than an unobservable
     -- result -- the boundary answered, and the answer was that the credential
     -- is not gone -- and an unobservable read-back stays distinct from both.
     expectOperationalCredentialRevocation
-      :: TeardownNodeResult surface -> CleanupNodeOutcome
+      :: TeardownNodeResult surface 'OperationalCredentialRevocationObservationResult
+      -> CleanupNodeOutcome
     expectOperationalCredentialRevocation result = case result of
       TeardownOperationalCredentialRevocationObservation observation
         | operationalCredentialRevocationObservationScope observation
@@ -1459,10 +1536,11 @@ validateNodeResult
               OperationalCredentialRevocationUnobservable _ ->
                 CleanupNodeFailed
                   "operational credential revocation is unobservable"
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     expectLocalDataDisposition
-      :: TeardownNodeResult surface -> CleanupNodeOutcome
+      :: TeardownNodeResult surface 'LocalDataDispositionObservationResult
+      -> CleanupNodeOutcome
     expectLocalDataDisposition result = case result of
       TeardownLocalDataDispositionObservation observation
         | localDataDispositionObservationScope observation /= expectedScope -> bindingMismatch
@@ -1472,11 +1550,9 @@ validateNodeResult
               CleanupNodeFailed "local data disposition was not applied"
             LocalDataDispositionUnobservable _ ->
               CleanupNodeFailed "local data disposition is unobservable"
-      _ -> resultKindMismatch
+      TeardownNodeRefused detail -> CleanupNodeFailed detail
 
     bindingMismatch = CleanupNodeFailed "lifecycle observation binding mismatch"
-    resultKindMismatch =
-      CleanupNodeFailed "lifecycle interpreter returned the wrong result kind"
 
 expectedObservationAuthority :: RegisteredTargetBinding -> ObservationAuthority
 expectedObservationAuthority target =
@@ -1484,12 +1560,17 @@ expectedObservationAuthority target =
     Just identity -> registeredIdentityObservationAuthority identity
     Nothing -> AwsResourceApiAuthority
 
+-- | The scope a run's terminal escape audit is taken in.
+--
+-- Sprint 4.92: this was a field-by-field re-mint through
+-- 'mkObservationEvidenceScope', which copied six of the scope's seven fields
+-- and dropped the seventh, because that constructor's documented contract
+-- hardcodes the run's retained DNS hosted zone to absent.  The audit therefore
+-- ran under a scope that was not the run's, and @expectTerminalAudit@ above
+-- compares the receipt's scope against this value with derived 'Eq': a zoned
+-- run's audit receipt could only ever be read as a binding mismatch, and the
+-- audit that did run swept for DNS01 challenge records without the zone they
+-- live in.  The canonical re-scoper is a record update, so a field added to the
+-- scope later cannot be dropped here again.
 auditEvidenceScope :: ObservationEvidenceScope -> ObservationEvidenceScope
-auditEvidenceScope scope =
-  mkObservationEvidenceScope
-    (evidenceCleanupSurface scope)
-    (evidenceRegistryRevision scope)
-    (evidenceDurableRunScope scope)
-    (evidenceLinuxRke2Foundation scope)
-    (evidenceAwsScope scope)
-    RunTerminalEscapeAudit
+auditEvidenceScope = scopeForTerminalAudit

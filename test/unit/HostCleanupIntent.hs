@@ -114,7 +114,7 @@ hostCleanupIntentSuite =
 
     it "round-trips one bounded canonical versioned envelope with its full CleanupRun" $ do
       let encoded = expectRight (encodeHostCleanupIntent fixtureIntent)
-      hostCleanupIntentFormatVersion `shouldBe` 2
+      hostCleanupIntentFormatVersion `shouldBe` 3
       ByteString.length encoded `shouldSatisfy` (<= maximumHostCleanupIntentBytes)
       decodeHostCleanupIntent encoded `shouldBe` Right fixtureIntent
       decodeHostCleanupIntent (ByteString.snoc encoded 0)

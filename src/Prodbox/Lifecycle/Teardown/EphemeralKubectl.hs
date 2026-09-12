@@ -9,27 +9,54 @@
 -- family is the second: its record is removed by deleting the cert-manager
 -- object that owns it, because a provider delete would race the solver into
 -- rewriting the record.  Two statements of this machinery would be two
--- statements of a __security__ property — the private kubeconfig, the bearer
--- token that never lands on disk, and the ambient-credential scrub — so the
--- second caller gets the first one's implementation rather than a copy.
+-- statements of a __security__ property — the private kubeconfig, the private
+-- credential beside it, and the ambient-credential scrub — so the second caller
+-- gets the first one's implementation rather than a copy.
 --
 -- What it guarantees, and why each part is here rather than at a call site:
 --
---   * The kubeconfig is written into a private temporary directory with
---     @O_EXCL@, @O_NOFOLLOW@, and owner-only mode, so a pre-placed path cannot
---     capture it.
---   * The bearer token is served through a FIFO rather than written to a file,
---     so the credential has no on-disk representation for its lifetime.
+--   * The kubeconfig and the bearer credential are both written into a private
+--     temporary directory with @O_EXCL@, @O_NOFOLLOW@, @CLOEXEC@ and owner-only
+--     mode, so a pre-placed path cannot capture either.
+--   * The credential is read back and compared before the client value exists,
+--     so \"client alive, credential unreadable\" is not a reachable state.
 --   * The subprocess environment is scrubbed of @KUBECONFIG@ and every ambient
 --     AWS credential variable, so the only reachable identity is the projection
 --     this client was built from.
 --   * The client is universally quantified by the continuation it is handed to,
---     so it cannot outlive the temporary directory that backs it.
+--     so it cannot outlive the temporary directory that backs it, and the
+--     credential dies with that directory.
+--
+-- __Sprint 7.39: why the credential is a file, measured rather than assumed.__
+-- It was a FIFO, on the argument that a credential should have no on-disk
+-- representation for its lifetime. That argument cost a total outage: GHC opens
+-- files non-blocking, so the writer's first write-open of a readerless FIFO
+-- failed with @ENXIO@ before @kubectl@ started, and every invocation then
+-- blocked in @open@ until its wall clock killed it. The client had never
+-- authenticated on any live run.
+--
+-- The replacement rests on a measurement the design question could not be
+-- decided without. Under @strace@, @kubectl@ v1.35.8 opens @users[0].user.tokenFile@
+-- __exactly twice per invocation and independently of how many API requests it
+-- makes__: twice for @version@, which makes none; twice for a @--raw@ read,
+-- which makes one; twice for a discovery-bearing @get@ against an unreachable
+-- endpoint, which makes six. A rendezvous therefore has to serve the credential
+-- at least twice per invocation, to a reader whose arrival it cannot observe and
+-- whose count it cannot know — and a FIFO served once was measured blocking on
+-- the second open until the outer bound expired.
+--
+-- Against a same-uid attacker the marginal exposure of the token beside the
+-- kubeconfig is small: the cluster CA and endpoint are already there, the
+-- directory is owner-only, the file is owner-only and @O_NOFOLLOW@, and both die
+-- with the continuation. That is the trade this sprint took, and it is a trade
+-- rather than a free win — what it buys is an EKS teardown path that
+-- authenticates at all.
 module Prodbox.Lifecycle.Teardown.EphemeralKubectl
   ( EphemeralKubectl
   , runEphemeralKubectl
   , EphemeralKubectlUnavailable (..)
   , withEphemeralKubectlForProjection
+  , withEphemeralKubeconfigPath
   , ephemeralKubectlLimits
   , ephemeralKubectlRequestTimeoutSeconds
   , ephemeralKubectlDiscoveryAttempts
@@ -41,9 +68,7 @@ module Prodbox.Lifecycle.Teardown.EphemeralKubectl
   )
 where
 
-import Control.Concurrent.Async (withAsync)
 import Control.Exception (IOException, try)
-import Control.Monad (forever)
 import Data.Aeson (Value, encode, object, (.=))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
@@ -69,8 +94,7 @@ import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Posix.Files
-  ( createNamedPipe
-  , ownerReadMode
+  ( ownerReadMode
   , ownerWriteMode
   , unionFileModes
   )
@@ -115,18 +139,60 @@ withEphemeralKubectlForProjection
   -> (Either EphemeralKubectlUnavailable EphemeralKubectl -> IO result)
   -> IO result
 withEphemeralKubectlForProjection kubectl environment workingDirectory projection consume =
+  withEphemeralKubeconfigPath
+    projection
+    ( consume
+        . fmap
+          ( \kubeconfigPath ->
+              EphemeralKubectl
+                (runBoundedKubectl kubectl safeEnvironment workingDirectory kubeconfigPath)
+          )
+    )
+ where
+  safeEnvironment = filter (not . forbiddenKubectlEnvironmentKey . fst) environment
+
+-- | Sprint 7.40: the same preparation, for a caller that needs the kubeconfig
+-- __path__ rather than a bounded runner.
+--
+-- `src/Prodbox/Infra/AwsEksTestStack.hs` carried a third statement of this
+-- machinery — its own named pipe, its own unsupervised writer, and a kubeconfig
+-- written with none of the protections this module exists to guarantee. It
+-- existed because its callers export @KUBECONFIG@ into an ambient environment
+-- and therefore need a path, which the 'EphemeralKubectl' record deliberately
+-- hides. Giving the owning module that entry point is what makes one statement
+-- serve both shapes; the alternative was a fourth.
+--
+-- The path's lifetime is the continuation's, exactly as the client's is, and the
+-- credential beside it dies with the same directory. A caller that exports it
+-- into a child's environment therefore exports a path that stops existing when
+-- this call returns, which is the property the ambient-@KUBECONFIG@ shape needs
+-- and cannot give itself.
+withEphemeralKubeconfigPath
+  :: EksClientAuthProjection
+  -> (Either EphemeralKubectlUnavailable FilePath -> IO result)
+  -> IO result
+withEphemeralKubeconfigPath projection consume =
   withSystemTempDirectory "prodbox-ephemeral-kubectl-" $ \directory -> do
     let kubeconfigPath = directory </> "kubeconfig.json"
-        tokenFifoPath = directory </> "bearer-token"
+        tokenPath = directory </> "bearer-token"
+        tokenBytes = TextEncoding.encodeUtf8 (eksClientAuthBearerToken projection)
     prepared <-
       try
         ( do
-            createNamedPipe tokenFifoPath privateMode
+            writePrivateFile tokenPath tokenBytes
             writePrivateFile
               kubeconfigPath
               ( LazyByteString.toStrict
-                  (encode (ephemeralKubeconfig projection tokenFifoPath))
+                  (encode (ephemeralKubeconfig projection tokenPath))
               )
+            -- The credential is read back before the caller receives anything,
+            -- so "kubeconfig handed out, credential unreadable" is not a state a
+            -- caller can reach. The FIFO this replaces had exactly that state
+            -- and nothing could observe it.
+            readBack <- ByteString.readFile tokenPath
+            if readBack == tokenBytes
+              then pure ()
+              else ioError (userError "ephemeral bearer credential did not read back")
         )
         :: IO (Either IOException ())
     case prepared of
@@ -141,49 +207,7 @@ withEphemeralKubectlForProjection kubectl environment workingDirectory projectio
                   )
               )
           )
-      Right () ->
-        -- Sprint 6.5, PROVEN DEFECT, replacement not yet found. GHC opens a FIFO
-        -- with @O_NONBLOCK@, and a non-blocking write-open of a FIFO with no
-        -- reader fails with @ENXIO@ rather than waiting. This 'ByteString.writeFile'
-        -- therefore throws on its very first attempt, before @kubectl@ has
-        -- started; 'forever' propagates, the thread dies, and nothing waits on
-        -- it, so the death is silent. Every @kubectl@ invocation then blocks in
-        -- @open@ on a FIFO that will never have a writer until the bounded
-        -- subprocess wall clock kills it. Measured: the identical call with a
-        -- plain token file completes in 54 ms; through this FIFO it consumes the
-        -- entire bound, 40.00 s of a 40-second budget, on both a threaded and a
-        -- non-threaded runtime, with kernel task state showing @kubectl@ parked
-        -- in @wait_for_partner@ and the FIFO absent from its descriptor table.
-        --
-        -- Two replacements were measured and both refused: retrying the
-        -- non-blocking open still lost the race about half the time even
-        -- threaded, and a blocking 'openFd' write-open hung indefinitely. The
-        -- token must not be written to a regular file, so neither dead end is a
-        -- licence to drop the FIFO. Left exactly as it was rather than landing
-        -- an unproven replacement for a proven defect.
-        withAsync
-          ( forever
-              ( ByteString.writeFile
-                  tokenFifoPath
-                  (TextEncoding.encodeUtf8 (eksClientAuthBearerToken projection))
-              )
-          )
-          ( \_ ->
-              consume
-                ( Right
-                    ( EphemeralKubectl
-                        ( runBoundedKubectl
-                            kubectl
-                            safeEnvironment
-                            workingDirectory
-                            kubeconfigPath
-                        )
-                    )
-                )
-          )
- where
-  privateMode = ownerReadMode `unionFileModes` ownerWriteMode
-  safeEnvironment = filter (not . forbiddenKubectlEnvironmentKey . fst) environment
+      Right () -> consume (Right kubeconfigPath)
 
 runBoundedKubectl
   :: FilePath
@@ -251,8 +275,16 @@ ephemeralKubectlDiscoveryAttempts = 5
 -- "bounded subprocess exceeded its wall-clock timeout". A live EKS drain
 -- selection did exactly that on 2026-09-11 under a flat 30-second bound, which
 -- is precisely the six-request worst case and therefore guaranteed to race it.
--- The margin covers process spawn, the FIFO token rendezvous, and TLS, measured
--- together at 65 ms against a healthy API server.
+--
+-- __Margin re-derived on the shipped mechanism (Sprint 7.39, 2026-09-11).__ It
+-- was justified by a measurement that included \"the FIFO token rendezvous\" —
+-- a rendezvous that never occurred, because the writer died before any reader
+-- arrived. What the margin actually has to cover is process spawn, two token-file
+-- opens, and TLS. Spawn plus both credential reads, measured over five runs with
+-- no API call at all, is 32-45 ms; the same client against an unreachable
+-- endpoint returns in 39 ms. Ten seconds is two orders of magnitude above that
+-- and is kept deliberately generous, because the margin exists to stop the outer
+-- bound racing @kubectl@'s own error rather than to be tight.
 ephemeralKubectlWallClockMarginSeconds :: Int
 ephemeralKubectlWallClockMarginSeconds = 10
 
@@ -290,10 +322,11 @@ forbiddenKubectlEnvironmentKey key =
     || key == "AWS_SHARED_CREDENTIALS_FILE"
     || key == "AWS_CONFIG_FILE"
 
--- | The kubeconfig document.  The bearer token is referenced as a @tokenFile@
--- pointing at a FIFO, so the credential is never written to a regular file.
+-- | The kubeconfig document.  The bearer token is referenced by path through
+-- @tokenFile@ and never appears in this document, so the rendered kubeconfig
+-- carries no credential even though it names where one lives.
 ephemeralKubeconfig :: EksClientAuthProjection -> FilePath -> Value
-ephemeralKubeconfig projection tokenFifoPath =
+ephemeralKubeconfig projection tokenPath =
   object
     [ "apiVersion" .= ("v1" :: String)
     , "kind" .= ("Config" :: String)
@@ -312,7 +345,7 @@ ephemeralKubeconfig projection tokenFifoPath =
     , "users"
         .= [ object
                [ "name" .= ("prodbox-provider" :: String)
-               , "user" .= object ["tokenFile" .= tokenFifoPath]
+               , "user" .= object ["tokenFile" .= tokenPath]
                ]
            ]
     , "contexts"
@@ -351,5 +384,5 @@ writeAll fd remaining
   | otherwise = do
       written <- PosixByteString.fdWrite fd remaining
       if written <= 0
-        then ioError (userError "short write while creating ephemeral EKS kubeconfig")
+        then ioError (userError "short write while creating an ephemeral EKS private file")
         else writeAll fd (ByteString.drop (fromIntegral written) remaining)

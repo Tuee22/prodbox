@@ -101,7 +101,7 @@ lifecycleTeardownProgramSuite = do
                   `shouldBe` cleanupSurfaceFromWitness surface
                 let nodes = desiredAbsenceProgramNodes program
                     operations = map programNodeOperation nodes
-                    operationTags = map teardownOperationTag operations
+                    operationTags = map someTeardownOperationTag operations
                 length nodes `shouldBe` expectedCount
                 operationTags `shouldBe` expectedOperationTags surface expectedTargets
                 assertTopologicallyOrdered nodes
@@ -165,7 +165,7 @@ lifecycleTeardownProgramSuite = do
                       ]
                     readBackTags =
                       sort
-                        [ teardownOperationTag operation
+                        [ someTeardownOperationTag operation
                         | node <- nodes
                         , let operation = programNodeOperation node
                         , isMandatoryReadBack operation
@@ -746,7 +746,7 @@ instance LifecycleTeardownEffects CaptureEffects where
       )
 
 eksTargetForOperation
-  :: TeardownOperation surface -> Maybe RegisteredTargetBinding
+  :: TeardownOperation surface result -> Maybe RegisteredTargetBinding
 eksTargetForOperation operation = case operation of
   CommitEksDrainIntent target -> Just target
   ReadBackEksDrainIntent target -> Just target
@@ -939,90 +939,90 @@ expectedEffectCount surface targetKeys = surfaceEffectCount + length targetKeys 
       TotalDecommissionSurface -> 4
 
 registeredObservationKey
-  :: TeardownOperation surface -> Maybe RegisteredResourceKey
-registeredObservationKey operation = case operation of
+  :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+registeredObservationKey (SomeTeardownOperation operation) = case operation of
   ObserveRegisteredTarget target -> Just (registeredTargetKey target)
   _ -> Nothing
 
 registeredReconcileKey
-  :: TeardownOperation surface -> Maybe RegisteredResourceKey
-registeredReconcileKey operation = case operation of
+  :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+registeredReconcileKey (SomeTeardownOperation operation) = case operation of
   ReconcileRegisteredTargetAbsent target -> Just (registeredTargetKey target)
   _ -> Nothing
 
 registeredReadBackKey
-  :: TeardownOperation surface -> Maybe RegisteredResourceKey
-registeredReadBackKey operation = case operation of
+  :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+registeredReadBackKey (SomeTeardownOperation operation) = case operation of
   ReadBackRegisteredTargetAbsent target -> Just (registeredTargetKey target)
   _ -> Nothing
 
 checkpointObservationKey
-  :: TeardownOperation surface -> Maybe RegisteredResourceKey
-checkpointObservationKey operation = case operation of
+  :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+checkpointObservationKey (SomeTeardownOperation operation) = case operation of
   ObserveStackCheckpointPair target -> Just (registeredTargetKey target)
   _ -> Nothing
 
 checkpointRestoreKey
-  :: TeardownOperation surface -> Maybe RegisteredResourceKey
-checkpointRestoreKey operation = case operation of
+  :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+checkpointRestoreKey (SomeTeardownOperation operation) = case operation of
   ReconcileStackCheckpointRestore target -> Just (registeredTargetKey target)
   _ -> Nothing
 
 checkpointRecoveryReadBackKey
-  :: TeardownOperation surface -> Maybe RegisteredResourceKey
-checkpointRecoveryReadBackKey operation = case operation of
+  :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+checkpointRecoveryReadBackKey (SomeTeardownOperation operation) = case operation of
   ReadBackStackCheckpointRecovery target -> Just (registeredTargetKey target)
   _ -> Nothing
 
 awsStackReaderCommitKey
-  :: TeardownOperation surface -> Maybe RegisteredResourceKey
-awsStackReaderCommitKey operation = case operation of
+  :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+awsStackReaderCommitKey (SomeTeardownOperation operation) = case operation of
   CommitAwsStackReaderBundle target -> Just (registeredTargetKey target)
   _ -> Nothing
 
 awsStackReaderReadBackKey
-  :: TeardownOperation surface -> Maybe RegisteredResourceKey
-awsStackReaderReadBackKey operation = case operation of
+  :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+awsStackReaderReadBackKey (SomeTeardownOperation operation) = case operation of
   ReadBackAwsStackReaderBundle target -> Just (registeredTargetKey target)
   _ -> Nothing
 
 eksDrainIntentCommitKey
-  :: TeardownOperation surface -> Maybe RegisteredResourceKey
-eksDrainIntentCommitKey operation = case operation of
+  :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+eksDrainIntentCommitKey (SomeTeardownOperation operation) = case operation of
   CommitEksDrainIntent target -> Just (registeredTargetKey target)
   _ -> Nothing
 
 eksDrainIntentReadBackKey
-  :: TeardownOperation surface -> Maybe RegisteredResourceKey
-eksDrainIntentReadBackKey operation = case operation of
+  :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+eksDrainIntentReadBackKey (SomeTeardownOperation operation) = case operation of
   ReadBackEksDrainIntent target -> Just (registeredTargetKey target)
   _ -> Nothing
 
-eksDrainKey :: TeardownOperation surface -> Maybe RegisteredResourceKey
-eksDrainKey operation = case operation of
+eksDrainKey :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+eksDrainKey (SomeTeardownOperation operation) = case operation of
   DrainEksKubernetesResources target -> Just (registeredTargetKey target)
   _ -> Nothing
 
 eksDrainReadBackKey
-  :: TeardownOperation surface -> Maybe RegisteredResourceKey
-eksDrainReadBackKey operation = case operation of
+  :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+eksDrainReadBackKey (SomeTeardownOperation operation) = case operation of
   ReadBackEksKubernetesDrain target -> Just (registeredTargetKey target)
   _ -> Nothing
 
 checkpointRetirementKey
-  :: TeardownOperation surface -> Maybe RegisteredResourceKey
-checkpointRetirementKey operation = case operation of
+  :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+checkpointRetirementKey (SomeTeardownOperation operation) = case operation of
   RetireStackCheckpointPair target -> Just (registeredTargetKey target)
   _ -> Nothing
 
 checkpointRetirementReadBackKey
-  :: TeardownOperation surface -> Maybe RegisteredResourceKey
-checkpointRetirementReadBackKey operation = case operation of
+  :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+checkpointRetirementReadBackKey (SomeTeardownOperation operation) = case operation of
   ReadBackStackCheckpointRetirement target -> Just (registeredTargetKey target)
   _ -> Nothing
 
-registeredBindingKind :: TeardownOperation surface -> Maybe ResourceKind
-registeredBindingKind operation = case operation of
+registeredBindingKind :: SomeTeardownOperation surface -> Maybe ResourceKind
+registeredBindingKind (SomeTeardownOperation operation) = case operation of
   ObserveRegisteredTarget target -> Just (registeredTargetKind target)
   ObserveStackCheckpointPair target -> Just (registeredTargetKind target)
   ReconcileStackCheckpointRestore target -> Just (registeredTargetKind target)
@@ -1039,8 +1039,8 @@ registeredBindingKind operation = case operation of
   ReadBackStackCheckpointRetirement target -> Just (registeredTargetKind target)
   _ -> Nothing
 
-confirmationTag :: TeardownOperation surface -> Maybe Text
-confirmationTag operation = case operation of
+confirmationTag :: SomeTeardownOperation surface -> Maybe Text
+confirmationTag (SomeTeardownOperation operation) = case operation of
   EstablishRecoveryPlane _ -> Just "read-back-recovery-plane"
   ReconcileRegisteredTargetAbsent target ->
     Just ("read-back-absent/" <> registeredResourceKeyText (registeredTargetKey target))
@@ -1083,8 +1083,8 @@ confirmationTag operation = case operation of
   CommitDecommissionTerminalReceipt -> Just "read-back-decommission-terminal-receipt"
   _ -> Nothing
 
-isMandatoryReadBack :: TeardownOperation surface -> Bool
-isMandatoryReadBack operation = case operation of
+isMandatoryReadBack :: SomeTeardownOperation surface -> Bool
+isMandatoryReadBack (SomeTeardownOperation operation) = case operation of
   ReadBackRecoveryPlane _ -> True
   ReadBackRegisteredTargetAbsent _ -> True
   ReadBackStackCheckpointRecovery _ -> True
@@ -1115,7 +1115,7 @@ eksTargetKeysFor = filter (== AwsEksKey)
 
 nodesWithTag :: Text -> [ProgramNode surface] -> [ProgramNode surface]
 nodesWithTag tag =
-  filter ((== tag) . teardownOperationTag . programNodeOperation)
+  filter ((== tag) . someTeardownOperationTag . programNodeOperation)
 
 assertProgramDependencies
   :: DesiredAbsenceProgram surface
@@ -1267,7 +1267,7 @@ expectPlanWithTag compiled tag =
   case [ plan
        | plan <- cleanupGraphNodes (compiledDesiredAbsenceGraph compiled)
        , Just operation <- [compiledOperationForNode (cleanupNodeId plan) compiled]
-       , teardownOperationTag operation == tag
+       , someTeardownOperationTag operation == tag
        ] of
     [plan] -> pure plan
     matches -> do
@@ -1362,7 +1362,8 @@ retirementNodesOf
 retirementNodesOf program =
   [ (target, node)
   | node <- desiredAbsenceProgramNodes program
-  , RetireStackCheckpointPair target <- [programNodeOperation node]
+  , SomeTeardownOperation (RetireStackCheckpointPair target) <-
+      [programNodeOperation node]
   ]
 
 requiredSuccessesOf :: ProgramNode surface -> [Text]

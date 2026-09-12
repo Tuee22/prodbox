@@ -67,6 +67,7 @@ import Prodbox.Lifecycle.Teardown.AwsEksAdapter
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.Registry
+import Prodbox.Lifecycle.Teardown.ScopeCodec (scopeIdentityFields)
 
 newtype EksClusterArn = EksClusterArn Text
   deriving (Eq, Ord, Show)
@@ -263,7 +264,7 @@ mkEksDrainSession now deadline operationId expectedScope verified kubernetes pro
       sessionId =
         EksDrainSessionId
           ( sha256Fields
-              [ "eks-drain-session/v2"
+              [ "eks-drain-session/v3"
               , cleanupOperationIdText operationId
               , renderEvidenceScope expectedScope
               , renderObservationRevision (exactObservationRevision observation)
@@ -517,22 +518,26 @@ canonicalFields = Text.concat . map frame
  where
   frame field = Text.pack (show (Text.length field)) <> ":" <> field
 
+-- | The scope a drain session is bound to, rendered into the session identity.
+--
+-- Sprint 4.92: this used to enumerate the scope's fields here, and it omitted
+-- the run's retained DNS hosted zone entirely while collapsing a present AWS
+-- scope into a single @account\/region@ field.  Two runs against the same
+-- account and region that differed only in the zone they were compiled against
+-- therefore minted the same 'EksDrainSessionId': the identifier that names a
+-- short-lived drain authorization did not depend on the whole scope that
+-- authorized it, and a collapsed @account\/region@ field cannot distinguish
+-- where the boundary between the two parts falls.  The canonical projection
+-- emits every field with a present\/absent discriminator beside each optional
+-- one; this module keeps its own @canonicalFields@ framing around it, because
+-- the framing belongs to the session identity rather than to the scope.
+--
+-- The session identity tag above moves to @v3@ because the rendered field list
+-- changed.  A session is recomputed from its inputs on every use and expires
+-- within 'maximumEksDrainLifetimeSeconds', so no stored identifier survives the
+-- change.
 renderEvidenceScope :: ObservationEvidenceScope -> Text
-renderEvidenceScope scope =
-  canonicalFields
-    [ Text.pack (show (evidenceCleanupSurface scope))
-    , revisionText (evidenceRegistryRevision scope)
-    , runScopeText (evidenceDurableRunScope scope)
-    , foundationText (evidenceLinuxRke2Foundation scope)
-    , maybe "no-aws" renderAwsScope (evidenceAwsScope scope)
-    , Text.pack (show (evidenceLifecycleOperation scope))
-    ]
- where
-  revisionText (RegistryRevision value) = value
-  runScopeText (DurableObservationRunScope value) = value
-  foundationText (LinuxRke2FoundationId value) = value
-  renderAwsScope (AwsScope (AwsAccountId account) (AwsRegion region)) =
-    account <> "/" <> region
+renderEvidenceScope = canonicalFields . scopeIdentityFields
 
 renderObservationRevision :: ObservationRevision -> Text
 renderObservationRevision (ObservationRevision revision) = Text.pack (show revision)

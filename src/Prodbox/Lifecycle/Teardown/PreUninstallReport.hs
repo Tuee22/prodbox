@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Sprint 4.86: the pre-uninstall cleanup report's bytes.
@@ -122,7 +123,8 @@ import Prodbox.Lifecycle.Teardown.Model
   , registeredResourceKeyText
   )
 import Prodbox.Lifecycle.Teardown.Program
-  ( TeardownOperation (ReadBackRegisteredTargetAbsent)
+  ( SomeTeardownOperation (SomeTeardownOperation)
+  , TeardownOperation (ReadBackRegisteredTargetAbsent)
   , desiredAbsenceProgramNodes
   , programNodeOperation
   , registeredTargetKey
@@ -257,7 +259,8 @@ compiledAbsentResourceKeys compiled =
     ( sort
         [ registeredResourceKeyText (registeredTargetKey target)
         | node <- desiredAbsenceProgramNodes (compiledDesiredAbsenceProgram compiled)
-        , ReadBackRegisteredTargetAbsent target <- [programNodeOperation node]
+        , SomeTeardownOperation (ReadBackRegisteredTargetAbsent target) <-
+            [programNodeOperation node]
         ]
     )
 

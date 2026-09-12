@@ -57,9 +57,13 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Lifecycle.AwsInventory (AwsInventory, AwsResource)
-import Prodbox.Lifecycle.DnsRecord (hostedZoneIdText)
+import Prodbox.Lifecycle.DnsRecord (HostedZoneId, hostedZoneIdText)
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Registry
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ObservationEvidenceScopeFields (..)
+  , observationEvidenceScopeFields
+  )
 
 newtype ObservedResourceIdentity = ObservedResourceIdentity Text
   deriving (Eq, Ord, Show)
@@ -171,6 +175,14 @@ data CompleteObservationSetError
       !RegisteredResourceKey
       !(Maybe AwsScope)
       !(Maybe AwsScope)
+  | -- | Sprint 4.92: the run's retained DNS hosted zone disagreed.  There was
+    -- no such refusal until the binding check below started comparing the
+    -- field, so an observation taken in a zone-less scope bound cleanly to a
+    -- zoned run.
+    ObservationAwsDnsZoneMismatch
+      !RegisteredResourceKey
+      !(Maybe HostedZoneId)
+      !(Maybe HostedZoneId)
   | ObservationOperationMismatch
       !RegisteredResourceKey
       !LifecycleOperation
@@ -593,55 +605,86 @@ validateObservationBinding expectedScope observations identity =
   expectedCoordinate = registeredIdentityCoordinateDigest identity
   expectedAuthority = registeredIdentityObservationAuthority identity
 
+-- | Bind one observation's evidence scope to the run's, field by field.
+--
+-- The comparison is field by field rather than a single @==@ because a refusal
+-- has to name which part of the binding disagreed; a caller that learns only
+-- that two scopes differ cannot tell a wrong-run observation from a
+-- wrong-account one.
+--
+-- Sprint 4.92: the chain was written against the scope's accessors and had six
+-- clauses for a seven-field scope -- it never compared the run's retained DNS
+-- hosted zone.  That made this validator and derived 'Eq' on the same two
+-- values disagree: an observation taken in a zone-less scope bound cleanly here
+-- while every caller that compares whole scopes with @==@ rejected it, so which
+-- answer a run got depended on which of the two checks it happened to reach.
+-- Both scopes are now destructured from 'observationEvidenceScopeFields'
+-- __positionally__, so a field added to the scope later is a constructor-arity
+-- error here rather than a comparison silently left out again.
 validateScopeBinding
   :: RegisteredResourceKey
   -> ObservationEvidenceScope
   -> ObservationEvidenceScope
   -> Either CompleteObservationSetError ()
-validateScopeBinding key expected actual
-  | evidenceCleanupSurface actual /= evidenceCleanupSurface expected =
-      Left
-        ( ObservationSurfaceMismatch
-            key
-            (evidenceCleanupSurface expected)
-            (evidenceCleanupSurface actual)
-        )
-  | evidenceRegistryRevision actual /= evidenceRegistryRevision expected =
-      Left
-        ( ObservationRegistryRevisionMismatch
-            key
-            (evidenceRegistryRevision expected)
-            (evidenceRegistryRevision actual)
-        )
-  | evidenceDurableRunScope actual /= evidenceDurableRunScope expected =
-      Left
-        ( ObservationDurableRunScopeMismatch
-            key
-            (evidenceDurableRunScope expected)
-            (evidenceDurableRunScope actual)
-        )
-  | evidenceLinuxRke2Foundation actual /= evidenceLinuxRke2Foundation expected =
-      Left
-        ( ObservationFoundationMismatch
-            key
-            (evidenceLinuxRke2Foundation expected)
-            (evidenceLinuxRke2Foundation actual)
-        )
-  | evidenceAwsScope actual /= evidenceAwsScope expected =
-      Left
-        ( ObservationAwsScopeMismatch
-            key
-            (evidenceAwsScope expected)
-            (evidenceAwsScope actual)
-        )
-  | evidenceLifecycleOperation actual /= evidenceLifecycleOperation expected =
-      Left
-        ( ObservationOperationMismatch
-            key
-            (evidenceLifecycleOperation expected)
-            (evidenceLifecycleOperation actual)
-        )
-  | otherwise = Right ()
+validateScopeBinding key expected actual =
+  compareScopeFields
+    (observationEvidenceScopeFields expected)
+    (observationEvidenceScopeFields actual)
+ where
+  compareScopeFields
+    ( ObservationEvidenceScopeFields
+        expectedSurface
+        expectedRevision
+        expectedRunScope
+        expectedFoundation
+        expectedAwsScope
+        expectedDnsZone
+        expectedOperation
+      )
+    ( ObservationEvidenceScopeFields
+        actualSurface
+        actualRevision
+        actualRunScope
+        actualFoundation
+        actualAwsScope
+        actualDnsZone
+        actualOperation
+      )
+      | actualSurface /= expectedSurface =
+          Left (ObservationSurfaceMismatch key expectedSurface actualSurface)
+      | actualRevision /= expectedRevision =
+          Left
+            ( ObservationRegistryRevisionMismatch
+                key
+                expectedRevision
+                actualRevision
+            )
+      | actualRunScope /= expectedRunScope =
+          Left
+            ( ObservationDurableRunScopeMismatch
+                key
+                expectedRunScope
+                actualRunScope
+            )
+      | actualFoundation /= expectedFoundation =
+          Left
+            ( ObservationFoundationMismatch
+                key
+                expectedFoundation
+                actualFoundation
+            )
+      | actualAwsScope /= expectedAwsScope =
+          Left (ObservationAwsScopeMismatch key expectedAwsScope actualAwsScope)
+      | actualDnsZone /= expectedDnsZone =
+          Left (ObservationAwsDnsZoneMismatch key expectedDnsZone actualDnsZone)
+      | actualOperation /= expectedOperation =
+          Left
+            ( ObservationOperationMismatch
+                key
+                expectedOperation
+                actualOperation
+            )
+      | otherwise = Right ()
 
 duplicateValues :: (Ord value) => [value] -> [value]
 duplicateValues values =

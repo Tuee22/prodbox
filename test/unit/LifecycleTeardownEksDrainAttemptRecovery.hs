@@ -172,14 +172,12 @@ instance LifecycleTeardownEffects RecoveryEffects where
               (recoveryCommittedIntent fixture)
       writeIORef (recoveryCaptured environment) (Just recovered)
       pure
-        ( TeardownMutationAttempt
-            (TeardownMutationRefused "recovery result captured")
-        )
+        (TeardownNodeRefused "recovery result captured")
 
 runRecoveryCase
   :: RecoveryFixture
   -> CleanupNodeOutcome
-  -> (TeardownOperation 'Cascade -> Bool)
+  -> (SomeTeardownOperation 'Cascade -> Bool)
   -> IO
        ( Either
            EksDrainAttemptRecoveryError
@@ -193,7 +191,7 @@ runRecoveryCase fixture predecessorOutcome selectPending = do
 runRecoveryCaseWithRun
   :: RecoveryFixture
   -> CleanupNodeOutcome
-  -> (TeardownOperation 'Cascade -> Bool)
+  -> (SomeTeardownOperation 'Cascade -> Bool)
   -> IO
        ( Either
            EksDrainAttemptRecoveryError
@@ -308,7 +306,7 @@ clientFailure :: Text -> CleanupRunClientError
 clientFailure = CleanupRunClientHttpStatus 500
 
 uniquePlan
-  :: (TeardownOperation 'Cascade -> Bool)
+  :: (SomeTeardownOperation 'Cascade -> Bool)
   -> CleanupNodePlan
 uniquePlan predicate =
   case [ plan
@@ -319,23 +317,23 @@ uniquePlan predicate =
     [plan] -> plan
     plans -> error ("expected one fixture plan, observed " <> show (length plans))
 
-eksDrainReadBackPlan :: TeardownOperation 'Cascade -> Bool
-eksDrainReadBackPlan operation = case operation of
+eksDrainReadBackPlan :: SomeTeardownOperation 'Cascade -> Bool
+eksDrainReadBackPlan (SomeTeardownOperation operation) = case operation of
   ReadBackEksKubernetesDrain target -> target == fixtureAwsEksTarget
   _ -> False
 
-eksDrainEffectPlan :: TeardownOperation 'Cascade -> Bool
-eksDrainEffectPlan operation = case operation of
+eksDrainEffectPlan :: SomeTeardownOperation 'Cascade -> Bool
+eksDrainEffectPlan (SomeTeardownOperation operation) = case operation of
   DrainEksKubernetesResources target -> target == fixtureAwsEksTarget
   _ -> False
 
-targetObservePlan :: TeardownOperation 'Cascade -> Bool
-targetObservePlan operation = case operation of
+targetObservePlan :: SomeTeardownOperation 'Cascade -> Bool
+targetObservePlan (SomeTeardownOperation operation) = case operation of
   ObserveRegisteredTarget target -> target == fixtureAwsEksTarget
   _ -> False
 
-recoveryDispositionPlan :: TeardownOperation 'Cascade -> Bool
-recoveryDispositionPlan operation = case operation of
+recoveryDispositionPlan :: SomeTeardownOperation 'Cascade -> Bool
+recoveryDispositionPlan (SomeTeardownOperation operation) = case operation of
   ObserveRecoveryPlaneDisposition CascadeRecoverySurface -> True
   _ -> False
 
@@ -536,7 +534,7 @@ targetForKey :: RegisteredResourceKey -> RegisteredTargetBinding
 targetForKey key =
   case [ target
        | (_, operation) <- compiledDesiredAbsenceOperations fixtureCompiled
-       , ObserveRegisteredTarget target <- [operation]
+       , SomeTeardownOperation (ObserveRegisteredTarget target) <- [operation]
        , registeredTargetKey target == key
        ] of
     [target] -> target
@@ -554,20 +552,20 @@ fixtureIntentReadBackOperation =
 fixtureEffectOperation = operationIdFor eksDrainEffectPlan
 fixtureReadBackOperation = operationIdFor eksDrainReadBackPlan
 
-isFixtureEksDrainIntentCommit :: TeardownOperation 'Cascade -> Bool
-isFixtureEksDrainIntentCommit operation = case operation of
+isFixtureEksDrainIntentCommit :: SomeTeardownOperation 'Cascade -> Bool
+isFixtureEksDrainIntentCommit (SomeTeardownOperation operation) = case operation of
   CommitEksDrainIntent target -> target == fixtureAwsEksTarget
   _ -> False
 
-isFixtureEksDrainIntentReadBack :: TeardownOperation 'Cascade -> Bool
-isFixtureEksDrainIntentReadBack operation = case operation of
+isFixtureEksDrainIntentReadBack :: SomeTeardownOperation 'Cascade -> Bool
+isFixtureEksDrainIntentReadBack (SomeTeardownOperation operation) = case operation of
   ReadBackEksDrainIntent target -> target == fixtureAwsEksTarget
   _ -> False
 
 fixtureEffectNodeId :: CleanupNodeId
 fixtureEffectNodeId = cleanupNodeId (uniquePlan eksDrainEffectPlan)
 
-operationIdFor :: (TeardownOperation 'Cascade -> Bool) -> CleanupOperationId
+operationIdFor :: (SomeTeardownOperation 'Cascade -> Bool) -> CleanupOperationId
 operationIdFor predicate = cleanupNodeOperationId (uniquePlan predicate)
 
 fixtureRunId, fixtureOtherRunId :: CleanupRunId

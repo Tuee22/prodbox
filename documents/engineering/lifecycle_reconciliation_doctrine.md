@@ -1110,18 +1110,23 @@ exact observer must return the same indexed scope it received. Checkpoint-pair a
 manifest wrappers retain that value rather than relying on an ambient caller or a later string
 comparison.
 
-> **Target, not current revision (recorded 2026-09-11, Sprint `0.33`).** The opacity claim and the
-> zone-sealing paragraph below describe the intended end state. In the current revision the scope
-> has roughly eighteen independently authored byte-level codecs, and **fifteen of them mint it
-> through the zone-less minter**, so a scope that carried a hosted zone decodes without one. Five of
-> eight digest and equality projections drop it as well, including `auditEvidenceScope` and
-> `cascadeAuditScope`, which means the cascade's terminal escape audit runs under a zoneless scope
-> while this document describes it as scoped to the run. The consequences are real and observed: an
-> exact-identity read-back refused a bundle its own run had just committed, and a zoned cascade
-> cannot match its own ready-to-uninstall binding. Sprint `4.92` derives one canonical encoder per
-> [pure_fp_standards.md § 2.3a](./pure_fp_standards.md#23a-encode-at-exactly-one-boundary); Sprint
-> `5.46` adds the round-trip properties that make a forgotten field fail. Implementation status
-> lives in [DEVELOPMENT_PLAN/README.md → Resume Here](../../DEVELOPMENT_PLAN/README.md#resume-here).
+> **Closed by Sprint `4.92` (2026-09-11).** The opacity claim and the zone-sealing paragraph below
+> were an intended end state rather than the revision. The scope had roughly eighteen independently
+> authored byte-level codecs, **fifteen of which minted it through the zone-less minter**, so a
+> scope that carried a hosted zone decoded without one; five of eight digest and equality
+> projections dropped it as well, including `auditEvidenceScope` and `cascadeAuditScope`, so the
+> cascade's terminal escape audit ran under a zoneless scope while this document described it as
+> scoped to the run. The consequences were observed rather than predicted: an exact-identity
+> read-back refused a bundle its own run had just committed.
+>
+> `Prodbox.Lifecycle.Teardown.ScopeCodec` is now the one encoder
+> [pure_fp_standards.md § 2.3a](./pure_fp_standards.md#23a-encode-at-exactly-one-boundary)
+> requires. Every durable envelope nests it as one value and bumps its own format version, refusing
+> older bytes rather than upgrading them: a pre-zone envelope has no zone to recover, so upgrading
+> one could only re-assert the absent zone that was the defect. Both audit re-scopers are record
+> updates over the complete field set, and the terminal audit deliberately **keeps** the run's zone,
+> because the DNS01 challenge records it looks for live in exactly the zone the run was compiled
+> against. Sprint `5.46` adds the round-trip properties over that codec.
 
 The optional DNS hosted zone is a durable coordinate, not observer input. Graph compilation takes
 it beside the AWS account/region scope and, when present, seals it into every operation identity,
@@ -2323,10 +2328,16 @@ The nodes have these contracts:
    **Target, not current revision (recorded 2026-09-11, Sprint `0.33`):** the legacy public cascade
    does not use this path. `prodbox cluster delete --cascade` on the AWS substrate materializes a
    kubeconfig through `withEksKubeconfig` and drains through `src/Prodbox/Lifecycle/K8sDrain.hs`,
-   which has no session and no absolute deadline — its `kubectl` calls run through the unbounded
-   capture, and the five-minute drain timeout bounds only the completion poll, so a blocked call
-   hangs past it rather than refusing. Sprint `4.93` bounds those subprocesses; Sprint `6.5` owns
-   the cutover that makes this paragraph describe the public path.
+   which has no session. **Sprint `4.93` closed the deadline half of that gap (2026-09-11):** every
+   drain `kubectl` now runs through the bounded runner under a wall clock derived from the
+   per-request bound it carries — five discovery retries plus the resource request plus a spawn and
+   TLS margin, forty seconds — and the per-request bound is appended at the runner so no call can
+   omit it. The five-minute drain timeout bounds the completion poll and says so; it is now an
+   absolute deadline read from a monotonic clock rather than a counter decremented by the sleep
+   interval, so time an iteration spends in its calls is charged against it. A bounded refusal is
+   reported as **unobservable** rather than as a drain failure, because a call that did not complete
+   is not the API server answering. Sprint `6.5` still owns the cutover that makes the rest of this
+   paragraph describe the public path.
 4. **Run every eligible desired-absence program.** Drain failure or unavailability remains a typed
    failure but opens `RequiresAttempt` edges to exact controller-family backstops and provider
    destroys. Each stack uses the §3.2 decision: verified primary, restored backup, complete

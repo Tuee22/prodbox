@@ -9,6 +9,10 @@ module Prodbox.TestPlan
   , validationDeferredPrerequisites
   , derivedManagedAwsHarnessPolicyTier
   , testExecutionPlan
+  , unitScopeHaskellSuites
+  , aggregateScopeHaskellSuites
+  , integrationScopeHaskellSuites
+  , routedHaskellSuites
   )
 where
 
@@ -91,6 +95,53 @@ retainedSesRequirementForValidations validations
   | ValidationKeycloakInvite `elem` validations = SesRequired
   | otherwise = SesNotRequired
 
+-- | Sprint 5.45: the Cabal suites @prodbox test unit@ runs.
+--
+-- A table rather than an inline list at the arm, because the gate in
+-- "Prodbox.CheckCode" compares it against the stanzas @prodbox.cabal@ declares,
+-- and a list buried inside a @case@ arm is unreachable as data. The package
+-- declared eight suites and these arms named five; three were compiled by the
+-- canonical gate and executed by no scope, including the one that starts a real
+-- daemon process, while governed documents attributed guarantees to all three.
+--
+-- @prodbox-haskell-style@ and @prodbox-pulumi@ are here rather than in the
+-- aggregate scope because neither needs a cluster: one inspects the repository
+-- and one exercises the retained Pulumi program ownership locally.
+unitScopeHaskellSuites :: [String]
+unitScopeHaskellSuites =
+  [ "test:prodbox-unit"
+  , "test:prodbox-authority-admission-unit"
+  , "test:prodbox-control-plane-authentication-unit"
+  , "test:prodbox-control-plane-authenticated-transport-unit"
+  , "test:prodbox-haskell-style"
+  , "test:prodbox-pulumi"
+  ]
+
+-- | The Cabal suites @prodbox test all@ runs.
+--
+-- @prodbox-daemon-lifecycle@ is here and not in the unit scope because it
+-- spawns the built operator binary as a real daemon and drives its health,
+-- drain and restart contract over real sockets. That is the aggregate scope's
+-- shape, not the unit scope's, and the contract governed documents credit to
+-- that suite is unproven until something runs it.
+aggregateScopeHaskellSuites :: [String]
+aggregateScopeHaskellSuites =
+  unitScopeHaskellSuites
+    ++ [ "test:prodbox-daemon-lifecycle"
+       , "test:prodbox-integration"
+       ]
+
+-- | The Cabal suite every @prodbox test integration ...@ scope runs.
+integrationScopeHaskellSuites :: [String]
+integrationScopeHaskellSuites = ["test:prodbox-integration"]
+
+-- | Every Cabal suite some @prodbox test@ scope runs.
+--
+-- This is the set the canonical gate holds against the package's declared
+-- stanzas, so a ninth suite cannot be added without a runner.
+routedHaskellSuites :: [String]
+routedHaskellSuites = nub (aggregateScopeHaskellSuites ++ integrationScopeHaskellSuites)
+
 testExecutionPlan :: Substrate -> TestScope -> TestExecutionPlan
 testExecutionPlan substrate scope =
   case scope of
@@ -127,12 +178,7 @@ testExecutionPlan substrate scope =
     TestAll ->
       nativeExecutionPlan
         "all"
-        [ "test:prodbox-unit"
-        , "test:prodbox-authority-admission-unit"
-        , "test:prodbox-control-plane-authentication-unit"
-        , "test:prodbox-control-plane-authenticated-transport-unit"
-        , "test:prodbox-integration"
-        ]
+        aggregateScopeHaskellSuites
         ( canonicalSuitePlan
             "all"
             canonicalNativeValidations
@@ -158,11 +204,7 @@ testExecutionPlan substrate scope =
     TestUnit ->
       nativeExecutionPlan
         "unit"
-        [ "test:prodbox-unit"
-        , "test:prodbox-authority-admission-unit"
-        , "test:prodbox-control-plane-authentication-unit"
-        , "test:prodbox-control-plane-authenticated-transport-unit"
-        ]
+        unitScopeHaskellSuites
         NativeSuitePlan
           { nativeSuiteId = "unit"
           , nativeValidations = []
@@ -179,7 +221,7 @@ testExecutionPlan substrate scope =
         IntegrationAll ->
           nativeExecutionPlan
             "integration all"
-            ["test:prodbox-integration"]
+            integrationScopeHaskellSuites
             ( canonicalSuitePlan
                 "integration-all"
                 canonicalNativeValidations
@@ -190,7 +232,7 @@ testExecutionPlan substrate scope =
         IntegrationCli ->
           nativeIntegrationPlan
             "integration cli"
-            ["test:prodbox-integration"]
+            integrationScopeHaskellSuites
             "integration-cli"
             []
             False
@@ -215,7 +257,7 @@ testExecutionPlan substrate scope =
         IntegrationEnv ->
           nativeIntegrationPlan
             "integration env"
-            ["test:prodbox-integration"]
+            integrationScopeHaskellSuites
             "integration-env"
             []
             False

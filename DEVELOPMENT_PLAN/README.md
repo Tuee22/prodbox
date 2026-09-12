@@ -25,36 +25,209 @@ dependency licenses the deviation ([Standard N.2](development_plan_standards.md#
 
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
-| 1 | `2.134` | 2 | Next | — |
-| 2 | `4.92` | 4 | Parked | — |
-| 3 | `4.93` | 4 | Parked | — |
-| 4 | `4.94` | 4 | Parked | — |
-| 5 | `5.44` | 5 | Parked | — |
-| 6 | `5.45` | 5 | Parked | — |
-| 7 | `5.46` | 5 | Blocked | `4.92` |
-| 8 | `7.39` | 7 | Blocked | `5.44` |
-| 9 | `7.40` | 7 | Blocked | `7.39` |
-| 10 | `6.5` | 6 | Parked | `7.40` |
+| 1 | `6.5` | 6 | Next | — |
 
-**Resume at Sprint `2.134`: repair the five discarded spawn handles, then gate the rule repo-wide.**
-Sprint `0.33` (2026-09-11) scheduled the remediation the ephemeral-Kubernetes-client investigation
-opened and corrected the governed record. The queue now leads with supervision rather than with the
-token defect, and that is deliberate as well as derived: the writer that has never served a
-credential is the sixth member of a class of long-lived threads whose handles are discarded, so
-linking them converts a silent forty-second wedge into a loud refusal at first execution — and
-repairs five other sites, including the sole refresher of the cache `/readyz` serves.
+**Resume at Sprint `6.5`: the last open row, and the only one left in the plan suite.** Its backward
+dependency on Sprint `7.40` is discharged, so nothing holds it but its own work: activate the typed
+teardown replacement as sole public writer, delete the legacy route, and qualify the result under
+Standard P with two consecutive destructive home cycles.
 
-The chain behind it is `4.92`–`4.94` (one canonical observation-scope codec, a bounded drain, and a
-result-indexed teardown operation), `5.44`–`5.46` (a real-child process-boundary harness and
-elapsed-time vocabulary, the three unrouted suites, and the codec round-trip properties § 3.2
-already mandates), then `7.39` and `7.40` (the credential mechanism, and the third statement of the
-machinery that Sprint `7.36` recorded as consolidated). Sprint `6.5` is last, held there by the plan
-suite's only currently live declared backward dependency: activating the replacement as sole public
-writer while its AWS drain cannot authenticate would strand every EKS teardown path behind a writer
-with no rollback.
+**The ephemeral Kubernetes client authenticated to an EKS API server for the first time
+(2026-09-12).** Live cascade-qualification cycle `recovery-ephemeral-credential-file` reached and
+passed the drain commit's Kubernetes UID observation. The proof is structural rather than
+inferred: the refusal it now stops at is reachable only from the present-UID arm of
+`acquireVerifiedEksDrainSelection`, and the refusal every prior cycle produced,
+`EksDrainCommitSelectionKubernetesUidUnobservable`, appears zero times in the transcript. That is
+the live half of Sprints `7.39` and `7.40`.
 
-**No further live cascade-qualification cycle should be run until Sprint `7.39` lands.** Every cycle
-reproduces the same wedge, at roughly an hour each.
+The cycle still exits 1, on a defect that only became reachable because they landed. The drain
+commit asks for a lease of exactly `maximumEksDrainLifetimeSeconds`, 900 seconds, while
+`mkEksDrainSession` also requires the deadline not to outlive the Provider-issued bearer that backs
+it — and that bearer is signed before the deadline is computed, so a lease equal to the ceiling can
+never satisfy both. The arithmetic makes it unsatisfiable rather than unlucky. Stable counterexample
+`CASCADE-QUALIFICATION-EKS-DRAIN-LEASE-EXCEEDS-BEARER-EXPIRY-2026-09-12` owns it, **no repair is
+landed**, and the reason is the same one the campaign has applied throughout: how long a live EKS
+drain is authorized for is a Standard-P surface, and the repair needs a measurement this run did not
+capture. The refusal carries `now` and `deadline` but not the bearer's expiry. Widening it to carry
+that expiry is the cheapest next step. Sprint `6.5` owns the counterexample and the evidence.
+
+**Sprint `7.40` is Done and Phase 7 recloses (2026-09-11).** The ephemeral Kubernetes client's
+machinery has one statement, held there by a gate rather than by a sentence.
+`withEksKubeconfig` is routed onto the owning module and keeps its four callers; its duplicate
+kubeconfig renderer, its named pipe, its unsupervised writer and five orphaned imports are gone. The
+copies had drifted exactly as the argument predicted — one created its pipe owner-read-write and the
+other owner-all, and only one wrote its kubeconfig with `O_EXCL`, `O_NOFOLLOW`, `CLOEXEC`, an
+explicit mode and an fsync — so a pre-placed path could capture one and not the other.
+
+Two things about that sprint are worth carrying forward. The rule reads its two markers in different
+places, and the first draft was wrong about it: read as a bare token, `tokenFile` fired on an
+ordinary binder for a projected service-account JWT path, which is refusing a word rather than a
+second statement of a security property. The writer is a Haskell name and is read with string
+literals stripped; the rendered key is read only inside literals, which is the only place a second
+statement could put it. And the false positive was invisible to `prodbox dev check`, which exited 0
+on a stale `./.build/prodbox` — the gate runs in-process, so a check binary that predates the gate
+validates nothing. Gate cases **5/5**, exercised against the real tree as well as synthetically,
+primary unit **4,966/4,966**, canonical `prodbox dev check` exits 0.
+
+**Sprint `7.39` is Done (2026-09-11).** The ephemeral Kubernetes client has a credential mechanism
+that works, and the measurement is what chose it. The design question the sprint opened with was
+whether a FIFO earns its complexity; the deciding question turned out to be how many times the
+reader reads, which no reasoning about the kubeconfig contract would have answered. Under `strace`,
+`kubectl` v1.35.8 opens its token file **exactly twice per invocation and independently of request
+count** — twice for `version`, which makes none, twice for `--raw`, which makes one, twice for a
+discovery-bearing `get`, which makes six. A rendezvous must therefore serve the credential at least
+twice, to a reader whose arrival it cannot observe, which retires the rendezvous as a class rather
+than one broken implementation of it.
+
+The credential is now a file written with `O_EXCL`, `O_NOFOLLOW`, `CLOEXEC` and mode `0600` beside
+the kubeconfig, read back and compared before the client value exists, and dying with the
+continuation's directory. The trade is stated rather than hidden: against a same-uid attacker the
+marginal exposure is small, because the cluster CA and endpoint are already there under the same
+mode, and what it buys is an EKS teardown path that authenticates at all. The wall clock's margin is
+re-derived on the shipped mechanism — measured spawn plus two token reads — instead of on a
+rendezvous that never occurred. One supervised child stopped existing rather than being supervised.
+Focused **5/5**, primary unit **4,966/4,966**, canonical `prodbox dev check` exits 0.
+
+**Sprint `5.46` is Done and Phase 5 recloses (2026-09-11).** Seven properties at a hundred cases
+each now cover the observation-evidence scope's round trip and identity projection, in
+`prodbox-unit` — the suite the policy's own tier table names, and not where the tree's only two
+genuine wire round trips previously lived. The generators are the part that matters: zoned and
+zoneless in roughly equal measure, same-typed fields discriminated so a swap fails rather than
+passes, and no value a decoder's own default could have produced.
+
+The mutation claim was tested rather than asserted. Dropping the zone from the wire encoder does not
+compile — the field set is destructured positionally, so the abandoned binding is an unused-match
+error under `-Werror`, which is Sprint `4.92`'s mechanism doing its work. Dropping the zone's value
+from the identity projection while keeping its discriminator does compile, and fails the
+every-field-reaches-the-projection property. Both mutations were reverted and the tree re-verified
+before closing. § 3.2's own list is now honest about which of its bullets hold and which remain
+table-covered. Focused **7/7**, primary unit **4,955/4,955**, canonical `prodbox dev check` exits 0.
+
+**Sprint `5.45` is Done (2026-09-11).** All eight declared suites now have a runner.
+`prodbox-haskell-style` and `prodbox-pulumi` are named by `prodbox test unit`;
+`prodbox-daemon-lifecycle` by `prodbox test all`, because it spawns the built binary as a real
+daemon over real sockets. The routing is exported tables rather than lists inside `case` arms, and
+`testSuiteStanzaViolations` holds the declared stanzas and the routed names in bijection in both
+directions, so a ninth suite cannot be added without a runner and a routed name cannot point at a
+stanza nobody wrote.
+
+Running them is what showed why it mattered, and none of it was a regression the sprint introduced.
+`prodbox-haskell-style` failed on an assertion that was false about the architecture it claimed to
+protect: it required the library to declare no `process` dependency, while `System.Process` supplies
+the `delegate_ctlc` the streaming runner needs. `prodbox-daemon-lifecycle` failed **23 of 27** cases,
+because a later sprint made the gateway daemon refuse to start without a Tier-0 deployment context
+and this fixture never learned to supply one — its whole behavioural contract had been unproven
+rather than merely unexercised. Both are fixed, a stale `/metrics` golden with them, and every
+guarantee a governed document credited to an unrun suite is reattributed. Daemon lifecycle
+**27/27**, style **17/17**, Pulumi **4/4**, primary unit **4,948/4,948**, canonical
+`prodbox dev check` exits 0.
+
+**Sprint `5.44` is Done (2026-09-11).** The canonical suite can now assert that a credential
+arrived. `test/unit/CredentialDeliveryHarness.hs` re-execs the test binary as the child, reads the
+credential through the kubeconfig's own `tokenFile` entry exactly as `kubectl` would, and echoes it,
+so no amount of absence assertion can satisfy the case. It proves it can disagree with its subject:
+against a writerless FIFO the credential does not arrive and the case fails. The elapsed-time
+vocabulary is in `TestSupport` on `GHC.Clock`, which is the binding constraint — that module
+compiles into five suites and two of them depend on neither `time` nor `process`, which is also why
+the harness itself lives in its own module.
+
+One thing the sprint record did not anticipate is now doctrine. A Haskell child cannot reproduce
+`kubectl`'s wedge by default: GHC opens non-blocking and gets an immediate empty read, while an
+ordinary C program opens blocking and waits for a writer that never comes. Both are real failures
+and they are different failures, so the harness models the read mode explicitly and produces either
+on demand. The negative control pins the wedge signature at **1.00 s** of a one-second bound with
+the exact wall-clock refusal. Focused **5/5**, primary unit **4,943/4,943**, auxiliaries
+**27/27**, **35/35**, **39/39**, canonical `prodbox dev check` exits 0.
+
+Sprint `7.39` was no longer `Blocked` at that point: the real-child harness and the elapsed-time
+assertion its counterexample is written in now existed. It landed on 2026-09-11.
+
+**Sprint `4.94` is Done and Phase 4 recloses (2026-09-11).** `TeardownOperation` is indexed by
+result as well as by cleanup surface, so an operation and its answer are tied together by
+construction. The twenty catch-all arms that existed only because the type permitted an operation to
+return another operation's result are deleted, and with them the one string they all collapsed into
+— which is what used to discard a checkpoint interpreter's exact typed error and hand an operator a
+sentence about kinds.
+
+Three things about that sprint are worth carrying forward. The index is deliberately many-to-one,
+twenty result kinds to forty operations, because a one-to-one index would have restated the
+operation type rather than constraining it. Heterogeneous node lists moved to an existential whose
+unpack point is exactly where the executor also holds the result, which is the whole mechanism.
+And forgetting the index costs no discrimination: equality on the existential compares the operation
+tag and its registered target, and that is a complete key because every surface witness has exactly
+one inhabitant per surface. The binding-mismatch refusal survives unchanged, because a result index
+proves the answer is the right kind and never that it belongs to this attempt.
+
+**Sprint `4.93` is Done (2026-09-11).** Every `kubectl` in the legacy cascade's drain now runs
+through the bounded runner, under a wall clock derived from the per-request bound rather than
+chosen: five measured API-group discovery retries plus the resource request, plus a spawn-and-TLS
+margin, forty seconds. The per-request bound is appended at one chokepoint, so no call can omit it —
+seven of the nine used to. A bounded refusal is now `DrainUnobservable` rather than `DrainFailed`,
+which is a real distinction: a call that did not complete is not the API server answering and
+refusing. And the completion poll's five minutes is an absolute deadline read from a monotonic clock
+instead of a counter decremented by the sleep interval, so the `2 + N` read-backs an iteration makes
+charge their time against it; before, the documented bound was an iteration count. A wedged fake
+`kubectl` is terminated at **40.04 s** and the case asserts that elapsed time, because "returned an
+error eventually" cannot tell slow from wedged. Focused **4/4**, primary unit **4,939/4,939**,
+canonical `prodbox dev check` exits 0.
+
+**Sprint `4.92` is Done (2026-09-11).** `Prodbox.Lifecycle.Teardown.ScopeCodec` is the single
+encoder § 2.3a required. Every durable envelope nests one canonical `ScopeWire` instead of
+flattening the scope's seven fields among its own, and each bumped its own format version and
+refuses older bytes rather than upgrading them — a pre-zone envelope has no zone to recover, so an
+upgrade could only re-assert the absent zone that was the defect. Every digest and
+canonical-identity projection derives from one field list that emits a present/absent discriminator
+beside each optional value. The conversion removed about four hundred lines net, because eleven
+envelopes stopped restating the same fields.
+
+What keeps the rule rather than merely landing it: the field set is constructed by name in exactly
+one function and destructured positionally by every projection, so a field added to the scope is a
+missing-field error at the constructor and a constructor-arity error at each projection. Two
+erasures beyond the row's own list are closed with it — `validateScopeBinding` had six clauses for a
+seven-field scope and disagreed with derived `Eq` on the same two values, and `HostCleanupScope` was
+a lossy in-memory projection with no zone slot, so the zone was gone before any byte was written.
+Focused **13/13**, primary unit **4,937/4,937**, auxiliaries **27/27**, **35/35**, **39/39**, and
+canonical `prodbox dev check` exits 0.
+
+Sprint `5.46` is no longer `Blocked`: it was blocked only on this codec existing, and its properties
+are written against it rather than against the eighteen shapes it replaced.
+
+**Sprint `2.134` is Done and Phase 2 recloses (2026-09-11).** Every long-lived child under `src/`
+whose handle was discarded now goes through `Prodbox.Supervision.withSupervisedChild`, whose private
+constructor links before the handle value exists, so an unsupervised long-lived thread is
+unconstructible rather than discouraged. `checkSpawnedHandleDisposition` replaces the single-file
+import scan a qualified import sidestepped by design: it scans every module under `src/`, refuses a
+spawned `Async` handle that is neither linked nor joined, and carries no admission registry because
+every site it fired on was repaired first. It fired on two sites the sprint record did not
+enumerate — both statements of the ephemeral Kubernetes client's token writer — so that
+proven-broken mechanism now raises at first execution instead of leaving every `kubectl` to consume
+its whole bound in silence. Making the failure loud was the whole of that sprint's claim here;
+Sprints `7.39` and `7.40` replaced the mechanism and removed the duplicate later the same day.
+
+Three things about that sprint are worth carrying forward rather than leaving in its record. The
+Bootstrap Broker's request pool was repaired differently, because its handles are joined at drain
+and the defect was *when* they were observed: the manager now waits on the listener and the pool
+together, and two further discarded join results on that path are closed with it. Linking the
+readiness observer first required making a raised observation non-fatal, or a transient MinIO or
+Vault blip would have become a process death. And the gate states its own limits — it decides
+whether a handle is disposed of, never when, and `cancel` is deliberately not a disposition. Focused
+**15/15**, Bootstrap Broker **185/185**, primary unit **4,923/4,923**, canonical `prodbox dev check`
+exits 0.
+
+One unrelated defect surfaced and is owned rather than fixed in passing: `prodbox-haskell-style`
+fails at HEAD, and failed before Sprint `2.134`, on `uses typed-process at the library subprocess
+boundary`, because the library stanza carries `process ^>=1.6.19.0`. Nothing runs that suite, which
+is exactly the condition Sprint `5.45` exists to remove.
+
+Every sprint in this session's queue — `2.134`, `4.92`–`4.94`, `5.44`–`5.46`, `7.39`, `7.40` — is
+Done, and Phases 2, 4, 5 and 7 have reclosed. Sprint `6.5` is the only row left.
+
+**Live cascade-qualification cycles are admissible again, and one has run.** They were suspended
+because every cycle reproduced the same wedge at roughly an hour each; Sprint `7.39` repaired the
+mechanism, and the 2026-09-12 cycle above proved the repair live. Both sprints now record their live
+half as proven. Deployment qualification stays **invalidated** under Standard P for every AWS row: a
+repaired mechanism is not a qualifying campaign, and no cycle has yet produced a qualifying artifact
+— all eighteen emitted so far carry `aggregate_succeeded=false`.
 
 The prior cycles recorded here for continuity. Live `recovery-eks-drain-uid-raw` refuted the discovery
 explanation and proved the real cause. The EKS drain UID observation fails identically under a
@@ -66,11 +239,19 @@ completes the identical call in 54 ms while the FIFO consumes the whole bound on
 non-blocking, so the standing writer throws `ENXIO` on its first attempt before `kubectl` starts, the
 thread dies silently, and every invocation then blocks on a FIFO with no writer. On this evidence the
 ephemeral Kubernetes client has never authenticated on any live run. Stable counterexample
-`CASCADE-QUALIFICATION-EPHEMERAL-KUBECTL-TOKEN-FIFO-UNSERVED-2026-09-11` owns it and **no
-replacement is landed**: two were built and both refused by measurement, a retrying non-blocking open
-still losing the race about half the time and a blocking open hanging outright. The token must never
-reach a regular file, and credential delivery to a subprocess is a Standard-P surface, so the writer
-stays exactly as it was with the proof recorded at its definition. The discovery-free UID read, the
+`CASCADE-QUALIFICATION-EPHEMERAL-KUBECTL-TOKEN-FIFO-UNSERVED-2026-09-11` owns it. At the time of
+that cycle **no replacement was landed**: two were built and both refused by measurement, a retrying
+non-blocking open still losing the race about half the time and a blocking open hanging outright,
+and the cycle concluded that the token must never reach a regular file.
+
+**Corrected 2026-09-11 by Sprint `7.39` (Standard C).** That conclusion was a design premise carried
+as a finding, and the measurement it lacked overturned it. `kubectl` opens its token file exactly
+twice per invocation and independently of request count, so every rendezvous — including both
+refused candidates — is serving a reader whose arrival it cannot observe and whose count it cannot
+know. The token now reaches a regular file, written with `O_EXCL`, `O_NOFOLLOW`, `CLOEXEC` and mode
+`0600` into the same owner-only directory as the kubeconfig and read back before the client value
+exists. Credential delivery to a subprocess remains a Standard-P surface, so no identity captured
+before that change qualifies afterwards. The discovery-free UID read, the
 per-request bound on every ephemeral call, and the derived wall clock are kept because they are
 correct independently. Focused **25/25**, primary unit **4,911/4,911**, auxiliaries **27/27**,
 **35/35**, **39/39**, and canonical `prodbox dev check` exits 0. Four registered-target observations
@@ -6377,7 +6558,8 @@ documentation, documentation policy/lint, and `git diff --check` pass with empty
   **10 s** margin covering process spawn, the FIFO rendezvous, and TLS — measured together at 65 ms.
   **Falsified 2026-09-11:** there is no FIFO rendezvous in production — the open never completes —
   so this margin is derived from a measurement of a mechanism that does not occur. Sprint `7.39`
-  re-derives the bound against the credential mechanism that ships.
+  re-derived the bound on 2026-09-11 against the credential mechanism that ships: measured process
+  spawn plus the two token reads `kubectl` actually makes.
   Any inner failure therefore surfaces before the outer bound, which is what makes the next such
   refusal attributable instead of opaque.
 - The focused exact EKS drain interpreter group passes **25/25** at
@@ -9173,7 +9355,9 @@ of that machinery would be two statements of a security property.
 the surviving one has never served a token: its writer fails with `ENXIO` before `kubectl` starts
 and dies silently. The proof is in this file's own lead, above. The argument quoted here is sound —
 two statements of that machinery are two statements of a security property — which is exactly why it
-needed a gate rather than a sentence. Sprints `7.39` and `7.40` own the correction.
+needed a gate rather than a sentence. Sprints `7.39` and `7.40` landed the correction on
+2026-09-11: the credential is a private file read back before the client exists, the third statement
+is deleted, and `checkEphemeralCredentialMachinery` holds the machinery to one file.
 
 **The follow-on compiled-scope work is closed.** At Sprint `7.36` closure, every compiled DNS01 node
 correctly refused with `Dns01ChallengeHostedZoneMissing` because the graph had no producer for its
@@ -13013,9 +13197,11 @@ Second, Sprint `7.39` changes how a bearer credential reaches a subprocess, whic
 wiring under Standard P, so no identity captured before it lands can satisfy either row afterwards.
 Third, the cleanup/residue column is directly implicated — a drain that cannot authenticate cannot
 have drained, so any historical run recording AWS cleanup crossed that step without evidence. Sprints
-`7.39` and `7.40` own the correction, `2.134` owns the supervision defect that made the failure
-silent, and `4.93` owns the unbounded drain subprocess that turns any such block into a hang rather
-than a refusal.
+`7.39` and `7.40` landed the correction on 2026-09-11, `2.134` closed the supervision defect that
+made the failure silent, and `4.93` closed the unbounded drain subprocess that turned any such block
+into a hang rather than a refusal. All three consequences above stand as written until a live cycle
+supplies the missing evidence: a repaired mechanism is not a run, and no AWS row's identity is
+qualified by code alone.
 
 ### First campaign attempt (2026-08-13) — home local
 

@@ -3,6 +3,7 @@
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
 -- | Production composition for the Bootstrap Broker.  This module owns the
@@ -43,7 +44,7 @@ import Control.Concurrent.STM
   , readTVarIO
   , writeTVar
   )
-import Control.Exception (SomeException, mask, throwIO, try)
+import Control.Exception (SomeException, displayException, mask, throwIO, try)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Crypto.Random (getRandomBytes)
 import Data.ByteString (ByteString)
@@ -191,6 +192,7 @@ import Prodbox.Bootstrap.Broker.Readiness
   , brokerReadinessSchedule
   , computeBrokerReadiness
   , observationBudgetMicros
+  , raisedBrokerReadinessFacts
   , unobservedBrokerReadinessFacts
   )
 import Prodbox.Bootstrap.Broker.Request (RequestDigest)
@@ -410,8 +412,23 @@ productionBrokerEngine settings = do
             }
         (boundary, capabilityRegistry) =
           productionBoundary settings owner store kubernetes clients provisionerTokens cache
+        -- Sprint 2.134: the observer this refresh runs under is now a linked
+        -- supervised child, so a pass that escaped would kill the broker
+        -- process on a transient backend blip. A raised pass is recorded as a
+        -- non-terminal unavailable instead, leaving the link to cover the loop
+        -- itself dying.
         refresh = do
-          facts <- observeBrokerReadinessFacts capabilityRegistry settings kubernetes
+          attempted <-
+            try (observeBrokerReadinessFacts capabilityRegistry settings kubernetes)
+          facts <- case attempted of
+            Right observed -> pure observed
+            Left (failure :: SomeException) -> do
+              raisedAt <- realMonotonicNow
+              pure
+                ( raisedBrokerReadinessFacts
+                    (Text.pack (displayException failure))
+                    (monotonicInstantMicros raisedAt)
+                )
           atomically (writeTVar factsVar facts)
     engine <-
       mkBrokerEngine

@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module LifecycleTeardownRegisteredTargetResult
@@ -245,19 +246,6 @@ lifecycleTeardownRegisteredTargetResultSuite =
       executeResult compiled plan (FixedRegisteredResult refused)
         `shouldBe` CleanupNodeFailed "EKS drain proof required"
 
-    it "never accepts a generic mutation result for registered reconcile" $ do
-      let (_, plan) = targetAndPlan AwsEksKey compiled
-      executeResult
-        compiled
-        plan
-        (FixedGenericMutation (TeardownMutationApplied))
-        `shouldBe` wrongResultKind
-      executeResult
-        compiled
-        plan
-        (FixedGenericMutation (TeardownMutationResponseLost "generic timeout"))
-        `shouldBe` wrongResultKind
-
     it "keeps the reconcile capability opaque and free of effect callbacks" $ do
       source <-
         readFile
@@ -270,9 +258,8 @@ lifecycleTeardownRegisteredTargetResultSuite =
       source `shouldNotContain` "ProviderProduction"
       source `shouldNotContain` "FilePath"
 
-data FixedResult
-  = FixedRegisteredResult !RegisteredTargetReconcileResult
-  | FixedGenericMutation !TeardownMutationResult
+newtype FixedResult
+  = FixedRegisteredResult RegisteredTargetReconcileResult
 
 newtype FixedEffects value = FixedEffects
   { runFixedEffects :: FixedResult -> value
@@ -292,14 +279,20 @@ instance Monad FixedEffects where
     FixedEffects $ \fixed ->
       runFixedEffects (continue (action fixed)) fixed
 
+-- | Sprint 4.94: the fixture answers the operation it is handed rather than
+-- returning a fixed constructor, because a node result now carries the
+-- operation's result index.  Only the reconcile node is exercised here; every
+-- other operation is declined with its own cause.
 instance LifecycleTeardownEffects FixedEffects where
-  executeLifecycleTeardownOperation _ _ =
+  executeLifecycleTeardownOperation _ operation =
     FixedEffects fixedTeardownResult
    where
-    fixedTeardownResult fixed = case fixed of
-      FixedRegisteredResult result ->
-        TeardownRegisteredTargetReconcile result
-      FixedGenericMutation mutation -> TeardownMutationAttempt mutation
+    fixedTeardownResult fixed = case operation of
+      ReconcileRegisteredTargetAbsent _ -> case fixed of
+        FixedRegisteredResult result -> TeardownRegisteredTargetReconcile result
+      _ ->
+        TeardownNodeRefused
+          "fixture answers only registered-target reconcile"
 
 executeResult
   :: CompiledDesiredAbsenceProgram surface
@@ -316,7 +309,7 @@ targetAndPlan
 targetAndPlan key compiledProgram =
   case [ (target, plan)
        | plan <- cleanupGraphNodes (compiledDesiredAbsenceGraph compiledProgram)
-       , Just (ReconcileRegisteredTargetAbsent target) <-
+       , Just (SomeTeardownOperation (ReconcileRegisteredTargetAbsent target)) <-
            [compiledOperationForNode (cleanupNodeId plan) compiledProgram]
        , registeredTargetKey target == key
        ] of
@@ -496,7 +489,3 @@ otherOperationId = mustRight (mkCleanupOperationId "unrelated-operation")
 
 bindingMismatch :: CleanupNodeOutcome
 bindingMismatch = CleanupNodeFailed "lifecycle observation binding mismatch"
-
-wrongResultKind :: CleanupNodeOutcome
-wrongResultKind =
-  CleanupNodeFailed "lifecycle interpreter returned the wrong result kind"

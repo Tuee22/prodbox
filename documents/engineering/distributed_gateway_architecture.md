@@ -28,14 +28,15 @@
 > were spawned through raw `withAsync` with their handles discarded. `withSupervisedWorkers` is now
 > the only way to run one: it links the `Async`, stamps a heartbeat, and records exit on every path
 > including an exception. Readiness folds the roster against a heartbeat bound derived from the beat
-> interval, and `prodbox dev check` refuses raw `withAsync` in `src/Prodbox/Gateway/Daemon.hs`.
-> **The region, recorded 2026-09-11 (Standard C):** that fix and that gate are one file. The check
-> is `checkSupervisedWorkers` in `src/Prodbox/CheckCode.hs`, it refuses an *unqualified* import, and
-> a qualified `Async.withAsync` sidesteps it by design. The identical defect class survives in five
-> other modules — the Bootstrap Broker's readiness observer and worker pool, the Gateway
-> port-forward supervisor, the workload config watcher, and the control-plane request-worker pool.
-> Read this statement as true of the Gateway daemon and as a target elsewhere until Sprint `2.134`
-> lands the repo-wide rule.
+> interval.
+> **The region (Sprint `2.134`, 2026-09-11).** The linking half of that argument was one file and
+> one import scan a qualified `Async.withAsync` sidestepped by design, while the identical defect
+> class survived in five other modules. It is now a type and a repo-wide gate:
+> `withSupervisedWorkers` obtains its children from
+> `Prodbox.Supervision.withSupervisedChild`, which links before the handle value exists, and
+> `checkSpawnedHandleDisposition` refuses an undisposed spawn anywhere under `src/`. What stays
+> daemon-specific here is the roster entry and the heartbeat, which is why the roster and the spawn
+> set remain the same list.
 
 Partition semantics for gateway leadership and DNS write gating must be formally verified by TLA+ before implementation changes are accepted.
 

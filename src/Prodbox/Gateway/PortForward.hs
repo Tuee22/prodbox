@@ -9,7 +9,6 @@ module Prodbox.Gateway.PortForward
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (withAsync)
 import Control.Concurrent.MVar
   ( newEmptyMVar
   , putMVar
@@ -51,6 +50,7 @@ import Prodbox.Subprocess
   , stopBackgroundProcess
   , waitBackgroundProcess
   )
+import Prodbox.Supervision (withSupervisedChild)
 
 -- | Coordinates for reaching a gateway daemon through the Kubernetes API
 -- server. The optional environment is where callers bind the intended
@@ -166,9 +166,12 @@ withGatewayServicePortForward spec action =
           )
       Right process -> Right process
 
+  -- Sprint 2.134: the restart supervisor's handle used to be discarded, so a
+  -- supervisor that died left the caller talking to a port nothing was
+  -- forwarding any more. 'withSupervisedChild' links it: its death raises here.
   withSupervisedPortForward localPort = do
     firstStart <- newEmptyMVar
-    withAsync (supervisePortForward localPort firstStart True) $ \_ -> do
+    withSupervisedChild (supervisePortForward localPort firstStart True) $ \_ -> do
       startResult <- takeMVar firstStart
       case startResult of
         Left err -> pure (Left err)

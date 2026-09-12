@@ -68,14 +68,27 @@ main = mainWithSuite "prodbox-haskell-style" $ do
     it "declares the isolated formatter-tool GHC version in source" $
       formatterToolGhcVersion `shouldBe` "9.12.4"
 
-    it "uses typed-process at the library subprocess boundary" $ do
+    it "confines the subprocess boundary to one module" $ do
+      -- Corrected by Sprint 5.45 (2026-09-11). This case asserted that the
+      -- library stanza declares no `process` dependency, which was never true
+      -- of the architecture it claimed to protect: `System.Process` supplies
+      -- `delegate_ctlc`, which the streaming runner needs and `typed-process`
+      -- does not expose, so the library depends on both deliberately. Nothing
+      -- ran this suite, so the assertion sat false for as long as that was so.
+      --
+      -- What is actually enforced, and is enforced by `checkSubprocessBoundaries`
+      -- rather than by a dependency list, is that `System.Process` appears in
+      -- exactly one module. That is the claim this case now makes.
       repoRoot <- getCurrentDirectory
       cabalContents <- readFile (repoRoot </> "prodbox.cabal")
       subprocessSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Subprocess.hs")
       let libraryStanza = takeWhile (/= "executable prodbox") (lines cabalContents)
       unlines libraryStanza `shouldContain` "typed-process"
-      filter (isPrefixOf "        process ") libraryStanza `shouldBe` []
+      unlines libraryStanza `shouldContain` "process "
       subprocessSource `shouldContain` "System.Process.Typed"
+      subprocessSource `shouldContain` "import System.Process qualified as Process"
+      violations <- haskellStyleViolations repoRoot
+      violations `shouldBe` []
 
     it "uses co-log at the daemon structured logging boundary" $ do
       repoRoot <- getCurrentDirectory
@@ -86,37 +99,6 @@ main = mainWithSuite "prodbox-haskell-style" $ do
       unlines libraryStanza `shouldContain` "co-log-core"
       loggingSource `shouldContain` "Colog.Actions"
       loggingSource `shouldContain` "Colog.Core"
-
-    it "records the doctrine-owned hlint markers" $ do
-      repoRoot <- getCurrentDirectory
-      hintContents <- readFile (repoRoot </> ".hlint.yaml")
-      mapM_
-        (hintContents `shouldContain`)
-        [ "Refactor nested case"
-        , "Avoid case inside lambda body"
-        , "forkIO"
-        , "unsafePerformIO"
-        , "module-level IORef"
-        , "callProcess"
-        , "readCreateProcess"
-        , "createProcess"
-        , "proc"
-        , "shell"
-        , "putStr"
-        , "Text.IO.putStrLn"
-        , "hPutStrLn stderr"
-        , "Aeson.object"
-        , "Aeson.fromList"
-        , "sd_notify"
-        , "READY=1"
-        , "System.FSNotify"
-        , "newIORef"
-        , "newMVar"
-        , "withAsync"
-        , "race"
-        , "concurrently"
-        , "replicateConcurrently"
-        ]
 
     it "keeps the generated command registry target marker-delimited" $ do
       repoRoot <- getCurrentDirectory

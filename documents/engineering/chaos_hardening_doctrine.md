@@ -715,15 +715,29 @@ and R9 is purely cross-boundary and lives there.)
   them, and proves owned residue empty before `Stopped`; an elapsed join deadline is explicit
   `ShutdownIncomplete`. Discarding cancellation/join results recreates unstructured ownership behind a
   structured API and is forbidden.
-  **Enforcement, recorded 2026-09-11 (Standard C).** This rule is review guidance today, not a gate.
-  The only mechanical check is `checkSupervisedWorkers` in `src/Prodbox/CheckCode.hs`, which refuses
-  an *unqualified* `withAsync` import in `src/Prodbox/Gateway/Daemon.hs` alone — one file, and a
-  qualified import sidesteps it by design. Nothing anywhere requires a spawned handle to be linked
-  or joined, and five long-lived threads under `src/` discard theirs: the Bootstrap Broker's
-  readiness observer, the Gateway port-forward supervisor, the workload config watcher, the
-  control-plane request-worker pool, and the Broker worker pool. Sprint `2.134` repairs all five,
-  lifts supervision into a type whose only constructor links, and replaces the one-file import scan
-  with a repo-wide rule. Until it lands, read this bullet as a target.
+  **Enforcement (Sprint `2.134`, 2026-09-11).** The handle half of this rule is a gate.
+  `checkSpawnedHandleDisposition` in `src/Prodbox/CheckCode.hs` scans every module under `src/` and
+  refuses a spawned `Async` handle that is neither linked nor joined — a wildcard or `const`
+  continuation, an unbound spawn, or a named handle no disposition function ever takes. It reads
+  qualified and unqualified spawns alike, which is what the superseded one-file import scan could
+  not do, and it carries no admission registry because every site it fired on was repaired first.
+  `cancel` is deliberately not a disposition: cancelling a child at shutdown says what the parent
+  wants to happen to it, not that the parent ever observed what did.
+
+  Above the gate sits a type. `Prodbox.Supervision.SupervisedChild` is opaque with a private
+  constructor, and its only constructors — `withSupervisedChild` and `withSupervisedChildren` —
+  link before the value exists, so "spawned but unobserved" is unconstructible rather than refused.
+  The five long-lived threads that discarded their handle are converted onto it, together with the
+  two statements of the ephemeral Kubernetes client's token writer, whose `ENXIO` death is now loud
+  at first execution rather than silent.
+
+  Two limits are stated rather than implied. The gate decides *whether* a handle is disposed of,
+  never *when*: the Bootstrap Broker's request pool was joined only by the drain that retires it,
+  which the gate reads as disposed and which Sprint `2.134` nevertheless repaired, because a
+  worker's death being observable eventually is not its parent observing it. And the rule covers
+  the `async` family plus `forkIO`, not `forkFinally`, whose continuation receives the child's
+  outcome by construction and whose only use is a per-connection thread rather than a long-lived
+  child.
 - **R7 — Impossibility-bounded invariants are stated conditionally, with the failure mode chosen
   explicitly.** Some safety invariants *cannot* hold unconditionally in an asynchronous system that
   admits partitions. **FLP** (Fischer, Lynch & Paterson, JACM 1985) showed that no deterministic protocol
@@ -1231,15 +1245,24 @@ both audit re-scopers, so the cascade's terminal escape audit runs under a zonel
 claiming to be scoped to the run.
 
 This is the section's thesis in its purest form. Every coordinate the type earned inside the region
-is discarded at the boundary, and the discard is silent because the zone-less result is a perfectly
-well-typed scope. It has already cost one exact-identity refusal on a bundle the same run had just
+was discarded at the boundary, and the discard was silent because the zone-less result is a
+perfectly well-typed scope. It cost one exact-identity refusal on a bundle the same run had just
 committed, and the repair applied there — adding the field to that one codec — is precisely the
-repair this section warns is insufficient: it leaves seventeen other authors free to forget.
+repair this section warns is insufficient: it left seventeen other authors free to forget.
 
-The remedy is the one [pure_fp_standards.md](./pure_fp_standards.md) § 2.3a already states: a
-record has one decoder and must have exactly one encoder, derived rather than restated. Sprint
-`4.92` owns it, and Sprint `5.46` adds the round-trip properties that make a forgotten field fail
-rather than pass.
+**Closed by Sprint `4.92` (2026-09-11).** The remedy is the one
+[pure_fp_standards.md](./pure_fp_standards.md) § 2.3a already states: a record has one decoder and
+must have exactly one encoder, derived rather than restated. `Prodbox.Lifecycle.Teardown.ScopeCodec`
+is now that encoder. Every durable envelope nests one canonical `ScopeWire` rather than flattening
+the scope's fields among its own; every digest and canonical-identity projection is derived from one
+field list that emits a present/absent discriminator beside each optional value; and both audit
+re-scopers are record updates over the complete field set rather than field-by-field re-mints.
+
+What makes the repair hold rather than merely land is that every projection destructures the field
+set **positionally**, and the one place that builds it does so **by name**. A field added to the
+scope is therefore a constructor-arity error at each projection and a missing-field error at the
+constructor, before it can be dropped anywhere — which is the property the eighteen hand-authored
+codecs could not have. Sprint `5.46` adds the round-trip properties over that codec.
 
 ## 24. An observation has a layer
 

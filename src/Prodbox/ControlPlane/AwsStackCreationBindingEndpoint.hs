@@ -86,25 +86,17 @@ import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Submission (OperationId)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork (ProviderRevision)
 import Prodbox.Lifecycle.Teardown.Model
-  ( AwsAccountId (..)
-  , AwsRegion (..)
-  , AwsScope (..)
-  , CleanupSurface
-  , DurableObservationRunScope (..)
-  , LifecycleOperation (ReconcileDesiredPresent)
-  , LinuxRke2FoundationId (..)
-  , ObservationEvidenceScope
+  ( ObservationEvidenceScope
   , ObservationFailure (..)
   , RegisteredResourceKey
-  , RegistryRevision (..)
-  , evidenceAwsScope
-  , evidenceCleanupSurface
-  , evidenceDurableRunScope
-  , evidenceLinuxRke2Foundation
-  , evidenceRegistryRevision
-  , mkObservationEvidenceScope
   , registeredResourceKeyFromText
   , registeredResourceKeyText
+  )
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ScopeWire
+  , renderScopeWireError
+  , scopeFromWire
+  , scopeToWire
   )
 import Prodbox.Lifecycle.Teardown.StackGeneration
   ( RegisteredStackGeneration
@@ -163,17 +155,6 @@ instance Serialise AwsStackCreationWireRequest where
       <*> decode
       <*> Cbor.decodeBytes
 
-data AwsStackCreationScopeWire = AwsStackCreationScopeWire
-  { creationScopeWireSurface :: !Int
-  , creationScopeWireRegistryRevision :: !Text
-  , creationScopeWireRunScope :: !Text
-  , creationScopeWireFoundation :: !Text
-  , creationScopeWireAwsAccount :: !(Maybe Text)
-  , creationScopeWireAwsRegion :: !(Maybe Text)
-  }
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
-
 data AwsStackCreationCommitPayload = AwsStackCreationCommitPayload
   { creationCommitPayloadOperationId :: !OperationId
   , creationCommitPayloadProviderScopeOperationId :: !OperationId
@@ -182,7 +163,12 @@ data AwsStackCreationCommitPayload = AwsStackCreationCommitPayload
   -- operation; it cannot state its content, because the Authority reads the
   -- receipt back from its own aggregate and verifies it there.
   , creationCommitPayloadProviderRevision :: !ProviderRevision
-  , creationCommitPayloadScope :: !AwsStackCreationScopeWire
+  , creationCommitPayloadScope :: !ScopeWire
+  -- ^ Sprint 4.92: the canonical scope wire form, so the caller's run scope
+  -- reaches the Authority whole.  The route used to carry its own six-field
+  -- spelling of the scope, and its decoder rebuilt the value through
+  -- @mkObservationEvidenceScope@ — which meant a run compiled against a DNS
+  -- hosted zone committed its binding under a scope that no longer named one.
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -223,7 +209,7 @@ awsStackCreationCommitWireRequest
 data AwsStackCreationSelectPayload = AwsStackCreationSelectPayload
   { creationSelectPayloadResourceKey :: !Text
   , creationSelectPayloadProviderScopeOperationId :: !OperationId
-  , creationSelectPayloadScope :: !AwsStackCreationScopeWire
+  , creationSelectPayloadScope :: !ScopeWire
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -356,11 +342,17 @@ newtype AwsStackCreationEndpointResult
   = AwsStackCreationEndpointResult AwsStackCreationWireResponse
   deriving stock (Eq, Show)
 
--- | Bumped to @2@ by Sprint 4.84: the commit payload now names the admitted
--- Provider AWS-scope observation, so a version-1 caller cannot reach the
+-- | Bumped to @3@ by Sprint 4.92: both payloads now carry the canonical scope
+-- wire form, which names the run's retained DNS hosted zone and its lifecycle
+-- operation.  A version-2 payload spelled the scope out in six fields of its
+-- own and had nowhere to put either, so its bytes are refused rather than
+-- upgraded: reading them would mean inventing the two fields they never carried.
+--
+-- Version @2@ was Sprint 4.84's, where the commit payload began naming the
+-- admitted Provider AWS-scope observation so that no caller could reach the
 -- generation-committing path with an unproven scope.
 awsStackCreationEndpointFormatVersion :: Word16
-awsStackCreationEndpointFormatVersion = 2
+awsStackCreationEndpointFormatVersion = 3
 
 awsStackCreationEndpointMaximumBytes :: Int
 awsStackCreationEndpointMaximumBytes =
@@ -392,14 +384,14 @@ serveAwsStackCreationEndpointRequest producer cleanupBoundary repository request
     AwsStackCreationWireCommitAttempt ->
       case decodeCommitPayload (awsStackCreationWireRequestPayload request) of
         Left detail -> pure (refused (AwsStackCreationWireCommitPayloadInvalid detail))
-        Right payload -> do
+        Right (payload, scope) -> do
           attempted <-
             commitRegisteredStackCreation
               producer
               (creationCommitPayloadOperationId payload)
               (creationCommitPayloadProviderScopeOperationId payload)
               (creationCommitPayloadProviderRevision payload)
-              (scopeFromWire (creationCommitPayloadScope payload))
+              scope
           pure $
             either
               creationErrorResult
@@ -410,7 +402,7 @@ serveAwsStackCreationEndpointRequest producer cleanupBoundary repository request
     AwsStackCreationWireSelectForCleanup ->
       case decodeSelectPayload (awsStackCreationWireRequestPayload request) of
         Left detail -> pure (refused (AwsStackCreationWireCommitPayloadInvalid detail))
-        Right payload ->
+        Right (payload, scope) ->
           case registeredResourceKeyFromText
             (creationSelectPayloadResourceKey payload) of
             Nothing ->
@@ -426,7 +418,7 @@ serveAwsStackCreationEndpointRequest producer cleanupBoundary repository request
                   cleanupBoundary
                   resourceKey
                   (creationSelectPayloadProviderScopeOperationId payload)
-                  (scopeFromWire (creationSelectPayloadScope payload))
+                  scope
               pure $ case selected of
                 Left err ->
                   refused
@@ -737,8 +729,17 @@ validateIdentity expected bytes = do
         )
     )
 
+-- | Sprint 4.92: decoding a payload now yields its scope as well.
+--
+-- The route used to validate the scope's fields in one function and rebuild the
+-- value in another, total, one — and because rebuilding could not fail, the
+-- rebuild silently substituted a @ReconcileDesiredPresent@ operation and an
+-- absent DNS hosted zone for whatever the caller had sent.  The canonical
+-- decoder returns 'Either', so the two halves collapse into this one step and
+-- the scope that reaches the Authority is the scope the caller encoded.
 decodeCommitPayload
-  :: ByteString -> Either Text AwsStackCreationCommitPayload
+  :: ByteString
+  -> Either Text (AwsStackCreationCommitPayload, ObservationEvidenceScope)
 decodeCommitPayload bytes = do
   when (ByteString.null bytes) (Left "commit payload was empty")
   when
@@ -751,11 +752,12 @@ decodeCommitPayload bytes = do
   unless
     (canonicalBytes payload == bytes)
     (Left "commit payload was non-canonical")
-  validateScopeWire (creationCommitPayloadScope payload)
-  Right payload
+  scope <- decodeScopeWire (creationCommitPayloadScope payload)
+  Right (payload, scope)
 
 decodeSelectPayload
-  :: ByteString -> Either Text AwsStackCreationSelectPayload
+  :: ByteString
+  -> Either Text (AwsStackCreationSelectPayload, ObservationEvidenceScope)
 decodeSelectPayload bytes = do
   when (ByteString.null bytes) (Left "selection payload was empty")
   when
@@ -768,62 +770,16 @@ decodeSelectPayload bytes = do
   unless
     (canonicalBytes payload == bytes)
     (Left "selection payload was non-canonical")
-  validateScopeWire (creationSelectPayloadScope payload)
-  Right payload
+  scope <- decodeScopeWire (creationSelectPayloadScope payload)
+  Right (payload, scope)
 
-scopeToWire :: ObservationEvidenceScope -> AwsStackCreationScopeWire
-scopeToWire scope =
-  AwsStackCreationScopeWire
-    { creationScopeWireSurface = fromEnum (evidenceCleanupSurface scope)
-    , creationScopeWireRegistryRevision =
-        registryRevisionText (evidenceRegistryRevision scope)
-    , creationScopeWireRunScope =
-        durableRunScopeText (evidenceDurableRunScope scope)
-    , creationScopeWireFoundation =
-        foundationText (evidenceLinuxRke2Foundation scope)
-    , creationScopeWireAwsAccount =
-        awsAccountText <$> evidenceAwsScope scope
-    , creationScopeWireAwsRegion =
-        awsRegionText <$> evidenceAwsScope scope
-    }
-
-scopeFromWire :: AwsStackCreationScopeWire -> ObservationEvidenceScope
-scopeFromWire wire =
-  mkObservationEvidenceScope
-    (toEnum (creationScopeWireSurface wire))
-    (RegistryRevision (creationScopeWireRegistryRevision wire))
-    (DurableObservationRunScope (creationScopeWireRunScope wire))
-    (LinuxRke2FoundationId (creationScopeWireFoundation wire))
-    awsScope
-    ReconcileDesiredPresent
- where
-  awsScope = case (creationScopeWireAwsAccount wire, creationScopeWireAwsRegion wire) of
-    (Just account, Just region) ->
-      Just (AwsScope (AwsAccountId account) (AwsRegion region))
-    _ -> Nothing
-
-validateScopeWire :: AwsStackCreationScopeWire -> Either Text ()
-validateScopeWire wire = do
-  unless
-    ( creationScopeWireSurface wire >= fromEnum (minBound :: CleanupSurface)
-        && creationScopeWireSurface wire <= fromEnum (maxBound :: CleanupSurface)
-    )
-    (Left "creation scope surface was outside the closed enum")
-  validateText "registry revision" 512 (creationScopeWireRegistryRevision wire)
-  validateText "durable run scope" 512 (creationScopeWireRunScope wire)
-  validateText "Linux RKE2 foundation" 512 (creationScopeWireFoundation wire)
-  case (creationScopeWireAwsAccount wire, creationScopeWireAwsRegion wire) of
-    (Nothing, Nothing) -> Right ()
-    (Just account, Just region) -> do
-      validateText "AWS account" 128 account
-      validateText "AWS region" 128 region
-    _ -> Left "creation scope carried only one AWS coordinate"
-
-validateText :: Text -> Int -> Text -> Either Text ()
-validateText label maximumLength value =
-  unless
-    (not (Text.null value) && Text.length value <= maximumLength)
-    (Left (label <> " was empty or exceeded its bound"))
+-- | The canonical scope decoder, lowered to this route's bounded refusal text.
+--
+-- The surface, revision, run scope, foundation, AWS coordinate pairing, and DNS
+-- zone rules all live in "Prodbox.Lifecycle.Teardown.ScopeCodec"; this route no
+-- longer states a weaker version of them.
+decodeScopeWire :: ScopeWire -> Either Text ObservationEvidenceScope
+decodeScopeWire = first (bounded . renderScopeWireError) . scopeFromWire
 
 canonicalBytes :: (Serialise value) => value -> ByteString
 canonicalBytes = LazyByteString.toStrict . serialise
@@ -849,21 +805,6 @@ commitDispositionFromWire disposition = case disposition of
     AwsStackCreationCommitResponseLost (ObservationFailure (bounded detail))
   AwsStackCreationWireCommitUnavailable detail ->
     AwsStackCreationCommitUnavailable (ObservationFailure (bounded detail))
-
-registryRevisionText :: RegistryRevision -> Text
-registryRevisionText (RegistryRevision value) = value
-
-durableRunScopeText :: DurableObservationRunScope -> Text
-durableRunScopeText (DurableObservationRunScope value) = value
-
-foundationText :: LinuxRke2FoundationId -> Text
-foundationText (LinuxRke2FoundationId value) = value
-
-awsAccountText :: AwsScope -> Text
-awsAccountText (AwsScope (AwsAccountId value) _) = value
-
-awsRegionText :: AwsScope -> Text
-awsRegionText (AwsScope _ (AwsRegion value)) = value
 
 renderError :: AwsStackCreationBindingError -> Text
 renderError = bounded . Text.pack . show

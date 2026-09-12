@@ -130,11 +130,13 @@ import Prodbox.Lifecycle.Teardown.Observation
   )
 import Prodbox.Lifecycle.Teardown.Program
   ( RegisteredTargetBinding
+  , SomeTeardownOperation (..)
   , TeardownOperation (..)
   , registeredTargetCoordinateDigest
   , registeredTargetKey
   , registeredTargetKind
   , registeredTargetLifecycleClass
+  , someTeardownOperationTag
   , teardownOperationTag
   )
 import Prodbox.Lifecycle.Teardown.ProviderDispatch
@@ -447,7 +449,8 @@ validateInvocation context target = do
   validateSuccessfulPredecessors context target
 
 validateSuccessfulPredecessors
-  :: TeardownExecutionContext surface
+  :: forall surface
+   . TeardownExecutionContext surface
   -> RegisteredTargetBinding
   -> Either AwsEksRegisteredTargetDestroyError ()
 validateSuccessfulPredecessors context target = do
@@ -475,13 +478,13 @@ validateSuccessfulPredecessors context target = do
   expected <-
     mapM
       expectedIdentity
-      [ ObserveRegisteredTarget target
-      , ReadBackStackCheckpointRecovery target
-      , ReadBackAwsStackReaderBundle target
-      , ReadBackEksKubernetesDrain target
-      , ReadBackRegisteredTargetAbsent ebsTarget
-      , ReadBackRegisteredTargetAbsent iamTarget
-      , ReadBackRegisteredTargetAbsent loadBalancerTarget
+      [ SomeTeardownOperation (ObserveRegisteredTarget target)
+      , SomeTeardownOperation (ReadBackStackCheckpointRecovery target)
+      , SomeTeardownOperation (ReadBackAwsStackReaderBundle target)
+      , SomeTeardownOperation (ReadBackEksKubernetesDrain target)
+      , SomeTeardownOperation (ReadBackRegisteredTargetAbsent ebsTarget)
+      , SomeTeardownOperation (ReadBackRegisteredTargetAbsent iamTarget)
+      , SomeTeardownOperation (ReadBackRegisteredTargetAbsent loadBalancerTarget)
       ]
   let actual = map succeededIdentity successful
       attempted = map attemptedIdentity (teardownExecutionAttemptedPredecessors context)
@@ -505,36 +508,44 @@ validateSuccessfulPredecessors context target = do
   ebsBackstops =
     [ backstop
     | predecessor <- successful
-    , ReadBackRegisteredTargetAbsent backstop <-
+    , SomeTeardownOperation (ReadBackRegisteredTargetAbsent backstop) <-
         [teardownSucceededPredecessorOperation predecessor]
     , registeredTargetKey backstop == AwsEbsPerRunTestKey
     ]
   iamBackstops =
     [ backstop
     | predecessor <- successful
-    , ReadBackRegisteredTargetAbsent backstop <-
+    , SomeTeardownOperation (ReadBackRegisteredTargetAbsent backstop) <-
         [teardownSucceededPredecessorOperation predecessor]
     , registeredTargetKey backstop == AwsEksIamRoleFamilyKey
     ]
   loadBalancerBackstops =
     [ backstop
     | predecessor <- successful
-    , ReadBackRegisteredTargetAbsent backstop <-
+    , SomeTeardownOperation (ReadBackRegisteredTargetAbsent backstop) <-
         [teardownSucceededPredecessorOperation predecessor]
     , registeredTargetKey backstop == AwsEksLoadBalancerControllerFamilyKey
     ]
-  expectedIdentity operation = case teardownExecutionOperationIdFor context operation of
-    Nothing ->
-      Left
-        ( AwsEksRegisteredTargetDestroyCatalogOperationMissing
-            (teardownOperationTag operation)
-        )
-    Just operationId ->
-      Right
-        AwsEksDestroyPredecessorIdentity
-          { awsEksDestroyPredecessorOperationTag = teardownOperationTag operation
-          , awsEksDestroyPredecessorOperationId = operationId
-          }
+  -- Sprint 4.94: the seven expected predecessors answer with five different
+  -- result kinds, so the list naming them is a list of existentials and this
+  -- lookup unpacks one.  The signature is required as well as descriptive: a
+  -- GADT module gives an unannotated local binding a monomorphic type.
+  expectedIdentity
+    :: SomeTeardownOperation surface
+    -> Either AwsEksRegisteredTargetDestroyError AwsEksDestroyPredecessorIdentity
+  expectedIdentity (SomeTeardownOperation operation) =
+    case teardownExecutionOperationIdFor context operation of
+      Nothing ->
+        Left
+          ( AwsEksRegisteredTargetDestroyCatalogOperationMissing
+              (teardownOperationTag operation)
+          )
+      Just operationId ->
+        Right
+          AwsEksDestroyPredecessorIdentity
+            { awsEksDestroyPredecessorOperationTag = teardownOperationTag operation
+            , awsEksDestroyPredecessorOperationId = operationId
+            }
 
 succeededIdentity
   :: TeardownSucceededPredecessor surface
@@ -542,7 +553,7 @@ succeededIdentity
 succeededIdentity predecessor =
   AwsEksDestroyPredecessorIdentity
     { awsEksDestroyPredecessorOperationTag =
-        teardownOperationTag (teardownSucceededPredecessorOperation predecessor)
+        someTeardownOperationTag (teardownSucceededPredecessorOperation predecessor)
     , awsEksDestroyPredecessorOperationId =
         teardownSucceededPredecessorOperationId predecessor
     }
@@ -553,7 +564,7 @@ attemptedIdentity
 attemptedIdentity predecessor =
   AwsEksDestroyPredecessorIdentity
     { awsEksDestroyPredecessorOperationTag =
-        teardownOperationTag (teardownAttemptedPredecessorOperation predecessor)
+        someTeardownOperationTag (teardownAttemptedPredecessorOperation predecessor)
     , awsEksDestroyPredecessorOperationId =
         teardownAttemptedPredecessorOperationId predecessor
     }

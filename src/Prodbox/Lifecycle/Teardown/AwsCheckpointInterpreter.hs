@@ -393,7 +393,7 @@ retireAwsStackCheckpointReference interpreter context target = do
   succeededAbsenceReadBacks =
     [ registeredTargetKey readBackTarget
     | predecessor <- teardownExecutionSuccessfulPredecessors context
-    , ReadBackRegisteredTargetAbsent readBackTarget <-
+    , SomeTeardownOperation (ReadBackRegisteredTargetAbsent readBackTarget) <-
         [teardownSucceededPredecessorOperation predecessor]
     ]
 
@@ -575,11 +575,11 @@ executeAwsCheckpointOperation
   :: (Monad m)
   => AwsCheckpointInterpreter m
   -> TeardownExecutionContext surface
-  -> TeardownOperation surface
+  -> TeardownOperation surface result
   -> m
        ( Either
            AwsCheckpointInterpreterError
-           (Maybe (TeardownNodeResult surface))
+           (Maybe (TeardownNodeResult surface result))
        )
 executeAwsCheckpointOperation interpreter context operation = case operation of
   ObserveStackCheckpointPair target ->

@@ -136,7 +136,7 @@ lifecycleTeardownAwsCheckpointInterpreterSuite =
             environment <-
               newEnvironment TargetPresent pairFixture RestoreApplied RetireApplied
             runNode environment (nodeFor RestoreNode AwsTestKey)
-              `shouldReturn` CleanupNodeFailed "lifecycle interpreter returned the wrong result kind"
+              `shouldReturnSatisfying` failedContaining "RecoveryIncomplete"
             errors <- readIORef (fakeErrors environment)
             errors `shouldSatisfy` any (Text.isInfixOf "RecoveryIncomplete")
             readIORef (fakeAuthoritySubmissions environment) `shouldReturn` []
@@ -145,7 +145,7 @@ lifecycleTeardownAwsCheckpointInterpreterSuite =
       targetUnknown <-
         newEnvironment TargetUnobservable PairBoth RestoreApplied RetireApplied
       runNode targetUnknown (nodeFor RestoreNode AwsTestKey)
-        `shouldReturn` CleanupNodeFailed "lifecycle interpreter returned the wrong result kind"
+        `shouldReturnSatisfying` failedContaining "TargetObservationIncomplete"
       readIORef (fakeErrors targetUnknown)
         `shouldReturnSatisfying` any (Text.isInfixOf "TargetObservationIncomplete")
 
@@ -173,7 +173,7 @@ lifecycleTeardownAwsCheckpointInterpreterSuite =
             runNode environment (nodeFor RestoreNode AwsTestKey)
               `shouldReturn` CleanupNodeEffectUnconfirmed "checkpoint restore response lost"
             runNode environment (nodeFor RecoveryReadBackNode AwsTestKey)
-              `shouldReturn` CleanupNodeFailed "lifecycle interpreter returned the wrong result kind"
+              `shouldReturnSatisfying` failedContaining "ObservedDigestMismatch"
             readIORef (fakeErrors environment)
               `shouldReturnSatisfying` any (Text.isInfixOf "ObservedDigestMismatch")
         )
@@ -182,7 +182,7 @@ lifecycleTeardownAwsCheckpointInterpreterSuite =
       noAttempt <- newEnvironment TargetPresent PairBoth RestoreApplied RetireApplied
       writeIORef (fakeForceRecoveryReadBack noAttempt) True
       runNode noAttempt (nodeFor PairObserveNode AwsTestKey)
-        `shouldReturn` CleanupNodeFailed "lifecycle interpreter returned the wrong result kind"
+        `shouldReturnSatisfying` failedContaining "AttemptBindingInvalid []"
       readIORef (fakeErrors noAttempt)
         `shouldReturnSatisfying` any (Text.isInfixOf "AttemptBindingInvalid []")
 
@@ -197,7 +197,7 @@ lifecycleTeardownAwsCheckpointInterpreterSuite =
       environment <-
         newEnvironment TargetAbsent PairBoth RestoreApplied RetireResponseLost
       runNode environment (nodeFor RetirementNode AwsTestKey)
-        `shouldReturn` CleanupNodeFailed "lifecycle interpreter returned the wrong result kind"
+        `shouldReturnSatisfying` failedContaining "CustodyUndischarged"
       readIORef (fakeErrors environment)
         `shouldReturnSatisfying` any (Text.isInfixOf "CustodyUndischarged")
 
@@ -293,7 +293,7 @@ instance LifecycleTeardownEffects CheckpointEffects where
     attempted <- case (forceReadBack, operation) of
       (True, ObserveStackCheckpointPair target) ->
         fmap
-          (fmap (Just . TeardownCheckpointRecoveryReadBack))
+          (fmap (const (Just forcedRecoveryReadBackRefusal)))
           ( readBackAwsStackCheckpointRecovery
               (interpreterFor environment)
               context
@@ -311,7 +311,7 @@ instance LifecycleTeardownEffects CheckpointEffects where
       Left err -> do
         let detail = Text.pack (show err)
         liftCheckpointIO (modifyIORef' (fakeErrors environment) (++ [detail]))
-        pure (TeardownMutationAttempt (TeardownMutationRefused detail))
+        pure (TeardownNodeRefused detail)
 
 newEnvironment
   :: TargetFixture
@@ -694,9 +694,9 @@ nodeFor kind key = case matching of
 operationMatches
   :: CheckpointNodeKind
   -> RegisteredResourceKey
-  -> TeardownOperation surface
+  -> SomeTeardownOperation surface
   -> Bool
-operationMatches kind key operation = case (kind, operation) of
+operationMatches kind key (SomeTeardownOperation operation) = case (kind, operation) of
   (PairObserveNode, ObserveStackCheckpointPair target) ->
     registeredTargetKey target == key
   (RestoreNode, ReconcileStackCheckpointRestore target) ->
@@ -815,6 +815,23 @@ otherScope =
     foundation
     (Just awsScope)
     ReconcileDesiredAbsent
+
+-- | Sprint 4.94: the recovery read-back is driven from the pair-observe node
+-- only to reach its attempt-binding check without an attempt.  Its evidence is
+-- not a pair observation and can no longer be handed back as one, so a success
+-- here is a refusal; the case this suite exercises refuses before producing
+-- any evidence at all.
+forcedRecoveryReadBackRefusal :: TeardownNodeResult surface result
+forcedRecoveryReadBackRefusal =
+  TeardownNodeRefused "forced recovery read-back cannot answer a pair observation"
+
+-- | Sprint 4.94: a component refusal now reaches the node outcome carrying the
+-- interpreter's own typed cause, so these assertions name that cause instead of
+-- the deleted shared result-kind string.
+failedContaining :: Text -> CleanupNodeOutcome -> Bool
+failedContaining needle outcome = case outcome of
+  CleanupNodeFailed detail -> needle `Text.isInfixOf` detail
+  _ -> False
 
 shouldReturnSatisfying :: IO value -> (value -> Bool) -> Expectation
 shouldReturnSatisfying action predicate = do

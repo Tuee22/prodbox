@@ -101,6 +101,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.Char (isDigit, isSpace, toLower)
+import Data.Either (isLeft)
 import Data.List (find)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -400,6 +401,8 @@ data BrokerServerSnapshot = BrokerServerSnapshot
 data BrokerServerError
   = BrokerListenerUnavailable
   | BrokerListenerFailed
+  | BrokerWorkerExitedWhileServing
+  | BrokerWorkerDrainFailed
   | BrokerDrainDeadlineExceeded
   | BrokerForcedShutdown
   | BrokerShutdownIncomplete
@@ -411,6 +414,10 @@ renderBrokerServerError err = case err of
     "bootstrap broker could not open its configured loopback listener"
   BrokerListenerFailed ->
     "bootstrap broker loopback listener stopped unexpectedly"
+  BrokerWorkerExitedWhileServing ->
+    "bootstrap broker request worker exited while the broker was still serving"
+  BrokerWorkerDrainFailed ->
+    "bootstrap broker request worker did not drain cleanly"
   BrokerDrainDeadlineExceeded ->
     "bootstrap broker drain deadline elapsed before admitted work completed"
   BrokerForcedShutdown ->
@@ -467,6 +474,13 @@ data AcceptOutcome
 
 data ManagerTrigger
   = ManagerListenerSettled !(Either SomeException AcceptOutcome)
+  | -- | Sprint 2.134: a request worker settled while the broker was still
+    -- serving. The pool is fixed and a worker returns only on the drain
+    -- sentinel, so this is a worker that died, and before this sprint it was
+    -- invisible until the drain that joins the pool — by which time the broker
+    -- had already been serving with fewer workers than its capacity plan
+    -- assumes.
+    ManagerWorkerSettled
   | ManagerDrainRequested
 
 newtype DrainDeadline = DrainDeadline Natural
@@ -626,12 +640,18 @@ waitBrokerServer handle = do
         1000
           * brokerDrainDeadlineMilliseconds
             (brokerLimits (runtimeSettings (handleRuntime handle)))
-  void
-    ( timeout
-        (naturalToTimeoutMicros managerJoinMicros)
-        (waitCatch (handleManager handle))
-    )
-  pure outcome
+  -- Sprint 2.134: the bounded join's result used to be discarded, so a manager
+  -- still running past the drain deadline — and with it the accept loop and the
+  -- worker pool it owns — was reported as a clean return. The bound is
+  -- unchanged; an expired join is now the incomplete shutdown it always was.
+  joined <-
+    timeout
+      (naturalToTimeoutMicros managerJoinMicros)
+      (waitCatch (handleManager handle))
+  pure $ case (joined, outcome) of
+    (Just _, _) -> outcome
+    (Nothing, Left err) -> Left err
+    (Nothing, Right ()) -> Left BrokerShutdownIncomplete
 
 brokerServerSnapshot :: BrokerServerHandle -> IO BrokerServerSnapshot
 brokerServerSnapshot handle = atomically $ do
@@ -1396,13 +1416,14 @@ managerLoop
   -> TMVar (Either BrokerServerError ())
   -> IO ()
 managerLoop runtime acceptThread workers done = do
-  trigger <- atomically (waitForManagerTrigger runtime acceptThread)
+  trigger <- atomically (waitForManagerTrigger runtime acceptThread workers)
   drainDeadline <- newDrainDeadline runtime
-  let acceptFailure = case trigger of
-        ManagerListenerSettled (Left _) -> True
-        ManagerListenerSettled (Right AcceptFailed) -> True
-        ManagerListenerSettled (Right AcceptStopped) -> False
-        ManagerDrainRequested -> False
+  let triggerFailure = case trigger of
+        ManagerListenerSettled (Left _) -> Just BrokerListenerFailed
+        ManagerListenerSettled (Right AcceptFailed) -> Just BrokerListenerFailed
+        ManagerListenerSettled (Right AcceptStopped) -> Nothing
+        ManagerWorkerSettled -> Just BrokerWorkerExitedWhileServing
+        ManagerDrainRequested -> Nothing
   atomically $ do
     phase <- readTVar (runtimePhase runtime)
     when (phase == BrokerServing) $ do
@@ -1436,11 +1457,14 @@ managerLoop runtime acceptThread workers done = do
           atomically (writeTVar (runtimePhase runtime) BrokerForceDraining)
           proof <- forceStopRuntime runtime acceptThread workers
           pure (Just (Left BrokerDrainDeadlineExceeded, proof))
-        (_, Just ()) -> do
+        (_, Just drainOutcome) -> do
           proof <- atomically (proveShutdownComplete runtime)
+          let terminal = case triggerFailure of
+                Just failure -> Just failure
+                Nothing -> drainOutcome
           pure
             ( Just
-                ( if acceptFailure then Left BrokerListenerFailed else Right ()
+                ( maybe (Right ()) Left terminal
                 , proof
                 )
             )
@@ -1452,18 +1476,38 @@ managerLoop runtime acceptThread workers done = do
         let terminalOutcome = case (terminalPhase, outcome) of
               (BrokerForceDraining, Right ()) -> Left BrokerForcedShutdown
               (BrokerForceDraining, Left BrokerListenerFailed) -> Left BrokerForcedShutdown
+              -- A worker that died while the broker was still serving, or that
+              -- did not retire cleanly, is the reason the drain started rather
+              -- than a consequence of it, so a force-drain does not subsume it.
+              -- This is the same distinction the drain-deadline outcome already
+              -- relies on (Sprint 2.134).
               _ -> outcome
         writeTVar (runtimePhase runtime) BrokerStopped
         void (tryPutTMVar done terminalOutcome)
 
-waitForManagerTrigger :: BrokerRuntime -> Async AcceptOutcome -> STM ManagerTrigger
-waitForManagerTrigger runtime acceptThread = do
+-- | Sprint 2.134: while serving, the manager waits on the listener __and__ on
+-- the request pool. The pool's handles were previously looked at only by the
+-- drain that joins them, so a worker's death could not wake anything.
+waitForManagerTrigger
+  :: BrokerRuntime
+  -> Async AcceptOutcome
+  -> [Async ()]
+  -> STM ManagerTrigger
+waitForManagerTrigger runtime acceptThread workers = do
   phase <- readTVar (runtimePhase runtime)
   case phase of
-    BrokerServing -> ManagerListenerSettled <$> waitCatchSTM acceptThread
+    BrokerServing ->
+      (ManagerListenerSettled <$> waitCatchSTM acceptThread)
+        `orElse` (ManagerWorkerSettled <$ anySettledWorker workers)
     BrokerDraining -> pure ManagerDrainRequested
     BrokerForceDraining -> pure ManagerDrainRequested
     BrokerStopped -> pure ManagerDrainRequested
+
+-- | Settle as soon as any worker in the fixed pool has finished, however it
+-- finished. Retries while every worker is still running.
+anySettledWorker :: [Async ()] -> STM ()
+anySettledWorker =
+  foldr (\worker rest -> void (waitCatchSTM worker) `orElse` rest) retry
 
 waitForRuntimeSettlement :: BrokerRuntime -> Async AcceptOutcome -> STM ()
 waitForRuntimeSettlement runtime acceptThread = do
@@ -1483,12 +1527,25 @@ waitForDrainSettlement runtime = do
     (phase == BrokerForceDraining || queued == 0 && active == 0)
     retry
 
-stopWorkersNormally :: BrokerRuntime -> [Async ()] -> IO ()
+-- | Retire the fixed pool by handing every worker its drain sentinel.
+--
+-- Sprint 2.134: a worker that had already settled claims no sentinel, and an
+-- unclaimed sentinel is a queued item, so leaving it behind makes the
+-- exact-empty shutdown postcondition in 'proveShutdownComplete' unreachable and
+-- the graceful branch wedges until the drain deadline. The residue is therefore
+-- drained here, which is a no-op for a pool that was whole.
+stopWorkersNormally :: BrokerRuntime -> [Async ()] -> IO (Maybe BrokerServerError)
 stopWorkersNormally runtime workers = do
   replicateM_
     (length workers)
     (atomically (writeTBQueue (runtimeQueue runtime) Nothing))
-  mapM_ waitCatch workers
+  joined <- mapM waitCatch workers
+  unclaimed <- atomically (drainQueuedSockets (runtimeQueue runtime))
+  mapM_ closeQuietly unclaimed
+  -- Sprint 2.134: the join results used to be discarded by `mapM_`, which is
+  -- rule R6's forbidden shape verbatim — a worker that escaped was
+  -- indistinguishable from one that took its sentinel and returned.
+  pure (if any isLeft joined then Just BrokerWorkerDrainFailed else Nothing)
 
 data ShutdownComplete = ShutdownComplete
 

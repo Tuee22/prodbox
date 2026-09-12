@@ -14,7 +14,6 @@ module Prodbox.Infra.AwsEksTestStack
   , destroyAwsEksTestStackWithAuthentication
   , awsEksTestStackResidueStatus
   , withEksKubeconfig
-  , eksKubeconfig
   , assertNoAwsEksTestStackResidue
   , pulumiAwsProviderEnv
   , renderAwsEksTestStackReport
@@ -24,25 +23,14 @@ module Prodbox.Infra.AwsEksTestStack
   )
 where
 
-import Control.Concurrent.Async (withAsync)
-import Control.Monad (forever)
-import Data.Aeson (Value (Array, String), eitherDecode, encode, object, (.=))
-import Data.ByteString qualified as ByteString
+import Data.Aeson (Value (Array, String), eitherDecode)
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
-import Data.Text.Encoding qualified as TextEncoding
 import Data.Vector qualified as Vector
 import Prodbox.CLI.Output (writeError, writeOutputLine)
 import Prodbox.Cluster.Topology (eksNodeGroupSize)
 import Prodbox.ControlPlane.EksClientAuthClient (withEksClientAuthProjection)
-import Prodbox.ControlPlane.EksClientAuthProjection
-  ( EksClientAuthProjection
-  , eksClientAuthBearerToken
-  , eksClientAuthCertificateAuthorityData
-  , eksClientAuthClusterName
-  , eksClientAuthEndpoint
-  )
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
   , LifecycleAuthorityAuthentication
@@ -70,6 +58,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkProviderStackRef
   )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
+import Prodbox.Lifecycle.Teardown.EphemeralKubectl (withEphemeralKubeconfigPath)
 import Prodbox.Lifecycle.Teardown.Registry qualified as Registry
 import Prodbox.Settings
   ( ConfigFile (..)
@@ -81,9 +70,6 @@ import Prodbox.Settings
   )
 import Prodbox.Settings.Coordinate (awsRegionText)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
-import System.FilePath ((</>))
-import System.IO.Temp (withSystemTempDirectory)
-import System.Posix.Files (createNamedPipe, ownerModes)
 
 -- | Sprint 4.85: both names are projections of the typed lifecycle registry.
 --
@@ -359,66 +345,26 @@ withEksKubeconfig repoRoot action = do
   snapshot <-
     fetchAwsEksTestSnapshotFromBackend repoRoot
       >>= maybe (error "withEksKubeconfig: aws-eks checkpoint is unavailable") pure
+  -- Sprint 7.40: routed onto the one owning module rather than restating it.
+  -- This function used to build its own named pipe with a drifted mode
+  -- (owner-all against the owner's read-write), its own unsupervised writer with
+  -- the same proven 'ENXIO' defect, and its own kubeconfig written with none of
+  -- the @O_EXCL@ / @O_NOFOLLOW@ / @CLOEXEC@ / @0600@ / fsync protections
+  -- "Prodbox.Lifecycle.Teardown.EphemeralKubectl" exists to guarantee — so a
+  -- pre-placed path could capture this one and could not capture that one. Two
+  -- statements of a security property are two properties; this is now one.
   projected <-
     withEksClientAuthProjection
       LifecycleAuthorityOperator
       repoRoot
       (Text.pack awsRegion)
       (Text.pack (eksSnapshotClusterName snapshot))
-      ( \projection ->
-          withSystemTempDirectory "prodbox-eks-client-auth-" $ \directory -> do
-            let kubeconfigPath = directory </> "kubeconfig.json"
-                tokenFifoPath = directory </> "bearer-token"
-            createNamedPipe tokenFifoPath ownerModes
-            BL8.writeFile kubeconfigPath (encode (eksKubeconfig projection tokenFifoPath))
-            withAsync
-              ( forever
-                  ( ByteString.writeFile
-                      tokenFifoPath
-                      (TextEncoding.encodeUtf8 (eksClientAuthBearerToken projection))
-                  )
-              )
-              (const (action kubeconfigPath))
-      )
+      (\projection -> withEphemeralKubeconfigPath projection runWithPrepared)
   either (error . ("withEksKubeconfig: " ++) . show) pure projected
-
-eksKubeconfig
-  :: EksClientAuthProjection
-  -> FilePath
-  -> Value
-eksKubeconfig projection tokenFifoPath =
-  object
-    [ "apiVersion" .= ("v1" :: String)
-    , "kind" .= ("Config" :: String)
-    , "current-context" .= ("prodbox-eks" :: String)
-    , "clusters"
-        .= [ object
-               [ "name" .= eksClientAuthClusterName projection
-               , "cluster"
-                   .= object
-                     [ "server" .= eksClientAuthEndpoint projection
-                     , "certificate-authority-data"
-                         .= eksClientAuthCertificateAuthorityData projection
-                     ]
-               ]
-           ]
-    , "users"
-        .= [ object
-               [ "name" .= ("prodbox-provider" :: String)
-               , "user" .= object ["tokenFile" .= tokenFifoPath]
-               ]
-           ]
-    , "contexts"
-        .= [ object
-               [ "name" .= ("prodbox-eks" :: String)
-               , "context"
-                   .= object
-                     [ "cluster" .= eksClientAuthClusterName projection
-                     , "user" .= ("prodbox-provider" :: String)
-                     ]
-               ]
-           ]
-    ]
+ where
+  runWithPrepared prepared = case prepared of
+    Left unavailable -> error ("withEksKubeconfig: " ++ show unavailable)
+    Right kubeconfigPath -> action kubeconfigPath
 
 joinComma :: [String] -> String
 joinComma = foldr (\value rest -> value ++ if null rest then "" else "," ++ rest) ""

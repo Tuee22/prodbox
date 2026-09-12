@@ -171,7 +171,9 @@ import Prodbox.Lifecycle.Teardown.Model
   )
 import Prodbox.Lifecycle.Teardown.Program
   ( RecoverySurfaceWitness
+  , SomeTeardownOperation (..)
   , TeardownOperation (..)
+  , someTeardownOperationTag
   , teardownOperationTag
   )
 import Prodbox.Lifecycle.Teardown.RecoveryPlane
@@ -366,12 +368,14 @@ executeRecoveryPlaneDescriptorBoundPhase interpreter phase bound durableContext 
             )
       | otherwise ->
           Left
-            (RecoveryPlaneInterpreterUnexpectedOperation (teardownOperationTag operation))
+            ( RecoveryPlaneInterpreterUnexpectedOperation
+                (someTeardownOperationTag operation)
+            )
 
 operationForPlan
   :: CompiledDesiredAbsenceProgram surface
   -> CleanupNodePlan
-  -> Either RecoveryPlaneInterpreterError (TeardownOperation surface)
+  -> Either RecoveryPlaneInterpreterError (SomeTeardownOperation surface)
 operationForPlan compiled plan =
   case [ operation
        | (nodeId, operation) <- compiledDesiredAbsenceOperations compiled
@@ -387,12 +391,13 @@ operationForPlan compiled plan =
 
 phaseMatchesOperation
   :: RecoveryPlaneReadBackPhase
-  -> TeardownOperation surface
+  -> SomeTeardownOperation surface
   -> Bool
-phaseMatchesOperation phase operation = case (phase, operation) of
-  (RecoveryPlaneInitialReadBackPhase, ReadBackRecoveryPlane _) -> True
-  (RecoveryPlaneFinalDispositionPhase, ObserveRecoveryPlaneDisposition _) -> True
-  _ -> False
+phaseMatchesOperation phase (SomeTeardownOperation operation) =
+  case (phase, operation) of
+    (RecoveryPlaneInitialReadBackPhase, ReadBackRecoveryPlane _) -> True
+    (RecoveryPlaneFinalDispositionPhase, ObserveRecoveryPlaneDisposition _) -> True
+    _ -> False
 
 -- | Execute only one of the three closed recovery operations. The caller must
 -- supply the exact post-Begin descriptor-bound handle and private execution
@@ -404,8 +409,8 @@ executeRecoveryPlaneOperation
   => RecoveryPlaneInterpreter m
   -> DescriptorBoundCleanupRun
   -> TeardownExecutionContext surface
-  -> TeardownOperation surface
-  -> m (Either RecoveryPlaneInterpreterError (TeardownNodeResult surface))
+  -> TeardownOperation surface result
+  -> m (Either RecoveryPlaneInterpreterError (TeardownNodeResult surface result))
 executeRecoveryPlaneOperation interpreter bound context operation =
   case operation of
     EstablishRecoveryPlane witness -> executeEstablish witness
@@ -963,7 +968,7 @@ regressionOperationTag
   -> CleanupNodePlan
   -> Either Text Text
 regressionOperationTag compiled plan =
-  case [ teardownOperationTag operation
+  case [ someTeardownOperationTag operation
        | (nodeId, operation) <- compiledDesiredAbsenceOperations compiled
        , nodeId == cleanupNodeId plan
        ] of

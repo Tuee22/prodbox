@@ -45,24 +45,32 @@ lifecycleTeardownAwsStackReaderInterpreterSuite =
         cleanupNodeOperationId commit `shouldNotBe` cleanupNodeOperationId readBack
         cleanupNodeOperationId readBack `shouldNotBe` cleanupNodeOperationId reconcile
 
-      let isNotReaderOperation operation = case operation of
+      let isNotReaderOperation (SomeTeardownOperation operation) = case operation of
             CommitAwsStackReaderBundle _ -> False
             ReadBackAwsStackReaderBundle _ -> False
             _ -> True
       operationsFor AwsEbsPerRunTestKey
         `shouldSatisfy` all isNotReaderOperation
 
-    it "requires a durable recovery predecessor instead of accepting direct execution" $ do
+    it "surfaces a declining interpreter's own cause rather than a generic failure" $ do
+      -- Sprint 4.94 narrowed what these two cases can claim, and the record says
+      -- so rather than leaving the names to overstate it. They used to drive a
+      -- fixture that answered a generic mutation attempt for every operation,
+      -- and the outcome they asserted was the executor refusing that pairing.
+      -- The pairing is no longer representable — an interpreter handed a
+      -- stack-reader operation cannot return a mutation attempt — so what these
+      -- exercise now is the remaining half: a declining interpreter's typed
+      -- cause reaches the caller through both the commit and the read-back node.
       let direct =
             runGenericEffects
               (runCompiledTeardownNode fixtureCompiled commitPlan)
-      direct `shouldSatisfy` isFailed
-
-    it "rejects generic mutation results and cross-operation evidence" $ do
-      let generic =
+          generic =
             runGenericEffects
               (runCompiledTeardownNode fixtureCompiled readBackPlan)
+      direct `shouldSatisfy` isFailed
       generic `shouldSatisfy` isFailed
+
+    it "rejects cross-operation commit evidence" $
       mkAwsStackReaderCommitOutcome
         fixtureRunId
         fixtureGraphDigest
@@ -107,24 +115,28 @@ instance Applicative GenericEffects where
 instance Monad GenericEffects where
   GenericEffects value >>= continue = continue value
 
+-- | Sprint 4.94: the fixture declines every operation.  It used to answer with
+-- a generic mutation attempt, which is how both cases below reached a failed
+-- outcome; that pairing is no longer representable, and an answer cannot be
+-- given without constructing the operation's own result.
 instance LifecycleTeardownEffects GenericEffects where
   executeLifecycleTeardownOperation _ _ =
-    pure (TeardownMutationAttempt TeardownMutationApplied)
+    pure (TeardownNodeRefused "fixture answers no lifecycle operation")
 
 isFailed :: CleanupNodeOutcome -> Bool
 isFailed outcome = case outcome of
   CleanupNodeFailed _ -> True
   _ -> False
 
-operationsFor :: RegisteredResourceKey -> [TeardownOperation 'Cascade]
+operationsFor :: RegisteredResourceKey -> [SomeTeardownOperation 'Cascade]
 operationsFor key =
   [ operation
   | (_, operation) <- compiledDesiredAbsenceOperations fixtureCompiled
   , operationKey operation == Just key
   ]
 
-operationKey :: TeardownOperation surface -> Maybe RegisteredResourceKey
-operationKey operation = case operation of
+operationKey :: SomeTeardownOperation surface -> Maybe RegisteredResourceKey
+operationKey (SomeTeardownOperation operation) = case operation of
   ObserveRegisteredTarget target -> Just (registeredTargetKey target)
   ObserveStackCheckpointPair target -> Just (registeredTargetKey target)
   ReconcileStackCheckpointRestore target -> Just (registeredTargetKey target)
@@ -141,7 +153,7 @@ operationKey operation = case operation of
   ReadBackStackCheckpointRetirement target -> Just (registeredTargetKey target)
   _ -> Nothing
 
-planFor :: TeardownOperation 'Cascade -> CleanupNodePlan
+planFor :: TeardownOperation 'Cascade result -> CleanupNodePlan
 planFor wanted = case matching of
   [plan] -> plan
   _ -> error ("expected one fixture plan for " <> show wanted)
@@ -149,7 +161,8 @@ planFor wanted = case matching of
   matching =
     [ plan
     | plan <- cleanupGraphNodes (compiledDesiredAbsenceGraph fixtureCompiled)
-    , compiledOperationForNode (cleanupNodeId plan) fixtureCompiled == Just wanted
+    , compiledOperationForNode (cleanupNodeId plan) fixtureCompiled
+        == Just (SomeTeardownOperation wanted)
     ]
 
 targetFor :: RegisteredResourceKey -> RegisteredTargetBinding
@@ -161,9 +174,9 @@ targetFor key = case matching of
     [ target
     | (_, operation) <- compiledDesiredAbsenceOperations fixtureCompiled
     , target <- case operation of
-        ObserveRegisteredTarget candidate
+        SomeTeardownOperation (ObserveRegisteredTarget candidate)
           | registeredTargetKey candidate == key -> [candidate]
-        _ -> []
+        SomeTeardownOperation _ -> []
     ]
 
 fixtureCompiled :: CompiledDesiredAbsenceProgram 'Cascade

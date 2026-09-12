@@ -69,7 +69,6 @@ import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
-import Data.Char (isAsciiLower, isDigit)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -151,6 +150,12 @@ import Prodbox.Lifecycle.Teardown.EksDrainIntent
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
   ( AbsenceEvidence (..)
+  )
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ScopeWire
+  , renderScopeWireError
+  , scopeFromWire
+  , scopeToWire
   )
 
 newtype EksDrainReadBackReceiptSubmissionKey
@@ -543,9 +548,12 @@ data EksDrainReadBackReceiptError
   | EksDrainReadBackReceiptCodecDigestInvalid !Text !Text
   | EksDrainReadBackReceiptCodecIdentityInvalid !Text
   | EksDrainReadBackReceiptCodecResourceKeyInvalid !Text
-  | EksDrainReadBackReceiptCodecSurfaceInvalid !Word16
-  | EksDrainReadBackReceiptCodecOperationInvalid !Word16
-  | EksDrainReadBackReceiptCodecAwsScopeInvalid
+  | -- | Every way a stored scope can be wrong, carrying the canonical
+    -- decoder's rendered reason. It replaces three constructors that
+    -- named only the surface tag, the operation tag, and a half-encoded AWS
+    -- scope, because this module no longer states the scope's field rules and
+    -- so can no longer disagree with the other codecs about what they are.
+    EksDrainReadBackReceiptCodecScopeInvalid !Text
   | EksDrainReadBackReceiptEvidenceDigestMismatch !Text !Text
   | EksDrainReadBackReceiptRunMismatch !CleanupRunId !CleanupRunId
   | EksDrainReadBackReceiptGraphMismatch !CleanupDigest !CleanupDigest
@@ -708,25 +716,13 @@ data ReceiptIdentityWire
   = ReceiptIdentityWire
       !Text
       !Text
-      !ReceiptScopeWire
+      !ScopeWire
       !Text
       !Text
       !Text
       !Text
       !Text
       !Text
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
-
-data ReceiptScopeWire
-  = ReceiptScopeWire
-      !Word16
-      !Text
-      !Text
-      !Text
-      !(Maybe Text)
-      !(Maybe Text)
-      !Word16
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -768,15 +764,24 @@ data DecodedReceiptIdentity = DecodedReceiptIdentity
   , decodedReceiptDrainReadBackOperation :: !CleanupOperationId
   }
 
+-- | Sprint 4.92: version 3 is the first encoding whose scope carries the run's
+-- retained DNS hosted zone.
+--
+-- Version 2 bytes are refused rather than upgraded. Their scope was written by
+-- a seven-slot positional record this module authored for itself, which had no
+-- slot for the zone at all, so there is nothing in those bytes to upgrade from.
+-- Refusing on the version tag reports that as the stale format it is, rather
+-- than letting a zone-less decode surface later as a scope mismatch against the
+-- zone-carrying scope the same run still holds.
 receiptFormatVersion :: Word16
-receiptFormatVersion = 2
+receiptFormatVersion = 3
 
 identityWire :: EksDrainReadBackReceiptIdentity -> ReceiptIdentityWire
 identityWire identity =
   ReceiptIdentityWire
     (cleanupRunIdText (eksDrainReadBackReceiptIdentityRunId identity))
     (cleanupDigestText (eksDrainReadBackReceiptIdentityGraphDigest identity))
-    (scopeWire (eksDrainReadBackReceiptIdentityScope identity))
+    (scopeToWire (eksDrainReadBackReceiptIdentityScope identity))
     (registeredResourceKeyText (eksDrainReadBackReceiptIdentityResourceKey identity))
     ( managedResourceCoordinateDigestText
         (eksDrainReadBackReceiptIdentityCoordinateDigest identity)
@@ -789,22 +794,6 @@ identityWire identity =
     ( cleanupOperationIdText
         (eksDrainReadBackReceiptIdentityDrainReadBackOperationId identity)
     )
-
-scopeWire :: ObservationEvidenceScope -> ReceiptScopeWire
-scopeWire scope =
-  ReceiptScopeWire
-    (encodeSurface (evidenceCleanupSurface scope))
-    (registryRevisionText (evidenceRegistryRevision scope))
-    (durableRunScopeText (evidenceDurableRunScope scope))
-    (foundationIdText (evidenceLinuxRke2Foundation scope))
-    account
-    region
-    (encodeOperation (evidenceLifecycleOperation scope))
- where
-  (account, region) = case evidenceAwsScope scope of
-    Nothing -> (Nothing, Nothing)
-    Just (AwsScope (AwsAccountId accountId) (AwsRegion regionId)) ->
-      (Just accountId, Just regionId)
 
 encodeOutcome
   :: EksDrainAttemptOutcome
@@ -1129,41 +1118,36 @@ decodeIdentityWire
         (const (EksDrainReadBackReceiptCodecIdentityInvalid label))
         (constructor raw)
 
+-- | Sprint 4.92: the canonical scope decoder, mapped into this repository's
+-- error type.
+--
+-- The field rules now live in "Prodbox.Lifecycle.Teardown.ScopeCodec". The
+-- decoder this replaces rebuilt the scope through 'mkObservationEvidenceScope',
+-- whose contract hardcodes the DNS hosted zone to absent, so a receipt written
+-- by a run that named a zone decoded back to a different scope than the one it
+-- was committed under and 'validateIdentity' below refused the run its own
+-- receipt. The scope codec it replaces was independently wrong in the other
+-- direction as well: its encoder emitted out-of-band tags for three of the six
+-- cleanup surfaces and for two of the three lifecycle operations, which its own
+-- decoder then rejected, so a receipt committed under any of those could never
+-- be read back at all.
 decodeScopeWire
-  :: ReceiptScopeWire
+  :: ScopeWire
   -> Either EksDrainReadBackReceiptError ObservationEvidenceScope
-decodeScopeWire
-  ( ReceiptScopeWire
-      surfaceTag
-      registryRevision
-      runScope
-      foundation
-      maybeAccount
-      maybeRegion
-      operationTag
-    ) = do
-    surface <- decodeSurface surfaceTag
-    operation <- decodeOperation operationTag
-    validateBoundedText "registry revision" 256 registryRevision
-    validateBoundedText "durable run scope" 256 runScope
-    validateBoundedText "foundation" 256 foundation
-    awsScope <- case (maybeAccount, maybeRegion) of
-      (Just account, Just region) -> do
-        validateAwsAccount account
-        validateAwsRegion region
-        Right (Just (AwsScope (AwsAccountId account) (AwsRegion region)))
-      (Nothing, Nothing) -> Right Nothing
-      _ -> Left EksDrainReadBackReceiptCodecAwsScopeInvalid
-    Right
-      ( mkObservationEvidenceScope
-          surface
-          (RegistryRevision registryRevision)
-          (DurableObservationRunScope runScope)
-          (LinuxRke2FoundationId foundation)
-          awsScope
-          operation
-      )
+decodeScopeWire =
+  first (EksDrainReadBackReceiptCodecScopeInvalid . renderScopeWireError)
+    . scopeFromWire
 
+-- | Refuse a receipt whose decoded identity is not the identity that was
+-- committed.
+--
+-- The scope comparison is over the whole 'ObservationEvidenceScope' with its
+-- derived 'Eq', so it is total by construction and a field added to the scope
+-- is compared without anyone editing this function. That totality is exactly
+-- what the erased DNS hosted zone turned against the run: the encoder retained
+-- a zone the decoder could not restore, so a run that named a zone was refused
+-- its own receipt here, and the refusal named a scope mismatch while the scope
+-- had in fact never differed.
 validateIdentity
   :: EksDrainReadBackReceiptIdentity
   -> DecodedReceiptIdentity
@@ -1240,44 +1224,6 @@ decodeResourceKey raw = case raw of
   "aws-ebs-volumes-production-retained" -> Right AwsEbsProductionRetainedKey
   _ -> Left (EksDrainReadBackReceiptCodecResourceKeyInvalid raw)
 
-encodeSurface :: CleanupSurface -> Word16
-encodeSurface surface = case surface of
-  Cascade -> 1
-  ExplicitPerRun -> 2
-  TotalDecommission -> 3
-  LocalOnly -> localOnlySurfaceTag
-  OperationalTeardown -> operationalTeardownSurfaceTag
-  ExplicitLongLived -> explicitLongLivedSurfaceTag
-
-localOnlySurfaceTag, operationalTeardownSurfaceTag, explicitLongLivedSurfaceTag :: Word16
-localOnlySurfaceTag = 101
-operationalTeardownSurfaceTag = 102
-explicitLongLivedSurfaceTag = 103
-
-decodeSurface
-  :: Word16 -> Either EksDrainReadBackReceiptError CleanupSurface
-decodeSurface tag = case tag of
-  1 -> Right Cascade
-  2 -> Right ExplicitPerRun
-  3 -> Right TotalDecommission
-  _ -> Left (EksDrainReadBackReceiptCodecSurfaceInvalid tag)
-
-encodeOperation :: LifecycleOperation -> Word16
-encodeOperation operation = case operation of
-  ReconcileDesiredAbsent -> 1
-  ReconcileDesiredPresent -> reconcileDesiredPresentOperationTag
-  RunTerminalEscapeAudit -> runTerminalEscapeAuditOperationTag
-
-reconcileDesiredPresentOperationTag, runTerminalEscapeAuditOperationTag :: Word16
-reconcileDesiredPresentOperationTag = 101
-runTerminalEscapeAuditOperationTag = 102
-
-decodeOperation
-  :: Word16 -> Either EksDrainReadBackReceiptError LifecycleOperation
-decodeOperation tag = case tag of
-  1 -> Right ReconcileDesiredAbsent
-  _ -> Left (EksDrainReadBackReceiptCodecOperationInvalid tag)
-
 validateBoundedText
   :: Text -> Int -> Text -> Either EksDrainReadBackReceiptError ()
 validateBoundedText label maximumLength value
@@ -1292,20 +1238,6 @@ validateSha256 label value
   | otherwise = Left (EksDrainReadBackReceiptCodecDigestInvalid label value)
  where
   isLowerHex character = character `elem` ("0123456789abcdef" :: String)
-
-validateAwsAccount :: Text -> Either EksDrainReadBackReceiptError ()
-validateAwsAccount value
-  | Text.length value == 12 && Text.all isDigit value = Right ()
-  | otherwise = Left (EksDrainReadBackReceiptCodecTextInvalid "AWS account" value)
-
-validateAwsRegion :: Text -> Either EksDrainReadBackReceiptError ()
-validateAwsRegion value
-  | Text.null value || Text.length value > 64 =
-      Left (EksDrainReadBackReceiptCodecTextInvalid "AWS region" value)
-  | Text.all valid value = Right ()
-  | otherwise = Left (EksDrainReadBackReceiptCodecTextInvalid "AWS region" value)
- where
-  valid character = isAsciiLower character || isDigit character || character == '-'
 
 mapIdentityError
   :: (Text -> EksDrainReadBackReceiptError)
@@ -1333,12 +1265,3 @@ sha256Text = sha256Bytes . TextEncoding.encodeUtf8
 
 sha256Bytes :: ByteString -> Text
 sha256Bytes = TextEncoding.decodeUtf8 . hexSha256
-
-registryRevisionText :: RegistryRevision -> Text
-registryRevisionText (RegistryRevision value) = value
-
-durableRunScopeText :: DurableObservationRunScope -> Text
-durableRunScopeText (DurableObservationRunScope value) = value
-
-foundationIdText :: LinuxRke2FoundationId -> Text
-foundationIdText (LinuxRke2FoundationId value) = value

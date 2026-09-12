@@ -154,7 +154,9 @@ Current enforced quality surfaces:
   the quality-gate implementation itself
 - generated renderer source modules must remain free of forbidden nondeterministic inputs
   (`getCurrentTime`, `randomIO`, `sort`, `System.Console.Terminal.Size`, `getEnv`, and the
-  other doctrine-named classes exercised by `prodbox-haskell-style`)
+  other doctrine-named classes). The rule reaches a change through `prodbox dev lint haskell`;
+  `prodbox-haskell-style` additionally exercises it against synthetic sources, and since Sprint
+  `5.45` that suite is named by `prodbox test unit` rather than compiled and never run
 - Fourmolu formatting through `fourmolu.yaml`
 - repo-local style-tool bootstrap under `.build/prodbox-style-tools/bin/` through
   `src/Prodbox/Lint.hs`, pinned to formatter GHC `9.12.4`, Fourmolu `0.19.0.1`, and
@@ -162,19 +164,35 @@ Current enforced quality surfaces:
 - HLint through `.hlint.yaml`. **Corrected 2026-09-11 (Sprint `0.33`):** that file contributes no
   enforcement. It holds zero custom hints and only `ignore:` entries, so the hard gate is HLint's
   own `default` plus `extra` groups *minus* those suppressions. The "doctrine-owned marker set" it
-  was credited with is a comment block, and the check that reads it, `checkHlintDoctrineCoverage` in
-  `src/Prodbox/CheckCode.hs`, asserts only that the comment text exists. The nested-case and
-  daemon-path rules it names are enforced by `checkNestedCaseViolations` and
-  `checkDaemonRuntimeImports`, which are ordinary Haskell checks and owe nothing to `.hlint.yaml`.
-  Sprint `2.134` retires the coverage check, its marker block, and the style-suite case that asserts
-  the same markers — all three together, because they are mutually load-bearing.
+  was credited with was a comment block, and the check that read it asserted only that the comment
+  text existed. The nested-case and daemon-path rules it named are enforced by
+  `checkNestedCaseViolations` and `checkDaemonRuntimeImports`, which are ordinary Haskell checks and
+  owe nothing to `.hlint.yaml`. **Sprint `2.134` retired** the coverage check, its marker block, and
+  the style-suite case that asserted the same markers — all three together, because they were
+  mutually load-bearing.
+- spawned-handle disposition through `checkSpawnedHandleDisposition`: every module under `src/` is
+  scanned, and a spawned `Async` handle that is neither linked nor joined is a build failure. The
+  rule's exact scope, its two stated limits, and the type that makes the unsupervised state
+  unconstructible live in
+  [Chaos Hardening Doctrine, rule R6](./chaos_hardening_doctrine.md)
+- ephemeral credential machinery through `checkEphemeralCredentialMachinery`: `createNamedPipe` is
+  refused anywhere under `src/`, and the private-file writer and the rendered `tokenFile` key are
+  refused outside `src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs`. Two statements of that
+  machinery would be two statements of a security property, and the sprint that consolidated it
+  recorded the singular claim in four documents while a third copy survived, because nothing bound
+  it to one file. **The two markers are read in different places**, which is the whole reason the
+  rule is usable: the writer is a Haskell name, read with string literals stripped out; the key is
+  read only inside string literals, because as an ordinary binder the same word means a projected
+  service-account JWT path elsewhere in the tree and refusing it there would refuse a word rather
+  than a mechanism. See [AWS Integration Environment
+  Doctrine](./aws_integration_environment_doctrine.md)
 - daemon-path guardrails for forbidden filesystem readiness markers, `sd_notify`, module-local
   mutable metrics counters, and unrestricted Async primitives outside the closed daemon set.
-  **The region, recorded 2026-09-11 (Standard C):** the "closed daemon set" is two files —
-  `src/Prodbox/Gateway/Daemon.hs` and `src/Prodbox/Workload.hs` — and the guardrail forbids `forkIO`,
-  not an unsupervised `withAsync`. A spawned handle that is neither linked nor joined is permitted
-  everywhere, including inside that set, and five long-lived threads under `src/` take that option.
-  Sprint `2.134` lands the repo-wide rule.
+  **The region (Standard C):** the "closed daemon set" is two files —
+  `src/Prodbox/Gateway/Daemon.hs` and `src/Prodbox/Workload.hs` — and this particular guardrail
+  forbids `forkIO`, not an unsupervised `withAsync`. What covers the unsupervised handle is the
+  separate repo-wide rule above, landed by Sprint `2.134`; the two are complementary and neither
+  subsumes the other.
   Filesystem-watch reload primitives (`fsnotify` / `hinotify`) are **not** forbidden: they are
   the *required* config-reload mechanism per
   [config_doctrine.md § 7](./config_doctrine.md#7-file-watch-reload-trigger). The former blanket
@@ -732,9 +750,11 @@ Automated enforcement is partial:
    hints the configuration turns off. Either re-enable them or shorten the
    list; do not leave it describing a state that is not the case.
 3. **Project-specific hlint custom warnings** in `.hlint.yaml`. **Corrected
-   2026-09-11: none have ever accumulated.** The file has only suppressions.
-   Sprint `2.134` decides whether real hints are written or the claim is
-   withdrawn.
+   2026-09-11: none have ever accumulated, and Sprint `2.134` withdrew the
+   claim rather than writing hints.** The file has only suppressions. The
+   repository's own rules are ordinary Haskell checks in
+   `src/Prodbox/CheckCode.hs`, which is where a new one belongs: they can be
+   unit-tested against synthetic sources, and an hlint hint cannot.
 4. **Code-review checklist.** *"Does any function exceed two levels of
    nested case/if? If so, can it be flattened?"*
 

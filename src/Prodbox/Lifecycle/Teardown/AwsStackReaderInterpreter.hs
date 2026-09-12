@@ -247,8 +247,8 @@ executeAwsStackReaderOperation
   :: (Monad m)
   => AwsStackReaderInterpreter m
   -> TeardownExecutionContext surface
-  -> TeardownOperation surface
-  -> m (Maybe (TeardownNodeResult surface))
+  -> TeardownOperation surface result
+  -> m (Maybe (TeardownNodeResult surface result))
 executeAwsStackReaderOperation interpreter context operation = case operation of
   CommitAwsStackReaderBundle target ->
     Just . either (TeardownNodeRefused . renderError) TeardownAwsStackReaderCommit
@@ -269,7 +269,7 @@ validateCommitAdmission context target = do
   case teardownExecutionSuccessfulPredecessors context of
     [predecessor]
       | teardownSucceededPredecessorOperation predecessor
-          == ReadBackStackCheckpointRecovery target
+          == SomeTeardownOperation (ReadBackStackCheckpointRecovery target)
           && Just (teardownSucceededPredecessorOperationId predecessor)
             == teardownExecutionOperationIdFor
               context
@@ -290,7 +290,7 @@ validateReadBackAdmission context target = do
   case teardownExecutionAttemptedPredecessors context of
     [predecessor]
       | teardownAttemptedPredecessorOperation predecessor
-          == CommitAwsStackReaderBundle target
+          == SomeTeardownOperation (CommitAwsStackReaderBundle target)
           && Just (teardownAttemptedPredecessorOperationId predecessor)
             == teardownExecutionOperationIdFor
               context
@@ -304,7 +304,7 @@ validateReadBackAdmission context target = do
 
 validateCurrentOperation
   :: TeardownExecutionContext surface
-  -> TeardownOperation surface
+  -> TeardownOperation surface result
   -> Either AwsStackReaderInterpreterError ()
 validateCurrentOperation context expected
   | teardownExecutionOperationIdFor context expected

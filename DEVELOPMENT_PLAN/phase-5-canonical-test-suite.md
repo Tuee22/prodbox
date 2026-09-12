@@ -4237,15 +4237,15 @@ None.
   [system-components.md](system-components.md); register the compiled harness defaults in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
-## Sprint 5.44: A Fake That Never Authenticates Cannot Prove Authentication [📋 Planned]
+## Sprint 5.44: A Fake That Never Authenticates Cannot Prove Authentication [✅ Done]
 
-**Status**: Planned. Phase `5` own-surface reopen (Standard A/N) on the canonical suite's boundary
+**Status**: Done. Phase `5` own-surface reopen (Standard A/N) on the canonical suite's boundary
 coverage and its assertion vocabulary.
 **Doctrine**: [Unit Testing Policy § 0, Canonical Statement
 10](../documents/engineering/unit_testing_policy.md#0-canonical-statements) and [§ 1.1, "Core
 rule"](../documents/engineering/unit_testing_policy.md#11-core-rule).
-**Implementation**: `test/support/TestSupport.hs`, a new real-child process-boundary harness under
-`test/`, and `prodbox.cabal`.
+**Implementation**: `test/support/TestSupport.hs`, `test/unit/CredentialDeliveryHarness.hs` (new),
+`test/unit/Main.hs`, and `prodbox.cabal`.
 **Blocked by**: none.
 **Live-proof**: not applicable; the surface is local test vocabulary.
 **Deployment qualification**: not applicable; this sprint changes no production composition.
@@ -4299,16 +4299,66 @@ the EKS or DNS01 teardown paths. The boundary sat in the gap between the two tie
 3. New modules are registered in `prodbox.cabal`, so the suite actually compiles them.
 4. Full unit suite and `prodbox dev check` exit 0.
 
+### Closure Record
+
+**The harness asserts arrival, which is the whole point.** The child re-execs the test binary,
+parses the kubeconfig it is handed exactly as `kubectl` would, reads the credential through
+`users[0].user.tokenFile`, and echoes it. The parent asserts the exact bytes, so no amount of
+absence assertion can satisfy it. It reuses the journal tests' self-exec idiom rather than inventing
+a second one, and it builds the child's environment from `getEnvironment` rather than passing an
+explicit list — the runner applies `Just environment` verbatim, so an empty list would have left the
+child with no `PATH`, which is exactly how the deleted prior art survived only by carrying an
+absolute shebang.
+
+**One thing the sprint record did not anticipate, and it is now doctrine.** A Haskell child cannot
+reproduce `kubectl`'s wedge by default: GHC opens files non-blocking, so a Haskell reader of a
+writerless FIFO gets an immediate empty read, while an ordinary C program opens blocking and waits
+for a writer that never comes. Both are real failures and they are different failures. The harness
+therefore models the read mode explicitly and produces either on demand, because a fixture that
+silently modelled one as the other would be committing the substitution this sprint exists to stop.
+
+**The elapsed-time vocabulary is in the shared module; the harness is not.** `withElapsedMicros` and
+`sleepMicros` use `GHC.Clock` from `base`, which is the binding constraint: `TestSupport` is
+compiled into five of the eight suites and two of them depend on neither `time` nor `process`. A
+harness that spawns a child cannot live there, so it has its own module registered only in
+`prodbox-unit`.
+
+**The blanket ratio stays forbidden, and the record says which case forbids it.**
+`test/unit/ControlPlaneTargetSecretWorker.hs` runs a real child under a one-second bound and
+finishes in single-digit milliseconds; a retroactive "elapsed must be a fraction of the bound" rule
+would make it flaky on a loaded host without proving anything it does not already prove.
+
+### Validation Record
+
+1. **It can disagree with its subject.** Against a regular file holding the credential, the child
+   delivers the exact bytes. Against a writerless FIFO it delivers nothing, and the case asserts
+   both that the delivery is empty and that it is not the credential.
+2. **The elapsed-time assertion fails a slow fixture and passes a fast one.** A deliberately slow
+   action measures at or above the bound; the fast delivery measures below it.
+3. **The wedge signature is pinned.** A blocking open against a writerless FIFO — what `kubectl`
+   actually does — is terminated by the bounded runner at **1.00 s** of a one-second bound, with the
+   exact wall-clock refusal. Elapsed equal to the bound is the shape, and it is now named in the
+   suite rather than rediscovered.
+4. **The child gets a real environment**, asserted directly: its `PATH` is non-empty.
+5. **Registration is real.** The module is in `prodbox-unit`'s `other-modules` and its suite is
+   called from `unitSuite`; its self-exec dispatcher runs before tasty, after the journal
+   dispatcher and only when that one did not claim the argv.
+6. **Canonical gate.** Focused Sprint-5.44 group **5/5**, primary unit suite **4,943/4,943**,
+   auxiliaries **27/27**, **35/35**, **39/39**, and canonical `prodbox dev check` exits 0.
+
 ### Remaining Work
 
-All deliverables above.
+None.
 
-## Sprint 5.45: Three Suites The Gate Compiles And Nothing Runs [📋 Planned]
+## Sprint 5.45: Three Suites The Gate Compiles And Nothing Runs [✅ Done]
 
-**Status**: Planned. Phase `5` own-surface reopen (Standard A/N) on the public runner contract this
+**Status**: Done. Phase `5` own-surface reopen (Standard A/N) on the public runner contract this
 phase owns.
-**Implementation**: `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, and
-`src/Prodbox/CheckCode.hs`.
+**Implementation**: `src/Prodbox/TestPlan.hs` and `src/Prodbox/CheckCode.hs`;
+`test/daemon-lifecycle/Main.hs`, `test/haskell-style/Main.hs`, `test/unit/Main.hs`,
+`test/golden/daemon-health/metrics.golden`, and `prodbox.cabal`. `src/Prodbox/TestRunner.hs` is
+deliberately unchanged: `runHaskellSuites` already executes whatever a scope names, so routing was a
+data change rather than a runner change.
 **Blocked by**: none.
 **Live-proof**: not applicable.
 **Deployment qualification**: not applicable.
@@ -4349,20 +4399,70 @@ the daemon-lifecycle behavioural contract are both cited as proven by a suite th
 2. Adding a suite without a runner fails the gate, proven by a synthetic stanza case.
 3. Full unit suite and `prodbox dev check` exit 0.
 
+### Closure Record
+
+**Routed, not retired, and the record says why for each.** `prodbox-haskell-style` and
+`prodbox-pulumi` join `prodbox test unit`: neither needs a cluster, one inspects the repository and
+one exercises retained Pulumi program ownership locally. `prodbox-daemon-lifecycle` joins
+`prodbox test all`, because it spawns the built operator binary as a real daemon and drives its
+health, drain and restart contract over real sockets — that is the aggregate scope's shape, not the
+unit scope's.
+
+**The routing is a table, because a list inside a `case` arm is unreachable as data.**
+`unitScopeHaskellSuites`, `aggregateScopeHaskellSuites` and `integrationScopeHaskellSuites` are
+exported values the scope arms consume, and `routedHaskellSuites` is their union. `TestRunner` did
+not change at all: `runHaskellSuites` already runs whatever a scope names.
+
+**The gate is a bijection in both directions.** `testSuiteStanzaViolations` compares the stanzas
+`prodbox.cabal` declares against the names `Prodbox.TestPlan` routes. A declared stanza with no
+runner is the defect this closes; a routed name with no stanza is a scope that would fail at
+`cabal test` with a name nobody typed deliberately. It is pure over the manifest text so the unit
+suite can feed it a synthetic ninth stanza, which is the only way to prove a rule fires rather than
+merely passes.
+
+**Running them is what showed why it mattered, and none of it was a regression this sprint
+introduced.** `prodbox-haskell-style` failed on an assertion that was false about the architecture
+it claimed to protect: it required the library stanza to declare no `process` dependency, while
+`System.Process` supplies the `delegate_ctlc` the streaming runner needs and `typed-process` does not
+expose. The case now asserts what is actually enforced — that `System.Process` appears in exactly one
+module — and says why it changed. `prodbox-daemon-lifecycle` failed **23 of 27** cases: a later
+sprint made the gateway daemon refuse to start without a Tier-0 deployment context, and this suite's
+fixture never learned to supply one, so every case spawned a daemon that exited during bounded
+startup. The fixture now writes one through the canonical generator, exactly as the unit suite's
+binary-sibling cases do. Its `/metrics` golden had also gone stale by one metric family
+(`prodbox_gateway_bounded_liveness_frames`) and by a heartbeat sample a peerless daemon no longer
+emits — the same TYPE-only shape `prodbox_gateway_peer_connected` already had in the accepted
+golden, which is what makes the new shape readable as correct rather than merely different.
+
+### Validation Record
+
+1. **Every declared suite is named by at least one scope, asserted as a table.** A unit case reads
+   the manifest's stanza names and compares them with `routedHaskellSuites`; another asserts the
+   package as it stands produces no violation.
+2. **Adding a suite without a runner fails the gate**, proven by a synthetic manifest carrying a
+   ninth stanza. The opposite direction is proven too, by a synthetic manifest missing one the plan
+   routes, and the original interface rule still fires on a synthetic `detailed-0.9` stanza.
+3. **All three newly routed suites pass**: `prodbox-daemon-lifecycle` **27/27**,
+   `prodbox-haskell-style` **17/17**, `prodbox-pulumi` **4/4**.
+4. **Canonical gate.** Focused Sprint-5.45 group **5/5**, primary unit suite **4,948/4,948**, and
+   canonical `prodbox dev check` exits 0.
+
 ### Remaining Work
 
-All deliverables above.
+None.
 
-## Sprint 5.46: The Property The Policy Already Mandates [⏸️ Blocked]
+## Sprint 5.46: The Property The Policy Already Mandates [✅ Done]
 
-**Status**: Blocked. Phase `5` own-surface reopen (Standard A/N) on the canonical suite's property
-coverage.
+**Status**: Done. Phase `5` own-surface reopen (Standard A/N) on the canonical suite's property
+coverage. Sprint `4.92` landed the single canonical scope codec on 2026-09-11, so the block that
+held this row was discharged: the properties are written against
+`Prodbox.Lifecycle.Teardown.ScopeCodec` rather than against the eighteen hand-authored shapes it
+replaced.
 **Doctrine**: [Unit Testing Policy § 3.2,
 "Properties"](../documents/engineering/unit_testing_policy.md#32-properties).
-**Implementation**: `test/unit/` property modules and `prodbox.cabal`.
-**Blocked by**: Sprint `4.92`, which lands the single canonical scope codec these properties are
-written against; writing them first would pin eighteen hand-authored shapes this project is about to
-replace with one.
+**Implementation**: `test/unit/ScopeCodecProperties.hs` (new), `test/unit/Main.hs`, and
+`prodbox.cabal`.
+**Blocked by**: none.
 **Live-proof**: not applicable.
 **Deployment qualification**: not applicable.
 **Independent Validation**: the properties are pure and exhaustively generated; a mutation that
@@ -4385,7 +4485,7 @@ without a single failing test. The rule existed; the test did not.
 
 ### Deliverables
 
-- The round-trip properties § 3.2 mandates, over the canonical codec Sprint `4.92` lands, with
+- The round-trip properties § 3.2 mandates, over the canonical codec Sprint `4.92` landed, with
   generators that produce both zoned and zoneless values and that discriminate fields from one
   another so no two same-typed fields can collide and no field can hold a decoder's default.
 - Correct the policy's own tier table to say where codec properties live.
@@ -4398,9 +4498,44 @@ without a single failing test. The rule existed; the test did not.
 2. The properties run in the suite the policy's table names.
 3. Full unit suite and `prodbox dev check` exit 0.
 
+### Closure Record
+
+**Seven properties, a hundred cases each, in the suite the policy's own table names.** The round
+trip through the canonical wire form, the round trip through the field set without touching the
+wire, the zone surviving and an absent zone staying absent, the identity projection separating
+exactly the scopes that differ, every field reaching that projection, and both audit re-scopers
+keeping the run's zone.
+
+**The generators are the part worth reviewing.** They produce zoned and zoneless scopes in roughly
+equal measure, because the erasure was invisible on exactly the zoned half. They discriminate
+same-typed fields by prefixing each with the field it belongs to, so a codec that swapped the
+registry revision with the run scope fails rather than passes — a generator that gave them
+interchangeable values would not have noticed. And they never emit a value a decoder's own default
+could have produced, which is the property the historical erasure needed in order to be caught at
+all.
+
+**The policy's own list is now honest about which bullets hold.** § 3.2 said "at minimum,
+`decode . encode == id`" and listed thirteen further laws in the indicative. The rewritten paragraph
+says that the codec round trip holds for this type, in this suite, and that the remaining laws are
+table-covered under § 3.1 rather than property-covered. It does not claim the whole list.
+
+### Validation Record
+
+1. **A mutation that drops a scope field fails**, proven by running two.
+   - Dropping the zone from the wire encoder does not compile at all: the field set is destructured
+     positionally, so the abandoned binding is an unused-match error under `-Werror`. That is a
+     stronger outcome than a failing property and is the Sprint-`4.92` mechanism doing its work.
+   - Dropping the zone's *value* from the identity projection while keeping its discriminator does
+     compile, and fails `every scope field reaches the identity projection`. Both mutations were
+     reverted and the tree re-verified byte-identical before closing.
+2. **The properties run in the suite the policy's table names** — `prodbox-unit` — rather than
+   outside it, which is where the tree's only two genuine wire round trips lived before.
+3. **Canonical gate.** Focused Sprint-5.46 group **7/7** at 100 cases each, primary unit suite
+   **4,955/4,955**, and canonical `prodbox dev check` exits 0.
+
 ### Remaining Work
 
-All deliverables above.
+None.
 
 ## Related Documents
 

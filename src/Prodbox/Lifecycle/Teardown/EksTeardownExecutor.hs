@@ -27,6 +27,7 @@ import Prodbox.ControlPlane.EksDrainReadBackReceiptClient
 import Prodbox.ControlPlane.EksDrainReadBackReceiptRepository
   ( committedEksDrainTargetsAbsentEvidence
   )
+import Prodbox.Lifecycle.CleanupRun (CleanupOperationId)
 import Prodbox.Lifecycle.Teardown.AwsEksAdapter
   ( AwsEksObservationPurpose (ObserveEksForDecision)
   , VerifiedAwsEksObservation
@@ -109,8 +110,8 @@ executeEksTeardownOperation
   :: (Monad m)
   => EksTeardownExecutor m
   -> TeardownExecutionContext surface
-  -> TeardownOperation surface
-  -> m (Maybe (TeardownNodeResult surface))
+  -> TeardownOperation surface result
+  -> m (Maybe (TeardownNodeResult surface result))
 executeEksTeardownOperation executor context operation = case operation of
   CommitEksDrainIntent target ->
     Just <$> executeCommit executor context target
@@ -125,7 +126,8 @@ executeEksTeardownOperation executor context operation = case operation of
 -- | Reconstruct the exact four-operation identity from the sealed compiled
 -- catalog.  No caller-supplied operation text can enter the durable intent.
 eksDrainOperationBindingForContext
-  :: TeardownExecutionContext surface
+  :: forall surface
+   . TeardownExecutionContext surface
   -> RegisteredTargetBinding
   -> Either EksTeardownExecutorError EksDrainOperationBinding
 eksDrainOperationBindingForContext context target = do
@@ -150,6 +152,15 @@ eksDrainOperationBindingForContext context target = do
         drainReadBackOperation
     )
  where
+  -- Sprint 4.94: the four drain operations answer with four different result
+  -- kinds, so this lookup stays polymorphic in the index.  The signature is
+  -- mandatory rather than decorative: a GADT module gives an unannotated local
+  -- binding a monomorphic type, which would pin it to whichever kind was used
+  -- first.
+  required
+    :: Text
+    -> TeardownOperation surface result
+    -> Either EksTeardownExecutorError CleanupOperationId
   required label wanted =
     maybe
       (Left (EksTeardownOperationMissing label))
@@ -161,7 +172,7 @@ executeCommit
   => EksTeardownExecutor m
   -> TeardownExecutionContext surface
   -> RegisteredTargetBinding
-  -> m (TeardownNodeResult surface)
+  -> m (TeardownNodeResult surface 'MutationAttemptResult)
 executeCommit executor context target = case eksDrainOperationBindingForContext context target of
   Left err -> pure (refused err)
   Right binding -> case requireAttemptedPredecessor context (ObserveRegisteredTarget target) of
@@ -180,7 +191,7 @@ commitNewIntent
   -> TeardownExecutionContext surface
   -> RegisteredTargetBinding
   -> EksDrainOperationBinding
-  -> m (TeardownNodeResult surface)
+  -> m (TeardownNodeResult surface 'MutationAttemptResult)
 commitNewIntent executor context target binding = do
   observed <-
     observeVerifiedAwsEksForDecision
@@ -231,7 +242,7 @@ commitPrepared
   :: (Monad m)
   => EksTeardownExecutor m
   -> Either EksTeardownExecutorError EksDrainIntent
-  -> m (TeardownNodeResult surface)
+  -> m (TeardownNodeResult surface 'MutationAttemptResult)
 commitPrepared _ (Left err) = pure (refused err)
 commitPrepared executor (Right intent) = do
   committed <- commitAndReadBackEksDrainIntent (eksTeardownIntentClient executor) intent
@@ -250,7 +261,7 @@ executeIntentReadBack
   => EksTeardownExecutor m
   -> TeardownExecutionContext surface
   -> RegisteredTargetBinding
-  -> m (TeardownNodeResult surface)
+  -> m (TeardownNodeResult surface 'EksDrainIntentReadBackResult)
 executeIntentReadBack executor context target = case eksDrainOperationBindingForContext context target of
   Left err -> pure (refused err)
   Right binding -> case requireAttemptedPredecessor context (CommitEksDrainIntent target) of
@@ -266,7 +277,7 @@ executeDrain
   => EksTeardownExecutor m
   -> TeardownExecutionContext surface
   -> RegisteredTargetBinding
-  -> m (TeardownNodeResult surface)
+  -> m (TeardownNodeResult surface 'EksDrainAttemptResult)
 executeDrain executor context target = case eksDrainOperationBindingForContext context target of
   Left err -> pure (refused err)
   Right binding -> case requireAttemptedPredecessor context (ReadBackEksDrainIntent target) of
@@ -299,7 +310,7 @@ executeDrainReadBack
   => EksTeardownExecutor m
   -> TeardownExecutionContext surface
   -> RegisteredTargetBinding
-  -> m (TeardownNodeResult surface)
+  -> m (TeardownNodeResult surface 'EksDrainTargetReadBackResult)
 executeDrainReadBack executor context target = case eksDrainOperationBindingForContext context target of
   Left err -> pure (refused err)
   Right binding -> case requireAttemptedPredecessor context (DrainEksKubernetesResources target) of
@@ -327,7 +338,7 @@ createReceipt
   -> TeardownExecutionContext surface
   -> RegisteredTargetBinding
   -> EksDrainOperationBinding
-  -> m (TeardownNodeResult surface)
+  -> m (TeardownNodeResult surface 'EksDrainTargetReadBackResult)
 createReceipt executor context target binding = do
   recovered <- recoverIntent executor binding
   case recovered of
@@ -379,9 +390,9 @@ withFreshEksExecutionInputs
   -> ( ObservationRevision
        -> Integer
        -> Maybe (VerifiedAwsEksObservation 'ObserveEksForDecision)
-       -> m (TeardownNodeResult surface)
+       -> m (TeardownNodeResult surface result)
      )
-  -> m (TeardownNodeResult surface)
+  -> m (TeardownNodeResult surface result)
 withFreshEksExecutionInputs executor context target committed continue =
   case eksDrainIntentTarget (committedEksDrainIntent committed) of
     EksDrainNoKubernetesTarget {} ->
@@ -421,7 +432,7 @@ recoverIntent executor =
 
 requireAttemptedPredecessor
   :: TeardownExecutionContext surface
-  -> TeardownOperation surface
+  -> TeardownOperation surface wantedResult
   -> Either EksTeardownExecutorError ()
 requireAttemptedPredecessor context wanted = do
   expectedOperation <-
@@ -431,7 +442,8 @@ requireAttemptedPredecessor context wanted = do
       (teardownExecutionOperationIdFor context wanted)
   case [ predecessor
        | predecessor <- teardownExecutionAttemptedPredecessors context
-       , teardownAttemptedPredecessorOperation predecessor == wanted
+       , teardownAttemptedPredecessorOperation predecessor
+           == SomeTeardownOperation wanted
        , teardownAttemptedPredecessorOperationId predecessor == expectedOperation
        ] of
     [_] -> Right ()
@@ -488,7 +500,7 @@ isReceiptMissing err = case err of
   EksDrainReadBackReceiptClientRecoveryMissing -> True
   _ -> False
 
-refused :: (Show err) => err -> TeardownNodeResult surface
+refused :: (Show err) => err -> TeardownNodeResult surface result
 refused = TeardownNodeRefused . renderError
 
 renderError :: (Show err) => err -> Text

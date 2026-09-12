@@ -103,16 +103,33 @@ test-only Boolean success path that production cannot produce.
 construction* and no fake at all of *authentication*: it never opens the credential file, so a
 credential mechanism that has never worked passes through it unchanged. That is what happened. When
 a fake stands in for a boundary that consumes a credential, it must consume the credential by the
-same mechanism production uses, and the case must assert the exact value arrived. Sprint `5.44`
-lands the harness.
+same mechanism production uses, and the case must assert the exact value arrived.
+
+**Sprint `5.44` landed the harness (2026-09-11).** `test/unit/CredentialDeliveryHarness.hs` re-execs
+the test binary as the child, parses the kubeconfig it is handed exactly as `kubectl` would, reads
+the credential through `users[0].user.tokenFile`, and echoes it, so the assertion is that the exact
+bytes reached a separate process. It carries its own disagreement proof — against a writerless FIFO
+the child delivers nothing and the case fails — and it models the child's read mode explicitly,
+because GHC opens non-blocking and gets an immediate empty read where an ordinary C program opens
+blocking and waits for a writer that never comes. Both are real failures, they are different
+failures, and a harness that silently modelled one as the other would be the same class of defect it
+exists to catch.
 
 **A bounded call asserts elapsed time, not only its result.** "Returned an error eventually" cannot
 distinguish slow from wedged, and the distinction is the whole diagnosis: a call whose duration
 tracks its supervisor's bound — thirty seconds under a thirty-second bound, forty under forty — is
 not slow, it never completes. Any case exercising a bounded subprocess asserts that it finished in a
-small fraction of that bound. Sprint `5.44` lands the vocabulary; note that a blanket ratio applied
-retroactively produces false positives, because at least one existing case carries a one-second
-bound.
+small fraction of that bound.
+
+**Sprint `5.44` landed the vocabulary (2026-09-11).** `withElapsedMicros` and `sleepMicros` in
+`test/support/TestSupport.hs` read a monotonic clock from `GHC.Clock`, which is in `base` and
+therefore compiles under all five suites that share that module — two of them depend on neither
+`time` nor `process`, which is also why the real-child harness lives in its own module rather than
+there. A negative control pins the wedge signature itself: elapsed equal to the bound, plus the
+exact wall-clock refusal, so the shape is recognised rather than rediscovered. The blanket ratio
+stays forbidden: at least one existing case carries a one-second bound and finishes in single-digit
+milliseconds, and a retroactive ratio rule would make it flaky on a loaded host without proving
+anything it does not already prove.
 
 ### 1.2 Test hooks
 
@@ -129,15 +146,25 @@ must not change domain decisions. Direct `threadDelay` for race coordination is 
 | Pure unit tables | Parsing, validation, ADTs, graph rejection, `decide`/`evolve`, admission, deadline, cleanup scheduling | `test/unit/` |
 | Conformance tier | Cross-artifact agreement between compiled registries and their projections | `prodbox-unit` plus the canonical quality gate |
 | Parser tests | `argv -> Command` via `execParserPure`, including rejection | `test/unit/Parser.hs` |
-| Property tests | Codec/replay/idempotency/monotonicity/bounds/deadline laws | `prodbox-unit` — **target, not current (2026-09-11)**: the tree holds roughly five property registrations in total, and the only two genuine wire round trips live outside `prodbox-unit`. Sprint `5.46` |
+| Property tests | Codec/replay/idempotency/monotonicity/bounds/deadline laws | `prodbox-unit`. Since Sprint `5.46` (2026-09-11) the observation-evidence scope's round trip and identity projection are property-covered there; § 3.2 says which of its other bullets are table-covered rather than property-covered |
+| Real-child process boundary | A credential, an argument set, or a bound crossing a real `exec`, asserted by what arrived rather than by what is absent | `prodbox-unit`, self-exec modules such as `test/unit/CredentialDeliveryHarness.hs` and `test/unit/GatewayEmitterJournal.hs` |
 | Deterministic concurrency simulation | Actor interleavings, saturation, cancellation, restart, response loss | dedicated pure/simulation test module |
 | Built-frontend integration | Real binary routing and fake boundary behavior | `test/integration/` |
-| Daemon lifecycle | Real process/config/health/admission/drain/restart contract | `test/daemon-lifecycle/` — **compiled by the gate and executed by no `prodbox test` scope (2026-09-11)**, so this contract is unproven rather than merely unexercised. Sprint `5.45` |
+| Daemon lifecycle | Real process/config/health/admission/drain/restart contract | `test/daemon-lifecycle/`, named by `prodbox test all` since Sprint `5.45` (2026-09-11). It had been compiled by the gate and executed by nothing, and running it showed the cost: **23 of 27** cases failed because the daemon had since acquired a Tier-0 deployment-context requirement its fixture never learned to supply |
 | Production-adapter composition | Real binary with native MinIO/Vault/CAS clients and exact identity binding | named integration validation |
 | Load qualification | Authored steady rate plus burst under exact cgroups | named integration validation |
 | Chaos qualification | Kill/isolate/restart at every durable transition boundary | named integration validation |
-| Pulumi infrastructure | Provision, assert, always-run cleanup, residue re-observation | `test/pulumi/` — **executed by no `prodbox test` scope (2026-09-11)**; only the named validations run. Sprint `5.45` |
+| Pulumi infrastructure | Provision, assert, always-run cleanup, residue re-observation | `test/pulumi/`, named by `prodbox test unit` since Sprint `5.45` (2026-09-11); the live retained flows remain the named validations' |
 | Golden tests | CLI, plans, health/ready/metrics, generated docs | `test/golden/` |
+
+**Every declared suite has a runner, and a gate holds that (Sprint `5.45`, 2026-09-11).**
+`prodbox.cabal` declares eight `test-suite` stanzas; `Prodbox.TestPlan` names which of them each
+`prodbox test` scope runs, as exported tables rather than lists buried in `case` arms; and
+`testSuiteStanzaViolations` compares the two sets in both directions, so a stanza with no runner and
+a routed name with no stanza are each a build failure. A suite nobody runs is a suite whose
+assertions are unproven rather than merely unexercised, which is not a theoretical distinction: of
+the three this closed, one carried an assertion that was false about the architecture it claimed to
+protect and one failed 23 of its 27 cases on first execution.
 
 The canonical named-validation inventory is defined in `src/Prodbox/TestValidation.hs`; phase and
 substrate coverage are defined by `TestPlan` and
@@ -239,14 +266,30 @@ Use `tasty-quickcheck` for, at minimum:
 Happy-path chronological generators alone are insufficient. Generate duplicate, reordered,
 conflicting, stale, truncated, malformed, unobservable, and response-lost cases.
 
-**What this list currently is, recorded 2026-09-11 (Standard C).** § 3.1's exhaustive tables are
-largely met. **This section is not.** The tree holds roughly five `testProperty` registrations in
-total, of which two are genuine wire round trips, and both live outside `prodbox-unit`. Against that
-density, the `decode . encode == id` bullet is a target rather than a description: fifteen codecs
-for one durable type erased a field for weeks without a single failing test, which is precisely the
-class the first bullet exists to prevent. Sprint `5.46` lands the round-trip properties over the
-canonical codec Sprint `4.92` derives. Read the bullets above as required, not as achieved, until
-that sprint closes and this paragraph is rewritten to say which of them hold.
+**Which of these hold, recorded 2026-09-11 (Standard C), rewritten by Sprint `5.46` the same day.**
+§ 3.1's exhaustive tables are largely met. This section was not: the tree held roughly five
+`testProperty` registrations in total, of which two were genuine wire round trips, and both lived
+outside `prodbox-unit` — the suite the tier table above names as their home. Against that density
+the `decode . encode == id` bullet was a target rather than a description, and the cost is on the
+record: fifteen independently authored codecs for one durable type erased a field for weeks without
+a single failing test, which is exactly the class the first bullet exists to prevent.
+
+- **`decode . encode == id` for bounded valid values** now holds for the observation-evidence scope,
+  the durable coordinate every teardown observation binds to, over the single canonical codec
+  `Prodbox.Lifecycle.Teardown.ScopeCodec` owns, in `prodbox-unit`. It does **not** yet hold for
+  every durable type in the tree, and this sentence is the honest statement of that.
+- **The remaining bullets stay targets.** Deterministic replay, duplicate-command idempotency, stale
+  epoch rejection, monotonic generations, the retained-material and selected-worker laws, CAS
+  re-decision, bounded projections, deadline monotonicity, retry-within-deadline, heartbeat
+  coalescing, and the two cleanup laws are asserted by exhaustive tables under § 3.1 rather than by
+  generated properties. Read them as required and table-covered, not as property-covered.
+
+Two things about the generators are doctrine rather than implementation, because both are cheap to
+get wrong and neither is visible in a passing run. They discriminate same-typed fields from one
+another, so a codec that swapped two `Text` fields fails rather than passes; and they never emit a
+value a decoder's own default could have produced, which is the property the historical erasure
+needed in order to be caught. A generator that gave every field the same value would have passed the
+codec that shipped the defect.
 
 ### 3.3 Deterministic concurrency simulation
 

@@ -78,7 +78,7 @@ data CompiledDesiredAbsenceProgram surface = CompiledDesiredAbsenceProgram
   , internalCompiledDesiredAbsenceRunScope :: !DurableObservationRunScope
   , internalCompiledDesiredAbsenceObservationScope :: !ObservationEvidenceScope
   , internalCompiledDesiredAbsenceOperations
-      :: !(Map CleanupNodeId (TeardownOperation surface))
+      :: !(Map CleanupNodeId (SomeTeardownOperation surface))
   , internalCompiledDesiredAbsenceRecoveryCapabilityCatalog
       :: !RecoveryCapabilityCatalog
   }
@@ -106,14 +106,14 @@ compiledDesiredAbsenceObservationScope =
 
 compiledDesiredAbsenceOperations
   :: CompiledDesiredAbsenceProgram surface
-  -> [(CleanupNodeId, TeardownOperation surface)]
+  -> [(CleanupNodeId, SomeTeardownOperation surface)]
 compiledDesiredAbsenceOperations =
   Map.toAscList . internalCompiledDesiredAbsenceOperations
 
 compiledOperationForNode
   :: CleanupNodeId
   -> CompiledDesiredAbsenceProgram surface
-  -> Maybe (TeardownOperation surface)
+  -> Maybe (SomeTeardownOperation surface)
 compiledOperationForNode nodeId =
   Map.lookup nodeId . internalCompiledDesiredAbsenceOperations
 
@@ -321,88 +321,94 @@ compileDesiredAbsenceGraphWithProgram
 
     compilePlan nodeIds (sourceNode, nodeId, operationId) = do
       dependencies <- mapM (compileDependency nodeIds) (programNodeDependencies sourceNode)
-      coordinate <- operationCoordinate surface (programNodeOperation sourceNode)
-      pure $ case programNodeOperation sourceNode of
-        EstablishRecoveryPlane _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedEnsure coordinate) nodeId operationId dependencies
-        ReadBackRecoveryPlane _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-        ObserveRecoveryPlaneDisposition _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
-        ObserveRegisteredTarget _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
-        ObserveStackCheckpointPair _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
-        ReconcileStackCheckpointRestore _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedEnsure coordinate) nodeId operationId dependencies
-        ReadBackStackCheckpointRecovery _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-        CommitAwsStackReaderBundle _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-        ReadBackAwsStackReaderBundle _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-        CommitEksDrainIntent _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-        ReadBackEksDrainIntent _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-        DrainEksKubernetesResources _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-        ReadBackEksKubernetesDrain _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-        ReconcileRegisteredTargetAbsent _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-        ReadBackRegisteredTargetAbsent _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-        RetireStackCheckpointPair _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-        ReadBackStackCheckpointRetirement _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-        AuditCascadeEscapes ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
-        CommitCascadePreUninstallReport ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-        ReadBackCascadePreUninstallReport ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-        UninstallCascadeLocalFoundation ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-        ReadBackCascadeLocalAbsence ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-        CommitCascadeCompletion ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-        ReadBackCascadeCompletion ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-        UninstallLocalOnlyFoundation ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-        ReadBackLocalOnlyAbsence ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-        CommitLocalOnlyCompletion ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-        ReadBackLocalOnlyCompletion ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-        RevokeOperationalCredential _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-        ReadBackOperationalCredentialRevocation _ ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-        CommitOrdinarySurfaceReport ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-        ReadBackOrdinarySurfaceReport ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-        AuditTotalDecommissionEscapes ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
-        ObserveExternalDecommissionReceipt ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
-        UninstallDecommissionLocalFoundation ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-        ReadBackDecommissionLocalAbsence ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-        ApplyDecommissionLocalDataDisposition ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
-        ReadBackDecommissionLocalDataDisposition ->
-          mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
-        CommitDecommissionTerminalReceipt ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
-        ReadBackDecommissionTerminalReceipt ->
-          mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+      -- Sprint 4.94: the node forgot its operation's result index, and this is
+      -- where it is recovered.  Nothing below depends on it; the capability
+      -- class a node compiles to is a property of the operation, not of the
+      -- shape of the answer it asks for.
+      case programNodeOperation sourceNode of
+        SomeTeardownOperation operation -> do
+          coordinate <- operationCoordinate surface operation
+          pure $ case operation of
+            EstablishRecoveryPlane _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedEnsure coordinate) nodeId operationId dependencies
+            ReadBackRecoveryPlane _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+            ObserveRecoveryPlaneDisposition _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
+            ObserveRegisteredTarget _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
+            ObserveStackCheckpointPair _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
+            ReconcileStackCheckpointRestore _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedEnsure coordinate) nodeId operationId dependencies
+            ReadBackStackCheckpointRecovery _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+            CommitAwsStackReaderBundle _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+            ReadBackAwsStackReaderBundle _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+            CommitEksDrainIntent _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+            ReadBackEksDrainIntent _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+            DrainEksKubernetesResources _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+            ReadBackEksKubernetesDrain _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+            ReconcileRegisteredTargetAbsent _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+            ReadBackRegisteredTargetAbsent _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+            RetireStackCheckpointPair _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+            ReadBackStackCheckpointRetirement _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+            AuditCascadeEscapes ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
+            CommitCascadePreUninstallReport ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+            ReadBackCascadePreUninstallReport ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+            UninstallCascadeLocalFoundation ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+            ReadBackCascadeLocalAbsence ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+            CommitCascadeCompletion ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+            ReadBackCascadeCompletion ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+            UninstallLocalOnlyFoundation ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+            ReadBackLocalOnlyAbsence ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+            CommitLocalOnlyCompletion ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+            ReadBackLocalOnlyCompletion ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+            RevokeOperationalCredential _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+            ReadBackOperationalCredentialRevocation _ ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+            CommitOrdinarySurfaceReport ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+            ReadBackOrdinarySurfaceReport ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+            AuditTotalDecommissionEscapes ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
+            ObserveExternalDecommissionReceipt ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
+            UninstallDecommissionLocalFoundation ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+            ReadBackDecommissionLocalAbsence ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+            ApplyDecommissionLocalDataDisposition ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
+            ReadBackDecommissionLocalDataDisposition ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+            CommitDecommissionTerminalReceipt ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleSubmit coordinate) nodeId operationId dependencies
+            ReadBackDecommissionTerminalReceipt ->
+              mkCleanupNodePlan (mkCapabilityRef @'LifecycleObserve coordinate) nodeId operationId dependencies
 
 compileDependency
   :: Map ProgramNodeName CleanupNodeId
@@ -420,7 +426,7 @@ compileDependency nodeIds dependency =
 
 operationCoordinate
   :: CleanupSurfaceWitness surface
-  -> TeardownOperation surface
+  -> TeardownOperation surface result
   -> Either DesiredAbsenceGraphError CapabilityCoordinate
 operationCoordinate surface operation =
   do
@@ -437,7 +443,7 @@ operationCoordinate surface operation =
     -> Either DesiredAbsenceGraphError value
   coordinatePart = first (DesiredAbsenceCoordinateInvalid . Text.pack . show)
 
-operationLogicalName :: TeardownOperation surface -> Text
+operationLogicalName :: TeardownOperation surface result -> Text
 operationLogicalName operation = case operationTargetBinding operation of
   Nothing -> teardownOperationTag operation
   Just target ->
@@ -456,7 +462,7 @@ stableOperationDigest
   -> CleanupSurfaceWitness surface
   -> RecoveryCapabilityCatalogDraft
   -> RecoveryCapabilitySet
-  -> TeardownOperation surface
+  -> SomeTeardownOperation surface
   -> Text
 stableOperationDigest
   runId
@@ -466,7 +472,7 @@ stableOperationDigest
   surface
   recoveryCapabilityCatalogDraft
   recoveryCapabilities
-  operation =
+  (SomeTeardownOperation operation) =
     bindRecoveryCapabilitiesToOperationIdentity
       baseIdentity
       recoveryCapabilityCatalogDraft
@@ -517,7 +523,7 @@ stableOperationDigest
         ]
 
 operationTargetBinding
-  :: TeardownOperation surface -> Maybe RegisteredTargetBinding
+  :: TeardownOperation surface result -> Maybe RegisteredTargetBinding
 operationTargetBinding operation = case operation of
   ObserveRegisteredTarget target -> Just target
   ObserveStackCheckpointPair target -> Just target

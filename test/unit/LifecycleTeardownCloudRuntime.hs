@@ -451,7 +451,7 @@ checkSurface environment surface = do
   traces <- readIORef (fakeDispatchTrace environment)
   length traces `shouldBe` length plansAndOperations
   forM_ (zip plansAndOperations traces) $ \((_, operation), trace) -> do
-    dispatchTraceTag trace `shouldBe` teardownOperationTag operation
+    dispatchTraceTag trace `shouldBe` someTeardownOperationTag operation
     dispatchOwned trace `shouldBe` maybe False (const True) (expectedRoute operation)
   pure (mapMaybe (expectedRoute . snd) plansAndOperations)
 
@@ -464,14 +464,14 @@ dispatchOwned (DispatchTrace _ shape) = case shape of
   DispatchRefused _ -> True
   DispatchHandled -> True
 
-dispatchShape :: Maybe (TeardownNodeResult surface) -> DispatchShape
+dispatchShape :: Maybe (TeardownNodeResult surface result) -> DispatchShape
 dispatchShape result = case result of
   Nothing -> DispatchNotOwned
   Just (TeardownNodeRefused detail) -> DispatchRefused detail
   Just _ -> DispatchHandled
 
-expectedRoute :: TeardownOperation surface -> Maybe CloudRoute
-expectedRoute operation = case operation of
+expectedRoute :: SomeTeardownOperation surface -> Maybe CloudRoute
+expectedRoute (SomeTeardownOperation operation) = case operation of
   ObserveRegisteredTarget _ -> Just RegisteredObserveRoute
   ReconcileRegisteredTargetAbsent _ -> Just RegisteredReconcileRoute
   ReadBackRegisteredTargetAbsent _ -> Just RegisteredReadBackRoute
@@ -560,10 +560,10 @@ isEksDrainOperation
   :: CompiledDesiredAbsenceProgram surface -> CleanupNodePlan -> Bool
 isEksDrainOperation compiled plan =
   case compiledOperationForNode (cleanupNodeId plan) compiled of
-    Just CommitEksDrainIntent {} -> True
-    Just ReadBackEksDrainIntent {} -> True
-    Just DrainEksKubernetesResources {} -> True
-    Just ReadBackEksKubernetesDrain {} -> True
+    Just (SomeTeardownOperation CommitEksDrainIntent {}) -> True
+    Just (SomeTeardownOperation ReadBackEksDrainIntent {}) -> True
+    Just (SomeTeardownOperation DrainEksKubernetesResources {}) -> True
+    Just (SomeTeardownOperation ReadBackEksKubernetesDrain {}) -> True
     _ -> False
 
 memoryCleanupRunClient :: IORef CleanupRun -> CleanupRunClient IO
@@ -649,7 +649,7 @@ planForTag compiled tag = case matching of
     [ plan
     | plan <- cleanupGraphNodes (compiledDesiredAbsenceGraph compiled)
     , Just operation <- [compiledOperationForNode (cleanupNodeId plan) compiled]
-    , teardownOperationTag operation == tag
+    , someTeardownOperationTag operation == tag
     ]
 
 fixtureRunId :: CleanupRunId

@@ -1371,7 +1371,7 @@ validateCommitSelectionAdmission =
   validateEksDrainProjectionAdmission CommitEksDrainIntent
 
 validateEksDrainProjectionAdmission
-  :: (RegisteredTargetBinding -> TeardownOperation surface)
+  :: (RegisteredTargetBinding -> TeardownOperation surface result)
   -> TeardownExecutionContext surface
   -> RegisteredTargetBinding
   -> EksDrainOperationBinding
@@ -1404,7 +1404,7 @@ validateProviderObservationRevision context verified = do
     )
 
 validateEksDrainProtocolContext
-  :: (RegisteredTargetBinding -> TeardownOperation surface)
+  :: (RegisteredTargetBinding -> TeardownOperation surface result)
   -> TeardownExecutionContext surface
   -> RegisteredTargetBinding
   -> EksDrainOperationBinding

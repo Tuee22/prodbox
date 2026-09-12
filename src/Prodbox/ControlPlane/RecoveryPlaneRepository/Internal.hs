@@ -154,6 +154,7 @@ import Prodbox.Lifecycle.Teardown.Model
   )
 import Prodbox.Lifecycle.Teardown.Program
   ( RecoverySurfaceWitness (..)
+  , SomeTeardownOperation (..)
   , TeardownOperation (..)
   )
 import Prodbox.Lifecycle.Teardown.RecoveryPlane
@@ -827,8 +828,8 @@ exactAttemptedEstablish identity context =
             )
         )
       case teardownAttemptedPredecessorOperation predecessor of
-        EstablishRecoveryPlane _ -> Right predecessor
-        _ ->
+        SomeTeardownOperation (EstablishRecoveryPlane _) -> Right predecessor
+        SomeTeardownOperation _ ->
           Left
             ( RecoveryPlaneRepositoryPredecessorStateMismatch
                 (teardownAttemptedPredecessorOperationId predecessor)
@@ -853,8 +854,8 @@ exactTerminalReadBack identity context =
     )
     (teardownExecutionTerminalPredecessors context) of
     [predecessor] -> case teardownTerminalPredecessorOperation predecessor of
-      ReadBackRecoveryPlane _ -> Right predecessor
-      _ ->
+      SomeTeardownOperation (ReadBackRecoveryPlane _) -> Right predecessor
+      SomeTeardownOperation _ ->
         Left
           ( RecoveryPlaneRepositoryPredecessorStateMismatch
               (teardownTerminalPredecessorOperationId predecessor)

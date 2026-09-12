@@ -12,8 +12,10 @@
 -- "Prodbox.Lifecycle.Teardown.CloudRuntimeProduction" — and nothing drove the
 -- dispatcher over a durable run.  This module is that drive.  It is
 -- package-private, and its facade exposes only non-authorizing booleans: Sprint
--- @6.5@ owns activating a public writer, and nothing in the repository calls
--- the entrypoint below.
+-- @6.5@ owns activating a public writer.  The one caller is
+-- "Prodbox.Test.CascadeQualification", which drives it under a named
+-- qualification cycle and holds no writer permit of either kind; no public
+-- command reaches it.
 --
 -- Six properties carry the design.
 --
@@ -55,8 +57,8 @@
 --
 -- What this module does not own: the content of any node, which belongs to the
 -- runtime that answers it; the public @cluster delete --cascade@ route, which
--- Sprint @6.5@ cuts over; and the decision to run at all, which no caller in
--- this repository makes.
+-- Sprint @6.5@ cuts over; and the decision to run at all, which belongs to the
+-- operator who names a qualification cycle rather than to any command.
 module Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal
   ( -- * What the caller supplies
     CascadeCandidateInputs (..)
@@ -215,7 +217,8 @@ import Prodbox.Lifecycle.Teardown.Model
   , LinuxRke2FoundationId (..)
   )
 import Prodbox.Lifecycle.Teardown.Program
-  ( TeardownOperation (UninstallCascadeLocalFoundation)
+  ( SomeTeardownOperation (SomeTeardownOperation)
+  , TeardownOperation (UninstallCascadeLocalFoundation)
   )
 import Prodbox.Lifecycle.Teardown.ProviderDispatch
   ( productionTeardownProviderBoundary
@@ -800,7 +803,7 @@ compiledLocalUninstallOperationId
 compiledLocalUninstallOperationId compiled =
   case [ cleanupNodeOperationId node
        | (nodeId, operation) <- compiledDesiredAbsenceOperations compiled
-       , operation == UninstallCascadeLocalFoundation
+       , operation == SomeTeardownOperation UninstallCascadeLocalFoundation
        , node <- cleanupGraphNodes (compiledDesiredAbsenceGraph compiled)
        , cleanupNodeId node == nodeId
        ] of

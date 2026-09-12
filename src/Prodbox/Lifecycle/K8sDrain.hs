@@ -18,6 +18,7 @@
 module Prodbox.Lifecycle.K8sDrain
   ( CascadeDecision (..)
   , ClusterProbe (..)
+  , DrainCallFailure (..)
   , DrainTimeout (..)
   , DrainResult (..)
   , K8sDrainEnv
@@ -25,6 +26,11 @@ module Prodbox.Lifecycle.K8sDrain
   , classifyClusterProbe
   , collectSurvivors
   , defaultDrainTimeout
+  , drainKubectlDiscoveryAttempts
+  , drainKubectlRequestTimeoutArgument
+  , drainKubectlRequestTimeoutSeconds
+  , drainKubectlWallClockMarginSeconds
+  , drainKubectlWallClockSeconds
   , deleteReclaimPersistentVolumeJsonPath
   , deleteReclaimPvcBindings
   , drainAwsAffectingK8sResources
@@ -38,25 +44,131 @@ module Prodbox.Lifecycle.K8sDrain
 where
 
 import Control.Concurrent (threadDelay)
+import Control.Monad (void)
 import Data.List (intercalate)
+import Data.Text qualified as Text
+import GHC.Clock (getMonotonicTimeNSec)
+import Prodbox.Error (errorMsg)
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
-  ( ProcessOutput (..)
+  ( BoundedSubprocessLimits (..)
+  , ProcessOutput (..)
   , Subprocess (..)
-  , captureSubprocessResult
+  , captureSubprocessBounded
   )
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
 
--- | Configurable drain deadline. Default is 5 minutes, which is
--- enough headroom for the AWS Load Balancer Controller to delete an
--- ALB (~30-60s) and for the EBS CSI driver to delete a small Delete-
--- reclaim PVC (~30-60s) even on a slow control plane.
+-- | The completion poll's budget. Default is 5 minutes, which is enough
+-- headroom for the AWS Load Balancer Controller to delete an ALB (~30-60s) and
+-- for the EBS CSI driver to delete a small Delete-reclaim PVC (~30-60s) even on
+-- a slow control plane.
+--
+-- __This is not the bound on a @kubectl@ call, and Sprint 4.93 made the two
+-- visibly separate numbers.__ It bounds /waiting for resources to disappear/.
+-- Until that sprint it bounded nothing else either: every call that asks ran
+-- through an unbounded runner, so a child that blocked held the drain past the
+-- five minutes an operator reads about, and the refusal they are told to expect
+-- could not be emitted because the code never reached it.
+--
+-- The two numbers now compose, and each is stated where it is derived. A call
+-- is bounded at 'drainKubectlWallClockSeconds'; a poll iteration makes @2 + N@
+-- calls for N targeted PVCs; and this budget is an absolute deadline read from
+-- a monotonic clock rather than a counter decremented by the sleep interval
+-- alone. Time spent inside an iteration's calls is therefore charged against
+-- it, which the superseded countdown did not do: it subtracted 10 per iteration
+-- whatever the calls cost, so the stated 300 seconds was an iteration count.
 newtype DrainTimeout = DrainTimeout {drainTimeoutSeconds :: Int}
   deriving (Eq, Show)
 
 defaultDrainTimeout :: DrainTimeout
 defaultDrainTimeout = DrainTimeout 300
+
+-- | Sprint 4.93: the per-request bound every drain @kubectl@ carries.
+--
+-- It bounds one HTTP request, not one invocation, which is the distinction the
+-- wall clock below is derived from. It is appended by 'drainSubprocess' rather
+-- than at call sites, so no call can omit it: without one, the outer wall clock
+-- is a call's only bound and @kubectl@'s own exact error can never be the
+-- reported cause. Two of the nine calls used to pass it and seven did not.
+drainKubectlRequestTimeoutSeconds :: Int
+drainKubectlRequestTimeoutSeconds = 5
+
+drainKubectlRequestTimeoutArgument :: String
+drainKubectlRequestTimeoutArgument =
+  "--request-timeout=" ++ show drainKubectlRequestTimeoutSeconds ++ "s"
+
+-- | How many API-group discovery requests @kubectl@ issues before it gives up.
+--
+-- Measured rather than assumed, by the same Sprint 6.5 measurement the
+-- ephemeral client's bound rests on: a discovery-bearing @kubectl get@ against
+-- an unreachable endpoint took 10.04 s at a 2-second request timeout, 15.04 s
+-- at 3 seconds, and 25.05 s at 5 seconds, emitting exactly five
+-- @couldn't get current server API group list@ errors each time.
+drainKubectlDiscoveryAttempts :: Int
+drainKubectlDiscoveryAttempts = 5
+
+-- | Process spawn and TLS, which the request timeouts do not cover.
+drainKubectlWallClockMarginSeconds :: Int
+drainKubectlWallClockMarginSeconds = 10
+
+-- | The wall clock one drain @kubectl@ invocation may take.
+--
+-- Derived, not chosen. A discovery-bearing call can spend
+-- 'drainKubectlDiscoveryAttempts' request timeouts on discovery and one more on
+-- the resource itself, so the outer bound must exceed that sum or it fires
+-- first and replaces @kubectl@'s own exact error with an opaque
+-- \"bounded subprocess exceeded its wall-clock timeout\".
+drainKubectlWallClockSeconds :: Int
+drainKubectlWallClockSeconds =
+  (drainKubectlDiscoveryAttempts + 1) * drainKubectlRequestTimeoutSeconds
+    + drainKubectlWallClockMarginSeconds
+
+-- | The physical ceilings one drain @kubectl@ runs under.
+--
+-- The stdout ceiling is load-bearing rather than decorative: the cluster-wide
+-- @get pv@ this module runs is its largest output, and it used to be read into
+-- a lazy 'String' with no cap at all.
+drainKubectlLimits :: BoundedSubprocessLimits
+drainKubectlLimits =
+  BoundedSubprocessLimits
+    { boundedSubprocessMaximumInputBytes = 1
+    , boundedSubprocessMaximumStdoutBytes = 2 * 1024 * 1024
+    , boundedSubprocessMaximumStderrBytes = 128 * 1024
+    , boundedSubprocessTimeoutMicros = drainKubectlWallClockSeconds * 1000 * 1000
+    }
+
+-- | Why one drain @kubectl@ call produced no answer.
+--
+-- Sprint 4.93. The two cases used to be one @String@, and the distinction is
+-- the one [Lifecycle Reconciliation
+-- Doctrine](../../../documents/engineering/lifecycle_reconciliation_doctrine.md)
+-- requires: a bounded refusal is __unobservable__ — the API server may or may
+-- not have acted, and the drain cannot claim otherwise — while a non-zero exit
+-- is the server answering and refusing. Collapsing them made a wedged child
+-- indistinguishable from a rejected request, and both became 'DrainFailed',
+-- which asserts the cluster was reached.
+data DrainCallFailure
+  = DrainCallUnobservable !String
+  | DrainCallRefused !String
+  deriving (Eq, Show)
+
+renderDrainCallFailure :: DrainCallFailure -> String
+renderDrainCallFailure failure = case failure of
+  DrainCallUnobservable detail -> detail
+  DrainCallRefused detail -> detail
+
+-- | Carry one call failure into the drain's own result vocabulary.
+drainResultFromCallFailure :: String -> DrainCallFailure -> DrainResult
+drainResultFromCallFailure context failure = case failure of
+  DrainCallUnobservable detail -> DrainUnobservable (context ++ ": " ++ detail)
+  DrainCallRefused detail -> DrainFailed (context ++ ": " ++ detail)
+
+-- | Prefix a call failure's detail without losing which kind it is.
+contextualiseCallFailure :: String -> DrainCallFailure -> DrainCallFailure
+contextualiseCallFailure context failure = case failure of
+  DrainCallUnobservable detail -> DrainCallUnobservable (context ++ ": " ++ detail)
+  DrainCallRefused detail -> DrainCallRefused (context ++ ": " ++ detail)
 
 -- | Exact execution target for every kubectl subprocess in one drain.
 --
@@ -188,9 +300,15 @@ renderClusterProbe probe = case probe of
   ClusterUnobservable detail -> "unobservable (" ++ detail ++ ")"
 
 -- | Pure fail-closed classifier for the probe subprocess result.
+--
+-- Sprint 4.93 widened what a 'Failure' can mean. The probe now runs through the
+-- bounded runner, so the transport arm covers a child that never started /and/
+-- one terminated by its own wall clock; the wording no longer asserts the
+-- former. Neither is evidence of absence, which is why both land on
+-- 'ClusterUnobservable' rather than on a new constructor.
 classifyClusterProbe :: Result ProcessOutput -> ClusterProbe
 classifyClusterProbe result = case result of
-  Failure err -> ClusterUnobservable ("failed to start `kubectl`: " ++ err)
+  Failure err -> ClusterUnobservable ("`kubectl cluster-info` did not complete: " ++ err)
   Success output -> case processExitCode output of
     ExitSuccess -> ClusterReachable
     ExitFailure code ->
@@ -242,19 +360,8 @@ cascadeDecisionFromDrainResult result = case result of
 -- that the installed cluster is absent.
 probeCluster :: K8sDrainEnv -> IO ClusterProbe
 probeCluster env =
-  classifyClusterProbe
-    <$> captureSubprocessResult
-      Subprocess
-        { subprocessPath = drainKubectlExecutable env
-        , subprocessArguments =
-            drainKubectlArguments
-              env
-              [ "cluster-info"
-              , "--request-timeout=5s"
-              ]
-        , subprocessEnvironment = Just (drainEnvironment env)
-        , subprocessWorkingDirectory = drainWorkingDirectory env
-        }
+  classifyClusterProbe . boundedOutcome
+    <$> captureSubprocessBounded drainKubectlLimits (drainSubprocess env ["cluster-info"])
 
 -- | Read the exact Kubernetes identity used to bind a remote EKS drain
 -- session.  The request always uses this drain environment's explicit
@@ -268,12 +375,11 @@ observeK8sClusterUid env = do
       [ "get"
       , "namespace"
       , "kube-system"
-      , "--request-timeout=5s"
       , "-o"
       , "jsonpath={.metadata.uid}"
       ]
   pure $ do
-    raw <- observed
+    raw <- either (Left . renderDrainCallFailure) Right observed
     case words raw of
       [uid] -> Right uid
       [] -> Left "Kubernetes identity probe returned an empty namespace UID"
@@ -304,7 +410,7 @@ drainAwsAffectingK8sResources env timeout = do
     ClusterReachable -> do
       deleteResult <- deleteAwsAffectingResources env
       case deleteResult of
-        Left err -> pure (DrainFailed err)
+        Left failure -> pure (drainResultFromCallFailure "drain delete" failure)
         Right targets -> waitForDrainComplete env targets timeout
 
 newtype DrainTargets = DrainTargets
@@ -312,7 +418,8 @@ newtype DrainTargets = DrainTargets
   }
   deriving (Eq, Show)
 
-deleteAwsAffectingResources :: K8sDrainEnv -> IO (Either String DrainTargets)
+deleteAwsAffectingResources
+  :: K8sDrainEnv -> IO (Either DrainCallFailure DrainTargets)
 deleteAwsAffectingResources env = do
   loadBalancers <-
     runKubectl
@@ -325,7 +432,8 @@ deleteAwsAffectingResources env = do
       , "--ignore-not-found=true"
       ]
   case loadBalancers of
-    Left err -> pure (Left ("delete LoadBalancer Services: " ++ err))
+    Left failure ->
+      pure (Left (contextualiseCallFailure "delete LoadBalancer Services" failure))
     Right () -> do
       ingresses <-
         runKubectl
@@ -338,11 +446,12 @@ deleteAwsAffectingResources env = do
           , "--ignore-not-found=true"
           ]
       case ingresses of
-        Left err -> pure (Left ("delete Ingresses: " ++ err))
+        Left failure -> pure (Left (contextualiseCallFailure "delete Ingresses" failure))
         Right () -> do
           pvcs <- deleteDeleteReclaimPvcs env
           case pvcs of
-            Left err -> pure (Left ("delete Delete-reclaim PVCs: " ++ err))
+            Left failure ->
+              pure (Left (contextualiseCallFailure "delete Delete-reclaim PVCs" failure))
             Right bindings -> pure (Right (DrainTargets bindings))
 
 -- | Delete every PVC whose underlying PV has @reclaimPolicy=Delete@.
@@ -363,19 +472,34 @@ deleteReclaimPvcBindings rawOutput =
   , not (null name)
   ]
 
-deleteDeleteReclaimPvcs :: K8sDrainEnv -> IO (Either String [(String, String)])
+deleteDeleteReclaimPvcs
+  :: K8sDrainEnv -> IO (Either DrainCallFailure [(String, String)])
 deleteDeleteReclaimPvcs env = do
   listResult <- listDeleteReclaimPvcBindings env
   case listResult of
-    Left err -> pure (Left err)
+    Left failure -> pure (Left failure)
     Right bindings -> do
       results <- mapM (deletePvc env) bindings
-      pure $ case [err | Left err <- results] of
+      -- One unobservable delete makes the whole set unobservable: the drain
+      -- cannot claim a PVC was refused when it does not know the request
+      -- arrived, and it cannot claim the set completed either.
+      pure $ case [failure | Left failure <- results] of
         [] -> Right bindings
-        errs -> Left (intercalate "; " errs)
+        failures
+          | any isUnobservableCallFailure failures ->
+              Left (DrainCallUnobservable (joinCallFailures failures))
+          | otherwise -> Left (DrainCallRefused (joinCallFailures failures))
+
+isUnobservableCallFailure :: DrainCallFailure -> Bool
+isUnobservableCallFailure failure = case failure of
+  DrainCallUnobservable _ -> True
+  DrainCallRefused _ -> False
+
+joinCallFailures :: [DrainCallFailure] -> String
+joinCallFailures = intercalate "; " . map renderDrainCallFailure
 
 listDeleteReclaimPvcBindings
-  :: K8sDrainEnv -> IO (Either String [(String, String)])
+  :: K8sDrainEnv -> IO (Either DrainCallFailure [(String, String)])
 listDeleteReclaimPvcBindings env = do
   result <-
     captureKubectl
@@ -386,10 +510,10 @@ listDeleteReclaimPvcBindings env = do
       , deleteReclaimPersistentVolumeJsonPath
       ]
   pure $ case result of
-    Left err -> Left ("list Delete-reclaim PVs: " ++ err)
+    Left failure -> Left (contextualiseCallFailure "list Delete-reclaim PVs" failure)
     Right output -> Right (deleteReclaimPvcBindings output)
 
-deletePvc :: K8sDrainEnv -> (String, String) -> IO (Either String ())
+deletePvc :: K8sDrainEnv -> (String, String) -> IO (Either DrainCallFailure ())
 deletePvc env (namespace, name) =
   runKubectl
     env
@@ -402,33 +526,48 @@ deletePvc env (namespace, name) =
     , "--ignore-not-found=true"
     ]
 
+-- | Poll until the targeted resources are gone or the budget is spent.
+--
+-- Sprint 4.93 replaced a counter with an absolute deadline. The counter was
+-- decremented by the sleep interval once per iteration regardless of how long
+-- that iteration's @2 + N@ read-backs took, so the stated budget was an
+-- iteration count rather than an elapsed-time bound — and with those calls
+-- themselves unbounded, an iteration could take arbitrarily long without
+-- charging a second against it. The deadline is read from a monotonic clock, so
+-- time spent in a call is time spent.
 waitForDrainComplete :: K8sDrainEnv -> DrainTargets -> DrainTimeout -> IO DrainResult
-waitForDrainComplete env targets timeout = go (drainTimeoutSeconds timeout)
+waitForDrainComplete env targets timeout = do
+  startedAt <- monotonicSeconds
+  go startedAt
  where
   pollIntervalSeconds = 10 :: Int
 
-  go :: Int -> IO DrainResult
-  go remainingSeconds
-    | remainingSeconds <= 0 = do
-        survivors <- collectTargetedSurvivors env targets
-        case survivors of
-          Left err -> pure (DrainFailed err)
-          Right [] -> pure DrainSucceeded
-          Right names -> pure (DrainTimedOut names)
-    | otherwise = do
-        survivors <- collectTargetedSurvivors env targets
-        case survivors of
-          Left err -> pure (DrainFailed err)
-          Right [] -> pure DrainSucceeded
-          Right _ -> do
+  go :: Word -> IO DrainResult
+  go startedAt = do
+    survivors <- collectTargetedSurvivors env targets
+    case survivors of
+      Left failure -> pure (drainResultFromCallFailure "drain read-back" failure)
+      Right [] -> pure DrainSucceeded
+      Right names -> do
+        now <- monotonicSeconds
+        if now - startedAt >= fromIntegral (max 0 (drainTimeoutSeconds timeout))
+          then pure (DrainTimedOut names)
+          else do
             threadDelay (pollIntervalSeconds * 1000000)
-            go (remainingSeconds - pollIntervalSeconds)
+            go startedAt
 
-collectSurvivors :: K8sDrainEnv -> IO (Either String [String])
+-- | Whole seconds on a monotonic clock, which is what a deadline needs and a
+-- wall clock cannot promise.
+monotonicSeconds :: IO Word
+monotonicSeconds = do
+  nanos <- getMonotonicTimeNSec
+  pure (fromIntegral (nanos `div` 1_000_000_000))
+
+collectSurvivors :: K8sDrainEnv -> IO (Either DrainCallFailure [String])
 collectSurvivors env = do
   bindings <- listDeleteReclaimPvcBindings env
   case bindings of
-    Left err -> pure (Left err)
+    Left failure -> pure (Left failure)
     Right targets -> collectTargetedSurvivors env (DrainTargets targets)
 
 -- | Read back every resource class after delete acceptance. Services and
@@ -437,7 +576,7 @@ collectSurvivors env = do
 -- so disappearance of their PV rows cannot be mistaken for observed PVC
 -- absence.
 collectTargetedSurvivors
-  :: K8sDrainEnv -> DrainTargets -> IO (Either String [String])
+  :: K8sDrainEnv -> DrainTargets -> IO (Either DrainCallFailure [String])
 collectTargetedSurvivors env targets = do
   loadBalancersResult <-
     captureKubectl
@@ -450,7 +589,8 @@ collectTargetedSurvivors env targets = do
       , "jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name}{\"\\n\"}{end}"
       ]
   case loadBalancersResult of
-    Left err -> pure (Left ("read back LoadBalancer Services: " ++ err))
+    Left failure ->
+      pure (Left (contextualiseCallFailure "read back LoadBalancer Services" failure))
     Right loadBalancersText -> do
       ingressesResult <-
         captureKubectl
@@ -462,14 +602,15 @@ collectTargetedSurvivors env targets = do
           , "jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name}{\"\\n\"}{end}"
           ]
       case ingressesResult of
-        Left err -> pure (Left ("read back Ingresses: " ++ err))
+        Left failure ->
+          pure (Left (contextualiseCallFailure "read back Ingresses" failure))
         Right ingressesText -> do
           pvcResults <-
             mapM
               (readBackTargetedPvc env)
               (drainTargetPersistentVolumeClaims targets)
-          pure $ case [err | Left err <- pvcResults] of
-            (err : _) -> Left err
+          pure $ case [failure | Left failure <- pvcResults] of
+            (failure : _) -> Left failure
             [] ->
               Right
                 ( [ "Service/" ++ name | name <- lines loadBalancersText, not (null name)
@@ -482,7 +623,9 @@ collectTargetedSurvivors env targets = do
                 )
 
 readBackTargetedPvc
-  :: K8sDrainEnv -> (String, String) -> IO (Either String (Maybe String))
+  :: K8sDrainEnv
+  -> (String, String)
+  -> IO (Either DrainCallFailure (Maybe String))
 readBackTargetedPvc env (namespace, name) = do
   result <-
     captureKubectl
@@ -497,15 +640,16 @@ readBackTargetedPvc env (namespace, name) = do
       , "name"
       ]
   pure $ case result of
-    Left err ->
+    Left failure ->
       Left
-        ( "read back targeted PVC "
-            ++ namespace
-            ++ "/"
-            ++ name
-            ++ ": "
-            ++ err
+        ( contextualiseCallFailure
+            ("read back targeted PVC " ++ namespace ++ "/" ++ name)
+            failure
         )
+    -- The module's only absence decision, and it is gated on a successful exit
+    -- rather than on the absence of an error. A bounded refusal never reaches
+    -- this branch, which is what keeps \"the API server did not answer\" from
+    -- reading as \"the PVC is gone\".
     Right output
       | null (words output) -> Right Nothing
       | otherwise -> Right (Just ("PersistentVolumeClaim/" ++ namespace ++ "/" ++ name))
@@ -522,52 +666,71 @@ renderDrainTimeoutRefusal survivors =
         ++ map (\survivor -> "  - " ++ survivor) survivors
     )
 
-runKubectl :: K8sDrainEnv -> [String] -> IO (Either String ())
-runKubectl env arguments = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = drainKubectlExecutable env
-        , subprocessArguments = drainKubectlArguments env arguments
-        , subprocessEnvironment = Just (drainEnvironment env)
-        , subprocessWorkingDirectory = drainWorkingDirectory env
-        }
-  pure $ case result of
-    Failure err -> Left ("failed to start `kubectl`: " ++ err)
-    Success output -> case processExitCode output of
-      ExitSuccess -> Right ()
-      ExitFailure code ->
-        Left
-          ( "`kubectl "
-              ++ unwords (drainKubectlArguments env arguments)
-              ++ "` exited with code "
-              ++ show code
-              ++ ": "
-              ++ processStderr output
-              ++ processStdout output
-          )
+-- | The exact subprocess one drain @kubectl@ runs as.
+--
+-- Sprint 4.93: the per-request bound is appended here, once, so no call site
+-- can omit it and no call site can pass it twice.
+drainSubprocess :: K8sDrainEnv -> [String] -> Subprocess
+drainSubprocess env arguments =
+  Subprocess
+    { subprocessPath = drainKubectlExecutable env
+    , subprocessArguments =
+        drainKubectlArguments env (arguments ++ [drainKubectlRequestTimeoutArgument])
+    , subprocessEnvironment = Just (drainEnvironment env)
+    , subprocessWorkingDirectory = drainWorkingDirectory env
+    }
 
-captureKubectl :: K8sDrainEnv -> [String] -> IO (Either String String)
-captureKubectl env arguments = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = drainKubectlExecutable env
-        , subprocessArguments = drainKubectlArguments env arguments
-        , subprocessEnvironment = Just (drainEnvironment env)
-        , subprocessWorkingDirectory = drainWorkingDirectory env
-        }
+-- | Lift the bounded runner's answer into the 'Result' the pure classifiers
+-- already consume, so the classifier tables keep their shape.
+boundedOutcome :: Either err ProcessOutput -> Result ProcessOutput
+boundedOutcome = either (const (Failure boundedRefusalDetail)) Success
+
+-- | What a transport or wall-clock refusal is called where the exact error is
+-- not available to the pure seam.
+boundedRefusalDetail :: String
+boundedRefusalDetail =
+  "the bounded `kubectl` runner returned no process result within "
+    ++ show drainKubectlWallClockSeconds
+    ++ "s"
+
+-- | Run one drain @kubectl@ for its exit status.
+--
+-- Sprint 4.93: bounded, and its two failure modes are no longer one @String@.
+runKubectl :: K8sDrainEnv -> [String] -> IO (Either DrainCallFailure ())
+runKubectl env arguments = fmap void (boundedKubectl env arguments)
+
+-- | Run one drain @kubectl@ for its standard output.
+captureKubectl :: K8sDrainEnv -> [String] -> IO (Either DrainCallFailure String)
+captureKubectl env arguments =
+  fmap (fmap processStdout) (boundedKubectl env arguments)
+
+boundedKubectl
+  :: K8sDrainEnv -> [String] -> IO (Either DrainCallFailure ProcessOutput)
+boundedKubectl env arguments = do
+  result <- captureSubprocessBounded drainKubectlLimits (drainSubprocess env arguments)
   pure $ case result of
-    Failure err -> Left ("failed to start `kubectl`: " ++ err)
-    Success output -> case processExitCode output of
-      ExitSuccess -> Right (processStdout output)
+    Left err ->
+      Left
+        ( DrainCallUnobservable
+            ( "`kubectl "
+                ++ rendered
+                ++ "` did not complete: "
+                ++ Text.unpack (errorMsg err)
+            )
+        )
+    Right output -> case processExitCode output of
+      ExitSuccess -> Right output
       ExitFailure code ->
         Left
-          ( "`kubectl "
-              ++ unwords (drainKubectlArguments env arguments)
-              ++ "` exited with code "
-              ++ show code
-              ++ ": "
-              ++ processStderr output
-              ++ processStdout output
+          ( DrainCallRefused
+              ( "`kubectl "
+                  ++ rendered
+                  ++ "` exited with code "
+                  ++ show code
+                  ++ ": "
+                  ++ processStderr output
+                  ++ processStdout output
+              )
           )
+ where
+  rendered = unwords (subprocessArguments (drainSubprocess env arguments))

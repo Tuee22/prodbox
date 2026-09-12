@@ -345,7 +345,7 @@ coordinate boundary execution accepted now agentIdentity target schema image sig
           pure (Right (Right (TargetWorkerCreateRecovered jobUid)))
         _ -> tryAny (recoverTargetWorkerIntent boundary intent)
       case resolveCreatedJob created recovered of
-        Left (Just async) -> throwIO async
+        Left (Just asyncException) -> throwIO asyncException
         Left Nothing -> pure (Left (createFailure created recovered))
         Right jobUid -> case asyncFromCreate created of
           Just exception -> do

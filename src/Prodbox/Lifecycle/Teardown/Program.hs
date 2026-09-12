@@ -18,7 +18,10 @@ module Prodbox.Lifecycle.Teardown.Program
   , RecoverySurfaceWitness (..)
   , CredentialDispositionSurfaceWitness (..)
   , TeardownOperation (..)
+  , TeardownResultKind (..)
+  , SomeTeardownOperation (..)
   , teardownOperationTag
+  , someTeardownOperationTag
   , ProgramNodeName (..)
   , ProgramDependency (..)
   , ProgramNode
@@ -100,74 +103,121 @@ data CredentialDispositionSurfaceWitness (surface :: CleanupSurface) where
 deriving instance Eq (CredentialDispositionSurfaceWitness surface)
 deriving instance Show (CredentialDispositionSurfaceWitness surface)
 
--- | Closed, surface-indexed lifecycle operations.  Effects and mandatory
--- read-backs are different constructors and therefore receive different
--- stable operation references in the durable lowering.
-data TeardownOperation (surface :: CleanupSurface) where
+-- | Sprint 4.94: the closed universe of results a lifecycle teardown operation
+-- can produce.
+--
+-- The operation GADT was indexed on cleanup surface and never on result, so the
+-- type permitted an operation to return another operation's result and its
+-- interpreter carried twenty catch-all arms that existed only to say so — all
+-- twenty collapsing into one string, /\"lifecycle interpreter returned the wrong
+-- result kind\"/. That discarded whatever exact cause the component had, which
+-- is how a checkpoint interpreter's typed 'AwsCheckpointInterpreterError'
+-- reached an operator as a sentence about kinds.
+--
+-- The relation is deliberately many-to-one: twelve operations legally produce a
+-- mutation attempt and six a durable receipt. Indexing on result is therefore a
+-- coarsening of the operation universe rather than a restatement of it, which is
+-- exactly what makes the twenty arms unrepresentable without making any legal
+-- pairing unexpressible.
+--
+-- __What a result index does not prove.__ It proves that an operation and the
+-- result handed back describe the same kind of answer. It does not prove that an
+-- external effect occurred, that the answer belongs to this attempt, or that it
+-- was produced under the expected observation scope. The separate binding and
+-- read-back checks remain, and their distinct refusal — @bindingMismatch@ —
+-- survives this sprint unchanged.
+data TeardownResultKind
+  = MutationAttemptResult
+  | RegisteredTargetReconcileResult
+  | ExactResourceObservationResult
+  | CheckpointPairObservationResult
+  | CheckpointRestoreResult
+  | CheckpointRecoveryReadBackResult
+  | AwsStackReaderCommitResult
+  | AwsStackReaderReadBackResult
+  | CheckpointRetirementResult
+  | CheckpointRetirementReadBackResult
+  | EksDrainIntentReadBackResult
+  | EksDrainAttemptResult
+  | EksDrainTargetReadBackResult
+  | RecoveryPlaneInitialReadBackResult
+  | RecoveryPlaneFinalEvidenceResult
+  | TerminalAuditObservationResult
+  | DurableReceiptObservationResult
+  | LocalFoundationObservationResult
+  | LocalDataDispositionObservationResult
+  | OperationalCredentialRevocationObservationResult
+  deriving (Bounded, Enum, Eq, Ord, Show)
+
+-- | Closed lifecycle operations, indexed on cleanup surface and on the kind of
+-- result they produce.  Effects and mandatory read-backs are different
+-- constructors and therefore receive different stable operation references in
+-- the durable lowering.
+data TeardownOperation (surface :: CleanupSurface) (result :: TeardownResultKind) where
   EstablishRecoveryPlane
     :: RecoverySurfaceWitness surface
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'MutationAttemptResult
   ReadBackRecoveryPlane
     :: RecoverySurfaceWitness surface
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'RecoveryPlaneInitialReadBackResult
   ObserveRecoveryPlaneDisposition
     :: RecoverySurfaceWitness surface
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'RecoveryPlaneFinalEvidenceResult
   ObserveRegisteredTarget
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'ExactResourceObservationResult
   ObserveStackCheckpointPair
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'CheckpointPairObservationResult
   ReconcileStackCheckpointRestore
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'CheckpointRestoreResult
   ReadBackStackCheckpointRecovery
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'CheckpointRecoveryReadBackResult
   CommitAwsStackReaderBundle
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'AwsStackReaderCommitResult
   ReadBackAwsStackReaderBundle
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'AwsStackReaderReadBackResult
   CommitEksDrainIntent
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'MutationAttemptResult
   ReadBackEksDrainIntent
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'EksDrainIntentReadBackResult
   DrainEksKubernetesResources
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'EksDrainAttemptResult
   ReadBackEksKubernetesDrain
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'EksDrainTargetReadBackResult
   ReconcileRegisteredTargetAbsent
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'RegisteredTargetReconcileResult
   ReadBackRegisteredTargetAbsent
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'ExactResourceObservationResult
   RetireStackCheckpointPair
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'CheckpointRetirementResult
   ReadBackStackCheckpointRetirement
     :: RegisteredTargetBinding
-    -> TeardownOperation surface
-  AuditCascadeEscapes :: TeardownOperation 'Cascade
-  CommitCascadePreUninstallReport :: TeardownOperation 'Cascade
-  ReadBackCascadePreUninstallReport :: TeardownOperation 'Cascade
-  UninstallCascadeLocalFoundation :: TeardownOperation 'Cascade
-  ReadBackCascadeLocalAbsence :: TeardownOperation 'Cascade
-  CommitCascadeCompletion :: TeardownOperation 'Cascade
-  ReadBackCascadeCompletion :: TeardownOperation 'Cascade
-  UninstallLocalOnlyFoundation :: TeardownOperation 'LocalOnly
-  ReadBackLocalOnlyAbsence :: TeardownOperation 'LocalOnly
-  CommitLocalOnlyCompletion :: TeardownOperation 'LocalOnly
-  ReadBackLocalOnlyCompletion :: TeardownOperation 'LocalOnly
-  CommitOrdinarySurfaceReport :: TeardownOperation surface
-  ReadBackOrdinarySurfaceReport :: TeardownOperation surface
+    -> TeardownOperation surface 'CheckpointRetirementReadBackResult
+  AuditCascadeEscapes :: TeardownOperation 'Cascade 'TerminalAuditObservationResult
+  CommitCascadePreUninstallReport :: TeardownOperation 'Cascade 'MutationAttemptResult
+  ReadBackCascadePreUninstallReport :: TeardownOperation 'Cascade 'DurableReceiptObservationResult
+  UninstallCascadeLocalFoundation :: TeardownOperation 'Cascade 'MutationAttemptResult
+  ReadBackCascadeLocalAbsence :: TeardownOperation 'Cascade 'LocalFoundationObservationResult
+  CommitCascadeCompletion :: TeardownOperation 'Cascade 'MutationAttemptResult
+  ReadBackCascadeCompletion :: TeardownOperation 'Cascade 'DurableReceiptObservationResult
+  UninstallLocalOnlyFoundation :: TeardownOperation 'LocalOnly 'MutationAttemptResult
+  ReadBackLocalOnlyAbsence :: TeardownOperation 'LocalOnly 'LocalFoundationObservationResult
+  CommitLocalOnlyCompletion :: TeardownOperation 'LocalOnly 'MutationAttemptResult
+  ReadBackLocalOnlyCompletion :: TeardownOperation 'LocalOnly 'DurableReceiptObservationResult
+  CommitOrdinarySurfaceReport :: TeardownOperation surface 'MutationAttemptResult
+  ReadBackOrdinarySurfaceReport :: TeardownOperation surface 'DurableReceiptObservationResult
   -- | Sprint 4.85: submit the Lifecycle-provider credential's revocation and
   -- independently read it back.
   --
@@ -177,23 +227,67 @@ data TeardownOperation (surface :: CleanupSurface) where
   -- dispose of registered resources rather than of the credential itself.
   RevokeOperationalCredential
     :: CredentialDispositionSurfaceWitness surface
-    -> TeardownOperation surface
+    -> TeardownOperation surface 'MutationAttemptResult
   ReadBackOperationalCredentialRevocation
     :: CredentialDispositionSurfaceWitness surface
-    -> TeardownOperation surface
-  AuditTotalDecommissionEscapes :: TeardownOperation 'TotalDecommission
-  ObserveExternalDecommissionReceipt :: TeardownOperation 'TotalDecommission
-  UninstallDecommissionLocalFoundation :: TeardownOperation 'TotalDecommission
-  ReadBackDecommissionLocalAbsence :: TeardownOperation 'TotalDecommission
-  ApplyDecommissionLocalDataDisposition :: TeardownOperation 'TotalDecommission
-  ReadBackDecommissionLocalDataDisposition :: TeardownOperation 'TotalDecommission
-  CommitDecommissionTerminalReceipt :: TeardownOperation 'TotalDecommission
-  ReadBackDecommissionTerminalReceipt :: TeardownOperation 'TotalDecommission
+    -> TeardownOperation surface 'OperationalCredentialRevocationObservationResult
+  AuditTotalDecommissionEscapes
+    :: TeardownOperation 'TotalDecommission 'TerminalAuditObservationResult
+  ObserveExternalDecommissionReceipt
+    :: TeardownOperation 'TotalDecommission 'DurableReceiptObservationResult
+  UninstallDecommissionLocalFoundation :: TeardownOperation 'TotalDecommission 'MutationAttemptResult
+  ReadBackDecommissionLocalAbsence
+    :: TeardownOperation 'TotalDecommission 'LocalFoundationObservationResult
+  ApplyDecommissionLocalDataDisposition :: TeardownOperation 'TotalDecommission 'MutationAttemptResult
+  ReadBackDecommissionLocalDataDisposition
+    :: TeardownOperation 'TotalDecommission 'LocalDataDispositionObservationResult
+  CommitDecommissionTerminalReceipt :: TeardownOperation 'TotalDecommission 'MutationAttemptResult
+  ReadBackDecommissionTerminalReceipt
+    :: TeardownOperation 'TotalDecommission 'DurableReceiptObservationResult
 
-deriving instance Eq (TeardownOperation surface)
-deriving instance Show (TeardownOperation surface)
+deriving instance Eq (TeardownOperation surface result)
+deriving instance Show (TeardownOperation surface result)
 
-teardownOperationTag :: TeardownOperation surface -> Text
+-- | One operation whose result index is forgotten.
+--
+-- A program's node list is heterogeneous in result by construction — the whole
+-- point of the index is that different operations answer differently — so the
+-- list holds this and the executor recovers the index by matching the operation
+-- again at the point where it also has the result.
+data SomeTeardownOperation (surface :: CleanupSurface) where
+  SomeTeardownOperation
+    :: !(TeardownOperation surface result)
+    -> SomeTeardownOperation surface
+
+deriving instance Show (SomeTeardownOperation surface)
+
+-- | Two operations are the same operation when they are the same constructor
+-- over the same registered target.
+--
+-- This is a complete key rather than an approximation, and the type is what
+-- makes it one: the only payloads a constructor carries are a
+-- 'RegisteredTargetBinding' and a surface witness, and both
+-- 'RecoverySurfaceWitness' and 'CredentialDispositionSurfaceWitness' have
+-- exactly one inhabitant per surface. For a fixed surface the tag and the
+-- binding therefore decide the value, which is why forgetting the result index
+-- costs no discrimination.
+instance Eq (SomeTeardownOperation surface) where
+  SomeTeardownOperation left == SomeTeardownOperation right =
+    teardownOperationTag left == teardownOperationTag right
+      && operationTargetBinding left == operationTargetBinding right
+
+-- | Sprint 4.94: the same tag over an operation whose result index has been
+-- forgotten.
+--
+-- Every consumer that names an operation in a refusal, a digest, or a trace
+-- holds it from a node list, and a node list is heterogeneous in result. The
+-- tag never mentions the result, so unpacking the existential here saves every
+-- one of those consumers from doing it.
+someTeardownOperationTag :: SomeTeardownOperation surface -> Text
+someTeardownOperationTag (SomeTeardownOperation operation) =
+  teardownOperationTag operation
+
+teardownOperationTag :: TeardownOperation surface result -> Text
 teardownOperationTag operation = case operation of
   EstablishRecoveryPlane _ -> "establish-recovery-plane"
   ReadBackRecoveryPlane _ -> "read-back-recovery-plane"
@@ -257,7 +351,7 @@ data ProgramDependency = ProgramDependency
 
 data ProgramNode surface = ProgramNode
   { internalProgramNodeName :: !ProgramNodeName
-  , internalProgramNodeOperation :: !(TeardownOperation surface)
+  , internalProgramNodeOperation :: !(SomeTeardownOperation surface)
   , internalProgramNodeDependencies :: ![ProgramDependency]
   , internalProgramNodeRecoveryCapabilities :: !RecoveryCapabilitySet
   }
@@ -280,7 +374,7 @@ desiredAbsenceProgramNodes = internalDesiredAbsenceProgramNodes
 programNodeName :: ProgramNode surface -> ProgramNodeName
 programNodeName = internalProgramNodeName
 
-programNodeOperation :: ProgramNode surface -> TeardownOperation surface
+programNodeOperation :: ProgramNode surface -> SomeTeardownOperation surface
 programNodeOperation = internalProgramNodeOperation
 
 programNodeDependencies :: ProgramNode surface -> [ProgramDependency]
@@ -912,13 +1006,13 @@ targetName suffix target =
 
 programNode
   :: Text
-  -> TeardownOperation surface
+  -> TeardownOperation surface result
   -> [ProgramDependency]
   -> ProgramNode surface
 programNode name operation dependencies =
   ProgramNode
     { internalProgramNodeName = ProgramNodeName name
-    , internalProgramNodeOperation = operation
+    , internalProgramNodeOperation = SomeTeardownOperation operation
     , internalProgramNodeDependencies = dependencies
     , internalProgramNodeRecoveryCapabilities =
         mergeRecoveryCapabilitySets
@@ -927,14 +1021,14 @@ programNode name operation dependencies =
     }
 
 operationAdditionalRecoveryCapabilities
-  :: TeardownOperation surface -> RecoveryCapabilitySet
+  :: TeardownOperation surface result -> RecoveryCapabilitySet
 operationAdditionalRecoveryCapabilities operation =
   case operationTargetBinding operation of
     Nothing -> noAdditionalRecoveryCapabilities
     Just target -> registeredTargetRecoveryCapabilities target
 
 operationTargetBinding
-  :: TeardownOperation surface -> Maybe RegisteredTargetBinding
+  :: TeardownOperation surface result -> Maybe RegisteredTargetBinding
 operationTargetBinding operation = case operation of
   ObserveRegisteredTarget target -> Just target
   ObserveStackCheckpointPair target -> Just target

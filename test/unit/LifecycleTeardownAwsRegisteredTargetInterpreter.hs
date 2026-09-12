@@ -659,8 +659,8 @@ nodeFor kind key = case matching of
     ]
 
 operationMatches
-  :: NodeKind -> RegisteredResourceKey -> TeardownOperation surface -> Bool
-operationMatches kind key operation = case (kind, operation) of
+  :: NodeKind -> RegisteredResourceKey -> SomeTeardownOperation surface -> Bool
+operationMatches kind key (SomeTeardownOperation operation) = case (kind, operation) of
   (ObserveNode, ObserveRegisteredTarget target) -> registeredTargetKey target == key
   (ReconcileNode, ReconcileRegisteredTargetAbsent target) ->
     registeredTargetKey target == key

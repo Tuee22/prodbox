@@ -95,7 +95,6 @@ import Prodbox.Lifecycle.CleanupRun
   , mkCleanupOperationId
   , mkCleanupRunId
   )
-import Prodbox.Lifecycle.DnsRecord (hostedZoneIdText, mkHostedZoneId)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderStackConfig
   , ProviderStackConfigView (..)
@@ -138,6 +137,13 @@ import Prodbox.Lifecycle.Teardown.Registry
   , lookupRegisteredIdentity
   , registeredIdentityCoordinateDigest
   , registeredIdentityKind
+  )
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ScopeWire
+  , renderScopeWireError
+  , scopeFromWire
+  , scopeIdentityFields
+  , scopeToWire
   )
 import Prodbox.Settings.AwsSubstrateProfile (AwsSubstrateProfile)
 
@@ -625,25 +631,6 @@ confirmReadBack expected observation = case observation of
                   )
               )
 
--- | Sprint 6.5: the encoded projection of an 'ObservationEvidenceScope'.
---
--- @scopeWireAwsDnsZone@ carries the run's retained DNS hosted zone. Without it
--- an encode/decode round trip silently returned a zone-less scope, and the
--- exact identity comparison that guards every read-back then refused a bundle
--- this same run had just committed.
-data ScopeWire = ScopeWire
-  { scopeWireSurface :: !Int
-  , scopeWireRegistryRevision :: !Text
-  , scopeWireRunScope :: !Text
-  , scopeWireFoundation :: !Text
-  , scopeWireAwsAccount :: !(Maybe Text)
-  , scopeWireAwsRegion :: !(Maybe Text)
-  , scopeWireAwsDnsZone :: !(Maybe Text)
-  , scopeWireOperation :: !Int
-  }
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
-
 data AwsStackReaderIdentityWire = AwsStackReaderIdentityWire
   { identityWireVersion :: !Int
   , identityWireRunId :: !Text
@@ -697,7 +684,7 @@ decodeAwsStackReaderAuthorityIdentity bytes = do
   graphDigest <- decodeText "graph digest" mkCleanupDigest (identityWireGraphDigest wire)
   operationId <- decodeText "operation ID" mkCleanupOperationId (identityWireOperationId wire)
   key <- decodeBoundedEnum "registered key" (identityWireKey wire)
-  scope <- scopeFromWire (identityWireScope wire)
+  scope <- decodeScopeWire (identityWireScope wire)
   identity <- awsStackReaderAuthorityIdentity runId graphDigest operationId key scope
   unless
     ( identityWireCoordinateDigest wire
@@ -834,7 +821,7 @@ decodeAwsStackReaderBundle bytes = do
   graphDigest <- decodeText "graph digest" mkCleanupDigest (readerWireGraphDigest wire)
   operationId <- decodeText "operation ID" mkCleanupOperationId (readerWireOperationId wire)
   key <- decodeBoundedEnum "registered key" (readerWireKey wire)
-  scope <- scopeFromWire (readerWireScope wire)
+  scope <- decodeScopeWire (readerWireScope wire)
   identity <- awsStackReaderAuthorityIdentity runId graphDigest operationId key scope
   unless
     ( readerWireCoordinateDigest wire
@@ -964,7 +951,7 @@ manifestFromWire
 manifestFromWire wire = case wire of
   ManifestObservationWire rawKey provenance rawScope result -> do
     key <- decodeBoundedEnum "manifest key" rawKey
-    scope <- scopeFromWire rawScope
+    scope <- decodeScopeWire rawScope
     observedProvenance <-
       OwnershipManifestProvenance <$> checkedText "manifest provenance" 1024 provenance
     observedResult <- manifestResultFromWire result
@@ -1003,7 +990,7 @@ checkpointFromWire wire = do
   provenance <-
     CheckpointProvenance
       <$> checkedText "checkpoint provenance" 1024 (checkpointWireProvenance wire)
-  scope <- scopeFromWire (checkpointWireScope wire)
+  scope <- decodeScopeWire (checkpointWireScope wire)
   result <- checkpointResultFromWire (checkpointWireResult wire)
   pure
     CheckpointObservation
@@ -1047,60 +1034,6 @@ manifestResultFromWire wire = case wire of
       <$> checkedText "manifest version" 512 version
   ManifestPartialWire failures -> OwnershipManifestPartial <$> checkedFailures failures
   ManifestUnobservableWire failures -> OwnershipManifestUnobservable <$> checkedFailures failures
-
-scopeToWire :: ObservationEvidenceScope -> ScopeWire
-scopeToWire scope =
-  ScopeWire
-    { scopeWireSurface = fromEnum (evidenceCleanupSurface scope)
-    , scopeWireRegistryRevision = registryRevisionText (evidenceRegistryRevision scope)
-    , scopeWireRunScope = runScopeText (evidenceDurableRunScope scope)
-    , scopeWireFoundation = foundationText (evidenceLinuxRke2Foundation scope)
-    , scopeWireAwsAccount = accountText <$> evidenceAwsScope scope
-    , scopeWireAwsRegion = regionText <$> evidenceAwsScope scope
-    , scopeWireAwsDnsZone = hostedZoneIdText <$> evidenceAwsDnsZone scope
-    , scopeWireOperation = lifecycleOperationTag (evidenceLifecycleOperation scope)
-    }
-
-scopeFromWire :: ScopeWire -> Either AwsStackReaderError ObservationEvidenceScope
-scopeFromWire wire = do
-  surface <- decodeBoundedEnum "cleanup surface" (scopeWireSurface wire)
-  revision <-
-    RegistryRevision <$> checkedText "registry revision" 512 (scopeWireRegistryRevision wire)
-  runScope <- DurableObservationRunScope <$> checkedText "run scope" 512 (scopeWireRunScope wire)
-  foundation <- LinuxRke2FoundationId <$> checkedText "foundation" 512 (scopeWireFoundation wire)
-  awsScope <- case (scopeWireAwsAccount wire, scopeWireAwsRegion wire) of
-    (Nothing, Nothing) -> Right Nothing
-    (Just account, Just region) ->
-      Just
-        <$> ( (AwsScope . AwsAccountId)
-                <$> checkedText "AWS account" 128 account
-                <*> (AwsRegion <$> checkedText "AWS region" 128 region)
-            )
-    _ -> Left (AwsStackReaderFieldInvalid "AWS scope was only partially encoded")
-  dnsZone <- case scopeWireAwsDnsZone wire of
-    Nothing -> Right Nothing
-    Just raw ->
-      Just
-        <$> first
-          (const (AwsStackReaderFieldInvalid "AWS DNS zone is invalid"))
-          (mkHostedZoneId raw)
-  operation <- case scopeWireOperation wire of
-    0 -> Right ReconcileDesiredAbsent
-    1 -> Right ReconcileDesiredPresent
-    2 -> Right RunTerminalEscapeAudit
-    other -> Left (AwsStackReaderFieldInvalid ("invalid lifecycle operation " <> Text.pack (show other)))
-  pure $ case dnsZone of
-    Nothing ->
-      mkObservationEvidenceScope surface revision runScope foundation awsScope operation
-    Just zone ->
-      mkObservationEvidenceScopeWithDnsZone
-        surface
-        revision
-        runScope
-        foundation
-        awsScope
-        zone
-        operation
 
 providerConfigToWire :: ProviderStackConfig -> ProviderConfigWire
 providerConfigToWire config = case providerStackConfigView config of
@@ -1210,22 +1143,18 @@ repositoryFailure category detail =
 renderClientError :: AwsStackReaderClientError -> Text
 renderClientError = Text.take 1024 . Text.pack . show
 
+-- | Sprint 4.92: the canonical scope decoder, mapped into this repository's
+-- error type.
+--
+-- The rules themselves live in "Prodbox.Lifecycle.Teardown.ScopeCodec". This
+-- module used to state them itself, which is how it came to be the one codec of
+-- roughly eighteen that carried the run's DNS hosted zone while fifteen others
+-- silently dropped it.
+decodeScopeWire :: ScopeWire -> Either AwsStackReaderError ObservationEvidenceScope
+decodeScopeWire = first (AwsStackReaderFieldInvalid . renderScopeWireError) . scopeFromWire
+
 frame :: Text -> Text
 frame value = Text.pack (show (Text.length value)) <> ":" <> value
-
-scopeIdentityFields :: ObservationEvidenceScope -> [Text]
-scopeIdentityFields scope =
-  [ Text.pack (show (evidenceCleanupSurface scope))
-  , registryRevisionText (evidenceRegistryRevision scope)
-  , runScopeText (evidenceDurableRunScope scope)
-  , foundationText (evidenceLinuxRke2Foundation scope)
-  , maybe "aws/absent" (const "aws/present") (evidenceAwsScope scope)
-  , maybe "" accountText (evidenceAwsScope scope)
-  , maybe "" regionText (evidenceAwsScope scope)
-  , maybe "zone/absent" (const "zone/present") (evidenceAwsDnsZone scope)
-  , maybe "" hostedZoneIdText (evidenceAwsDnsZone scope)
-  , Text.pack (show (evidenceLifecycleOperation scope))
-  ]
 
 registryRevisionText :: RegistryRevision -> Text
 registryRevisionText (RegistryRevision value) = value
@@ -1241,12 +1170,6 @@ accountText (AwsScope (AwsAccountId value) _) = value
 
 regionText :: AwsScope -> Text
 regionText (AwsScope _ (AwsRegion value)) = value
-
-lifecycleOperationTag :: LifecycleOperation -> Int
-lifecycleOperationTag operation = case operation of
-  ReconcileDesiredAbsent -> 0
-  ReconcileDesiredPresent -> 1
-  RunTerminalEscapeAudit -> 2
 
 checkpointProvenanceText :: CheckpointProvenance -> Text
 checkpointProvenanceText (CheckpointProvenance value) = value

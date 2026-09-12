@@ -345,8 +345,8 @@ awsScopedCloudPlans compiled =
   , operationTargetsAws operation
   ]
 
-operationTargetsAws :: TeardownOperation surface -> Bool
-operationTargetsAws operation = case operation of
+operationTargetsAws :: SomeTeardownOperation surface -> Bool
+operationTargetsAws (SomeTeardownOperation operation) = case operation of
   ObserveRegisteredTarget target -> notLocalFoundation target
   ReconcileRegisteredTargetAbsent target -> notLocalFoundation target
   ReadBackRegisteredTargetAbsent target -> notLocalFoundation target
@@ -367,10 +367,13 @@ succeedingTags compiled outcomes =
 
 tagFor :: CompiledDesiredAbsenceProgram surface -> CleanupNodePlan -> Text
 tagFor compiled plan =
-  maybe "?" teardownOperationTag (compiledOperationForNode (cleanupNodeId plan) compiled)
+  maybe
+    "?"
+    someTeardownOperationTag
+    (compiledOperationForNode (cleanupNodeId plan) compiled)
 
-isCloudOwned :: TeardownOperation surface -> Bool
-isCloudOwned operation = case operation of
+isCloudOwned :: SomeTeardownOperation surface -> Bool
+isCloudOwned (SomeTeardownOperation operation) = case operation of
   ObserveRegisteredTarget _ -> True
   ReconcileRegisteredTargetAbsent _ -> True
   ReadBackRegisteredTargetAbsent _ -> True

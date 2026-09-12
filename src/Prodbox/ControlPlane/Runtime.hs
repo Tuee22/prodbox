@@ -107,7 +107,6 @@ module Prodbox.ControlPlane.Runtime
   )
 where
 
-import Control.Concurrent.Async (async, cancel)
 import Control.Concurrent.STM
   ( TBQueue
   , TVar
@@ -132,7 +131,7 @@ import Control.Exception
   , throwIO
   , try
   )
-import Control.Monad (forever, replicateM, void)
+import Control.Monad (forever, void)
 import Crypto.Random (getRandomBytes)
 import Data.Bifunctor (first)
 import Data.ByteString qualified as ByteString
@@ -902,6 +901,7 @@ import Prodbox.Pulumi.EncryptedBackend
   , renderEncryptedBackendError
   )
 import Prodbox.Runtime.Role (RuntimeRole (..), runtimeRoleName)
+import Prodbox.Supervision (withSupervisedChildren)
 import Prodbox.Vault.Client
   ( VaultKubernetesLoginResult (..)
   , vaultKubernetesLoginWithLease
@@ -5141,12 +5141,17 @@ runControlPlaneServer role interpreter = case controlPlaneCapacityPlan of
       pending <- newTBQueueIO (serviceCapacityQueueCapacity plan)
       admission <- newTVarIO (emptyAdmissionQueue plan)
       nextRequestId <- newTVarIO (0 :: Natural)
-      bracket
-        ( replicateM
+      -- Sprint 2.134: the pool used to be spawned through raw `async` into a
+      -- `bracket` whose release only cancelled it, so a worker that died was
+      -- reaped by nothing and the accept loop kept enqueueing into a pool that
+      -- had shrunk. `withSupervisedChildren` links every worker as it spawns,
+      -- keeping the same cancel-on-exit lifetime while making a worker's death
+      -- reach the accept loop instead of being absorbed by it.
+      withSupervisedChildren
+        ( replicate
             (fromIntegral (serviceCapacityWorkerCount plan))
-            (async (controlPlaneWorkerLoop role interpreter admission pending))
+            (controlPlaneWorkerLoop role interpreter admission pending)
         )
-        (mapM_ cancel)
         (const (forever (acceptOne pending admission nextRequestId listener)))
  where
   open = do

@@ -370,10 +370,12 @@ The current registry contents are the authoritative source; future fully generat
 be added there in the same change that introduces them. The renderer-source modules named by the
 registry are also checked for forbidden nondeterministic inputs — timestamps, random IDs,
 locale-dependent ordering, terminal-width state, environment-derived paths. **Attribution corrected
-2026-09-11 (Sprint `0.33`):** that check reaches you through `prodbox dev lint haskell`, which calls
-the shared function. The `prodbox-haskell-style` suite exposes the same function but is executed by
-no `prodbox test` scope, so crediting the guarantee to the suite named a proof surface that does not
-run. Sprint `5.45` owns routing or retiring it.
+2026-09-11 (Sprint `0.33`), and the suite routed by Sprint `5.45` the same day:** the check reaches
+you through `prodbox dev lint haskell`, which calls the shared function, and *also* through
+`prodbox-haskell-style`, which is now named by `prodbox test unit`. Crediting a guarantee to a suite
+nothing runs names a proof surface that does not run; the correction was to say which mechanism
+provided it, and the sprint's job was to make the other one real rather than to leave the sentence
+carrying both.
 
 ---
 

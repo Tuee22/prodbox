@@ -110,7 +110,7 @@ controlPlaneOwnershipManifestRepositorySuite =
         `shouldBe` evidenceLinuxRke2Foundation fixtureCreationScope
       ownershipManifestAuthorityAwsScope identity `shouldBe` fixtureAwsScope
       ownershipManifestAuthoritySubmissionKey identity
-        `shouldSatisfy` Text.isPrefixOf "ownership-manifest-v1-"
+        `shouldSatisfy` Text.isPrefixOf "ownership-manifest-v2-"
       Text.length (ownershipManifestAuthoritySubmissionKey identity) `shouldBe` 86
       ownershipManifestAuthoritySubmissionKey otherIdentity
         `shouldNotBe` ownershipManifestAuthoritySubmissionKey identity

@@ -44,6 +44,7 @@ import Prodbox.Lifecycle.Teardown.Model
   )
 import Prodbox.Lifecycle.Teardown.Program
   ( RegisteredTargetBinding
+  , SomeTeardownOperation (..)
   , TeardownOperation (DrainEksKubernetesResources)
   , registeredTargetCoordinateDigest
   , registeredTargetKey
@@ -167,8 +168,8 @@ exactDrainPredecessorTarget
   -> Either EksDrainAttemptRecoveryError RegisteredTargetBinding
 exactDrainPredecessorTarget predecessor =
   case teardownAttemptedPredecessorOperation predecessor of
-    DrainEksKubernetesResources target -> Right target
-    _ -> Left EksDrainAttemptRecoveryPredecessorOperationInvalid
+    SomeTeardownOperation (DrainEksKubernetesResources target) -> Right target
+    SomeTeardownOperation _ -> Left EksDrainAttemptRecoveryPredecessorOperationInvalid
 
 conservativeOutcome
   :: EksDrainIntentTarget -> CleanupNodeOutcome -> EksDrainAttemptOutcome

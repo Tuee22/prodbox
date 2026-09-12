@@ -17,6 +17,7 @@ import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
 import Prodbox.Lifecycle.CleanupRun
+import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.Teardown.AwsEksAdapter
 import Prodbox.Lifecycle.Teardown.EksDrainIntent
 import Prodbox.Lifecycle.Teardown.EksDrainSession
@@ -109,6 +110,28 @@ lifecycleTeardownEksDrainIntentSuite =
               fixtureUid
               "other-kubernetes-uid"
           )
+
+    it "round-trips a zoned scope through the durable intent and back" $ do
+      -- Sprint 4.92. This envelope used to flatten the scope's fields and
+      -- rebuild them through `mkObservationEvidenceScope`, whose contract
+      -- hardcodes the DNS hosted zone to absent, so a zoned intent decoded to a
+      -- zone-less one and the exact identity comparison that guards every
+      -- read-back then refused a bundle the same run had just committed. It now
+      -- nests the canonical scope codec, and this is the assertion that
+      -- erasure would fail.
+      let zonedIntent = fixtureKubernetesIntentWithZone
+          decoded = decodeEksDrainIntent (encodeEksDrainIntent zonedIntent)
+      decoded `shouldBe` Right zonedIntent
+      fmap (evidenceAwsDnsZone . eksDrainBindingScope . eksDrainIntentBinding) decoded
+        `shouldBe` Right (Just fixtureHostedZone)
+      -- A zoneless intent stays zoneless, so the codec is not simply asserting a
+      -- zone onto everything it reads.
+      fmap
+        (evidenceAwsDnsZone . eksDrainBindingScope . eksDrainIntentBinding)
+        (decodeEksDrainIntent (encodeEksDrainIntent fixtureKubernetesIntent))
+        `shouldBe` Right Nothing
+      -- The two differ, so the zone is inside the digest rather than beside it.
+      eksDrainIntentDigest zonedIntent `shouldNotBe` eksDrainIntentDigest fixtureKubernetesIntent
 
     it "round-trips one bounded canonical intent without durable credential material" $ do
       let intent = fixtureKubernetesIntent
@@ -317,6 +340,75 @@ fixtureKubernetesIntent =
         fixtureSession
         fixtureSelection
     )
+
+-- | Sprint 4.92: the same intent under a scope that names the run's retained
+-- DNS hosted zone, which is the case the superseded codec silently erased.
+fixtureKubernetesIntentWithZone :: EksDrainIntent
+fixtureKubernetesIntentWithZone =
+  mustRight
+    ( prepareEksKubernetesDrainIntent
+        (fixtureBinding fixtureZonedScope)
+        fixtureZonedSession
+        fixtureZonedSelection
+    )
+
+-- | The same session under the zoned scope, because the intent's own binding
+-- check refuses a session whose scope is not the exact one the binding names —
+-- which is precisely the comparison the erasure used to break.
+fixtureZonedSession :: EksDrainSession
+fixtureZonedSession =
+  mustRight
+    ( mkEksDrainSession
+        1_000
+        1_500
+        drainEffectOperation
+        fixtureZonedScope
+        fixtureZonedVerifiedPresent
+        fixtureZonedKubernetesIdentity
+        fixtureProjection
+    )
+
+fixtureZonedKubernetesIdentity :: EksKubernetesIdentityObservation
+fixtureZonedKubernetesIdentity =
+  eksKubernetesIdentityObservationFor
+    fixtureZonedScope
+    (ObservationRevision 14)
+    fixtureArn
+    (EksKubernetesIdentityPresent fixtureUid)
+    fixtureProjection
+
+fixtureZonedVerifiedPresent
+  :: VerifiedAwsEksObservation 'ObserveEksForDecision
+fixtureZonedVerifiedPresent =
+  case decodeVerified fixtureZonedDecisionRequest (Right ("eks-cluster-arn:" <> fixtureArn)) of
+    AwsEksObservationDecoded verified -> verified
+    AwsEksObservationRejected err _ -> error ("fixture EKS evidence rejected: " <> show err)
+
+fixtureZonedDecisionRequest
+  :: ExactAwsEksObservationRequest 'ObserveEksForDecision
+fixtureZonedDecisionRequest =
+  mustRight (mkAwsEksDecisionObservationRequest (ObservationRevision 13) fixtureZonedScope)
+
+fixtureZonedSelection :: EksDrainTargetSelectionObservation
+fixtureZonedSelection =
+  eksDrainTargetSelectionObservationFor
+    fixtureZonedSession
+    (ObservationRevision 41)
+    (EksDrainTargetSelectionComplete [fixturePvcB, fixturePvcA])
+
+fixtureZonedScope :: ObservationEvidenceScope
+fixtureZonedScope =
+  mkObservationEvidenceScopeWithDnsZone
+    Cascade
+    lifecycleRegistryRevision
+    (DurableObservationRunScope (cleanupRunIdText fixtureRunId))
+    fixtureFoundation
+    (Just fixtureAwsScope)
+    fixtureHostedZone
+    ReconcileDesiredAbsent
+
+fixtureHostedZone :: HostedZoneId
+fixtureHostedZone = mustRight (mkHostedZoneId "Z0EKSDRAIN0EXAMPLE")
 
 alternateGraphIntent :: EksDrainIntent
 alternateGraphIntent =

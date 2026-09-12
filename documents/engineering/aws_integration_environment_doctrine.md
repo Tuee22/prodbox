@@ -1139,27 +1139,38 @@ which is load-bearing here rather than ceremonial — cert-manager removes the r
 after its object is gone.
 
 Both Kubernetes-reaching teardown paths run `kubectl` through one ephemeral client: a kubeconfig
-written into a private temporary directory with `O_EXCL`, `O_NOFOLLOW`, and owner-only mode; a bearer
-token served through a FIFO so the credential never lands on disk; an environment scrubbed of
-`KUBECONFIG` and every ambient AWS credential variable; and a client scoped to the continuation it is
-handed to. Two statements of that machinery would be two statements of a security property.
+written into a private temporary directory with `O_EXCL`, `O_NOFOLLOW`, `CLOEXEC`, and owner-only
+mode; a bearer credential written beside it under the same protections and read back before the
+client value exists; an environment scrubbed of `KUBECONFIG` and every ambient AWS credential
+variable; and a client scoped to the continuation it is handed to, so both files die with it.
 
-> **Target, not current revision (recorded 2026-09-11, Sprint `0.33`).** Two clauses above are false
-> of the tree. There are **three** statements of the machinery, not one: `withEksKubeconfig` in
-> `src/Prodbox/Infra/AwsEksTestStack.hs` was never converted, is reached from the legacy public
-> cascade's AWS drain, and has already drifted from its sibling in pipe mode. And the FIFO **has
-> never served a token**: GHC opens a FIFO non-blocking, so the writer fails with `ENXIO` before
-> `kubectl` starts and dies unobserved, leaving every invocation blocked until its wall clock. On
-> that evidence no AWS teardown path has ever authenticated to an EKS API server. Counterexample
-> `CASCADE-QUALIFICATION-EPHEMERAL-KUBECTL-TOKEN-FIFO-UNSERVED-2026-09-11`.
->
-> The argument the last sentence makes is sound, and is why the claim needed a gate rather than a
-> sentence: nothing bound the machinery to one file, so a third copy survived the sprint that
-> recorded the consolidation. Sprint `7.39` establishes the credential mechanism — and must decide
-> whether a FIFO earns its complexity at all, given that the kubeconfig beside it is already a
-> regular owner-only file in an owner-only directory — and Sprint `7.40` removes the third statement
-> and lands the gate. Status lives in
-> [DEVELOPMENT_PLAN/README.md → Resume Here](../../DEVELOPMENT_PLAN/README.md#resume-here).
+Two statements of that machinery would be two statements of a security property, and the claim is
+carried by a gate rather than by this sentence. `checkEphemeralCredentialMachinery` refuses
+`createNamedPipe` anywhere under `src/`, and refuses the private-write and credential-path helpers
+outside `src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs`. The sentence alone was not enough
+once: the sprint that recorded the consolidation left a third copy in
+`src/Prodbox/Infra/AwsEksTestStack.hs`, reached from the legacy public cascade's AWS drain and
+already drifted from its sibling in pipe mode, and nothing could tell the difference because nothing
+bound the machinery to one file.
+
+**The credential is a file rather than a rendezvous, and that was measured rather than assumed.** It
+was a FIFO, on the argument that a bearer token should have no on-disk representation for its
+lifetime. That argument cost a total outage. GHC opens files non-blocking, so the writer's first
+write-open of a readerless FIFO failed with `ENXIO` before `kubectl` started and the writer died
+unobserved, leaving every invocation blocked in `open` until its wall clock expired. On that evidence
+no AWS teardown path had ever authenticated to an EKS API server, which is what counterexample
+`CASCADE-QUALIFICATION-EPHEMERAL-KUBECTL-TOKEN-FIFO-UNSERVED-2026-09-11` records.
+
+The replacement rests on the one measurement the design question could not be decided without: how
+often the reader reads. Under `strace`, `kubectl` v1.35.8 opens `users[0].user.tokenFile` **exactly
+twice per invocation and independently of how many API requests it makes** — twice for `version`,
+which makes none; twice for a `--raw` read, which makes one; twice for a discovery-bearing `get`,
+which makes six. A rendezvous must therefore serve the credential at least twice per invocation, to
+a reader whose arrival it cannot observe and whose count it cannot know, and a FIFO served once was
+measured blocking on the second open until the outer bound expired. Against a same-uid attacker the
+marginal exposure of the token beside the kubeconfig is small, because the cluster CA and endpoint
+are already in that directory under the same mode. That is the trade, and what it buys is an EKS
+teardown path that authenticates at all.
 
 
 ## 6. Required Command Surfaces

@@ -10,13 +10,25 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-09-11 on Sprints `4.92`–`4.94` (Standards A/L/P).** Own-surface reopen on the
-lifecycle teardown scope, its durable wire codecs, the drain's subprocess bounds, and the teardown
-operation model. Sprint `6.5`'s investigation found that fifteen of roughly eighteen codecs for
-`ObservationEvidenceScope` erase the DNS hosted zone Sprints `7.36`/`7.38` added and sealed, that
-the drain's `kubectl` calls carry no wall clock at all, and that the teardown interpreter's twenty
-result-kind mismatch arms exist only because operation and result are untied. The phase recloses
-when all three reach `Done`; until then this entry records an open reopen, not a closure.
+🔄 **Reopened 2026-09-12 on Sprints `4.95`–`4.98` (Standards A/L/P).** Own-surface reopen on the
+EKS drain session, the control-plane request boundary and its encrypted-backend commit ordering, the
+Provider response wire and the desired-absence decision, and the absence vocabulary — every one of
+them a surface this phase already owns. The reopen follows a live leak: an EKS cluster created
+2026-09-08 billed for four days and was removed by hand, and the analysis found that the create was
+cancelled by its own transport deadline after its AWS effects had landed, that the checkpoint
+describing them was never committed because the commit runs only on the return route, and that a
+later cascade read the missing checkpoint as positive absence. The phase recloses when all four
+reach `Done`; until then this entry records an open reopen, not a closure.
+
+✅ **Reclosed 2026-09-11 on Sprints `4.92`–`4.94` (Standards A/L/P); header corrected 2026-09-12.**
+Own-surface reopen on the lifecycle teardown scope, its durable wire codecs, the drain's
+subprocess bounds, and the teardown operation model. Sprint `6.5`'s investigation found that
+fifteen of roughly eighteen codecs for `ObservationEvidenceScope` erase the DNS hosted zone
+Sprints `7.36`/`7.38` added and sealed, that the drain's `kubectl` calls carry no wall clock at
+all, and that the teardown interpreter's twenty result-kind mismatch arms exist only because
+operation and result are untied. All three reached `Done` on 2026-09-11; the reclose is written
+here on 2026-09-12 because the phase header is the one place a reclose must be written by hand in
+a second location, and it is therefore the one place that drifts.
 
 ✅ **Reclosed 2026-09-08 on Sprint `4.91` (Standards A/L/P).** Sprint `6.5`'s live cascade
 recovery found a Phase-4 checkpoint-custody identity mismatch. The corrected boundary selects the
@@ -13615,8 +13627,13 @@ None.
 
 **Status**: Done. Phase `4` own-surface reopen (Standard A) on the local and AWS drain paths this
 phase owns.
-**Doctrine**: [Chaos Hardening Doctrine, rule R5 "One absolute
-deadline"](../documents/engineering/chaos_hardening_doctrine.md).
+**Doctrine**: [Pure Functional Programming Standards, "One absolute
+deadline"](../documents/engineering/pure_fp_standards.md#63-one-absolute-deadline), and [Chaos
+Hardening Doctrine, rule R5 "Bound
+everything"](../documents/engineering/chaos_hardening_doctrine.md). **Citation corrected 2026-09-12
+(Standard C):** this field previously named chaos rule R5 as "One absolute deadline". R5 is titled
+"Bound everything"; the titled rule is § 6.3 of the purity standards. Both are load-bearing here and
+the sprint implemented both, so the correction is the attribution rather than the scope.
 **Implementation**: `src/Prodbox/Lifecycle/K8sDrain.hs`; `test/unit/Main.hs`.
 `src/Prodbox/Subprocess.hs` is deliberately unchanged: its bounded runner already had the shape this
 sprint needed, and the defect was that the drain did not use it.
@@ -13826,6 +13843,325 @@ Phase `4` owns; it makes no claim about the other two.
 ### Remaining Work
 
 None.
+
+## Sprint 4.95: A Lease That Cannot Outlive Its Bearer [📋 Planned]
+
+**Status**: Planned. Phase `4` own-surface reopen (Standard A/L/P) on the EKS drain session this
+phase owns. Sprint `6.5`'s live campaign stops here and can go no further, so every later
+Standard-P surface in the queue is unqualifiable until it moves.
+**Doctrine**: [Chaos Hardening Doctrine](../documents/engineering/chaos_hardening_doctrine.md)'s
+bounding rule and [Pure Functional Programming
+Standards](../documents/engineering/pure_fp_standards.md)'s one-absolute-deadline rule.
+**Implementation**: `src/Prodbox/Lifecycle/Teardown/EksDrainSession.hs`,
+`src/Prodbox/Lifecycle/Teardown/CloudRuntimeProduction.hs`,
+`src/Prodbox/Lifecycle/Teardown/EksDrainInterpreter.hs`, and `test/unit/Main.hs`.
+**Blocked by**: none.
+**Live-proof**: pending. The measurement this sprint exists to capture is only available from a
+cycle that reaches the drain commit, which the current refusal already does.
+**Deployment qualification**: pending — **invalidated** on absolute-deadline composition, because
+how long a live EKS drain is authorized for is a composition surface.
+**Independent Validation**: the widened refusal's own table, exercised with a bearer expiry earlier
+than, equal to, and later than the requested deadline; the repaired arithmetic's table at the
+boundary; full unit suite; `prodbox dev check`. None of these needs AWS.
+**Docs to update**: `documents/engineering/chaos_hardening_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`, `DEVELOPMENT_PLAN/README.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+The drain commit asks for a lease of exactly `maximumEksDrainLifetimeSeconds`, and the session also
+requires the deadline not to outlive the Provider-issued bearer backing it. The refusal reports
+`now` and `deadline` and not the bearer's expiry, so an operator reading it cannot tell which bound
+failed.
+
+The registered account of this defect attributes it to ordering — the deadline computed before the
+bearer is minted. That account is wrong in a way that matters for the repair. The observed refusal
+carries `deadline - now` of exactly the ceiling, which proves both clock reads landed in the same
+second and the ordering contributed nothing; and a later mint would push the expiry later, which
+helps rather than hurts. Both bounds are strict, so a deadline equal to the ceiling passes the
+ceiling. Only the bearer bound fails.
+
+The cause is empirical: the AWS token endpoint issues a fixed lifetime shorter than the requested
+lease, so the request overshoots by the difference. The repair turns on that number, and the run
+that produced the refusal did not capture it.
+
+### Deliverables
+
+- Widen the drain-commit refusal to carry the bearer's expiry beside the `now` and `deadline` it
+  already reports, so the failing bound names itself.
+- Repair the lease against the measured lifetime rather than against the ceiling, and state in the
+  refusal which of the two bounds refused.
+- Correct the registered account of the mechanism in place, dated, under Standard C. The ordering
+  explanation is retired; it is not deleted.
+- Record in the chaos doctrine's bounding rule that an authorization may not outlive the credential
+  that backs it, which is the general form of this counterexample.
+
+### Validation
+
+1. The widened refusal names the bearer expiry, exercised against a bearer earlier than, equal to,
+   and later than the requested deadline.
+2. The repaired lease is satisfiable at the boundary, and a lease above the measured lifetime still
+   refuses.
+3. The retired ordering explanation is corrected where a reader meets it, not rewritten away.
+4. Full unit suite and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+All of it.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/chaos_hardening_doctrine.md` — an authorization may not outlive the
+  credential backing it.
+- `documents/engineering/aws_integration_environment_doctrine.md` — the EKS drain session's two
+  bounds and which one the refusal names.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `4` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md).
+
+## Sprint 4.96: The Deadline Cancels The Reply, Never The Effect [📋 Planned]
+
+**Status**: Planned. Phase `4` own-surface reopen (Standard A/L/P) on the control-plane request
+boundary and the encrypted-backend commit ordering this phase owns.
+**Doctrine**: [Lifecycle Control-Plane
+Architecture](../documents/engineering/lifecycle_control_plane_architecture.md)'s non-negotiable
+invariants and [Chaos Hardening
+Doctrine](../documents/engineering/chaos_hardening_doctrine.md)'s crash-only recovery rule.
+**Implementation**: `src/Prodbox/ControlPlane/Runtime.hs`,
+`src/Prodbox/Capacity/ProviderWorkerBudget.hs`, `src/Prodbox/Pulumi/EncryptedBackend.hs`, and
+`test/unit/Main.hs`.
+**Blocked by**: none.
+**Live-proof**: pending. A create deliberately interrupted mid-effect, and a subsequent cascade that
+names what it made, is Sprint `7.41`'s evidence; this sprint's own surface is provable without AWS.
+**Deployment qualification**: pending — **invalidated** on absolute-deadline composition,
+queueing/admission, and persistence protocol.
+**Independent Validation**: a table proving the commit path runs on the exception route; a table
+proving admission refuses a request whose deadline the effect cannot outlive; the existing budget
+tables; full unit suite; `prodbox dev check`.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/chaos_hardening_doctrine.md`, `documents/engineering/pure_fp_standards.md`,
+`DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+The control-plane connection wraps the whole request, interpreter included, in a cancelling timeout.
+Every role reaches that one function, so the Provider Worker's capability — which runs the provider
+mutation in-process on the serving thread, with no subprocess bound of its own — is cancelled by it.
+The encrypted backend then commits its checkpoint only after the action returns, and the module
+carries no exception-route commit at all, so a cancelled action commits nothing while its external
+effects have already landed.
+
+The Provider Worker's envelope equals its maximum admitted child deadline with no margin, and an EKS
+control plane does not become available inside it. So this is not a race that fires occasionally. It
+fires on every EKS create, which is why no create has reached its node group since 2026-07-10 while
+creates kept succeeding.
+
+The widened Authority budget landed for a different reason and does not help: it lets the Authority
+live long enough to receive the Provider's refusal, and leaves the Provider's own envelope, and the
+cancellation, unchanged.
+
+### Deliverables
+
+- Make the request deadline cancel the reply rather than the effect, so a handler that has already
+  mutated the world is not unwound by its own transport bound.
+- Commit the collected scratch state on the exception route as well as the return route, before the
+  scratch is released.
+- Refuse admission for an apply whose deadline the effect demonstrably cannot outlive, using the
+  existing unmeetable-deadline refusal rather than a new one.
+- State the rule as a numbered non-negotiable invariant: a request deadline may cancel a reply,
+  never an effect.
+
+### Validation
+
+1. A cancelled action commits the state it had already produced, proven by a table that cancels
+   between the effect and the return.
+2. Admission refuses an apply whose deadline the effect cannot outlive, and names the bound.
+3. The Provider Worker's envelope and its maximum child deadline no longer coincide with zero
+   margin, or the sprint records why they may.
+4. Full unit suite and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+All of it.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` — the reply/effect cancellation
+  invariant, as a numbered entry in the non-negotiable list.
+- `documents/engineering/chaos_hardening_doctrine.md` — the evidence-strength entry for a guard that
+  runs only on the returns path.
+- `documents/engineering/pure_fp_standards.md` — the one-absolute-deadline rule gains the effect
+  half.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `4` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md).
+
+## Sprint 4.97: Three Constructors, One String, Two Unreachable Arms [📋 Planned]
+
+**Status**: Planned. Phase `4` own-surface reopen (Standard A/L) on the Provider response wire and
+the desired-absence decision this phase owns.
+**Doctrine**: [Lifecycle Reconciliation
+Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md)'s desired-absence decision
+table.
+**Implementation**: `src/Prodbox/ControlPlane/AuthorityProviderEndpoint.hs`,
+`src/Prodbox/Lifecycle/Teardown/ProviderDispatch.hs`,
+`src/Prodbox/ControlPlane/AwsStackReaderRepository/Internal.hs`,
+`src/Prodbox/Lifecycle/Teardown/Decision.hs`, `src/Prodbox/Lifecycle/Teardown/AwsStackAdapter.hs`,
+and `test/unit/Main.hs`.
+**Blocked by**: none.
+**Live-proof**: pending.
+**Deployment qualification**: pending — **invalidated** on capability wiring.
+**Independent Validation**: the decoder's refusal arms exercised with each execution-result kind;
+the decision's own tables over the restored signature; full unit suite; `prodbox dev check`.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+The Authority's provider response flattens three execution-result constructors and their coordinate
+into one text. The teardown client then re-synthesises a result from the intent it sent, always with
+the same constructor, so the two refusal arms that guard against a coordinate mismatch and a wrong
+result kind compare a value against itself and can never fire. A destroy that ran and a destroy that
+found nothing are byte-identical on that wire.
+
+Separately, the stack-reader wire refuses complete ownership-manifest evidence outright. That single
+refusal is what makes the decision's manifest branch dead, not the branch's own predecessor
+condition — so the one authority that can act on AWS coordinates rather than on a checkpoint can
+never be reached, and the ladder can only refuse.
+
+The decision itself is a faithful branch structure over a weaker type than the doctrine specifies:
+no surface index, no inventory carried into the destroy arms, and no retirement authorization on the
+already-absent arm, which is the payload that keeps a prune from erasing the last usable destruction
+mechanism.
+
+### Deliverables
+
+- Carry the execution-result kind and coordinate on the response beside the evidence, so the
+  decoder's refusal arms become reachable.
+- Open the stack-reader wire to complete manifest evidence, so the manifest authority is decidable
+  rather than structurally refused.
+- Restore the decision's surface index, its carried inventory, and the retirement authorization the
+  doctrine's signature names.
+- Record, dated and in place, that the decision table's provider and checkpoint columns are not
+  independent inputs on the current adapter.
+
+### Validation
+
+1. Each execution-result kind reaches the decoder distinctly, and each refusal arm fires on its own
+   input.
+2. Complete manifest evidence round-trips the stack-reader wire.
+3. The restored decision signature is exercised over every row of the doctrine's table.
+4. Full unit suite and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+All of it.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — the dated correction that the
+  provider observation hydrates from the checkpoint, so the two columns are one witness read twice.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `4` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md).
+
+## Sprint 4.98: Absence Minted From A Grep [📋 Planned]
+
+**Status**: Planned. Phase `4` own-surface reopen (Standard A/L) on the absence vocabulary and its
+producers, which this phase owns.
+**Doctrine**: [Lifecycle Reconciliation
+Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md)'s nominal separation
+between observation strata.
+**Implementation**: `src/Prodbox/ControlPlane/ProviderProduction.hs`,
+`src/Prodbox/Lifecycle/Teardown/AwsStackAdapter.hs`,
+`src/Prodbox/Lifecycle/Teardown/Observation.hs`, `src/Prodbox/Lifecycle/HostCleanupLocalAbsence.hs`,
+and `test/unit/Main.hs`.
+**Blocked by**: none.
+**Live-proof**: pending.
+**Deployment qualification**: pending — **invalidated** on lifecycle orchestration.
+**Independent Validation**: a table proving a structured absence arm carries its coordinate; a
+policy check refusing a decoder that mints exact absence from subprocess output; the sealed type's
+own constructor tests; full unit suite; `prodbox dev check`.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+The strongest absence type in the repository is reconstituted by string equality. A predicate greps
+the merged standard error and standard output of a Pulumi invocation for three English phrases and
+returns a boolean; that boolean becomes a fixed literal; the literal crosses the Provider wire; a
+second module compares it by equality against an independently authored copy of the same literal and
+returns exact resource absence; and the decision turns that into an already-absent verdict. Nothing
+joins the two copies of the literal, and the backend the grep ran against was hydrated from the
+local checkpoint, so the claim is about local state throughout.
+
+The doctrine says the absence-evidence constructor is opaque outside registered observer and
+decision modules. It is exported with its constructor, and host-local cleanup mints one by
+describing a directory — so the nominal separation the doctrine relies on is enforced by the
+enclosing wrapper types and not by the evidence type itself.
+
+### Deliverables
+
+- Give the provider a structured absence arm carrying its coordinate, in the shape the native-family
+  path already uses, and delete the literal channel rather than joining its two ends.
+- Seal the absence-evidence constructor and split it nominally per observation stratum, so a local
+  host absence and a provider absence are different types.
+- Land the policy check that refuses any decoder constructing exact absence from a value derived
+  from subprocess output.
+- Correct the doctrine's opacity claim in place, dated, rather than rewriting it.
+
+### Validation
+
+1. A structured absence arm carries its coordinate end to end, and the literal has zero occurrences
+   in production modules.
+2. Host-local absence cannot inhabit a provider-absence position, proven by a type error in a
+   synthetic mutation.
+3. The policy check fires on a synthetic decoder and passes the real tree.
+4. Full unit suite and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+All of it.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — the positive-absence definition the
+  other nine documents will link to, and the dated correction to the opacity claim.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `4` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md).
 
 ## Related Documents
 

@@ -11,14 +11,16 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-09-11 on Sprint `2.134` (Standards A/N/P).** Own-surface reopen on the daemon,
-workload, bootstrap-broker, and control-plane runtime concurrency this phase owns. Sprint `6.5`'s
-live investigation proved a token writer that died silently because its `withAsync` handle was
-discarded, and found five further long-lived threads under `src/` with the same shape — including
-the sole refresher of the cache `/readyz` serves. [Chaos Hardening
-Doctrine](../documents/engineering/chaos_hardening_doctrine.md) rule R6 already forbids discarding a
-join result; nothing enforced it. The phase recloses when `2.134` reaches `Done`; until then this
-entry records an open reopen, not a closure.
+✅ **Reclosed 2026-09-11 on Sprint `2.134` (Standards A/N/P); header corrected 2026-09-12.** The
+own-surface reopen was on the daemon, workload, bootstrap-broker, and control-plane runtime
+concurrency this phase owns. Sprint `6.5`'s live investigation proved a token writer that died
+silently because its `withAsync` handle was discarded, and found five further long-lived threads
+under `src/` with the same shape — including the sole refresher of the cache `/readyz` serves.
+[Chaos Hardening Doctrine](../documents/engineering/chaos_hardening_doctrine.md) rule R6 already
+forbids discarding a join result; nothing enforced it. Sprint `2.134` reached `Done` on
+2026-09-11; the reclose is written here on 2026-09-12 because the phase header is the one place a
+reclose must be written by hand in a second location, and it is therefore the one place that
+drifts.
 
 ✅ **Reclosed 2026-08-31 on Sprint `2.133` (Standards A/N/P).** Generation 157 reuses the exact
 Generation-156 runtime identity, reads back the current Lifecycle Authority config, receives the

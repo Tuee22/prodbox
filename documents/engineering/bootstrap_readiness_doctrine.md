@@ -161,7 +161,8 @@ installation. Admission resolution separately closes projection-registration coo
 construction, corrupt/unready registration observations, clean-install versus migration
 construction, and the unobservable observation's coordinate-authority, native store
 endpoint/request/HTTP/version, envelope-open, invalid-Model-B-version, and fail-closed `other`
-families. Native S3 404 remains positive absence through every layer and selects clean install.
+families. Native S3 404 remains [positive absence](./lifecycle_reconciliation_doctrine.md#30-positive-absence) through every layer and selects clean
+install.
 The clean generation-56 diagnostic proves native store HTTP is the current live family; the next
 plan-owned diagnostic refines only its closed response-status class before behavior changes. The
 closed classes are authentication, authorization, other-client, server, unexpected-non-error, and

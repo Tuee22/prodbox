@@ -251,6 +251,11 @@ phase/ledger records. Engineering docs under
 
 ## Target Architecture
 
+> **Target.** This section describes the accepted end state, not the current revision. The shipped
+> binary's differences are recorded under [Current Implementation
+> Baseline](#current-implementation-baseline) below. Status lives only in the [Development
+> Plan](./DEVELOPMENT_PLAN/README.md#resume-here).
+
 ```text
 Internet
   -> Router (80/443 port-forward)
@@ -356,6 +361,17 @@ on the legacy public cascade's AWS drain, whose `kubectl` calls are additionally
 a measured current fact, not a qualification status; ownership and remaining work live in the
 [Development Plan](./DEVELOPMENT_PLAN/README.md#resume-here) under Sprints `7.39`, `7.40`, and
 `4.93`.
+
+**Measured 2026-09-12 — no EKS create has reached its node group since 2026-07-10, and every
+cluster created since the Provider Worker cutover has been deleted by hand.** Provider-side
+cancellation is the reason: a create runs in-process on the serving thread of a request whose
+transport deadline is shorter than an EKS control plane takes to become available, so the effect is
+abandoned mid-flight and the checkpoint describing what it built — committed only on the return
+route, held until then in memory — is discarded with the thread. The cloud audit trail shows creates
+succeeding and no node group ever following, and two manual deletions where the supported surface
+issued none. A cluster created 2026-09-08 accordingly billed for four days. These are measured
+current facts, not a qualification status; ownership and remaining work live in the [Development
+Plan](./DEVELOPMENT_PLAN/README.md#resume-here) under Sprints `4.96` and `7.41`.
 
 The measured-capacity recorder is available as
 `prodbox test integration gateway-pods --record-profile`. It writes
@@ -1103,7 +1119,7 @@ prodbox/
 - [Claude Code Patterns (CLAUDE.md)](./CLAUDE.md)
 - [Agent Guidelines (AGENTS.md)](./AGENTS.md)
 
-The list above is a starting point, not the index. `documents/engineering/` holds 40 governed
+The list above is a starting point, not the index. `documents/engineering/` holds 41 governed
 documents; [its README](./documents/engineering/README.md) is the complete one, and this file
 deliberately does not maintain a second copy of it
 ([documentation_standards.md § 1](./documents/documentation_standards.md)). The ones most often
@@ -1128,6 +1144,9 @@ reached for and not listed above:
   the typed parser rather than transcribed.
 
 ### Target retained SES workflow (not current)
+
+> **Target.** This subsection describes the accepted end state. Status lives only in the
+> [Development Plan](./DEVELOPMENT_PLAN/README.md#resume-here).
 
 In the target topology, SES reconciliation is revisioned and crash-resumable through the retained
 Lifecycle Authority.

@@ -3350,6 +3350,111 @@ node is a renderer, and calling it a validation is the defect."* The rule was wr
 
 None. The code work this sprint schedules belongs to the nine sprints it opened.
 
+## Sprint 0.34: What A Type Cannot Prove About Someone Else's Database [📋 Planned]
+
+**Status**: Planned. It schedules the resource-custody remediation and corrects the governed record
+on the same already-reclosed Phase 0 documentation and governance surface — it neither re-closes nor
+reopens the phase. It opens eight code sprints in Phases `4`, `5` and `7`, records the reopen of
+Phases `4`, `5` and `7` and the overdue reclose of Phase `2`, and corrects four located claims that
+are false about the current revision.
+**Doctrine**: [Documentation Standards](../documents/documentation_standards.md) and
+[Development Plan Standards](development_plan_standards.md).
+**Implementation**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, `DEVELOPMENT_PLAN/phase-2-gateway-dns.md`,
+`DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md`,
+`DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md`,
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
+`documents/engineering/pure_fp_standards.md`, `documents/documentation_standards.md`, and
+`README.md`.
+**Blocked by**: none.
+**Live-proof**: pending — not applicable to a documentation and governance surface.
+**Deployment qualification**: pending — not invalidated by this sprint, which changes no production
+composition.
+**Independent Validation**: `prodbox dev docs check` and `prodbox dev check` over the edited
+governed record, including the derived Resume Here execution order, the backward-dependency
+bijection, the Pending Removal owner and prerequisite direction, and every cited source path.
+**Docs to update**: `documents/engineering/pure_fp_standards.md`,
+`documents/documentation_standards.md`, `README.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+An EKS cluster created 2026-09-08 billed for four days and was removed by hand. It is the fourth
+incident of one class since May 2026: local state says a resource is absent, the provider says it is
+present, and the teardown believes the local state.
+
+Thirty-four sprints have applied a type-level device to that class. The devices are sound and the
+claim each makes is true. Every one of them makes a *value* unconstructible, and a leak is not a
+value — it is an outcome in a database this repository does not own. The doctrine already says type
+indices are for program-owned facts and external state stays flat data, so the campaign was
+well-formed inside its declared scope, and nothing was ever built to cover the remainder.
+
+The repository half-knows this. The chaos treatise records that conversions are where this project's
+MISU work has actually failed. That observation sits in a rule about conversions; it has never been
+promoted into the standard that governs new work, and the document that should own it uses the word
+"unrepresentable" exactly once and never names the practice at all.
+
+This sprint places that statement where a new sprint will meet it, schedules the eight code sprints
+the analysis produced, and corrects the four claims in the governed record that the incident proved
+false.
+
+### Deliverables
+
+- State in the purity standards what a type-level device can and cannot prove: that typing an
+  ordering of effects is legitimate because ordering is a program-owned fact, that typing a fact
+  about a cloud resource is not, and that a value-level guard with no production consumer is not a
+  guard. Derive it from the chaos treatise's conversion rule rather than restating it.
+- Record the reopen of Phases `4`, `5` and `7`, and the overdue reclose of Phase `2`, whose header
+  said it would reclose when its one sprint reached `Done` and did not.
+- Correct, in place and dated, the ledger's claim that the Sprint `4.16` source-of-truth swap makes
+  this divergence impossible. The named resources were cleaned; the impossibility claim was not
+  true, and four later incidents are the evidence.
+- Move the Sprint `7.36` write-ahead ownership row back to `Pending Removal`, re-owned to Sprint
+  `7.41`. The generation half of that row is true and the ownership half has no production writer.
+- Register the counterexample the 2026-09-07 checkpoint-retirement incident never received. Its fix
+  landed as a correct typed device; what is missing is any record at all, which is why the next
+  incident was diagnosed from scratch.
+- Add a counterexample disposition index. The plan names hundreds of stable counterexample
+  identifiers and carries no way to answer which are open.
+- Correct the documentation standards' claim that the renderer-determinism check runs under the
+  Haskell lint. It runs under one suite and not that gate — an enforcement claim of exactly the kind
+  the section it sits in exists to forbid.
+- Correct the governed-document count in the repository README, and declare its two target regions,
+  which state a target architecture in the present indicative outside any declared region.
+
+### Validation
+
+1. The derived Resume Here execution order matches the authored table, and every declared dependency
+   appears in its queue row.
+2. The one backward dependency carries both directions and its justification.
+3. Every Pending Removal row names an existing sprint or is explicitly unowned, and no prerequisite
+   is later than its owner.
+4. Every cited source path resolves, and every bound section citation resolves to a real heading.
+5. `prodbox dev docs check` and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+All of it.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/pure_fp_standards.md` — what a type-level device can and cannot prove about
+  an external resource.
+- `documents/documentation_standards.md` — the corrected attribution for the renderer-determinism
+  check.
+
+**Product docs to create/update:**
+
+- `README.md` — the two undeclared target regions and the governed-document count.
+
+**Cross-references to add:**
+
+- Record the Phase `4`, `5` and `7` reopens and the Phase `2` reclose in [README.md](README.md) and
+  [00-overview.md](00-overview.md); register the surviving defects in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
 ## Related Documents
 
 - [README.md](README.md)

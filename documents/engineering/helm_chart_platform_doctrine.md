@@ -257,7 +257,8 @@ still-empty slot shape, carries the observed opaque `resourceVersion` into an ex
 PATCH as an optimistic CAS, and independently reads the restored content back. It cannot create a
 Secret or patch a different name. Missing, immutable, corrupt, different, concurrently replaced,
 or unobservable slot state fails closed. Corrupt, digest-mismatched, unobservable, not-yet-valid, or
-Authority-time-uncertain state blocks issuance; only positive absence or expiry proven by the pure
+Authority-time-uncertain state blocks issuance; only [positive absence](./lifecycle_reconciliation_doctrine.md#30-positive-absence) or expiry
+proven by the pure
 trusted-Authority-time fold may lead to a separately committed issuance plan. AWS qualification
 deletes/recreates AWS Vault and EBS and proves this restore path before issuance.
 

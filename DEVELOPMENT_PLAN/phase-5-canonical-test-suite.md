@@ -11,13 +11,22 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-09-11 on Sprints `5.44`–`5.46` (Standards A/N).** Own-surface reopen on the
-canonical suite's boundary coverage, assertion vocabulary, runner contract, and property coverage.
-Sprint `6.5`'s investigation proved a credential path that has never worked and that no test could
-have caught: every assertion about the bearer token was an absence assertion, no helper anywhere in
-`test/` measures elapsed time, three declared suites are compiled by the gate and run by no scope,
-and § 3.2's mandated codec round-trip properties do not exist. The phase recloses when all three
+🔄 **Reopened 2026-09-12 on Sprints `5.47`–`5.48` (Standards A/N).** Own-surface reopen on the
+canonical suite's gate surface, the scopes that execute it, and the repository's model-checked proof
+surface. The 2026-09-08 leak crossed four boundaries and no gate could see any of them, because
+every lifecycle gate is a join between inventories while every one of those defects lives in a
+`case` arm. The same investigation found that the canonical check compiles the suites and runs none
+of them, so the strongest absence rule in the tree is asserted by a boolean that is never executed,
+and that nothing in the repository models create, cleanup, or absence. The phase recloses when both
 reach `Done`; until then this entry records an open reopen, not a closure.
+
+✅ **Reclosed 2026-09-11 on Sprints `5.44`–`5.46` (Standards A/N); header corrected 2026-09-12.**
+Own-surface reopen on the canonical suite's boundary coverage, assertion vocabulary, runner
+contract, and property coverage. Sprint `6.5`'s investigation proved a credential path that has
+never worked and that no test could have caught: every assertion about the bearer token was an
+absence assertion, no helper anywhere in `test/` measures elapsed time, three declared suites are
+compiled by the gate and run by no scope, and the mandated codec round-trip properties do not exist.
+All three reached `Done` on 2026-09-11; the reclose is written here on 2026-09-12.
 
 ✅ **Reclosed 2026-08-31 on Sprint `5.43` (Standards A/N).** Sprints `5.38` through `5.43` are
 Done: fake Helm status, Docker retention/repository identity, Credential Provisioner substrate
@@ -4536,6 +4545,144 @@ table-covered under § 3.1 rather than property-covered. It does not claim the w
 ### Remaining Work
 
 None.
+
+## Sprint 5.47: Gates That Read Conversions, And A Suite The Gate Runs [📋 Planned]
+
+**Status**: Planned. Phase `5` own-surface reopen (Standard A/N) on the canonical suite's gate
+surface and the scopes that execute it.
+**Doctrine**: [Unit Testing Policy](../documents/engineering/unit_testing_policy.md)'s tier table
+and [Code Quality Doctrine](../documents/engineering/code_quality.md)'s policy-guardrail idiom.
+**Implementation**: `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestPlan.hs`, and `test/unit/Main.hs`.
+**Blocked by**: none.
+**Live-proof**: pending — not applicable to this surface; every item is provable locally.
+**Deployment qualification**: pending — not invalidated by this sprint, which adds gates and a
+suite route and changes no production composition.
+**Independent Validation**: each new gate exercised against a synthetic violation and against the
+real tree; the suite route proven by a deliberately failing assertion that the gate must surface;
+full unit suite; `prodbox dev check`.
+**Docs to update**: `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/code_quality.md`, `documents/documentation_standards.md`,
+`DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Roughly twenty lifecycle gates run in the canonical check, and every one of them is a join between
+two inventories or between an inventory and a file on disk. They are good at that. None of them can
+read a `case` arm, and every defect the 2026-09-08 leak crossed lives in one — a checkpoint absence
+read as residue absence, a substring match promoted to exact absence, three constructors flattened
+to one string on a wire.
+
+Two shapes of gate would have caught those, and both are already in the repository's toolbox applied
+to other subjects: a guard declared and consumed nowhere, and a serialised sum that loses arms. A
+third is the inverse of a technique already used for coordinate literals — refusing a decoder that
+derives an absence claim from subprocess output.
+
+Separately, the canonical check compiles the suites and runs none of them. The strongest absence
+rule in the tree is asserted by a boolean that is type-checked and never executed, which is a proof
+surface that does not run.
+
+### Deliverables
+
+- A declared-but-unconsumed-guard gate, shipped with a ledger-keyed exemption registry in the
+  established declared-symbol and deletion-condition shape, because the tree contains known
+  unconsumed guards today and the gate must name them rather than fail opaquely on day one.
+- A wire-fidelity gate: a serialised sum may not lose arms its in-process type distinguishes.
+- A ban, not a join, on absence literals derived from subprocess output.
+- Route the unit suite onto a gated path so a compiled assertion is also an executed one, and record
+  in the testing policy which gate now runs which tier.
+
+### Validation
+
+1. Each gate fires on a synthetic violation and passes the real tree.
+2. The exemption registry names every currently unconsumed guard, and an unregistered new one fails.
+3. A deliberately failing unit assertion is surfaced by the gated path.
+4. Full unit suite and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+All of it.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/unit_testing_policy.md` — which gate executes which tier, replacing the
+  statement that the canonical check proves only compilation.
+- `documents/engineering/code_quality.md` — the three new policy guardrails.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `5` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md).
+
+## Sprint 5.48: A Model For The One Invariant Types Cannot Hold [📋 Planned]
+
+**Status**: Planned. Phase `5` own-surface reopen (Standard A/N) on the repository's model-checked
+proof surface.
+**Doctrine**: [TLA+ Modelling
+Assumptions](../documents/engineering/tla_modelling_assumptions.md) and [Chaos Hardening
+Doctrine](../documents/engineering/chaos_hardening_doctrine.md)'s extract-model-inject method.
+**Implementation**: `src/Prodbox/Tla.hs`, `documents/engineering/tla/`, and `test/unit/Main.hs`.
+**Blocked by**: none.
+**Live-proof**: pending — not applicable; a model is checked, not deployed.
+**Deployment qualification**: pending — not invalidated by this sprint.
+**Independent Validation**: exhaustive model check over the registered configuration, with the
+invariant deliberately broken once to prove the model can fail; registration exercised by the
+check command; `prodbox dev check`.
+**Docs to update**: `documents/engineering/tla_modelling_assumptions.md`,
+`DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Two models exist and both are about the gateway. Nothing models create, cleanup, or absence — which
+is where four leaks in four months have come from, and which is the one invariant a type system
+provably cannot hold, because it is a property of an ordering across processes and crashes rather
+than of any value.
+
+The invariant to check is safety, not liveness: there is no reachable state in which a provider
+effect has landed and no durable record names the coordinates it created. Liveness over a reconciler
+with no fairness assumption yields a stuttering counterexample and proves nothing, and "absent in
+AWS" is a claim about the world that does not belong inside a model property any more than inside a
+type.
+
+### Deliverables
+
+- A third registered model over admit, create, crash, restart and reconcile, checking the safety
+  form.
+- Registration in the check command, so the model is a gate rather than an ungoverned file.
+- The modelling-assumptions document gains the new model's invariants, its deliberate abstractions,
+  and the statement that it proves the protocol and never the boundary implementation.
+
+### Validation
+
+1. The model checks exhaustively over its registered configuration.
+2. A deliberately broken variant produces a counterexample trace, proving the invariant can fail.
+3. The assumptions document names every abstraction the model makes.
+4. `prodbox dev check` exits 0.
+
+### Remaining Work
+
+All of it.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/tla_modelling_assumptions.md` — the third model, its invariants, and its
+  abstractions.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `5` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md).
 
 ## Related Documents
 

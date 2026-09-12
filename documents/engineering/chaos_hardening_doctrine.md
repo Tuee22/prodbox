@@ -647,6 +647,7 @@ assumed result and report it as proven. Keep this ledger explicitly:
 | **Inject** — live fault injection | The deployed system survived the injected faults | **Tested** (the faults you chose), never proven | Faults/interleavings not injected; that the invariant is *sound* |
 | Synchrony / real-time assumption (R8) | The timing premise the live system relies on (clock-skew bound, lease, heartbeat) is named, bounded, and monitored | **Assumed** — monitored at runtime, never proven by any move | Behaviour when the bound is exceeded; that the premise actually holds in the field |
 | Type tightening inside a region (§ 23) | Values of that type in the compiled region cannot take the excluded shape | **Proven for the compiled region only** — and the region is whatever the build command selects, not the repository (§ 22) | Anything at a conversion out of the region: a hand-authored serialization, a typed failure thrown as an exception, an unanswered socket. Tightening a type does not update a second encoder; it only makes it wrong |
+| A guard that runs only on the returns path | That the excluded outcome cannot be *decided* wrongly by code that completes | **Proven for completing executions only** | Anything on the path where the function never returns. A cancelled, killed, or crashed handler reaches no decision at all, so a device that can only run after the action returns says nothing about the state the action left behind |
 | Derivation from an observed source (§ 24) | The rendered value agrees with the object that was actually read | **Proven only for the layer at which that object is authoritative** — deriving from one source fixes the encoder count, not the layer | That the layer read is the layer the value is enforced at. A value generated from the pre-translation object and matched against the post-translation one is single-sourced, derived, and wrong |
 
 (Three further rows — the cross-boundary consistency premise, the failover budget, and the
@@ -705,7 +706,13 @@ and R9 is purely cross-boundary and lives there.)
   about and no model can scope.) A control-plane request creates one monotonic absolute deadline;
   admission queueing, credential refresh, external I/O, read-back, and response serialization all
   consume its remaining budget. Resetting a relative timeout at each layer silently removes the
-  authored bound.
+  authored bound. Two corollaries are easy to miss and have both cost a live incident here. A bound
+  may cancel a *reply* and may not cancel an *effect*: a side-effecting handler wrapped in its own
+  transport's cancelling timeout is abandoned mid-flight, and the record of what it already built
+  goes with the thread. And an authorization may not outlive the credential that backs it — a lease
+  is bounded by the shorter of its own ceiling and the expiry of the token it is issued against, so
+  a bound derived from a provider-issued credential is a measurement rather than a constant, and a
+  repair that assumes otherwise is guessing at the number that decides it.
 - **R6 — Structured concurrency only.** Coordination paths use scoped concurrency (spawn-within-a-scope,
   race, cancel-on-exit) — never unstructured fire-and-forget tasks or ad-hoc sleeps. Structured scopes
   make cancellation and async-exception safety analyzable; unstructured tasks leak and hide races. (The

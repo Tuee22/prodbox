@@ -460,6 +460,20 @@ Rules:
     describe the wrong boundary. Substrate convergence is then read back from a fresh observation
     alone; the applied steps are not an input to it.
 
+17. **Addressability is not destroyability, and a cleanup run needs both.** A record that names the
+    cycle a resource was created under makes it addressable: a later run can say which admitted
+    operation produced it. That is not sufficient to remove it. Destruction additionally needs the
+    coordinates — the identities the provider will accept — and on the checkpoint path it needs
+    state a tool can act on. The two come apart in both directions and each direction has been
+    observed. A create whose effects landed and whose state was never committed leaves a resource
+    that is addressable by cycle and destroyable by nothing. A successful apply whose state persist
+    then fails leaves a resource that is addressable, recorded, and still not destroyable by the
+    primary mechanism, because the state that would destroy it was dropped with the scratch. Plan
+    for both: the write-ahead record supplies addressability, the ownership tag supplies
+    enumerability when every host record is gone, and only an exact coordinate supplies destruction.
+    Status lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+
 ## Cross-References
 
 - [Config Doctrine](./config_doctrine.md) — storage paths and MinIO coordinates live in

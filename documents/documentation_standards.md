@@ -377,6 +377,17 @@ nothing runs names a proof surface that does not run; the correction was to say 
 provided it, and the sprint's job was to make the other one real rather than to leave the sentence
 carrying both.
 
+**Attribution corrected again 2026-09-12 (Standard C), and this time in the other direction:** the
+first half of the sentence above is false about the current revision. `runHaskellLint` calls
+`haskellStyleViolations`, whose body does not reference the determinism check at all, so
+`prodbox dev lint haskell` does not run it. Its only caller outside its own definition is the
+`prodbox-haskell-style` suite, which Sprint `5.45` did route into `prodbox test unit` — so the
+guarantee is real and exactly one mechanism provides it. The 2026-09-11 correction added the true
+half and left the false half standing beside it. That is worth recording rather than deleting,
+because it is this section's own rule failing inside the section that states it: an enforcement
+claim is read as a claim about the current revision no matter what surrounds it, and "calls the
+shared function" was never checked against the caller list.
+
 ---
 
 ## 12. Revision-Scoped Claims

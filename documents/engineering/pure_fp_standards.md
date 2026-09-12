@@ -208,7 +208,7 @@ coordinates and CAS adapters; the retained-custody topology is owned by
 source correspondence, migration, and qualification status are owned by the
 [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
-> **Current source correspondence.** The real `Prodbox.Lifecycle.CheckpointAuthority` Model-B types
+> **Current revision.** The real `Prodbox.Lifecycle.CheckpointAuthority` Model-B types
 > (`ModelBObjectCoordinate l`,
 > `ModelBCasRequest l value`, `ModelBCasAdapter l m value`) carry a `nominal` role and expose the
 > full-name-tagging constructors `mkClusterRetainedCoordinate` / `mkChartLifetimeCoordinate` /
@@ -347,12 +347,52 @@ Retry is legal only for a classified transient failure, an idempotent or durably
 operation, and a next attempt that fits in the original deadline. Queue saturation is a typed
 admission refusal, not an instruction to accumulate waiters.
 
+**A deadline cancels a reply, never an effect.** A transport bound exists to stop a caller waiting;
+it does not exist to stop work that has already changed the world. Wrapping a side-effecting
+handler in a cancelling timeout gives the expiry a second, unstated meaning — the effect is
+abandoned mid-flight and whatever it had already built is left with no record — and no type in the
+handler can describe that outcome, because the function does not return. Two rules follow.
+
+- **Admission refuses what the budget cannot hold.** An effect whose expected duration exceeds the
+  remaining budget is refused before it starts, with the bound named. Starting an effect that
+  provably cannot finish inside its own deadline is an admission defect, not a timeout.
+- **An authorization may not outlive the credential that backs it.** A lease, a session, or a
+  projected deadline is bounded by the shorter of its own ceiling and the expiry of the credential
+  it is issued against, and a refusal names which of the two refused. A bound derived from a
+  provider-issued token is a measurement, not a constant, and a repair that assumes otherwise is
+  guessing at the number that decides it.
+
+> **Target.** Both rules are accepted and neither is enforced in the current revision: the
+> control-plane request boundary wraps its interpreter in a cancelling timeout that every role
+> reaches, and the encrypted backend commits its collected state only on the return route. Status
+> lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
 ### 6.4 At-least-once processing
 
 Durable work is at least once. Commit an operation or outbox intent before executing its external
 effect; identify it by a stable operation/action key; make the handler idempotent; and acknowledge
 completion only after authoritative read-back. A lost response is resolved by observing the
 operation ID.
+
+**Record before effect.** This is the named invariant other documents cite rather than restate: no
+irreversible external effect may begin until a durable record naming the coordinates that effect can
+create has been committed outside the effecting process and independently read back, and the absence
+of such a record is a refusal rather than a claim that nothing was created. Two properties make it
+work, and both are load-bearing.
+
+- **The record names resources, not the attempt.** An operation identifier says a cycle happened; it
+  does not say what the cycle built. A cleanup run holding only the identifier has an addressable
+  cycle and no coordinate to destroy, which is the same position as holding nothing.
+- **The ordering survives interruption, and the record must too.** An effect that lands and a record
+  that is written after it are not atomic, and no type makes them so. What the ordering buys is that
+  every interruption point leaves an addressable coordinate — so the commit precedes the effect, and
+  a record whose only copy lives in the effecting process's memory has not been committed.
+
+Where the ordering cannot cover the gap — a process killed between the effect landing and its
+read-back — the remaining marker is one the provider holds rather than the host, which is why
+resources this repository creates carry ownership tags authored by the creating program. That
+vocabulary is owned by [Lifecycle Control-Plane
+Architecture](./lifecycle_control_plane_architecture.md).
 
 Gateway peer gossip remains a bounded anti-entropy protocol, not a durable work queue. It shares
 idempotent fold requirements but uses the protocol defined by
@@ -420,6 +460,56 @@ to a component/backend label, is superseded. It could reject a constructor misma
 prove that the action used the named endpoint, operation, or authority. The replacement is an
 operation-indexed program plus an opaque same-reference interpreter, owned by
 [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
+
+### 7.1 What a type-level device can and cannot prove about a resource
+
+A type makes a *value* unconstructible. A leaked cloud resource is not a value; it is an outcome in
+a database this repository does not own. That is why the rule above reserves indices for
+program-owned facts, and it is also the boundary of what this practice can ever deliver against a
+resource. Reading that boundary as a defect in the types is the mistake; reading it as a reason to
+stop at the types is the expensive one.
+
+**What does work is typing an ordering of effects, because an ordering is a program-owned fact.**
+"This effect may not begin until a durable record naming what it can create has been committed and
+read back" is a statement about this program's own steps, so it can be made unconstructible in the
+ordinary way: give the effecting function an argument only the committed read-back can produce. That
+is the positive form, and § 6.4 is where the repository states the invariant it enforces.
+
+**What does not work is typing the resource.** No index, phantom, or GADT may assert that a cloud
+resource exists, is absent, or has been destroyed. Those remain flat exhaustive data with explicit
+partial and unobservable arms, decided by a pure fold over separately authored observations.
+
+Three failure modes recur, and each has produced a live incident in this repository. They are
+recorded here because each reads as correct to a reviewer who checks the type and not its
+neighbourhood.
+
+- **A guard with no production consumer is not a guard.** A rule that refuses unless a demanding
+  precondition holds proves nothing if no shipping path calls it, and nothing about the type says
+  which. This is the shape that made a strict absence rule, an adoption planner, and a write-ahead
+  commit simultaneously present, tested, and inert.
+- **Unrepresentable-but-unreachable.** A device strict enough to exclude the unsafe value can also
+  exclude the safe one. When the only constructor for a needed authority cannot be produced on any
+  production path — or a wire refuses to carry it — the branch it guards is not protected, it is
+  dead, and the decision that consults it can only refuse.
+- **Laundering at a conversion.** A weak observation converted into a strong-looking type gains the
+  appearance of evidence and none of the substance. A substring match on a subprocess's error output
+  that becomes an exact-absence value is the worked instance; the type did not prevent it, the type
+  is what made it persuasive. The [Chaos Hardening
+  Doctrine](./chaos_hardening_doctrine.md#23-conversions--where-the-moves-stop) owns conversions and
+  names them as where this project's MISU work has actually failed; [its ring-2 gate
+  bound](./chaos_hardening_doctrine.md#22-what-a-ring-2-gate-does-and-does-not-prove) states what a
+  gate proves, and [its layer
+  rule](./chaos_hardening_doctrine.md#24-an-observation-has-a-layer) requires an observation to
+  carry the authority that answered it.
+
+**The review question this section exists to make askable.** For every type-level claim in a change:
+does a shipping path construct this value, what does a reader learn from holding one that they did
+not already know, and which conversion does it survive? A device that cannot answer the third is
+scoped to a module, and the resource is not.
+
+Status of the work that closes the named gaps lives only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
 
 ## 8. Plan / Apply
 

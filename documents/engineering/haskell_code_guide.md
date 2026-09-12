@@ -460,7 +460,7 @@ as an in-memory, SigV4-signed S3 request — **no `aws` CLI subprocess and no pe
 bodies** (the third gateway hot-path CPU driver from counterexample `LCPC-2026-07-11`). Bodies are
 held in memory as strict `ByteString`s; the `x-amz-content-sha256` header binds the exact body, and
 ETag conditional semantics (`If-Match`/`If-None-Match`) preserve the compare-and-swap outcome
-taxonomy (`ConditionalPutConflict` on a `412`, positive absence on a `404`).
+taxonomy (`ConditionalPutConflict` on a `412`, [positive absence](./lifecycle_reconciliation_doctrine.md#30-positive-absence) on a `404`).
 
 The native and subprocess clients are drop-in interchangeable through the `ObjectStoreBackend`
 selector in `Prodbox.Minio.ObjectStore` (`objectStoreBackend`); the subprocess path remains the

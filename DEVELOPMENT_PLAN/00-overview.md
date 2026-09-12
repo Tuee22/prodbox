@@ -503,6 +503,24 @@ not reopen them merely by being incomplete. This reference does not select curre
 mechanical queue, including which partially implemented foundations are parked, is
 [README.md → Resume Here](README.md#resume-here).
 
+**Phases `4`, `5` and `7` own-surface reopen, and Phase `2` recloses, Sprint `0.34`
+(2026-09-12).** A four-day EKS leak reopened three phases on their own surfaces. Phase `4` takes
+the EKS drain session, the control-plane request boundary and its encrypted-backend commit
+ordering, the Provider response wire and the desired-absence decision, and the absence vocabulary,
+on Sprints `4.95`–`4.98`. Phase `5` takes the gate surface, the scopes that execute it, and a
+third model-checked proof surface, on Sprints `5.47`–`5.48`. Phase `7` takes the registered
+stack-creation lane and the bounded legacy-adoption protocol, on Sprints `7.41`–`7.42`. Phase
+`6`'s Sprint `6.5` gains three deliverables rather than a fourth sprint, because they change
+destructive semantics in the writer it deletes, and declares a backward dependency on Sprint
+`7.41`.
+
+Each reopen expands only the surface its phase already owns; no phase reopens another. Phase `2`
+is reclosed in the same change on Sprint `2.134`, whose header had said the phase would reclose
+when that sprint reached `Done` and was not updated when it did — the phase header is the one
+place a reclose must be written by hand in a second location, and it is therefore the one place
+that drifts. Details in [README.md](README.md#resume-here) and Sprint `0.34` in
+[phase-0-planning-documentation.md](phase-0-planning-documentation.md).
+
 **Phase `0` own-surface reopen, Sprint `0.30` (2026-08-18).** The direction rule above was enforced
 by hand audit and had failed twice. Sprint `0.30` re-scoped six items that an earlier sprint held but
 could not perform — five in Sprint `4.85`, one owned by nobody — onto the sprints that own the

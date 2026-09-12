@@ -394,7 +394,9 @@ and Sprint `4.86` landed the non-public candidate entrypoint that drives the tot
 a durable descriptor-bound run. Sprints `7.39` and `7.40` closed the last of them on 2026-09-11: the
 ephemeral Kubernetes client's credential mechanism, which this sprint's own live campaign proved had
 never authenticated. Deploy the corrected runtime, recover the registered AWS graph, then resume
-activation qualification. This is the plan suite's only open row.
+activation qualification. It is no longer the plan suite's only open row: Sprint `0.34` opened
+eight code sprints on 2026-09-12 after a four-day EKS leak, and this sprint's closure now waits on
+Sprint `7.41`'s create lane.
 **Deployment qualification**: pending — clean-room/destructive evidence from the superseded
 cascade is invalid for the replacement composition.
 **Doctrine**: [Lifecycle Control-Plane Architecture § 12, “Cutover and
@@ -411,10 +413,17 @@ Fixtures”](../documents/engineering/integration_fixture_doctrine.md#7-clean-ro
 `src/Prodbox/Test/Qualification/Evidence.hs`,
 `src/Prodbox/Capacity/ProviderWorkerBudget.hs`, `docker/prodbox.Dockerfile`, the four
 `pulumi/*/Pulumi.yaml` projects, and the registered retired-symbol scanner.
-**Closure dependency**: none. It was Sprint `7.40`, which completed the ephemeral Kubernetes
-client's consolidation onto the credential mechanism Sprint `7.39` established; both landed
-2026-09-11 and the dependency is discharged.
-**Backward dependency**: Sprint `7.40`, discharged 2026-09-11 and retained here because
+**Closure dependency**: Sprint `7.41`. Sprint `7.40`, which completed the ephemeral Kubernetes
+client's consolidation onto the credential mechanism Sprint `7.39` established, landed 2026-09-11
+and that dependency is discharged; it is named here because its admission below must stay legible.
+**Backward dependency**: Sprint `7.41`, and Sprint `7.40` discharged 2026-09-11. Activating the
+typed writer as the sole public route before a create records what it made would delete the legacy
+route while the replacement still cannot name a resource it created — precisely the state that
+stranded the 2026-09-08 generation, whose cycle was addressable while its VPC, roles, policy and
+cluster were named by nothing, and which no supported surface could then destroy. Sprint `7.41`
+supplies the write-ahead record and the provider-side tag that make a created resource nameable, so
+activating without it would remove the operator's only fallback while leaving the orphan class
+intact. Sprint `7.40` is retained here because
 [Standard N.2](development_plan_standards.md#n-phase-independence-and-execution-order) requires the
 admission to stay legible where the deviation happened. Activating the replacement as the sole
 public writer while its AWS drain could not authenticate would have stranded every EKS teardown path
@@ -513,6 +522,20 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
   adapters Sprint `7.36` supplies — **this sprint's declared `**Backward dependency**`, recorded once
   in the field above**. Held in Phase 4 it was a Phase-4 validation item that only a Phase-6/7
   composition could satisfy; it belongs here.
+
+- **Bind the postflight enumerator to a region and follow its pages, and query the global-service
+  region for IAM.** The current sweep passes no region and reads one page, so it sees one region,
+  one page, and no IAM at all — which is why the 2026-09-07 residue had to be cleared by hand from
+  outside the product. The correct shape already exists in the native-family observer; copy it.
+- **Run the postflight sweep before the local substrate uninstall, and gate the uninstall on a
+  confirmed-empty result.** Today the cascade destroys the local Authority — the only permitted
+  mutation path — before checking whether anything is left to mutate, so detection without
+  remediation is the best outcome the ordering allows.
+- **Decide whether AWS was ever in scope from program-owned facts rather than from three checkpoints
+  reading absent.** The declared substrate and the presence of any registered creation binding are
+  facts this repository authored; three absent checkpoints are not evidence about a cloud account. A
+  non-empty sweep refutes a claimed clean run; it never proves absence and never becomes an exact
+  observation.
 
 ### Validation
 

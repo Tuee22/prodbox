@@ -1238,7 +1238,8 @@ Vault/EBS teardown does not destroy the ability to restore an AWS-substrate cert
 
 Restore precedes issuance. The Adapter returns only flat present/positively-absent/corrupt/digest-
 mismatch/unobservable observations; a pure decision classifies present validity against trusted
-Authority time and its uncertainty interval. Only positive absence or proven expiry may permit a
+Authority time and its uncertainty interval. Only [positive absence](./lifecycle_reconciliation_doctrine.md#30-positive-absence) or proven
+expiry may permit a
 separate issuance intent. Not-yet-valid, boundary-ambiguous, regressed/unobservable time, corrupt,
 identity-mismatched, rollback, or unobservable Secret/S3/Transit state fails closed and cannot be
 collapsed to absence. TLS-retention credentials and exact

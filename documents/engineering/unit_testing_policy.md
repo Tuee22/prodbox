@@ -196,7 +196,14 @@ named by no `prodbox test` scope in `src/Prodbox/TestPlan.hs`, so running the wh
 baseline executes none of them. Where this document or
 [code_quality.md](./code_quality.md) credits a guarantee to one of those suites, the guarantee is
 today obtained — if at all — by the shared function the corresponding `prodbox dev lint` leaf calls,
-not by the suite. Sprint `5.45` owns routing or retiring them and gating the condition. **A sprint that records `dev check`
+not by the suite. Sprint `5.45` owns routing or retiring them and gating the condition.
+
+**Recorded 2026-09-12 (Standard C): the consequence is larger than three unrouted suites.** Every
+invariant this repository encodes as a `fixed…Regression :: Bool` self-test is proven by the gate to
+*typecheck* and by nothing to *hold*, unless a scope runs the suite that asserts it. The strongest
+absence rule in the lifecycle tree is in exactly that position, which is why a four-day EKS leak
+crossed it without any gate objecting. An assertion that a scope does not execute is a proof surface
+that does not run, and this document may not credit a guarantee to one. **A sprint that records `dev check`
 and `prodbox test unit` as its validation has still not exercised the integration suite**, and a
 sprint touching a contract that suite exercises must name that command in its Validation section.
 

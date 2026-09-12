@@ -908,6 +908,34 @@ joins external observations by exact registered keys; it never promotes them int
 about the world. This is the boundary between making illegal *program transitions*
 unrepresentable and honestly modelling a fallible external system.
 
+### 3.0 Positive absence
+
+The term is used throughout this repository and has never been defined in one place. It is defined
+here, and other documents link rather than restate.
+
+**Positive absence is a claim that a named resource does not exist, licensed by an observation of
+the authority that holds it.** Three things follow, and each has been violated by a shipped path.
+
+- **Absence of a record is not absence of a resource.** A missing checkpoint, an unreadable state
+  bucket, a deleted local directory, and a stack a tool cannot select are all statements about this
+  repository's own bookkeeping. None of them observes the provider, so none can license absence. The
+  honest reading of "I have no record" is `unobservable`, and an unobservable answer refuses.
+- **An answered query and an unanswered one are different facts.** A store that replies "no such
+  object" has observed successfully; a store that could not be reached has not. Collapsing the
+  second into the first manufactures absence out of a transport failure; collapsing the first into
+  the second manufactures a refusal out of an answer. Both have happened here.
+- **A cluster-wide audit refutes, it does not prove.** A sweep that finds a resource contradicts a
+  claimed clean run. A sweep that finds nothing proves nothing about any one registered coordinate,
+  because its field of view is a tag query and not an inventory, and it never becomes an exact
+  observation of a named resource.
+
+The asymmetry is deliberate and worth stating plainly: this doctrine makes absence expensive to
+claim and says nothing about how presence is represented. A resource that exists and that no record
+names is therefore outside the vocabulary entirely — which is the state a leak *is*, and the reason
+detecting one depends on enumeration from the provider rather than on any value this repository
+holds.
+
+
 ### 3.1 The managed-resource registry and exact observation boundary
 
 The registry is a pure, closed inventory of everything prodbox may create directly or through a
@@ -1105,6 +1133,15 @@ absent. An escape found by the sweep creates a diagnostic cleanup obligation; it
 stack owner. `AbsenceEvidence`, `ExactPresenceEvidence`, and complete-inventory constructors are
 opaque outside the registered observer/decision modules; decoding a provider response does not let
 a caller manufacture one without the key, coordinate, authority, revision, and scope checks.
+**Corrected 2026-09-12 (Standard C): `AbsenceEvidence` is not opaque in the current revision.** It
+is exported with its constructor, and host-local cleanup mints one by describing a directory, so
+the nominal separation this paragraph relies on is enforced by the enclosing wrapper types and not
+by the evidence type itself. The sentence above states the accepted rule; it was read as a
+description of the tree, and a substring match on a subprocess's error output reached
+`ExactResourceAbsent` through exactly the gap it denies. Status lives only in the [Development
+Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+
 `ObservationEvidenceScope` is also opaque: only the durable run descriptor can mint it, and the
 exact observer must return the same indexed scope it received. Checkpoint-pair and ownership-
 manifest wrappers retain that value rather than relying on an ambient caller or a later string
@@ -1388,6 +1425,17 @@ The decision table is:
 | Present, complete | no usable checkpoint and incomplete manifest | Refuse; preserve required credentials and report the recovery-plane disposition |
 | Partial or unobservable | any checkpoint state | Refuse mutation and absence; preserve required credentials and report the recovery-plane disposition |
 
+**Corrected 2026-09-12 (Standard C): the first two columns are not independent inputs on the
+current revision.** The table is written as a join over two separately authored observations, and
+that is the accepted design. It is not what the shipping adapter does. The exact provider
+observation runs `pulumi stack select` inside a scratch backend hydrated *from the same
+checkpoint* the second column reports, so on that path the two columns are one witness read twice
+and their agreement carries no independent information. Any rule of the form "corroborate the
+checkpoint against a provider observation" is therefore circular until the observation is taken
+against the provider rather than against a rehydration of local state. The table stands as the
+target; what is corrected is the belief that satisfying it today requires nothing further.
+
+
 The read-only Provider configuration needed to learn whether a stack is present comes from the
 independently read-back stack-creation binding. It cannot come from the stack-reader bundle: that
 bundle deliberately does not exist until checkpoint recovery has completed and binds the
@@ -1463,6 +1511,43 @@ value cannot mint it. A corrupt-checkpoint prune may therefore run only after ex
 the resource obligation, or as the retirement tail of a completed desired-absence decision. It may
 never erase the last usable destruction mechanism merely because checkpoint decoding failed.
 Long-lived checkpoint retirement remains an explicit long-lived operation, never a cascade target.
+
+### 3.2a Record before effect, for every resource kind
+
+> **Target.** The generation half of this rule is implemented for registered stacks; the ownership
+> half has no production writer and the appending operation has no occurrence in the source. Status
+> lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+[Pure Functional Programming Standards](./pure_fp_standards.md#64-at-least-once-processing) owns the
+invariant. This section states what it means for a registered resource.
+
+A create commits two distinct durable things, and conflating them is what produced the 2026-09-08
+orphan. The **generation** names the cycle: which admitted operation, under which registry revision,
+in which AWS scope. The **ownership manifest** names the resources that cycle may create. A cleanup
+run holding only the generation has an addressable cycle and no coordinate to destroy, which is
+indistinguishable in practice from holding nothing.
+
+Three properties are required of the manifest, and each has been observed absent:
+
+1. **It is committed and independently read back before the effect**, so every failure before the
+   execute leaves an addressable record and no cloud resource, and the one failure that can leave a
+   cloud resource is one whose coordinates are already durable.
+2. **It carries identities, not an empty set.** A manifest with no entries is not weak authority; it
+   is no authority, and a destroy that consults it refuses every present stack. The appending
+   operation that records what the provider actually returned is therefore part of the same
+   increment as the commit, never a later one.
+3. **It generalises past one resource kind.** The rule is stated for stacks because that is where it
+   is implemented; IAM identities, DNS records, volumes, and controller-created children are created
+   by this repository under the same obligation and are covered by no record today.
+
+**What the record cannot do, and what covers the remainder.** A create and its record are not
+atomic. A process killed between the effect landing and the append leaves a resource the host has
+never described, and no ordering and no type closes that window. What closes it is a marker the
+provider holds rather than the host: ownership tags authored by the creating program, whose
+vocabulary is owned by [Lifecycle Control-Plane
+Architecture](./lifecycle_control_plane_architecture.md). The tag is what makes an unrecorded
+resource enumerable; adoption is what makes it recoverable.
+
 
 ### 3.3 Result-indexed programs and the durable cleanup graph
 

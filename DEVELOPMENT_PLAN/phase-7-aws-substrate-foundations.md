@@ -11,6 +11,16 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-09-12 on Sprints `7.41` and `7.42` (Standards A/L/P).** Own-surface reopen on
+the registered stack-creation lane and the bounded legacy-adoption protocol this phase built. An EKS
+cluster created 2026-09-08 billed for four days and was removed by hand; the analysis found that a
+generation record was committed one second before the capability ran, that a generation names a
+cycle rather than resources, and that the write-ahead ownership manifest which would have named the
+resources has no production writer — the half of Sprint `7.36` recorded as delivered. The adoption
+protocol that could have recovered the orphan is likewise written, tested, and called from nothing,
+because its authorization half has no operator surface. The phase recloses when both reach `Done`;
+until then this entry records an open reopen, not a closure.
+
 ✅ **Reclosed 2026-09-11 on Sprints `7.39` and `7.40` (Standards A/L/P).** The own-surface reopen
 was on the ephemeral Kubernetes client this phase created. Sprint `6.5`'s live investigation had
 proved that the client's bearer-token writer dies with `ENXIO` before `kubectl` starts and that its
@@ -6199,6 +6209,196 @@ it, the owning module admitted, and the ordinary binder admitted. Exercised agai
 well as synthetically: a probe added to `src/Prodbox/Infra/SubstrateKubectl.hs` produces both
 refusals and the tree is clean without it. Every converted call site keeps its existing tables.
 Primary unit **4,966/4,966**, canonical `prodbox dev check` exits 0.
+
+## Sprint 7.41: A Create That Says What It Is About To Make [📋 Planned]
+
+**Status**: Planned. Phase `7` own-surface reopen (Standard A/L/P) on the registered stack-creation
+lane this phase built and owns. It completes the half of Sprint `7.36` that was recorded as
+delivered and has no production writer.
+**Doctrine**: [Lifecycle Reconciliation
+Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md)'s write-ahead ownership
+manifest and [Lifecycle Control-Plane
+Architecture](../documents/engineering/lifecycle_control_plane_architecture.md)'s
+commit-before-effect invariant.
+**Implementation**: `src/Prodbox/ControlPlane/RegisteredStackCreationSubmitter.hs`,
+`src/Prodbox/ControlPlane/RegisteredStackCreationProducer.hs`,
+`src/Prodbox/ControlPlane/OwnershipManifestRepository.hs`,
+`src/Prodbox/Lifecycle/Teardown/OwnershipManifest.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
+`src/Prodbox/Test/CounterexampleValidation.hs`, `pulumi/aws-eks/Main.yaml`, and `test/unit/Main.hs`.
+**Blocked by**: none.
+**Live-proof**: pending. The proof this class has never had is a create interrupted on purpose,
+followed by a cascade that names and destroys what it made.
+**Deployment qualification**: pending — **invalidated** on persistence protocol and lifecycle
+orchestration, because what a create records before it mutates is a composition surface.
+**Independent Validation**: the write-ahead commit and its independent read-back exercised as a
+table; the witness proven to be the only way to construct what the execute step consumes, by a
+synthetic mutation that must not compile; the appended identities proven non-empty and consumed by
+the destroy authorization; the counterexample fixture failing against the frozen superseded
+implementation and passing against the replacement; full unit suite; `prodbox dev check`.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/pure_fp_standards.md`, `DEVELOPMENT_PLAN/README.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+The doctrine requires a durable record naming the coordinates an effect may create to exist, and be
+read back, before the effect begins. Sprint `7.36` delivered that for the generation record and
+recorded the ownership half as delivered too. The ownership half has no production writer: the
+write-ahead commit is defined, wired into a repository record and a transport client, and called
+from nothing. The appending operation that would give a manifest real identities has no occurrence
+in the source at all.
+
+The consequence is the 2026-09-08 orphan. A generation record was committed one second before the
+capability ran, so the cycle was addressable; but a generation names a cycle, not resources, and
+nothing named the VPC, the roles, the policy, or the cluster that the next four seconds created.
+
+This must ship as one increment. The commit alone is worse than neutral, because the read-back is
+observation-only and the decision maps exactly that to a refusal — converting quiet teardowns into
+refusals while buying no destroy path. The witness alone is unenforceable because nothing mints it.
+Both without the append produce a manifest with no identities, which the destroy authorization
+structurally rejects.
+
+The witness belongs host-side, on the Authority's create program, and not on the provider-effect
+type: that type is serialised and hashed into the dispatch request digest, so a new argument would
+break the admit and execute replay identity Sprint `7.36` engineered to stay stable, and the fenced
+Provider Worker is kept out of manifest authority by doctrine in any case.
+
+### Deliverables
+
+- Commit the write-ahead ownership manifest and read it back independently between the generation
+  commit and the execute, at the same submission key.
+- Make the read-back witness the only way to construct what the execute step consumes, carrying the
+  purpose index so a cleanup-only adoption receipt can never inhabit the slot.
+- Implement the appending operation so the manifest gains the exact identities the provider
+  returned, and prove the destroy authorization consumes them.
+- Stamp provider-level default tags carrying run scope and cycle in the stack programs, and record
+  those values durably before the effect. This is the only marker that survives a process kill,
+  because the provider holds it rather than the host.
+- Give the one create-failure arm that can leave a resource behind a durable obligation instead of
+  the string it currently dies as.
+- Mint the counterexample fixture family for an interrupted create, in the established five-file
+  form, with its causal profile holding the topology-normalized budget constant.
+
+### Validation
+
+1. Every failure before the execute leaves an addressable record and no cloud resource; the one arm
+   that can leave a resource names it.
+2. A synthetic execute that skips the witness does not compile.
+3. The appended identities are non-empty and reach the destroy authorization.
+4. The counterexample fails against the frozen superseded implementation and passes against the
+   replacement, with its mutation fixture proving the oracle can fail.
+5. Full unit suite and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+All of it.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — the write-ahead rule generalised
+  beyond one resource kind, and the statement that an identity-less manifest is not authority.
+- `documents/engineering/lifecycle_control_plane_architecture.md` — sole ownership of the
+  provider-side ownership-tag vocabulary, which three documents currently spell three ways.
+- `documents/engineering/storage_lifecycle_doctrine.md` — addressability is not destroyability.
+- `documents/engineering/pure_fp_standards.md` — the write-ahead statement promoted to a named
+  invariant other documents cite rather than restate.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `7` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md); move the Sprint `7.36` write-ahead row back to `Pending Removal`
+  in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 7.42: Adopting What The Record Does Not Name [📋 Planned]
+
+**Status**: Planned. Phase `7` own-surface reopen (Standard A/L/P) on the bounded legacy-adoption
+protocol this phase built and owns.
+**Doctrine**: [Lifecycle Reconciliation
+Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md)'s bounded legacy adoption.
+**Implementation**: `src/Prodbox/Lifecycle/Teardown/LegacyAdoptionObserver.hs`,
+`src/Prodbox/Lifecycle/Teardown/LegacyAdoptionPlan.hs`,
+`src/Prodbox/ControlPlane/LegacyAdoptionManifestRepository.hs`, `src/Prodbox/CLI/Command.hs`,
+`src/Prodbox/CLI/Spec.hs`, and `test/unit/Main.hs`.
+**Blocked by**: none.
+**Live-proof**: pending.
+**Deployment qualification**: pending — **invalidated** on lifecycle orchestration and destructive
+cleanup.
+**Independent Validation**: the rendered plan and its digest; an admin permit bound to that exact
+digest and refused against any other; the independent read-back before mutation; refusal on a
+missing, extra, ambiguous, partial or unobservable candidate; full unit suite; `prodbox dev check`.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`,
+`DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+The adoption observer and its pure planner exist, are tested, and are called from nothing. They are
+caller-less because the authorization half has no surface, not because someone forgot a call: the
+doctrine requires an explicit admin permit over the exact rendered plan digest, receipt-committed
+and independently read back before any cleanup mutation, with observation confined to the read-only
+Provider capability.
+
+This is the only mechanism that answers the asymmetry the leak analysis opens with. Everything else
+in the queue makes a resource this repository creates from now on addressable; only adoption can
+recover one that is already live and named by nothing — which is the state that cost four days of
+billing and a manual teardown.
+
+One hazard must be carried explicitly: the provisioned cluster name is a constant and the sweep
+filter has no run discriminator, so an unpermitted adoption could adopt and then destroy a live
+predecessor. The run-scoped provider tag Sprint `7.41` stamps is what makes the candidate set
+discriminating enough for this to be safe, which is why the adoption lane follows the create lane
+rather than preceding it.
+
+### Deliverables
+
+- The bounded plan and apply path: render the complete candidate set and its digest, bind an admin
+  permit over that exact digest through the permit-bounded runner, receipt-commit, then read back
+  independently before any mutation.
+- Keep observation inside the read-only Provider capability, and record that the result is a
+  cleanup-only provenance with no type-level path into a future create.
+- Document the out-of-band operator diagnostic — an enumeration run from credentials alone, alerting
+  a human, whose verdict feeds no prodbox decision — and say plainly that it is outside the mutation
+  boundary and is not a classifier the product may consult.
+
+### Validation
+
+1. A permit bound to one plan digest is refused against any other plan.
+2. A missing, extra, ambiguous, partial or unobservable candidate refuses the whole family rather
+   than adopting a shorter one.
+3. The adoption receipt cannot inhabit a create-side position, proven by a synthetic mutation that
+   must not compile.
+4. Full unit suite and `prodbox dev check` exit 0.
+
+### Remaining Work
+
+All of it.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — the adoption lane's operator
+  surface and its permit binding.
+- `documents/engineering/aws_test_environment.md` — the out-of-band diagnostic and the manual
+  recovery order, stated as outside the mutation boundary.
+- `documents/engineering/cli_command_surface.md` — the adoption command, if one is added.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the Phase `7` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md).
 
 ## Related Documents
 

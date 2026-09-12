@@ -1125,7 +1125,8 @@ installation. Initial admission is itself closed over projection-registration co
 construction, corrupt/unready registration observations, clean-install versus migration admission
 construction, and the unobservable observation's exact payload-free family: coordinate-authority
 rejection, native store endpoint/request/HTTP/version failure, envelope open, invalid Model-B
-version, or the fail-closed `other` arm. A native S3 404 remains positive absence through the
+version, or the fail-closed `other` arm. A native S3 404 remains [positive absence](./lifecycle_reconciliation_doctrine.md#30-positive-absence)
+through the
 encrypted-object, authority-object, and Model-B layers and therefore selects clean install rather
 than an unobservable cause. The clean generation-56 diagnostic proves that the current live
 unobservable family is native store HTTP; the plan-owned next diagnostic refines only its closed

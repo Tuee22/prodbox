@@ -341,9 +341,29 @@ tombstone. Gateway and host-direct generic secret-write routes are absent.
     residue gates read the already sealed Tier-0 basics. Tests replace the typed coordinate or the
     client boundary; no production endpoint override participates in selection.
 
+19. A request deadline cancels a reply, never an effect. A transport bound stops a caller waiting;
+    it does not abandon work that has already changed an external system. A side-effecting
+    capability therefore does not run under a cancelling timeout owned by its own transport, and
+    admission refuses an effect whose expected duration exceeds the remaining budget rather than
+    starting one that cannot finish. An authorization derived from a provider-issued credential is
+    bounded by the shorter of its own ceiling and that credential's expiry, and a refusal names
+    which of the two refused. The rule and its purity-side statement are owned by [Pure Functional
+    Programming Standards](./pure_fp_standards.md#63-one-absolute-deadline).
+20. Every AWS resource this repository creates carries ownership tags authored by the creating
+    program, and this document owns that vocabulary. The tag set names the managed owner, the
+    registered coordinate, and the run scope and cycle the resource was created under. Its purpose
+    is narrow and it is the only marker that survives the loss of every host-side record: a process
+    killed between an effect landing and its record becoming durable leaves a resource the provider
+    can still describe and the host cannot. A tag is therefore an enumeration key and a
+    provenance marker; it is never a lifecycle class, never a substitute for the registered
+    coordinate, and never evidence of absence.
+
+> **Target.** Invariants 19 and 20 are accepted and neither is enforced in the current revision.
+> Status lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
 ## 3. Pure Capability Algebra
 
-> **Current source correspondence.** The pure foundation of this algebra is represented by
+> **Current revision.** The pure foundation of this algebra is represented by
 > `src/Prodbox/ControlPlane/{CapabilityKind,Coordinate,CapabilityRef,
 > Observation,Permit,Program}.hs` (umbrella `src/Prodbox/ControlPlane.hs`). The current layout
 > refines the illustrative `Capability.hs`/`Program.hs`/`Interpreter.hs` target shapes below:
@@ -1640,7 +1660,8 @@ prompt, a new Provisioner Job accepts only
 `GenesisCleanupProvisionPermit`, deletes and reads back the prefix/key/identity (and the bucket only
 when the manifest proves this genesis created it and no other registered prefix exists). In the
 consumed case only, the Agent then tombstones/read-backs the consumed marker and target generation;
-positive absence has no target mutation to invent. The cleanup Job revokes its session and is
+[positive absence](./lifecycle_reconciliation_doctrine.md#30-positive-absence) has no target mutation to invent. The cleanup Job revokes its
+session and is
 observed absent before genesis restarts. Thus the exceptional primary-only journal can leave only
 exact registered, operator-recoverable resources; it cannot authorize production work.
 
@@ -1969,7 +1990,7 @@ Every authority-namespace object coordinate and CAS adapter is durability-indexe
 constructors partition the object namespaces by lifetime class. A retained-or-stronger object
 addressed through a chart-lifetime transport is unrepresentable rather than merely forbidden.
 
-> **Current source correspondence.** The Model-B coordinate/request/adapter types carry the phantom
+> **Current revision.** The Model-B coordinate/request/adapter types carry the phantom
 > `StoreLifetime` index with a `nominal` role and full-name-tagging constructors plus the compile and
 > byte-erasure witness. A lease guard is
 > monomorphically `'ClusterRetained'` (not lifetime-indexed) — a lease is always retained — which

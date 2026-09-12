@@ -25,12 +25,41 @@ dependency licenses the deviation ([Standard N.2](development_plan_standards.md#
 
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
-| 1 | `6.5` | 6 | Next | — |
+| 1 | `0.34` | 0 | Next | — |
+| 2 | `4.95` | 4 | Parked | — |
+| 3 | `4.96` | 4 | Parked | — |
+| 4 | `4.97` | 4 | Parked | — |
+| 5 | `4.98` | 4 | Parked | — |
+| 6 | `5.47` | 5 | Parked | — |
+| 7 | `5.48` | 5 | Parked | — |
+| 8 | `7.41` | 7 | Parked | — |
+| 9 | `6.5` | 6 | Parked | `7.41` |
+| 10 | `7.42` | 7 | Parked | — |
 
-**Resume at Sprint `6.5`: the last open row, and the only one left in the plan suite.** Its backward
-dependency on Sprint `7.40` is discharged, so nothing holds it but its own work: activate the typed
-teardown replacement as sole public writer, delete the legacy route, and qualify the result under
-Standard P with two consecutive destructive home cycles.
+**Resume at Sprint `0.34`: place the doctrine before the code sprints that cite it.** It is first
+because every row below it is a Standard-P surface whose sprint block must name the rule it
+implements, and because three phase headers currently describe reopens that closed and one describes
+a reclose that never happened. It changes no production composition.
+
+**A four-day EKS leak reopened Phases `4`, `5` and `7` (2026-09-12).** A cluster created on
+2026-09-08 billed until an operator deleted it by hand, and the cascade that should have removed it
+refused with its drain and sweep phases unresolved. The cause is not the cascade. A create was
+cancelled by its own transport deadline after its AWS effects had landed; the checkpoint describing
+them was never committed, because the commit runs only on the return route and the scratch holding
+it lives in RAM; and every later teardown read the missing checkpoint as positive absence. The
+generation record was committed one second before the capability ran, so the cycle was addressable —
+but a generation names a cycle, not resources, and the write-ahead ownership manifest that would
+have named them has no production writer.
+
+**The wider finding is that this class has recurred four times and the type system cannot close
+it.** Thirty-four sprints have applied a type-level device to cleanup, absence and residue. Each
+makes a value unconstructible and each claim is true; none makes an outcome in a cloud account
+unconstructible, and the doctrine already says none may. Three consequences are now scheduled rather
+than restated: absence is minted from a substring match on a subprocess's error output and laundered
+into the strongest absence type in the tree; the typed decision ladder is reachable only from the
+qualification harness while the shipping cascade runs on exit codes; and the guards that would have
+caught all of it are written, tested, and called from nothing. Sprint `0.34` places the statement
+where a new sprint meets it, and Sprints `4.95` through `7.42` do the work.
 
 **The ephemeral Kubernetes client authenticated to an EKS API server for the first time
 (2026-09-12).** Live cascade-qualification cycle `recovery-ephemeral-credential-file` reached and
@@ -13134,6 +13163,47 @@ long-lived cross-substrate shared infrastructure retained by design) live in
 |-----------|-----------|----------------------------------------|--------------|-------------------------------------------------|
 | Home local | `prodbox cluster reconcile` + `prodbox charts reconcile ...` | Current explicit local-only escape: `prodbox cluster delete --yes`, which makes no AWS claim. Target pending `3.41`/`4.84`–`4.86`/`5.36`/`6.5`, consuming the completed `5.35` oracle: `prodbox cluster delete --cascade --yes` uses bootstrap-owned recovery; `ReadyToUninstallEvidence` admits uninstall from exact convergence and terminal-audit evidence plus the backed-up/read-back report and one-shot permit, while distinct `CascadeCompleteEvidence` additionally requires exact `LocalUninstallEvidence` and the matching read-back receipt. Public activation and legacy deletion are qualification-gated. | **pending.** Must include `TEARDOWN-2026-08-15`, stopped/absent-RKE2 recovery, every interruption prefix, exact `RecoveryPlaneDisposition`, the distinct readiness/completion witnesses, and two consecutive clean-room cycles. | Sprint `6.5` prerequisite / Sprint `8.12` final ([phase 6](phase-6-clean-room-handoff.md)) |
 | AWS | `prodbox aws stack eks reconcile` + `prodbox aws stack aws-subzone reconcile` + `prodbox aws stack test reconcile` | Current explicit stack surfaces are the corresponding `prodbox aws stack <cli-verb> destroy --yes` commands. Sprint `7.36` supplies lifecycle-kernel adapters with exact stack/family read-back, write-ahead manifests, bounded admin-confirmed/read-back adoption manifests for known pre-manifest stacks, a provider-issued EKS drain session, and normalized escape audit. Operational route cutover remains qualification-gated. | **pending.** Must prove all three stacks independently, every checkpoint/write-ahead/adoption-manifest arm, AWS/drain unobservability, retained-bucket isolation, exact absence, and repeated cascade. | Sprint `7.36` adapter foundation complete / Sprint `8.12` final ([phase 7](phase-7-aws-substrate-foundations.md)) |
+
+## Counterexample Dispositions
+
+[Standard P](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)
+requires work opened by a live counterexample to carry a stable name and a repository-owned
+reproducer. It does not require a disposition, and without one a closed counterexample and an open
+one read alike. Measured 2026-09-12: `DEVELOPMENT_PLAN/` names **217** distinct counterexample
+identifiers and **two** frozen fixture families exist on disk, `LCPC-2026-07-11` and
+`TEARDOWN-2026-08-15`, under `test/qualification/`.
+
+A disposition is one of three. **Open** — the defect it names is reachable in the current revision
+and no repair is landed. **Closed by repair** — a named sprint landed the fix and the reproducer
+distinguishes the superseded implementation from the replacement. **Closed by succession** — a later
+cycle in the same campaign superseded it, and no separate repair was owed.
+
+| Counterexample | Disposition | Owner |
+|---|---|---|
+| `CASCADE-QUALIFICATION-EKS-DRAIN-LEASE-EXCEEDS-BEARER-EXPIRY-2026-09-12` | Open — no repair landed; the refusal does not carry the bearer expiry the repair turns on | Sprint `4.95` |
+| `CASCADE-AWS-EKS-OLDER-GENERATION-CHECKPOINTLESS-ORPHAN-2026-09-08` | Open — the named resources were cleared by hand on 2026-09-12; the mechanism that orphaned them is unchanged | Sprints `4.96`, `7.41` |
+| `CREATE-INTERRUPTED-2026-09-08` | Open — registered 2026-09-12; its fixture family is not yet on disk | Sprint `7.41` |
+| `CHECKPOINT-RETIREMENT-2026-09-07` | Closed by repair, registered retroactively 2026-09-12 | — |
+| `TEARDOWN-2026-08-15` | Open — both deployment-qualification rows below are `pending` | Sprint `6.5` |
+| `LCPC-2026-07-11` | Open — both deployment-qualification rows below are `pending` | Sprint `8.12` |
+
+**`CHECKPOINT-RETIREMENT-2026-09-07` is registered here because it never was.** On 2026-09-07 a
+`cluster delete --cascade` reported its per-run destroys phase successful while an EKS cluster and
+its VPC stayed live, because an absent scratch checkpoint after a *failed* action was read as a
+clean destroy and the Authority's only record of the stack was retired. A correct typed device
+landed the same day and closed it. That change modified no file under `DEVELOPMENT_PLAN/`, opened no
+sprint block, and added no ledger row; its only record anywhere in the repository is a Haddock
+comment in the module it repaired. The next incident, four weeks later, was diagnosed from scratch,
+and the fix was again scoped to the mechanism of the last one rather than to the class. Registering
+it now does not reopen it; it makes the class searchable.
+
+**The remaining identifiers are unclassified, and that is the defect this section records rather
+than resolves.** Most are campaign-log entries where each cycle's counterexample was superseded by
+the next cycle's correction, which is the closed-by-succession case. A keyword heuristic over them
+gives demonstrably wrong answers — it marks at least one identifier open that a phase file records
+as reclosed — so the sweep is a reading task, not a scripting one. Sprint `0.34` owns completing this
+table.
+
 
 ## Deployment Qualification
 

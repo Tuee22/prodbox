@@ -31,17 +31,20 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word64, Word8)
 import Prodbox.ControlPlane.AuthorityProviderEndpoint
   ( AuthorityProviderClientError (..)
+  , ProviderExecutionOutcome (..)
   )
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller
   )
 import Prodbox.ControlPlane.ProviderCaller
   ( ProviderCallerError (..)
-  , dispatchHostProviderIntentOwnedBy
+  , dispatchHostProviderIntentExecutedOwnedBy
   , renderProviderCallerError
   )
 import Prodbox.ControlPlane.ProviderWorkerExecution
-  ( ProviderIntentExecutionResult (ProviderIntentExecutionObserved)
+  ( ProviderExecutionKind (..)
+  , ProviderIntentExecutionResult
+  , mkProviderIntentExecutionResult
   )
 import Prodbox.Lifecycle.Authority.Admission
   ( ProviderOperationCleanupOwner (ProviderOperationOwnedByCleanupOperation)
@@ -59,7 +62,6 @@ import Prodbox.Lifecycle.CleanupRun
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
-  , providerIntentCoordinate
   )
 import Prodbox.Lifecycle.Teardown.Model (ObservationRevision (..))
 import Prodbox.Lifecycle.Teardown.RegisteredTargetResult
@@ -132,6 +134,13 @@ data ProviderDispatchError
       !ProviderIntent
   | ProviderDispatchObservationUnobservable !Text
   | ProviderDispatchObservationRefused !Text
+  | -- | Sprint 4.97.  An observation lane answered with an execution kind that
+    -- is not an observation.  Unreachable while the client re-synthesised the
+    -- result from the intent it sent; reachable now that the wire carries what
+    -- the Provider Worker actually produced.
+    ProviderDispatchObservationResultKind !ProviderExecutionKind
+  | -- | Sprint 4.97.  A mutation lane answered with an observation.
+    ProviderDispatchMutationResultKind !ProviderExecutionKind
   deriving (Eq, Show)
 
 mkProviderDispatchKey
@@ -167,7 +176,10 @@ purposeSuffix purpose = case purpose of
 -- availability failure.  A refused mutation is terminal; an unavailable
 -- response remains ambiguous and must be closed by its independent read-back.
 data TeardownProviderBoundaryResult
-  = TeardownProviderCompleted !Text
+  = -- | Sprint 4.97: the whole outcome, not only its evidence text.  The
+    -- evidence alone is what made a destroy that ran and a destroy that found
+    -- nothing byte-identical at this boundary.
+    TeardownProviderCompleted !ProviderExecutionOutcome
   | TeardownProviderRefused !Text
   | TeardownProviderUnavailable !Text
   deriving (Eq, Show)
@@ -198,7 +210,7 @@ productionTeardownProviderBoundary
 productionTeardownProviderBoundary caller repoRoot =
   TeardownProviderBoundary $ \dispatchKey intent -> do
     dispatched <-
-      dispatchHostProviderIntentOwnedBy
+      dispatchHostProviderIntentExecutedOwnedBy
         caller
         repoRoot
         (clientSubmissionKeyText (providerDispatchSubmissionKey dispatchKey))
@@ -240,9 +252,10 @@ teardownProviderDispatchOwnershipIsTotal =
           == ProviderOperationOwnedByCleanupOperation operationId
 
 classifyProviderCallerResult
-  :: Either ProviderCallerError Text -> TeardownProviderBoundaryResult
+  :: Either ProviderCallerError ProviderExecutionOutcome
+  -> TeardownProviderBoundaryResult
 classifyProviderCallerResult result = case result of
-  Right evidence -> TeardownProviderCompleted evidence
+  Right outcome -> TeardownProviderCompleted outcome
   Left err -> case err of
     ProviderCallerSubmissionKeyInvalid _ ->
       TeardownProviderRefused (rendered err)
@@ -258,6 +271,13 @@ classifyProviderCallerResult result = case result of
         AuthorityProviderResponseInvalid _ _ ->
           TeardownProviderUnavailable (rendered err)
         AuthorityProviderResponseStatusMismatch _ ->
+          TeardownProviderUnavailable (rendered err)
+        -- Sprint 4.97.  A replay of an already-settled operation retains the
+        -- evidence text and not the execution kind, so the Authority cannot
+        -- answer with an outcome and must not invent one.  That is the same
+        -- class as a lost response — ambiguous — and it is closed by the
+        -- independent absence read-back, never by a synthesised constructor.
+        AuthorityProviderReplayOutcomeNotRetained _ ->
           TeardownProviderUnavailable (rendered err)
  where
   rendered = Text.pack . renderProviderCallerError
@@ -282,12 +302,7 @@ dispatchRegisteredProviderObservation boundary dispatchKey intent =
           Left (ProviderDispatchObservationUnobservable detail)
         TeardownProviderRefused detail ->
           Left (ProviderDispatchObservationRefused detail)
-        TeardownProviderCompleted evidence ->
-          Right
-            ( ProviderIntentExecutionObserved
-                (providerIntentCoordinate intent)
-                evidence
-            )
+        TeardownProviderCompleted outcome -> observationFromOutcome outcome
 
 -- | A transport failure after mutation submission is ambiguous.  The caller
 -- must run its separately keyed absence read-back; this boundary never turns
@@ -309,7 +324,46 @@ dispatchRegisteredProviderMutation boundary dispatchKey intent =
           Right (RegisteredTargetMutationResponseLost detail)
         TeardownProviderRefused detail ->
           Right (RegisteredTargetMutationRefused detail)
-        TeardownProviderCompleted _ -> Right RegisteredTargetMutationApplied
+        TeardownProviderCompleted outcome -> mutationFromOutcome outcome
+
+-- | Sprint 4.97: keep the coordinate the wire carried, never the one we sent.
+--
+-- The superseded code rebuilt 'ProviderIntentExecutionObserved' from
+-- @providerIntentCoordinate intent@, so the adapter's coordinate-mismatch
+-- refusal compared the request's coordinate against a copy of itself.  Taking
+-- both the kind and the coordinate from the response is what makes that arm —
+-- and the result-kind arm below it — able to fire at all.
+observationFromOutcome
+  :: ProviderExecutionOutcome
+  -> Either ProviderDispatchError ProviderIntentExecutionResult
+observationFromOutcome outcome = case providerExecutionOutcomeKind outcome of
+  ProviderExecutionObservedKind ->
+    Right
+      ( mkProviderIntentExecutionResult
+          ProviderExecutionObservedKind
+          (providerExecutionOutcomeCoordinate outcome)
+          (providerExecutionOutcomeEvidence outcome)
+      )
+  kind -> Left (ProviderDispatchObservationResultKind kind)
+
+-- | Sprint 4.97: a destroy that ran and a destroy that found nothing stop being
+-- the same answer.
+--
+-- This boundary flattened them a second time, after the wire had already done
+-- it: every completion became 'RegisteredTargetMutationApplied'.  Carrying the
+-- kind on the response would have bought nothing without this.
+mutationFromOutcome
+  :: ProviderExecutionOutcome
+  -> Either ProviderDispatchError RegisteredTargetMutationAttempt
+mutationFromOutcome outcome = case providerExecutionOutcomeKind outcome of
+  ProviderExecutionAppliedKind -> Right RegisteredTargetMutationApplied
+  ProviderExecutionAlreadySatisfiedKind ->
+    Right
+      ( RegisteredTargetMutationAlreadySatisfied
+          (providerExecutionOutcomeEvidence outcome)
+      )
+  ProviderExecutionObservedKind ->
+    Left (ProviderDispatchMutationResultKind ProviderExecutionObservedKind)
 
 validateObservationIntent
   :: ProviderDispatchPurpose

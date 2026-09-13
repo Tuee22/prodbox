@@ -11,6 +11,13 @@ import Data.IORef
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.ControlPlane.AuthorityProviderEndpoint
+  ( ProviderExecutionOutcome
+  , providerExecutionOutcome
+  )
+import Prodbox.ControlPlane.ProviderWorkerExecution
+  ( ProviderIntentExecutionResult (..)
+  )
 import Prodbox.Lifecycle.Authority.AdminAction
   ( PermitFreshness (PermitFresh)
   , RunnerRole (AdminActionRunner)
@@ -39,6 +46,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkAwsEksSubzoneProviderStackConfig
   , mkAwsTestProviderStackConfig
   , mkProviderRevision
+  , providerIntentCoordinate
   )
 import Prodbox.Lifecycle.Teardown.AwsEksAdapter
   ( AwsEksAdapterError (AwsEksEvidenceNotRecognized)
@@ -424,20 +432,35 @@ providerResponse environment submissionKey intent
       BoundaryDecisionRefused ->
         TeardownProviderRefused "decision observer refused"
       BoundaryDecisionMalformed ->
-        TeardownProviderCompleted "malformed EKS decision evidence"
+        TeardownProviderCompleted
+          (observedOutcome intent "malformed EKS decision evidence")
       _ -> observedResponse submissionKey intent
   | isMutation intent = case fakeBoundaryMode environment of
       BoundaryMutationUnavailable ->
         TeardownProviderUnavailable "response unavailable after submit"
       BoundaryMutationRefused -> TeardownProviderRefused "generation fenced"
-      _ -> TeardownProviderCompleted "mutation accepted"
+      _ ->
+        TeardownProviderCompleted (appliedOutcome intent "mutation accepted")
   | otherwise = observedResponse submissionKey intent
+
+-- | Sprint 4.97: a fixture answers with the kind and the coordinate the
+-- Authority's wire now carries, rather than an evidence text the client used to
+-- re-wrap in a constructor of its own choosing.
+observedOutcome :: ProviderIntent -> Text -> ProviderExecutionOutcome
+observedOutcome intent evidence =
+  providerExecutionOutcome
+    (ProviderIntentExecutionObserved (providerIntentCoordinate intent) evidence)
+
+appliedOutcome :: ProviderIntent -> Text -> ProviderExecutionOutcome
+appliedOutcome intent evidence =
+  providerExecutionOutcome
+    (ProviderIntentExecutionApplied (providerIntentCoordinate intent) evidence)
 
 observedResponse
   :: ClientSubmissionKey -> ProviderIntent -> TeardownProviderBoundaryResult
 observedResponse submissionKey intent = case intent of
   ObserveNativeStackFamily ref _ ->
-    TeardownProviderCompleted
+    completed
       ( mustRight
           ( encodeAwsNativeStackFamilyEvidence
               ref
@@ -450,12 +473,11 @@ observedResponse submissionKey intent = case intent of
               ]
           )
       )
-  ObserveEksClusterIdentity _ ->
-    TeardownProviderCompleted eksEvidence
-  ObserveTestEbsVolumes _ ->
-    TeardownProviderCompleted ebsEvidence
-  _ -> TeardownProviderCompleted "mutation accepted"
+  ObserveEksClusterIdentity _ -> completed eksEvidence
+  ObserveTestEbsVolumes _ -> completed ebsEvidence
+  _ -> TeardownProviderCompleted (appliedOutcome intent "mutation accepted")
  where
+  completed = TeardownProviderCompleted . observedOutcome intent
   ebsEvidence
     | Text.isSuffixOf ":absence-readback" (clientSubmissionKeyText submissionKey) =
         ebsAbsentEvidence

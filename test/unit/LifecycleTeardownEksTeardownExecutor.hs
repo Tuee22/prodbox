@@ -13,14 +13,25 @@ import Data.IORef
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.ControlPlane.AuthorityProviderEndpoint
+  ( ProviderExecutionOutcome
+  , providerExecutionOutcome
+  )
 import Prodbox.ControlPlane.CleanupRunClient
 import Prodbox.ControlPlane.CleanupRunEndpoint
 import Prodbox.ControlPlane.EksDrainIntentClient
 import Prodbox.ControlPlane.EksDrainIntentRepository
 import Prodbox.ControlPlane.EksDrainReadBackReceiptClient
 import Prodbox.ControlPlane.EksDrainReadBackReceiptRepository
+import Prodbox.ControlPlane.ProviderWorkerExecution
+  ( ProviderIntentExecutionResult (..)
+  )
 import Prodbox.Lifecycle.CleanupRun
 import Prodbox.Lifecycle.CleanupRunRunner
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent (..)
+  , providerIntentCoordinate
+  )
 import Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter
 import Prodbox.Lifecycle.Teardown.EksDrainInterpreter
 import Prodbox.Lifecycle.Teardown.EksTeardownExecutor
@@ -178,19 +189,28 @@ executorFor environment =
         pure (Left "already-absent target must not request selection parameters")
     }
 
+-- | Sprint 4.97: the fixture answers with the coordinate the intent carries.
+observedOutcome :: ProviderIntent -> Text -> ProviderExecutionOutcome
+observedOutcome intent evidence =
+  providerExecutionOutcome
+    (ProviderIntentExecutionObserved (providerIntentCoordinate intent) evidence)
+
 registeredInterpreter
   :: FakeEnvironment -> AwsRegisteredTargetInterpreter ExecutorEffects
 registeredInterpreter environment =
   AwsRegisteredTargetInterpreter
     { awsRegisteredTargetProviderBoundary =
-        TeardownProviderBoundary $ \dispatchKey _ -> do
+        TeardownProviderBoundary $ \dispatchKey intent -> do
           let submissionKey = providerDispatchSubmissionKey dispatchKey
           liftExecutorIO
             ( modifyIORef'
                 (fakeProviderCalls environment)
                 (<> [Text.pack (show submissionKey)])
             )
-          pure (TeardownProviderCompleted "registered EKS cluster is absent")
+          pure
+            ( TeardownProviderCompleted
+                (observedOutcome intent "registered EKS cluster is absent")
+            )
     , awsRegisteredTargetReadStackDecisionInputs = \_ _ _ ->
         pure (Left "not used by EKS intent commit")
     , awsRegisteredTargetReadStackCreationBinding = \_ _ _ ->

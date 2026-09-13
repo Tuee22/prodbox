@@ -35,6 +35,70 @@ lifecycleTeardownOwnershipManifestSuite =
       ByteString.length bytes
         `shouldSatisfy` (<= maximumDurableWriteAheadOwnershipManifestBytes)
 
+    -- Sprint 4.97.  The first value in this repository to construct complete
+    -- decision evidence at all, and that absence was the finding rather than a
+    -- gap in the tests: the stack-reader wire refused this shape outright, the
+    -- production reader degrades every arm to observation-only, and nothing
+    -- anywhere had a reason to build one.
+    --
+    -- The round trip is what makes the manifest authority decidable. Without
+    -- it the decision's manifest branch is not merely unreached — it cannot be
+    -- constructed on the far side of the wire at all, so the ladder can only
+    -- refuse.
+    it "round-trips complete manifest evidence, and refuses observation-only" $ do
+      let intent =
+            mustRight
+              (mkWriteAheadManifestIntent CascadeSurface AwsTestKey creationScope)
+          write = initialWriteAheadManifestWrite intent
+          durable = mustRight (captureDurableWriteAheadOwnershipManifest write)
+          observed =
+            mustRight
+              ( observedDurableWriteAheadOwnershipManifest
+                  "authority/write-ahead"
+                  "1"
+                  durable
+              )
+          -- The manifest is written at create time and bound at cleanup time,
+          -- so the target carries the cleanup operation while the durable
+          -- value carries the creation one. That asymmetry is the point of the
+          -- binder.
+          target =
+            mustRight
+              (mkOwnershipManifestTarget CascadeSurface AwsTestKey cleanupScope)
+          complete =
+            mustRight
+              ( bindObservedDurableWriteAheadOwnershipManifestForCleanup
+                  target
+                  observed
+              )
+          bytes = mustRight (captureCompleteOwnershipManifestEvidence complete)
+          restored = mustRight (restoreCompleteOwnershipManifestEvidence bytes)
+
+      -- The evidence survives as complete, not downgraded to an observation on
+      -- the way through.
+      ownershipManifestDecisionView restored
+        `shouldBe` ownershipManifestDecisionView complete
+      ownershipManifestDecisionStackKey restored `shouldBe` AwsTestKey
+      -- The bound manifest carries the *target's* scope, so a value written
+      -- before the create arrives on the far side already keyed to the cleanup
+      -- that is entitled to act on it.
+      ownershipManifestDecisionScope restored `shouldBe` cleanupScope
+      ownershipManifestDecisionScope restored
+        `shouldBe` ownershipManifestDecisionScope complete
+
+      -- And its entries survive, which is the half that matters: a manifest
+      -- with no identities commits and reads back exactly as a real one does
+      -- and authorizes the destruction of nothing.
+      ownershipManifestDecisionEntryIdentities AwsTestKey restored
+        `shouldBe` ownershipManifestDecisionEntryIdentities AwsTestKey complete
+
+      -- Observation-only evidence has its own wire and is refused by this one.
+      -- Admitting it here would let an observation arrive on the far side
+      -- claiming to be evidence that authorizes a destroy.
+      captureCompleteOwnershipManifestEvidence
+        (ownershipManifestObservationOnly (observationFor AwsTestKey))
+        `shouldSatisfy` isLeftMatching OwnershipManifestCompleteEvidenceRequired
+
     -- Sprint 4.85: the ownership relation is derived from two registry
     -- coordinates instead of authored beside them. It was authored, and it was
     -- wrong: `aws-test` was named the owner of a family whose coordinate is
@@ -194,6 +258,21 @@ isRightEdge :: Either OwnershipManifestError RegisteredOwnershipEdge -> Bool
 isRightEdge result = case result of
   Right _ -> True
   Left _ -> False
+
+-- | Sprint 4.97 helpers for the complete-evidence round trip.
+observationFor :: RegisteredResourceKey -> OwnershipManifestObservation
+observationFor key =
+  OwnershipManifestObservation
+    { ownershipManifestStackKey = key
+    , ownershipManifestProvenance = OwnershipManifestProvenance "fixture"
+    , ownershipManifestEvidenceScope = creationScope
+    , ownershipManifestResult = OwnershipManifestAbsent
+    }
+
+isLeftMatching :: (Eq err) => err -> Either err value -> Bool
+isLeftMatching expected result = case result of
+  Left actual -> actual == expected
+  Right _ -> False
 
 creationScope :: ObservationEvidenceScope
 creationScope = scopeFor ReconcileDesiredPresent

@@ -56,6 +56,7 @@ module Prodbox.Lifecycle.Teardown.EksDrainInterpreter
   , observeEksDrainTargetsReadBack
   , observeEksDrainTargetsReadBackWithContext
   , executeEksDrainReadBack
+  , eksDrainCommitSelectionInvocations
   )
 where
 
@@ -668,7 +669,7 @@ acquireAwsEksDestroyAuthorization
   -> RegisteredTargetBinding
   -> EksDrainOperationBinding
   -> ProviderRevision
-  -> StackDesiredAbsenceDecision
+  -> StackDesiredAbsenceDecision surface
   -> EksDrainTargetsAbsentEvidence
   -> ObservationRevision
   -> Integer
@@ -2144,6 +2145,26 @@ runProductionMutation client arguments = do
     Left failures ->
       EksDrainMutationResponseLost
         (combineObservationFailures "kubectl mutation result unknown" failures)
+
+-- | Sprint 4.95: how many bounded ephemeral calls one drain commit issues
+-- before it is allowed to mutate anything.
+--
+-- Counted from 'acquireVerifiedEksDrainSelection' rather than chosen: the
+-- initial Kubernetes UID, its confirmation after the session is minted, and
+-- then the load-balancer services, ingresses, controller owners, and
+-- delete-policy volumes that together make the selection complete.  Each of
+-- the six carries 'ephemeralKubectlWallClockSeconds', so their product is the
+-- wall clock a drain authorization has to be able to spend before it reaches
+-- its first mutation.
+--
+-- This exists so the lease is derived from work this repository measured
+-- instead of from the session ceiling, which measures nothing.  A lease equal
+-- to the ceiling is what a live cycle asked for on 2026-09-12, and it is
+-- unsatisfiable against any bearer the Provider will accept: the mint refuses
+-- an expiry beyond its own short-lived bound, and the mint cannot precede the
+-- clock read the deadline is computed from.
+eksDrainCommitSelectionInvocations :: Integer
+eksDrainCommitSelectionInvocations = 6
 
 -- | Sprint 6.5: every ephemeral call carries the named per-request bound.
 --

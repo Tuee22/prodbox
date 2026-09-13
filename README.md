@@ -581,7 +581,10 @@ reference and generation. The authoritative model is
 [§3 The SecretRef model](./documents/engineering/vault_doctrine.md#3-the-secretref-model) and
 [§4 Config split](./documents/engineering/vault_doctrine.md#4-config-split-production-references-vs-test-plaintext)).
 
-> **Target credential boundary**: `prodbox.dhall` contains no AWS access key or shared `aws.*`
+> **Target.** This credential boundary describes the accepted end state. Status lives only in the
+> [Development Plan](./DEVELOPMENT_PLAN/README.md#resume-here).
+>
+> `prodbox.dhall` contains no AWS access key or shared `aws.*`
 > reference. Lifecycle-provider, Authority-backup, TLS-retention, Gateway-DNS, and per-substrate
 > cert-manager-DNS01 identities have
 > separate IAM resources, Vault paths, policies, generations, consumers, and lifecycle classes;
@@ -892,7 +895,12 @@ AWS quotas:
 ./.build/prodbox aws quotas request --tier full
 ```
 
-**Target AWS authority flow (not current).** The governed `aws ...` flow prompts for an ephemeral
+#### Target AWS authority flow (not current)
+
+> **Target.** This subsection describes the accepted end state. Status lives only in the
+> [Development Plan](./DEVELOPMENT_PLAN/README.md#resume-here).
+
+The governed `aws ...` flow prompts for an ephemeral
 temporary admin credential only after
 an attested Credential Provisioner, Admin Action Runner, or post-export Decommission Runner is
 bound to its disjoint permit/manifest. Normal stack work uses the already sealed Lifecycle-provider
@@ -906,8 +914,8 @@ The test harness automates that prompt by reading `aws_admin_for_test_simulation
 `test-secrets.dhall` (a test fixture, never a production config section and never a Vault
 object); there is no production config-backed admin path.
 
-The current binary's `aws setup|teardown` implementation still creates/deletes one shared
-operational IAM user; that is the explicitly pre-cutover behavior recorded in the deletion ledger,
+**Current revision.** The current binary's `aws setup|teardown` implementation still
+creates/deletes one shared operational IAM user; that is the explicitly pre-cutover behavior recorded in the deletion ledger,
 not the target contract. Target `config setup` authors/validates Tier 0 only. On the first
 `cluster reconcile`, Vault/Broker/home Target Agent/Authority/Backup Adapter come up in the frozen
 genesis topology; one ephemeral admin prompt establishes and receipts the LongLived backup, then
@@ -1119,7 +1127,7 @@ prodbox/
 - [Claude Code Patterns (CLAUDE.md)](./CLAUDE.md)
 - [Agent Guidelines (AGENTS.md)](./AGENTS.md)
 
-The list above is a starting point, not the index. `documents/engineering/` holds 41 governed
+The list above is a starting point, not the index. `documents/engineering/` holds 42 governed
 documents; [its README](./documents/engineering/README.md) is the complete one, and this file
 deliberately does not maintain a second copy of it
 ([documentation_standards.md § 1](./documents/documentation_standards.md)). The ones most often

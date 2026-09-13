@@ -107,6 +107,7 @@ module Prodbox.ControlPlane.Runtime
   )
 where
 
+import Control.Concurrent.Async (async, wait, waitCatch)
 import Control.Concurrent.STM
   ( TBQueue
   , TVar
@@ -310,9 +311,12 @@ import Prodbox.ControlPlane.Coordinate (mkAuthorityScope)
 import Prodbox.ControlPlane.Coordinate qualified as Coordinate
 import Prodbox.ControlPlane.Deadline
   ( Deadline
+  , DeadlineAdmission (AdmissionMissesDeadline, AdmissionWithinDeadline)
   , DeadlineObservation (DeadlineExpired, DeadlineOpen)
   , MonotonicInstant
   , RemainingDuration (RemainingDuration)
+  , WorkEstimate (WorkEstimate)
+  , deadlineAdmission
   , deadlineAtOffset
   , deadlineObservation
   , monotonicInstantFromMicros
@@ -5091,13 +5095,23 @@ controlPlaneRequestBudget = RemainingDuration (300 * 1000 * 1000)
 
 -- | The Lifecycle Authority contains the nested Provider call, so its server
 -- envelope must retain the same finite response margin as the host client
--- waiting on that call. The Provider Worker and every sibling role keep the
+-- waiting on that call.
+--
+-- __Sprint 4.96.__ The Provider Worker gets its own arm rather than the flat
+-- role default, because that default is *equal* to the maximum admitted child
+-- deadline. A child allowed to consume the whole envelope left the Provider
+-- nothing for its own framing, encode, and write, so the envelope could only
+-- fire during the child. The three bounds are now strictly ordered — child <
+-- Provider server < Authority client — and every sibling role keeps the
 -- established five-minute server bound.
 controlPlaneRequestBudgetFor :: RuntimeRole -> RemainingDuration
 controlPlaneRequestBudgetFor role = case role of
   LifecycleAuthorityRuntime ->
     RemainingDuration
       (fromIntegral ProviderWorkerBudget.providerWorkerResponseTimeoutMicros)
+  ProviderWorkerRuntime ->
+    RemainingDuration
+      (fromIntegral ProviderWorkerBudget.providerWorkerServerEnvelopeMicros)
   _ -> controlPlaneRequestBudget
 
 -- | An accepted connection with the instant it was accepted.
@@ -5240,17 +5254,22 @@ controlPlaneWorkerLoop role interpreter admission pending = forever $ do
 
 -- | Answer a connection the admission machine refused.
 --
--- The two reasons map to different statuses on purpose. Saturation is
--- retryable and says so; an unmeetable deadline is not, because retrying
--- against the same budget produces the same answer. The second arm is
--- unreachable under 'controlPlaneCapacityInputs' — the deepest admissible queue
--- costs about two seconds against a 300-second budget — and it exists because
--- the decision is total, not because it is expected.
+-- The two reasons map to different statuses on purpose; the mapping itself now
+-- lives in 'controlPlaneRejectionReply', which this path shares with the
+-- apply-time admission check.
+--
+-- __Sprint 4.96.__ The unmeetable-deadline arm used to be unreachable from
+-- here and was kept because the decision is total. It is still unreachable
+-- from *this* accept-time path under 'controlPlaneCapacityInputs' — the deepest
+-- admissible queue costs about two seconds against the role budget — but it is
+-- no longer unreachable in the server: a provider apply whose remaining budget
+-- cannot hold the least an apply can need is refused with the same reason
+-- before the interpreter runs.
 refuseControlPlaneConnection :: RuntimeRole -> RejectionReason -> Socket -> IO ()
 refuseControlPlaneConnection activeRole reason client =
   withResponseObligation obligation client $ do
     drainBeforeRefusal client
-    pure (refusalReply reason)
+    pure (controlPlaneRejectionReply reason)
  where
   obligation =
     mkResponseObligation
@@ -5259,10 +5278,47 @@ refuseControlPlaneConnection activeRole reason client =
       (observeControlPlaneRefusal activeRole)
       controlPlaneRefusalWriteBudgetMicros
 
-  refusalReply value = case value of
-    RejectedSaturated _ -> (ReplyTooManyRequests, "control-plane-saturated\n")
-    RejectedDeadlineUnmeetable _ _ ->
-      (ReplyServiceUnavailable, "control-plane-deadline-unmeetable\n")
+-- | One renderer for both decision points that refuse on admission.
+--
+-- Sprint 4.96 lifted this out of 'refuseControlPlaneConnection'\'s @where@
+-- clause. The accept-time machine and the apply-time deadline check are two
+-- places a request can be turned away, and they must not grow two vocabularies
+-- for the same refusal: one constructor, one renderer, two decision points.
+--
+-- The two reasons map to different statuses on purpose. Saturation is
+-- retryable and says so; an unmeetable deadline is not, because retrying
+-- against the same budget produces the same answer.
+controlPlaneRejectionReply :: RejectionReason -> (ReplyStatus, ByteString.ByteString)
+controlPlaneRejectionReply value = case value of
+  RejectedSaturated _ -> (ReplyTooManyRequests, "control-plane-saturated\n")
+  RejectedDeadlineUnmeetable _ _ ->
+    (ReplyServiceUnavailable, "control-plane-deadline-unmeetable\n")
+
+-- | Sprint 4.96: the least a registered provider apply can need, as the
+-- admission machine\'s own work estimate.
+providerWorkApplyEstimate :: WorkEstimate
+providerWorkApplyEstimate =
+  WorkEstimate ProviderWorkerBudget.providerWorkerMinimumApplyEffectMicros
+
+providerApplyUnmeetable :: RemainingDuration -> RejectionReason
+providerApplyUnmeetable = RejectedDeadlineUnmeetable providerWorkApplyEstimate
+
+-- | Name the bound where naming it is allowed.
+--
+-- A production refusal body carries no detail by design, so the two numbers an
+-- operator needs to understand this refusal go to the role\'s own diagnostic
+-- rather than onto the wire.
+observeProviderApplyDeadlineUnmeetable :: RuntimeRole -> RemainingDuration -> IO ()
+observeProviderApplyDeadlineUnmeetable role remaining =
+  logError
+    "provider_apply_deadline_unmeetable"
+    [ field "role" (runtimeRoleName role)
+    , field "work_estimate_micros" (workEstimateMicros providerWorkApplyEstimate)
+    , field "remaining_budget_micros" (remainingDurationMicros remaining)
+    ]
+ where
+  workEstimateMicros (WorkEstimate value) = value
+  remainingDurationMicros (RemainingDuration value) = value
 
 -- | The write budget a refusal gets. Short relative to
 -- 'responseWriteBudgetMicrosDefault' because it is spent on the accept thread:
@@ -5319,6 +5375,29 @@ controlPlaneMonotonicMicros = fromIntegral . (`div` 1000) <$> getMonotonicTimeNS
 -- — so the caller would receive @503 shutting-down@, and any second write would
 -- be a second reply on one connection. Inside, the expiry is an ordinary value
 -- and the peer gets exactly one reply that names what happened.
+--
+-- __Sprint 4.96: the deadline bounds the wait, not the work.__ Placing it
+-- inside the obligation was necessary and not sufficient. It still wrapped
+-- 'served' — the socket read, the route classification, the interpreter, and
+-- every effect underneath — so a role whose capability mutates a cloud account
+-- in-process on this thread had that mutation cancelled mid-flight by its own
+-- transport bound. Nothing on the way out re-entered a commit, and the scratch
+-- holding the record of what had already been built was released by its own
+-- bracket on the same unwind. The result was an effect with no record, which is
+-- the shape behind a four-day EKS leak.
+--
+-- The request now runs on its own thread and the deadline bounds only the wait
+-- for it. An expiry answers the peer with the same reply it always did; the
+-- effect keeps running and reaches its own commit. The connection is not
+-- released until that effect finishes, so an in-flight effect still occupies
+-- the admission machine's slot and the socket is not closed under it. The
+-- trade is stated rather than hidden: a drain now waits for outstanding
+-- effects instead of abandoning them, which is slower and is the same
+-- invariant read from the other end.
+--
+-- The child is joined, never cancelled. Cancelling it here would reintroduce
+-- exactly the defect: a bound that says what the parent wants to happen to an
+-- effect is not an observation of what did.
 serveControlPlaneConnection
   :: RuntimeRole
   -> RoleInterpreter IO
@@ -5327,15 +5406,12 @@ serveControlPlaneConnection
   -> IO ()
 serveControlPlaneConnection activeRole interpreter deadline client = do
   providerWorkRequest <- newTVarIO False
-  withResponseObligation (controlPlaneResponseObligation activeRole) client $ do
-    now <- monotonicInstantFromMicros <$> controlPlaneMonotonicMicros
-    case deadlineObservation now deadline of
-      DeadlineExpired -> do
-        drainBeforeRefusal client
-        pure controlPlaneDeadlineReply
-      DeadlineOpen (RemainingDuration remaining) -> do
-        answered <- timeout (controlPlaneTimeoutMicros remaining) (served providerWorkRequest)
-        pure (fromMaybe controlPlaneDeadlineReply answered)
+  effectSlot <- newTVarIO Nothing
+  withResponseObligation
+    (controlPlaneResponseObligation activeRole)
+    client
+    (replyWithin providerWorkRequest effectSlot)
+    `finally` joinOutstandingEffect effectSlot
   observedProviderWork <- readTVarIO providerWorkRequest
   if observedProviderWork
     then
@@ -5345,25 +5421,69 @@ serveControlPlaneConnection activeRole interpreter deadline client = do
         ProviderWorkerStageCompleted
     else pure ()
  where
-  served providerWorkRequest = do
+  replyWithin providerWorkRequest effectSlot = do
+    now <- monotonicInstantFromMicros <$> controlPlaneMonotonicMicros
+    case deadlineObservation now deadline of
+      DeadlineExpired -> do
+        drainBeforeRefusal client
+        pure controlPlaneDeadlineReply
+      DeadlineOpen remaining ->
+        awaitEffectWithin providerWorkRequest effectSlot remaining
+
+  -- The effect is spawned, registered, then waited for under the deadline.
+  -- `timeout` interrupts the wait; the spawned thread never receives it.
+  awaitEffectWithin providerWorkRequest effectSlot (RemainingDuration remaining) = do
+    effect <- async (served providerWorkRequest (RemainingDuration remaining))
+    atomically (writeTVar effectSlot (Just effect))
+    answered <- timeout (controlPlaneTimeoutMicros remaining) (wait effect)
+    pure (fromMaybe controlPlaneDeadlineReply answered)
+
+  -- Runs on the return route and on the cancellation re-raise route alike, so
+  -- the connection outlives the effect it started under every exit.
+  joinOutstandingEffect effectSlot = do
+    outstanding <- readTVarIO effectSlot
+    maybe (pure ()) discardEffectOutcome outstanding
+
+  -- The peer has already been answered by the time this runs, so an effect
+  -- that threw must not replace a delivered reply with a worker-loop error.
+  discardEffectOutcome effect = void (waitCatch effect)
+
+  served providerWorkRequest remaining = do
     framed <- receiveControlPlaneRequest client
     case framed of
       Left _ -> pure (ReplyBadRequest, "bad-request\n")
-      Right request -> do
-        case classifyControlPlaneRequest activeRole request of
-          DispositionOwnedRoute ProviderWorkApply _
-            | activeRole == ProviderWorkerRuntime -> do
-                atomically (writeTVar providerWorkRequest True)
-                observeProviderWorkerRequest
-                  productionProviderWorkerRequestObserver
-                  ProviderWorkerSocketIngress
-                  ProviderWorkerStageCompleted
-          _ -> pure ()
-        serveControlPlaneRequest
-          (productionRoleReadinessResolverFor activeRole)
-          interpreter
-          activeRole
-          request
+      Right request -> dispatchClassified providerWorkRequest remaining request
+
+  dispatchClassified providerWorkRequest remaining request =
+    case classifyControlPlaneRequest activeRole request of
+      DispositionOwnedRoute ProviderWorkApply _
+        | activeRole == ProviderWorkerRuntime -> do
+            atomically (writeTVar providerWorkRequest True)
+            observeProviderWorkerRequest
+              productionProviderWorkerRequestObserver
+              ProviderWorkerSocketIngress
+              ProviderWorkerStageCompleted
+            admitApplyWithin remaining request
+      _ -> dispatchRequest request
+
+  -- Sprint 4.96.  An apply whose remaining budget provably cannot hold even the
+  -- least an apply can need is refused before it starts, with the bound named
+  -- on the role's own diagnostic rather than on the wire.  It reuses the
+  -- existing unmeetable-deadline refusal: one constructor, one renderer, two
+  -- decision points.
+  admitApplyWithin remaining request =
+    case deadlineAdmission remaining providerWorkApplyEstimate of
+      AdmissionMissesDeadline _ -> do
+        observeProviderApplyDeadlineUnmeetable activeRole remaining
+        pure (controlPlaneRejectionReply (providerApplyUnmeetable remaining))
+      AdmissionWithinDeadline _ -> dispatchRequest request
+
+  dispatchRequest request =
+    serveControlPlaneRequest
+      (productionRoleReadinessResolverFor activeRole)
+      interpreter
+      activeRole
+      request
 
 controlPlaneDeadlineReply :: (ReplyStatus, ByteString.ByteString)
 controlPlaneDeadlineReply = (ReplyRequestTimeout, "request-deadline-exceeded\n")

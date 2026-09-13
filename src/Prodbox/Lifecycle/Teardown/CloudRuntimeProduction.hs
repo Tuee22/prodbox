@@ -62,6 +62,8 @@ module Prodbox.Lifecycle.Teardown.CloudRuntimeProduction
   , EksDrainLeaseSeconds
   , eksDrainLeaseSecondsValue
   , mkEksDrainLeaseSeconds
+  , minimumEksDrainLeaseSeconds
+  , derivedEksDrainLeaseSeconds
 
     -- * What can go wrong before a node runs
   , ProductionCloudRuntimeError (..)
@@ -160,7 +162,8 @@ import Prodbox.Lifecycle.Teardown.Dns01ChallengeOwnerDeleteInterpreter
   ( productionDns01ChallengeOwnerDeleteBoundary
   )
 import Prodbox.Lifecycle.Teardown.EksDrainInterpreter
-  ( mkEksDrainInterpreter
+  ( eksDrainCommitSelectionInvocations
+  , mkEksDrainInterpreter
   , productionEksDrainAttemptBoundary
   , productionEksDrainCommitSelectionBoundary
   )
@@ -170,6 +173,9 @@ import Prodbox.Lifecycle.Teardown.EksDrainSession
 import Prodbox.Lifecycle.Teardown.EksTeardownExecutor
   ( EksDrainSelectionParameters (..)
   , EksTeardownExecutor (..)
+  )
+import Prodbox.Lifecycle.Teardown.EphemeralKubectl
+  ( ephemeralKubectlWallClockSeconds
   )
 import Prodbox.Lifecycle.Teardown.Execution
   ( TeardownExecutionContext
@@ -249,11 +255,42 @@ newtype EksDrainLeaseSeconds = EksDrainLeaseSeconds Integer
 eksDrainLeaseSecondsValue :: EksDrainLeaseSeconds -> Integer
 eksDrainLeaseSecondsValue (EksDrainLeaseSeconds seconds) = seconds
 
+-- | Sprint 4.95: the shortest lease that can reach a drain's first mutation.
+--
+-- Derived, not chosen.  A drain commit issues 'eksDrainCommitSelectionInvocations'
+-- bounded ephemeral calls before it may mutate anything, each carrying
+-- 'ephemeralKubectlWallClockSeconds'; one further call's bound is the slack
+-- that makes the session strictly outlive the work it authorizes rather than
+-- expire at the same instant.  Every later phase re-leases from a fresh clock
+-- read, so the floor is per phase rather than cumulative.
+minimumEksDrainLeaseSeconds :: Integer
+minimumEksDrainLeaseSeconds =
+  (eksDrainCommitSelectionInvocations + 1)
+    * fromIntegral ephemeralKubectlWallClockSeconds
+
+-- | Sprint 4.95: the lease a caller asks for when it has no reason to ask for
+-- more.
+--
+-- It is 'minimumEksDrainLeaseSeconds', and that is the point.  The bearer the
+-- Provider issues is the binding constraint on whether an authorization can be
+-- granted at all, and this repository has not measured how long that bearer
+-- lives; what it has measured is how long the drain's own bounded work takes.
+-- Asking for the work bound is therefore the largest request this revision can
+-- justify, and the smallest one that can still do the job.  The previous
+-- request was 'maximumEksDrainLifetimeSeconds' — the ceiling, which measures
+-- nothing and which no bearer can back, because the mint refuses an expiry
+-- beyond its own short-lived bound and cannot precede the clock read the
+-- deadline is computed from.
+derivedEksDrainLeaseSeconds :: Integer
+derivedEksDrainLeaseSeconds = minimumEksDrainLeaseSeconds
+
 mkEksDrainLeaseSeconds
   :: Integer -> Either ProductionCloudRuntimeError EksDrainLeaseSeconds
 mkEksDrainLeaseSeconds seconds
   | seconds <= 0 || seconds > maximumEksDrainLifetimeSeconds =
       Left (ProductionCloudDrainLeaseInvalid seconds)
+  | seconds < minimumEksDrainLeaseSeconds =
+      Left (ProductionCloudDrainLeaseBelowMinimum seconds minimumEksDrainLeaseSeconds)
   | otherwise = Right (EksDrainLeaseSeconds seconds)
 
 -- ---------------------------------------------------------------------------
@@ -262,6 +299,11 @@ mkEksDrainLeaseSeconds seconds
 
 data ProductionCloudRuntimeError
   = ProductionCloudDrainLeaseInvalid !Integer
+  | -- | @(requested, minimum)@.  Sprint @4.95@.  The lease is inside the
+    -- session ceiling but shorter than the bounded work a drain commit issues
+    -- before its first mutation, so it would expire partway through a mutation
+    -- sequence rather than before one.
+    ProductionCloudDrainLeaseBelowMinimum !Integer !Integer
   | ProductionCloudCheckpointUnregistered
       !Text
       !RegisteredPulumiCheckpointError
@@ -274,6 +316,12 @@ renderProductionCloudRuntimeError = \case
   ProductionCloudDrainLeaseInvalid seconds ->
     "the EKS drain lease must be within 1.."
       ++ show maximumEksDrainLifetimeSeconds
+      ++ " seconds, not "
+      ++ show seconds
+  ProductionCloudDrainLeaseBelowMinimum seconds minimumSeconds ->
+    "the EKS drain lease must cover the bounded work a drain commit issues, at "
+      ++ "least "
+      ++ show minimumSeconds
       ++ " seconds, not "
       ++ show seconds
   ProductionCloudCheckpointUnregistered name err ->

@@ -47,6 +47,7 @@ module Prodbox.Lifecycle.Teardown.Execution
   , teardownExecutionNodeId
   , teardownExecutionIdentity
   , teardownExecutionObservationScope
+  , teardownExecutionSurfaceWitness
   , teardownExecutionAttemptOperationIds
   , teardownExecutionOperationIdFor
   , teardownExecutionSuccessfulPredecessors
@@ -347,6 +348,7 @@ data TeardownExecutionContext surface = TeardownExecutionContext
   , internalTeardownExecutionGraphDigest :: !CleanupDigest
   , internalTeardownExecutionNodeId :: !CleanupNodeId
   , internalTeardownExecutionObservationScope :: !ObservationEvidenceScope
+  , internalTeardownExecutionSurfaceWitness :: !(CleanupSurfaceWitness surface)
   , internalTeardownExecutionAttemptOperationIds :: ![CleanupOperationId]
   , internalTeardownExecutionOperationCatalog
       :: ![(SomeTeardownOperation surface, CleanupOperationId)]
@@ -396,6 +398,16 @@ teardownExecutionIdentity context =
 teardownExecutionObservationScope
   :: TeardownExecutionContext surface -> ObservationEvidenceScope
 teardownExecutionObservationScope = internalTeardownExecutionObservationScope
+
+-- | The compiled program's own surface witness.
+--
+-- Sprint 4.97: an interpreter that needs a surface-indexed decision takes the
+-- index from the run it was admitted to execute rather than naming one. The
+-- witness here is the value the compiled program was built around, so it cannot
+-- disagree with the graph the node came from.
+teardownExecutionSurfaceWitness
+  :: TeardownExecutionContext surface -> CleanupSurfaceWitness surface
+teardownExecutionSurfaceWitness = internalTeardownExecutionSurfaceWitness
 
 -- | Stable operation references of this node's 'RequiresAttempt'
 -- predecessors.  Read-back interpreters consume these durable references;
@@ -743,6 +755,8 @@ runCompiledTeardownNodeWithPredecessors compiled descriptorDigest attempt succee
       , internalTeardownExecutionNodeId = cleanupNodeId suppliedPlan
       , internalTeardownExecutionObservationScope =
           compiledDesiredAbsenceObservationScope compiled
+      , internalTeardownExecutionSurfaceWitness =
+          desiredAbsenceProgramSurface (compiledDesiredAbsenceProgram compiled)
       , internalTeardownExecutionAttemptOperationIds =
           attemptOperationIds suppliedPlan
       , internalTeardownExecutionOperationCatalog =
@@ -1463,6 +1477,12 @@ validateNodeResult
       :: RegisteredTargetMutationAttempt -> CleanupNodeOutcome
     mutationAttemptOutcome attempt = case attempt of
       RegisteredTargetMutationApplied -> CleanupNodeSucceeded
+      -- Sprint 4.97.  The provider found nothing to do, which satisfies the
+      -- node exactly as an applied mutation does.  The two answers are kept
+      -- apart in the attempt rather than here, because what differs is what
+      -- the run may later claim about the resource, not whether this node
+      -- succeeded.
+      RegisteredTargetMutationAlreadySatisfied _ -> CleanupNodeSucceeded
       RegisteredTargetMutationResponseLost detail ->
         CleanupNodeEffectUnconfirmed detail
       RegisteredTargetMutationRefused detail -> CleanupNodeFailed detail

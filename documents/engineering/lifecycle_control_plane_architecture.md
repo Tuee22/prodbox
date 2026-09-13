@@ -358,8 +358,20 @@ tombstone. Gateway and host-direct generic secret-write routes are absent.
     provenance marker; it is never a lifecycle class, never a substitute for the registered
     coordinate, and never evidence of absence.
 
-> **Target.** Invariants 19 and 20 are accepted and neither is enforced in the current revision.
-> Status lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+**Enforcement of invariant 19 (Sprint `4.96`, 2026-09-12).** The reply/effect half is now
+structural at the control-plane request boundary. The request runs on its own thread and the
+deadline bounds only the *wait* for it, so an expiry answers the peer without touching the effect;
+the connection is not released until that effect finishes, so an in-flight effect still holds the
+admission machine's slot. The encrypted backend commits collected scratch on the exception route as
+well as the return route, before the scratch is released, and refuses retirement after an
+interrupted action for a reason of its own — `RefuseRetirementAfterInterruptedAction` — because an
+action that never returned decided nothing, which is strictly less than a failure. The admission
+half refuses a provider apply whose remaining budget cannot hold the least an apply can need, using
+the existing unmeetable-deadline refusal rather than a second one. The credential half was enforced
+by Sprint `4.95` at `mkEksDrainSession`.
+
+> **Target.** Invariant 20 is accepted and not enforced in the current revision. Status lives only
+> in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ## 3. Pure Capability Algebra
 

@@ -41,6 +41,8 @@ module Prodbox.Lifecycle.Teardown.OwnershipManifest.Internal
   , SomeCompleteOwnershipManifest (..)
   , decodeDurableCompleteOwnershipManifest
   , restoreDurableCompleteOwnershipManifest
+  , captureCompleteOwnershipManifestWithEntries
+  , restoreCompleteOwnershipManifestWithEntries
   , DurableOwnershipManifestEntryValue (..)
   , DurableWriteAheadOwnershipManifest
   , captureDurableWriteAheadOwnershipManifestInternal
@@ -307,6 +309,11 @@ data DurableCompleteOwnershipManifestError
   | DurableCompleteOwnershipManifestPurposeSurfaceMismatch !CleanupSurface !CleanupSurface
   | DurableCompleteOwnershipManifestWriteAheadPlanUnexpected
   | DurableCompleteOwnershipManifestLegacyPlanMissing
+  | -- | Sprint 4.97.  The entry list travelling beside a complete manifest did
+    -- not decode.  The detail is the write-ahead entry decoder's own refusal,
+    -- rendered rather than re-derived, so one entry grammar keeps one set of
+    -- reasons for rejecting an entry.
+    DurableCompleteOwnershipManifestEntriesInvalid !Text
   deriving (Eq, Show)
 
 -- | The durable envelope of a complete ownership manifest.
@@ -402,6 +409,77 @@ restoreDurableCompleteOwnershipManifest
   :: DurableCompleteOwnershipManifest -> SomeCompleteOwnershipManifest
 restoreDurableCompleteOwnershipManifest =
   internalDurableCompleteOwnershipManifestProof
+
+-- | Sprint 4.97: a complete manifest and the entries that give it identities.
+--
+-- 'DurableCompleteOwnershipManifest' carries the manifest's binding and digest
+-- and no entries at all, which is enough to commit and read back but not enough
+-- to authorize a destroy: an identity-less manifest names no resource. This
+-- envelope nests the existing manifest wire beside the existing entry wire
+-- rather than flattening either, so there stays exactly one encoder for each
+-- and a field added to one is a compile error rather than a silent omission.
+data DurableCompleteOwnershipManifestEntriesWire
+  = DurableCompleteOwnershipManifestEntriesWire
+  { durableCompleteEntriesWireManifest :: !DurableCompleteOwnershipManifestWire
+  , durableCompleteEntriesWireEntries :: ![DurableOwnershipManifestEntryWire]
+  }
+  deriving (Eq, Show, Generic, Serialise)
+
+entriesCanonicalBytes :: DurableCompleteOwnershipManifestEntriesWire -> ByteString
+entriesCanonicalBytes = LazyByteString.toStrict . serialise
+
+captureCompleteOwnershipManifestWithEntries
+  :: CompleteOwnershipManifest surface
+  -> [DurableOwnershipManifestEntryValue]
+  -> Either DurableCompleteOwnershipManifestError ByteString
+captureCompleteOwnershipManifestWithEntries complete entries = do
+  let wire =
+        DurableCompleteOwnershipManifestEntriesWire
+          { durableCompleteEntriesWireManifest = wireFromComplete complete
+          , durableCompleteEntriesWireEntries = map writeAheadEntryToWire entries
+          }
+      bytes = entriesCanonicalBytes wire
+  when
+    (ByteString.length bytes > maximumDurableCompleteOwnershipManifestBytes)
+    ( Left
+        ( DurableCompleteOwnershipManifestTooLarge
+            maximumDurableCompleteOwnershipManifestBytes
+            (ByteString.length bytes)
+        )
+    )
+  -- Prove the bytes restore before anyone is told they were captured, exactly
+  -- as 'captureDurableCompleteOwnershipManifest' does.
+  _ <- restoreCompleteOwnershipManifestWithEntries bytes
+  pure bytes
+
+restoreCompleteOwnershipManifestWithEntries
+  :: ByteString
+  -> Either
+       DurableCompleteOwnershipManifestError
+       (SomeCompleteOwnershipManifest, [DurableOwnershipManifestEntryValue])
+restoreCompleteOwnershipManifestWithEntries bytes = do
+  when (ByteString.null bytes) (Left DurableCompleteOwnershipManifestEmpty)
+  when
+    (ByteString.length bytes > maximumDurableCompleteOwnershipManifestBytes)
+    ( Left
+        ( DurableCompleteOwnershipManifestTooLarge
+            maximumDurableCompleteOwnershipManifestBytes
+            (ByteString.length bytes)
+        )
+    )
+  wire <-
+    first
+      (DurableCompleteOwnershipManifestDecodeFailed . Text.pack . show)
+      (deserialiseOrFail (LazyByteString.fromStrict bytes))
+  unless
+    (entriesCanonicalBytes wire == bytes)
+    (Left DurableCompleteOwnershipManifestNonCanonical)
+  restored <- restoreWire (durableCompleteEntriesWireManifest wire)
+  entries <-
+    first
+      (DurableCompleteOwnershipManifestEntriesInvalid . Text.pack . show)
+      (traverse writeAheadEntryFromWire (durableCompleteEntriesWireEntries wire))
+  pure (restored, entries)
 
 data DurableOwnershipManifestEntryValue = DurableOwnershipManifestEntryValue
   { durableOwnershipManifestEntryKey :: !RegisteredResourceKey

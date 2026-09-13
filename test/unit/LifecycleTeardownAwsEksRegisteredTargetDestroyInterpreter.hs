@@ -14,6 +14,10 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import EksClientAuthProjectionFixture (testEksClientAuthProjection)
+import Prodbox.ControlPlane.AuthorityProviderEndpoint
+  ( ProviderExecutionOutcome
+  , providerExecutionOutcome
+  )
 import Prodbox.ControlPlane.AwsStackReaderRepository
 import Prodbox.ControlPlane.CleanupRunClient
 import Prodbox.ControlPlane.CleanupRunEndpoint
@@ -25,7 +29,7 @@ import Prodbox.ControlPlane.EksDrainIntentRepository
   )
 import Prodbox.ControlPlane.EksDrainReadBackReceiptClient
 import Prodbox.ControlPlane.ProviderWorkerExecution
-  ( ProviderIntentExecutionResult (ProviderIntentExecutionObserved)
+  ( ProviderIntentExecutionResult (..)
   )
 import Prodbox.Lifecycle.Authority.ClientRegistry
   ( ClientSubmissionKey
@@ -214,10 +218,17 @@ providerBoundary environment =
       (modifyIORef' (fakeProviderCalls environment) (<> [(submissionKey, intent)]))
     pure $ case intent of
       ObserveEksClusterIdentity {} ->
-        TeardownProviderCompleted ("eks-cluster-arn:" <> fixtureArn)
+        TeardownProviderCompleted
+          (observedOutcome intent ("eks-cluster-arn:" <> fixtureArn))
       DestroyRegisteredStack {} ->
         TeardownProviderRefused "diagnostic stack reader must fail before mutation"
       _ -> TeardownProviderRefused "unexpected Provider intent"
+
+-- | Sprint 4.97: the fixture answers with the coordinate the intent carries.
+observedOutcome :: ProviderIntent -> Text -> ProviderExecutionOutcome
+observedOutcome intent evidence =
+  providerExecutionOutcome
+    (ProviderIntentExecutionObserved (providerIntentCoordinate intent) evidence)
 
 drainInterpreter :: EksDrainInterpreter DestroyEffects
 drainInterpreter =

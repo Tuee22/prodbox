@@ -217,8 +217,24 @@ data EksDrainSessionError
   | EksDrainProjectionRegionMismatch !AwsRegion !Text
   | EksDrainProjectionClusterMismatch !Text !Text
   | EksDrainProjectionClusterArnMismatch !EksClusterArn !Text
-  | EksDrainDeadlineInvalid !Integer !Integer
-  | EksDrainDeadlineBeyondMaximum !Integer !Integer
+  | -- | @(now, deadline)@.  The requested deadline is at or before @now@, so it
+    -- authorizes nothing.  This arm carried the bearer bound as well until
+    -- Sprint @4.95@ split them; it now means only what its name says.
+    EksDrainDeadlineInvalid !Integer !Integer
+  | -- | @(now, deadline, bearerExpiry)@.  Sprint @4.95@.  The requested
+    -- deadline outlives the Provider-issued bearer that has to back it.
+    --
+    -- The third field is the whole point of the constructor: an operator
+    -- reading the refusal can subtract and see how much credential lifetime
+    -- the run actually held, which is the number a repair turns on.  Without
+    -- it a live cycle reports two numbers that satisfy every bound it can
+    -- name and refuses anyway.
+    EksDrainDeadlineBeyondBearerExpiry !Integer !Integer !Integer
+  | -- | @(now, deadline, maximum)@.  The requested deadline outlives the
+    -- session module's own ceiling.  Sprint @4.95@ added @now@ so the
+    -- comparison is reconstructible from the refusal alone, as it already was
+    -- for the bearer bound beside it.
+    EksDrainDeadlineBeyondMaximum !Integer !Integer !Integer
   | EksDrainProjectionExpired !Integer !Integer
   | EksDrainSessionBindingMismatch
   | EksDrainSessionExpired !Integer !Integer
@@ -226,6 +242,20 @@ data EksDrainSessionError
 
 -- | Mint one drain authorization.  The deadline is supplied explicitly so
 -- the caller cannot later extend the Provider-issued bearer lifetime.
+--
+-- __Three deadline bounds, three refusals (Sprint @4.95@).__  A requested
+-- deadline is refused if it authorizes nothing (@deadline <= now@), if it
+-- outlives the bearer backing it (@deadline > bearerExpiry@), or if it
+-- outlives this module's ceiling (@deadline > now + 'maximumEksDrainLifetimeSeconds'@).
+-- The first two shared one constructor and one payload until Sprint @4.95@,
+-- which is why a live cycle on 2026-09-12 could report @now@ and @deadline@
+-- exactly 'maximumEksDrainLifetimeSeconds' apart — satisfying the ceiling,
+-- whose comparison is strict — and still refuse.  Each bound now names itself
+-- and carries the value it compared against.
+--
+-- All three comparisons are strict, so a deadline equal to a bound is
+-- admitted.  That is deliberate: it is what makes a lease derived from a
+-- measurement satisfiable at the boundary rather than one second short of it.
 mkEksDrainSession
   :: Integer
   -> Integer
@@ -254,11 +284,14 @@ mkEksDrainSession now deadline operationId expectedScope verified kubernetes pro
   if projectionExpiry <= now
     then Left (EksDrainProjectionExpired now projectionExpiry)
     else Right ()
-  if deadline <= now || deadline > projectionExpiry
+  if deadline <= now
     then Left (EksDrainDeadlineInvalid now deadline)
     else Right ()
+  if deadline > projectionExpiry
+    then Left (EksDrainDeadlineBeyondBearerExpiry now deadline projectionExpiry)
+    else Right ()
   if deadline > now + maximumEksDrainLifetimeSeconds
-    then Left (EksDrainDeadlineBeyondMaximum deadline maximumEksDrainLifetimeSeconds)
+    then Left (EksDrainDeadlineBeyondMaximum now deadline maximumEksDrainLifetimeSeconds)
     else Right ()
   let tokenDigest = sha256Text (eksClientAuthBearerToken projection)
       sessionId =

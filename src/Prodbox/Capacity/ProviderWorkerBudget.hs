@@ -36,7 +36,9 @@ module Prodbox.Capacity.ProviderWorkerBudget
   , validateProviderWorkerSchemaMemoryCounterexample
   , providerWorkerMaximumChildDeadlineMilliseconds
   , providerWorkerResponseOverheadMilliseconds
+  , providerWorkerServerEnvelopeMicros
   , providerWorkerResponseTimeoutMicros
+  , providerWorkerMinimumApplyEffectMicros
   , validateProviderWorkerChildDeadlineMilliseconds
   )
 where
@@ -531,16 +533,59 @@ providerWorkerMaximumChildDeadlineMilliseconds = 5 * 60 * 1000
 providerWorkerResponseOverheadMilliseconds :: Natural
 providerWorkerResponseOverheadMilliseconds = 30 * 1000
 
--- | Provider-only HTTP timeout. The arithmetic is exact and well inside 'Int'
--- on every supported architecture.
-providerWorkerResponseTimeoutMicros :: Int
-providerWorkerResponseTimeoutMicros =
+-- | Sprint 4.95\/4.96: the Provider Worker's own server envelope.
+--
+-- The child deadline plus exactly one overhead term, because the Provider has
+-- its own framing, decode, replay check, response encode, and socket write to
+-- pay for after the child returns. Before Sprint @4.96@ the Provider's server
+-- envelope was the flat five-minute role default, which is *equal* to the
+-- maximum admitted child deadline: a child permitted to consume the whole
+-- envelope left nothing for the reply, so the bound fired on the work rather
+-- than on the wait. The margin is not decoration; it is the difference between
+-- an answered request and an abandoned one.
+providerWorkerServerEnvelopeMicros :: Int
+providerWorkerServerEnvelopeMicros =
   fromIntegral
     ( ( providerWorkerMaximumChildDeadlineMilliseconds
           + providerWorkerResponseOverheadMilliseconds
       )
         * 1000
     )
+
+-- | Provider-only HTTP timeout — what the Lifecycle Authority waits.
+--
+-- One overhead term beyond the Provider's whole server envelope, on the same
+-- principle that gives the Provider one beyond its child: every layer that has
+-- to serialise a reply is allowed the time to do it. The three bounds are
+-- therefore strictly ordered — child < Provider server < Authority client — so
+-- whichever fires, the innermost one that could have decided the outcome fires
+-- first and the cause reaches the operator instead of a generic timeout. Two
+-- equal bounds race, and a race between a server envelope and its caller's
+-- timeout is how a structured refusal becomes an opaque one.
+--
+-- The arithmetic is exact and well inside 'Int' on every supported
+-- architecture.
+providerWorkerResponseTimeoutMicros :: Int
+providerWorkerResponseTimeoutMicros =
+  providerWorkerServerEnvelopeMicros
+    + fromIntegral (providerWorkerResponseOverheadMilliseconds * 1000)
+
+-- | Sprint 4.96: the least time a registered provider apply can plausibly need.
+--
+-- __Authored, not measured.__ No measured provider-apply profile exists, and
+-- this is the same uncertified-until-first-profile seam the resource-scaling
+-- doctrine already names for CPU demand. What it buys is narrow and worth
+-- having anyway: an apply whose remaining budget provably cannot hold even this
+-- much is refused before it starts, with the bound named, rather than being
+-- admitted and abandoned partway through a provider mutation.
+--
+-- The value is the Provider's own response overhead. An apply that cannot be
+-- given at least the time its own reply costs cannot be given enough for the
+-- mutation either, and choosing an already-authored term keeps this from
+-- becoming a second independent number to be wrong about.
+providerWorkerMinimumApplyEffectMicros :: Natural
+providerWorkerMinimumApplyEffectMicros =
+  providerWorkerResponseOverheadMilliseconds * 1000
 
 validateProviderWorkerChildDeadlineMilliseconds
   :: Natural -> Either ProviderWorkerBudgetError ()

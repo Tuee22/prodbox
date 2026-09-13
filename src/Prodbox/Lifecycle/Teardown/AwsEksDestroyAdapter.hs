@@ -17,7 +17,7 @@ module Prodbox.Lifecycle.Teardown.AwsEksDestroyAdapter
   , awsEksDestroyAuthorizationCoordinateDigest
   , awsEksDestroyAuthorizationScope
   , awsEksDestroyAuthorizationProviderRevision
-  , awsEksDestroyAuthorizationDecision
+  , awsEksDestroyAuthorizationInventory
   , awsEksDestroyAuthorizationAuthorityKind
   , awsEksDestroyAuthorizationDrainBinding
   , awsEksDestroyAuthorizationDrainAttemptId
@@ -156,7 +156,7 @@ data AwsEksDestroyAuthorization = AwsEksDestroyAuthorization
   , internalAwsEksDestroyCoordinateDigest :: !ManagedResourceCoordinateDigest
   , internalAwsEksDestroyScope :: !ObservationEvidenceScope
   , internalAwsEksDestroyProviderRevision :: !ProviderRevision
-  , internalAwsEksDestroyDecision :: !StackDesiredAbsenceDecision
+  , internalAwsEksDestroyInventory :: !ExactResourceInventory
   , internalAwsEksDestroyAuthorityKind :: !AwsEksDestroyAuthorityKind
   , internalAwsEksDestroyDrainBinding :: !EksDrainOperationBinding
   , internalAwsEksDestroyDrainAttemptId :: !CleanupAttemptId
@@ -187,9 +187,15 @@ awsEksDestroyAuthorizationProviderRevision
   :: AwsEksDestroyAuthorization -> ProviderRevision
 awsEksDestroyAuthorizationProviderRevision = internalAwsEksDestroyProviderRevision
 
-awsEksDestroyAuthorizationDecision
-  :: AwsEksDestroyAuthorization -> StackDesiredAbsenceDecision
-awsEksDestroyAuthorizationDecision = internalAwsEksDestroyDecision
+-- | Sprint 4.97: the exact inventory the desired-absence decision was taken
+-- over.
+--
+-- The authorization retains that evidence rather than the whole decision, so
+-- the surface index stays on the decision instead of leaking into every request
+-- and read-back type downstream of it.
+awsEksDestroyAuthorizationInventory
+  :: AwsEksDestroyAuthorization -> ExactResourceInventory
+awsEksDestroyAuthorizationInventory = internalAwsEksDestroyInventory
 
 awsEksDestroyAuthorizationAuthorityKind
   :: AwsEksDestroyAuthorization -> AwsEksDestroyAuthorityKind
@@ -247,11 +253,11 @@ authorizeAwsEksDestroy
   -> CleanupOperationId
   -> VerifiedAwsEksObservation 'ObserveEksForDecision
   -> EksDrainSession
-  -> StackDesiredAbsenceDecision
+  -> StackDesiredAbsenceDecision surface
   -> EksDrainTargetsAbsentEvidence
   -> Either AwsEksDestroyRefusal AwsEksDestroyAuthorization
 authorizeAwsEksDestroy now providerRevision expectedBinding expectedAttempt destroyOperation verified session decision drainEvidence = do
-  authorityKind <- validateDestroyDecision decision
+  (decisionInventory, authorityKind) <- validateDestroyDecision decision
   validateDistinctDestroyOperation expectedBinding destroyOperation
   let expectedScope = eksDrainBindingScope expectedBinding
       observation = verifiedAwsEksExactObservation verified
@@ -375,7 +381,7 @@ authorizeAwsEksDestroy now providerRevision expectedBinding expectedAttempt dest
       , internalAwsEksDestroyCoordinateDigest = expectedCoordinate
       , internalAwsEksDestroyScope = expectedScope
       , internalAwsEksDestroyProviderRevision = providerRevision
-      , internalAwsEksDestroyDecision = decision
+      , internalAwsEksDestroyInventory = decisionInventory
       , internalAwsEksDestroyAuthorityKind = authorityKind
       , internalAwsEksDestroyDrainBinding = expectedBinding
       , internalAwsEksDestroyDrainAttemptId = expectedAttempt
@@ -724,19 +730,23 @@ data AwsEksDestroyRefusal
   deriving (Eq, Show)
 
 validateDestroyDecision
-  :: StackDesiredAbsenceDecision
-  -> Either AwsEksDestroyRefusal AwsEksDestroyAuthorityKind
+  :: StackDesiredAbsenceDecision surface
+  -> Either AwsEksDestroyRefusal (ExactResourceInventory, AwsEksDestroyAuthorityKind)
 validateDestroyDecision decision = case decision of
-  StackDestroyFromVerifiedPrimary key authority -> do
+  StackDestroyFromVerifiedPrimary key inventory authority -> do
     validateDecisionKey key
     case authority of
-      VerifiedPrimaryCheckpoint {} -> Right AwsEksDestroyFromPrimaryCheckpoint
+      VerifiedPrimaryCheckpoint {} ->
+        Right (inventory, AwsEksDestroyFromPrimaryCheckpoint)
       _ -> Left (AwsEksDestroyDecisionAuthorityMismatch authority)
-  StackDestroyFromVerifiedManifest key authority -> do
+  StackDestroyFromVerifiedManifest key inventory authority -> do
     validateDecisionKey key
     case authority of
       VerifiedOwnershipManifest _ _ identities ->
-        Right (AwsEksDestroyFromCompleteManifest (map observedIdentityText identities))
+        Right
+          ( inventory
+          , AwsEksDestroyFromCompleteManifest (map observedIdentityText identities)
+          )
       _ -> Left (AwsEksDestroyDecisionAuthorityMismatch authority)
   StackAlreadyAbsent {} -> Left AwsEksDestroyDecisionAlreadyAbsent
   StackRestoreBackupThenDestroy {} ->

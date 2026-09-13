@@ -50,6 +50,7 @@ import Prodbox.ControlPlane.AuthorityProviderEndpoint
   , classifyAuthorityProviderResponse
   , providerDispatchFormatVersion
   , providerDispatchResponseMaximumBytes
+  , providerExecutionOutcomeEvidence
   , renderAuthorityProviderResponseObservation
   )
 import Prodbox.ControlPlane.CallerPrincipal
@@ -378,8 +379,15 @@ expectAdmitted response = case response of
   ProviderDispatchAdmitted operation -> pure operation
   other -> failWith ("expected an admission, got " <> show other)
 
+-- | Sprint 4.97: a fresh execution answers with the whole outcome.
+--
+-- 'ProviderDispatchExecuted' is what the execute lane now returns when it
+-- actually ran something; the two retained-text arms remain the replay answers,
+-- because the Authority retains the evidence and not the execution kind.
 expectCompleted :: ProviderDispatchResponse -> IO (OperationId, Text)
 expectCompleted response = case response of
+  ProviderDispatchExecuted operation outcome ->
+    pure (operation, providerExecutionOutcomeEvidence outcome)
   ProviderDispatchCompleted operation evidence -> pure (operation, evidence)
   ProviderDispatchAlreadyCompleted operation evidence -> pure (operation, evidence)
   other -> failWith ("expected a completion, got " <> show other)

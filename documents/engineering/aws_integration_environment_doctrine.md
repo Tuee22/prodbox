@@ -1093,6 +1093,19 @@ facts and one absolute deadline. Kubernetes authentication is obtained inside th
 cascade does not reconstruct EKS identity from Pulumi checkpoint outputs, write a reusable host
 kubeconfig, or infer the AWS substrate from another stack's residue.
 
+That deadline answers to two bounds, and they are not the same kind of thing. One is this
+repository's own ceiling on how long a drain may be authorized for. The other is the expiry of the
+Provider-issued bearer backing it, which is a measurement of a credential the repository did not
+issue. Both comparisons are strict, so a deadline equal to either bound is admitted — which is what
+makes a lease derived from a measurement satisfiable at the boundary rather than one second short of
+it. The refusal names which bound refused, and the bearer arm carries the expiry it compared
+against; a refusal that named neither is what made a live 2026-09-12 cycle report two numbers that
+satisfied every bound it could name and refuse anyway.
+
+The lease the cascade asks for is derived from the bounded work a drain commit issues before its
+first mutation, not from the ceiling. The ceiling measures nothing, and a lease equal to it is
+unsatisfiable against any bearer the Provider will accept.
+
 The drain removes registered LoadBalancer Services, ALB Ingresses, and other controller owners while
 their controllers remain live, then re-observes every bounded AWS child family. Static durable EBS
 volumes are `Retain`; only exact test-scoped volume obligations are deleted.

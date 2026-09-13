@@ -7,6 +7,7 @@ module LifecycleTeardownAwsEksDestroyAdapter
   )
 where
 
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
 import Data.Text qualified as Text
 import EksClientAuthProjectionFixture (testEksClientAuthProjection)
@@ -50,7 +51,10 @@ lifecycleTeardownAwsEksDestroyAdapterSuite =
       awsEksDestroyAuthorizationScope authorization `shouldBe` fixtureScope
       awsEksDestroyAuthorizationProviderRevision authorization
         `shouldBe` providerRevision
-      awsEksDestroyAuthorizationDecision authorization `shouldBe` primaryDecision
+      -- Sprint 4.97: the authorization retains the inventory the decision was
+      -- taken over rather than the whole decision, which keeps the decision's
+      -- surface index off every request and read-back type downstream.
+      awsEksDestroyAuthorizationInventory authorization `shouldBe` decisionInventory
       awsEksDestroyAuthorizationAuthorityKind authorization
         `shouldBe` AwsEksDestroyFromPrimaryCheckpoint
       awsEksDestroyAuthorizationDrainBinding authorization
@@ -272,7 +276,7 @@ lifecycleTeardownAwsEksDestroyAdapterSuite =
         fixtureDrainEvidence
         `shouldBe` Left AwsEksDestroyDecisionAlreadyAbsent
       authorizeFixture
-        (StackDestroyFromVerifiedPrimary AwsEksKey manifestAuthority)
+        (StackDestroyFromVerifiedPrimary AwsEksKey decisionInventory manifestAuthority)
         freshVerified
         freshSession
         fixtureDrainEvidence
@@ -429,7 +433,7 @@ lifecycleTeardownAwsEksDestroyAdapterSuite =
       rendered `shouldNotContain` Text.unpack fixtureBearer
 
 authorizeFixture
-  :: StackDesiredAbsenceDecision
+  :: StackDesiredAbsenceDecision surface
   -> VerifiedAwsEksObservation 'ObserveEksForDecision
   -> EksDrainSession
   -> EksDrainTargetsAbsentEvidence
@@ -816,10 +820,22 @@ scopeFor runId =
     (Just fixtureAwsScope)
     ReconcileDesiredAbsent
 
-primaryDecision, manifestDecision, crossStackDecision :: StackDesiredAbsenceDecision
-primaryDecision = StackDestroyFromVerifiedPrimary AwsEksKey primaryAuthority
-manifestDecision = StackDestroyFromVerifiedManifest AwsEksKey manifestAuthority
-crossStackDecision = StackDestroyFromVerifiedPrimary AwsTestKey primaryAuthority
+primaryDecision
+  , manifestDecision
+  , crossStackDecision
+    :: StackDesiredAbsenceDecision surface
+primaryDecision =
+  StackDestroyFromVerifiedPrimary AwsEksKey decisionInventory primaryAuthority
+manifestDecision =
+  StackDestroyFromVerifiedManifest AwsEksKey decisionInventory manifestAuthority
+crossStackDecision =
+  StackDestroyFromVerifiedPrimary AwsTestKey decisionInventory primaryAuthority
+
+-- | Sprint 4.97: the inventory the decision was taken over, carried on the arm.
+decisionInventory :: ExactResourceInventory
+decisionInventory =
+  ExactResourceInventory
+    (ObservedResourceIdentity ("eks-cluster/" <> fixtureArn) :| [])
 
 primaryAuthority, manifestAuthority :: StackCleanupAuthority
 primaryAuthority =

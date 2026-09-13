@@ -111,6 +111,7 @@ import Prodbox.Lifecycle.Teardown.Execution
   , teardownExecutionOperationIdFor
   , teardownExecutionRunId
   , teardownExecutionSuccessfulPredecessors
+  , teardownExecutionSurfaceWitness
   , teardownSucceededPredecessorOperation
   , teardownSucceededPredecessorOperationId
   )
@@ -118,7 +119,8 @@ import Prodbox.Lifecycle.Teardown.ExecutionIdentity
   ( TeardownExecutionIdentity
   )
 import Prodbox.Lifecycle.Teardown.Model
-  ( LifecycleClass
+  ( CleanupSurface
+  , LifecycleClass
   , ManagedResourceCoordinateDigest
   , ObservationEvidenceScope
   , RegisteredResourceKey (..)
@@ -207,7 +209,7 @@ data AwsEksDestroyPredecessorIdentity = AwsEksDestroyPredecessorIdentity
   }
   deriving (Eq, Ord, Show)
 
-data AwsEksRegisteredTargetDestroyError
+data AwsEksRegisteredTargetDestroyError (surface :: CleanupSurface)
   = AwsEksRegisteredTargetDestroyTargetUnregistered !RegisteredResourceKey
   | AwsEksRegisteredTargetDestroyTargetKeyMismatch
       !RegisteredResourceKey
@@ -249,7 +251,7 @@ data AwsEksRegisteredTargetDestroyError
   | AwsEksRegisteredTargetDestroyDecisionInvalid
       !StackDecisionBindingError
   | AwsEksRegisteredTargetDestroyDecisionNotAuthorized
-      !StackDesiredAbsenceDecision
+      !(StackDesiredAbsenceDecision surface)
   | AwsEksRegisteredTargetDestroyReceiptRecoveryFailed
       !EksDrainReadBackReceiptClientError
   | AwsEksRegisteredTargetDestroyReceiptBindingMismatch
@@ -293,7 +295,7 @@ reconcilePresentAwsEksRegisteredTarget
   -> VerifiedAwsEksObservation 'ObserveEksForDecision
   -> m
        ( Either
-           AwsEksRegisteredTargetDestroyError
+           (AwsEksRegisteredTargetDestroyError surface)
            RegisteredTargetReconcileResult
        )
 reconcilePresentAwsEksRegisteredTarget interpreter context target verified =
@@ -340,6 +342,7 @@ reconcilePresentAwsEksRegisteredTarget interpreter context target verified =
         pure (Left (AwsEksRegisteredTargetDestroyObservationSetInvalid err))
       Right observations ->
         case decideStackDesiredAbsence
+          (teardownExecutionSurfaceWitness context)
           key
           observations
           (awsStackDecisionInputsCheckpointPair inputs)
@@ -431,7 +434,7 @@ reconcilePresentAwsEksRegisteredTarget interpreter context target verified =
 validateInvocation
   :: TeardownExecutionContext surface
   -> RegisteredTargetBinding
-  -> Either AwsEksRegisteredTargetDestroyError ()
+  -> Either (AwsEksRegisteredTargetDestroyError surface) ()
 validateInvocation context target = do
   validateStaticTarget AwsEksKey target
   case teardownExecutionOperationIdFor
@@ -452,7 +455,7 @@ validateSuccessfulPredecessors
   :: forall surface
    . TeardownExecutionContext surface
   -> RegisteredTargetBinding
-  -> Either AwsEksRegisteredTargetDestroyError ()
+  -> Either (AwsEksRegisteredTargetDestroyError surface) ()
 validateSuccessfulPredecessors context target = do
   ebsTarget <- case ebsBackstops of
     [] -> Left AwsEksRegisteredTargetDestroyEbsBackstopMissing
@@ -532,7 +535,7 @@ validateSuccessfulPredecessors context target = do
   -- GADT module gives an unannotated local binding a monomorphic type.
   expectedIdentity
     :: SomeTeardownOperation surface
-    -> Either AwsEksRegisteredTargetDestroyError AwsEksDestroyPredecessorIdentity
+    -> Either (AwsEksRegisteredTargetDestroyError surface) AwsEksDestroyPredecessorIdentity
   expectedIdentity (SomeTeardownOperation operation) =
     case teardownExecutionOperationIdFor context operation of
       Nothing ->
@@ -572,7 +575,7 @@ attemptedIdentity predecessor =
 validateStaticTarget
   :: RegisteredResourceKey
   -> RegisteredTargetBinding
-  -> Either AwsEksRegisteredTargetDestroyError ()
+  -> Either (AwsEksRegisteredTargetDestroyError surface) ()
 validateStaticTarget expectedKey target = do
   if registeredTargetKey target == expectedKey
     then Right ()
@@ -653,7 +656,7 @@ stackReaderIdentityMatches context target bundle =
   identity = committedAwsStackReaderIdentity bundle
 
 mapBoundaryError
-  :: AwsEksRegisteredTargetDestroyError
+  :: AwsEksRegisteredTargetDestroyError surface
   -> AwsRegisteredTargetInterpreterError
 mapBoundaryError err = case err of
   AwsEksRegisteredTargetDestroyStackReaderRecoveryFailed detail ->

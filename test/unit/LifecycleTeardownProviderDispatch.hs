@@ -10,8 +10,14 @@ import Data.IORef
 import Data.List (nub)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.ControlPlane.AuthorityProviderEndpoint
+  ( ProviderExecutionOutcome
+  , providerExecutionOutcome
+  )
 import Prodbox.ControlPlane.ProviderWorkerExecution
-  ( ProviderIntentExecutionResult (..)
+  ( ProviderExecutionKind (..)
+  , ProviderIntentExecutionResult (..)
+  , executionResultCoordinate
   )
 import Prodbox.Lifecycle.Authority.ClientRegistry
   ( ClientSubmissionKeyError (ClientSubmissionKeyTooLong)
@@ -88,7 +94,7 @@ lifecycleTeardownProviderDispatchSuite =
 
     it "dispatches only exact read-only intents and reconstructs their coordinate" $ do
       trace <- newIORef []
-      let boundary = recordingBoundary trace (TeardownProviderCompleted canonicalAbsent)
+      let boundary = recordingObservingBoundary trace canonicalAbsent
           request = ObserveRegisteredStack stackRef
       observed <-
         dispatchRegisteredProviderObservation
@@ -124,9 +130,9 @@ lifecycleTeardownProviderDispatchSuite =
     it "rejects mutation intents at observation keys before dispatch" $ do
       calls <- newIORef (0 :: Int)
       let boundary =
-            TeardownProviderBoundary $ \_ _ -> do
+            TeardownProviderBoundary $ \_ intent -> do
               modifyIORef' calls (+ 1)
-              pure (TeardownProviderCompleted "unexpected")
+              pure (TeardownProviderCompleted (observedOutcome intent "unexpected"))
           destroy = DestroyRegisteredStack stackRef providerRevision stackConfig
       dispatched <-
         dispatchRegisteredProviderObservation
@@ -146,7 +152,7 @@ lifecycleTeardownProviderDispatchSuite =
           mutationKey = keyFor ProviderRegisteredMutation
       applied <-
         dispatchRegisteredProviderMutation
-          (fixedBoundary (TeardownProviderCompleted "provider read-back satisfied"))
+          (appliedBoundary "provider read-back satisfied")
           mutationKey
           destroy
       lost <-
@@ -159,9 +165,95 @@ lifecycleTeardownProviderDispatchSuite =
         `shouldBe` Right
           (RegisteredTargetMutationResponseLost "connection closed after submit")
 
+    -- Sprint 4.97.  These are the arms the sprint exists for.  Before it, the
+    -- client rebuilt its result from the intent it had *sent* — always
+    -- `ProviderIntentExecutionObserved` at the request's own coordinate — so
+    -- the adapter's coordinate-mismatch and result-kind refusals compared a
+    -- value against itself and could not fire from any dispatch.  They were
+    -- unit-tested with hand-built values, which is exactly why that survived
+    -- review: the pure decoder was covered and the path feeding it was not.
+    it "carries the execution kind from the wire, so a wrong kind refuses" $ do
+      let observe = ObserveRegisteredStack stackRef
+          destroy = DestroyRegisteredStack stackRef providerRevision stackConfig
+          observationKey = keyFor ProviderDecisionObservation
+          mutationKey = keyFor ProviderRegisteredMutation
+
+      -- An observation lane answered with a mutation kind is refused, naming
+      -- the kind it received.
+      appliedToObservation <-
+        dispatchRegisteredProviderObservation
+          (appliedBoundary "applied on an observation lane")
+          observationKey
+          observe
+      appliedToObservation
+        `shouldBe` Left
+          (ProviderDispatchObservationResultKind ProviderExecutionAppliedKind)
+
+      satisfiedToObservation <-
+        dispatchRegisteredProviderObservation
+          (alreadySatisfiedBoundary "already satisfied on an observation lane")
+          observationKey
+          observe
+      satisfiedToObservation
+        `shouldBe` Left
+          ( ProviderDispatchObservationResultKind
+              ProviderExecutionAlreadySatisfiedKind
+          )
+
+      -- And a mutation lane answered with an observation is refused too.
+      observedToMutation <-
+        dispatchRegisteredProviderMutation
+          (observingBoundary "observed on a mutation lane")
+          mutationKey
+          destroy
+      observedToMutation
+        `shouldBe` Left
+          (ProviderDispatchMutationResultKind ProviderExecutionObservedKind)
+
+    -- Sprint 4.97.  A destroy that ran and a destroy that found nothing already
+    -- gone stop being the same answer.  This boundary flattened them into
+    -- `RegisteredTargetMutationApplied` a second time, after the Authority's
+    -- wire had already flattened them once, so carrying the kind on the
+    -- response would have bought nothing without this arm.
+    it "distinguishes a mutation that ran from one that found nothing to do" $ do
+      let destroy = DestroyRegisteredStack stackRef providerRevision stackConfig
+          mutationKey = keyFor ProviderRegisteredMutation
+      applied <-
+        dispatchRegisteredProviderMutation
+          (appliedBoundary "destroy ran")
+          mutationKey
+          destroy
+      alreadySatisfied <-
+        dispatchRegisteredProviderMutation
+          (alreadySatisfiedBoundary "nothing to destroy")
+          mutationKey
+          destroy
+      applied `shouldBe` Right RegisteredTargetMutationApplied
+      alreadySatisfied
+        `shouldBe` Right
+          (RegisteredTargetMutationAlreadySatisfied "nothing to destroy")
+      applied `shouldSatisfy` (/= alreadySatisfied)
+
+    -- Sprint 4.97.  The coordinate now comes from the response, so a wire that
+    -- answers about a different resource is visible instead of being silently
+    -- replaced by the one we asked about.
+    it "keeps the coordinate the wire answered with, not the one it was sent" $ do
+      let observe = ObserveRegisteredStack stackRef
+          other = ObserveRegisteredStack otherStackRef
+          observationKey = keyFor ProviderDecisionObservation
+      observed <-
+        dispatchRegisteredProviderObservation
+          (observingBoundaryFor other "evidence about another stack")
+          observationKey
+          observe
+      fmap executionResultCoordinate observed
+        `shouldBe` Right (providerIntentCoordinate other)
+      fmap executionResultCoordinate observed
+        `shouldSatisfy` (/= Right (providerIntentCoordinate observe))
+
     it "admits only the three registered teardown mutation constructors" $ do
       let mutationKey = keyFor ProviderRegisteredMutation
-          boundary = fixedBoundary (TeardownProviderCompleted "unused")
+          boundary = appliedBoundary "unused"
           forbidden = ReconcileRegisteredStack stackRef providerRevision stackConfig
       refused <- dispatchRegisteredProviderMutation boundary mutationKey forbidden
       refused
@@ -202,7 +294,7 @@ lifecycleTeardownProviderDispatchSuite =
         `shouldBe` Left (ProviderDispatchObservationRefused "generation fenced")
 
     it "admits every registered-target executor's intents at its own purposes" $ do
-      let boundary = fixedBoundary (TeardownProviderCompleted "unused")
+      let boundary = observingBoundary "unused"
           admit executor = do
             let intents = executorIntents executor
             decision <-
@@ -239,18 +331,70 @@ lifecycleTeardownProviderDispatchSuite =
       source `shouldNotContain` "dispatchAuthenticatedProviderIntentFresh"
       source `shouldNotContain` "getPOSIXTime"
 
-recordingBoundary
-  :: IORef [(Text, ProviderIntent)]
-  -> TeardownProviderBoundaryResult
-  -> TeardownProviderBoundary IO
-recordingBoundary trace result =
+fixedBoundary :: TeardownProviderBoundaryResult -> TeardownProviderBoundary IO
+fixedBoundary result = TeardownProviderBoundary (\_ _ -> pure result)
+
+-- | Sprint 4.97.  A fixture answers with the coordinate the intent carries, as
+-- the Authority now does.
+--
+-- Before this sprint the client rebuilt its result from the intent it had sent,
+-- so every fixture agreed with the adapter by construction and the adapter's
+-- coordinate check was a value compared against itself.  Building the outcome
+-- here from the intent keeps the fixtures honest about the *shape* of the wire
+-- while leaving a mismatched coordinate constructible on purpose, which is what
+-- makes the refusal arms testable.
+observedOutcome :: ProviderIntent -> Text -> ProviderExecutionOutcome
+observedOutcome intent evidence =
+  providerExecutionOutcome
+    (ProviderIntentExecutionObserved (providerIntentCoordinate intent) evidence)
+
+appliedOutcome :: ProviderIntent -> Text -> ProviderExecutionOutcome
+appliedOutcome intent evidence =
+  providerExecutionOutcome
+    (ProviderIntentExecutionApplied (providerIntentCoordinate intent) evidence)
+
+observingBoundary :: Text -> TeardownProviderBoundary IO
+observingBoundary evidence =
+  TeardownProviderBoundary
+    (\_ intent -> pure (TeardownProviderCompleted (observedOutcome intent evidence)))
+
+appliedBoundary :: Text -> TeardownProviderBoundary IO
+appliedBoundary evidence =
+  TeardownProviderBoundary
+    (\_ intent -> pure (TeardownProviderCompleted (appliedOutcome intent evidence)))
+
+alreadySatisfiedOutcome :: ProviderIntent -> Text -> ProviderExecutionOutcome
+alreadySatisfiedOutcome intent evidence =
+  providerExecutionOutcome
+    ( ProviderIntentExecutionAlreadySatisfied
+        (providerIntentCoordinate intent)
+        evidence
+    )
+
+alreadySatisfiedBoundary :: Text -> TeardownProviderBoundary IO
+alreadySatisfiedBoundary evidence =
+  TeardownProviderBoundary
+    ( \_ intent ->
+        pure (TeardownProviderCompleted (alreadySatisfiedOutcome intent evidence))
+    )
+
+-- | Answer about a resource other than the one that was asked about.
+--
+-- Sprint 4.97: constructible only because the coordinate now travels on the
+-- response.  While the client re-synthesised it from the request, this fixture
+-- could not be written at all.
+observingBoundaryFor :: ProviderIntent -> Text -> TeardownProviderBoundary IO
+observingBoundaryFor answered evidence =
+  TeardownProviderBoundary
+    (\_ _ -> pure (TeardownProviderCompleted (observedOutcome answered evidence)))
+
+recordingObservingBoundary
+  :: IORef [(Text, ProviderIntent)] -> Text -> TeardownProviderBoundary IO
+recordingObservingBoundary trace evidence =
   TeardownProviderBoundary $ \dispatchKey intent -> do
     let submissionKey = providerDispatchSubmissionKey dispatchKey
     modifyIORef' trace (++ [(clientSubmissionKeyText submissionKey, intent)])
-    pure result
-
-fixedBoundary :: TeardownProviderBoundaryResult -> TeardownProviderBoundary IO
-fixedBoundary result = TeardownProviderBoundary (\_ _ -> pure result)
+    pure (TeardownProviderCompleted (observedOutcome intent evidence))
 
 keyFor :: ProviderDispatchPurpose -> ProviderDispatchKey
 keyFor = mustRight . mkProviderDispatchKey operationId
@@ -266,6 +410,9 @@ operationText = "lifecycle-operation/0123456789abcdef"
 
 stackRef :: ProviderStackRef
 stackRef = mustRight (mkProviderStackRef "aws-eks")
+
+otherStackRef :: ProviderStackRef
+otherStackRef = mustRight (mkProviderStackRef "aws-test")
 
 providerRevision :: ProviderRevision
 providerRevision = mustRight (mkProviderRevision 1)

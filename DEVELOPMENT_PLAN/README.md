@@ -25,21 +25,63 @@ dependency licenses the deviation ([Standard N.2](development_plan_standards.md#
 
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
-| 1 | `0.34` | 0 | Next | — |
-| 2 | `4.95` | 4 | Parked | — |
-| 3 | `4.96` | 4 | Parked | — |
-| 4 | `4.97` | 4 | Parked | — |
-| 5 | `4.98` | 4 | Parked | — |
-| 6 | `5.47` | 5 | Parked | — |
-| 7 | `5.48` | 5 | Parked | — |
-| 8 | `7.41` | 7 | Parked | — |
-| 9 | `6.5` | 6 | Parked | `7.41` |
-| 10 | `7.42` | 7 | Parked | — |
+| 1 | `4.98` | 4 | Next | — |
+| 2 | `5.47` | 5 | Parked | — |
+| 3 | `5.48` | 5 | Parked | — |
+| 4 | `7.41` | 7 | Parked | — |
+| 5 | `6.5` | 6 | Parked | `7.41` |
+| 6 | `7.42` | 7 | Parked | — |
 
-**Resume at Sprint `0.34`: place the doctrine before the code sprints that cite it.** It is first
-because every row below it is a Standard-P surface whose sprint block must name the rule it
-implements, and because three phase headers currently describe reopens that closed and one describes
-a reclose that never happened. It changes no production composition.
+**Resume at Sprint `4.98`: absence minted from a grep.** The strongest absence type in the tree is
+reconstituted by string equality against a literal a substring match produced, and the backend that
+substring was read from was hydrated from the local checkpoint — so the claim is about local state
+throughout.
+
+**Sprint `4.97` is Done (2026-09-13), and two of its four deliverables closed narrower than
+authored.** The provider wire now carries the execution kind and the coordinate, so the two refusal
+arms that compared a value against itself can fire, and a destroy that ran is no longer identical to
+a destroy that found nothing. The stack-reader wire is open and complete manifest evidence
+round-trips — but the production reader still answers observation-only on every arm, so the manifest
+authority is *decidable* and still unreached. The retirement authorization payload is deliberately
+not landed: nothing would consume it, and an inert device inside the sprint that repairs inert
+devices is self-defeating.
+
+**The doctrine correction that sprint was told to write was itself false.** It said the decision's
+provider observation hydrates from the checkpoint, "so the two columns are one witness read twice".
+The wired observation queries AWS directly and the checkpoint-hydrated observers have no production
+caller at all. The real coupling is one row lower — the destroy arm's own pre-apply observation runs
+in a checkpoint-hydrated scratch, so a destroy whose checkpoint will not load reports its stack
+absent *from local state*. Both the doctrine and the sprint's own deliverable text are corrected in
+place and dated.
+
+**Sprint `4.96` is Done (2026-09-12): the mechanism behind the 2026-09-08 orphan is closed.** A
+request now runs on its own thread and the deadline bounds only the wait for it, so an expiry
+answers the peer while the effect continues to its own commit; the encrypted backend commits
+collected scratch on the exception route in all three of its transactions, before the scratch is
+released. The part the deliverable's wording did not reach is the one the defect depended on: an
+interrupted action could only be spelled `Nothing`, which is what a *success* looks like, and
+`Nothing` is the single input that authorizes retiring the Authority's only record of a stack.
+
+**Sprint `4.95` is Done (2026-09-12) and the live campaign can move again.** The drain commit's
+refusal now names which of its three deadline bounds refused and carries the bearer expiry it
+compared against, and the lease is derived from the bounded work a drain commit issues rather than
+from a ceiling no credential can back. The account that blamed ordering is corrected in place: it
+ran the inference backwards, and the live refusal's own numbers disprove it.
+
+**Sprint `0.34` is Done and Phase `0` stays closed (2026-09-12).** It changed no production
+composition. What it had to correct is worth carrying: the overview's phase table still recorded
+Phases `4`, `5` and `7` as reclosed while this queue carried eight new rows against them; the root
+`README.md` measured its governed-document count over a non-recursive glob and so dropped a governed
+document the recursive gate counts; and the 2026-09-12 correction to the renderer-determinism
+attribution had itself breached § 12.2 rule 1 by naming the two functions that do not run the check
+and never the one that does.
+
+**The counterexample disposition index below is complete, and it could not have been scripted.** All
+**219** identifiers carry a disposition: **6** open, **181** closed by repair, **32** closed by
+succession. A keyword heuristic marks at least one identifier open that a phase file records as
+falsified and closed, and the distinction that decides most rows — *no repair landed* against
+*repair landed, live re-crossing pending* — lives only in the surrounding narrative. Six rows first
+read as open were re-read adversarially; five moved and one did not.
 
 **A four-day EKS leak reopened Phases `4`, `5` and `7` (2026-09-12).** A cluster created on
 2026-09-08 billed until an operator deleted it by hand, and the cascade that should have removed it
@@ -72,13 +114,30 @@ the live half of Sprints `7.39` and `7.40`.
 The cycle still exits 1, on a defect that only became reachable because they landed. The drain
 commit asks for a lease of exactly `maximumEksDrainLifetimeSeconds`, 900 seconds, while
 `mkEksDrainSession` also requires the deadline not to outlive the Provider-issued bearer that backs
-it — and that bearer is signed before the deadline is computed, so a lease equal to the ceiling can
-never satisfy both. The arithmetic makes it unsatisfiable rather than unlucky. Stable counterexample
-`CASCADE-QUALIFICATION-EKS-DRAIN-LEASE-EXCEEDS-BEARER-EXPIRY-2026-09-12` owns it, **no repair is
-landed**, and the reason is the same one the campaign has applied throughout: how long a live EKS
-drain is authorized for is a Standard-P surface, and the repair needs a measurement this run did not
-capture. The refusal carries `now` and `deadline` but not the bearer's expiry. Widening it to carry
-that expiry is the cheapest next step. Sprint `6.5` owns the counterexample and the evidence.
+it. ~~That bearer is signed before the deadline is computed, so a lease equal to the ceiling can
+never satisfy both.~~ Stable counterexample
+`CASCADE-QUALIFICATION-EKS-DRAIN-LEASE-EXCEEDS-BEARER-EXPIRY-2026-09-12` owns it.
+
+**Sprint `4.95` is Done and the account above is corrected in place (2026-09-12, Standard C).** The
+struck sentence runs the inference backwards and is retired rather than deleted, because it is the
+reading a reader is most likely to repeat: the mint happens *later* than the clock read the deadline
+is computed from, and a later mint yields a later expiry, which relaxes the bearer bound. The
+observed refusal proves ordering contributed nothing — `deadline - now` is exactly the lease, so
+both clock reads returned the same second. What is true needs no ordering: both comparisons are
+strict, so a deadline equal to the ceiling passes the ceiling and only the bearer bound can have
+failed; and it must fail for any lease at the ceiling, because the Provider's own mint refuses a
+bearer whose expiry exceeds the same 900-second bound measured from a clock read no earlier than
+this one.
+
+The repair is two things, and the second is the one that unblocks the campaign. The three deadline
+bounds now have three refusals instead of two, and the bearer arm carries the expiry it compared
+against, which is the measurement instrument the next live cycle needs. And the lease stops being
+the ceiling: it is derived from the bounded work a drain commit issues before its first mutation —
+six ephemeral calls at the ephemeral client's own per-invocation bound, plus one call's slack — with
+`mkEksDrainLeaseSeconds` refusing anything shorter, so the derivation is enforced rather than merely
+used. Nothing clamps; a lease above what the bearer can back still refuses, and now says so. The
+credential's own lifetime remains unmeasured, which is exactly what the widened refusal exists to
+capture.
 
 **Sprint `7.40` is Done and Phase 7 recloses (2026-09-11).** The ephemeral Kubernetes client's
 machinery has one statement, held there by a gate rather than by a sentence.
@@ -248,8 +307,11 @@ fails at HEAD, and failed before Sprint `2.134`, on `uses typed-process at the l
 boundary`, because the library stanza carries `process ^>=1.6.19.0`. Nothing runs that suite, which
 is exactly the condition Sprint `5.45` exists to remove.
 
-Every sprint in this session's queue — `2.134`, `4.92`–`4.94`, `5.44`–`5.46`, `7.39`, `7.40` — is
-Done, and Phases 2, 4, 5 and 7 have reclosed. Sprint `6.5` is the only row left.
+Every sprint in that session's queue — `2.134`, `4.92`–`4.94`, `5.44`–`5.46`, `7.39`, `7.40` — is
+Done, and Phases 2, 4, 5 and 7 reclosed on it. **Corrected 2026-09-12 by Sprint `0.34` (Standard C):**
+the sentence that followed — "Sprint `6.5` is the only row left" — was true for one day. The
+2026-09-12 leak analysis reopened Phases `4`, `5` and `7` and opened eight code sprints; the current
+queue is the table under [Resume Here](#resume-here) and nothing else.
 
 **Live cascade-qualification cycles are admissible again, and one has run.** They were suspended
 because every cycle reproduced the same wedge at roughly an hour each; Sprint `7.39` repaired the
@@ -13169,9 +13231,11 @@ long-lived cross-substrate shared infrastructure retained by design) live in
 [Standard P](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)
 requires work opened by a live counterexample to carry a stable name and a repository-owned
 reproducer. It does not require a disposition, and without one a closed counterexample and an open
-one read alike. Measured 2026-09-12: `DEVELOPMENT_PLAN/` names **217** distinct counterexample
-identifiers and **two** frozen fixture families exist on disk, `LCPC-2026-07-11` and
-`TEARDOWN-2026-08-15`, under `test/qualification/`.
+one read alike. Measured 2026-09-12 after this section registered two identifiers of its own:
+`DEVELOPMENT_PLAN/` names **219** distinct counterexample identifiers, and **two** frozen fixture
+families exist on disk, `LCPC-2026-07-11` and `TEARDOWN-2026-08-15`, under `test/qualification/`.
+The gap between those numbers is the finding, not an omission: a stable name is cheap and a frozen
+reproducer is not, so all but two of these identifiers rest on a narrative in this plan.
 
 A disposition is one of three. **Open** — the defect it names is reachable in the current revision
 and no repair is landed. **Closed by repair** — a named sprint landed the fix and the reproducer
@@ -13180,12 +13244,225 @@ cycle in the same campaign superseded it, and no separate repair was owed.
 
 | Counterexample | Disposition | Owner |
 |---|---|---|
-| `CASCADE-QUALIFICATION-EKS-DRAIN-LEASE-EXCEEDS-BEARER-EXPIRY-2026-09-12` | Open — no repair landed; the refusal does not carry the bearer expiry the repair turns on | Sprint `4.95` |
-| `CASCADE-AWS-EKS-OLDER-GENERATION-CHECKPOINTLESS-ORPHAN-2026-09-08` | Open — the named resources were cleared by hand on 2026-09-12; the mechanism that orphaned them is unchanged | Sprints `4.96`, `7.41` |
+| `CASCADE-QUALIFICATION-EKS-DRAIN-LEASE-EXCEEDS-BEARER-EXPIRY-2026-09-12` | Closed by repair — Sprint `4.95` split the collapsed refusal so the bearer bound names itself and carries the expiry it compared against, and derived the lease from measured drain work instead of the ceiling; live re-crossing pending | — |
 | `CREATE-INTERRUPTED-2026-09-08` | Open — registered 2026-09-12; its fixture family is not yet on disk | Sprint `7.41` |
-| `CHECKPOINT-RETIREMENT-2026-09-07` | Closed by repair, registered retroactively 2026-09-12 | — |
+| `CASCADE-AWS-EKS-OLDER-GENERATION-CHECKPOINTLESS-ORPHAN-2026-09-08` | Open — Sprint `4.96` closed the half that discarded the record, so a cancelled create now commits what it built; nothing yet names the resources a create is about to make | Sprint `7.41` |
+| `TLS-RETENTION-SELECTED-RESTORE-SESSION-PRECLEAN-FAILED-2026-09-04` | Open — Only a value-free diagnostic projection landed with all preclean behavior explicitly unchanged, and the arm re-crossed live on 2026-09-08 where the record still calls it open | Sprint `6.5` |
 | `TEARDOWN-2026-08-15` | Open — both deployment-qualification rows below are `pending` | Sprint `6.5` |
 | `LCPC-2026-07-11` | Open — both deployment-qualification rows below are `pending` | Sprint `8.12` |
+| `CASCADE-QUALIFICATION-EPHEMERAL-KUBECTL-TOKEN-FIFO-UNSERVED-2026-09-11` | Closed by repair — Sprint 7.39 is Done with a reproducer failing on the FIFO and passing on the private-file credential, and the 2026-09-12 live cycle authenticated to an EKS API server for the first time | — |
+| `CASCADE-QUALIFICATION-EKS-DRAIN-UID-KUBECTL-TIMEOUT-2026-09-11` | Closed by succession — Its --raw repair was refuted live, the record hands the real cause to the successor FIFO counterexample, and the 2026-09-12 cycle shows the UID-unobservable refusal zero times | — |
+| `CASCADE-QUALIFICATION-TLS-SESSION-CLEANUP-CAUSE-DISCARDED-2026-09-10` | Closed by repair — Plan says it is closed code-locally by exact session-close classification with a 42/42 focused group; medium because the next live cycle never exercised it, so it is not live-closed | — |
+| `CASCADE-QUALIFICATION-PROVIDER-WORKER-REPLAY-LIMIT-MIGRATION-UNADMITTED-2026-09-10` | Closed by repair — Codec v13 admits v2-through-v12 capacity widening, and live recovery-provider-worker-replay-envelope-v13 live-closes it with Provider Worker 1/1 Ready | — |
+| `CASCADE-QUALIFICATION-PROVIDER-WORKER-REPLAY-ENVELOPE-UNDERSIZED-2026-09-10` | Closed by repair — The capacity-80/64 KiB envelope landed with a 39/39 regression and ran live on the v13 cycle to a Ready Provider Worker, though no line says live-closed for this exact id | — |
+| `CASCADE-QUALIFICATION-PROVIDER-WORKER-PLAIN-RESPONSE-DIAGNOSTIC-LOST-2026-09-10` | Closed by repair — The total status/body classifier landed at 27/27 and the live recovery-provider-worker-plain-response-diagnostic cycle preserved the exact outer refusal, which the record says closes it | — |
+| `CASCADE-QUALIFICATION-PROVIDER-EVIDENCE-REFUSAL-UNDIAGNOSABLE-2026-09-10` | Closed by repair — Each evidence rule now names itself, and live recovery-stack-reader-dns-zone returned the measured 4649-over-4096 cause, which the record says live-closes it | — |
+| `CASCADE-QUALIFICATION-EKS-CLIENT-AUTH-EVIDENCE-OVER-BOUND-2026-09-10` | Closed by repair — The per-intent derived evidence bound landed, live recovery-eks-client-auth-evidence-bound live-closed it on the Provider side, and a later cycle proved both halves end to end | — |
+| `CASCADE-QUALIFICATION-AWS-STACK-READER-SCOPE-DNS-ZONE-ERASED-2026-09-10` | Closed by repair — ScopeWire advanced to v2 carrying the hosted zone (12/12 focused) and live recovery-stack-reader-dns-zone made the stack-reader read-back succeed, which the record calls live-closed | — |
+| `CASCADE-QUALIFICATION-AUTHORITY-EVIDENCE-BOUND-DUPLICATED-2026-09-10` | Closed by repair — The duplicated 4096-character rule became one shared total function (12/12 focused) and live recovery-session-cleanup-cause live-closed it with the 409 gone | — |
+| `CASCADE-QUALIFICATION-STACK-READER-ROLE-IDENTITY-MISMATCH-2026-09-09` | Closed by repair — Reader-split correction landed with 15/15 and 10/10 focused groups plus a test naming it closed; live recovery-stack-reader-role-identity proved aws-eks/observe succeeds | — |
+| `CASCADE-QUALIFICATION-RECOVERY-RKE2-SYSTEMD-MARKER-INCOMPLETE-2026-09-09` | Closed by repair — Canonical systemd unit-file marker corrected with a direct regression (local-RKE2 31/31); cycle recovery-rke2-marker-corrected then advanced past the corrected install observation | — |
+| `CASCADE-QUALIFICATION-RECOVERY-PRIMARY-OUTCOME-CONFLICT-2026-09-09` | Closed by repair — Recovery-primary correction landed code-locally with a 1/1 regression still pinned in LifecycleTeardownCascadeCandidate.hs, and the corrected live rerun passed that attachment boundary | — |
+| `CASCADE-QUALIFICATION-RECOVERY-PLANE-DNS-ZONE-SCOPE-LOSS-2026-09-09` | Closed by repair — Closed code-locally by RecoveryPlaneIdentityWire v2 with 19/19 focused validation; live recovery-recovery-plane-dns-zone-scope then succeeded under the exact zone-bearing scope | — |
+| `CASCADE-QUALIFICATION-RECOVERY-INITIAL-FAILURE-DIAGNOSTIC-LOST-2026-09-09` | Closed by repair — The plan states the diagnostic-loss counterexample is closed code-locally (6/6 focused) and live recovery-component-diagnostic reported exact component/cluster_base:missing, live-closing it | — |
+| `CASCADE-QUALIFICATION-RECOVERY-HOST-PREPARED-READBACK-MISMATCH-2026-09-09` | Closed by repair — Host-intent terminal-retirement correction landed with 13/13 and 5/5 focused regressions; live replay recovery-host-intent-retired live-closed it without overwriting either failure | — |
+| `CASCADE-QUALIFICATION-RECOVERY-DESCRIPTOR-RETENTION-WINDOW-2026-09-09` | Closed by repair — Sprint 6.5 landed a code-local descriptor-retention correction with a named 1/1 regression and the next live replay returned LifecycleCleanupReportObserved, explicitly live-closing it | — |
+| `CASCADE-QUALIFICATION-RECOVERY-CLUSTER-BASE-MISSING-2026-09-09` | Closed by repair — The Establish-time RecoveryPlaneIdentity reconstruction landed, and live recovery-establish-identity had all three recovery nodes succeed, live-closing it | — |
+| `CASCADE-QUALIFICATION-FRESH-DECLARED-LEASE-RUNNER-LOST-2026-09-09` | Closed by repair — The attach-before-claim correction landed with a both-orders kernel regression, and live recovery-primary-activation recorded CleanupPrimarySucceeded, live-closing it | — |
+| `CASCADE-QUALIFICATION-EKS-DRAIN-RECOVERY-MISSING-WIRE-2026-09-09` | Closed by repair — Authenticated transport now preserves EksDrainIntentWireRecoveryMissing as the typed recovery-missing value, and the live cycle proved it reaching the create-on-missing arm | — |
+| `CASCADE-QUALIFICATION-CREATION-BINDING-SCOPE-OPERATION-MISMATCH-2026-09-09` | Closed by repair — Disjoint creation/cleanup scope readers landed code-locally and live recovery-creation-binding-scope crossed the former lifecycle-operation mismatch at aws-eks-subzone/observe | — |
+| `CASCADE-QUALIFICATION-AWS-EKS-CHECKPOINT-NO-MUTATION-READBACK-2026-09-09` | Closed by repair — Recovery now re-observes the checkpoint pair and closes directly on an exact current primary (11/11 focused), and the next live cycle proved that checkpoint correction | — |
+| `CASCADE-QUALIFICATION-AWS-DNS-ZONE-RESOLUTION-MISSING-2026-09-09` | Closed by repair — The zone resolver and subzone-ref projection landed with an 11/11 adapter regression, and live recovery-aws-dns-zone-resolution crossed both former typed zone-missing refusals | — |
+| `TLS-LEGACY-RECOVERY-V3-IMMUTABLE-COLLISION-2026-09-08` | Closed by repair — The authority-v1 lane split landed at 4591 and the live pre-1 at 4617 explicitly live-closes it, with the disjoint-lane rule pinned at ControlPlaneTlsRetentionEndpoint.hs:1522 | — |
+| `TLS-LEGACY-RECOVERY-V2-IMMUTABLE-COLLISION-2026-09-08` | Closed by repair — Closure at 4464 landed the legacy-recovery collision outbox on the code-owned surface at 27/27 and 32/32, and the next live run raised the distinct successor at 4500 | — |
+| `TLS-LEGACY-RECOVERY-V2-COLLISION-CIPHERTEXT-AUTHENTICATION-FAILED-2026-09-08` | Closed by repair — Closure at 4516 landed the fixed version-3 successor pending state, pinned by tests named for the counterexample in both TLS retention unit suites | — |
+| `TLS-HOME-REWRAP-TRANSIT-CIPHERTEXT-AUTHENTICATION-FAILED-2026-09-08` | Closed by repair — Closure at 4405 landed the crash-safe pre-outbox version-2 recovery transition, whose own live run then raised the distinct immutable-collision successor at 4454 | — |
+| `TLS-AUTHORITY-RETAIN-READBACK-MISMATCH-SELECTED-AGENT-UNAVAILABLE-2026-09-08` | Closed by repair — Sprint 6.5's genesis-only legacy-observation fix landed in retainPublicEdgeTlsWorkflow and live-closed the retain read-back and restore arms on 2026-09-08; the residual arm passed to a successor | — |
+| `TARGET-AGENT-REPLAY-V9-CAPACITY-DRIFT-2026-09-08` | Closed by repair — The record says that counterexample is closed code-locally by replay codec v10 admitting v2-v9 capacity widening, and the corrected live rerun proves that barrier | — |
+| `CASCADE-QUALIFICATION-EAGER-EKS-KUBECONFIG-BEFORE-CANDIDATE-2026-09-08` | Closed by repair — NativeValidationKubeconfigMode landed code-locally and the corrected live replay reached the private candidate body, where the record states the eager-kubeconfig counterexample is live-closed | — |
+| `CASCADE-QUALIFICATION-BOOTSTRAP-PRECEDES-RESIDUE-RECOVERY-2026-09-08` | Closed by repair — CascadeQualificationBootstrapMode landed with both selector regressions 1/1 and recovery-prefixed live cycles skipped fresh AWS provisioning; the one re-exposure was a label-selection error | — |
+| `CASCADE-QUALIFICATION-AUTHORITY-BACKUP-REPLAY-ENVELOPE-UNDERSIZED-2026-09-08` | Closed by repair — Authority Backup was widened to 1036 retained entries through lossless codec v12 (37/37 focused) and the live recovery rerun accepted registration past request 19, live-closing it | — |
+| `CASCADE-CANDIDATE-PRODUCTION-DESCRIPTOR-MISSING-NOT-CREATE-2026-09-08` | Closed by repair — observeOrCreate now admits the exact CleanupRunDescriptorMissing answer with an observe-before-create regression 1/1, and the next live replay records the counterexample live-closed | — |
+| `CASCADE-AWS-EKS-PROVIDER-CHECKPOINT-STACK-DESCRIPTOR-MISSING-2026-09-08` | Closed by repair — Sprint 4.91 [Done] made checkpoint custody use the registry identity with an exhaustive lookup regression, and the corrected cascade recovery live-closed that lookup refusal | — |
+| `CASCADE-AWS-EKS-CHECKPOINT-AWS-TRUTH-DIVERGENCE-2026-09-08` | Closed by succession — Recorded as a diagnostic hypothesis that the corrected cascade recovery falsified and closed, with the checkpointless-orphan counterexample taking the actual boundary and no repair owed | — |
+| `AWS-EKS-TEST-RECONCILE-IAM-NAME-COLLISION-2026-09-08` | Closed by succession — Later Sprint-6.5 cycles re-attributed the same 409 EntityAlreadyExists terminal to CASCADE-AWS-EKS-OLDER-GENERATION-CHECKPOINTLESS-ORPHAN-2026-09-08, which owns the actual boundary | — |
+| `TLS-RETENTION-AUTHORITY-SOURCE-READBACK-MISMATCH-2026-09-07` | Closed by repair — Closure at 4149 appended the payload-free LegacySourceMissing arm and the live run at 4219 live-proves the correction, pinned at ControlPlaneTlsRetentionEndpoint.hs:1480 | — |
+| `TLS-HOME-REWRAP-TRANSIT-UNWRAP-UNAVAILABLE-2026-09-07` | Closed by repair — Closure at 4310 landed the exhaustive value-free TlsDekTransitFailure classification 1/1 and the live run at 4330 selected the request-bad-request successor | — |
+| `TLS-HOME-REWRAP-TRANSIT-BAD-REQUEST-2026-09-07` | Closed by repair — Closure at 4356 mapped Vault's pinned decrypt grammar onto twelve finite value-free causes 1/1 and the live run at 4376 selected the ciphertext-authentication-failed successor | — |
+| `TLS-HOME-REWRAP-TARGET-MATERIALIZATION-REFUSED-2026-09-07` | Closed by repair — Closure at 4232 landed the closed home-rewrap runtime refusal vocabulary 1/1 and the live pre-1 at 4260 selected the refined dek-exchange-failed successor token | — |
+| `TLS-HOME-REWRAP-DEK-EXCHANGE-FAILED-2026-09-07` | Closed by repair — Closure at 4269 landed the exhaustive value-free TlsDekExchangeRefusalCause projection 1/1 and the next live pre-1 selected the successor transit-unwrap arm named at 4305 | — |
+| `FIRST-RECONCILE-DETERMINISTIC-IDENTITY-NONEMPTY-INVENTORY-2026-09-07` | Closed by repair — Closed code-locally by the signed-intent plan-binding install fold with unit pins, then the exact live pre-1 rerun proved it across all five compiled first-reconcile members | — |
+| `CHECKPOINT-RETIREMENT-2026-09-07` | Closed by repair (unit-pinned; no frozen superseded reproducer) — registered retroactively 2026-09-12; a correct typed device landed 2026-09-07 and the six-case `checkpointRetirementSuite` pins the replacement | — |
+| `AUTHORITY-BACKUP-POST-ESTABLISHMENT-SERVICE-ROUTING-2026-09-07` | Closed by repair — StepAuthorityBackupServiceRoutingReady landed with a 1/1 stable-counterexample proof and a named unit test, and the 19:20 live pre-1 crossed the new routing barrier | — |
+| `AUTHORITY-BACKUP-GENESIS-NONEMPTY-INVENTORY-2026-09-07` | Closed by repair — The record says the counterexample is closed code-locally by the install-attempt-by-inventory fold, and the 14:34 live pre-1 crossed the former nonempty-inventory refusal | — |
+| `AUTHORITY-BACKUP-GENESIS-INITIAL-CLEANUP-JOURNAL-TRANSITION-2026-09-07` | Closed by repair — The journal now admits initial cleanup only for GenesisBackupKind, and the 15:35 live pre-1 explicitly live-closes this Genesis journal counterexample | — |
+| `AUTHORITY-BACKUP-FRESH-ROOT-STORE-NOT-READY-2026-09-07` | Closed by repair — Sprint 6.5 landed the AuthorityBackupReadinessStage ordering correction with focused regressions, and the 13:30 live pre-1 crossed the former Authority Backup rollout barrier | — |
+| `TLS-SELECTED-AGENT-ENDPOINT-RESPONSE-COLLAPSED-TO-HTTP-OTHER-2026-09-06` | Closed by repair — A route-indexed closed endpoint classification landed with a named 1/1 regression, and the live pre-1 replay states This live-closes that counterexample | — |
+| `TLS-RETENTION-VERIFY-MISMATCH-BEFORE-VSCODE-DELETE-2026-09-06` | Closed by repair — Sprint 6.5 landed the three-way TlsTargetVerifyMismatchCause discriminator rendering verify/mismatch/cause, pinned by a test naming the counterexample; only live re-selection stayed pending | — |
+| `REGISTRY-NODEPORT-READBACK-CONNECTION-REFUSED-AFTER-READY-CLEAN-INSTALL-2026-09-06` | Closed by repair — The record calls the bounded read-back retry correction code-local, mutation-proven, and live-closed, with an installed regression bearing the counterexample name | — |
+| `MINIO-REGISTRY-ADMISSION-FRESHNESS-EXHAUSTED-CLEAN-INSTALL-2026-09-06` | Closed by repair — runAnchoredStepOrder now re-observes every distinct expired dependency, pinned by a two-sided regression, and the exact fresh-install replay live-closes this identifier | — |
+| `LIFECYCLE-PROVIDER-ASSUMED-ROLE-ROUTE53-CREATE-DENIED-2026-09-06` | Closed by repair — ProviderRolePolicyOperationScope freezes a two-sided reproducer and the corrected live pre-1 replay closed the Route 53 create denial when the subzone create returned a settled receipt | — |
+| `LIFECYCLE-PROVIDER-ASSUME-ROLE-SESSION-NOT-BOUND-2026-09-06` | Closed by repair — ProviderAssumedRoleSession landed the rank-2 assume-role repair with a frozen unit reproducer and the corrected live pre-1 rerun explicitly live-closes this identifier | — |
+| `HOME-PATRONI-RETAINED-THREE-ORDINAL-RESTORE-NONCONVERGENCE-2026-09-06` | Closed by repair — The live-primary follower-root reset correction is red-before green-after pinned in CliSuite, and the corrected retained-cluster pre-1 replay live-closes it at PostgreSQL 3/3 | — |
+| `AWS-ADMIN-REVISIONED-TARGET-WORKER-INSUFFICIENT-CPU-2026-09-06` | Closed by repair — Phase 6 records the corrected live pre-1 replay closing the one-shot scheduler capacity counterexample after the 250m eviction-floor transfer and its frozen reproducer | — |
+| `AWS-ADMIN-AUTHORIZED-CLEANUP-PROVEN-STATE-TRANSITION-REJECTED-2026-09-06` | Closed by repair — renewalCoreBindingsMatch dropped the false non-empty plan-binding requirement with a frozen 1/1 regression, and the corrected live pre-1 replay explicitly closes it | — |
+| `AUTHORITY-PROVIDER-DISPATCH-RESPONSE-INVALID-2026-09-06` | Closed by repair — Sprint 6.5 landed the 330-second nested Authority server budget plus a value-free response classifier, and the 2026-09-08 live pre-1 confirmed the structured 503 reached the host | — |
+| `TLS-RETAIN-PUBLIC-EDGE-SECRET-UNAVAILABLE-2026-09-05` | Closed by repair — The namespace-observation correction is recorded code-local complete at 2750 and the corrected live pre-1 at 2763 explicitly crosses and live-closes it | — |
+| `REGISTRY-RUNTIME-UNTAGGED-MANIFEST-RETENTION-DISK-PRESSURE-2026-09-05` | Closed by repair — Prodbox.Registry.Retention landed with a fake freezing 177 revisions to 1, and the live pre-1 took the retained store from 52 GiB to 2.9 GiB and host free space to 89 GiB | — |
+| `REGISTRY-GC-UNKNOWN-QUIET-FALSE-SUCCESS-2026-09-05` | Closed by repair — The supported-argv plus exact stderr and marking-record result check landed with an installed refusal reproducer, and the live pre-1 live-closes both Registry counterexamples | — |
+| `REGISTRY-GC-DELETE-PROGRESS-EXCEEDS-STDERR-64K-2026-09-05` | Closed by repair — The two-pass dry-run/delete collector protocol landed with a frozen 178-to-30 partial-mutation fake, and the next live pre-1 live-closes both Registry collector counterexamples | — |
+| `PUBLIC-EDGE-WAIT-TRANSIENT-GATEWAY-DNS-EXIT-2026-09-05` | Closed by repair — The shared PublicEdgeReadinessObservation classifier landed with a transient-then-ready reproducer and the next live pre-1 reached ready-for-external-proof, but no line names it live-closed | — |
+| `PROVIDER-WORKER-PULUMI-YAML-LANGUAGE-PLUGIN-MISSING-2026-09-05` | Closed by repair — The pinned-archive packaging correction installs the YAML language host beside the CLI, and a later live run is recorded as proving the packaged YAML host crossing | — |
+| `PROVIDER-WORKER-PULUMI-STACK-CONFIG-ABSENT-2026-09-05` | Closed by repair — ProviderPulumiConfigProjection made observe-first preview consume both config keys, and the record says the exact live pre-1 closes the missing-stack-config counterexample | — |
+| `PROVIDER-WORKER-PULUMI-EPHEMERAL-STORAGE-EVICTION-256MI-2026-09-05` | Closed by repair — Immutable image-content AWS-provider packaging landed with a frozen old-to-new profile, and the corrected live pre-1 rerun closes the ephemeral-storage barrier at the unchanged 256Mi limit | — |
+| `PROVIDER-WORKER-PACKAGED-AWS-SCHEMA-OOM-176MIB-2026-09-05` | Closed by repair — The 1120Mi envelope landed and the live pre-1 replay explicitly closes the Provider schema-memory/OOM counterexample, though the frozen artifact still validates as PendingLiveReplacement | — |
+| `LIFECYCLE-PROVIDER-ROUTE53-HOSTED-ZONE-CREATE-DENIED-2026-09-05` | Closed by repair — ProviderRoute53Policy froze the nine-action replacement set and the live pre-1 replay crossed the previous CreateHostedZone denial with a settled Provider receipt and zero restarts | — |
+| `CASCADE-QUALIFICATION-HARNESS-CALLER-SERVICEACCOUNT-ABSENT-2026-09-05` | Closed by repair — A keyword read of the earlier keeps-it-open line is wrong: the later exact live rerun closes it after the caller invariant moved to LifecycleAuthorityOperator | — |
+| `CASCADE-QUALIFICATION-CTRL-C-BLOCKED-INDEFINITELY-ON-STM-2026-09-05` | Closed by repair — runStreaming moved onto the process bracket waiting in the calling thread; a red-before/green-after 1/1 process-group regression and the shipped Subprocess.hs code close it | — |
+| `BOOTSTRAP-BROKER-ROLLOUT-TIMEOUT-AFTER-RUNTIME-IMAGE-2026-09-05` | Closed by succession — Diagnosis found no Bootstrap crash and licensed no timeout widening; the nested registry disk-pressure counterexample superseded it and a later run crossed the former scheduling boundary | — |
+| `AWS-QUALIFICATION-REGISTERED-STACK-CREATE-PROVIDER-DISPATCH-TIMEOUT-2026-09-05` | Closed by repair — The 330-second Provider outer-budget correction landed with a 1/1 timeout regression, and the later live pre-1 executed the committed generation, live-closing it | — |
+| `VSCODE-RESTORE-PATRONI-THREE-REPLICA-READINESS-TIMEOUT-2026-09-04` | Closed by repair — Despite two entries saying it was not yet live-closed, the primary-Pod PV anchor correction landed and a later cycle states This live-closes it with Percona ready 3/3 | — |
+| `TLS-STORE-REPOSITORY-FAILED-2026-09-04` | Closed by succession — The requested repository diagnostic landed and the next live cycle's exact put/conflict/bytes-mismatch token registered the successor that carried the actual fix | — |
+| `TLS-RETENTION-RESTORE-SELECTED-AGENT-UNAVAILABLE-2026-09-04` | Closed by succession — Sprint 6.5's log calls it an umbrella and hands each exact arm to registered successors whose repairs are in source, and the corrected live pre-1 crossed VS Code retain/restore | — |
+| `TLS-RETENTION-RESTORE-SECRET-APPLY-HTTP-FORBIDDEN-2026-09-04` | Closed by repair — Recorded as now closed code-locally by an exact graph-owned restore slot with 4/4 and 1/1 regressions; a later live log shows apply reaching content comparison, not 403 | — |
+| `TLS-RETENTION-RESTORE-SECRET-APPLY-FAILED-2026-09-04` | Closed by succession — An apply discriminator landed, then the live rerun refined it into the explicitly named successor TLS-RETENTION-RESTORE-SECRET-APPLY-HTTP-FORBIDDEN-2026-09-04 | — |
+| `TLS-RETENTION-PREPARE-ATTACH-TRANSPORT-UNAVAILABLE-2026-09-04` | Closed by repair — The collapsed token was replaced by an eight-stage attach vocabulary now in source and unit-pinned, and its replacement arm attach-failed/provisional-read-unavailable was observed live on 2026-09-06 | — |
+| `TLS-RETENTION-IMMUTABLE-VERSION-CONFLICT-BYTES-MISMATCH-2026-09-04` | Closed by repair — Durable pending-outbox closure landed and the next corrected live pre-1 crossed TLS Retention without the immutable-version collision | — |
+| `TLS-RETENTION-HOME-REWRAP-SESSION-PREPARE-FAILED-2026-09-04` | Closed by repair — The fifteen-cause session-prepare diagnostic it licensed landed 1/1 at 2261, but 2292 records that the rerun did not live-close it and no later cycle re-selected that arm | — |
+| `HOME-PUBLIC-EDGE-GATEWAY-DNS-WRITE-AUTHORITY-NOT-READY-2026-09-04` | Closed by repair — Repeatedly reselected as open, but the PublicEdge readiness classifier landed and the exact live pre-1 reached ready-for-external-proof, which the phase file states live-closes it | — |
+| `GATEWAY-RESTORE-PEER-SNAPSHOT-HEARTBEAT-EVIDENCE-UNEXPECTED-2026-09-04` | Closed by repair — SignedEmitterRetention reconciles signed retention against the installed semantic checkpoint, and the corrected live pre-1 rerun states this live-closes the identifier | — |
+| `GATEWAY-RESTORE-LEGACY-HEARTBEAT-CADENCE-EXCEEDS-FRESHNESS-WINDOW-2026-09-04` | Closed by repair — Last named open at 2484, but the protocol-level cadence repair then landed and the next live run measured bounded liveness ages under 1.3s against the unchanged 5-second window | — |
+| `GATEWAY-LEGACY-ORDERS-HASH-CHANGE-STRANDS-CONTINUITY-2026-09-04` | Closed by repair — The retained Orders identity was restored to version 1 and the next live pre-1 crossed a full-mode Gateway reconcile without the former HTTP 503 starting, though no sentence names it closed | — |
+| `GATEWAY-LEGACY-LIVENESS-SELF-REPLAY-AFTER-CRASH-2026-09-04` | Closed by repair — A model counterexample against an initial draft: the same cycle made runtime and TLA model refuse inbound self-delivery, with bounded-Gateway focus 47/47 and six legacy invariants passing | — |
+| `GATEWAY-LEGACY-LIVENESS-NO-BACKEND-FRESHNESS-2026-09-04` | Closed by repair — A supervised backend_round_trip worker landed with protocol v2 and the corrected live pre-1 crossed backend-round-trip readiness, which the record says live-closes it | — |
+| `GATEWAY-LEGACY-LIVENESS-ASYMMETRIC-REJECTION-SPLIT-OWNER-2026-09-04` | Closed by repair — Liveness protocol version 2 landed with the 3/3 signed-liveness group, and the corrected live pre-1 crossed bidirectional liveness, which the record says live-closes it | — |
+| `AWS-QUALIFICATION-REGISTERED-STACK-GENERATION-SCOPE-MISSING-2026-09-04` | Closed by repair — Closed code-locally at the Authority producer boundary (4/4 producer/consumer group) and the corrected live pre-1 reached execution under its committed scope, proving the fix live | — |
+| `TLS-VERIFY-TRUST-INSTALL-REPLAY-CAPACITY-EXHAUSTED-2026-09-03` | Closed by repair — Capacity-54 v8 replay codec plus the Vault ConfigMap digest binding landed, and the live run crosses it, migrating the retained replay projection without clearing evidence | — |
+| `TLS-TARGET-ONE-SHOT-EXCEEDS-DEFAULT-HTTP-DEADLINE-2026-09-03` | Closed by repair — A derived 930-second Target one-shot response budget landed and the unchanged live pre-1 live-proves the inner response-budget correction, moving the failure outward | — |
+| `TLS-RETAIN-WORKER-MATERIALIZATION-REFUSED-2026-09-03` | Closed by repair — Code-local diagnostic closure at 1659 landed the closed tls-retain refusal causes 1/1 and the live run at 1683 selected the refined secret-invalid successor | — |
+| `TLS-RETAIN-TERMINAL-STATUS-INCONSISTENT-2026-09-03` | Closed by repair — Code-local closure at 1623 separated worker-domain outcome from attach exit status, and the corrected live rerun at 1645 crossed the former terminal-status inconsistency | — |
+| `TLS-RETAIN-PUBLIC-EDGE-SECRET-INVALID-2026-09-03` | Closed by repair — Code-local closure at 1692 made the parser accept cert-manager's empty optional annotations, and the corrected live rerun at 1714 crossed the exact secret-parser barrier | — |
+| `TLS-RESTORE-AUTHORITY-ADAPTER-UNAVAILABLE-2026-09-03` | Closed by repair — The licensed diagnostic it owned was code-local closed at 1818 with a 1/1 regression, and the next live run selected the refined adapter cause named at 1849 | — |
+| `TLS-RESTORE-ADAPTER-HTTP-STATUS-OTHER-2026-09-03` | Closed by repair — Source enumeration closed the boundary code-locally at 1854 and the live pre-1 at 1880 is recorded as live-closing the collapsed-HTTP counterexample | — |
+| `TLS-AUTHORITY-WORKFLOW-EXCEEDS-HOST-HTTP-DEADLINE-2026-09-03` | Closed by repair — Code-local closure at 1552 derived the 3,790,000,000 us host TLS-workflow budget and the live rerun at 1576 live-proved it, returning a typed Authority result instead of HttpTimeout | — |
+| `TLS-AUTHORITY-SELECTED-AGENT-UNAVAILABLE-2026-09-03` | Closed by repair — Code-local diagnostic closure at 1587 landed the closed attach-subcause vocabulary with a 1/1 regression, and the next live run refined the refusal to the successor named at 1616 | — |
+| `LIFECYCLE-AUTHORITY-STARTUP-CRASHLOOP-2026-09-03` | Closed by succession — The record licenses no behavior change and the unchanged diagnostic rerun recovered it through the already-supported failed-release uninstall and reconcile, which live-closes it | — |
+| `TLS-WORKFLOW-AUTHORITY-HOME-AGENT-UNAVAILABLE-2026-09-02` | Closed by succession — Its diagnostic falsified the replay-capacity claim and the same campaign traced the symptom to the NetworkPolicy-deny counterexample, which carried the repair | — |
+| `TLS-TARGET-WORKER-NOT-RUNNING-2026-09-02` | Closed by repair — Code-local closure widened the worker schema parser to thirteen constructors with a 1/1 reproducer and the corrected live pre-1 proves the parser correction | — |
+| `TLS-TARGET-WORKER-ATTESTATION-FAILED-2026-09-02` | Closed by succession — Only a behavior-neutral 17-arm attestation diagnostic landed; the next live cycle refined it to not-running, whose parser repair removed the attestation failure | — |
+| `TLS-TARGET-INTENT-AUTHORITY-NETWORKPOLICY-DENY-2026-09-02` | Closed by repair — Code-local closure added the two missing NetworkPolicy arms with a 1/1 reproducer and the corrected live pre-1 proved policy generations 2 and 5 carry them | — |
+| `HOME-TLS-WORKFLOW-BYPASSES-LIFECYCLE-AUTHORITY-2026-09-02` | Closed by repair — Code-local closure is explicit for the route-code-60 Authority workflow endpoint with 4789/4789 passing, but the record carries no live-close sentence for this identifier | — |
+| `BOOTSTRAP-SECRET-WORKER-ABSENT-FROM-CAPACITY-PLAN-2026-09-02` | Closed by repair — A zero-growth capacity repair landed with a repository-owned superseded-vs-replacement reproducer in test/unit/Allocation.hs, and the unchanged live pre-1 replay proved the correction | — |
+| `AWS-HARNESS-PROVIDER-WORKER-SERVICE-DNS-UNAVAILABLE-2026-09-02` | Closed by repair — Code-local correction re-enters an ordinary local-only reconcile before AWS prerequisites; the corrected live replay installed Provider Worker and passed deep readiness, live-closing it | — |
+| `AWS-HARNESS-ACME-EAB-TARGET-TRUST-INSTALL-RESPONSE-CODEC-2026-09-02` | Closed by repair — Code-local closure preserved the closed status class for codec-invalid responses (1/1 focused); the next live retry returned the exact cause, live-closing the generic response-codec case | — |
+| `AWS-HARNESS-ACME-EAB-TARGET-TRUST-INSTALL-REPLAY-CAPACITY-EXHAUSTED-2026-09-02` | Closed by repair — The capacity-10 plus 24 MiB Target-role correction and v7 retained codec landed with a 35/35 authenticated-transport suite, and the corrected live pre-1 replay explicitly live-closes it | — |
+| `AWS-HARNESS-ACME-EAB-RETAINED-TARGET-WORKER-WORKLOAD-ABSENT-2026-09-02` | Closed by repair — Code-local closure made the coordinator retain the last typed observation failure across clean-absence retries (35/35); the next live retry returned it, live-closing the false workload absence | — |
+| `AWS-HARNESS-ACME-EAB-RETAINED-TARGET-WORKER-IMAGE-DIGEST-MISMATCH-2026-09-02` | Closed by repair — A typed resolver now derives Target Agent identity from the published repository manifest (1/1 focused); the next live retry crossed attestation, live-closing the image-digest counterexample | — |
+| `AWS-HARNESS-ACME-EAB-RETAINED-DELIVERY-RESPONSE-BUDGET-2026-09-02` | Closed by repair — Sprint 6.5 landed the typed 330-second delivery capacity constant with a 1/1 focused regression, and the next live pre-1 retry crossed it, explicitly live-closing the response-budget counterexample | — |
+| `AWS-HARNESS-ACME-EAB-MATERIALIZER-NOT-COMPLETE-2026-09-02` | Closed by repair — The invalid bounded grep regex was replaced by length and alphabet checks, and the replay records the corrected EAB materializer completing with zerossl-dns01 Ready, live-closing it | — |
+| `AWS-OPERATIONAL-USER-POLICY-DEPENDENCY-ORDER-2026-09-01` | Closed by repair — Record states it is closed by enumerating/deleting every inline policy and detaching every managed policy before user deletion, focused regression 1/1 and suite 4763/4763 | — |
+| `AWS-HARNESS-RETAINED-CREDENTIAL-DEADLINE-REPLAY-2026-09-01` | Closed by repair — Closed code-locally by returning the retained prepared challenge only for a byte-for-byte completed intent (1/1 focused); the next live retry returned Generation 2, explicitly live-closing it | — |
+| `AWS-HARNESS-PRE-IAM-PROVIDER-READINESS-CYCLE-2026-09-01` | Closed by repair — The bootstrap-floor graph-projection correction landed (14/14 focused) and the next live retry rotated the provider credential to Generation 2, closing the readiness cycle in live execution | — |
+| `AWS-HARNESS-OWNED-PRIOR-CONFIG-PRESERVATION-2026-09-01` | Closed by repair — Recorded closed by regenerating only a harness-owned-storage-root config when authored fields are absent or topology mismatches, with both focused guards 1/1 and the suite at 4762/4762 | — |
+| `AWS-HARNESS-ACME-EAB-TEXT-ENVELOPE-INVALID-2026-09-01` | Closed by repair — Reads "remains open" at README:990 but is later closed by the missing stdinOnce:true Job binding plus manifest regression, and the corrected live retry's worker got EOF and returned its receipt | — |
+| `AWS-HARNESS-ACME-EAB-TARGET-INTENT-RECEIPT-DIGEST-SUBSTITUTION-2026-09-01` | Closed by repair — Code-local closure projects the validated delivery attestation via retainedTargetIntentReceiptDigest (17/17); the next live retry crossed receipt-digest validation, live-closing it | — |
+| `AWS-HARNESS-ACME-EAB-RETAINED-TARGET-INTENT-DEADLINE-EXPIRED-2026-09-01` | Closed by repair — Code-local closure made Target-intent issuance sign the persisted successor's fresh deadline (18/18 focused); the next live retry crossed it, live-closing the retained-deadline counterexample | — |
+| `AWS-HARNESS-ACME-EAB-RETAINED-SOURCE-UNAVAILABLE-2026-09-01` | Closed by repair — The exact absence-authorized recovery transition landed with a 20/20 focused group, and the next live retry's positive-absence recovery reached its fresh successor worker | — |
+| `AWS-HARNESS-ACME-EAB-RETAINED-SOURCE-SEAL-DEADLINE-REUSE-2026-09-01` | Closed by repair — Code-local closure gave source-catalog admission its own fresh Authority-time bound (14/14 focused), and the next live retry crossed RetainedSealDeadlineExpired, live-closing it | — |
+| `AWS-HARNESS-ACME-EAB-RETAINED-SOURCE-RECEIPT-BINDING-MISMATCH-2026-09-01` | Closed by repair — Closed code-locally by carrying the validated custody HMAC source receipt in a v2 receipt carrier (25/25 focused); the next live retry crossed the former retained source binding mismatch | — |
+| `AWS-HARNESS-ACME-EAB-RETAINED-LEGACY-SOURCE-RECEIPT-CORRECTION-2026-09-01` | Closed by repair — Code-local closure landed the ObserveLegacyRetainedMaterialSourceReceiptCorrection transition (16/16 focused) and the next live retry crossed it, live-closing both retained counterexamples | — |
+| `AWS-HARNESS-ACME-EAB-RETAINED-DELIVERY-EXPIRED-OPERATION-REUSE-2026-09-01` | Closed by repair — ReplaceExpiredRetainedMaterialDelivery landed at 14/14 and the corrected live retry persists the deterministic successor, live-closing both retained counterexamples | — |
+| `AWS-HARNESS-ACME-EAB-RETAINED-DEADLINE-EXPIRED-2026-09-01` | Closed by repair — The exact prepared-only renewal transition landed at 16/16 and the next retry records prepared-only renewal succeeding and live-closing it | — |
+| `AWS-HARNESS-ACME-EAB-RENEWED-RECEIPT-DECODE-FAILED-2026-09-01` | Closed by succession — Its --quiet attach repair is recorded as not live-closed and then falsified, and successor ABSENCE-RETRY-RECEIPT-DECODE-FAILED carried the same decode boundary to the envelope fix | — |
+| `AWS-HARNESS-ACME-EAB-RECOVERY-JOB-WITHOUT-POD-2026-09-01` | Closed by succession — Post-run inspection showed a transient Job-without-Pod topology with no repair owed, and the unchanged-executable rerun superseded it with the container-image digest mismatch | — |
+| `AWS-HARNESS-ACME-EAB-LIFECYCLE-AUTHORITY-SELF-ROUTE-EGRESS-DENIED-2026-09-01` | Closed by repair — The exact namespace-plus-name-plus-release self-egress peer landed at 26/26 and the next live retry crosses the timeout, live-closing the self-route policy counterexample | — |
+| `AWS-HARNESS-ACME-EAB-JOB-CREATE-ABSENT-2026-09-01` | Closed by repair — The 68-byte permit moved from labels to annotations, closed code-locally with server-side admission proof, and the next retry's EAB Job was created and ran to cleanup | — |
+| `AWS-HARNESS-ACME-EAB-JOB-CLEANUP-STILL-PRESENT-2026-09-01` | Closed by repair — The 4 KiB bounded delete-payload ceiling landed with a focused regression and the recovery retry states This live-closes the counterexample | — |
+| `AWS-HARNESS-ACME-EAB-CONTAINER-IMAGE-DIGEST-MISMATCH-2026-09-01` | Closed by repair — The intent-owned digest pull reference landed with 2/2 renderer regressions and the next retry records the immutable intent-bound image pull live-closing it | — |
+| `AWS-HARNESS-ACME-EAB-COMMITTED-JOB-LOST-2026-09-01` | Closed by repair — The authenticated Target-Agent source-observation recovery is recorded as landed at 18/18 and the next live retry reaches that committed-effect recovery instead of the lost-Job refusal | — |
+| `AWS-HARNESS-ACME-EAB-ABSENCE-RETRY-RECEIPT-DECODE-FAILED-2026-09-01` | Closed by repair — The source-specific envelope carrier correction landed at 22/22 and the next live pre-1 advanced past decode-failed to a distinct ExternalMaterialTargetReceiptEnvelopeInvalid refusal | — |
+| `PROVIDER-WORKER-RESPONSE-AFTER-DEFAULT-HTTP-DEADLINE-2026-08-31` | Closed by repair — Sprint 2.133 [Done] states the stable counterexample is closed locally and by unchanged-command live proof; Generation 157 decoded the Provider response and the reconcile exited 0 | — |
+| `PROVIDER-WORKER-LIFECYCLE-AUTHORITY-INGRESS-DENIED-2026-08-31` | Closed by repair — Sprint 2.130 [Done] added the exact Lifecycle Authority ingress peer with a rendered-policy regression, and Generation 152 read that peer back on the owned surface | — |
+| `PROVIDER-WORKER-LIFECYCLE-AUTHORITY-EGRESS-DENIED-2026-08-31` | Closed by repair — Sprint 2.131 is Done: the reciprocal Authority egress peer landed with a paired-policy regression, and Generation 153 read back both directions and emitted Provider socket ingress | — |
+| `PROVIDER-WORKER-FIRST-READY-DISPATCH-TIMEOUT-2026-08-31` | Closed by succession — Sprint 2.129 only classified it behavior-neutrally; the INGRESS-DENIED and EGRESS-DENIED cycles superseded it and Generation 153 crossed the registered connection-timeout boundary | — |
+| `PROVIDER-WORKER-DNS-ABSENT-BEFORE-FIRST-PROVIDER-DISPATCH-2026-08-31` | Closed by repair — Sprint 2.128 is Done: the missing Provider-Worker-before-Gateway graph edge landed with a pure order assertion, and Generation 149 created the worker and crossed DNS absence | — |
+| `PROVIDER-WORKER-CAPABILITY-EXECUTION-OOM-112MIB-2026-08-31` | Closed by repair — Sprint 2.132 is Done: the measured 176Mi Guaranteed envelope with a serialized AWS CLI permit landed, and Generation 155 completed the Provider capability path with zero restarts | — |
+| `LIFECYCLE-REPLAY-IMMEDIATE-RETRY-WINDOW-2026-08-31` | Closed by repair — Sprint 2.127 is Done: per-role replay capacities landed with a pure two-attempt trace, and Generation 147 crossed both replay refusals without clearing retained entries | — |
+| `LIFECYCLE-AUTHORITY-IN-FORCE-CONFIG-RESPONSE-CODEC-INVALID-2026-08-31` | Closed by repair — Sprint 2.126 is Done and live-proven: generation 141 returns the exact AuthenticatedRoleReplayCapacityExhausted observation, identifying and crossing the opaque codec boundary | — |
+| `FAKE-RKE2-DOCKER-RUNTIME-RETENTION-INVENTORY-2026-08-31` | Closed by repair — Sprint 5.39 is Done with Remaining Work None; the machine-formatted fake inventory landed and all six remaining installed failures advance past Docker retention to Sprint 5.40's boundary | — |
+| `FAKE-RKE2-DOCKER-REPOSITORY-MANIFEST-INVENTORY-2026-08-31` | Closed by repair — Sprint 5.41 is marked Done with Remaining Work None; its format-specific fake image-inspect arm landed and both installed entrypoints then cross repository-manifest resolution | — |
+| `FAKE-RKE2-CREDENTIAL-PROVISIONER-SUBSTRATE-OBSERVATION-EMPTY-2026-08-31` | Closed by repair — Sprint 5.40 is Done: the fake stores and reads back the nine-object substrate, the focused case passes 1/1, and all six failures crossed to Sprint 5.41's boundary | — |
+| `FAKE-RKE2-AUTHORITY-BACKUP-PORT-FORWARD-ACK-MISSING-2026-08-31` | Closed by repair — Sprint 5.42 is Done: the fake recognizes deployment/authority-backup and emits the exact acknowledgement, pinned by a 1/1 process-boundary case, with failures moving to Sprint 5.43 | — |
+| `FAKE-RKE2-AUTHORITY-BACKUP-ACK-BEFORE-LISTENER-2026-08-31` | Closed by repair — Sprint 5.43 is Done: the acknowledgement now follows proven listener readiness, the focused case passes 1/1, and both installed entrypoints pass 63/63 | — |
+| `AWS-QUALIFICATION-TIER0-UNAUTHORED-2026-08-31` | Closed by repair — Repaired in the Haskell-owned TestSecrets generator rather than the generated artifact (4760/4760), and the rerun generated and admitted the authored proposal before AWS IAM setup | — |
+| `AUTHORITY-BACKUP-ROLLOUT-USE-BEFORE-READY-2026-08-31` | Closed by repair — The record says it is closed code-locally by the graph-owned observe_authority_backup_rollout_ready step with golden plans and tests, and the next live pre-1 reached a later ACME boundary | — |
+| `AUTHORITY-BACKUP-REPLAY-SINGLE-COMPLETE-RECONCILE-2026-08-31` | Closed by repair — Sprint 2.127 is Done with deployment qualification proven: Generation 147 crosses the Adapter replay-capacity refusal under the derived 18-entry role-specific bound | — |
+| `VAULT-BASELINE-TARGET-REVISION-OMITTED-2026-08-30` | Closed by repair — Sprint 2.116 (Done) appended the auditor lease-containment baseline target and Generation 123 minted a fresh root session and crossed exact lease admission | — |
+| `TARGET-WORKER-RUN-AS-NON-ROOT-IMAGE-METADATA-2026-08-30` | Closed by repair — Explicit numeric UID/GID/fsGroup 65532 landed with a structural security-context regression, and Generation 124 records the former runAsNonRoot root-metadata refusal as absent | — |
+| `TARGET-WORKER-REPOSITORY-QUALIFIED-RUNTIME-IDENTITY-2026-08-30` | Closed by repair — The narrow Target-only parser was deleted for the canonical repository-qualified one, and Generation 126 advanced through Target delivery, live-proving and closing that boundary | — |
+| `TARGET-WORKER-POD-OBSERVATION-FAILED-AFTER-START-2026-08-30` | Closed by succession — Only a behavior-neutral cause diagnostic was owed; Generation 125 refined the same terminal to runtime-image-identity-invalid, and the successor identifier carried the actual repair | — |
+| `TARGET-MATERIAL-RESPONSE-CODEC-INVALID-2026-08-30` | Closed by repair — Sprint 2.122 [Done] records Live-proof proven: Generation 134 emitted the exact response-codec/invalid/status/server token the landed status refinement added | — |
+| `TARGET-MATERIAL-CODEC-INVALID-SERVER-SHAPE-2026-08-30` | Closed by repair — Sprint 2.124 [Done] landed the exact-pair plaintext classifier with two-sided tests, but its live proof stayed pending after Generation 136/137 hit an earlier boundary instead | — |
+| `LOCAL-RUNTIME-DANGLING-IMAGE-RETENTION-2026-08-30` | Closed by repair — Generation 112 is recorded as the required live proof: the exact managed-repository retention fold deleted all 15 dangling images and the node recovered to DiskPressure=False with no taint | — |
+| `LOCAL-RUNTIME-COMPILE-LAYER-RETENTION-2026-08-30` | Closed by repair — Generation 113 closes it on independent image history: the Cabal layer fell from 2.87 GB to 166 MB under the same-RUN Dockerfile removal pinned by a dedicated Sprint 2.116 regression | — |
+| `AWS-ADMIN-SUCCESSOR-JOB-HEARTBEAT-STALE-2026-08-30` | Closed by repair — Sprint 2.123 is Done with a per-attempt heartbeat and named sequential-attempt reproducer, and its Live-proof line records Generation 134 crossing the stale refusal | — |
+| `AWS-ADMIN-LIFECYCLE-ROLE-TRUST-POLICY-SHAPE-2026-08-30` | Closed by repair — Sprint 2.121 is Done with singleton-form acceptance plus positive and negative reproducers, and Generation 132 positively crossed the former trust-policy mismatch | — |
+| `AWS-ADMIN-LIFECYCLE-ROLE-READ-BACK-MISMATCH-2026-08-30` | Closed by succession — Generation 130 refined it to the narrower trust-policy-shape counterexample under Sprint 2.120, so the Sprint 2.121 repair was owed to that successor, not to this identifier | — |
+| `AWS-ADMIN-CREATE-LIFECYCLE-ROLE-OTHER-CLIENT-2026-08-30` | Closed by succession — Sprint 2.118 landed only a diagnostic classifier and Generation 129 records the condition does not recur; medium because a classifier sprint could also read as a repair | — |
+| `AWS-ADMIN-CLEANUP-RECOVERY-WORKER-SESSION-REVOCATION-FAILED-2026-08-30` | Closed by succession — The session-closure checkpoint only classified constructors, and Generation 120 superseded it with session-revocation-failed/journal-unavailable | — |
+| `AWS-ADMIN-CLEANUP-RECOVERY-WORKER-SESSION-JOURNAL-UNAVAILABLE-2026-08-30` | Closed by repair — Generation 121 repeated it, then the auditor-lease baseline-revision correction landed and Generation 123 crossed exact lease admission and session finalization | — |
+| `AWS-ADMIN-CLEANUP-RECOVERY-TARGET-WORKER-KUBECONFIG-UNAVAILABLE-2026-08-30` | Closed by repair — The One-Shot Kubernetes API Identity Local Correction projected a separate Kubernetes-audience token and Generation 119 ran past that arm to session revocation | — |
+| `AWS-ADMIN-CLEANUP-RECOVERY-TARGET-WORKER-AGENT-IDENTITY-UNAVAILABLE-2026-08-30` | Closed by succession — The rollout-observation diagnostic changed no behavior and Generation 118 superseded it with the narrower agent-identity-unavailable/kubeconfig-unavailable terminal | — |
+| `AWS-ADMIN-CLEANUP-RECOVERY-TARGET-TRUST-OBSERVATION-UNAVAILABLE-2026-08-30` | Closed by succession — Its checkpoint only classified the Vault trust read without changing it, and Generation 116 refined the terminal to observation/record/agent-identity-mismatch | — |
+| `AWS-ADMIN-CLEANUP-RECOVERY-TARGET-TRUST-AGENT-IDENTITY-MISMATCH-2026-08-30` | Closed by repair — The Same-Cluster Target-Agent Rollout Trust Local Correction landed with a two-sided regression, and Generation 117 crossed that trust observation and installation | — |
+| `AWS-ADMIN-CLEANUP-RECOVERY-TARGET-INTENT-TRUST-INSTALL-UNAVAILABLE-2026-08-30` | Closed by succession — The trust-install checkpoint states no behavior change is licensed, and Generation 115 refined the terminal to trust-install/unavailable/observation | — |
+| `AWS-ADMIN-CLEANUP-RECOVERY-TARGET-DELIVERY-FAILED-2026-08-30` | Closed by succession — Its checkpoint licensed no behavior change and Generation 114 refined the same terminal to intent/unavailable/trust-install; Generation 126 later crossed Target delivery outright | — |
+| `AUTHORITY-BACKUP-EXPORT-200-RESPONSE-INVALID-2026-08-30` | Closed by repair — Sprint 2.117 is Done with deployment qualification proven, and Generation 128 live-proves the direct-success export encoding, explicitly closing this counterexample | — |
+| `AUTHORITY-AGGREGATE-BACKUP-RESPONSE-CODEC-INVALID-2026-08-30` | Closed by repair — Sprint 2.125 is Done and landed the aggregate-client codec observation with a 1/1 focused decode-seam regression; Generations 138/139 stopped earlier, so live crossing is unproven | — |
+| `LOCAL-RUNTIME-REIMPORT-DISK-PRESSURE-2026-08-29` | Closed by repair — README directs closing it with the landed exact-current import bypass; it recurred at Generation 111, and the 2.116 retention fixes then restored DiskPressure=False at Generations 112/113 | — |
+| `LOCAL-RUNTIME-REIMPORT-CONFIG-MEDIA-TYPE-2026-08-29` | Closed by repair — The closed Docker-or-OCI config-media-type observer landed and Generation 97's unchanged-source retry printed the exact-current proof with no archive or import process existing | — |
+| `LIFECYCLE-AUTHORITY-TRUST-READ-403-2026-08-29` | Closed by repair — Sprint 2.116 landed the appended BaselineCredentialProvisionerCompletionPrincipal baseline target and Generation 100 advanced the root session and crossed Authority protected startup with no 403 | — |
+| `AWS-ADMIN-WORKER-RECEIPT-DECODE-2026-08-29` | Closed by repair — Sprint 2.116 is Done with Remaining Work none, its Validation requires crossing this identifier, and Generation 126 live-proves every Sprint-2.116 receipt-transport correction | — |
+| `AWS-ADMIN-WORKER-POD-LOG-SINGLE-NON-ENVELOPE-2026-08-29` | Closed by succession — Generation 94's single non-envelope line drove the record-separated envelope correction and was superseded by Generation 97's RECORD-ENVELOPE-ABSENT | — |
+| `AWS-ADMIN-WORKER-POD-LOG-RECORD-ENVELOPE-ABSENT-2026-08-29` | Closed by succession — Generation 97's absent-envelope refusal licensed only a prefix/terminal diagnostic and was superseded by Generation 98's COMPLETION-UNAVAILABLE token | — |
+| `AWS-ADMIN-WORKER-POD-LOG-ENVELOPE-INVALID-2026-08-29` | Closed by succession — Generation 93's refusal licensed only a line-topology diagnostic and was superseded by Generation 94's POD-LOG-SINGLE-NON-ENVELOPE refinement | — |
+| `AWS-ADMIN-WORKER-POD-LOG-DECODE-2026-08-29` | Closed by succession — Generation 92's fallback-decode refusal drove the canonical text-envelope correction and was superseded by Generation 93's POD-LOG-ENVELOPE-INVALID refinement | — |
+| `AWS-ADMIN-WORKER-IAM-PREREQUISITE-FAILED-2026-08-29` | Closed by succession — A value-free prerequisite classifier only refined it, and Generation 104 superseded it with AWS-ADMIN-OBSERVE-BUCKET-SERVICE-OTHER-CLIENT-2026-08-29 inside Done Sprint 2.116 | — |
+| `AWS-ADMIN-WORKER-EXECUTION-FAILED-2026-08-29` | Closed by succession — No repair was owed: only a payload-free execution-cause discriminator was added, and Generation 103 refined the same terminal to execution-failed/iam-prerequisite-failed | — |
+| `AWS-ADMIN-WORKER-COMPLETION-UNAVAILABLE-2026-08-29` | Closed by repair — Sprint 2.116 landed the delivery/completion caller-code split and Generation 100's worker terminal reads execution-failed, no longer completion-unavailable | — |
+| `AWS-ADMIN-WORKER-ATTACH-EMPTY-2026-08-29` | Closed by repair — The Empty-Attach Local Correction added the bounded pod-log fallback at focused 2/2, and Generation 92 live-emitted the distinct source=pod-log capture | — |
+| `AWS-ADMIN-TARGET-OBSERVATION-UNOBSERVABLE-2026-08-29` | Closed by succession — Its checkpoint changed no behavior and Generation 132 emitted the refined client/response-codec/invalid cause, registered as a narrower successor under Sprint 2.122 | — |
+| `AWS-ADMIN-OBSERVE-BUCKET-SERVICE-OTHER-CLIENT-2026-08-29` | Closed by repair — The Native-S3 Payload-Hash correction added the omitted x-amz-content-sha256 with a request-capture regression, and Generation 105 advanced past the IAM prerequisite | — |
+| `AWS-ADMIN-CLEANUP-RECOVERY-REMINT-AMBIGUOUS-REPEATED-2026-08-29` | Closed by repair — The ten-cause value-free remint classifier it licensed landed, and Generation 110 rendered the distinguished terminal recovery-remint-ambiguous/target-delivery-failed | — |
+| `AWS-ADMIN-CLEANUP-RECOVERY-REMINT-AMBIGUOUS-2026-08-29` | Closed by succession — The record states no behavior change is licensed or needed; unchanged-source Generation 109 reproduced the same terminal and registered the REPEATED successor | — |
+| `AWS-ADMIN-CLEANUP-RECOVERY-PERMIT-KIND-REJECTED-2026-08-29` | Closed by repair — The mode-indexed CleanupRecoveryKind correction landed (focused Sprint-2.116 11/11) and Generation 108 crosses the former recovery-intent-rejected boundary and executes | — |
+| `AWS-ADMIN-AUTHORIZED-RECOVERY-JOURNAL-PRESENT-2026-08-29` | Closed by succession — Superseded by stable refinement INTENT-COMMITTED; only a read-only phase classifier landed and Generation 102 still exits at the unchanged attempt-recovery/journal-present refusal | — |
+| `AWS-ADMIN-AUTHORIZED-RECOVERY-INTENT-COMMITTED-2026-08-29` | Closed by repair — The intent-committed durable continuation landed (focused Sprint-2.116 7/7) and Generation 103 proves intent continuation works by reaching the worker's IAM prerequisite stage | — |
+| `AWS-ADMIN-ATTEMPT-RECOVERY-KEY-CREATED-REMINT-USED-2026-08-29` | Closed by repair — The predecessor-bound cleanup-only permit kind landed under Sprint 2.116 (focused 10/10, AWS-admin 38/38) and Generation 108 crossed it into execution | — |
+| `AWS-ADMIN-ATTEMPT-RECOVERY-JOURNAL-PRESENT-2026-08-29` | Closed by succession — Read-only inspection of the already-deployed Authority log refined it into stable refinement KEY-CREATED-REMINT-USED in the same cycle, with no separate code change made or owed | — |
+| `AUTHORIZED-JOURNAL-UNOBSERVABLE-2026-08-29` | Closed by repair — Sprint 2.115 is Done; the appended journal-observer baseline target landed and Generation 90 logs journal-observation=absent, completing that recovery and its qualification | — |
+| `VAULT-ROLE-SEMANTIC-RECEIPT-2026-08-28` | Closed by repair — Sprint 2.98 is Done and live-proven: the appended semantic-revision baseline target made generation 63 Authority Backup Vault login return HTTP 200 | — |
+| `TOKENREQUEST-MINIMUM-TTL-2026-08-28` | Closed by repair — Sprint 2.100 is Done and live-proven: a 600-second minimum TokenRequest lifetime landed and generation 65 crossed the correction live | — |
+| `PRESEED-SETTINGS-INVERSION-2026-08-28` | Closed by repair — Sprint 2.101 is Done: pre-seed establishment now consumes the validated Tier-0 settings with a structural regression, and Generation 66 crossed the missing-generation failure | — |
+| `PREPARED-TARGET-OUTBOX-AHEAD-2026-08-28` | Closed by repair — Sprint 2.114 is Done with an injected outbox-ahead crash-window and codec-migration reproducer; only its live fault injection is recorded pending, not the repair itself | — |
+| `PREPARED-TARGET-FAILURE-COLLAPSE-2026-08-28` | Closed by repair — Sprint 2.106 is Done: a 20-constructor stage/cause algebra replaced the collapsed error with exhaustive renderer regressions, and Generation 71 reported the precise closed cause | — |
+| `NOT-READY-SERVICE-ENDPOINT-2026-08-28` | Closed by repair — Sprint 2.103 is Done: genesis forwarding moved to the exact Recreate Deployment coordinate with a command-shape regression, and Generation 68 proved the two-sided live observation | — |
+| `NETWORKPOLICY-GENERATION-DIFF-2026-08-28` | Closed by repair — Registered as a refinement inside Done Sprint 2.109 and repaired there: the exact-keyed observer excludes server-owned generation, and its Closure Record states false drift cannot recur | — |
+| `MISSING-CREDENTIAL-PROVISIONER-SUBSTRATE-2026-08-28` | Closed by repair — Sprint 2.109 is Done: the typed seven-object substrate component landed with pure manifest/order tests and Generation 78 observed all seven resources current before Job creation | — |
+| `LIFECYCLE-REPLAY-WINDOW-2026-08-28` | Closed by repair — Sprint 2.105 is Done: capacity 64 plus widening-only codec migration landed with a pure capacity-four reproducer, and Generation 70 crossed the former request-five exhaustion | — |
+| `LEGACY-OUTBOX-PREDICATE-2026-08-28` | Closed by succession — The value-free discriminator proved the retained state was not an expired Prepared predecessor, so no predicate repair was owed and Sprint 2.115 took the successor counterexample | — |
+| `IMMEDIATE-POD-ATTESTATION-2026-08-28` | Closed by repair — Sprint 2.111 is Done; generation 80's bounded convergence observer lets the Pod start rather than deleting it while Pending, and the next refusal is Sprint 2.112's distinct boundary | — |
+| `HELM-RETRY-2026-08-28` | Closed by repair — Sprint 3.46 is Done and live-proven and Phase 3 reclosed on it: generation 61 reconciles the frozen failed release to observed absence before upgrade and reaches Ready | — |
+| `FORWARD-STARTUP-HANDSHAKE-2026-08-28` | Closed by repair — Sprint 2.104 is Done and live-proven: generation 69 crosses the bounded socket acknowledgement and /healthz, so the create-before-bind race no longer reproduces | — |
+| `FIRST-RECONCILE-DEADLINE-RETRY-MISMATCH-2026-08-28` | Closed by repair — Sprint 2.107 is Done and live-proven: generation 72 adopts the retained canonical plan unchanged instead of reproducing the generation-71 plan-digest mismatch | — |
+| `FAKE-HELM-STATUS-2026-08-28` | Closed by repair — Sprint 5.38 is Done: both fake Helm interpreters project the closed status observation, the focused installed-boundary case passes 1/1, and no Helm-status failure remains | — |
+| `EXPIRED-PREPARED-FIRST-RECONCILE-2026-08-28` | Closed by repair — Sprint 2.108 is Done: generation 73 crossed the prepared-target/deadline-expired refusal through proof-carrying renewal and advanced to Job creation | — |
+| `EXPIRED-NONPREPARED-AWS-ADMIN-2026-08-28` | Closed by repair — Sprint 2.115 is Done: Generation 90 recovers the expired Authorized attempt after independent Job/Pod/journal absence and reaches Sprint 2.116's distinct decode boundary | — |
+| `DEAD-PORT-FORWARD-2026-08-28` | Closed by repair — Sprint 2.102 is Done and live-proven: generation 67 retires each dead child and starts a fresh forward after the Pod exists, so the counterexample is recorded as crossed | — |
+| `CREDENTIAL-PROVISIONER-PULLED-MANIFEST-IDENTITY-2026-08-28` | Closed by repair — Sprint 2.112 is Done and live-proven: Generation 82's permit carries the registry manifest, the observer accepts the join, and the identity-drift refusal does not recur | — |
+| `CREDENTIAL-PROVISIONER-NONROOT-IDENTITY-2026-08-28` | Closed by repair — Sprint 2.110 is Done: the shared nonzero UID/GID/fsGroup projection landed in both native renderers and Generation 79 was scheduled without the former non-root admission event | — |
+| `AWS-ADMIN-NATIVE-JOB-ARGV-2026-08-28` | Closed by repair — Sprint 2.113 is Done: the native renderer now projects the required target-worker repository and an exact argv/parser regression separates the missing-option drift | — |
+| `AUTHORITY-BACKUP-GENESIS-ORDER-2026-08-28` | Closed by repair — Sprint 2.99 is Done and live-proven: the deferred-credential Adapter binding plus no-wait Helm exception landed, and Generation 64 closes the genesis startup cycle | — |
 
 **`CHECKPOINT-RETIREMENT-2026-09-07` is registered here because it never was.** On 2026-09-07 a
 `cluster delete --cascade` reported its per-run destroys phase successful while an EKS cluster and
@@ -13193,16 +13470,31 @@ its VPC stayed live, because an absent scratch checkpoint after a *failed* actio
 clean destroy and the Authority's only record of the stack was retired. A correct typed device
 landed the same day and closed it. That change modified no file under `DEVELOPMENT_PLAN/`, opened no
 sprint block, and added no ledger row; its only record anywhere in the repository is a Haddock
-comment in the module it repaired. The next incident, four weeks later, was diagnosed from scratch,
+comment in the module it repaired and the six-case `checkpointRetirementSuite` in
+`test/unit/FencedCheckpoint.hs` that pins the rule. Both describe the replacement; neither freezes
+the superseded implementation, which is why the disposition below reads *unit-pinned* rather than
+claiming Standard P's two-sided reproducer. The next incident, four weeks later, was diagnosed from scratch,
 and the fix was again scoped to the mechanism of the last one rather than to the class. Registering
 it now does not reopen it; it makes the class searchable.
 
-**The remaining identifiers are unclassified, and that is the defect this section records rather
-than resolves.** Most are campaign-log entries where each cycle's counterexample was superseded by
-the next cycle's correction, which is the closed-by-succession case. A keyword heuristic over them
-gives demonstrably wrong answers — it marks at least one identifier open that a phase file records
-as reclosed — so the sweep is a reading task, not a scripting one. Sprint `0.34` owns completing this
-table.
+**The sweep that completed this table was a reading task, and it had to be, which is the finding
+worth keeping.** A keyword heuristic over these identifiers gives demonstrably wrong answers: it
+marks `CASCADE-AWS-EKS-CHECKPOINT-AWS-TRUTH-DIVERGENCE-2026-09-08` open, where
+[phase 6](phase-6-clean-room-handoff.md) records it *falsified and closed* with
+`CASCADE-AWS-EKS-OLDER-GENERATION-CHECKPOINTLESS-ORPHAN-2026-09-08` taking the actual boundary. The
+distinction the heuristic cannot make is the one that matters — *no repair landed* against *repair
+landed, live re-crossing pending* — and six rows first classified `Open` on that reading were
+adversarially re-read, of which five moved to a closed disposition and one did not. That one,
+`TLS-RETENTION-SELECTED-RESTORE-SESSION-PRECLEAN-FAILED-2026-09-04`, is the evidence the re-read
+could disagree: only a value-free diagnostic projection landed for it, preclean behaviour is
+explicitly unchanged, and the arm re-crossed live on 2026-09-08.
+
+**What the completed table shows.** Of 219 identifiers, **5** are open, **182** are closed by
+repair, and **32** are closed by succession, measured after Sprint `4.95` closed one of them. The closed-by-succession population is the campaign shape this
+section predicted: a live cycle registers a counterexample, the next cycle's correction supersedes
+it, and no separate repair was ever owed. The open population is small and entirely accounted for by
+the queue — Sprints `4.96`, `6.5`, `7.41` and `8.12` — except that two of the five are the
+deployment-qualification rows below rather than a defect in the code.
 
 
 ## Deployment Qualification

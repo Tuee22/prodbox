@@ -362,10 +362,24 @@ handler can describe that outcome, because the function does not return. Two rul
   provider-issued token is a measurement, not a constant, and a repair that assumes otherwise is
   guessing at the number that decides it.
 
-> **Target.** Both rules are accepted and neither is enforced in the current revision: the
-> control-plane request boundary wraps its interpreter in a cancelling timeout that every role
-> reaches, and the encrypted backend commits its collected state only on the return route. Status
-> lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+**Both rules are now enforced, and the `> **Target.**` block that said neither was is retired
+(Standard C).** It named two defects verbatim, and both are closed.
+
+**The credential rule, Sprint `4.95` (2026-09-12).** `mkEksDrainSession` in
+`src/Prodbox/Lifecycle/Teardown/EksDrainSession.hs` has three deadline bounds and three refusals,
+and the bearer arm carries the expiry it compared against — the "names which of the two refused"
+clause above.
+
+**The reply/effect rule and its admission half, Sprint `4.96` (2026-09-12).** The control-plane
+request boundary no longer wraps its interpreter in a cancelling timeout: the request runs on its
+own thread and the deadline bounds only the wait for it, so an expiry answers the peer while the
+effect continues to its own commit. The encrypted backend commits collected scratch on the exception
+route as well as the return route, before the scratch is released; and the admission half refuses a
+provider apply whose remaining budget cannot hold the least an apply can need, with the bound named.
+
+One consequence is worth stating because it is the rule read from the other end: a drain now *waits*
+for outstanding effects instead of abandoning them. That is slower, and it is the same invariant. A
+bound that says what a parent wants to happen to an effect is not an observation of what did.
 
 ### 6.4 At-least-once processing
 

@@ -9,7 +9,8 @@
 -- the object-store cipher/HMAC inputs from Vault; tests use the explicit hook
 -- seam below.
 module Prodbox.Pulumi.EncryptedBackend
-  ( CheckpointCommitDecision (..)
+  ( CheckpointActionOutcome (..)
+  , CheckpointCommitDecision (..)
   , CheckpointObservability (..)
   , EncryptedBackendError (..)
   , EncryptedBackendHooks (..)
@@ -42,7 +43,7 @@ module Prodbox.Pulumi.EncryptedBackend
   )
 where
 
-import Control.Exception (IOException, bracket, try)
+import Control.Exception (IOException, SomeException, bracket, mask, throwIO, try)
 import Control.Monad qualified
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (Value (Object), eitherDecodeStrict')
@@ -406,22 +407,26 @@ withFencedDecryptedStackEnvironment adapter coordinate leaseCoordinate maybeLega
         case hydrateResult of
           Left err -> pure (Left (EncryptedBackendHydrateFailed err))
           Right () -> do
-            actionResult <- action (fileBackendEnvironment scratch environment)
+            -- Sprint 4.96: the effect may be cancelled, and what it already
+            -- built must still be committed before the scratch is released.
+            attempted <- tryScratchAction (action (fileBackendEnvironment scratch environment))
+            let actionResult = actionReturned attempted
+                rethrowing = rethrowAfterCommit attempted
             collectResult <- collectScratchCheckpoint scratch
             case collectResult of
-              Left err -> pure (Left (EncryptedBackendCollectFailed err))
+              Left err -> rethrowing (Left (EncryptedBackendCollectFailed err))
               Right Nothing ->
-                pure
+                rethrowing
                   ( Left
                       ( EncryptedBackendStoreFailed
                           "fenced desired-present reconcile produced no checkpoint; conditional delete is not permitted"
                       )
                   )
-              Right (Just bytes) -> do
+              Right (Just bytes) -> mask $ \_ -> do
                 authorization <- authorizeCommit
                 case authorization of
                   Left err ->
-                    pure
+                    rethrowing
                       ( Left
                           ( EncryptedBackendStoreFailed
                               ("fenced checkpoint commit refused: " ++ err)
@@ -443,19 +448,20 @@ withFencedDecryptedStackEnvironment adapter coordinate leaseCoordinate maybeLega
                           stackRef
                           (fencedLoadedFromLegacy loaded)
                           actionResult
+                          >>= rethrowing
                       ModelBCasConflict _ ->
-                        pure
+                        rethrowing
                           ( Left
                               ( EncryptedBackendStoreFailed
                                   "fenced checkpoint CAS conflicted with a newer authority version"
                               )
                           )
                       ModelBCasRefusedCorrupt detail ->
-                        pure (Left (EncryptedBackendStoreFailed (Text.unpack detail)))
+                        rethrowing (Left (EncryptedBackendStoreFailed (Text.unpack detail)))
                       ModelBCasEndpointUnready detail ->
-                        pure (Left (EncryptedBackendStoreFailed (Text.unpack detail)))
+                        rethrowing (Left (EncryptedBackendStoreFailed (Text.unpack detail)))
                       ModelBCasUnobservable detail ->
-                        pure (Left (EncryptedBackendStoreFailed (Text.unpack detail)))
+                        rethrowing (Left (EncryptedBackendStoreFailed (Text.unpack detail)))
 
 withMigratedDecryptedStackEnvironment
   :: LifecycleAuthorityAuthentication
@@ -627,7 +633,7 @@ withAuthorityCheckpointStack clients maybeLegacy allowRetirement authorizeCommit
         case hydrateResult of
           Left detail -> pure (Left (EncryptedBackendHydrateFailed detail))
           Right () -> do
-            actionResult <- action scratch
+            attempted <- tryScratchAction (action scratch)
             collected <- collectScratchCheckpoint scratch
             let commit checkpointBytes = do
                   authorized <- authorizeCommit
@@ -651,20 +657,83 @@ withAuthorityCheckpointStack clients maybeLegacy allowRetirement authorizeCommit
                           finalizeAuthorityAction
                             maybeLegacy
                             (authorityLoadedFromLegacy loaded)
-                            actionResult
-            case collected of
-              Left detail -> pure (Left (EncryptedBackendCollectFailed detail))
-              Right collectedBytes ->
-                case decideCheckpointCommit
-                  allowRetirement
-                  (actionFailureDetail actionResult)
-                  collectedBytes of
-                  RefuseRetirementUnpermitted detail ->
-                    pure (Left (EncryptedBackendStoreFailed detail))
-                  RefuseRetirementAfterFailedAction detail ->
-                    pure (Left (EncryptedBackendActionFailed detail))
-                  CommitCheckpointBytes bytes -> commit (Just bytes)
-                  CommitCheckpointRetirement -> commit Nothing
+                            (actionReturned attempted)
+            completeCheckpointTransaction allowRetirement attempted collected commit
+
+-- | Sprint 4.96: finish a checkpoint transaction on both routes.
+--
+-- The commit used to run only where the action returned. An action cancelled by
+-- its caller's transport bound therefore committed nothing, while the effects it
+-- had already produced in a cloud account had landed — and the scratch holding
+-- the record of them was then deleted by its own bracket on the same unwind.
+-- That is an effect with no record, and it is the shape behind a four-day EKS
+-- leak.
+--
+-- Three orderings are load-bearing and must not be rearranged. The collect runs
+-- before any rethrow; the commit runs before any rethrow; and the original
+-- exception is re-raised unchanged, never replaced by a derived one, so a
+-- @timeout@ composed around the caller still fires.
+--
+-- The commit region is masked. An async exception delivered /during/ the commit
+-- would abort it, and the whole point of this function is that the record
+-- survives the first one. It is 'mask' rather than an uninterruptible mask
+-- deliberately: a wedged Authority must not become an unkillable process.
+-- The residual is stated rather than hidden — this is best-effort against a
+-- /second/ cancellation, and single cancellation is the case it closes.
+completeCheckpointTransaction
+  :: Bool
+  -> Either SomeException (Either String a)
+  -> Either String (Maybe ByteString)
+  -> (Maybe ByteString -> IO (Either EncryptedBackendError a))
+  -> IO (Either EncryptedBackendError a)
+completeCheckpointTransaction allowRetirement attempted collected commit =
+  case collected of
+    Left detail -> rethrowing (Left (EncryptedBackendCollectFailed detail))
+    Right collectedBytes ->
+      case decideCheckpointCommit allowRetirement outcome collectedBytes of
+        RefuseRetirementUnpermitted detail ->
+          rethrowing (Left (EncryptedBackendStoreFailed detail))
+        RefuseRetirementAfterFailedAction detail ->
+          rethrowing (Left (EncryptedBackendActionFailed detail))
+        RefuseRetirementAfterInterruptedAction detail ->
+          rethrowing (Left (EncryptedBackendActionFailed detail))
+        CommitCheckpointBytes bytes -> mask (\_ -> commit (Just bytes)) >>= rethrowing
+        CommitCheckpointRetirement -> mask (\_ -> commit Nothing) >>= rethrowing
+ where
+  outcome = checkpointActionOutcome attempted
+
+  rethrowing = rethrowAfterCommit attempted
+
+-- | Re-raise the original interruption once the commit has been attempted.
+--
+-- Sprint 4.96. The exception is the one the action was interrupted by, never a
+-- derived one, so a @timeout@ composed around the caller still fires and an
+-- enclosing bracket still unwinds exactly as it did before the commit existed.
+rethrowAfterCommit
+  :: Either SomeException b
+  -> Either EncryptedBackendError a
+  -> IO (Either EncryptedBackendError a)
+rethrowAfterCommit attempted committed = case attempted of
+  Left interruption -> throwIO interruption
+  Right _ -> pure committed
+
+-- | Run a scratch action so a cancellation is a value rather than an unwind.
+--
+-- Sprint 4.96. It catches asynchronous exceptions too, which is the whole
+-- point: the cancelled action is precisely the case this exists for.
+tryScratchAction
+  :: IO (Either String a) -> IO (Either SomeException (Either String a))
+tryScratchAction = try
+
+-- | The action's own result, for the finalizer that still needs it.
+--
+-- An interrupted action has none; the commit has already happened by the time
+-- this is reached on that route, and 'completeCheckpointTransaction' re-raises
+-- rather than returning, so the placeholder is never observed.
+actionReturned :: Either SomeException (Either String a) -> Either String a
+actionReturned attempted = case attempted of
+  Left interruption -> Left (show interruption)
+  Right result -> result
 
 -- | What the checkpoint transaction is permitted to do with the state the
 -- scratch backend left behind.
@@ -675,8 +744,9 @@ withAuthorityCheckpointStack clients maybeLegacy allowRetirement authorizeCommit
 -- @Maybe@ it did not examine.
 data CheckpointCommitDecision
   = -- | Write these bytes back.  This is also the answer for a mutation that
-    -- failed part-way: the collected state records the deletions that /did/
-    -- land, and discarding it would lose that progress.
+    -- failed part-way, and for one that never returned at all: the collected
+    -- state records the effects that /did/ land, and discarding it would lose
+    -- that progress.
     CommitCheckpointBytes !ByteString
   | -- | The scratch backend holds no stack and the run earned the right to say
     -- so.  Only this constructor authorizes retirement.
@@ -686,6 +756,23 @@ data CheckpointCommitDecision
   | -- | The scratch backend holds no stack, but the action that was supposed to
     -- empty it failed, so its emptiness is not evidence of anything.
     RefuseRetirementAfterFailedAction !String
+  | -- | Sprint 4.96.  The scratch backend holds no stack and the action never
+    -- returned, so its emptiness is evidence of nothing at all — strictly less
+    -- than a failure, which at least decided something.
+    RefuseRetirementAfterInterruptedAction !String
+  deriving (Eq, Show)
+
+-- | Sprint 4.96: how the scratch action ended.
+--
+-- A cancelled action is not a failed one.  A failure is a decision the action
+-- reached and returned; a cancellation is the absence of any decision, and the
+-- two were indistinguishable while this was a @Maybe String@ — an interruption
+-- could only be spelled as @Nothing@, which is what a *success* looks like, and
+-- @Nothing@ is exactly the input that authorizes retirement.
+data CheckpointActionOutcome
+  = CheckpointActionSucceeded
+  | CheckpointActionFailed !String
+  | CheckpointActionInterrupted !String
   deriving (Eq, Show)
 
 -- | Pure: decide the fate of the retained checkpoint.
@@ -707,19 +794,19 @@ data CheckpointCommitDecision
 decideCheckpointCommit
   :: Bool
   -- ^ Whether this transaction may retire at all.
-  -> Maybe String
-  -- ^ The action's failure detail; 'Nothing' when it succeeded.
+  -> CheckpointActionOutcome
+  -- ^ How the action ended.
   -> Maybe ByteString
   -- ^ The checkpoint collected from scratch.
   -> CheckpointCommitDecision
-decideCheckpointCommit allowRetirement actionFailure collected =
+decideCheckpointCommit allowRetirement outcome collected =
   case collected of
     Just bytes -> CommitCheckpointBytes bytes
     Nothing
       | not allowRetirement ->
           RefuseRetirementUnpermitted
             "fenced desired-present reconcile produced no checkpoint; Authority retirement is not permitted"
-      | Just detail <- actionFailure ->
+      | CheckpointActionFailed detail <- outcome ->
           RefuseRetirementAfterFailedAction
             ( detail
                 ++ " (the retained Pulumi checkpoint was PRESERVED, not retired: "
@@ -727,12 +814,28 @@ decideCheckpointCommit allowRetirement actionFailure collected =
                 ++ "absence is not evidence that the stack is gone. Resolve the "
                 ++ "failure and retry; the stack's state is intact.)"
             )
+      | CheckpointActionInterrupted detail <- outcome ->
+          RefuseRetirementAfterInterruptedAction
+            ( detail
+                ++ " (the retained Pulumi checkpoint was PRESERVED, not retired: "
+                ++ "this action never returned, so it decided nothing at all and "
+                ++ "its empty scratch is evidence of nothing. Whatever it had "
+                ++ "already built is still there; the stack's state is intact.)"
+            )
       | otherwise -> CommitCheckpointRetirement
 
--- | The action's failure detail, or 'Nothing' when it succeeded. Keeps
--- 'decideCheckpointCommit' pure and independent of the action's result type.
-actionFailureDetail :: Either String a -> Maybe String
-actionFailureDetail = either Just (const Nothing)
+-- | How the action ended, from its result or the exception that replaced it.
+--
+-- Sprint 4.96 replaced @actionFailureDetail :: Either String a -> Maybe String@
+-- with this. That projection was total and lossy in the one direction that
+-- mattered: it could say "succeeded" or "failed", and an action that never
+-- returned had to borrow one of the two.
+checkpointActionOutcome
+  :: Either SomeException (Either String a) -> CheckpointActionOutcome
+checkpointActionOutcome attempted = case attempted of
+  Left interruption -> CheckpointActionInterrupted (show interruption)
+  Right (Left detail) -> CheckpointActionFailed detail
+  Right (Right _) -> CheckpointActionSucceeded
 
 loadAuthorityCheckpoint
   :: AuthorityCheckpointClients
@@ -1052,22 +1155,29 @@ withDecryptedStackWith hooks stackRef action = do
             case hydrateResult of
               Left err -> pure (Left (EncryptedBackendHydrateFailed err))
               Right () -> do
-                actionResult <- action scratch
+                -- Sprint 4.96: same exception route as the two transactions
+                -- above, so the module has no surviving returns-path-only
+                -- commit for a rule to be true of only sometimes.
+                attempted <- tryScratchAction (action scratch)
+                let actionResult = actionReturned attempted
+                    rethrowing = rethrowAfterCommit attempted
                 collectResult <- collectScratchCheckpoint scratch
                 case collectResult of
-                  Left err -> pure (Left (EncryptedBackendCollectFailed err))
-                  Right Nothing -> do
+                  Left err -> rethrowing (Left (EncryptedBackendCollectFailed err))
+                  Right Nothing -> mask $ \_ -> do
                     deleteResult <- encryptedBackendDelete hooks stackRef
                     case deleteResult of
-                      Left err -> pure (Left (EncryptedBackendDeleteFailed err))
+                      Left err -> rethrowing (Left (EncryptedBackendDeleteFailed err))
                       Right () ->
                         finalizeAction hooks stackRef (loadedCheckpointFromLegacy loaded) actionResult
-                  Right (Just bytes) -> do
+                          >>= rethrowing
+                  Right (Just bytes) -> mask $ \_ -> do
                     storeResult <- encryptedBackendStore hooks stackRef bytes
                     case storeResult of
-                      Left err -> pure (Left (EncryptedBackendStoreFailed err))
+                      Left err -> rethrowing (Left (EncryptedBackendStoreFailed err))
                       Right () ->
                         finalizeAction hooks stackRef (loadedCheckpointFromLegacy loaded) actionResult
+                          >>= rethrowing
 
 -- | Sprint 7.21: read-only observability query for a per-run stack's
 -- encrypted checkpoint. Production entry point used by the residue path

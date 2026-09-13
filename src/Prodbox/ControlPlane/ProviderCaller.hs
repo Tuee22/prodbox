@@ -10,6 +10,7 @@ module Prodbox.ControlPlane.ProviderCaller
   , renderProviderCallerError
   , dispatchHostProviderIntent
   , dispatchHostProviderIntentOwnedBy
+  , dispatchHostProviderIntentExecutedOwnedBy
   , dispatchHostProviderIntentFresh
   , dispatchAuthenticatedProviderIntent
   , dispatchAuthenticatedProviderIntentFresh
@@ -25,8 +26,10 @@ import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Prodbox.ControlPlane.AuthorityProviderEndpoint
   ( AuthorityProviderClientError
+  , ProviderExecutionOutcome
   , admitAuthorityProviderIntentOwnedBy
   , dispatchAuthorityProviderIntent
+  , dispatchAuthorityProviderIntentExecutedOwnedBy
   , dispatchAuthorityProviderIntentOwnedBy
   , dispatchAuthorityProviderIntentWithOperation
   )
@@ -108,6 +111,38 @@ dispatchHostProviderIntentOwnedBy caller repoRoot rawSubmissionKey intent owner 
         Right (Left err) -> Left (ProviderCallerAuthenticationFailed err)
         Right (Right (Left err)) -> Left (ProviderCallerDispatchFailed err)
         Right (Right (Right evidence)) -> Right evidence
+
+-- | Sprint 4.97: the same dispatch, keeping the whole outcome.
+--
+-- The form above returns the evidence text, which is what a caller that only
+-- narrates a receipt needs. A caller that has to tell a destroy that ran from a
+-- destroy that found nothing needs the execution kind and the coordinate the
+-- Provider Worker produced, and this is the only route that carries them.
+dispatchHostProviderIntentExecutedOwnedBy
+  :: ExternalLifecycleAuthorityCaller
+  -> FilePath
+  -> Text
+  -> ProviderIntent
+  -> ProviderOperationCleanupOwner
+  -> IO (Either ProviderCallerError ProviderExecutionOutcome)
+dispatchHostProviderIntentExecutedOwnedBy caller repoRoot rawSubmissionKey intent owner =
+  case mkClientSubmissionKey rawSubmissionKey of
+    Left err -> pure (Left (ProviderCallerSubmissionKeyInvalid err))
+    Right submissionKey -> do
+      authenticated <-
+        withHostLifecycleAuthorityAuthentication caller repoRoot $ \authentication ->
+          withLifecycleAuthorityProviderAuthenticatedTransport authentication $ \transport ->
+            fmap snd
+              <$> dispatchAuthorityProviderIntentExecutedOwnedBy
+                transport
+                submissionKey
+                intent
+                owner
+      pure $ case authenticated of
+        Left err -> Left (ProviderCallerAuthenticationFailed err)
+        Right (Left err) -> Left (ProviderCallerAuthenticationFailed err)
+        Right (Right (Left err)) -> Left (ProviderCallerDispatchFailed err)
+        Right (Right (Right outcome)) -> Right outcome
 
 dispatchAuthenticatedProviderIntent
   :: LifecycleAuthorityAuthentication

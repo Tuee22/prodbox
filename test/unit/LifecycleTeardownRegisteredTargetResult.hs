@@ -371,6 +371,9 @@ stackAuthorization key scope =
         verified
         ( StackDestroyFromVerifiedPrimary
             key
+            ( ExactResourceInventory
+                (ObservedResourceIdentity "arn:aws:fixture:stack" :| [])
+            )
             ( VerifiedPrimaryCheckpoint
                 (CheckpointProvenance "primary://registered-target-result")
                 (CheckpointVersion "primary-v1")

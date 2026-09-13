@@ -147,9 +147,9 @@ lifecycleTeardownAwsStackAdapterSuite =
     it "mints private destroy authority only from primary or complete-manifest decisions" $ do
       let verifiedPresent = decodedVerified (observeRequest AwsTestKey) exactPresentIdentity
           primaryDecision =
-            StackDestroyFromVerifiedPrimary AwsTestKey primaryAuthority
+            StackDestroyFromVerifiedPrimary AwsTestKey decisionInventory primaryAuthority
           manifestDecision =
-            StackDestroyFromVerifiedManifest AwsTestKey manifestAuthority
+            StackDestroyFromVerifiedManifest AwsTestKey decisionInventory manifestAuthority
       forM_
         [ (primaryDecision, AwsStackDestroyFromPrimaryCheckpoint)
         ,
@@ -174,7 +174,7 @@ lifecycleTeardownAwsStackAdapterSuite =
       authorizeAwsStackDestroy
         providerRevision
         verifiedPresent
-        (StackRestoreBackupThenDestroy AwsTestKey backupAuthority)
+        (StackRestoreBackupThenDestroy AwsTestKey decisionInventory backupAuthority)
         `shouldBe` Left AwsStackDestroyCheckpointRestoreRequired
       authorizeAwsStackDestroy
         providerRevision
@@ -184,13 +184,13 @@ lifecycleTeardownAwsStackAdapterSuite =
       authorizeAwsStackDestroy
         providerRevision
         verifiedPresent
-        (StackDestroyFromVerifiedPrimary AwsEksSubzoneKey primaryAuthority)
+        (StackDestroyFromVerifiedPrimary AwsEksSubzoneKey decisionInventory primaryAuthority)
         `shouldBe` Left
           (AwsStackDestroyDecisionKeyMismatch AwsTestKey AwsEksSubzoneKey)
       authorizeAwsStackDestroy
         providerRevision
         verifiedPresent
-        (StackDestroyFromVerifiedPrimary AwsTestKey manifestAuthority)
+        (StackDestroyFromVerifiedPrimary AwsTestKey decisionInventory manifestAuthority)
         `shouldBe` Left (AwsStackDestroyDecisionAuthorityMismatch manifestAuthority)
       let verifiedAbsent = decodedVerified (observeRequest AwsTestKey) exactAbsenceEvidence
       authorizeAwsStackDestroy
@@ -202,7 +202,7 @@ lifecycleTeardownAwsStackAdapterSuite =
       authorizeAwsStackDestroy
         providerRevision
         eksVerified
-        (StackDestroyFromVerifiedPrimary AwsEksKey primaryAuthority)
+        (StackDestroyFromVerifiedPrimary AwsEksKey decisionInventory primaryAuthority)
         `shouldBe` Left AwsStackDestroyEksDrainAuthorizationRequired
 
     it "validates stack config and sealed revision before returning DestroyRegisteredStack" $ do
@@ -255,7 +255,7 @@ lifecycleTeardownAwsStackAdapterSuite =
               ( authorizeAwsStackDestroy
                   providerRevision
                   verified
-                  (StackDestroyFromVerifiedManifest AwsTestKey manifestAuthority)
+                  (StackDestroyFromVerifiedManifest AwsTestKey decisionInventory manifestAuthority)
               )
           request =
             mustRight
@@ -566,7 +566,7 @@ manifestAuthority =
 decisionFailures :: NonEmpty StackDecisionRefusal
 decisionFailures = StackOwnershipManifestAbsent :| []
 
-refusedDecision :: StackDesiredAbsenceDecision
+refusedDecision :: StackDesiredAbsenceDecision surface
 refusedDecision = StackDesiredAbsenceRefused AwsEksKey decisionFailures
 
 providerRevision :: ProviderRevision
@@ -598,7 +598,7 @@ destroyAuthorizationFor key revision =
     ( authorizeAwsStackDestroy
         revision
         (decodedVerified (observeRequest key) exactPresentIdentity)
-        (StackDestroyFromVerifiedPrimary key primaryAuthority)
+        (StackDestroyFromVerifiedPrimary key decisionInventory primaryAuthority)
     )
 
 destroyRequestFor
@@ -636,7 +636,7 @@ observeSignature = mkAwsStackObserveRequest
 destroyAuthorizationSignature
   :: ProviderRevision
   -> VerifiedAwsStackObservation 'ObserveStackForDecision
-  -> StackDesiredAbsenceDecision
+  -> StackDesiredAbsenceDecision surface
   -> Either AwsStackDestroyRefusal AwsStackDestroyAuthorization
 destroyAuthorizationSignature = authorizeAwsStackDestroy
 
@@ -645,3 +645,13 @@ readBackSignature
   -> ObservationRevision
   -> AwsStackObservationRequest 'ReadBackDestroyedStack
 readBackSignature = mkAwsStackDestroyReadBackRequest
+
+-- | Sprint 4.97: the inventory the decision was taken over.
+--
+-- The destroy arms carry it now, so the manifest-identity comparison inside
+-- `authorizeAwsStackDestroy` tests the manifest against the list the decision
+-- saw rather than against a second, separately derived reading of the same
+-- observation.
+decisionInventory :: ExactResourceInventory
+decisionInventory =
+  ExactResourceInventory (ObservedResourceIdentity exactPresentIdentity :| [])

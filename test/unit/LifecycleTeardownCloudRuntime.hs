@@ -17,6 +17,10 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.ControlPlane.AuthorityOperationClient
+import Prodbox.ControlPlane.AuthorityProviderEndpoint
+  ( ProviderExecutionOutcome
+  , providerExecutionOutcome
+  )
 import Prodbox.ControlPlane.AwsStackReaderRepository
 import Prodbox.ControlPlane.CleanupRunClient
 import Prodbox.ControlPlane.CleanupRunEndpoint (CleanupRunCommand (..))
@@ -24,6 +28,9 @@ import Prodbox.ControlPlane.EksDrainIntentClient
 import Prodbox.ControlPlane.EksDrainIntentRepository
 import Prodbox.ControlPlane.EksDrainReadBackReceiptClient
 import Prodbox.ControlPlane.EksDrainReadBackReceiptRepository
+import Prodbox.ControlPlane.ProviderWorkerExecution
+  ( ProviderIntentExecutionResult (..)
+  )
 import Prodbox.ControlPlane.PulumiCheckpointClient
 import Prodbox.Lifecycle.CleanupRun
 import Prodbox.Lifecycle.CleanupRunRunner
@@ -35,6 +42,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkAwsEksSubzoneProviderStackConfig
   , mkAwsTestProviderStackConfig
   , mkProviderRevision
+  , providerIntentCoordinate
   )
 import Prodbox.Lifecycle.PulumiCheckpoint
 import Prodbox.Lifecycle.Teardown.AwsCheckpointInterpreter
@@ -261,7 +269,10 @@ registeredInterpreter environment owner =
             )
           pure
             ( TeardownProviderCompleted
-                (providerEvidence (fakeProviderMode environment) intent)
+                ( observedOutcome
+                    intent
+                    (providerEvidence (fakeProviderMode environment) intent)
+                )
             )
     , awsRegisteredTargetReadStackDecisionInputs =
         \_ _ _ -> pure (Left "fixture decision reader refused")
@@ -683,3 +694,9 @@ mustRight :: (Show left) => Either left right -> right
 mustRight result = case result of
   Left err -> error ("expected Right, got Left " <> show err)
   Right value -> value
+
+-- | Sprint 4.97: the fixture answers with the coordinate the intent carries.
+observedOutcome :: ProviderIntent -> Text -> ProviderExecutionOutcome
+observedOutcome intent evidence =
+  providerExecutionOutcome
+    (ProviderIntentExecutionObserved (providerIntentCoordinate intent) evidence)

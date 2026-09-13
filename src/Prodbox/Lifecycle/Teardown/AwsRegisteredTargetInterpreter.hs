@@ -67,6 +67,7 @@ import Prodbox.Lifecycle.Teardown.Execution
   , teardownExecutionObservationScope
   , teardownExecutionOperationId
   , teardownExecutionOperationIdFor
+  , teardownExecutionSurfaceWitness
   )
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
@@ -1017,6 +1018,7 @@ reconcilePresentStack interpreter context target binding verified = do
               pure (refused (AwsRegisteredTargetObservationSetInvalid err))
             Right complete ->
               case decideStackDesiredAbsence
+                (teardownExecutionSurfaceWitness context)
                 key
                 complete
                 (internalAwsStackDecisionInputsCheckpointPair inputs)

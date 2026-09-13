@@ -713,6 +713,25 @@ and R9 is purely cross-boundary and lives there.)
   is bounded by the shorter of its own ceiling and the expiry of the token it is issued against, so
   a bound derived from a provider-issued credential is a measurement rather than a constant, and a
   repair that assumes otherwise is guessing at the number that decides it.
+
+  **Enforcement of the credential half (Sprint `4.95`, 2026-09-12).** The rule is typed at
+  `mkEksDrainSession` in `src/Prodbox/Lifecycle/Teardown/EksDrainSession.hs`. Its three deadline
+  bounds — a deadline that authorizes nothing, a deadline that outlives the Provider-issued bearer,
+  and a deadline that outlives the module's own ceiling — now have three refusals, and the bearer
+  arm carries the bearer's expiry so an operator can subtract and learn how much credential lifetime
+  the run held. That is the general form of counterexample
+  `CASCADE-QUALIFICATION-EKS-DRAIN-LEASE-EXCEEDS-BEARER-EXPIRY-2026-09-12`, where the bearer bound
+  and a degenerate deadline shared one constructor: a live cycle reported a `now` and a `deadline`
+  that satisfied every bound the refusal named, and refused anyway.
+
+  Two things about that incident belong in the rule rather than only in its record. A lease equal to
+  its own ceiling is not a lease with maximum headroom; it is a lease that no credential can back,
+  because the mint refuses an expiry beyond its own short-lived bound and cannot precede the clock
+  read the deadline is computed from. And the repair for such a lease is not a shorter guess: the
+  request is derived from work this repository measured — the bounded ephemeral calls a drain commit
+  issues before its first mutation — while the credential's own lifetime remains a measurement this
+  revision has not taken. Deriving a bound from the wrong side of the comparison is how a constant
+  gets mistaken for a measurement in the first place.
 - **R6 — Structured concurrency only.** Coordination paths use scoped concurrency (spawn-within-a-scope,
   race, cancel-on-exit) — never unstructured fire-and-forget tasks or ad-hoc sleeps. Structured scopes
   make cancellation and async-exception safety analyzable; unstructured tasks leak and hide races. (The

@@ -129,8 +129,12 @@ import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.OwnershipManifest
   ( OwnershipManifestDecisionEvidence
   , OwnershipManifestDecisionView (..)
+  , captureCompleteOwnershipManifestEvidence
+  , ownershipManifestDecisionEntryIdentities
+  , ownershipManifestDecisionStackKey
   , ownershipManifestDecisionView
   , ownershipManifestObservationOnly
+  , restoreCompleteOwnershipManifestEvidence
   )
 import Prodbox.Lifecycle.Teardown.Registry
   ( lifecycleRegistryRevision
@@ -943,8 +947,28 @@ manifestToWire evidence = case ownershipManifestDecisionView evidence of
           (scopeToWire (ownershipManifestEvidenceScope observation))
           (manifestResultToWire (ownershipManifestResult observation))
       )
-  OwnershipManifestDecisionComplete {} ->
-    Left AwsStackReaderCompleteManifestUnsupported
+  -- Sprint 4.97.  This arm refused outright, which is what made the decision's
+  -- manifest authority structurally undecidable rather than merely unreached:
+  -- the one branch that can act on AWS coordinates instead of on a checkpoint
+  -- could never be constructed on the far side, so the ladder could only
+  -- refuse.
+  --
+  -- Complete evidence that names no identity for its own key is still refused,
+  -- and that is what `AwsStackReaderCompleteManifestUnsupported` now means. An
+  -- identity-less manifest is not authority: it commits and reads back exactly
+  -- as a real one does and authorizes the destruction of nothing, which is the
+  -- failure mode worth keeping a name for.
+  OwnershipManifestDecisionComplete {}
+    | Nothing <-
+        ownershipManifestDecisionEntryIdentities
+          (ownershipManifestDecisionStackKey evidence)
+          evidence ->
+        Left AwsStackReaderCompleteManifestUnsupported
+    | otherwise ->
+        ManifestCompleteWire
+          <$> first
+            (AwsStackReaderFieldInvalid . Text.pack . show)
+            (captureCompleteOwnershipManifestEvidence evidence)
 
 manifestFromWire
   :: ManifestWire -> Either AwsStackReaderError OwnershipManifestDecisionEvidence
@@ -964,8 +988,10 @@ manifestFromWire wire = case wire of
             , ownershipManifestResult = observedResult
             }
       )
-  ManifestCompleteWire _ ->
-    Left AwsStackReaderCompleteManifestUnsupported
+  ManifestCompleteWire bytes ->
+    first
+      (AwsStackReaderFieldInvalid . Text.pack . show)
+      (restoreCompleteOwnershipManifestEvidence bytes)
 
 checkpointToWire :: CheckpointObservation -> CheckpointObservationWire
 checkpointToWire observation =

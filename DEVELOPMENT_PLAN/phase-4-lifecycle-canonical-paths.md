@@ -12277,10 +12277,21 @@ convergence, records it durably, and can construct a local-uninstall plan only a
   would let a replay commit a second intent for one operation, which is exactly the ambiguity the
   durable intent exists to remove.
 - **Liveness is the only thing a clock decides.** The drain deadline is `now + lease` under an
-  operator-declared lease bounded *at construction* by the session module's own ceiling, so a
+  operator-declared lease bounded *at construction* by the session module's own ceiling, ~~so a
   deadline this runtime computes cannot be refused later by `mkEksDrainSession` for a reason an
-  operator could only discover mid-cascade. The execution identity the deadline callback receives
+  operator could only discover mid-cascade~~. The execution identity the deadline callback receives
   supplies no freedom, which is why it is ignored rather than consulted.
+
+  **Falsified live and repaired 2026-09-12 by Sprint `4.95` (Standard C).** The struck clause was
+  false, and a four-day-old live cycle is the evidence: a construction ceiling bounds the lease
+  against *this module's* limit and says nothing about the Provider-issued bearer that has to back
+  it, so a lease admitted at construction was refused at `mkEksDrainSession` for exactly the reason
+  the clause promised an operator would never meet. The ceiling was never the binding bound. The
+  invariant is restored from the other side: the lease is now derived from the bounded work a drain
+  commit issues rather than from the ceiling, and `mkEksDrainLeaseSeconds` refuses a lease that
+  cannot cover it — so a lease this runtime constructs is one the drain can actually spend. What a
+  construction-time bound still cannot promise is that a credential will back it, and the refusal
+  that says so now carries the bearer's expiry rather than two numbers that look satisfiable.
 - **One registered-target interpreter, by construction.** Checkpoint recovery, EKS drain, and
   registered reconciliation must address the same Provider boundary; the composition builds exactly
   one interpreter and lets `mkCloudRuntime` normalize it, and the recursion this creates is the
@@ -13844,17 +13855,22 @@ Phase `4` owns; it makes no claim about the other two.
 
 None.
 
-## Sprint 4.95: A Lease That Cannot Outlive Its Bearer [📋 Planned]
+## Sprint 4.95: A Lease That Cannot Outlive Its Bearer [✅ Done]
 
-**Status**: Planned. Phase `4` own-surface reopen (Standard A/L/P) on the EKS drain session this
-phase owns. Sprint `6.5`'s live campaign stops here and can go no further, so every later
-Standard-P surface in the queue is unqualifiable until it moves.
+**Status**: Done (2026-09-12). Phase `4` own-surface reopen (Standard A/L/P) on the EKS drain
+session this phase owns. Sprint `6.5`'s live campaign stopped here and could go no further, so every
+later Standard-P surface in the queue was unqualifiable until it moved.
 **Doctrine**: [Chaos Hardening Doctrine](../documents/engineering/chaos_hardening_doctrine.md)'s
 bounding rule and [Pure Functional Programming
 Standards](../documents/engineering/pure_fp_standards.md)'s one-absolute-deadline rule.
 **Implementation**: `src/Prodbox/Lifecycle/Teardown/EksDrainSession.hs`,
 `src/Prodbox/Lifecycle/Teardown/CloudRuntimeProduction.hs`,
-`src/Prodbox/Lifecycle/Teardown/EksDrainInterpreter.hs`, and `test/unit/Main.hs`.
+`src/Prodbox/Lifecycle/Teardown/EksDrainInterpreter.hs`,
+`src/Prodbox/Test/CascadeQualification.hs`, `src/Prodbox/Test/LifecycleCleanupClient.hs`,
+`test/unit/LifecycleTeardownEksDrainSession.hs`, and
+`test/unit/LifecycleTeardownCloudRuntimeProduction.hs`. The two `src/Prodbox/Test/` modules are the
+sprint's own addition to the declared surface: they are the only production callers that choose a
+lease, so the ceiling could not stop being the request without them.
 **Blocked by**: none.
 **Live-proof**: pending. The measurement this sprint exists to capture is only available from a
 cycle that reaches the drain commit, which the current refusal already does.
@@ -13905,9 +13921,82 @@ that produced the refusal did not capture it.
 3. The retired ordering explanation is corrected where a reader meets it, not rewritten away.
 4. Full unit suite and `prodbox dev check` exit 0.
 
+### Validation Result
+
+**The registered account was wrong about the mechanism, and correcting it changed the repair.** It
+attributed the refusal to ordering — the deadline computed before the bearer was minted. That
+inference runs backwards: the mint is *later* than the clock read the deadline comes from, and a
+later mint yields a later expiry, which relaxes the bearer bound. The live refusal settles it
+directly, because `deadline - now` is exactly the lease, so both clock reads returned the same
+second and ordering contributed nothing. Both comparisons are strict, so a deadline equal to the
+ceiling passes the ceiling; only the bearer bound could have failed. And it must fail for *any*
+lease at the ceiling, because the Provider's own mint refuses a bearer whose expiry exceeds the same
+900-second bound measured from a clock read no earlier than this one. A lease equal to the ceiling
+is not a lease with maximum headroom — it is a lease no credential this Provider issues can back.
+
+**Three bounds, three refusals.** `EksDrainDeadlineInvalid` carried a degenerate deadline and the
+bearer bound in one constructor with one payload, which is why a live cycle could report a `now` and
+a `deadline` satisfying every bound the refusal named and refuse anyway. The disjunction is split.
+`EksDrainDeadlineBeyondBearerExpiry now deadline bearerExpiry` names the bearer bound and carries
+the expiry it compared against, so an operator can subtract and learn how much credential lifetime
+the run held; `EksDrainDeadlineBeyondMaximum` gains `now` so its comparison is reconstructible from
+the refusal alone; `EksDrainDeadlineInvalid` now means only what its name says and has a test for
+the first time.
+
+**The lease stops being the ceiling, and the derivation is enforced rather than used.**
+`eksDrainCommitSelectionInvocations` is counted from `acquireVerifiedEksDrainSelection` — the
+initial Kubernetes UID, its confirmation, then load-balancer services, ingresses, controller owners
+and delete-policy volumes — and `minimumEksDrainLeaseSeconds` is that count plus one call's slack at
+the ephemeral client's own per-invocation bound, **280 s**. Both production callers that choose a
+lease now ask for it. `mkEksDrainLeaseSeconds` refuses anything shorter with
+`ProductionCloudDrainLeaseBelowMinimum`, which is what keeps the derivation from becoming a value
+nothing consults — the failure shape § 7.1 of the purity standards names. A one-second lease used to
+be accepted.
+
+**Nothing clamps, deliberately.** A clamp would satisfy the boundary case and violate this sprint's
+own second validation item, and it would trade a loud refusal for an obscure mid-drain expiry. The
+bearer bound still refuses; what changed is that the request is now derivable from something
+measured. The credential's own lifetime remains unmeasured, and the widened refusal is the
+instrument the next live cycle captures it with.
+
+**Two claims in the registered account are corrected in place beyond the mechanism.** The repair
+site is `mkEksDrainSession`, not `selectWithProjectionClient`: the latter is one of four production
+callers that each hold the projection, so repairing it alone would leave the drain-effect, read-back
+and destroy-admission paths on the old arithmetic. And `defaultDrainTimeout`, the 300-second
+completion deadline the account proposed comparing a clamp against, belongs to the local RKE2 drain
+in `src/Prodbox/Lifecycle/K8sDrain.hs` and is reached only from `src/Prodbox/CLI/Rke2.hs`; nothing
+under `src/Prodbox/Lifecycle/Teardown/` imports it. The EKS path never carried that bound. Sprint
+`4.86`'s "a deadline this runtime computes cannot be refused later by `mkEksDrainSession`" is
+annotated where a reader meets it: it was falsified by this cycle, because a construction ceiling
+bounds the lease against this module's limit and says nothing about the credential.
+
+**The doctrine deliverable was already half-landed and is not restated.** Both the chaos doctrine's
+R5 and the purity standards' § 6.3 already carry the rule, the latter including "a refusal names
+which of the two refused". What was owed is enforcement: R5 gains an enforcement paragraph naming
+this counterexample and `mkEksDrainSession`, and § 6.3's `> **Target.**` block — which asserted that
+*neither* of its two rules is enforced — is corrected in place to claim only the reply/effect half,
+which Sprint `4.96` owns.
+
+Focused EKS-drain-session **9/9** including the new three-bound table, focused production cloud
+runtime **6/6**, primary unit **4,973/4,974**, canonical `prodbox dev check` exits 0.
+
+No deletion-ledger row was owed. The collapsed refusal was never registered as one — it was found
+by reading the live refusal, not the ledger — and this sprint removed no compatibility surface, so
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is unchanged and its counts are
+untouched.
+
+The one primary-unit failure is environmental and is recorded rather than absorbed. `injects the
+Provider Worker RTS policy and 1120 MiB Guaranteed-QoS envelope` builds a chart deployment plan that
+reads Kubernetes Endpoints through a real `kubectl`, and `rke2-server` is inactive on this host, so
+it refuses with `dial tcp 127.0.0.1:8080: connect: connection refused`. No file this sprint changed
+is on that path — the sprint's whole diff is drain-lease arithmetic, its two callers, and their
+tables — and the case has no dependency on any of them. It is a missing local cluster, not a
+regression, and it will pass on a host where the substrate is up.
+
 ### Remaining Work
 
-All of it.
+None on the code-owned surface. The bearer's issued lifetime is a live measurement, and Sprint
+`6.5`'s next cascade-qualification cycle is where the widened refusal captures it.
 
 ## Documentation Requirements
 
@@ -13927,17 +14016,17 @@ All of it.
 - Record the Phase `4` own-surface reopen in [README.md](README.md) and
   [00-overview.md](00-overview.md).
 
-## Sprint 4.96: The Deadline Cancels The Reply, Never The Effect [📋 Planned]
+## Sprint 4.96: The Deadline Cancels The Reply, Never The Effect [✅ Done]
 
-**Status**: Planned. Phase `4` own-surface reopen (Standard A/L/P) on the control-plane request
-boundary and the encrypted-backend commit ordering this phase owns.
+**Status**: Done (2026-09-12). Phase `4` own-surface reopen (Standard A/L/P) on the control-plane
+request boundary and the encrypted-backend commit ordering this phase owns.
 **Doctrine**: [Lifecycle Control-Plane
 Architecture](../documents/engineering/lifecycle_control_plane_architecture.md)'s non-negotiable
 invariants and [Chaos Hardening
 Doctrine](../documents/engineering/chaos_hardening_doctrine.md)'s crash-only recovery rule.
 **Implementation**: `src/Prodbox/ControlPlane/Runtime.hs`,
-`src/Prodbox/Capacity/ProviderWorkerBudget.hs`, `src/Prodbox/Pulumi/EncryptedBackend.hs`, and
-`test/unit/Main.hs`.
+`src/Prodbox/Capacity/ProviderWorkerBudget.hs`, `src/Prodbox/Pulumi/EncryptedBackend.hs`,
+`test/unit/Main.hs`, `test/unit/FencedCheckpoint.hs`, and `test/unit/ControlPlaneServer.hs`.
 **Blocked by**: none.
 **Live-proof**: pending. A create deliberately interrupted mid-effect, and a subsequent cascade that
 names what it made, is Sprint `7.41`'s evidence; this sprint's own surface is provable without AWS.
@@ -13988,9 +14077,83 @@ cancellation, unchanged.
    margin, or the sprint records why they may.
 4. Full unit suite and `prodbox dev check` exit 0.
 
+### Validation Result
+
+**The deadline now bounds a wait rather than the work.** `serveControlPlaneConnection` spawns the
+request on its own thread, registers the handle, and applies the connection's `timeout` to the
+*wait* for it. An expiry answers the peer with the reply it always did; the effect keeps running and
+reaches its own commit. Three properties are load-bearing and are stated rather than left to be
+rediscovered. The deadline stays *inside* `withResponseObligation`, because a timeout wrapped
+outside delivers an async exception into the obligation, which answers its own cancellation refusal
+and re-raises — the peer would get `503 shutting-down` and a second write would be a second reply on
+one connection. The connection is joined under `finally`, on the return route and the re-raise route
+alike, so an in-flight effect still holds the admission machine's slot and the socket is not closed
+under it. And the child is joined, never cancelled: cancelling it here would restate the defect,
+because a bound that says what a parent *wants* to happen to an effect is not an observation of what
+did. The cost is real and recorded rather than hidden — a drain now waits for outstanding effects
+instead of abandoning them.
+
+**The encrypted backend commits on the exception route, in all three of its transactions.** The
+module had no exception-route commit at all; its only `bracket` guards a temp file for the legacy
+export. Worse than "does not commit": `withRamScratch` releases through `withTempDirectory`, which
+*deletes* the scratch on the same unwind, so the exception route's single effect on the collected
+state was to destroy it. `withAuthorityCheckpointStack`, `withFencedDecryptedStackEnvironment` and
+`withDecryptedStackWith` now run their action through `tryScratchAction`, collect, commit under
+`mask`, and then re-raise the original exception unchanged so an enclosing bound still fires. All
+three were converted rather than just the Provider Worker's, because a rule that holds in one of
+three transactions is a rule a reader cannot use.
+
+**An interrupted action is a third outcome, not a `Nothing`.** This is the part the deliverable's
+wording does not reach and the defect depends on. `decideCheckpointCommit` took
+`Maybe String` — "failed with this detail" or "succeeded" — so an action that never returned could
+only be spelled `Nothing`, which is exactly what a *success* looks like, and `Nothing` is the one
+input that authorizes retiring the Authority's only record of a stack. `CheckpointActionOutcome`
+makes the three cases distinct and `RefuseRetirementAfterInterruptedAction` gives the cancelled one
+a refusal of its own, on the ground that a failure decided something and a cancellation decided
+nothing. Present bytes are still committed in all three outcomes, which is what makes a cancelled
+effect's progress durable.
+
+**The zero-margin coincidence is closed, and the ordering is now strict.** The Provider Worker's
+server envelope was the flat five-minute role default, which is *equal* to
+`providerWorkerMaximumChildDeadlineMilliseconds` — so a child permitted to consume the whole
+envelope left nothing for the Provider's own framing, decode, encode and write, and the envelope
+could only fire during the child. It now gets `providerWorkerServerEnvelopeMicros`, the child
+deadline plus one overhead term, and `providerWorkerResponseTimeoutMicros` — what the Authority
+waits — becomes that envelope plus one more, on the same principle: every layer that has to
+serialise a reply is allowed the time to do it. The three bounds are asserted as strict
+inequalities rather than as three numbers, because the defect was an equality nobody had written
+down, and two equal bounds race.
+
+**Admission refuses an apply the budget cannot hold, reusing the existing refusal.**
+`controlPlaneRejectionReply` is lifted out of `refuseControlPlaneConnection`'s `where` clause so the
+accept-time machine and the apply-time check share one constructor and one renderer rather than
+growing two vocabularies for the same refusal. The bound is named on the role's own diagnostic
+rather than on the wire, because a production refusal body carries no detail by design.
+`providerWorkerMinimumApplyEffectMicros` is authored rather than measured — no provider-apply
+profile exists — and it reuses an already-authored term instead of introducing a second independent
+number to be wrong about.
+
+**The doctrine deliverable was a retirement, not an authoring.** Invariant 19 already existed in the
+control-plane architecture and its purity twin in § 6.3; what existed alongside both was a
+`> **Target.**` note saying they were accepted and unenforced, naming these two exact defects. Adding
+a numbered entry would have duplicated 19. The notes are retired and replaced with enforcement
+paragraphs.
+
+**The cancellation test is proven able to fail.** Against a mutation that restores the
+returns-path-only commit in the fenced transaction, `commits what a cancelled action already built,
+then re-raises unchanged` fails; the mutation was reverted and the tree re-verified before closing.
+The negative control — a cancelled action that wrote no checkpoint — asserts zero CAS writes, so the
+positive case cannot pass by committing unconditionally.
+
+Focused fenced-checkpoint **5/5**, checkpoint-retirement **7/7**, primary unit **4,977/4,978**,
+canonical `prodbox dev check` exits 0. The single failure is the same environmental one Sprint
+`4.95` recorded: a chart-plan case that reads Kubernetes Endpoints through a real `kubectl` while
+`rke2-server` is inactive on this host.
+
 ### Remaining Work
 
-All of it.
+None on the code-owned surface. A create deliberately interrupted mid-effect, followed by a cascade
+that names what it made, is Sprint `7.41`'s evidence and stays there.
 
 ## Documentation Requirements
 
@@ -14012,18 +14175,27 @@ All of it.
 - Record the Phase `4` own-surface reopen in [README.md](README.md) and
   [00-overview.md](00-overview.md).
 
-## Sprint 4.97: Three Constructors, One String, Two Unreachable Arms [📋 Planned]
+## Sprint 4.97: Three Constructors, One String, Two Unreachable Arms [✅ Done]
 
-**Status**: Planned. Phase `4` own-surface reopen (Standard A/L) on the Provider response wire and
-the desired-absence decision this phase owns.
+**Status**: Done (2026-09-13). Phase `4` own-surface reopen (Standard A/L) on the Provider response
+wire and the desired-absence decision this phase owns. Two of its four deliverables closed narrower
+than authored, and the Validation Result says which and why rather than absorbing the difference.
 **Doctrine**: [Lifecycle Reconciliation
 Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md)'s desired-absence decision
 table.
 **Implementation**: `src/Prodbox/ControlPlane/AuthorityProviderEndpoint.hs`,
+`src/Prodbox/ControlPlane/ProviderWorkerExecution.hs`, `src/Prodbox/ControlPlane/ProviderCaller.hs`,
 `src/Prodbox/Lifecycle/Teardown/ProviderDispatch.hs`,
+`src/Prodbox/Lifecycle/Teardown/RegisteredTargetResult.hs`,
 `src/Prodbox/ControlPlane/AwsStackReaderRepository/Internal.hs`,
-`src/Prodbox/Lifecycle/Teardown/Decision.hs`, `src/Prodbox/Lifecycle/Teardown/AwsStackAdapter.hs`,
-and `test/unit/Main.hs`.
+`src/Prodbox/Lifecycle/Teardown/OwnershipManifest.hs`,
+`src/Prodbox/Lifecycle/Teardown/OwnershipManifest/Internal.hs`,
+`src/Prodbox/Lifecycle/Teardown/Decision.hs`, `src/Prodbox/Lifecycle/Teardown/Execution.hs`,
+`src/Prodbox/Lifecycle/Teardown/AwsStackAdapter.hs`,
+`src/Prodbox/Lifecycle/Teardown/AwsEksDestroyAdapter.hs`,
+`src/Prodbox/Lifecycle/Teardown/AwsRegisteredTargetInterpreter.hs`,
+`src/Prodbox/Lifecycle/Teardown/AwsEksRegisteredTargetDestroyInterpreter.hs`, and the six
+`test/unit/LifecycleTeardown*.hs` modules their types reach.
 **Blocked by**: none.
 **Live-proof**: pending.
 **Deployment qualification**: pending — **invalidated** on capability wiring.
@@ -14058,8 +14230,13 @@ mechanism.
   rather than structurally refused.
 - Restore the decision's surface index, its carried inventory, and the retirement authorization the
   doctrine's signature names.
-- Record, dated and in place, that the decision table's provider and checkpoint columns are not
-  independent inputs on the current adapter.
+- Record, dated and in place, what the decision table's provider and checkpoint columns actually
+  are on the current adapter. **Corrected 2026-09-13 during the sprint:** the deliverable as
+  authored said they "are not independent inputs", and that is false as wired. The decision
+  observation is `ObserveNativeStackFamily`, whose capability queries AWS directly and reads no
+  checkpoint; the checkpoint-hydrated observers have no production caller. The coupling is one row
+  lower — in the destroy arm's own pre-apply observation and completion read-back, which do run in
+  a checkpoint-hydrated scratch.
 
 ### Validation
 
@@ -14069,16 +14246,118 @@ mechanism.
 3. The restored decision signature is exercised over every row of the doctrine's table.
 4. Full unit suite and `prodbox dev check` exit 0.
 
+### Validation Result
+
+**The two refusal arms could not fire because the client answered its own question.** The teardown
+client rebuilt its result as `ProviderIntentExecutionObserved (providerIntentCoordinate intent)
+evidence` — the coordinate from the intent it had *sent*, always the same constructor — so the
+adapter's coordinate-mismatch and result-kind refusals compared a value against itself. Both arms
+were unit-tested with hand-built values, which is exactly why the defect survived review: the pure
+decoder was covered and the path feeding it was not. The Authority's response now carries
+`ProviderExecutionOutcome`, and `observationFromOutcome` takes the kind and the coordinate from the
+response. The new fixture that proves it — `observingBoundaryFor`, which answers about a *different*
+stack than was asked about — could not have been written before this sprint.
+
+**The flattening happened twice, and fixing one half would have bought nothing.** Beneath the wire,
+`ProviderDispatch` collapsed every completion into `RegisteredTargetMutationApplied`, so a destroy
+that ran and a destroy that found nothing already gone stayed identical even with the kind on the
+response. `RegisteredTargetMutationAlreadySatisfied` closes that, and the test asserts the two as an
+*inequality* because the whole point is that they used to be one value.
+
+**The replay gap is named rather than synthesised.** `ProviderDispatchCompleted` and
+`ProviderDispatchAlreadyCompleted` are the retained-*text* answers and the Authority never recorded
+the execution kind, so the executed-outcome client returns
+`AuthorityProviderReplayOutcomeNotRetained` instead of inventing one, and the teardown classifier
+treats it as *unavailable* — ambiguous, closed by the independent absence read-back. Widening the
+Authority's aggregate to retain the kind is a larger change and is deliberately not here.
+
+**The stack-reader wire is open, and that is less than the sprint's premise claimed.** Complete
+manifest evidence now round-trips in both directions, and the round-trip test is the first value in
+this repository to construct complete decision evidence at all — which is itself the finding, not a
+gap in the tests. But the Objective says that single refusal "is what makes the decision's manifest
+branch dead", and it is not the only thing:
+`confirmOwnershipManifestDecisionReadBack` independently degrades **every** arm to observation-only,
+including the `Present` arm that successfully decodes a manifest carrying entries, and a source-text
+test pins it there. The manifest authority is now *decidable*, which is the deliverable's own word;
+it is still unreached in production. That remainder is a
+[deletion-ledger](legacy-tracking-for-deletion.md) row, not a silent inclusion.
+
+**The decision's surface index is checked, not assumed — and that distinction is the phase.** The
+witness comes from `desiredAbsenceProgramSurface` on the compiled program, carried on
+`TeardownExecutionContext`, and is compared against the surface the exact observation's own evidence
+scope was minted under. A witness *derived* from that scope would have agreed by construction and
+made `StackDecisionSurfaceMismatch` unreachable — a phantom the caller picks, proving nothing about
+the evidence, which is the failure this sprint family exists to stop repeating. The compiler
+confirmed the index is load-bearing rather than decorative: a fixture pinned to `'Cascade` was
+rejected where the consuming function quantifies over `surface`.
+
+**The carried inventory removed a duplicate derivation from inside an authorization check.** The
+manifest-identity comparison in `authorizeAwsStackDestroy` — the check that decides whether a
+destroy is admitted from manifest authority — compared the manifest against `exactPresentIdentities`,
+a private re-reading of the observation that existed for that one line. It now compares against the
+inventory the decision was actually taken over, and the re-derivation is deleted. Index contagion
+was contained in the same pass: `AwsEksDestroyAuthorization` stores the inventory rather than the
+whole decision, keeping a `CleanupSurface` parameter out of roughly eighteen accessors and three
+derived-`Eq` request types.
+
+**The retirement authorization is deliberately NOT here, and that is a decision rather than an
+omission.** Retirement runs on a different node: `retireAwsStackCheckpointReference` re-observes the
+absence and the checkpoint pair itself and never consults this decision, so a payload minted on the
+already-absent arm would be read by nothing. It also made a legitimate adapter test unable to
+construct `StackAlreadyAbsent` at all. Shipping it would have added an inert device *inside the
+sprint that repairs inert devices* — the shape [Pure FP Standards
+§ 7.1](../documents/engineering/pure_fp_standards.md) names and Sprint `5.47`'s first gate exists to
+refuse. The reason is recorded where a reader meets the arm, and the payload lands with the
+conversion that consumes it.
+
+**The doctrine correction this sprint was told to write was false, and correcting it is the more
+valuable result.** The Deliverables and Documentation Requirements above said to record that the
+provider observation hydrates from the checkpoint, "so the two columns are one witness read twice" —
+restating a correction already dated 2026-09-12 in the reconciliation doctrine. Verified against the
+tree, both halves are wrong as wired: the decision observation is `ObserveNativeStackFamily`, whose
+capability builds an `aws` CLI environment and queries AWS by exact coordinate, and the
+checkpoint-hydrated observers it describes (`ObserveRegisteredStack`, `ReadBackRegisteredStack`)
+have **no production caller** — their builders are reachable only from a unit test, though the
+dispatch allowlist still admits both.
+
+The true coupling is one row lower and it matters more. The **destroy arm** observes its own
+precondition through the checkpoint: `destroyRegisteredStackCapability` routes to `pulumiMutation`,
+whose pre-apply observation runs `pulumi stack select` in a RAM scratch hydrated from the Authority
+checkpoint. A destroy whose checkpoint will not load therefore answers *from local state* that its
+stack is absent, and that is promoted to an already-satisfied execution result — the 2026-09-08
+orphan's mechanism, and a positive-absence claim § 3.0 forbids. Both the doctrine paragraph and this
+sprint's own deliverable text are corrected in place and dated; the superseded sentences are struck
+rather than deleted, because a reader who reasoned from them needs to see they were retired.
+
+One gap is registered rather than closed: `ObserveNativeStackFamily` appears nowhere under
+`documents/engineering/`, so the doctrine documents an observation path that no longer runs and
+omits the one that does. That is how a correction comes to be written about the wrong column.
+
+Focused Provider-dispatch **20/20**, ownership-manifest **7/7**, desired-absence decision **7/7**,
+EKS destroy adapter **12/12**, primary unit **4,982/4,983**, canonical `prodbox dev check` exits 0.
+The single failure is the environmental one Sprints `4.95` and `4.96` also recorded: a chart-plan
+case that reads Kubernetes Endpoints through a real `kubectl` while `rke2-server` is inactive on
+this host.
+
+A guard caught a real regression during this sprint and is worth recording. `test/unit/Main.hs`
+counts the Provider transport call sites in `src/Prodbox/ControlPlane/ProviderCaller.hs` and pins
+the number; Phase A's `dispatchHostProviderIntentExecutedOwnedBy` made it five and the assertion
+refused until the new site was acknowledged by name. That is the same mechanism Standard P's
+escape-path registry relies on, working.
+
 ### Remaining Work
 
-All of it.
+None on the code-owned surface. Two successors are registered rather than folded in: the production
+manifest reader still answers observation-only on every arm, so the manifest authority is decidable
+and unreached; and the retirement authorization payload awaits the conversion that would consume it.
 
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/lifecycle_reconciliation_doctrine.md` — the dated correction that the
-  provider observation hydrates from the checkpoint, so the two columns are one witness read twice.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — the dated correction to the
+  existing 2026-09-12 correction, which asserted that the provider observation hydrates from the
+  checkpoint. It does not; the destroy arm does.
 
 **Product docs to create/update:**
 

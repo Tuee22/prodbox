@@ -57,6 +57,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
+  , executionResultCoordinate
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
@@ -366,7 +367,7 @@ awsStackDestroyAuthorizationKind = internalDestroyAuthorizationKind
 authorizeAwsStackDestroy
   :: ProviderRevision
   -> VerifiedAwsStackObservation 'ObserveStackForDecision
-  -> StackDesiredAbsenceDecision
+  -> StackDesiredAbsenceDecision surface
   -> Either AwsStackDestroyRefusal AwsStackDestroyAuthorization
 authorizeAwsStackDestroy providerRevision verified decision = do
   case exactObservationResult observation of
@@ -378,14 +379,19 @@ authorizeAwsStackDestroy providerRevision verified decision = do
     then Left AwsStackDestroyEksDrainAuthorizationRequired
     else Right ()
   (decisionKey, authorityKind) <- case decision of
-    StackDestroyFromVerifiedPrimary key authority -> case authority of
+    StackDestroyFromVerifiedPrimary key _ authority -> case authority of
       VerifiedPrimaryCheckpoint {} ->
         Right (key, AwsStackDestroyFromPrimaryCheckpoint)
       _ -> Left (AwsStackDestroyDecisionAuthorityMismatch authority)
-    StackDestroyFromVerifiedManifest key authority -> case authority of
+    StackDestroyFromVerifiedManifest key inventory authority -> case authority of
       VerifiedOwnershipManifest _ _ manifestIdentities -> do
+        -- Sprint 4.97: the identities compared here are the ones the decision
+        -- was taken over, carried on the arm. Re-reading the observation
+        -- compared the manifest against a second, separately derived copy of
+        -- the same list — the duplicate derivation § 2.3a forbids, in the one
+        -- comparison that decides whether a destroy is admitted.
         let admitted = map observedIdentityText manifestIdentities
-            observed = exactPresentIdentities observation
+            observed = inventoryIdentityTexts inventory
         if all (`elem` admitted) observed
           then Right ()
           else Left (AwsStackDestroyManifestIdentityMismatch admitted observed)
@@ -412,11 +418,9 @@ authorizeAwsStackDestroy providerRevision verified decision = do
 observedIdentityText :: ObservedResourceIdentity -> Text
 observedIdentityText (ObservedResourceIdentity identity) = identity
 
-exactPresentIdentities :: ExactResourceObservation -> [Text]
-exactPresentIdentities observation = case exactObservationResult observation of
-  ExactResourcePresent (ExactResourceInventory (first :| remaining)) ->
-    map observedIdentityText (first : remaining)
-  _ -> []
+inventoryIdentityTexts :: ExactResourceInventory -> [Text]
+inventoryIdentityTexts (ExactResourceInventory (first :| remaining)) =
+  map observedIdentityText (first : remaining)
 
 data AwsStackDestroyRequest = AwsStackDestroyRequest
   { internalDestroyRequestAuthorization :: !AwsStackDestroyAuthorization
@@ -802,13 +806,6 @@ validSha256Identity evidence = case Text.stripPrefix "sha256:" evidence of
 
 isAsciiDigit :: Char -> Bool
 isAsciiDigit character = character >= '0' && character <= '9'
-
-executionResultCoordinate
-  :: ProviderIntentExecutionResult -> ProviderIntentCoordinate
-executionResultCoordinate executionResult = case executionResult of
-  ProviderIntentExecutionApplied coordinate _ -> coordinate
-  ProviderIntentExecutionAlreadySatisfied coordinate _ -> coordinate
-  ProviderIntentExecutionObserved coordinate _ -> coordinate
 
 renderObservationRefusal :: AwsStackObservationRefusal -> Text
 renderObservationRefusal refusal = case refusal of

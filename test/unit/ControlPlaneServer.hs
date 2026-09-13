@@ -435,8 +435,19 @@ controlPlaneServerSuite =
         controlPlaneRequestBudgetFor LifecycleAuthorityRuntime
           `shouldBe` RemainingDuration
             (fromIntegral ProviderWorkerBudget.providerWorkerResponseTimeoutMicros)
+
+        -- Sprint 4.96.  The Provider Worker no longer takes the flat role
+        -- default, which was *equal* to the maximum admitted child deadline and
+        -- therefore left the Provider nothing for its own framing, encode and
+        -- write.  It gets the child deadline plus one overhead term, and the
+        -- Authority's client bound stays strictly above that.
         controlPlaneRequestBudgetFor ProviderWorkerRuntime
-          `shouldBe` controlPlaneRequestBudget
+          `shouldBe` RemainingDuration
+            (fromIntegral ProviderWorkerBudget.providerWorkerServerEnvelopeMicros)
+        controlPlaneRequestBudgetFor ProviderWorkerRuntime
+          `shouldSatisfy` (/= controlPlaneRequestBudget)
+        controlPlaneRequestBudgetFor ProviderWorkerRuntime
+          `shouldSatisfy` (< controlPlaneRequestBudgetFor LifecycleAuthorityRuntime)
 
     it "Sprint 4.68: a saturated accept path refuses 429 through the obligation" $ do
       -- The refusal is not a raw write. A connection the admission machine

@@ -62,6 +62,7 @@ module Prodbox.Lifecycle.Teardown.OwnershipManifest
   , durableWriteAheadOwnershipManifestStackKey
   , durableWriteAheadOwnershipManifestScope
   , ObservedDurableWriteAheadOwnershipManifest
+  , observedDurableWriteAheadOwnershipManifest
   , bindObservedDurableWriteAheadOwnershipManifestForCleanup
   , bindConfirmedLegacyAdoptionManifestForCleanup
   , ConfirmedLegacyAdoptionManifestWrite
@@ -77,6 +78,8 @@ module Prodbox.Lifecycle.Teardown.OwnershipManifest
   , OwnershipManifestDecisionView (..)
   , ownershipManifestObservationOnly
   , ownershipManifestDecisionView
+  , captureCompleteOwnershipManifestEvidence
+  , restoreCompleteOwnershipManifestEvidence
   , ownershipManifestDecisionStackKey
   , ownershipManifestDecisionScope
   , ownershipManifestDecisionEntryIdentities
@@ -86,6 +89,7 @@ module Prodbox.Lifecycle.Teardown.OwnershipManifest
   )
 where
 
+import Data.Bifunctor (first)
 import Data.ByteString qualified as ByteString
 import Data.List (nub, sort, sortOn)
 import Data.List.NonEmpty (NonEmpty)
@@ -117,6 +121,8 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest.Internal
   , OwnershipManifestDigest (..)
   , OwnershipManifestPurposeValue (..)
   , RegisteredOwnershipEdge
+  , SomeCompleteOwnershipManifest (..)
+  , captureCompleteOwnershipManifestWithEntries
   , captureDurableCompleteOwnershipManifest
   , captureDurableWriteAheadOwnershipManifestInternal
   , completeOwnershipManifestDigest
@@ -140,6 +146,7 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest.Internal
   , maximumDurableCompleteOwnershipManifestBytes
   , maximumDurableWriteAheadOwnershipManifestBytes
   , mkCompleteOwnershipManifestInternal
+  , observedDurableWriteAheadOwnershipManifest
   , observedDurableWriteAheadOwnershipManifestProvenance
   , observedDurableWriteAheadOwnershipManifestValue
   , observedDurableWriteAheadOwnershipManifestVersion
@@ -148,6 +155,7 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest.Internal
   , ownershipManifestDigestText
   , registeredOwnershipEdges
   , registeredStackClusters
+  , restoreCompleteOwnershipManifestWithEntries
   )
 import Prodbox.Lifecycle.Teardown.Registry
 import Prodbox.Lifecycle.Teardown.ScopeCodec
@@ -772,6 +780,59 @@ ownershipManifestDecisionEntryIdentities key evidence = case evidence of
     [identities] -> Just identities
     _ -> Nothing
 
+-- | Sprint 4.97: carry complete decision evidence across the stack-reader wire.
+--
+-- The wire refused this outright, so the decision's manifest authority was not
+-- merely unreached but structurally undecidable: the one branch that can act on
+-- AWS coordinates rather than on a checkpoint could never be constructed on the
+-- far side, and the ladder could only refuse.
+--
+-- Observation-only evidence is refused here rather than encoded. It already has
+-- a wire of its own, and admitting it through this one would let an observation
+-- arrive claiming to be evidence that authorizes a destroy.
+captureCompleteOwnershipManifestEvidence
+  :: OwnershipManifestDecisionEvidence
+  -> Either OwnershipManifestError ByteString.ByteString
+captureCompleteOwnershipManifestEvidence evidence = case evidence of
+  OwnershipManifestObservationOnly _ ->
+    Left OwnershipManifestCompleteEvidenceRequired
+  ValidatedCompleteOwnershipManifest complete entries ->
+    first
+      (OwnershipManifestCompleteEvidenceInvalid . Text.pack . show)
+      (captureCompleteOwnershipManifestWithEntries complete (map durableEntry entries))
+ where
+  durableEntry entry =
+    DurableOwnershipManifestEntryValue
+      { durableOwnershipManifestEntryKey = ownershipManifestEntryKey entry
+      , durableOwnershipManifestEntryCoordinateDigest =
+          ownershipManifestEntryCoordinateDigest entry
+      , durableOwnershipManifestEntryObservedIdentities =
+          ownershipManifestEntryObservedIdentities entry
+      }
+
+restoreCompleteOwnershipManifestEvidence
+  :: ByteString.ByteString
+  -> Either OwnershipManifestError OwnershipManifestDecisionEvidence
+restoreCompleteOwnershipManifestEvidence bytes = do
+  (restored, entries) <-
+    first
+      (OwnershipManifestCompleteEvidenceInvalid . Text.pack . show)
+      (restoreCompleteOwnershipManifestWithEntries bytes)
+  pure (completeEvidence restored (map manifestEntry entries))
+ where
+  completeEvidence restored entries = case restored of
+    SomeCompleteOwnershipManifest complete ->
+      ValidatedCompleteOwnershipManifest complete entries
+
+  manifestEntry entry =
+    OwnershipManifestEntry
+      { ownershipManifestEntryKey = durableOwnershipManifestEntryKey entry
+      , ownershipManifestEntryCoordinateDigest =
+          durableOwnershipManifestEntryCoordinateDigest entry
+      , ownershipManifestEntryObservedIdentities =
+          durableOwnershipManifestEntryObservedIdentities entry
+      }
+
 data OwnershipManifestError
   = OwnershipManifestKeyUnregistered !RegisteredResourceKey
   | OwnershipManifestResourceIsNotStack !RegisteredResourceKey !ResourceKind
@@ -822,6 +883,15 @@ data OwnershipManifestError
     OwnershipManifestAdoptionPlanDigestMismatch
       !LegacyAdoptionPlanDigest
       !LegacyAdoptionPlanDigest
+  | -- | Sprint 4.97.  Complete decision evidence failed to capture or restore
+    -- across a wire.  The detail is the durable codec's own refusal rendered,
+    -- not a second vocabulary for the same rejections.
+    OwnershipManifestCompleteEvidenceInvalid !Text
+  | -- | Sprint 4.97.  Observation-only evidence was handed to the
+    -- complete-evidence encoder.  The observation branch has its own wire, and
+    -- routing it through this one would mean an observation could arrive
+    -- claiming to be a manifest that authorizes destruction.
+    OwnershipManifestCompleteEvidenceRequired
   deriving (Eq, Show)
 
 manifestBindingFor

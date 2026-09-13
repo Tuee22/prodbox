@@ -60,6 +60,9 @@ module Prodbox.ControlPlane.ProviderWorkerExecution
   , ProviderIntentAdmissionError (..)
   , admitProviderCommittedIntent
   , ProviderIntentExecutionResult (..)
+  , ProviderExecutionKind (..)
+  , providerExecutionKind
+  , mkProviderIntentExecutionResult
   , ExecutedProviderIntent
   , executedProviderIntentAction
   , executedProviderIntentCoordinate
@@ -68,6 +71,7 @@ module Prodbox.ControlPlane.ProviderWorkerExecution
   , executedProviderIntentCredentialSessionBinding
   , executedProviderIntentAcceptedAuthorityDigest
   , executedProviderIntentResult
+  , executionResultCoordinate
   , ProviderIntentExecutionError (..)
   , ProviderIntentCredentialBindingRegression
   , fixedProviderIntentCredentialBindingRegression
@@ -1615,6 +1619,44 @@ data ProviderIntentExecutionResult
   | ProviderIntentExecutionObserved !ProviderIntentCoordinate !Text
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+-- | Sprint 4.97: which of the three a result is, as a value that survives a
+-- wire.
+--
+-- The result type above has carried the distinction since it was written. What
+-- it did not have was a projection anything could put on a response, so the
+-- Authority's provider wire answered with the evidence text alone and a destroy
+-- that ran and a destroy that found nothing were byte-identical to every
+-- consumer downstream of it.
+data ProviderExecutionKind
+  = ProviderExecutionAppliedKind
+  | ProviderExecutionAlreadySatisfiedKind
+  | ProviderExecutionObservedKind
+  deriving stock (Bounded, Enum, Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+providerExecutionKind :: ProviderIntentExecutionResult -> ProviderExecutionKind
+providerExecutionKind result = case result of
+  ProviderIntentExecutionApplied _ _ -> ProviderExecutionAppliedKind
+  ProviderIntentExecutionAlreadySatisfied _ _ -> ProviderExecutionAlreadySatisfiedKind
+  ProviderIntentExecutionObserved _ _ -> ProviderExecutionObservedKind
+
+-- | Rebuild a result from a kind, a coordinate, and its evidence.
+--
+-- The inverse of 'providerExecutionKind' and 'executionResultCoordinate', so a
+-- consumer that decoded all three can reconstruct exactly what the Provider
+-- Worker produced rather than re-synthesising one constructor from the intent
+-- it sent.
+mkProviderIntentExecutionResult
+  :: ProviderExecutionKind
+  -> ProviderIntentCoordinate
+  -> Text
+  -> ProviderIntentExecutionResult
+mkProviderIntentExecutionResult kind coordinate evidence = case kind of
+  ProviderExecutionAppliedKind -> ProviderIntentExecutionApplied coordinate evidence
+  ProviderExecutionAlreadySatisfiedKind ->
+    ProviderIntentExecutionAlreadySatisfied coordinate evidence
+  ProviderExecutionObservedKind -> ProviderIntentExecutionObserved coordinate evidence
 
 -- | One terminal Provider result bound to the exact admitted signed intent
 -- that produced it.  The constructor is deliberately private: a raw wire

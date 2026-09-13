@@ -1974,14 +1974,21 @@ destroyDrainEvidence =
             }
       )
 
-destroyDecision :: StackDesiredAbsenceDecision
+destroyDecision :: StackDesiredAbsenceDecision surface
 destroyDecision =
   StackDestroyFromVerifiedPrimary
     AwsEksKey
+    destroyDecisionInventory
     ( VerifiedPrimaryCheckpoint
         (CheckpointProvenance "primary://eks-drain-interpreter")
         (CheckpointVersion "primary-v1")
     )
+
+-- | Sprint 4.97: the inventory the decision was taken over, carried on the arm
+-- rather than re-derived by each adapter.
+destroyDecisionInventory :: ExactResourceInventory
+destroyDecisionInventory =
+  ExactResourceInventory (ObservedResourceIdentity ("eks-cluster/" <> fixtureArn) :| [])
 
 destroyProviderRevision :: ProviderRevision
 destroyProviderRevision = mustRight (mkProviderRevision 17)

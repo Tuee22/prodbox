@@ -26,6 +26,9 @@ module Prodbox.ControlPlane.AuthorityProviderEndpoint
   , dispatchAuthorityProviderIntent
   , dispatchAuthorityProviderIntentWithOperation
   , dispatchAuthorityProviderIntentOwnedBy
+  , dispatchAuthorityProviderIntentExecutedOwnedBy
+  , ProviderExecutionOutcome (..)
+  , providerExecutionOutcome
   , admitAuthorityProviderIntentOwnedBy
   )
 where
@@ -75,10 +78,13 @@ import Prodbox.ControlPlane.Codec
 import Prodbox.ControlPlane.Coordinate (AuthorityEpoch (AuthorityEpoch))
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderCommittedIntentSpec (..)
+  , ProviderExecutionKind (..)
   , ProviderIntentExecutionResult (..)
   , encodeSignedProviderCommittedIntent
+  , executionResultCoordinate
   , mkProviderIssuerKeyGeneration
   , mkUnsignedProviderCommittedIntent
+  , providerExecutionKind
   , signProviderCommittedIntentWith
   )
 import Prodbox.ControlPlane.RequestAuthentication
@@ -120,6 +126,7 @@ import Prodbox.Lifecycle.Lease
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent
+  , ProviderIntentCoordinate
   , ProviderRevision
   )
 import Prodbox.Lifecycle.TargetCommitIntent (sha256TargetValueDigest)
@@ -186,8 +193,11 @@ data ProviderDispatchPayload = ProviderDispatchPayload
 -- only safe default for a missing one would be to execute — so the version
 -- refusal is what keeps an older caller from silently executing an operation a
 -- newer Authority would have admitted only.
+-- Sprint 4.97 raised it to @5@: the response gained an answer a version-@4@
+-- client cannot decode, and the request version is the only gate on the
+-- exchange in either direction.
 providerDispatchFormatVersion :: Word16
-providerDispatchFormatVersion = 4
+providerDispatchFormatVersion = 5
 
 -- | Sprint 4.84: a settled dispatch names the operation the Authority admitted.
 --
@@ -207,6 +217,15 @@ data ProviderDispatchResponse
     -- executed.  Appended last so every earlier constructor keeps its
     -- 'Serialise' index.
     ProviderDispatchAdmitted !OperationId
+  | -- | Sprint 4.97: a freshly executed submission, answering with the kind and
+    -- the coordinate the Provider Worker produced rather than only its evidence
+    -- text.  Appended last for the same reason as the arm above.
+    --
+    -- 'ProviderDispatchCompleted' and 'ProviderDispatchAlreadyCompleted' stay
+    -- exactly as they were: they are the retained-text replay answers, and the
+    -- Authority retained only text, so it must not synthesise a kind it never
+    -- recorded.
+    ProviderDispatchExecuted !OperationId !ProviderExecutionOutcome
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -322,7 +341,8 @@ runProviderDispatch boundary caller payload =
                       case executed of
                         Left detail -> pure (ProviderDispatchUnavailable detail)
                         Right result -> do
-                          let evidence = providerExecutionEvidence result
+                          let outcome = providerExecutionOutcome result
+                              evidence = providerExecutionOutcomeEvidence outcome
                           settled <-
                             settleProviderOperation
                               boundary
@@ -334,7 +354,7 @@ runProviderDispatch boundary caller payload =
                           pure $ case settled of
                             Left detail -> ProviderDispatchUnavailable detail
                             Right AuthorityProviderSettlementCompleted ->
-                              ProviderDispatchCompleted operation evidence
+                              ProviderDispatchExecuted operation outcome
                             Right (AuthorityProviderSettlementAlreadyCompleted retained) ->
                               ProviderDispatchAlreadyCompleted operation retained
                             Right (AuthorityProviderSettlementRefused detail) ->
@@ -342,6 +362,7 @@ runProviderDispatch boundary caller payload =
 
 providerResponseStatus :: ProviderDispatchResponse -> ReplyStatus
 providerResponseStatus response = case response of
+  ProviderDispatchExecuted _ _ -> ReplyOk
   ProviderDispatchCompleted _ _ -> ReplyOk
   ProviderDispatchAlreadyCompleted _ _ -> ReplyOk
   ProviderDispatchAdmitted _ -> ReplyOk
@@ -523,6 +544,30 @@ providerDispatchRequestDigest payload =
 digestNormalizedLane :: ProviderDispatchLane
 digestNormalizedLane = ProviderAdmitAndExecute
 
+-- | Sprint 4.97: what the Provider Worker actually produced, on the wire.
+--
+-- The projection this replaces returned the evidence text alone and matched the
+-- kind and the coordinate to @_@ in all three arms. Downstream, the teardown
+-- client re-synthesised a result from the intent it had *sent*, always with the
+-- same constructor — so the decoder's coordinate-mismatch and result-kind
+-- refusals compared a value against itself and could never fire, and a destroy
+-- that ran and a destroy that found nothing were byte-identical.
+data ProviderExecutionOutcome = ProviderExecutionOutcome
+  { providerExecutionOutcomeKind :: !ProviderExecutionKind
+  , providerExecutionOutcomeCoordinate :: !ProviderIntentCoordinate
+  , providerExecutionOutcomeEvidence :: !Text
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+providerExecutionOutcome :: ProviderIntentExecutionResult -> ProviderExecutionOutcome
+providerExecutionOutcome result =
+  ProviderExecutionOutcome
+    { providerExecutionOutcomeKind = providerExecutionKind result
+    , providerExecutionOutcomeCoordinate = executionResultCoordinate result
+    , providerExecutionOutcomeEvidence = providerExecutionEvidence result
+    }
+
 providerExecutionEvidence :: ProviderIntentExecutionResult -> Text
 providerExecutionEvidence result = case result of
   ProviderIntentExecutionApplied _ evidence -> evidence
@@ -530,7 +575,13 @@ providerExecutionEvidence result = case result of
   ProviderIntentExecutionObserved _ evidence -> evidence
 
 data AuthorityProviderClientError
-  = AuthorityProviderTransportFailed !AuthenticatedClientError
+  = -- | Sprint 4.97.  The Authority answered a replay of an already-settled
+    -- operation, which retains the evidence text and not the execution kind, so
+    -- no outcome can be returned without inventing one.  A caller that needs
+    -- the kind must treat this as ambiguous and close it with its own
+    -- independent read-back.
+    AuthorityProviderReplayOutcomeNotRetained !OperationId
+  | AuthorityProviderTransportFailed !AuthenticatedClientError
   | AuthorityProviderResponseInvalid
       !ControlPlaneResponseCodecError
       !AuthorityProviderResponseObservation
@@ -688,6 +739,9 @@ dispatchAuthorityProviderIntentOwnedBy transport submissionKey intent owner = do
   pure $ do
     (status, response) <- decoded
     case response of
+      ProviderDispatchExecuted operation outcome
+        | status == 200 -> Right (operation, providerExecutionOutcomeEvidence outcome)
+        | otherwise -> Left (AuthorityProviderResponseStatusMismatch status)
       ProviderDispatchCompleted operation evidence
         | status == 200 -> Right (operation, evidence)
         | otherwise -> Left (AuthorityProviderResponseStatusMismatch status)
@@ -697,6 +751,48 @@ dispatchAuthorityProviderIntentOwnedBy transport submissionKey intent owner = do
       -- An execute lane that came back admitted-only means the Authority did
       -- not run what this caller asked it to run.  It is not evidence, so it
       -- cannot be returned as evidence.
+      ProviderDispatchAdmitted _ ->
+        Left
+          ( AuthorityProviderRemoteRefused
+              status
+              "provider dispatch returned an admission to an execute lane"
+          )
+      ProviderDispatchRefused detail ->
+        Left (AuthorityProviderRemoteRefused status detail)
+      ProviderDispatchUnavailable detail ->
+        Left (AuthorityProviderRemoteRefused status detail)
+
+-- | Sprint 4.97: dispatch and keep the whole outcome, not only its evidence.
+--
+-- The form above is retained for every caller that narrates a receipt and
+-- decides nothing from the execution kind. This one is for the callers that
+-- decide: it accepts only a freshly executed answer, because a replay of an
+-- already-settled operation retains the evidence text and not the kind, and a
+-- kind the Authority never recorded must not be invented on the way past.
+dispatchAuthorityProviderIntentExecutedOwnedBy
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> ClientSubmissionKey
+  -> ProviderIntent
+  -> ProviderOperationCleanupOwner
+  -> IO (Either AuthorityProviderClientError (OperationId, ProviderExecutionOutcome))
+dispatchAuthorityProviderIntentExecutedOwnedBy transport submissionKey intent owner = do
+  decoded <-
+    callProviderDispatchRoute
+      transport
+      submissionKey
+      intent
+      owner
+      ProviderAdmitAndExecute
+  pure $ do
+    (status, response) <- decoded
+    case response of
+      ProviderDispatchExecuted operation outcome
+        | status == 200 -> Right (operation, outcome)
+        | otherwise -> Left (AuthorityProviderResponseStatusMismatch status)
+      ProviderDispatchCompleted operation _ ->
+        Left (AuthorityProviderReplayOutcomeNotRetained operation)
+      ProviderDispatchAlreadyCompleted operation _ ->
+        Left (AuthorityProviderReplayOutcomeNotRetained operation)
       ProviderDispatchAdmitted _ ->
         Left
           ( AuthorityProviderRemoteRefused
@@ -744,8 +840,15 @@ admitAuthorityProviderIntentOwnedBy transport submissionKey intent owner = do
         | status == 200 -> Right operation
         | otherwise -> Left (AuthorityProviderResponseStatusMismatch status)
       -- The admit-only lane never executes, so a completion answer to it means
-      -- the Authority did something this caller did not ask for.
+      -- the Authority did something this caller did not ask for.  Sprint 4.97
+      -- added a second such answer; both are the same defect.
       ProviderDispatchCompleted _ _ ->
+        Left
+          ( AuthorityProviderRemoteRefused
+              status
+              "provider dispatch executed an admit-only submission"
+          )
+      ProviderDispatchExecuted _ _ ->
         Left
           ( AuthorityProviderRemoteRefused
               status

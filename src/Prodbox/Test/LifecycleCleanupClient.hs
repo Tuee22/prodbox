@@ -106,6 +106,7 @@ import Prodbox.Lifecycle.Teardown.CloudRuntime (CloudRuntime)
 import Prodbox.Lifecycle.Teardown.CloudRuntimeProduction
   ( ProductionCloudRuntimeError
   , ProductionCloudRuntimeInputs (..)
+  , derivedEksDrainLeaseSeconds
   , mkEksDrainLeaseSeconds
   , productionCloudRuntime
   , renderProductionCloudRuntimeError
@@ -470,7 +471,10 @@ cloudRuntimeFor
        LifecycleTestHarnessCleanupError
        (CloudRuntime IO)
 cloudRuntimeFor inputs _ transport registered compiled = do
-  lease <- firstValue LifecycleTestHarnessCloudRuntimeInvalid (mkEksDrainLeaseSeconds 300)
+  lease <-
+    firstValue
+      LifecycleTestHarnessCloudRuntimeInvalid
+      (mkEksDrainLeaseSeconds derivedEksDrainLeaseSeconds)
   firstValue
     LifecycleTestHarnessCloudRuntimeInvalid
     ( productionCloudRuntime

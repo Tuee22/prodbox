@@ -1427,13 +1427,44 @@ The decision table is:
 
 **Corrected 2026-09-12 (Standard C): the first two columns are not independent inputs on the
 current revision.** The table is written as a join over two separately authored observations, and
-that is the accepted design. It is not what the shipping adapter does. The exact provider
+that is the accepted design. It is not what the shipping adapter does. ~~The exact provider
 observation runs `pulumi stack select` inside a scratch backend hydrated *from the same
 checkpoint* the second column reports, so on that path the two columns are one witness read twice
 and their agreement carries no independent information. Any rule of the form "corroborate the
 checkpoint against a provider observation" is therefore circular until the observation is taken
-against the provider rather than against a rehydration of local state. The table stands as the
+against the provider rather than against a rehydration of local state.~~ The table stands as the
 target; what is corrected is the belief that satisfying it today requires nothing further.
+
+**Corrected again 2026-09-13 by Sprint `4.97` (Standard C): the struck sentences are wrong about
+the first column, and the coupling is one row lower.** They are retired rather than deleted because
+the conclusion they reach — distrust the decision table's provider column — sends a reader to the
+wrong place.
+
+The wired decision observation is `ObserveNativeStackFamily`, and its production capability is
+checkpoint-independent: `nativeStackFamilyObservation` in
+`src/Prodbox/ControlPlane/ProviderProduction.hs` builds an `aws` CLI environment from the session's
+credentials and queries AWS by deterministic name and exact coordinate. The module it calls,
+`src/Prodbox/Lifecycle/AwsNativeStackFamily.hs`, says so in its own header. The `aws-eks` key's
+decision observation is AWS-direct for the same reason — `eksClusterIdentityObservation` runs
+`sts get-caller-identity` and `eks describe-cluster`. The checkpoint-hydrated observers the struck
+sentences describe, `ObserveRegisteredStack` and `ReadBackRegisteredStack`, have **no production
+caller**: their request builders are reachable only from a unit test, though the dispatch allowlist
+still admits both.
+
+What is true is narrower and worth more. The **destroy arm** observes its own precondition through
+the checkpoint. `destroyRegisteredStackCapability` routes to `pulumiMutation`, whose pre-apply
+observation runs `pulumi stack select` inside a RAM scratch hydrated from the Authority checkpoint,
+and whose apply runs in the same rehydrated environment. So a destroy whose checkpoint will not load
+answers *from local state* that its stack is absent, and that answer is promoted to an
+already-satisfied execution result. The completion read-back has the same shape. Neither is
+admissible as positive absence under [§ 3.0](#30-positive-absence), and both are recognisably the
+mechanism behind the 2026-09-08 orphan.
+
+Two consequences for a reader. A rule of the form "corroborate the checkpoint against a provider
+observation" is **not** circular on the decision path as wired — the first column is a real provider
+answer. And this document describes an observation path that no longer runs while omitting the one
+that does: `ObserveNativeStackFamily` appears nowhere in `documents/engineering/`. Status lives only
+in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 
 The read-only Provider configuration needed to learn whether a stack is present comes from the

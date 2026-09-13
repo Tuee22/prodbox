@@ -24,6 +24,7 @@ import TestSupport
 lifecycleAwsNativeStackFamilySuite :: SuiteBuilder ()
 lifecycleAwsNativeStackFamilySuite =
   describe "Sprint 7.36 native registered stack families" $ do
+    nativeFamilyEvidenceValidationCase
     it "observes the aws-test family only through exact managed names" $ do
       calls <- newIORef []
       observed <-
@@ -224,6 +225,40 @@ lifecycleAwsNativeStackFamilySuite =
             )
         )
         `shouldSatisfy` isRight
+
+-- | Sprint 4.98 reproducer, registered rather than repaired here.
+--
+-- `encodeAwsNativeStackFamilyEvidence` joins its fields with `Text.unlines`, so
+-- every value it produces carries newlines and a trailing one. The Provider
+-- Worker validates observed evidence with `validateProviderIntentEvidence`,
+-- which refuses any character at or below `0x1f` — and `ObserveNativeStackFamily`
+-- takes the shared bound rather than an exemption. The encoder and the validator
+-- therefore disagree, and this is the wired decision observation: Sprint `4.97`
+-- established that `ObserveNativeStackFamily` is what the desired-absence
+-- decision actually runs, not the checkpoint-hydrated observers the doctrine
+-- described.
+--
+-- This asserts the disagreement rather than describing it, so the claim in the
+-- deletion ledger rests on an executed check. Repairing it means changing a
+-- wire shape, which is a Standard-P surface and belongs to the sprint that owns
+-- the codec.
+nativeFamilyEvidenceValidationCase :: SuiteBuilder ()
+nativeFamilyEvidenceValidationCase =
+  it "native-family evidence carries newlines the Provider validator refuses" $ do
+    let request =
+          mustRight
+            ( mkAwsNativeStackFamilyObservationRequest
+                AwsTestKey
+                testScope
+                revision
+                testConfig
+            )
+        ref = awsNativeStackFamilyObservationRequestRef request
+        evidence =
+          mustRight (encodeAwsNativeStackFamilyEvidence ref ["vpc/vpc-1"])
+        intent = ObserveNativeStackFamily ref testConfig
+    Text.any (\character -> character <= '\x1f') evidence `shouldBe` True
+    validateProviderIntentEvidence intent evidence `shouldSatisfy` isLeft
 
 recordingRunner
   :: IORef [[String]]

@@ -83,7 +83,6 @@ lifecycleTeardownCloudRuntimeProductionSuite :: SuiteBuilder ()
 lifecycleTeardownCloudRuntimeProductionSuite =
   describe "Sprint 4.86 production cloud runtime" $ do
     it "bounds the drain lease at both ends and keeps the accepted value" $ do
-      fmap eksDrainLeaseSecondsValue (mkEksDrainLeaseSeconds 1) `shouldBe` Right 1
       fmap eksDrainLeaseSecondsValue (mkEksDrainLeaseSeconds 900)
         `shouldBe` Right 900
       mkEksDrainLeaseSeconds 0
@@ -93,10 +92,33 @@ lifecycleTeardownCloudRuntimeProductionSuite =
       mkEksDrainLeaseSeconds 901
         `shouldBe` Left (ProductionCloudDrainLeaseInvalid 901)
 
+    -- Sprint 4.95.  A one-second lease used to be accepted, which made the
+    -- constructed value say nothing about whether the drain it authorizes can
+    -- finish.  The floor is the bounded work a drain commit issues before its
+    -- first mutation, derived from the ephemeral client's own per-invocation
+    -- bound rather than chosen.
+    it "refuses a lease shorter than the bounded work a drain commit issues" $ do
+      minimumEksDrainLeaseSeconds `shouldBe` 280
+      derivedEksDrainLeaseSeconds `shouldBe` minimumEksDrainLeaseSeconds
+      fmap
+        eksDrainLeaseSecondsValue
+        (mkEksDrainLeaseSeconds minimumEksDrainLeaseSeconds)
+        `shouldBe` Right minimumEksDrainLeaseSeconds
+      mkEksDrainLeaseSeconds (minimumEksDrainLeaseSeconds - 1)
+        `shouldBe` Left
+          ( ProductionCloudDrainLeaseBelowMinimum
+              (minimumEksDrainLeaseSeconds - 1)
+              minimumEksDrainLeaseSeconds
+          )
+      mkEksDrainLeaseSeconds 1
+        `shouldBe` Left
+          (ProductionCloudDrainLeaseBelowMinimum 1 minimumEksDrainLeaseSeconds)
+
     it "renders every refusal as a bounded operator-readable line" $ do
       let cases :: [(ProductionCloudRuntimeError, String)]
           cases =
             [ (ProductionCloudDrainLeaseInvalid 0, "1..900")
+            , (ProductionCloudDrainLeaseBelowMinimum 1 280, "at least 280")
             ,
               ( ProductionCloudCheckpointUnregistered
                   "aws-eks"

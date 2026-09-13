@@ -3350,11 +3350,11 @@ node is a renderer, and calling it a validation is the defect."* The rule was wr
 
 None. The code work this sprint schedules belongs to the nine sprints it opened.
 
-## Sprint 0.34: What A Type Cannot Prove About Someone Else's Database [📋 Planned]
+## Sprint 0.34: What A Type Cannot Prove About Someone Else's Database [✅ Done]
 
-**Status**: Planned. It schedules the resource-custody remediation and corrects the governed record
-on the same already-reclosed Phase 0 documentation and governance surface — it neither re-closes nor
-reopens the phase. It opens eight code sprints in Phases `4`, `5` and `7`, records the reopen of
+**Status**: Done (2026-09-12). It schedules the resource-custody remediation and corrects the
+governed record on the same already-reclosed Phase 0 documentation and governance surface — it
+neither re-closes nor reopens the phase. It opens eight code sprints in Phases `4`, `5` and `7`, records the reopen of
 Phases `4`, `5` and `7` and the overdue reclose of Phase `2`, and corrects four located claims that
 are false about the current revision.
 **Doctrine**: [Documentation Standards](../documents/documentation_standards.md) and
@@ -3432,9 +3432,56 @@ false.
 4. Every cited source path resolves, and every bound section citation resolves to a real heading.
 5. `prodbox dev docs check` and `prodbox dev check` exit 0.
 
+### Closure Record
+
+The purity standard, the ledger's Sprint `4.16` correction, the Sprint `7.36` write-ahead row's move
+back to `Pending Removal` re-owned to Sprint `7.41`, and the `CHECKPOINT-RETIREMENT-2026-09-07`
+registration landed with the sprint block itself. Four things did not, and they are what closing
+required.
+
+**The phase table still said the phases were closed.** `00-overview.md` recorded Phases `4`, `5` and
+`7` as reclosed on the 2026-09-11 sprints while this plan's own queue carried eight new rows against
+them. All three rows are now 2026-09-12 reopens naming the sprints that own them, with the
+superseded rows preserved as one-line `<!-- Prior Phase N status: … -->` comments in the form the
+file already used. Phase `6`'s row gains Sprint `6.5`'s declared backward dependency on Sprint
+`7.41`, which was legible in the sprint block and nowhere in the overview.
+
+**The governed-document count was measuring the wrong set.** The root `README.md` claimed
+`documents/engineering/` holds 41 governed documents. The governed set is what `isGovernedDocPath`
+selects over a recursive walk, which is 42; `41` is what a non-recursive `documents/engineering/*.md`
+returns, and it silently drops `documents/engineering/tla/README.md`, a governed document carrying
+the mandatory metadata header. Both undeclared target regions now carry the canonical `**Target.**`
+declaration and its status pointer, and the current-side paragraph inside the second is
+counter-marked `**Current revision.**`.
+
+**The correction to the renderer-determinism attribution breached the rule it was correcting.**
+§ 12.2 rule 1 requires an enforcement claim to name its violation function; the 2026-09-12
+correction named the two functions that do *not* run the check and never named
+`rendererDeterminismViolations` or its single caller. Both are now named, and the loose
+"this section's own rule" self-reference is a bound citation.
+
+**The disposition index is complete, and completing it is what showed why it could not be scripted.**
+All **219** identifiers are classified: **6** open, **181** closed by repair, **32** closed by
+succession. A keyword heuristic marks `CASCADE-AWS-EKS-CHECKPOINT-AWS-TRUTH-DIVERGENCE-2026-09-08`
+open where Phase `6` records it falsified and closed with its successor taking the boundary, so the
+sweep is a reading pass over the surrounding narrative. The distinction that decides most rows is
+*no repair landed* against *repair landed, live re-crossing pending*: six rows first read as open
+were re-read adversarially, five moved to a closed disposition, and one did not —
+`TLS-RETENTION-SELECTED-RESTORE-SESSION-PRECLEAN-FAILED-2026-09-04`, where only a value-free
+diagnostic projection landed and preclean behaviour is explicitly unchanged. That one is the
+evidence the re-read could disagree with itself.
+
+Three measurement claims this sprint made about its own surface were stale by the time it closed and
+are corrected rather than carried: the identifier count (**217** → **219**, moved by this section's
+own two registrations), the claim that the retired incident's only record is a Haddock comment (the
+six-case `checkpointRetirementSuite` is a second one), and its disposition, which is now
+*unit-pinned* because no frozen superseded arm exists for it.
+
+`prodbox dev docs check`, `prodbox dev lint docs`, and canonical `prodbox dev check` exit 0.
+
 ### Remaining Work
 
-All of it.
+None.
 
 ## Documentation Requirements
 

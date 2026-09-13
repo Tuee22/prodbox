@@ -73,7 +73,8 @@ import Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal
   , runCascadeCandidate
   )
 import Prodbox.Lifecycle.Teardown.CloudRuntimeProduction
-  ( mkEksDrainLeaseSeconds
+  ( derivedEksDrainLeaseSeconds
+  , mkEksDrainLeaseSeconds
   )
 import Prodbox.Lifecycle.Teardown.Model
   ( AwsAccountId (..)
@@ -258,7 +259,7 @@ qualificationComposition repoRoot environment cycleLabel settings basics dnsZone
   apiWait <- first Text.unpack (mkSubstrateApiWait 120 5_000_000)
   admissionWait <-
     first Text.unpack (mkLifecycleAuthorityAdmissionWait 180 5_000_000)
-  drainLease <- first show (mkEksDrainLeaseSeconds 900)
+  drainLease <- first show (mkEksDrainLeaseSeconds derivedEksDrainLeaseSeconds)
   stateBucket <-
     requireCoordinate
       "pulumi_state_backend.bucket_name"

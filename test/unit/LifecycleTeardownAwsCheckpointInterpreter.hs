@@ -16,8 +16,15 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.ControlPlane.AuthorityOperationClient
+import Prodbox.ControlPlane.AuthorityProviderEndpoint
+  ( ProviderExecutionOutcome
+  , providerExecutionOutcome
+  )
 import Prodbox.ControlPlane.CleanupRunClient
 import Prodbox.ControlPlane.CleanupRunEndpoint
+import Prodbox.ControlPlane.ProviderWorkerExecution
+  ( ProviderIntentExecutionResult (..)
+  )
 import Prodbox.ControlPlane.PulumiCheckpointClient
 import Prodbox.ControlPlane.PulumiCheckpointEndpoint
 import Prodbox.Lifecycle.Authority.ClientRegistry
@@ -40,6 +47,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkAwsEksSubzoneProviderStackConfig
   , mkAwsTestProviderStackConfig
   , mkProviderRevision
+  , providerIntentCoordinate
   )
 import Prodbox.Lifecycle.PulumiCheckpoint
 import Prodbox.Lifecycle.Teardown.AwsCheckpointInterpreter
@@ -410,14 +418,21 @@ providerResult environment intent = case intent of
   ObserveNativeStackFamily ref _ -> observed ref
   _ -> TeardownProviderRefused "unexpected Provider intent"
  where
+  -- Sprint 4.97: the fixture answers with the coordinate the intent carries,
+  -- exactly as the Authority's wire now does.
+  completed = TeardownProviderCompleted . observedOutcome intent
+
   observed ref = case fakeTargetFixture environment of
     TargetPresent ->
-      TeardownProviderCompleted
-        (mustRight (encodeAwsNativeStackFamilyEvidence ref ["vpc/vpc-fixture"]))
+      completed (mustRight (encodeAwsNativeStackFamilyEvidence ref ["vpc/vpc-fixture"]))
     TargetAbsent ->
-      TeardownProviderCompleted
-        (mustRight (encodeAwsNativeStackFamilyEvidence ref []))
-    TargetUnobservable -> TeardownProviderCompleted "malformed-provider-evidence"
+      completed (mustRight (encodeAwsNativeStackFamilyEvidence ref []))
+    TargetUnobservable -> completed "malformed-provider-evidence"
+
+observedOutcome :: ProviderIntent -> Text -> ProviderExecutionOutcome
+observedOutcome intent evidence =
+  providerExecutionOutcome
+    (ProviderIntentExecutionObserved (providerIntentCoordinate intent) evidence)
 
 providerConfig :: RegisteredResourceKey -> ProviderStackConfig
 providerConfig key = case key of

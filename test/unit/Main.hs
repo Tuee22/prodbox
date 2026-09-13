@@ -23090,8 +23090,31 @@ unitSuite = do
         `shouldBe` 300000
       ProviderWorkerBudget.providerWorkerResponseOverheadMilliseconds
         `shouldBe` 30000
-      ProviderWorkerBudget.providerWorkerResponseTimeoutMicros
+      ProviderWorkerBudget.providerWorkerServerEnvelopeMicros
         `shouldBe` (330 * 1000 * 1000)
+      ProviderWorkerBudget.providerWorkerResponseTimeoutMicros
+        `shouldBe` (360 * 1000 * 1000)
+
+      -- Sprint 4.96.  Stated as strict inequalities rather than as three
+      -- numbers, because the defect this closes was an *equality* nobody had
+      -- written down: the Provider's server envelope was the flat role default,
+      -- which is exactly the maximum admitted child deadline, so a child
+      -- permitted to use the whole envelope left nothing for the reply and the
+      -- bound could only fire during the work.  Two equal bounds race; the
+      -- ordering is what makes the innermost one that could decide the outcome
+      -- fire first.
+      fromIntegral
+        ( ProviderWorkerBudget.providerWorkerMaximumChildDeadlineMilliseconds
+            * 1000
+        )
+        `shouldSatisfy` (< ProviderWorkerBudget.providerWorkerServerEnvelopeMicros)
+      ProviderWorkerBudget.providerWorkerServerEnvelopeMicros
+        `shouldSatisfy` (< ProviderWorkerBudget.providerWorkerResponseTimeoutMicros)
+
+      -- The apply-admission floor is an authored term reused rather than a
+      -- second independent number to be wrong about.
+      ProviderWorkerBudget.providerWorkerMinimumApplyEffectMicros
+        `shouldBe` (ProviderWorkerBudget.providerWorkerResponseOverheadMilliseconds * 1000)
       Prodbox.Http.Client.httpRequestTimeoutMicros
         ControlPlaneRuntime.lifecycleAuthorityProviderHttpConfig
         `shouldBe` ProviderWorkerBudget.providerWorkerResponseTimeoutMicros
@@ -23109,12 +23132,17 @@ unitSuite = do
       providerCallerSource <- readFile "src/Prodbox/ControlPlane/ProviderCaller.hs"
       let transportCallLines =
             filter ("$ \\transport ->" `isInfixOf`) (lines providerCallerSource)
+      -- Sprint 4.97 added the fifth: `dispatchHostProviderIntentExecutedOwnedBy`,
+      -- which dispatches exactly as the owned form beside it but keeps the whole
+      -- execution outcome instead of only its evidence text. The count is the
+      -- point of the assertion — a new Provider transport call site is a thing
+      -- a reader should have to acknowledge, not discover.
       length
         ( filter
             ("withLifecycleAuthorityProviderAuthenticatedTransport" `isInfixOf`)
             transportCallLines
         )
-        `shouldBe` 4
+        `shouldBe` 5
       length
         ( filter
             ("withLifecycleAuthorityAuthenticatedTransport" `isInfixOf`)

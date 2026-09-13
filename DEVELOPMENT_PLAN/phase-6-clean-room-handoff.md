@@ -6616,23 +6616,50 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
   qualification runner asks for `mkEksDrainLeaseSeconds 900` — exactly the ceiling — and the deadline
   is computed as `now + lease` by `drainDeadline` in
   `src/Prodbox/Lifecycle/Teardown/CloudRuntimeProduction.hs`, before the Provider-issued projection
-  that has to back it is minted. A bearer signed at any time at or before that `now` therefore
+  that has to back it is minted. ~~A bearer signed at any time at or before that `now` therefore
   expires at or before `now + 900`, so a lease equal to the ceiling can never satisfy the first
-  bound. The observed pair is exactly `deadline - now == 900`. The other production caller,
+  bound.~~ The observed pair is exactly `deadline - now == 900`. The other production caller,
   `src/Prodbox/Test/LifecycleCleanupClient.hs`, asks for 300 and would pass, which is why the defect
   was invisible until a run got this far.
+
+  **Mechanism corrected 2026-09-12 by Sprint `4.95` (Standard C).** The struck sentence is retired,
+  not deleted, because the inference it makes is the one a reader is most likely to repeat. It runs
+  in the wrong direction: the mint happens *later* than the clock read the deadline is computed
+  from, and a later mint yields a *later* expiry, which relaxes the bearer bound rather than
+  tightening it. Ordering contributed nothing here, and the observed refusal proves it —
+  `deadline - now` is exactly the lease, so both clock reads returned the same second.
+
+  What is true is narrower and does not depend on ordering at all. Both comparisons are strict, so
+  a deadline equal to the ceiling *passes* the ceiling; only the bearer bound can have failed. And
+  it must fail for any lease at the ceiling, because the Provider's own mint refuses a bearer whose
+  expiry exceeds its short-lived bound, and that bound is the same 900 seconds measured from a clock
+  read no earlier than this one. A lease equal to the ceiling is therefore not a lease with maximum
+  headroom; it is a lease no credential this Provider will issue can back.
 - **No repair is landed for it here, deliberately.** How long a live EKS drain is authorized for is
-  a Standard-P surface, and the repair is a design choice rather than a transcription: the deadline
-  must be derived from the Provider-issued bearer instead of racing it, which means clamping it at
-  the one site holding both — `selectWithProjectionClient` in
-  `src/Prodbox/Lifecycle/Teardown/EksDrainInterpreter.hs` — and deciding what to do when the clamp
-  leaves less than the drain's own absolute completion deadline of **300 s**
-  (`defaultDrainTimeout`). Silently accepting a too-short window would trade this loud refusal for
-  an obscure mid-drain timeout, so the shortfall needs a refusal of its own. Choose that floor from
-  a measurement of the projection's actual remaining lifetime at this step, which this run did not
-  capture: `EksDrainDeadlineInvalid` carries `now` and `deadline` but not `projectionExpiry`, and
-  `EksDrainProjectionExpired` did not fire, so all that is proven is `now < projectionExpiry < now +
-  900`. Widening that refusal to carry the expiry is the cheapest next measurement.
+  a Standard-P surface. ~~The repair means clamping the deadline at the one site holding both —
+  `selectWithProjectionClient` in `src/Prodbox/Lifecycle/Teardown/EksDrainInterpreter.hs` — and
+  deciding what to do when the clamp leaves less than the drain's own absolute completion deadline
+  of **300 s** (`defaultDrainTimeout`).~~ All that is proven by this run is
+  `now < projectionExpiry < now + 900`, because `EksDrainDeadlineInvalid` carries `now` and
+  `deadline` but not `projectionExpiry`, and `EksDrainProjectionExpired` did not fire. Widening that
+  refusal to carry the expiry is the cheapest next measurement.
+
+  **Repair landed 2026-09-12 as Sprint `4.95`; two claims above are corrected in place (Standard C).**
+  The site is `mkEksDrainSession`, not `selectWithProjectionClient`: the latter is one of four
+  production callers that each hold the projection, and repairing one would leave the drain-effect,
+  read-back and destroy-admission paths on the old arithmetic. And `defaultDrainTimeout` is the
+  local RKE2 drain's constant in `src/Prodbox/Lifecycle/K8sDrain.hs`, reached only from
+  `src/Prodbox/CLI/Rke2.hs`; no module under `src/Prodbox/Lifecycle/Teardown/` imports it, so the
+  EKS path never carried a 300-second completion deadline to compare a clamp against.
+
+  Nothing clamps. The bearer bound still refuses, now as
+  `EksDrainDeadlineBeyondBearerExpiry now deadline bearerExpiry`, which is the measurement
+  instrument this bullet asked for. What changed is the request: the lease is derived from the
+  bounded work a drain commit issues before its first mutation — six ephemeral calls at the
+  ephemeral client's own per-invocation bound, plus one call's slack — instead of from the ceiling,
+  and `mkEksDrainLeaseSeconds` refuses anything shorter so the derivation is enforced rather than
+  merely used. The credential's own lifetime remains unmeasured, and the widened refusal is what the
+  next live cycle will capture it with.
 - **The rest of the run is unchanged from the prior cycle and is not attributed here.** Four
   registered-target observations refuse — `aws-eks-iam-role-family` and
   `dns-aws-dns01-challenge-records` as unobservable, `aws-eks-subzone` and `aws-eks` on

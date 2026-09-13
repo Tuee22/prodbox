@@ -171,7 +171,7 @@ lifecycleTeardownEksDrainSessionSuite = do
         fixtureVerified
         fixtureKubernetes
         fixtureProjection
-        `shouldBe` Left (EksDrainDeadlineInvalid 1_000 1_801)
+        `shouldBe` Left (EksDrainDeadlineBeyondBearerExpiry 1_000 1_801 1_800)
       let longLivedProjection =
             mustProjection
               "111122223333"
@@ -186,7 +186,63 @@ lifecycleTeardownEksDrainSessionSuite = do
         fixtureVerified
         fixtureKubernetes
         longLivedProjection
-        `shouldBe` Left (EksDrainDeadlineBeyondMaximum 1_901 900)
+        `shouldBe` Left (EksDrainDeadlineBeyondMaximum 1_000 1_901 900)
+
+    -- Sprint 4.95.  The bearer bound and the degenerate deadline shared one
+    -- constructor and one payload, so a live refusal could report two numbers
+    -- that satisfy every bound it named and refuse anyway.  These rows exist to
+    -- keep the three bounds separable by their refusals alone.
+    it "names which deadline bound refused and carries the bearer expiry" $ do
+      let projectionExpiring expires =
+            mustProjection
+              "111122223333"
+              (fixtureAwsRegion FixtureCaCentral1)
+              fixtureClusterName
+              expires
+          sessionAt expires deadline =
+            mkEksDrainSession
+              1_000
+              deadline
+              fixtureOperation
+              fixtureScope
+              fixtureVerified
+              fixtureKubernetes
+              (projectionExpiring expires)
+          expiryOf = fmap eksDrainSessionExpiresAtEpochSeconds
+
+      -- A bearer that dies before the requested deadline names itself, and
+      -- carries the number an operator has to subtract to learn how much
+      -- credential lifetime the run actually held.
+      sessionAt 1_400 1_500
+        `shouldBe` Left (EksDrainDeadlineBeyondBearerExpiry 1_000 1_500 1_400)
+
+      -- A bearer that expires exactly at the requested deadline is admitted.
+      -- The comparison is strict, and that is what makes a lease derived from
+      -- a measurement satisfiable at the boundary instead of one second short.
+      expiryOf (sessionAt 1_500 1_500) `shouldBe` Right 1_500
+
+      -- A bearer that outlives the deadline is admitted and does not shorten
+      -- it: the session holds what was requested, not what the bearer allows.
+      expiryOf (sessionAt 1_800 1_500) `shouldBe` Right 1_500
+
+      -- One second past the bearer still refuses.  Nothing clamps.
+      sessionAt 1_600 1_601
+        `shouldBe` Left (EksDrainDeadlineBeyondBearerExpiry 1_000 1_601 1_600)
+
+      -- The ceiling bound fires alone when the bearer could have backed the
+      -- request, and now carries `now` so the comparison is reconstructible
+      -- from the refusal by itself.
+      sessionAt 5_000 1_901
+        `shouldBe` Left (EksDrainDeadlineBeyondMaximum 1_000 1_901 900)
+
+      -- A deadline equal to the ceiling passes the ceiling, which is why the
+      -- live cycle's refusal could only have been the bearer bound.
+      expiryOf (sessionAt 5_000 1_900) `shouldBe` Right 1_900
+
+      -- The degenerate deadline is what `EksDrainDeadlineInvalid` now means,
+      -- and only that.  It had no test at all before this sprint.
+      sessionAt 1_800 1_000 `shouldBe` Left (EksDrainDeadlineInvalid 1_000 1_000)
+      sessionAt 1_800 999 `shouldBe` Left (EksDrainDeadlineInvalid 1_000 999)
 
     it "rejects another run and keeps invalid operations and surfaces before admission" $ do
       let wrongRun =

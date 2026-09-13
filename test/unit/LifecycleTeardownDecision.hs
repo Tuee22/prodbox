@@ -21,22 +21,24 @@ lifecycleTeardownDecisionSuite =
     it "covers every exact-result x primary x backup x manifest combination" $ do
       length decisionMatrix `shouldBe` 256
       forM_ decisionMatrix $ \row@(exactCase, primaryCase, backupCase, manifestCase) -> do
-        let actual =
+        let decided =
               decideStackDesiredAbsence
+                CascadeSurface
                 AwsEksKey
                 (completeObservation exactCase)
                 (checkpointPair primaryCase backupCase)
                 (manifestDecisionEvidence AwsEksKey decisionScope manifestCase)
+                :: Either StackDecisionBindingError (StackDesiredAbsenceDecision 'Cascade)
+            actual = fmap decisionShape decided
             expected =
-              ( Right
-                  ( expectedDecision
-                      exactCase
-                      primaryCase
-                      backupCase
-                      manifestCase
-                  )
-                  :: Either StackDecisionBindingError StackDesiredAbsenceDecision
-              )
+              Right
+                ( expectedDecision
+                    exactCase
+                    primaryCase
+                    backupCase
+                    manifestCase
+                )
+                :: Either StackDecisionBindingError DecisionShape
         if actual == expected
           then pure ()
           else
@@ -66,13 +68,14 @@ lifecycleTeardownDecisionSuite =
       forM_ nestedCheckpointMismatches $ \(label, malformedPair, expectedError) -> do
         let actual =
               decideStackDesiredAbsence
+                CascadeSurface
                 AwsEksKey
                 presentCompleteObservation
                 malformedPair
                 validManifest
             expected =
               ( Left (StackDecisionCheckpointPairInvalid expectedError)
-                  :: Either StackDecisionBindingError StackDesiredAbsenceDecision
+                  :: Either StackDecisionBindingError (StackDesiredAbsenceDecision 'Cascade)
               )
         if actual == expected
           then pure ()
@@ -102,6 +105,7 @@ lifecycleTeardownDecisionSuite =
                     TestCheckpointAbsent
               }
       decideStackDesiredAbsence
+        CascadeSurface
         AwsEksKey
         presentCompleteObservation
         swappedPair
@@ -109,18 +113,21 @@ lifecycleTeardownDecisionSuite =
         `shouldBe` Right
           ( StackRestoreBackupThenDestroy
               AwsEksKey
+              presentInventory
               (VerifiedBackupCheckpoint backupProvenance checkpointVersion)
           )
 
     it "keeps terminal audit and AWS tag inventory outside the decision API" $ do
       let pinnedDecisionType
-            :: RegisteredResourceKey
+            :: CleanupSurfaceWitness 'Cascade
+            -> RegisteredResourceKey
             -> CompleteObservationSet
             -> CheckpointPairObservation
             -> OwnershipManifestDecisionEvidence
-            -> Either StackDecisionBindingError StackDesiredAbsenceDecision
+            -> Either StackDecisionBindingError (StackDesiredAbsenceDecision 'Cascade)
           pinnedDecisionType = decideStackDesiredAbsence
       pinnedDecisionType
+        CascadeSurface
         AwsEksKey
         presentCompleteObservation
         validCheckpointPair
@@ -128,6 +135,7 @@ lifecycleTeardownDecisionSuite =
         `shouldBe` Right
           ( StackDestroyFromVerifiedPrimary
               AwsEksKey
+              presentInventory
               (VerifiedPrimaryCheckpoint primaryProvenance checkpointVersion)
           )
       source <- readFile "src/Prodbox/Lifecycle/Teardown/Decision.hs"
@@ -138,6 +146,7 @@ lifecycleTeardownDecisionSuite =
 
     it "refuses a merely present manifest without validated complete evidence" $ do
       decideStackDesiredAbsence
+        CascadeSurface
         AwsEksKey
         presentCompleteObservation
         (checkpointPair TestCheckpointAbsent TestCheckpointAbsent)
@@ -153,6 +162,28 @@ lifecycleTeardownDecisionSuite =
                      ]
               )
           )
+
+    -- Sprint 4.97.  The index is checked against the evidence, not taken from
+    -- the caller.  Without this comparison the surface parameter would be a
+    -- label the caller picks, and the type would prove nothing about the
+    -- evidence it indexes — the failure mode this sprint family exists to stop
+    -- repeating.
+    --
+    -- `ExplicitPerRun` rather than `LocalOnly` deliberately: this key is
+    -- admissible on `ExplicitPerRun`, so the only thing refusing here is the
+    -- witness-against-scope comparison rather than a selection error.
+    it "refuses a witness whose surface differs from the evidence scope" $ do
+      let decided =
+            decideStackDesiredAbsence
+              ExplicitPerRunSurface
+              AwsEksKey
+              presentCompleteObservation
+              validCheckpointPair
+              validManifest
+              :: Either
+                   StackDecisionBindingError
+                   (StackDesiredAbsenceDecision 'ExplicitPerRun)
+      decided `shouldBe` Left (StackDecisionSurfaceMismatch ExplicitPerRun Cascade)
 
 data ExactCase
   = TestExactAbsent
@@ -184,35 +215,73 @@ decisionMatrix =
   , manifestCase <- [minBound .. maxBound]
   ]
 
+-- | Sprint 4.97: the matrix compares shapes, not whole decisions.
+--
+-- 'StackAlreadyAbsent' now carries a 'StackCheckpointRetirementMandate', whose
+-- constructor is deliberately not exported: only the decision's own absent arm
+-- may mint one. That makes an expected value carrying a mandate impossible to
+-- build here, which is the property working rather than an obstacle — so the
+-- 256-row matrix asserts the shape and the mandate gets its own assertion,
+-- where it can be checked against the inputs it was minted from.
+data DecisionShape
+  = ShapeAlreadyAbsent !RegisteredResourceKey !AbsenceEvidence
+  | ShapeDestroyFromVerifiedPrimary
+      !RegisteredResourceKey
+      !ExactResourceInventory
+      !StackCleanupAuthority
+  | ShapeRestoreBackupThenDestroy
+      !RegisteredResourceKey
+      !ExactResourceInventory
+      !StackCleanupAuthority
+  | ShapeDestroyFromVerifiedManifest
+      !RegisteredResourceKey
+      !ExactResourceInventory
+      !StackCleanupAuthority
+  | ShapeRefused !RegisteredResourceKey !(NonEmpty StackDecisionRefusal)
+  deriving (Eq, Show)
+
+decisionShape :: StackDesiredAbsenceDecision surface -> DecisionShape
+decisionShape decision = case decision of
+  StackAlreadyAbsent key evidence -> ShapeAlreadyAbsent key evidence
+  StackDestroyFromVerifiedPrimary key inventory authority ->
+    ShapeDestroyFromVerifiedPrimary key inventory authority
+  StackRestoreBackupThenDestroy key inventory authority ->
+    ShapeRestoreBackupThenDestroy key inventory authority
+  StackDestroyFromVerifiedManifest key inventory authority ->
+    ShapeDestroyFromVerifiedManifest key inventory authority
+  StackDesiredAbsenceRefused key refusals -> ShapeRefused key refusals
+
 expectedDecision
   :: ExactCase
   -> CheckpointCase
   -> CheckpointCase
   -> ManifestCase
-  -> StackDesiredAbsenceDecision
+  -> DecisionShape
 expectedDecision exactCase primaryCase backupCase manifestCase =
   case exactCase of
-    TestExactAbsent -> StackAlreadyAbsent AwsEksKey absenceEvidence
+    TestExactAbsent -> ShapeAlreadyAbsent AwsEksKey absenceEvidence
     TestExactPartial ->
-      StackDesiredAbsenceRefused
+      ShapeRefused
         AwsEksKey
         (StackExactObservationPartial partialEvidence exactFailures :| [])
     TestExactUnobservable ->
-      StackDesiredAbsenceRefused
+      ShapeRefused
         AwsEksKey
         (StackExactObservationUnobservable exactFailures :| [])
     TestExactPresent -> case primaryCase of
       TestCheckpointPresent ->
-        StackDestroyFromVerifiedPrimary
+        ShapeDestroyFromVerifiedPrimary
           AwsEksKey
+          presentInventory
           (VerifiedPrimaryCheckpoint primaryProvenance checkpointVersion)
       _ -> case backupCase of
         TestCheckpointPresent ->
-          StackRestoreBackupThenDestroy
+          ShapeRestoreBackupThenDestroy
             AwsEksKey
+            presentInventory
             (VerifiedBackupCheckpoint backupProvenance checkpointVersion)
         _ ->
-          StackDesiredAbsenceRefused
+          ShapeRefused
             AwsEksKey
             ( checkpointRefusal PrimaryCheckpointCopy primaryCase
                 :| [ checkpointRefusal BackupCheckpointCopy backupCase
@@ -269,12 +338,17 @@ completeObservationFor key scope result =
         ]
     )
 
+-- | Sprint 4.97: the inventory the present observation reports, shared with the
+-- expectations, because the destroy arms now carry it rather than leaving each
+-- adapter to re-derive it from the observation.
+presentInventory :: ExactResourceInventory
+presentInventory =
+  ExactResourceInventory (ObservedResourceIdentity "arn:aws:fixture:stack" :| [])
+
 exactResult :: ExactCase -> ExactObservationResult
 exactResult exactCase = case exactCase of
   TestExactAbsent -> ExactResourceAbsent absenceEvidence
-  TestExactPresent ->
-    ExactResourcePresent
-      (ExactResourceInventory (ObservedResourceIdentity "arn:aws:fixture:stack" :| []))
+  TestExactPresent -> ExactResourcePresent presentInventory
   TestExactPartial -> ExactResourcePartial partialEvidence exactFailures
   TestExactUnobservable -> ExactResourceUnobservable exactFailures
 
@@ -364,14 +438,15 @@ validManifest =
 
 wrapperBindingMismatches
   :: [ ( String
-       , Either StackDecisionBindingError StackDesiredAbsenceDecision
-       , Either StackDecisionBindingError StackDesiredAbsenceDecision
+       , Either StackDecisionBindingError (StackDesiredAbsenceDecision 'Cascade)
+       , Either StackDecisionBindingError (StackDesiredAbsenceDecision 'Cascade)
        )
      ]
 wrapperBindingMismatches =
   [
     ( "unselected exact key"
     , decideStackDesiredAbsence
+        CascadeSurface
         AwsEksKey
         (completeObservationFor AwsEksSubzoneKey decisionScope presentResult)
         validCheckpointPair
@@ -381,6 +456,7 @@ wrapperBindingMismatches =
   ,
     ( "non-stack registry identity"
     , decideStackDesiredAbsence
+        CascadeSurface
         AwsEbsPerRunTestKey
         (completeObservationFor AwsEbsPerRunTestKey decisionScope presentResult)
         validCheckpointPair
@@ -390,6 +466,7 @@ wrapperBindingMismatches =
   ,
     ( "checkpoint pair key"
     , decideStackDesiredAbsence
+        CascadeSurface
         AwsEksKey
         presentCompleteObservation
         validCheckpointPair {checkpointPairStackKey = AwsEksSubzoneKey}
@@ -399,6 +476,7 @@ wrapperBindingMismatches =
   ,
     ( "manifest key"
     , decideStackDesiredAbsence
+        CascadeSurface
         AwsEksKey
         presentCompleteObservation
         validCheckpointPair
@@ -413,6 +491,7 @@ wrapperBindingMismatches =
   ,
     ( "checkpoint pair scope"
     , decideStackDesiredAbsence
+        CascadeSurface
         AwsEksKey
         presentCompleteObservation
         validCheckpointPair {checkpointPairEvidenceScope = otherScope}
@@ -422,6 +501,7 @@ wrapperBindingMismatches =
   ,
     ( "manifest scope"
     , decideStackDesiredAbsence
+        CascadeSurface
         AwsEksKey
         presentCompleteObservation
         validCheckpointPair

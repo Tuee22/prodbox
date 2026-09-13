@@ -87,6 +87,12 @@ import Prodbox.Lifecycle.Teardown.Registry
 -- durable runner can retain an unconfirmed effect for stable-key retry.
 data RegisteredTargetMutationAttempt
   = RegisteredTargetMutationApplied
+  | -- | Sprint 4.97.  The provider found nothing to do.  Distinct from
+    -- 'RegisteredTargetMutationApplied' because a destroy that ran and a
+    -- destroy that found its target already gone are different facts, and this
+    -- boundary flattened them into one until the Authority's response began
+    -- carrying the execution kind.
+    RegisteredTargetMutationAlreadySatisfied !Text
   | RegisteredTargetMutationResponseLost !Text
   | RegisteredTargetMutationRefused !Text
   deriving (Eq, Show)

@@ -198,7 +198,7 @@ decodeExactAwsRetainedEbsObservation request providerResult =
       [] ->
         observation
           ( ExactResourceAbsent
-              ( AbsenceEvidence
+              ( providerWorkerAbsence
                   "provider-worker exact retained EBS family returned its canonical empty set"
               )
           )
@@ -267,7 +267,7 @@ awsRetainedEbsReapProviderIntent authorization =
 confirmExactAwsRetainedEbsAbsence
   :: ExactAwsRetainedEbsObservationRequest
   -> Either Text ProviderIntentExecutionResult
-  -> Either AwsRetainedEbsAdapterError AbsenceEvidence
+  -> Either AwsRetainedEbsAdapterError (AbsenceEvidence 'ProviderApi)
 confirmExactAwsRetainedEbsAbsence request result = do
   exact <- decodeExactAwsRetainedEbsObservation request result
   complete <-

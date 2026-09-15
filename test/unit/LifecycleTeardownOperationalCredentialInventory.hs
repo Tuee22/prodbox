@@ -384,7 +384,7 @@ freezeBinding =
 
 providerIntents :: [ProviderIntent]
 providerIntents =
-  [ ReconcileRegisteredStack stackRef revision stackConfig
+  [ ReconcileRegisteredStack stackRef revision stackConfig fixtureProviderRunMarker
   , DestroyRegisteredStack stackRef revision stackConfig
   , ObserveRegisteredStack stackRef
   , ReadBackRegisteredStack stackRef

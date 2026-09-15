@@ -21,6 +21,8 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkProviderStackRef
   , mkRegisteredProviderResources
   , providerIntentCoordinate
+  , providerRunMarkerRunScope
+  , providerRunMarkerSubmission
   )
 import TestSupport
 
@@ -92,13 +94,16 @@ controlPlaneProviderWorkEndpointSuite =
       observed <- serveProviderWorkObserve repository
       providerWorkObserveSummary observed `shouldBe` "provider-work-observe:idle"
  where
+  -- Sprint 7.41: a registered-stack reconcile carries its run marker in the
+  -- secondary and tertiary slots this intent kind did not previously use, so a
+  -- payload without them is refused rather than admitted with no marker.
   submitReconcile =
     ProviderWorkApplyPayload
       { applyCommandKind = SubmitCommand
       , applyIntentKind = ReconcileStackIntent
       , applyResourceRef = "aws-eks"
-      , applySecondaryRef = ""
-      , applyTertiaryRef = ""
+      , applySecondaryRef = providerRunMarkerRunScope fixtureProviderRunMarker
+      , applyTertiaryRef = providerRunMarkerSubmission fixtureProviderRunMarker
       , applyRequestedRevision = 3
       , applyStackConfig = Just awsEksConfig
       , applyCoordinate = ""
@@ -132,6 +137,7 @@ controlPlaneProviderWorkEndpointSuite =
       { applyIntentKind = intentKind
       , applyResourceRef = resource
       , applySecondaryRef = secondary
+      , applyTertiaryRef = ""
       , applyRequestedRevision = 0
       , applyStackConfig = Nothing
       }
@@ -141,6 +147,7 @@ controlPlaneProviderWorkEndpointSuite =
           (unsafeRef (mkProviderStackRef "aws-eks"))
           (unsafeRef (mkProviderRevision 3))
           awsEksConfig
+          fixtureProviderRunMarker
       )
   freshRepository initial failWrites = do
     stateRef <- newIORef initial

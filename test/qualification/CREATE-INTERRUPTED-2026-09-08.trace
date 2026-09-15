@@ -1,0 +1,59 @@
+# CREATE-INTERRUPTED-2026-09-08 canonical frozen operator trace.
+#
+# All identifiers are synthetic qualification fixture values. This is a
+# reference oracle input, not a production observation or live proof.
+#
+# What it records is one registered-stack create that committed its lifecycle
+# generation one second before the provider capability ran, and whose reply the
+# transport deadline then cancelled. The generation made the cycle addressable.
+# It named no resource, and for four seconds the provider made five.
+
+format-version 1
+fixture-id CREATE-INTERRUPTED-2026-09-08
+
+run-scope stack-create/1757318400000000
+submission-key operator-reconcile-aws-eks-0001
+registry-revision lifecycle-registry/v1
+surface registered-stack-create
+operation reconcile-desired-present
+foundation linux-rke2/home
+aws-account 111122223333
+aws-region ca-central-1
+stack aws-eks
+
+# What the create declared it was about to make. In the replacement lane this
+# is the write-ahead ownership manifest's entry set, committed and read back
+# before the effect; in the superseded lane it is what nobody wrote down.
+declared aws-eks-vpc aws:ec2:Vpc
+declared aws-eks-cluster aws:eks:Cluster
+declared aws-eks-node-group aws:eks:NodeGroup
+declared aws-eks-node-role aws:iam:Role
+declared aws-eks-node-role-policy aws:iam:RolePolicyAttachment
+
+# What the provider reported having made. The completion append records exactly
+# these against the declared coordinates; the superseded lane discarded them
+# with the cancelled reply.
+observed aws-eks-vpc provider-operation/vpc-0001
+observed aws-eks-cluster provider-operation/cluster-0001
+observed aws-eks-node-group provider-operation/node-group-0001
+observed aws-eks-node-role provider-operation/node-role-0001
+observed aws-eks-node-role-policy provider-operation/node-role-policy-0001
+
+# The provider-held marker. It is the only record in this trace that lives
+# outside the host process, which is why an interruption cannot take it.
+provider-tag prodbox.io/run-scope stack-create/1757318400000000
+provider-tag prodbox.io/submission operator-reconcile-aws-eks-0001
+
+# The lane each implementation runs. The finding is the gap: the superseded
+# lane has nothing at all between the generation commit and the effect.
+lane superseded admit-create
+lane superseded commit-generation
+lane superseded execute-admitted-create
+
+lane replacement mint-run-marker
+lane replacement admit-create
+lane replacement commit-generation
+lane replacement commit-write-ahead-manifest
+lane replacement read-back-write-ahead-manifest
+lane replacement execute-admitted-create
+lane replacement append-observed-identities

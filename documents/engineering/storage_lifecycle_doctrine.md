@@ -471,7 +471,15 @@ Rules:
     primary mechanism, because the state that would destroy it was dropped with the scratch. Plan
     for both: the write-ahead record supplies addressability, the ownership tag supplies
     enumerability when every host record is gone, and only an exact coordinate supplies destruction.
-    Status lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+    **Recorded 2026-09-14 (Sprint `7.41`).** All three now exist. The write-ahead record is
+    committed and independently read back before the effect, and a completion record under the same
+    identity carries the identity the provider returned — so addressability and, when the create
+    returned, destroyability are both durable. The third, the provider-side ownership tag, is
+    stamped as provider default tags carrying the run scope and the submission key, so a run killed
+    between the effect and its return route leaves resources the provider can still enumerate under
+    the exact run scope the write-ahead record is keyed on. The join is what is new: the tag and the
+    record now name the same run from opposite sides of the boundary the host can die on. Status
+    lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 
 ## Cross-References

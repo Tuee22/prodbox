@@ -358,6 +358,28 @@ tombstone. Gateway and host-direct generic secret-write routes are absent.
     provenance marker; it is never a lifecycle class, never a substitute for the registered
     coordinate, and never evidence of absence.
 
+    **The vocabulary, landed by Sprint `7.41` (2026-09-14).** `prodbox.io/managed-by` names the
+    managed owner and `Name` the registered coordinate, both authored per resource as before.
+    `prodbox.io/run-scope` and `prodbox.io/submission` are the run pair: the durable run scope the
+    lifecycle generation and the write-ahead ownership manifest are both recorded under, and the
+    submission key that run's create was admitted at. The cycle is named by the run scope rather
+    than by the generation ordinal, because the ordinal is assigned by the Authority *after*
+    admission while the tag value must be inside the intent, whose serialisation is hashed into the
+    admit and execute replay digest — a value that differed between those two calls would make the
+    execute a divergent replay of its own admission.
+
+    Three properties of how it is stamped are load-bearing. It is stamped by the **provider**, as
+    `defaultTags` on the default AWS provider each per-run program declares, so a resource added to
+    a program carries the pair without anyone remembering to author it. It is projected into the
+    Pulumi configuration on the **preview as well as the apply**, because a preview run against
+    different configuration than the apply reports an agreement the apply does not keep — the exact
+    defect `PROVIDER-WORKER-PULUMI-STACK-CONFIG-ABSENT-2026-09-05` froze. And because the pair is
+    per-submission, a reconcile of a stack that is already present previews a tag change and applies
+    it: the marker the provider holds names the run that last proved it, which is the run whose
+    write-ahead record a cascade will find. The retained long-lived `aws-ses` stack carries no run
+    pair at all; a per-run marker on the one stack nothing may reap would tell a per-run sweep that
+    it belongs to the run currently reaping.
+
 **Enforcement of invariant 19 (Sprint `4.96`, 2026-09-12).** The reply/effect half is now
 structural at the control-plane request boundary. The request runs on its own thread and the
 deadline bounds only the *wait* for it, so an expiry answers the peer without touching the effect;
@@ -525,11 +547,53 @@ kind is admissible. A mutation constructor owns any required domain pre-observat
 effect, and mandatory read-back inside its operation boundary; callers cannot splice an
 observation from one reference into execution on another.
 
-This is the minimum closed operation universe for the target control plane and component graph,
-not an illustrative subset. Adding a supported operation requires a new kind, singleton,
+~~This is the minimum closed operation universe for the target control plane and component graph,
+not an illustrative subset.~~ Adding a supported operation requires a new kind, singleton,
 compatible program constructor, provider mapping, exhaustive tests, policy entry, and doctrine
 update in the same change. A generic HTTP, Vault, MinIO, AWS, or subprocess escape constructor is
 forbidden.
+
+**Corrected 2026-09-13 (Standard C): the struck sentence is false about the current revision, and
+the rule in the sentence after it is the one that was not followed.** Measured against this
+revision: `CapabilityKind` in `src/Prodbox/ControlPlane/CapabilityKind.hs` carries 40 constructors,
+of which this document names 24; the fenced Provider Worker's own `ProviderIntent` in
+`src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs` carries 32 constructors, of which the whole
+of `documents/engineering/` names 5. What the enumeration above closes, accurately, is the set of
+*tiers and admission rules* — no operation escapes the tier algebra, and that half has held. What it
+does not close is the set of operations the system admits.
+
+The gap is almost entirely the observation family, and that is not a coincidence. Because no
+document said what those intents return, six provider-evidence encoders could disagree with one
+validator from 2026-08-24 onward without any document becoming visibly wrong: there was nothing to
+contradict. A missing description does not read as a defect, which is exactly why the same-change
+rule above exists and why skipping it is expensive. The returned value now has an owner in
+[Provider Evidence Contract](./provider_evidence_contract.md).
+
+The undocumented intents are recorded here rather than silently carried; closing them belongs to the
+phases that own them, and this correction claims no surface beyond Phase `4`'s own. Status lives
+only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+#### 3.1a The observation intents that reach a teardown decision
+
+Six `ProviderIntent` observations carry the AWS teardown path. They are entered here because the
+same-change rule above requires it and because their evidence was the undocumented half; what each
+one *returns* is governed by [Provider Evidence
+Contract](./provider_evidence_contract.md), which owns the grammar, the character rule, the derived
+bounds, and the byte-exact retention. The remaining shipped intents are still unentered.
+
+| Intent | Asks | Answers with |
+|---|---|---|
+| `ObserveNativeStackFamily` | the deterministic per-run stack family at an exact coordinate | the family's member identities, or a stated absence |
+| `ObserveOwnedResourceTags` | one tag filter, key-only or exact-pair, at the cascade's terminal audit purpose | the tagged resources found, completion as an explicit terminator, and a resource carrying no tags distinguished from one not returned |
+| `ObserveEksIamRoleFamily` | the cluster's stack-owned non-credential IAM role family | the role identities, or a stated absence |
+| `ObserveEksLoadBalancerControllerFamily` | the load-balancer-controller-owned family | the member identities, or a stated absence |
+| `ObserveValidationHostedZones` | the run's validation hosted zones under a prefix | zone identifiers and names, or a stated absence |
+| `ObserveDns01ChallengeRecords` | the DNS01 challenge records in a zone | record identities, or a stated absence |
+
+Each is a `*Observe` kind and therefore carries the restriction stated above: a read-only
+diagnostic/recovery authority, never reusable as proof that a mutation is admissible. Three of them
+have a paired `Reap*` mutation, and the pairing is deliberately not a splice — the mutation owns its
+own pre-observation inside its operation boundary rather than consuming the observation's answer.
 
 ### 3.2 Programs are data
 
@@ -3084,7 +3148,7 @@ schema/preview peak upward; the remaining 96 MiB retains the existing heap/nativ
 decomposition. AWS CLI actions additionally use a physical 30-second wall-clock bound with finite
 stdout and stderr ceilings; queue wait and child execution remain inside the caller's existing
 absolute request deadline. The permit changes neither intent admission, authentication, Vault
-binding, Provider evidence, nor the four-worker request admission plan.
+binding, Provider evidence, nor the four-worker request admission plan. Provider evidence — what a capability returns, as opposed to what it is permitted to do — is owned by [Provider Evidence Contract](./provider_evidence_contract.md).
 
 The Provider's ephemeral-storage counterexample holds that complete topology, child permit, and
 `100m / 176Mi / 256Mi / 0 durable` envelope constant. The superseded runtime download reaches a
@@ -3123,7 +3187,10 @@ The Provider Worker exposes one protected request-progress diagnostic and no req
 payload. Its closed stages are `socket-ingress`, `authenticated-ingress`, `intent-admission`,
 `trust-revalidation`, `clock-revalidation`, `narrow-session`, `credential-binding`,
 `capability-execution`, `authority-projection`, `response-encoding`, and `socket-completion`; the
-only causes are `started`, `completed`, and `refused`. `socket-ingress` is emitted only after the
+only causes are `started`, `completed`, and `refused`. Evidence validation happens inside
+`capability-execution` and **again** at Lifecycle Authority settlement, which is not a Worker
+stage at all; a reader tracing an evidence refusal through this vocabulary will find the first
+boundary here and must look outside it for the second. `socket-ingress` is emitted only after the
 shared server has framed and classified the owned Provider route. `authenticated-ingress` means
 the authenticated/replay layer has admitted a fresh inner-handler invocation; an authentication
 refusal or replayed response therefore cannot be mistaken for new Provider execution. The final
@@ -3562,7 +3629,7 @@ data DecommissionState
 data DecommissionNodeState
   = DecommissionPending
   | DecommissionRunning DecommissionAttempt
-  | DecommissionAbsent AbsenceEvidence
+  | DecommissionAbsent (AbsenceEvidence 'ProviderApi)
   | DecommissionFailed DecommissionFailure
 
 data DecommissionReceiptFrame = DecommissionReceiptFrame

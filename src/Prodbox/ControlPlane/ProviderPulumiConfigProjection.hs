@@ -11,18 +11,26 @@ module Prodbox.ControlPlane.ProviderPulumiConfigProjection
   , ProviderPulumiConfigCounterexampleError (..)
   , providerPulumiConfigCounterexampleId
   , providerPulumiPreviewArguments
+  , providerRunMarkerProgramBindings
+  , providerRunMarkerConfiguration
   , frozenProviderPulumiConfigCounterexample
   , validateProviderPulumiConfigCounterexample
   )
 where
 
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Prodbox.Capacity.ProviderWorkerBudget
   ( ProviderWorkerCounterexampleBackgroundLoad (OneRegisteredStackReconcile)
   , ProviderWorkerCounterexampleFaultSchedule (NoInjectedProviderFault)
   , ProviderWorkerCounterexampleTopology (OneFencedProviderWorkerOneSerializedChild)
   , ProviderWorkerEphemeralCausalProfile (..)
   , ProviderWorkerResourceEnvelope (..)
+  )
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderRunMarker
+  , providerRunMarkerRunScope
+  , providerRunMarkerSubmission
   )
 
 data ProviderPulumiConfigCounterexample = ProviderPulumiConfigCounterexample
@@ -80,6 +88,38 @@ providerPulumiPreviewArguments selectedStack configuration =
     <> concatMap configArgument configuration
  where
   configArgument (key, value) = ["--config", key <> "=" <> value]
+
+-- | Sprint 7.41: how a run marker reaches the resources a create makes.
+--
+-- Each pair is a Pulumi configuration key and the provider tag key the program
+-- stamps from it.  Stating both here is what lets one test assert that the
+-- value this code sets and the value the committed program reads are the same
+-- value: the two live in different languages, and a rename on either side is
+-- otherwise a silent no-op that stamps an empty tag.
+--
+-- The four programs do not all take one.  @aws-ses@ is the retained long-lived
+-- stack, and a per-run marker on it would tell a per-run sweep that a stack
+-- nothing is allowed to reap belongs to the run currently reaping.
+providerRunMarkerProgramBindings :: [(String, String)]
+providerRunMarkerProgramBindings =
+  [ (providerRunScopeConfigurationKey, "prodbox.io/run-scope")
+  , (providerSubmissionConfigurationKey, "prodbox.io/submission")
+  ]
+
+-- | The marker projected into the configuration the preview and the apply both
+-- carry.  Projecting it onto only one of the two is the defect
+-- 'providerPulumiConfigCounterexampleId' froze.
+providerRunMarkerConfiguration :: ProviderRunMarker -> [(String, String)]
+providerRunMarkerConfiguration marker =
+  [ (providerRunScopeConfigurationKey, Text.unpack (providerRunMarkerRunScope marker))
+  , (providerSubmissionConfigurationKey, Text.unpack (providerRunMarkerSubmission marker))
+  ]
+
+providerRunScopeConfigurationKey :: String
+providerRunScopeConfigurationKey = "prodboxRunScope"
+
+providerSubmissionConfigurationKey :: String
+providerSubmissionConfigurationKey = "prodboxSubmission"
 
 frozenProviderPulumiConfigCounterexample :: ProviderPulumiConfigCounterexample
 frozenProviderPulumiConfigCounterexample =

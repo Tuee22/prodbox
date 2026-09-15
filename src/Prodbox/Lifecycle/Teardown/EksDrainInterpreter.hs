@@ -163,7 +163,7 @@ data EksDrainKubernetesUidObservation
 -- name-bound, so any object at that name -- including a recreated object with
 -- another UID -- blocks absence confirmation.
 data EksDrainPvcObservation
-  = EksDrainPvcObservedAbsent !AbsenceEvidence
+  = EksDrainPvcObservedAbsent !(AbsenceEvidence 'KubernetesApi)
   | EksDrainPvcObservedPresent !Text
   | EksDrainPvcObservationUnobservable !(NonEmpty ObservationFailure)
   deriving (Eq, Show)
@@ -1706,7 +1706,7 @@ inventoryReadBack
   -> EksDrainResourceClassReadBack
 inventoryReadBack absence result = case result of
   EksDrainInventoryComplete [] ->
-    EksDrainResourceClassAbsent (AbsenceEvidence absence)
+    EksDrainResourceClassAbsent (kubernetesReadBackAbsence absence)
   EksDrainInventoryComplete (first : rest) ->
     EksDrainResourceClassPresent (first :| rest)
   EksDrainInventoryPartial values failures ->
@@ -2125,7 +2125,7 @@ observeProductionPvc client target = do
     Right raw
       | Text.null (Text.strip (Text.pack raw)) ->
           EksDrainPvcObservedAbsent
-            (AbsenceEvidence "exact PVC name absent from successful Kubernetes API read-back")
+            (kubernetesReadBackAbsence "exact PVC name absent from successful Kubernetes API read-back")
       | otherwise -> case Text.splitOn "|" (Text.strip (Text.pack raw)) of
           [namespace, name, uid]
             | namespace == eksNamespacedNameNamespace target

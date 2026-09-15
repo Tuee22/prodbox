@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | The local-Linux RKE2 terminal adapter for 'HostCleanupRunner'.  Install
@@ -42,7 +43,11 @@ import Prodbox.Lifecycle.HostCleanupRunner
   , HostCleanupRunnerContext
   , hostCleanupRunnerUninstallOperationId
   )
-import Prodbox.Lifecycle.Teardown.Observation (AbsenceEvidence (..))
+import Prodbox.Lifecycle.Teardown.Observation
+  ( AbsenceEvidence
+  , ObservationStratum (..)
+  , hostLocalAbsence
+  )
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , ProcessOutput (..)
@@ -102,7 +107,7 @@ data LocalRke2InstallObservation
   = LocalRke2InstallPresent
       !(NonEmpty LocalRke2InstallMarker)
       ![LocalRke2MarkerFailure]
-  | LocalRke2InstallAbsent !AbsenceEvidence
+  | LocalRke2InstallAbsent !(AbsenceEvidence 'HostLocal)
   | LocalRke2InstallUnconfirmed !(NonEmpty LocalRke2MarkerFailure)
   deriving (Eq, Show)
 
@@ -120,7 +125,7 @@ data LocalRke2UninstallRefusal
 data LocalRke2UninstallResult
   = LocalRke2UninstallAlreadyAbsent
       !CleanupOperationId
-      !AbsenceEvidence
+      !(AbsenceEvidence 'HostLocal)
   | LocalRke2UninstallApplied !CleanupOperationId
   | LocalRke2UninstallResponseLost !CleanupOperationId !Text
   | LocalRke2UninstallRefused
@@ -219,9 +224,9 @@ observeLocalRke2Install adapter = do
     observed <- localRke2ObserveInstallMarker boundary marker
     pure (marker, observed)
 
-exactLocalRke2Absence :: AbsenceEvidence
+exactLocalRke2Absence :: AbsenceEvidence 'HostLocal
 exactLocalRke2Absence =
-  AbsenceEvidence
+  hostLocalAbsence
     "local-rke2-install/v1: every canonical no-follow install marker was observed absent"
 
 attemptLocalRke2Uninstall

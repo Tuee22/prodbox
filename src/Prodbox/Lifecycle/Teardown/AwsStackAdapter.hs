@@ -68,6 +68,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderStackConfigError
   , ProviderStackRef
   , mkProviderStackRef
+  , parseRegisteredStackAbsenceEvidence
   , providerIntentCoordinate
   , validateProviderStackConfig
   )
@@ -509,7 +510,7 @@ data CompleteAwsStackDestroy = CompleteAwsStackDestroy
   { internalCompleteAwsStackDestroyKey :: !RegisteredResourceKey
   , internalCompleteAwsStackDestroyScope :: !ObservationEvidenceScope
   , internalCompleteAwsStackDestroyObservationRevision :: !ObservationRevision
-  , internalCompleteAwsStackDestroyAbsenceEvidence :: !AbsenceEvidence
+  , internalCompleteAwsStackDestroyAbsenceEvidence :: !(AbsenceEvidence 'ProviderApi)
   }
   deriving (Eq, Show)
 
@@ -526,7 +527,7 @@ completeAwsStackDestroyObservationRevision =
   internalCompleteAwsStackDestroyObservationRevision
 
 completeAwsStackDestroyAbsenceEvidence
-  :: CompleteAwsStackDestroy -> AbsenceEvidence
+  :: CompleteAwsStackDestroy -> AbsenceEvidence 'ProviderApi
 completeAwsStackDestroyAbsenceEvidence =
   internalCompleteAwsStackDestroyAbsenceEvidence
 
@@ -758,9 +759,6 @@ exactObservationForRequest request =
  where
   binding = observationRequestBinding request
 
-registeredStackAbsentEvidence :: Text
-registeredStackAbsentEvidence = "registered stack is absent"
-
 decodeRequestObservationEvidence
   :: AwsStackObservationRequest purpose
   -> Text
@@ -770,7 +768,7 @@ decodeRequestObservationEvidence request evidence =
     ObserveNativeStackFamily ref _ ->
       case decodeAwsNativeStackFamilyEvidence ref evidence of
         Left _ -> Nothing
-        Right [] -> Just (ExactResourceAbsent (AbsenceEvidence evidence))
+        Right [] -> Just (ExactResourceAbsent (providerWorkerAbsence evidence))
         Right (firstIdentity : remaining) ->
           Just
             ( ExactResourcePresent
@@ -780,12 +778,20 @@ decodeRequestObservationEvidence request evidence =
                     )
                 )
             )
-    _ -> decodeObservationEvidence evidence
+    _ -> decodeObservationEvidence (awsStackBindingRef binding) evidence
+ where
+  binding = observationRequestBinding request
 
-decodeObservationEvidence :: Text -> Maybe ExactObservationResult
-decodeObservationEvidence evidence
-  | evidence == registeredStackAbsentEvidence =
-      Just (ExactResourceAbsent (AbsenceEvidence evidence))
+-- | Sprint @4.98@: the absence arm is parsed rather than compared to a locally
+-- authored copy of the same sentence, and the coordinate it names must be the
+-- coordinate this request asked about.  An absence observed for one registered
+-- stack can no longer answer for another.
+decodeObservationEvidence :: ProviderStackRef -> Text -> Maybe ExactObservationResult
+decodeObservationEvidence expected evidence
+  | Just observed <- parseRegisteredStackAbsenceEvidence evidence =
+      if observed == expected
+        then Just (ExactResourceAbsent (providerWorkerAbsence evidence))
+        else Nothing
   | validSha256Identity evidence =
       Just
         ( ExactResourcePresent

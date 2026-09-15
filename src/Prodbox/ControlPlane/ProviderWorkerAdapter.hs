@@ -80,6 +80,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderOwnedTagQuery (..)
   , ProviderReadinessProbe (..)
   , ProviderRevision
+  , ProviderRunMarker
   , ProviderSpotPriceQuery
   , ProviderStackConfig
   , ProviderStackRef
@@ -104,6 +105,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkProviderCheckpointRef
   , mkProviderNativeStackFamilyRef
   , mkProviderRevision
+  , mkProviderRunMarker
   , mkProviderSpotPriceQuery
   , mkProviderStackRef
   , mkPublicARecordRef
@@ -118,6 +120,8 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , providerNativeStackFamilyRegion
   , providerNativeStackFamilyStackRef
   , providerRevisionNatural
+  , providerRunMarkerRunScope
+  , providerRunMarkerSubmission
   , providerSpotPriceInstanceType
   , providerSpotPriceProductDescription
   , providerStackRefText
@@ -133,6 +137,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , sesRuleSetCaptureBucket
   , sesRuleSetRecipient
   , sesRuleSetRefText
+  , validateProviderIntentEvidence
   , validateProviderStackConfig
   )
 
@@ -172,6 +177,7 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
       :: ProviderStackRef
       -> ProviderRevision
       -> ProviderStackConfig
+      -> ProviderRunMarker
       -> ProviderMutation m session
   , destroyRegisteredStackCapability
       :: ProviderStackRef
@@ -413,17 +419,33 @@ validateProviderWorkDurableState durable = do
  where
   validateCompletion completion = do
     validateProviderIntent (providerWorkCompletedIntent completion)
-    validateEvidence (providerWorkCompletionEvidence completion)
+    validateEvidence
+      (providerWorkCompletedIntent completion)
+      (providerWorkCompletionEvidence completion)
   validateActiveCoordinate coordinate intent
     | coordinate == providerIntentCoordinate intent = Right ()
     | otherwise = Left ProviderWorkStateIntentCoordinateMismatch
 
+-- | Sprint 7.41: a retained run marker must still be one the provider would
+-- accept, re-derived through its own constructor rather than trusted because it
+-- was decoded.
+validateRunMarker
+  :: ProviderRunMarker -> Either ProviderWorkStateCodecError ()
+validateRunMarker marker =
+  case mkProviderRunMarker
+    (providerRunMarkerRunScope marker)
+    (providerRunMarkerSubmission marker) of
+    Right rebuilt
+      | rebuilt == marker -> Right ()
+    _ -> Left (ProviderWorkStateIntentInvalid "run-marker")
+
 validateProviderIntent :: ProviderIntent -> Either ProviderWorkStateCodecError ()
 validateProviderIntent intent = case intent of
-  ReconcileRegisteredStack ref revision config -> do
+  ReconcileRegisteredStack ref revision config marker -> do
     validateRef "stack" (mkProviderStackRef (providerStackRefText ref)) ref
     validateRevision revision
     validateStackConfig ref config
+    validateRunMarker marker
   DestroyRegisteredStack ref revision config -> do
     validateRef "stack" (mkProviderStackRef (providerStackRefText ref)) ref
     validateRevision revision
@@ -587,14 +609,22 @@ validateProviderIntent intent = case intent of
         || Text.length identity > 2048
         || Text.any (\character -> character == '|' || character == '\n' || character == '\r') identity
 
-validateEvidence :: Text -> Either ProviderWorkStateCodecError ()
-validateEvidence evidence
-  | Text.null evidence = Left ProviderWorkStateEvidenceInvalid
-  | Text.length evidence > 4096 = Left ProviderWorkStateEvidenceInvalid
-  | Text.any isControl evidence = Left ProviderWorkStateEvidenceInvalid
-  | otherwise = Right ()
- where
-  isControl character = character <= '\x1f' || character == '\x7f'
+-- | Sprint @4.99@: derived from the one rule rather than restating it.
+--
+-- This was a third independent statement of the provider-evidence rule. It
+-- hardcoded a 4096 maximum instead of consulting the bound for the intent being
+-- served, and collapsed the empty, over-length and control-character causes into
+-- one opaque constructor. A rule stated three times can disagree with itself,
+-- and this one already did: its number was not the number the wire enforced.
+--
+-- It survived two counterexample closures that each claimed to have deduplicated
+-- this rule, because the module has no production importer outside its own unit
+-- test and a grep for the rule's refusal text never reached it.
+validateEvidence :: ProviderIntent -> Text -> Either ProviderWorkStateCodecError ()
+validateEvidence intent evidence =
+  case validateProviderIntentEvidence intent evidence of
+    Left _ -> Left ProviderWorkStateEvidenceInvalid
+    Right _ -> Right ()
 
 traverse_ :: (a -> Either errorValue ()) -> Maybe a -> Either errorValue ()
 traverse_ validate maybeValue = case maybeValue of
@@ -809,7 +839,7 @@ executeProviderIntent adapter requested = do
       Right () -> Left detail
 
   completeSnapshot snapshot intent evidence =
-    case validateEvidence evidence of
+    case validateEvidence intent evidence of
       Left err -> recoverAfterFailure snapshot (Text.pack (show err))
       Right () -> do
         let completion =
@@ -874,7 +904,7 @@ runIntentUnderSession adapter mode intent session =
  where
   coordinate = providerIntentCoordinate intent
   validateRuntimeEvidence evidence =
-    case validateEvidence evidence of
+    case validateEvidence intent evidence of
       Left err -> Left (Text.pack (show err))
       Right () -> Right evidence
 
@@ -887,8 +917,9 @@ operationForIntent
   -> ProviderIntent
   -> ProviderIntentOperation m session
 operationForIntent capabilities intent = case intent of
-  ReconcileRegisteredStack ref revision config ->
-    IntentMutation (reconcileRegisteredStackCapability capabilities ref revision config)
+  ReconcileRegisteredStack ref revision config marker ->
+    IntentMutation
+      (reconcileRegisteredStackCapability capabilities ref revision config marker)
   DestroyRegisteredStack ref revision config ->
     IntentMutation (destroyRegisteredStackCapability capabilities ref revision config)
   ObserveRegisteredStack ref ->

@@ -4546,13 +4546,15 @@ table-covered under § 3.1 rather than property-covered. It does not claim the w
 
 None.
 
-## Sprint 5.47: Gates That Read Conversions, And A Suite The Gate Runs [📋 Planned]
+## Sprint 5.47: Gates That Read Conversions, And A Suite The Gate Runs [✅ Done]
 
-**Status**: Planned. Phase `5` own-surface reopen (Standard A/N) on the canonical suite's gate
-surface and the scopes that execute it.
+**Status**: Done (2026-09-14). Phase `5` own-surface reopen (Standard A/N) on the canonical suite's
+gate surface and the scopes that execute it.
 **Doctrine**: [Unit Testing Policy](../documents/engineering/unit_testing_policy.md)'s tier table
 and [Code Quality Doctrine](../documents/engineering/code_quality.md)'s policy-guardrail idiom.
-**Implementation**: `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestPlan.hs`, and `test/unit/Main.hs`.
+**Implementation**: `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestPlan.hs`,
+`src/Prodbox/TestRunner.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `test/unit/Main.hs`,
+`test/unit/TypedGuardConsumption.hs`, `test/unit/WireFidelity.hs`, and `prodbox.cabal`.
 **Blocked by**: none.
 **Live-proof**: pending — not applicable to this surface; every item is provable locally.
 **Deployment qualification**: pending — not invalidated by this sprint, which adds gates and a
@@ -4561,8 +4563,13 @@ suite route and changes no production composition.
 real tree; the suite route proven by a deliberately failing assertion that the gate must surface;
 full unit suite; `prodbox dev check`.
 **Docs to update**: `documents/engineering/unit_testing_policy.md`,
-`documents/engineering/code_quality.md`, `documents/documentation_standards.md`,
-`DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+`documents/engineering/code_quality.md`, ~~`documents/documentation_standards.md`,~~
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`. **Corrected 2026-09-14 (Standard C):** no edit
+to the documentation standards was owed. The struck document governs how a governed document states
+a claim, and this sprint states its new enforcement claims inside `code_quality.md` § 3 naming their
+violation functions, which is that document's § 12.2 rule 1 being obeyed rather than changed. The
+overview is added because Phase `5`'s row carries two clauses this sprint makes false.
 
 ### Objective
 
@@ -4587,7 +4594,12 @@ surface that does not run.
   established declared-symbol and deletion-condition shape, because the tree contains known
   unconsumed guards today and the gate must name them rather than fail opaquely on day one.
 - A wire-fidelity gate: a serialised sum may not lose arms its in-process type distinguishes.
-- A ban, not a join, on absence literals derived from subprocess output.
+- ~~A ban, not a join, on absence literals derived from subprocess output.~~ **Corrected 2026-09-14
+  (Standard C):** already landed. Sprint `4.98` shipped `checkAbsenceMinterProvenance` on
+  2026-09-13, one day after this sprint was written, and it is exactly this rule — an absence minter
+  may not reduce subprocess output to a substring match, checked as a ban over a stated region
+  rather than as a join. The deliverable is struck rather than deleted because a reader who meets
+  this block will otherwise look for a third gate that does not exist.
 - Route the unit suite onto a gated path so a compiled assertion is also an executed one, and record
   in the testing policy which gate now runs which tier.
 
@@ -4600,7 +4612,83 @@ surface that does not run.
 
 ### Remaining Work
 
-All of it.
+None on the code-owned surface. `Live-proof` and `Deployment qualification` stay pending and
+non-blocking (Standards O/P).
+
+### Outcome
+
+**Two gates landed, one deliverable was already closed, and the suite route cost a repair the sprint
+had not named.**
+
+The guard-consumption gate is `checkTypedGuardConsumption`, and its subject is narrower than the
+sprint's sentence. "A function whose name looks like a guard" selects 208 bindings in this tree, of
+which roughly three in five are ordinary record accessors, and a rule whose registry is larger than
+its finding set constrains nothing. The subject is instead a binding whose declared type names one
+of the repository's cleanup-authority vocabularies — the types whose whole purpose is a claim about
+a resource's absence, its ownership, or a permission to destroy or retire it. That selects 114
+declarations, of which **41** have no production consumer. The registry names all 41, each keyed to
+the deletion-ledger row that owns its consumption, and the bijection refuses in four directions
+rather than two: an unregistered unconsumed guard, a row whose symbol is gone, a row whose symbol
+has *gained* a consumer, and a declared owner missing from the scanned set. The third is what makes
+the registry a ratchet instead of a list — wiring a guard up fails the build until its ledger row
+closes in the same change.
+
+**Two of the four locations the ledger row named had been found by reading, and the gate found the
+other two.** `resourceDestroyCapability` is written into every managed-resource descriptor and read
+by nothing, which is invisible to any rule that only reads call sites — a field written into a
+record literal is not a read of that field. `dischargeByObservedAbsence` has a call site, and it is
+inside `fixedCheckpointAbsenceDischargeRegression`: a self-test proves a guard can refuse and is not
+a decision that consults it. Both distinctions are in the rule, and the second is the one the
+2026-09-08 leak turned on.
+
+**The wire-fidelity rule reports 24 collapses across 15 functions, and every one of them is
+registered.** That is the honest outcome and it is worth stating plainly: on the tree as it stands
+this gate refuses nothing, and its value is entirely prospective — a *new* collapse fails, and the
+stale-exemption direction keeps the registry from drifting into a description of the tree. Each of
+the 15 was adjudicated against its consumers rather than waved through: six are the Bootstrap
+Broker's three-valued boundary classifiers, whose returned string is the key `boundaryReply`
+string-matches to select an HTTP status and is emitted verbatim as the body, with the exact cause
+surviving on the protected baseline diagnostic; `providerIntentResourceKey` collapses an observe and
+its reap deliberately, because the key names the registered family the Authority grants and
+`providerIntentCoordinate` is the injective sibling; `localClientStartupProbePath`'s codomain is a
+URL path with two inhabitants. **One is a real defect deferred rather than a contract** —
+`renderTargetSecretWorkerRuntimeRefusal` collapses twenty of twenty-eight runtime failures onto one
+token that the standing Target Agent parses, and widening that vocabulary is a deployed-protocol
+change this sprint declares it does not make. It is registered as such and carries a new ledger row.
+
+**The rule's first draft reported three findings that were not collapses, and the fix is in the
+rule.** `renderingArmsIn` joins the arms of every `case` in a function body, including
+`where`-bound ones over different types, so comparing literals across the whole body read a
+composite renderer's `size=empty` and `shape=empty` — two constructors of two types written into two
+labelled fields — as one collapsed value. Comparing within each type separately is what the rule's
+own sentence says. A module's own declarations also now win over the shared index, because
+`CoordinateError` is declared by two modules and the shared index drops an ambiguous name, which had
+made the rule blind to a renderer written beside its own type.
+
+**The suite route is four stanzas, and running them surfaced a planner case that needed a cluster.**
+`prodbox dev check` now executes `prodbox-unit` and the three auxiliary `-unit` stanzas after the
+binary sync, through `runGatedTestSuites`; `testSuiteStanzaViolations` gained a third direction so a
+gated name must also be a routed name, and `prodbox test all` subtracts the gated four and prints
+what it subtracted. The measured cost is **126 seconds** against a gate that already exceeds ten
+minutes. What the sprint had not anticipated is that one `prodbox-unit` case could not run at all on
+a host with no cluster: the chart plan builder makes six observations that leave the process, and
+only the runtime image had a seam, so the `provider-worker` planner case invoked a real
+`kubectl get endpoints kubernetes` and failed. `ChartPlanObservers` now names both, production
+supplies `productionChartPlanObservers`, and the case reads a fixture coordinate. A unit assertion
+that cannot execute on the host the gate runs on is not a proof surface, which is the condition this
+deliverable exists to remove.
+
+**Three things are stated rather than closed.** The wire rule cannot see a collapse whose arm bodies
+are concatenations rather than bare literals — `"core-reconcile/" ++ cause` on two distinct heads is
+byte-identical and invisible — nor a nested `case` over a second type with its own catch-all, of
+which `provisionerAccessorRevocationBoundaryName` contains one. The guard rule cannot see a guard
+consumed only by a caller that is itself dead, which is the shape the whole adoption lane has: its
+four leaves are found and its interior is not. And neither rule would have caught the defects that
+motivated it, which the gates say in their own Haddock rather than leaving to a reader.
+
+Gate cases **42/42** — 21 guard, 17 wire, 4 suite-route — each exercised against a synthetic
+violation and against the real tree, primary unit **5,046/5,046**, auxiliaries **27/27**, **35/35**,
+**39/39**, canonical `prodbox dev check` exits 0.
 
 ## Documentation Requirements
 
@@ -4619,14 +4707,18 @@ All of it.
 - Record the Phase `5` own-surface reopen in [README.md](README.md) and
   [00-overview.md](00-overview.md).
 
-## Sprint 5.48: A Model For The One Invariant Types Cannot Hold [📋 Planned]
+## Sprint 5.48: A Model For The One Invariant Types Cannot Hold [✅ Done]
 
-**Status**: Planned. Phase `5` own-surface reopen (Standard A/N) on the repository's model-checked
-proof surface.
+**Status**: Done (2026-09-14). Phase `5` own-surface reopen (Standard A/N) on the repository's
+model-checked proof surface. **Phase `5` recloses with it.**
 **Doctrine**: [TLA+ Modelling
 Assumptions](../documents/engineering/tla_modelling_assumptions.md) and [Chaos Hardening
 Doctrine](../documents/engineering/chaos_hardening_doctrine.md)'s extract-model-inject method.
-**Implementation**: `src/Prodbox/Tla.hs`, `documents/engineering/tla/`, and `test/unit/Main.hs`.
+**Implementation**: `src/Prodbox/Tla.hs`, `src/Prodbox/CheckCode.hs`,
+`documents/engineering/tla/lifecycle_create_ownership.tla`,
+`documents/engineering/tla/lifecycle_create_ownership.cfg`,
+`documents/engineering/tla/lifecycle_create_ownership_superseded.cfg`,
+`documents/engineering/tla/README.md`, and `test/unit/Main.hs`.
 **Blocked by**: none.
 **Live-proof**: pending — not applicable; a model is checked, not deployed.
 **Deployment qualification**: pending — not invalidated by this sprint.
@@ -4634,7 +4726,11 @@ Doctrine](../documents/engineering/chaos_hardening_doctrine.md)'s extract-model-
 invariant deliberately broken once to prove the model can fail; registration exercised by the
 check command; `prodbox dev check`.
 **Docs to update**: `documents/engineering/tla_modelling_assumptions.md`,
-`DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+`documents/engineering/tla/README.md`, `documents/engineering/code_quality.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+~~`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`~~. **Corrected 2026-09-14 (Standard C):** this
+sprint removes nothing and leaves no compatibility surface behind, so it owes no deletion-ledger
+row; saying so explicitly is what distinguishes it from a forgotten one (Sprint `0.34`'s rule).
 
 ### Objective
 
@@ -4666,7 +4762,57 @@ type.
 
 ### Remaining Work
 
-All of it.
+None on the code-owned surface. `Live-proof` and `Deployment qualification` stay pending and
+non-blocking (Standards O/P).
+
+### Outcome
+
+**The third model is registered, it passes, and its frozen superseded ordering is registered
+alongside it and must fail.**
+
+`lifecycle_create_ownership.tla` models the ordering of durable writes around a provider effect —
+admit, commit the generation record, commit and independently read back a write-ahead ownership
+manifest, dispatch, land, append, settle — together with the two ways a host stops knowing what it
+did: a transport deadline that cancels the reply, and a crash. The checked property is the safety
+form the sprint named, and nothing in it asserts absence: `EveryProviderResourceIsDurablyNamed` says
+that every coordinate in the provider is named by some durable manifest, which is a claim about this
+repository's own writes and not about someone else's database.
+
+**`WriteAheadEnabled` is what makes the surface able to fail, and it is registered rather than
+described.** `Prodbox.Tla.TlaModel` now carries a declared disposition, and
+`lifecycle_create_ownership_superseded.cfg` — the 2026-09-08 ordering, in which a generation record
+names the cycle and nothing names the resources — is registered as `ExpectsCounterexample`.
+`prodbox dev tla-check` refuses when a configuration does not report the disposition its registry
+entry declares, so the superseded ordering *passing* is a build failure. TLC finds the trace in five
+states: `Admit`, `CommitGeneration`, `DispatchEffect`, `LandEffect`, violated. No crash is needed;
+the invariant is breached the instant the effect lands ahead of any record of it, which is exactly
+the commit-before-effect ordering the doctrine states.
+
+**The registration half found that the directory and the registry were held against each other by
+nothing.** `checkTlaModelRegistration` now refuses a `.tla` or `.cfg` file no registry entry names
+and a registry entry no file backs, and refuses a registry in which no configuration expects a
+counterexample. A model nobody registers is a proof surface that does not run — the same shape
+Sprint `5.45` closed for test stanzas and Sprint `5.47` for the suites the gate compiled.
+
+**Two corrections the sprint did not anticipate.** The model's first draft held one manifest slot
+rather than one per cycle, and TLC found in eleven steps that a second create's manifest erased the
+first's record; the correction is in the model because it is also true of the runtime, where a
+manifest is committed at the submission key. And a configuration that is *expected* to produce a
+counterexample leaves a trace-expression module and a root-owned `states` directory inside a
+governed directory on every run, which this host cannot then delete; TLC now runs with `-cleanup`
+and `-noGenerateSpecTE`. Neither surfaced before because no registered configuration had ever
+failed.
+
+**The model proves the protocol and never the boundary implementation, and the assumptions document
+says so in its own section rather than leaving it to a reader.** It does not prove that
+`commitOwnershipManifestWriteAheadAttempt` is called before the execute step — that is a source fact
+Sprint `7.41` owns and Sprint `5.47`'s guard-consumption gate currently records as *not* true. It
+gives the provider no failure modes, no partial visibility and no eventual consistency; it models no
+clock; and it takes a fresh cycle where a real create may be re-dispatched under the same key.
+
+Model check **1,750 distinct states, depth 18, zero left on queue, six invariants**, the superseded
+ordering refused in **5** states, all four registered configurations satisfied, registration cases
+**6/6**, primary unit **5,052/5,052**, canonical `prodbox dev check` exits 0.
 
 ## Documentation Requirements
 

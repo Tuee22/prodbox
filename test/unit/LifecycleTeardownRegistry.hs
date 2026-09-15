@@ -449,8 +449,8 @@ scopeWithoutAws =
 staleRegistryRevision :: RegistryRevision
 staleRegistryRevision = RegistryRevision "lifecycle-registry/stale"
 
-absence :: AbsenceEvidence
-absence = AbsenceEvidence "authoritative-not-found"
+absence :: AbsenceEvidence 'ProviderApi
+absence = providerWorkerAbsence "authoritative-not-found"
 
 present :: ExactObservationResult
 present =

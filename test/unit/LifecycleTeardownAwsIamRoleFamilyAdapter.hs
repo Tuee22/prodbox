@@ -11,8 +11,14 @@ import Data.Text qualified as Text
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
+import Prodbox.Lifecycle.ProviderWorker.Evidence
+  ( encodeProviderEvidence
+  , providerEvidenceFamilyOwnBound
+  , providerEvidenceText
+  )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
+  , eksIamRoleFamilyEvidenceFamily
   , providerIntentCoordinate
   )
 import Prodbox.Lifecycle.Teardown.AwsIamRoleFamilyAdapter
@@ -83,7 +89,7 @@ lifecycleTeardownAwsIamRoleFamilyAdapterSuite =
       map
         (exactObservationResult . decode)
         [ ""
-        , "prodbox-eks-iam-family/v1\nrole|unexpected|absent"
+        , "prodbox-eks-iam-family/v2:present:role|unexpected|absent"
         , absentEvidence <> "role|unexpected|absent\n"
         , absentEvidence <> "role|" <> primaryRoleName <> "|absent\n"
         ]
@@ -153,15 +159,21 @@ familyEvidence
   -> (Text -> Maybe Text)
   -> Text
 familyEvidence roleArn policyArn =
-  Text.unlines
-    ( ["prodbox-eks-iam-family/v1"]
-        <> map (row "role" roleArn) awsEksIamRoleNames
+  -- Sprint 4.99: rendered by the production encoder rather than hand-authored,
+  -- so a fixture cannot drift from the wire the way the two copies of every
+  -- superseded grammar did.
+  case encodeProviderEvidence
+    (providerEvidenceFamilyOwnBound eksIamRoleFamilyEvidenceFamily)
+    eksIamRoleFamilyEvidenceFamily
+    ( map (row "role" roleArn) awsEksIamRoleNames
         <> map (row "policy" policyArn) awsEksIamManagedPolicyNames
-    )
+    ) of
+    Right evidence -> providerEvidenceText evidence
+    Left refusal -> error ("fixture refused: " <> show refusal)
  where
   row kind arnFor name = case arnFor name of
-    Nothing -> kind <> "|" <> name <> "|absent"
-    Just arn -> kind <> "|" <> name <> "|present|" <> arn
+    Nothing -> [kind, name, "absent"]
+    Just arn -> [kind, name, "present", arn]
 
 roleNames, policyNames :: Text
 roleNames = Text.intercalate "|" awsEksIamRoleNames

@@ -270,7 +270,7 @@ lifecycleTeardownAwsEksDestroyAdapterSuite =
       authorizeFixture crossStackDecision freshVerified freshSession fixtureDrainEvidence
         `shouldBe` Left (AwsEksDestroyDecisionKeyMismatch AwsEksKey AwsTestKey)
       authorizeFixture
-        (StackAlreadyAbsent AwsEksKey (AbsenceEvidence "EKS already absent"))
+        (StackAlreadyAbsent AwsEksKey (providerWorkerAbsence "EKS already absent"))
         freshVerified
         freshSession
         fixtureDrainEvidence
@@ -386,7 +386,7 @@ lifecycleTeardownAwsEksDestroyAdapterSuite =
       completeAwsEksDestroyDrainAttemptId completed `shouldBe` attemptA
       completeAwsEksDestroyObservationRevision completed `shouldBe` readBackRevision
       completeAwsEksDestroyAbsenceEvidence completed
-        `shouldBe` AbsenceEvidence
+        `shouldBe` providerWorkerAbsence
           "Provider EKS DescribeCluster returned exact not-found evidence"
       let stillPresent = decodedReadBack readBack ("eks-cluster-arn:" <> fixtureArn)
       completeAwsEksDestroyReadBack readBack stillPresent
@@ -540,13 +540,13 @@ drainEvidenceFor binding attemptId =
                 eksDrainSessionCertificateAuthorityDigest session
             , eksDrainReadBackLoadBalancerServiceClass =
                 LoadBalancerServiceClassReadBack
-                  (EksDrainResourceClassAbsent (AbsenceEvidence "all LB Services absent"))
+                  (EksDrainResourceClassAbsent (kubernetesReadBackAbsence "all LB Services absent"))
             , eksDrainReadBackIngressClass =
                 IngressClassReadBack
-                  (EksDrainResourceClassAbsent (AbsenceEvidence "all Ingresses absent"))
+                  (EksDrainResourceClassAbsent (kubernetesReadBackAbsence "all Ingresses absent"))
             , eksDrainReadBackControllerOwnerClass =
                 ControllerOwnerClassReadBack
-                  (EksDrainResourceClassAbsent (AbsenceEvidence "controller owner absent"))
+                  (EksDrainResourceClassAbsent (kubernetesReadBackAbsence "controller owner absent"))
             , eksDrainReadBackDeletePolicyPvcs = []
             }
       )

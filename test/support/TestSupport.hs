@@ -25,6 +25,7 @@ module TestSupport
   , fixtureRoleReadinessResolver
   , FixtureAwsRegion (..)
   , fixtureAwsRegion
+  , fixtureProviderRunMarker
   , syntheticConfigFile
   , syntheticProjectConfig
   , verifiedCallerSlotFixture
@@ -76,6 +77,10 @@ import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.Lease
   ( authorityDurationFromMicros
   , authorityTimeFromMicros
+  )
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderRunMarker
+  , mkProviderRunMarker
   )
 import Prodbox.Retry qualified as Retry
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
@@ -147,6 +152,16 @@ data FixtureAwsRegion
   | FixtureUsIsoEast1
   | FixtureUsWest2
   deriving (Bounded, Enum, Eq, Ord, Show)
+
+-- | Sprint 7.41: the run marker a registered-stack create carries.
+--
+-- Minted through the real constructor rather than assembled, so a fixture can
+-- never carry a value the lane itself would refuse.
+fixtureProviderRunMarker :: ProviderRunMarker
+fixtureProviderRunMarker =
+  case mkProviderRunMarker "stack-create/1700000000000000" "fixture-create-0001" of
+    Right marker -> marker
+    Left err -> error ("fixture run marker refused: " ++ show err)
 
 fixtureAwsRegion :: (IsString value) => FixtureAwsRegion -> value
 fixtureAwsRegion region = case region of

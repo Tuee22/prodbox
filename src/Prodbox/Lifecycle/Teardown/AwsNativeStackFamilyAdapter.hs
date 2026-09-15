@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Provider-native observation boundary for pre-manifest registered stacks.
@@ -18,22 +19,26 @@ module Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
   , decodeAwsNativeStackFamilyEvidence
   , encodeAwsNativeStackFamilyEvidence
   , AwsNativeStackFamilyAdapterError (..)
-  , maximumAwsNativeStackFamilyEvidenceBytes
-  , maximumAwsNativeStackFamilyIdentities
   )
 where
 
-import Data.ByteString qualified as ByteString
+import Data.Bifunctor (first)
 import Data.List (sort)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
 import Prodbox.Lifecycle.DnsRecord (hostedZoneIdText)
+import Prodbox.Lifecycle.ProviderWorker.Evidence
+  ( decodeProviderEvidenceText
+  , encodeProviderEvidence
+  , providerEvidenceFamilyOwnBound
+  , providerEvidenceText
+  , renderProviderEvidenceRefusal
+  )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
@@ -96,14 +101,8 @@ data AwsNativeStackFamilyAdapterError
   | AwsNativeStackFamilyEvidenceRowMalformed !Text
   | AwsNativeStackFamilyEvidenceIdentityInvalid !Text
   | AwsNativeStackFamilyEvidenceDuplicate !Text
-  | AwsNativeStackFamilyEvidenceTooMany !Int !Int
+  | AwsNativeStackFamilyEvidenceRefused !Text
   deriving (Eq, Show)
-
-maximumAwsNativeStackFamilyEvidenceBytes :: Int
-maximumAwsNativeStackFamilyEvidenceBytes = 128 * 1024
-
-maximumAwsNativeStackFamilyIdentities :: Int
-maximumAwsNativeStackFamilyIdentities = 4096
 
 mkAwsNativeStackFamilyObservationRequest
   :: RegisteredResourceKey
@@ -180,7 +179,7 @@ decodeAwsNativeStackFamilyObservation request dispatched = do
     else Left (AwsNativeStackFamilyCoordinateMismatch expectedCoordinate actualCoordinate)
   identities <- decodeEvidence (awsNativeStackFamilyObservationRequestRef request) evidence
   let result = case identities of
-        [] -> ExactResourceAbsent (AbsenceEvidence evidence)
+        [] -> ExactResourceAbsent (providerWorkerAbsence evidence)
         firstIdentity : remaining ->
           ExactResourcePresent
             ( ExactResourceInventory
@@ -206,58 +205,35 @@ encodeAwsNativeStackFamilyEvidence
   -> Either AwsNativeStackFamilyAdapterError Text
 encodeAwsNativeStackFamilyEvidence ref rawIdentities = do
   identities <- validateIdentities rawIdentities
-  let evidence =
-        Text.unlines
-          ( [ "prodbox-native-stack-family/v1"
-            , renderBinding ref
-            ]
-              <> map ("resource|" <>) identities
-          )
-  if length identities > maximumAwsNativeStackFamilyIdentities
-    then
-      Left
-        ( AwsNativeStackFamilyEvidenceTooMany
-            maximumAwsNativeStackFamilyIdentities
-            (length identities)
+  first
+    (AwsNativeStackFamilyEvidenceRefused . renderProviderEvidenceRefusal)
+    ( fmap
+        providerEvidenceText
+        ( encodeProviderEvidence
+            (providerEvidenceFamilyOwnBound nativeStackFamilyEvidenceFamily)
+            nativeStackFamilyEvidenceFamily
+            (bindingRow ref : map (\identity -> ["resource", identity]) identities)
         )
-    else Right ()
-  let actualBytes = ByteString.length (TextEncoding.encodeUtf8 evidence)
-  if actualBytes > maximumAwsNativeStackFamilyEvidenceBytes
-    then
-      Left
-        ( AwsNativeStackFamilyEvidenceTooLarge
-            maximumAwsNativeStackFamilyEvidenceBytes
-            actualBytes
-        )
-    else Right evidence
+    )
 
 decodeEvidence
   :: ProviderNativeStackFamilyRef
   -> Text
   -> Either AwsNativeStackFamilyAdapterError [Text]
 decodeEvidence ref evidence = do
-  let actualBytes = ByteString.length (TextEncoding.encodeUtf8 evidence)
-  if actualBytes > maximumAwsNativeStackFamilyEvidenceBytes
-    then
-      Left (AwsNativeStackFamilyEvidenceTooLarge maximumAwsNativeStackFamilyEvidenceBytes actualBytes)
-    else Right ()
-  case Text.lines evidence of
-    header : binding : rows
-      | header /= "prodbox-native-stack-family/v1" ->
-          Left AwsNativeStackFamilyEvidenceHeaderInvalid
-      | binding /= renderBinding ref ->
-          Left AwsNativeStackFamilyEvidenceBindingMismatch
-      | otherwise -> do
-          identities <- mapM decodeRow rows >>= validateIdentities
-          if length identities > maximumAwsNativeStackFamilyIdentities
-            then
-              Left (AwsNativeStackFamilyEvidenceTooMany maximumAwsNativeStackFamilyIdentities (length identities))
-            else Right identities
+  rows <-
+    first
+      AwsNativeStackFamilyEvidenceRefused
+      (decodeProviderEvidenceText nativeStackFamilyEvidenceFamily evidence)
+  case rows of
+    binding : resourceRows
+      | binding /= bindingRow ref -> Left AwsNativeStackFamilyEvidenceBindingMismatch
+      | otherwise -> mapM decodeRow resourceRows >>= validateIdentities
     _ -> Left AwsNativeStackFamilyEvidenceHeaderInvalid
  where
-  decodeRow row = case Text.stripPrefix "resource|" row of
-    Just identity -> Right identity
-    Nothing -> Left (AwsNativeStackFamilyEvidenceRowMalformed row)
+  decodeRow row = case row of
+    ["resource", identity] -> Right identity
+    _ -> Left (AwsNativeStackFamilyEvidenceRowMalformed (Text.intercalate "|" row))
 
 validateIdentities :: [Text] -> Either AwsNativeStackFamilyAdapterError [Text]
 validateIdentities raw = do
@@ -282,13 +258,16 @@ validateIdentities raw = do
           ]
       )
 
-renderBinding :: ProviderNativeStackFamilyRef -> Text
-renderBinding ref =
-  Text.intercalate
-    "|"
-    [ "binding"
-    , providerStackRefText (providerNativeStackFamilyStackRef ref)
-    , providerNativeStackFamilyAccountId ref
-    , providerNativeStackFamilyRegion ref
-    , maybe "none" id (providerNativeStackFamilyHostedZoneId ref)
-    ]
+-- | The binding the evidence echoes: which family this observation is about.
+--
+-- It sorts first among the rows because @binding@ precedes @resource@, so the
+-- canonical ordering the codec imposes puts it where a reader expects without
+-- the grammar having to reserve a position for it.
+bindingRow :: ProviderNativeStackFamilyRef -> [Text]
+bindingRow ref =
+  [ "binding"
+  , providerStackRefText (providerNativeStackFamilyStackRef ref)
+  , providerNativeStackFamilyAccountId ref
+  , providerNativeStackFamilyRegion ref
+  , maybe "none" id (providerNativeStackFamilyHostedZoneId ref)
+  ]

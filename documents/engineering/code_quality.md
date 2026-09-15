@@ -350,6 +350,115 @@ Four further check families join the canonical quality gate under the Foundation
   [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here). There is no Haskell self-file
   exclusion.
 
+- the **cleanup-authority guard-consumption bijection** (Sprint `5.47`):
+  `checkTypedGuardConsumption` refuses a binding whose declared type names one of the
+  repository's cleanup-authority types — the vocabularies in `typedGuardAuthorityTypes`, whose whole
+  purpose is a claim about a resource's absence, its ownership, or a permission to destroy or retire
+  it — when no module under `src/` reads it. A value-level guard with no production consumer is not
+  a guard, which [pure_fp_standards.md](./pure_fp_standards.md) states and nothing enforced.
+  `unconsumedTypedGuardRegistry` names the set that exists today; each row carries the declared
+  symbol, its owning module, the
+  [deletion-ledger](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md) row that owns its
+  consumption, and what must become true before symbol and row are deleted together. The bijection
+  refuses in four directions: an unregistered unconsumed guard, a registry row whose symbol its
+  owner no longer names, a registry row whose symbol has *gained* a consumer — so wiring a guard up
+  is a build failure until its ledger row closes in the same change — and a declared owner missing
+  from the scanned set.
+
+  **Four positions are deliberately not reads**, and the fourth is the one the 2026-09-08 leak
+  turned on: a module header or import list, a signature block, a binder position (a field
+  declaration, a field written into a record literal, the left of a definition's `=`), and the body
+  of a `fixed…Regression` self-test. A self-test proves a guard can refuse; it is not a decision
+  that consults it.
+
+  **The honest bound**: the region is the type list, and it is a *declared* region rather than a
+  complete enumeration of every authority-bearing type — the registry is therefore admitted to be a
+  superset of what the discovery half finds. It cannot see a guard consumed only by a caller that is
+  itself dead, and it decides whether a symbol is read, never whether reading it was right. A record
+  field of a declaration that derives any instance is out of scope in the other direction, because
+  the derived code observes it.
+
+- the **wire-fidelity rule** (Sprint `5.47`): `checkWireFidelity` refuses a function whose declared
+  result is exactly `Text` or `String` and whose case arms name one indexed sum's constructors, when
+  two arms render distinct constructors to the same bare string literal, or when a catch-all renders
+  a literal (or the empty string) over a type with more constructors than the function writes arms
+  for. This class has been found and repaired six times — Sprints `2.46`–`2.49` on the Broker's
+  refusals, `4.97` on the provider execution wire, `4.99` on the provider evidence wire — and each
+  repair left no rule behind, so the seventh instance was written after the sixth was closed.
+  `wireFidelityExemptions` is keyed by `(module, function, reason)` and carries the stale-exemption
+  direction, so an exemption for a site the rule no longer reports fails the build.
+
+  **The matcher's shape was measured.** An arm body counts only when it is *exactly* one string
+  literal: two arms sharing the text `" (" <> boundaryName boundary <> ")"` render different bytes,
+  because `boundary` is bound by each arm's own pattern, and reading a shared literal prefix as a
+  shared value reported roughly a third of its findings falsely. A catch-all that *delegates* —
+  `_ -> f x` — is suppressed, because `f` is frequently total over the same sum; that is a stated
+  false negative rather than a cleverer matcher.
+
+  **The honest bound is larger here than for any other rule in this document.** What matters is
+  whether the *record that crosses* is injective over the in-process sum, and that is not decidable
+  from source text: Sprint `4.97`'s repair did not make its scalar injective, it put the tag on a
+  sibling field, and this rule reads that correct repair as a collapse. Such sites are registered
+  with the sibling named, so the exemption is a claim a reader can check. No text rule separates a
+  deliberate n-to-few classifier from a lossy encoder either. **And it would have caught neither of
+  the defects that motivated it** — Sprint `4.99`'s were a control character inside an
+  otherwise-distinct literal and rows emitted in the provider's pagination order; Sprint `4.97`'s
+  was a caller that rebuilt the result from the intent it had sent. It is a ratchet on a repaired
+  tree and is credited with catching neither.
+
+- the **sealed-constructor rule** (Sprint `6.5`): `checkSealedConstructors` refuses a module whose
+  export list names the constructors of a registered type. The registry is deliberately small and is
+  an inventory of *claims*, not of opaque types: a row belongs there only when something written
+  elsewhere depends on the constructor staying inside its module. Nine rows today — the
+  phase-indexed cutover state, its qualification witness, its admitted stage, the write-ahead
+  ownership proof, the three cascade-evidence values Sprint `6.5`'s validation calls private, and
+  the recovery-plane final evidence and readiness proof, whose `Lost` constructor retains the very
+  Ready value its sole eliminator withholds.
+
+  **It exists because the claims it guards are the ones no test can make.** "A dual-writer state is
+  unrepresentable", "an execute that skips the read-back does not compile", and "an incomplete
+  cascade may claim a preserved live plane only for `Established`" are true only while the
+  constructors are unexported, and the test that would notice a widened export is the one that cannot
+  be written — there is nothing to call. Widening `CutoverState` to `CutoverState (..)` would void
+  two sprints' central properties without changing a line of logic and without failing anything.
+
+  **A row names the module whose export list carries the seal, which is not always the one that
+  declares the type.** Where the declaring module exports the type abstractly, that is the tightest
+  seal and the row names it. This repository's other usual shape is an `…Internal` module that
+  declares a type and exports its constructors to its own family, behind a public facade that
+  re-exports it abstractly; the claim then lives in the facade, and such a row names the origin too,
+  so a facade cannot go on re-exporting a name long after the declaration it was sealing has moved.
+
+  **The bound on a facade row is stated rather than implied.** It bounds the *public* boundary only.
+  The declaring internal module hands its constructors to whatever imports it, and nothing here
+  defines or restricts that family — 18 modules import `CascadeEvidence.Internal` directly. A facade
+  row therefore holds "not mintable through the public API", which is what the facade's own Haddock
+  claims, and not "not mintable in this package"; the difference is registered in the deletion
+  ledger rather than papered over.
+
+  Three refusals in the other direction keep the registry from rotting into a list of names: a row
+  whose module is outside the scanned set, one whose *declaring* module no longer declares the type,
+  and one whose module no longer exports it — a type nobody outside can name needs no seal. A module with no
+  export list at all is its own refusal, because it exports everything it defines.
+
+  **The bound is narrow and worth stating.** It reads the module header only, so a re-export from
+  another module is out of scope, and it decides nothing about whether the seal was the right design
+  — only that the design a claim depends on is still there.
+
+- the **facade-withholding rule** (Sprint `6.5`): `checkFacadeWithholdings` refuses a public facade
+  that exports a name it is written to withhold. It is the sibling of the rule above, for claims
+  about a *name* rather than a constructor, and it exists because two facades in this tree state
+  what they keep back in their own Haddock: *"the drive itself remains package-private, so holding
+  one of these booleans authorizes nothing and cannot start a cascade"*, and *"their decoder and
+  restoration bridge are deliberately kept in the library-internal module … so raw fields cannot
+  mint readiness evidence through this public API"*. Re-exporting the name makes both sentences
+  false while the code still compiles, every test still passes, and the Haddock goes on reading as
+  though it were true.
+
+  Two rows, seven names. The other direction refuses a row whose origin module no longer exports the
+  withheld name — a row guarding a name nothing produces is guarding nothing — and a facade that
+  stopped having an export list, because it then withholds nothing at all.
+
 All of these families run inside `prodbox dev check` on the seconds-fast lint surface and follow
 the same registry discipline as the generated-section and forbidden-path registries: the
 in-code registries and committed artifacts remain the SSoT, and this doctrine names the check
@@ -723,9 +832,15 @@ test-suite call the same Haskell function.
   chart). It does **not** invoke `cabal build all`; in this repo `runLintAll`
   in `src/Prodbox/CheckCode.hs` is lint-only.
 - `prodbox dev check` runs that lint aggregate and then, only on lint success, the warning-clean
-  `cabal build --builddir=.build all --enable-tests --ghc-options=-Werror` followed by the
-  operator-binary sync. The build belongs to `dev check`, not to `dev lint all`; enabled test
-  components are type-checked but not executed.
+  `cabal build --builddir=.build all --enable-tests --ghc-options=-Werror`, then the
+  operator-binary sync, then `runGatedTestSuites`. The build belongs to `dev check`, not to
+  `dev lint all`. **Corrected 2026-09-14 (Standard C):** the sentence that stood here said enabled
+  test components are type-checked but not executed. That was true of every revision until Sprint
+  `5.47` and is now true of four of the eight stanzas. `Prodbox.TestPlan.gatedCheckHaskellSuites`
+  names the four whose stanza name ends in `-unit`, and the gate executes each through
+  `cabal test --builddir=.build <suite> --test-show-details=direct` under `runFailFastPhases`. The
+  other four are compiled and not executed here, and
+  [unit_testing_policy.md § 2](./unit_testing_policy.md) says which command runs each.
 
 ### Readability and nesting
 

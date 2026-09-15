@@ -24,10 +24,13 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkAwsEksSubzoneProviderStackConfig
   , mkAwsTestProviderStackConfig
   , mkProviderRevision
+  , mkProviderStackRef
   , providerIntentCoordinate
   , providerNativeStackFamilyHostedZoneId
   , providerStackConfigRef
   , providerStackRefText
+  , registeredStackAbsenceEvidence
+  , validateProviderIntentEvidence
   )
 import Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
   ( AwsNativeStackFamilyAdapterError (AwsNativeStackFamilyZoneMissing)
@@ -79,17 +82,17 @@ lifecycleTeardownAwsStackAdapterSuite =
       mkAwsStackObserveRequest AwsEksKey invalidRegionScope initialRevision
         `shouldBe` Left (AwsStackAwsRegionInvalid (AwsRegion "US-East-1"))
 
-    it "decodes only the exact absence literal or a strict lower-hex SHA-256 identity" $ do
-      forM_ stackRows $ \(key, _, _) -> do
+    it "decodes only its own coordinate's absence arm or a strict lower-hex SHA-256 identity" $ do
+      forM_ stackRows $ \(key, rawRef, _) -> do
         let request = observeRequest key
-            absent = decodeEvidence request exactAbsenceEvidence
+            absent = decodeEvidence request (absenceEvidenceFor rawRef)
             present = decodeEvidence request exactPresentIdentity
         case absent of
           AwsStackObservationDecoded verified -> do
             let observation = verifiedAwsStackExactObservation verified
             assertExactBinding request observation
             exactObservationResult observation
-              `shouldBe` ExactResourceAbsent (AbsenceEvidence exactAbsenceEvidence)
+              `shouldBe` ExactResourceAbsent (providerWorkerAbsence (absenceEvidenceFor rawRef))
           AwsStackObservationRejected refusal _ ->
             expectationFailure ("exact absence refused: " <> show refusal)
         case present of
@@ -103,6 +106,39 @@ lifecycleTeardownAwsStackAdapterSuite =
                 )
           AwsStackObservationRejected refusal _ ->
             expectationFailure ("exact present identity refused: " <> show refusal)
+
+    it "refuses an absence arm that names a different registered stack" $ do
+      -- Sprint 4.98.  The superseded wire carried the bare sentence
+      -- "registered stack is absent", authored independently on each side, so
+      -- an absence observed for one stack satisfied a request for any other and
+      -- nothing in the type system or the decoder could tell.  The arm now
+      -- carries its coordinate, and this is the case that would have caught it.
+      let request = observeRequest AwsEksKey
+      case decodeEvidence request testAbsenceEvidence of
+        AwsStackObservationRejected refusal observation -> do
+          refusal `shouldBe` AwsStackObservationEvidenceNotRecognized testAbsenceEvidence
+          assertExactBinding request observation
+          exactObservationResult observation `shouldSatisfy` isNotAbsent
+        AwsStackObservationDecoded _ ->
+          expectationFailure "an aws-test absence answered an aws-eks request"
+      -- ...and the matching coordinate still decodes, so the refusal above is
+      -- the coordinate check rather than a broken parse.
+      case decodeEvidence request eksAbsenceEvidence of
+        AwsStackObservationDecoded _ -> pure ()
+        AwsStackObservationRejected refusal _ ->
+          expectationFailure ("own-coordinate absence refused: " <> show refusal)
+
+    it "renders an absence arm the Provider Worker's own validator admits" $ do
+      -- The superseded shape could not have failed this, being an English
+      -- sentence.  The replacement could: a coordinate-carrying rendering is
+      -- exactly where a separator or a bound gets chosen badly, and the
+      -- validator that would refuse it lives nowhere near the encoder.  This
+      -- asserts the two agree, for each stack's own intent rather than in
+      -- general.
+      forM_ stackRows $ \(key, rawRef, _) -> do
+        let intent = awsStackObservationRequestIntent (observeRequest key)
+            evidence = absenceEvidenceFor rawRef
+        validateProviderIntentEvidence intent evidence `shouldBe` Right evidence
 
     it "turns every malformed or other evidence value into typed unobservable truth" $ do
       let request = observeRequest AwsEksKey
@@ -123,17 +159,17 @@ lifecycleTeardownAwsStackAdapterSuite =
           otherCoordinate = awsStackObservationRequestCoordinate otherRequest
       assertRejected
         request
-        (ProviderIntentExecutionObserved otherCoordinate exactAbsenceEvidence)
+        (ProviderIntentExecutionObserved otherCoordinate eksAbsenceEvidence)
         (AwsStackObservationCoordinateMismatch expectedCoordinate otherCoordinate)
       assertRejected
         request
-        (ProviderIntentExecutionApplied expectedCoordinate exactAbsenceEvidence)
+        (ProviderIntentExecutionApplied expectedCoordinate eksAbsenceEvidence)
         (AwsStackObservationResultKindMismatch AwsStackExecutionApplied)
       assertRejected
         request
         ( ProviderIntentExecutionAlreadySatisfied
             expectedCoordinate
-            exactAbsenceEvidence
+            eksAbsenceEvidence
         )
         (AwsStackObservationResultKindMismatch AwsStackExecutionAlreadySatisfied)
       let destroy = destroyRequestFor AwsTestKey testConfig providerRevision
@@ -141,7 +177,7 @@ lifecycleTeardownAwsStackAdapterSuite =
           readBackCoordinate = awsStackObservationRequestCoordinate readBack
       assertRejected
         request
-        (ProviderIntentExecutionObserved readBackCoordinate exactAbsenceEvidence)
+        (ProviderIntentExecutionObserved readBackCoordinate eksAbsenceEvidence)
         (AwsStackObservationCoordinateMismatch expectedCoordinate readBackCoordinate)
 
     it "mints private destroy authority only from primary or complete-manifest decisions" $ do
@@ -169,7 +205,7 @@ lifecycleTeardownAwsStackAdapterSuite =
       authorizeAwsStackDestroy
         providerRevision
         verifiedPresent
-        (StackAlreadyAbsent AwsTestKey (AbsenceEvidence exactAbsenceEvidence))
+        (StackAlreadyAbsent AwsTestKey (providerWorkerAbsence testAbsenceEvidence))
         `shouldBe` Left AwsStackDestroyDecisionAlreadyAbsent
       authorizeAwsStackDestroy
         providerRevision
@@ -192,7 +228,7 @@ lifecycleTeardownAwsStackAdapterSuite =
         verifiedPresent
         (StackDestroyFromVerifiedPrimary AwsTestKey decisionInventory manifestAuthority)
         `shouldBe` Left (AwsStackDestroyDecisionAuthorityMismatch manifestAuthority)
-      let verifiedAbsent = decodedVerified (observeRequest AwsTestKey) exactAbsenceEvidence
+      let verifiedAbsent = decodedVerified (observeRequest AwsTestKey) testAbsenceEvidence
       authorizeAwsStackDestroy
         providerRevision
         verifiedAbsent
@@ -317,7 +353,7 @@ lifecycleTeardownAwsStackAdapterSuite =
       let directDestroyResult =
             ProviderIntentExecutionApplied
               (awsStackDestroyRequestCoordinate destroy)
-              exactAbsenceEvidence
+              testAbsenceEvidence
       case decodeAwsStackExecutionResult readBack directDestroyResult of
         AwsStackObservationRejected _ observation ->
           exactObservationResult observation `shouldSatisfy` isUnobservable
@@ -331,17 +367,17 @@ lifecycleTeardownAwsStackAdapterSuite =
                   (ObservedResourceIdentity exactPresentIdentity :| [])
               )
           )
-      let absentReadBack = decodedVerified readBack exactAbsenceEvidence
+      let absentReadBack = decodedVerified readBack testAbsenceEvidence
           completed = mustRight (completeAwsStackDestroyReadBack destroy absentReadBack)
       completeAwsStackDestroyKey completed `shouldBe` AwsTestKey
       completeAwsStackDestroyScope completed `shouldBe` exactScope
       completeAwsStackDestroyObservationRevision completed `shouldBe` readBackRevision
       completeAwsStackDestroyAbsenceEvidence completed
-        `shouldBe` AbsenceEvidence exactAbsenceEvidence
+        `shouldBe` providerWorkerAbsence testAbsenceEvidence
       let otherDestroy = destroyRequestFor AwsTestKey testConfig otherProviderRevision
           otherReadBack =
             mkAwsStackDestroyReadBackRequest otherDestroy readBackRevision
-          otherVerified = decodedVerified otherReadBack exactAbsenceEvidence
+          otherVerified = decodedVerified otherReadBack testAbsenceEvidence
       completeAwsStackDestroyReadBack destroy otherVerified
         `shouldBe` Left
           ( AwsStackDestroyReadBackParentMismatch
@@ -452,17 +488,31 @@ initialRevision = ObservationRevision 41
 readBackRevision :: ObservationRevision
 readBackRevision = ObservationRevision 42
 
-exactAbsenceEvidence :: Text
-exactAbsenceEvidence = "registered stack is absent"
+-- | Sprint @4.98@: the absence arm carries the coordinate it is about, so a
+-- fixture is a function of the stack it answers for rather than one sentence
+-- that answered for all three.  It is rendered by the production encoder, so a
+-- test can no longer drift from the wire the way the two authored copies of the
+-- old literal did.
+absenceEvidenceFor :: Text -> Text
+absenceEvidenceFor raw =
+  registeredStackAbsenceEvidence (mustRight (mkProviderStackRef raw))
+
+eksAbsenceEvidence :: Text
+eksAbsenceEvidence = absenceEvidenceFor "aws-eks"
+
+testAbsenceEvidence :: Text
+testAbsenceEvidence = absenceEvidenceFor "aws-test"
 
 exactPresentIdentity :: Text
 exactPresentIdentity = "sha256:" <> Text.replicate 64 "a"
 
 malformedEvidence :: [Text]
 malformedEvidence =
-  [ "registered stack is absent "
-  , "Registered stack is absent"
-  , "stack is absent"
+  [ eksAbsenceEvidence <> " "
+  , "prodbox-registered-stack/v1:absent:"
+  , "prodbox-registered-stack/v2:absent:aws-eks"
+  , "PRODBOX-REGISTERED-STACK/v1:absent:aws-eks"
+  , "registered stack is absent"
   , "sha256:" <> Text.replicate 63 "a"
   , "sha256:" <> Text.replicate 65 "a"
   , "sha256:" <> Text.replicate 63 "a" <> "A"

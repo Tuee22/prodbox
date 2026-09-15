@@ -7,7 +7,12 @@
 -- distinct from exact resource truth and have no conversion into it.
 module Prodbox.Lifecycle.Teardown.Observation
   ( ObservedResourceIdentity (..)
-  , AbsenceEvidence (..)
+  , ObservationStratum (..)
+  , AbsenceEvidence
+  , absenceEvidenceText
+  , hostLocalAbsence
+  , providerWorkerAbsence
+  , kubernetesReadBackAbsence
   , PartialEvidence (..)
   , ExactResourceInventory (..)
   , ExactObservationResult (..)
@@ -68,8 +73,41 @@ import Prodbox.Lifecycle.Teardown.ScopeCodec
 newtype ObservedResourceIdentity = ObservedResourceIdentity Text
   deriving (Eq, Ord, Show)
 
-newtype AbsenceEvidence = AbsenceEvidence Text
+-- | Which authority observed an absence.  Sprint @4.98@.
+--
+-- The three are not interchangeable and there is deliberately no conversion in
+-- any direction.  A host-local absence is @lstat(2)@ on this machine; a
+-- provider absence is a coordinate-checked Provider Worker result; a Kubernetes
+-- absence is a successful API read-back through the ephemeral client.  Before
+-- this index they were one type, so a directory that was not there could
+-- inhabit the position where a cluster's non-existence belonged, and only the
+-- enclosing wrapper types kept them apart.
+data ObservationStratum = HostLocal | ProviderApi | KubernetesApi
+
+-- | Evidence that a named thing is absent, indexed by the authority that said
+-- so.  The constructor is private: every value is minted through the stratum
+-- function that names its authority, so the claim carries its provenance in its
+-- type rather than in the module that happened to build it.
+newtype AbsenceEvidence (stratum :: ObservationStratum) = AbsenceEvidence Text
   deriving (Eq, Ord, Show)
+
+-- | The only way out.  Total, and deliberately stratum-agnostic: rendering an
+-- absence into a journal or a receipt is legitimate for any of the three.
+absenceEvidenceText :: AbsenceEvidence stratum -> Text
+absenceEvidenceText (AbsenceEvidence value) = value
+
+-- | Mint from an observation of this host's own filesystem or service manager.
+hostLocalAbsence :: Text -> AbsenceEvidence 'HostLocal
+hostLocalAbsence = AbsenceEvidence
+
+-- | Mint from a Provider Worker result whose coordinate has been checked
+-- against the coordinate the caller asked about.
+providerWorkerAbsence :: Text -> AbsenceEvidence 'ProviderApi
+providerWorkerAbsence = AbsenceEvidence
+
+-- | Mint from a successful Kubernetes API read-back.
+kubernetesReadBackAbsence :: Text -> AbsenceEvidence 'KubernetesApi
+kubernetesReadBackAbsence = AbsenceEvidence
 
 newtype PartialEvidence = PartialEvidence [ObservedResourceIdentity]
   deriving (Eq, Show)
@@ -79,7 +117,7 @@ newtype ExactResourceInventory
   deriving (Eq, Show)
 
 data ExactObservationResult
-  = ExactResourceAbsent !AbsenceEvidence
+  = ExactResourceAbsent !(AbsenceEvidence 'ProviderApi)
   | ExactResourcePresent !ExactResourceInventory
   | ExactResourcePartial !PartialEvidence !(NonEmpty ObservationFailure)
   | ExactResourceUnobservable !(NonEmpty ObservationFailure)

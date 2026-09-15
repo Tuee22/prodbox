@@ -34,9 +34,18 @@ module Prodbox.Lifecycle.OwnedResourceTagEvidence
   )
 where
 
+import Data.Bifunctor (first)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.Lifecycle.ProviderWorker.Evidence
+  ( decodeProviderEvidenceText
+  , encodeProviderEvidence
+  , providerEvidenceFamilyOwnBound
+  , providerEvidenceText
+  , renderProviderEvidenceRefusal
+  )
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork (ownedResourceTagEvidenceFamily)
 import Text.Read (readMaybe)
 
 -- | Which tag family the query asked about.  A key-only query asks for every
@@ -64,9 +73,11 @@ data OwnedResourceTagObservation = OwnedResourceTagObservation
   deriving (Eq, Show)
 
 data OwnedResourceTagEvidenceError
-  = -- | A field carries a separator this encoding uses, so it cannot be
-    -- rendered without corrupting the row.
-    OwnedResourceTagFieldSeparatorPresent !Text
+  = -- | The canonical codec refused the rows, naming the rule that refused.
+    -- Sprint @4.99@ replaced a bespoke separator check with this, because the
+    -- separators the old check defended were themselves characters the wire
+    -- refuses.
+    OwnedResourceTagEvidenceRefused !Text
   | OwnedResourceTagEvidenceEmpty
   | OwnedResourceTagQueryLineInvalid !Text
   | OwnedResourceTagResourceLineInvalid !Text
@@ -78,9 +89,8 @@ data OwnedResourceTagEvidenceError
 
 renderOwnedResourceTagEvidenceError :: OwnedResourceTagEvidenceError -> Text
 renderOwnedResourceTagEvidenceError = \case
-  OwnedResourceTagFieldSeparatorPresent field ->
-    "owned-resource tag evidence cannot encode a field carrying a separator: "
-      <> field
+  OwnedResourceTagEvidenceRefused detail ->
+    "owned-resource tag evidence was refused by the canonical codec: " <> detail
   OwnedResourceTagEvidenceEmpty ->
     "owned-resource tag evidence carried no query line"
   OwnedResourceTagQueryLineInvalid line ->
@@ -93,124 +103,112 @@ renderOwnedResourceTagEvidenceError = \case
   OwnedResourceTagCompletionLineInvalid line ->
     "owned-resource tag evidence completion line is not readable: " <> line
 
-separator :: Text
-separator = "\t"
-
+-- | Render the audit's answer.  Sprint @4.99@.
+--
+-- The superseded form delimited with a tab and a newline, both of which
+-- 'Prodbox.Lifecycle.ProviderWorker.ProviderWork.validateProviderIntentEvidence'
+-- refuses, so this observation could never settle on any AWS cascade -- and the
+-- cascade's clean-audit arm was unreachable rather than merely unobserved.  It
+-- also declared no bound of any kind, on a listing that follows the provider's
+-- pagination to a hundred pages.
+--
+-- Three properties of the old form are kept exactly, because each answers a way
+-- an audit can lie: the query is echoed, so an answer cannot be read as
+-- belonging to a wider question; completion is a terminator carrying the page
+-- count rather than something a short listing implies; and a resource returned
+-- carrying no tags is a two-field row, distinct from a resource not returned at
+-- all.
+--
+-- One property is new.  Rows used to be emitted in the provider's return order,
+-- so two identical listings paginated differently produced different bytes --
+-- which the Authority's byte-equality replay comparison reads as a mismatch.
+-- The canonical ordering removes that, and it fixes the echo and terminator
+-- positions as a side effect, since @complete@ and @query@ sort before
+-- @resource@.
 renderOwnedResourceTagObservation
   :: OwnedResourceTagObservation
   -> Either OwnedResourceTagEvidenceError Text
-renderOwnedResourceTagObservation observation = do
-  queryLine <- case ownedResourceTagObservationQuery observation of
-    OwnedResourceTagKeyEcho key -> do
-      safe key
-      Right (Text.intercalate separator ["query", "key", key])
-    OwnedResourceTagPairEcho key value -> do
-      safe key
-      safe value
-      Right (Text.intercalate separator ["query", "pair", key, value])
-  resourceLines <-
-    traverse renderEntry (ownedResourceTagObservationEntries observation)
-  let completionLine =
-        Text.intercalate
-          separator
-          [ "complete"
-          , Text.pack (show (ownedResourceTagObservationPages observation))
-          ]
-  Right
-    ( Text.intercalate
-        "\n"
-        (queryLine : concat resourceLines ++ [completionLine])
+renderOwnedResourceTagObservation observation =
+  first
+    (OwnedResourceTagEvidenceRefused . renderProviderEvidenceRefusal)
+    ( fmap
+        providerEvidenceText
+        ( encodeProviderEvidence
+            (providerEvidenceFamilyOwnBound ownedResourceTagEvidenceFamily)
+            ownedResourceTagEvidenceFamily
+            (queryRow : completionRow : concatMap renderEntry entries)
+        )
     )
  where
-  renderEntry entry = do
-    safe (ownedResourceTagEntryArn entry)
-    case ownedResourceTagEntryTags entry of
-      [] ->
-        Right
-          [ Text.intercalate
-              separator
-              ["resource", ownedResourceTagEntryArn entry]
-          ]
-      tags ->
-        traverse
-          ( \(key, value) -> do
-              safe key
-              safe value
-              Right
-                ( Text.intercalate
-                    separator
-                    ["resource", ownedResourceTagEntryArn entry, key, value]
-                )
-          )
-          tags
-
-  safe field
-    | Text.any (\character -> character == '\t' || character == '\n') field =
-        Left (OwnedResourceTagFieldSeparatorPresent field)
-    | otherwise = Right ()
+  entries = ownedResourceTagObservationEntries observation
+  queryRow = case ownedResourceTagObservationQuery observation of
+    OwnedResourceTagKeyEcho key -> ["query", "key", key]
+    OwnedResourceTagPairEcho key value -> ["query", "pair", key, value]
+  completionRow =
+    ["complete", Text.pack (show (ownedResourceTagObservationPages observation))]
+  renderEntry entry = case ownedResourceTagEntryTags entry of
+    [] -> [["resource", ownedResourceTagEntryArn entry]]
+    tags ->
+      [ ["resource", ownedResourceTagEntryArn entry, key, value]
+      | (key, value) <- tags
+      ]
 
 -- | Read the canonical form back.
 --
--- Contiguous rows naming one ARN are merged into one entry.  Non-contiguous
--- rows stay separate entries on purpose: this parser reports what the evidence
--- said, and joining a resource's tag rows across the whole listing is the
--- consumer's normalization step, which already refuses rows that disagree.
+-- Rows naming one ARN merge into one entry.  The canonical ordering makes them
+-- contiguous, so that is now a property of the grammar rather than of the order
+-- the provider happened to return them in.
 parseOwnedResourceTagObservation
   :: Text
   -> Either OwnedResourceTagEvidenceError OwnedResourceTagObservation
-parseOwnedResourceTagObservation evidence = case Text.lines evidence of
-  [] -> Left OwnedResourceTagEvidenceEmpty
-  queryLine : remaining -> do
-    query <- parseQueryLine queryLine
-    (entries, pages) <- parseBody remaining [] Nothing
-    Right
-      OwnedResourceTagObservation
-        { ownedResourceTagObservationQuery = query
-        , ownedResourceTagObservationEntries = entries
-        , ownedResourceTagObservationPages = pages
-        }
+parseOwnedResourceTagObservation evidence = do
+  rows <-
+    first
+      OwnedResourceTagEvidenceRefused
+      (decodeProviderEvidenceText ownedResourceTagEvidenceFamily evidence)
+  query <- case [row | row <- rows, take 1 row == ["query"]] of
+    [row] -> parseQueryRow row
+    _ -> Left (OwnedResourceTagQueryLineInvalid (flatten rows))
+  pages <- case [count | ["complete", count] <- rows] of
+    [count] -> case readMaybe (Text.unpack count) :: Maybe Natural of
+      Just parsed -> Right parsed
+      Nothing -> Left (OwnedResourceTagCompletionLineInvalid count)
+    _ -> Left OwnedResourceTagEvidenceIncomplete
+  entries <-
+    traverse parseResourceRow [row | row <- rows, take 1 row == ["resource"]]
+  Right
+    OwnedResourceTagObservation
+      { ownedResourceTagObservationQuery = query
+      , ownedResourceTagObservationEntries = mergeEntries entries
+      , ownedResourceTagObservationPages = pages
+      }
+ where
+  flatten rows = Text.intercalate "|" (concat rows)
 
-parseQueryLine
-  :: Text -> Either OwnedResourceTagEvidenceError OwnedResourceTagQueryEcho
-parseQueryLine line = case Text.splitOn separator line of
+parseQueryRow
+  :: [Text] -> Either OwnedResourceTagEvidenceError OwnedResourceTagQueryEcho
+parseQueryRow row = case row of
   ["query", "key", key]
     | not (Text.null key) -> Right (OwnedResourceTagKeyEcho key)
   ["query", "pair", key, value]
     | not (Text.null key) -> Right (OwnedResourceTagPairEcho key value)
-  _ -> Left (OwnedResourceTagQueryLineInvalid line)
+  _ -> Left (OwnedResourceTagQueryLineInvalid (Text.intercalate "|" row))
 
--- | Accumulate resource rows until the completion terminator.  Anything after
--- the terminator, and evidence with no terminator at all, is refused.
-parseBody
-  :: [Text]
-  -> [(Text, [(Text, Text)])]
-  -> Maybe Natural
-  -> Either OwnedResourceTagEvidenceError ([OwnedResourceTagEntry], Natural)
-parseBody [] accumulated pages = case pages of
-  Nothing -> Left OwnedResourceTagEvidenceIncomplete
-  Just consumed -> Right (map toEntry (reverse accumulated), consumed)
+parseResourceRow
+  :: [Text] -> Either OwnedResourceTagEvidenceError (Text, Maybe (Text, Text))
+parseResourceRow row = case row of
+  ["resource", arn]
+    | not (Text.null arn) -> Right (arn, Nothing)
+  ["resource", arn, key, value]
+    | not (Text.null arn) && not (Text.null key) -> Right (arn, Just (key, value))
+  _ -> Left (OwnedResourceTagResourceLineInvalid (Text.intercalate "|" row))
+
+-- | Fold the flat rows into one entry per ARN, preserving tag order.
+mergeEntries :: [(Text, Maybe (Text, Text))] -> [OwnedResourceTagEntry]
+mergeEntries = foldr step []
  where
-  toEntry (arn, tags) = OwnedResourceTagEntry arn (reverse tags)
-parseBody (line : remaining) accumulated pages = case pages of
-  Just _ -> Left (OwnedResourceTagResourceLineInvalid line)
-  Nothing -> case Text.splitOn separator line of
-    ["complete", count] -> case readMaybe (Text.unpack count) :: Maybe Natural of
-      Just parsed -> parseBody remaining accumulated (Just parsed)
-      Nothing -> Left (OwnedResourceTagCompletionLineInvalid line)
-    ["resource", arn]
-      | not (Text.null arn) ->
-          parseBody remaining (addResource arn Nothing accumulated) Nothing
-    ["resource", arn, key, value]
-      | not (Text.null arn) && not (Text.null key) ->
-          parseBody remaining (addResource arn (Just (key, value)) accumulated) Nothing
-    _ -> Left (OwnedResourceTagResourceLineInvalid line)
-
-addResource
-  :: Text
-  -> Maybe (Text, Text)
-  -> [(Text, [(Text, Text)])]
-  -> [(Text, [(Text, Text)])]
-addResource arn tag accumulated = case accumulated of
-  (existingArn, tags) : rest
-    | existingArn == arn -> (existingArn, maybe tags (: tags) tag) : rest
-  _ -> (arn, maybe [] pure tag) : accumulated
+  step (arn, tag) accumulated = case accumulated of
+    OwnedResourceTagEntry existingArn tags : rest
+      | existingArn == arn ->
+          OwnedResourceTagEntry existingArn (maybe tags (: tags) tag) : rest
+    _ -> OwnedResourceTagEntry arn (maybe [] pure tag) : accumulated

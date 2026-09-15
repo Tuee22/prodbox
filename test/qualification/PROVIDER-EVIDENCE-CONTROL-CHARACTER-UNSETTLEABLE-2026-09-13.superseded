@@ -1,0 +1,15 @@
+# Frozen superseded renderings.  The region is written as <fixture-region>
+# because a complete AWS region literal is forbidden in this repository's
+# source and fixtures alike (config_doctrine.md section 0); the executable
+# table substitutes TestSupport's synthetic constructor for it.
+#
+# Frozen superseded renderings, one per producer, with control characters shown
+# as \t and \n. These are the exact shapes the deleted encoders emitted; the
+# executable two-sided table is test/unit/ProviderEvidenceQualification.hs.
+
+native-stack-family	prodbox-native-stack-family/v1\nbinding|aws-test|123456789012|<fixture-region>|none\nresource|vpc/vpc-1\n
+eks-iam-role-family	prodbox-eks-iam-family/v1\nrole|cluster-role|absent
+owned-resource-tags	query\tkey\tprodbox.io/managed-by\nresource\tarn:aws:s3:::bucket\tprodbox.io/managed-by\tprodbox\ncomplete\t3
+eks-lbc-family	prodbox-eks-lbc-family/v1\nload-balancer|arn:aws:elasticloadbalancing:lb/public-edge
+validation-hosted-zones	prodbox-dns-aws-\nZ1234 prodbox-dns-aws-abc.example.test.
+dns01-challenge-records	Z0123456789ABCDEFGHIJ _acme-challenge.\n_acme-challenge.app.example.test.

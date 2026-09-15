@@ -182,6 +182,33 @@ destructured **positionally** by every projection, so adding a field is a missin
 constructor and a constructor-arity error at each projection. The rule is a type error rather than a
 review note.
 
+**Second worked instance, recorded 2026-09-13: six encoders and a validator that never met.** The
+instance above has the writer and the reader inside one process. This one has them on opposite sides
+of a process boundary, which is what let it survive longer and fail more completely.
+
+Provider evidence — the text a fenced Provider Worker capability returns — is typed as bare `Text`
+on the capability signatures, so every `Text` is a legal answer. Six producers in three modules each
+authored their own rendering; `validateProviderIntentEvidence`, roughly 900 lines away from the
+nearest of them, refuses any character at or below `0x1f`. All six emit one. Three fail
+unconditionally, so those observations settle exactly when they have nothing to report. Nothing
+joined the encoders to the rule, and the same absence explains why one of them also invented a
+private 128 KiB bound: nothing handed it the real one.
+
+Three points this instance adds to the one above.
+
+- **A count is the diagnostic.** One conceptual value had six encoders and, counting the wire
+  decoder and a hidden second reader driving a reaper's deletions, more readers than anyone had
+  noticed. [Chaos Hardening Doctrine § 23](./chaos_hardening_doctrine.md) says to count them, and
+  counting them is what turned a one-codec bug report into a class.
+- **A gate is not the repair.** `validateProviderIntentEvidence` *is* the "add a proof" instinct,
+  applied to a seam whose real defect was six hand-authored encoders. It refuses correctly and has
+  never prevented one from being written.
+- **The type is the boundary, not the module.** The repair is a sealed evidence type minted by one
+  canonical encoder against a bound supplied by the intent being served, so a seventh encoder is a
+  type error in the author's editor. [Provider Evidence
+  Contract](./provider_evidence_contract.md) owns the resulting wire; adoption status lives only in
+  the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
 ### 2.4 Durability-indexed coordinates
 
 When stored objects outlive different scopes — a chart release, the cluster, the fleet — the
@@ -449,6 +476,65 @@ consequence.
   refusal survives; collapsing them into the index would have been the same mistake in the other
   direction.
 
+**Worked instance, Sprint `6.5`: index on phase, and let the permit be the thing that moves.**
+The cutover from the handwritten cascade to the typed recover-to-clean graph has to hold one
+property through four phases — *exactly one writer owns cleanup mutation at every moment* — and one
+irreversibility: after activation there is no rollback. Both are case 2 above: which writer this
+program permits is a program-owned fact, not a claim about an external system, so § 7.1's boundary
+is respected rather than tested.
+
+`CutoverState (phase :: CutoverPhase)` is indexed on the phase and is exported abstractly, so the
+only inhabitants are the ones its own transitions produce. Only the pre-activation constructor
+carries a `LegacyWriterPermit`; the three later ones carry a `ReplacementWriterPermit`. Four
+properties follow from the shape rather than from a check:
+
+- **A dual-writer state is unrepresentable.** No constructor holds both permits, so "both writers
+  are live" is not a state that can be built, refused, or tested for. This is the difference worth
+  noticing: a runtime check answers the question, a shape removes it.
+- **Post-activation rollback is unrepresentable.** `rollbackLegacy` is the only rollback and its
+  type is `CutoverState 'PreActivation -> CutoverState 'PreActivation`. There is no function
+  accepting a later phase, so the refusal is an absence of a function rather than an arm that
+  returns an error. No test exercises it, and none can: there is nothing to call. What a test
+  *would* be testing is the export list, which is where the property actually lives — see the bound
+  below.
+- **Activation consumes what it replaces.** `activateReplacement` takes the pre-activation state by
+  value and returns the post-activation one. The legacy permit is not marked spent; it is gone,
+  because the only value that held it was consumed.
+- **The witness is a value, not a flag.** `QualificationPassed` is opaque and minted only by
+  `qualifyReplacement` against evidence whose replacement identity equals the expected one, so
+  "activated without qualification" has no inhabitant either.
+
+Two corrections the first shape did not survive, and both are the same mistake in different
+clothing — **reachability mistaken for gating**.
+
+- The staged plan was an ordering fold over a six-constructor enumeration, so a run containing the
+  activation and deletion stages was constructible with no witness in existence anywhere, and
+  resuming the canonical plan returned success on constructor ordering alone. `AdmittedCutoverStage`
+  is now opaque and produced only by `admitCutoverStage`, which demands the witness that stage
+  requires *against the identity it will act on*; the resume fold takes admitted stages rather than
+  named ones. `cutoverStageRequiresWitness` is total over the six and states why the other four must
+  not require one: they are what produce the witnesses.
+- `deleteLegacyRoute` took no witness. Being reachable only from a private post-activation
+  constructor made it unreachable without a *prior* qualification, which is not the same as being
+  gated by one — the witness that authorized activation could be for a different identity by the
+  time deletion runs. It now takes the witness, and additionally refuses a resulting identity equal
+  to the one deleted, because a deletion that changed nothing would leave the post-activation
+  qualification satisfiable by the very witness that authorized activation.
+
+**Every claim above rests on one source fact, so that fact is gated rather than read.** A type is
+only unconstructible from outside while its constructors stay inside its module; widening
+`CutoverState` to `CutoverState (..)` would silently void the dual-writer and rollback properties
+without changing a line of logic, and no test could notice, because the tests that would notice are
+the ones that cannot be written. `prodbox dev check` therefore holds a registry of the types whose
+unconstructibility claim is load-bearing and refuses an export list that names any of their
+constructors — and refuses a registered row whose module no longer declares or exports the type, so
+the registry cannot rot into a list of names nothing checks.
+
+The other bound is worth stating too: none of this proves the legacy route is gone from the
+repository. That is a fact about source text, and it is measured separately by a bounded scanner
+with a pre-activation mode that requires the exact registered set and a post-activation mode that
+requires none.
+
 Do not use a GADT to claim that externally authoritative or replicated state changed. External
 readiness, leases, provider state, target generations, durable operation records, gateway
 ownership, and residue are flat exhaustive ADTs computed by pure projection/fold.
@@ -504,7 +590,12 @@ neighbourhood.
 - **Unrepresentable-but-unreachable.** A device strict enough to exclude the unsafe value can also
   exclude the safe one. When the only constructor for a needed authority cannot be produced on any
   production path — or a wire refuses to carry it — the branch it guards is not protected, it is
-  dead, and the decision that consults it can only refuse.
+  dead, and the decision that consults it can only refuse. **Instance recorded 2026-09-13:** the
+  "wire refuses to carry it" clause was written before anything here had been shown to do it, and
+  six provider-evidence encoders were doing it the whole time — see the second worked instance in
+  [§ 2.3a](#23a-encode-at-exactly-one-boundary). This bullet named the failure mode before the
+  repository could name an instance of it, which is the argument for keeping a predicted failure in
+  doctrine even while nothing yet matches it.
 - **Laundering at a conversion.** A weak observation converted into a strong-looking type gains the
   appearance of evidence and none of the substance. A substring match on a subprocess's error output
   that becomes an exact-absence value is the worked instance; the type did not prevent it, the type

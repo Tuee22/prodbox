@@ -661,7 +661,12 @@ data CreationFixture = CreationFixture
 creationFixture :: ProviderStackConfig -> IO CreationFixture
 creationFixture config =
   creationFixtureWithIntent
-    (ReconcileRegisteredStack fixtureStackRef fixtureRevision config)
+    ( ReconcileRegisteredStack
+        fixtureStackRef
+        fixtureRevision
+        config
+        fixtureProviderRunMarker
+    )
 
 -- | The Sprint 4.84 producer boundary over this fixture's aggregate and durable
 -- store.  The aggregate carries the admitted create and no Provider AWS-scope

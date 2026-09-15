@@ -203,7 +203,7 @@ fixtureCapabilities
   -> ProviderIntentCapabilities IO Text
 fixtureCapabilities calls applied loseResponse unobservable =
   ProviderIntentCapabilities
-    { reconcileRegisteredStackCapability = \ref requestedRevision _config ->
+    { reconcileRegisteredStackCapability = \ref requestedRevision _config _marker ->
         mutation
           ("stack-reconcile:" <> providerStackRefText ref <> "@" <> revisionText requestedRevision)
     , destroyRegisteredStackCapability = \ref requestedRevision _config ->
@@ -391,7 +391,11 @@ version number = mustRight (mkModelBObjectVersion ("provider-v" <> Text.pack (sh
 
 allIntents :: [ProviderIntent]
 allIntents =
-  [ ReconcileRegisteredStack (stackRef "aws-eks") (revision 3) awsEksConfig
+  [ ReconcileRegisteredStack
+      (stackRef "aws-eks")
+      (revision 3)
+      awsEksConfig
+      fixtureProviderRunMarker
   , DestroyRegisteredStack (stackRef "aws-eks") (revision 3) awsEksConfig
   , ObserveRegisteredStack (stackRef "aws-eks")
   , ReadBackRegisteredStack (stackRef "aws-eks")
@@ -454,7 +458,7 @@ expectedCalls intent =
 
 labelFor :: ProviderIntent -> Text
 labelFor intent = case intent of
-  ReconcileRegisteredStack ref requested _config ->
+  ReconcileRegisteredStack ref requested _config _marker ->
     "stack-reconcile:" <> providerStackRefText ref <> "@" <> revisionText requested
   DestroyRegisteredStack ref requested _config ->
     "stack-destroy:" <> providerStackRefText ref <> "@" <> revisionText requested

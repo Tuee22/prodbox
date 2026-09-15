@@ -27,14 +27,24 @@ lifecycleProviderWorkSuite =
       decide
         ProviderIdle
         ( SubmitProviderIntent
-            (ReconcileRegisteredStack (stackRef "staging") (revision 2) awsEksConfig)
+            ( ReconcileRegisteredStack
+                (stackRef "staging")
+                (revision 2)
+                awsEksConfig
+                fixtureProviderRunMarker
+            )
         )
         `shouldBe` ProviderWorkRefused (ProviderWorkUnregisteredResource "stack:staging")
     it "refuses a stack reconcile requesting a revision older than the bound revision" $ do
       decide
         ProviderIdle
         ( SubmitProviderIntent
-            (ReconcileRegisteredStack (stackRef "aws-eks") (revision 1) awsEksConfig)
+            ( ReconcileRegisteredStack
+                (stackRef "aws-eks")
+                (revision 1)
+                awsEksConfig
+                fixtureProviderRunMarker
+            )
         )
         `shouldBe` ProviderWorkRefused (ProviderWorkRevisionStale 1 2)
     it "refuses any submit once the session deadline has passed" $ do
@@ -86,7 +96,12 @@ lifecycleProviderWorkSuite =
       decide ProviderIdle (ResolveProviderRecovery coordReconcileProd)
         `shouldBe` ProviderWorkRefused ProviderWorkNotInRecovery
  where
-  reconcileProd = ReconcileRegisteredStack (stackRef "aws-eks") (revision 3) awsEksConfig
+  reconcileProd =
+    ReconcileRegisteredStack
+      (stackRef "aws-eks")
+      (revision 3)
+      awsEksConfig
+      fixtureProviderRunMarker
   observeProd = ObserveRegisteredStack (stackRef "aws-eks")
   reconcileSesIdentity = ReconcileSesSendingIdentity (sesIdentity "mail")
   reconcileSesDns =

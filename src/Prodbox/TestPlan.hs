@@ -12,6 +12,7 @@ module Prodbox.TestPlan
   , unitScopeHaskellSuites
   , aggregateScopeHaskellSuites
   , integrationScopeHaskellSuites
+  , gatedCheckHaskellSuites
   , routedHaskellSuites
   )
 where
@@ -48,6 +49,7 @@ data NativeValidation
   | ValidationGatewayPods
   | ValidationControlPlaneCounterexample
   | ValidationTeardownRecovery
+  | ValidationCreateInterrupted
   | ValidationCertificateScope
   | ValidationCleanRoomHandoff
   | ValidationCascadeQualification
@@ -134,6 +136,35 @@ aggregateScopeHaskellSuites =
 -- | The Cabal suite every @prodbox test integration ...@ scope runs.
 integrationScopeHaskellSuites :: [String]
 integrationScopeHaskellSuites = ["test:prodbox-integration"]
+
+-- | Sprint 5.47: the Cabal suites @prodbox dev check@ executes.
+--
+-- Sprint `5.45` gave every declared suite a runner. It did not make the
+-- canonical gate run one: the gate's single @cabal@ invocation is a @build@,
+-- so every assertion this repository compiles was proven by the gate to
+-- typecheck and by nothing to hold unless an operator separately typed
+-- @prodbox test unit@. The strongest absence rule in the tree sat in exactly
+-- that position while a cluster billed for four days.
+--
+-- The set is the four suites whose stanza name ends in @-unit@, and the
+-- boundary is a property rather than a preference: a unit stanza asserts over
+-- pure values and interpreter-boundary fakes, so it needs no cluster, no
+-- socket and no credential, and the canonical gate may depend on none of
+-- those. @prodbox-haskell-style@ is excluded because it calls the same
+-- @haskellStyleViolations@ this gate has already run in the same process;
+-- @prodbox-pulumi@ because it is a filesystem-harness tier;
+-- @prodbox-daemon-lifecycle@ and @prodbox-integration@ because they spawn the
+-- built binary over real sockets.
+--
+-- The measured cost on the operator host is 126 seconds against a gate that
+-- already exceeds ten minutes, almost all of it in the primary suite.
+gatedCheckHaskellSuites :: [String]
+gatedCheckHaskellSuites =
+  [ "test:prodbox-unit"
+  , "test:prodbox-authority-admission-unit"
+  , "test:prodbox-control-plane-authentication-unit"
+  , "test:prodbox-control-plane-authenticated-transport-unit"
+  ]
 
 -- | Every Cabal suite some @prodbox test@ scope runs.
 --
@@ -284,6 +315,12 @@ testExecutionPlan substrate scope =
             "integration teardown-recovery"
             "integration-teardown-recovery"
             [ValidationTeardownRecovery]
+            False
+        IntegrationCreateInterrupted ->
+          nativeNamedSuite
+            "integration create-interrupted"
+            "integration-create-interrupted"
+            [ValidationCreateInterrupted]
             False
         IntegrationCertificateScope ->
           nativeNamedSuite
@@ -489,6 +526,7 @@ canonicalNativeValidations =
   , ValidationGatewayDaemon
   , ValidationControlPlaneCounterexample
   , ValidationTeardownRecovery
+  , ValidationCreateInterrupted
   , ValidationCertificateScope
   , ValidationCleanRoomHandoff
   , ValidationChartsPlatform
@@ -538,6 +576,7 @@ validationInitialPrerequisites validation =
     ValidationGatewayPods -> clusterPrerequisites
     ValidationControlPlaneCounterexample -> []
     ValidationTeardownRecovery -> []
+    ValidationCreateInterrupted -> []
     ValidationCertificateScope -> [PublicEdgeReady, ToolCurl, ToolOpenSsl]
     ValidationCleanRoomHandoff -> []
     ValidationCascadeQualification -> pulumiSubstratePrerequisites
@@ -578,6 +617,7 @@ validationDeferredPrerequisites validation =
     ValidationGatewayPods -> []
     ValidationControlPlaneCounterexample -> []
     ValidationTeardownRecovery -> []
+    ValidationCreateInterrupted -> []
     ValidationCertificateScope -> []
     ValidationCleanRoomHandoff -> []
     ValidationCascadeQualification -> [PulumiLoggedIn]
@@ -697,6 +737,7 @@ nativeValidationId validation =
     ValidationGatewayPods -> "gateway-pods"
     ValidationControlPlaneCounterexample -> "control-plane-counterexample"
     ValidationTeardownRecovery -> "teardown-recovery"
+    ValidationCreateInterrupted -> "create-interrupted"
     ValidationCertificateScope -> "certificate-scope"
     ValidationCleanRoomHandoff -> "clean-room-handoff"
     ValidationCascadeQualification -> "cascade-qualification"

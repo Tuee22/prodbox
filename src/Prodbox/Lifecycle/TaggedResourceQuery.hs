@@ -13,9 +13,13 @@
 --
 -- Three rules bound this listing.
 --
---   * __One filter per call.__  The Tagging API intersects the filters inside
---     one call, and the audit's field of view is their union, so a query here
---     carries exactly one tag filter and the union is taken by the caller.
+--   * __One filter per call, in one named region.__  The Tagging API intersects
+--     the filters inside one call, and the audit's field of view is their
+--     union, so a query here carries exactly one tag filter and the union is
+--     taken by the caller.  The region is an argument rather than an ambient
+--     environment variable: the API answers for the region it is called in, so
+--     a query that does not say which region it asked cannot say what its empty
+--     answer covers.
 --   * __Truncation fails; it never shortens.__  Exceeding
 --     'maximumTaggedResourcePages', or being handed the same cursor twice,
 --     returns a failure rather than the rows gathered so far.
@@ -69,6 +73,11 @@ data TaggedResourceQueryInput = TaggedResourceQueryInput
   { taggedResourceQueryEnvironment :: [(String, String)]
   , taggedResourceQueryWorkingDirectory :: Maybe FilePath
   , taggedResourceQueryFilter :: TaggedResourceFilter
+  , taggedResourceQueryRegion :: !Text
+  -- ^ The region this call asks.  Required rather than optional: an
+  -- unstated region is answered by whatever the environment happens to
+  -- carry, and an empty answer from an unknown region is not an
+  -- observation of anything.
   }
   deriving (Eq, Show)
 
@@ -102,12 +111,14 @@ data TaggedResourceListing = TaggedResourceListing
 maximumTaggedResourcePages :: Natural
 maximumTaggedResourcePages = 100
 
-taggedResourceQueryArgs :: TaggedResourceFilter -> Maybe Text -> [String]
-taggedResourceQueryArgs filterValue cursor =
+taggedResourceQueryArgs :: TaggedResourceFilter -> Text -> Maybe Text -> [String]
+taggedResourceQueryArgs filterValue regionValue cursor =
   [ "resourcegroupstaggingapi"
   , "get-resources"
   , "--output"
   , "json"
+  , "--region"
+  , Text.unpack regionValue
   , "--tag-filters"
   , taggedResourceFilterArgument filterValue
   ]
@@ -221,7 +232,10 @@ discoverTaggedResources input = collect Nothing [] [] 0
         Subprocess
           { subprocessPath = "aws"
           , subprocessArguments =
-              taggedResourceQueryArgs (taggedResourceQueryFilter input) cursor
+              taggedResourceQueryArgs
+                (taggedResourceQueryFilter input)
+                (taggedResourceQueryRegion input)
+                cursor
           , subprocessEnvironment = Just (taggedResourceQueryEnvironment input)
           , subprocessWorkingDirectory = taggedResourceQueryWorkingDirectory input
           }

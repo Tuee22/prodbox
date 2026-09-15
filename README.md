@@ -153,7 +153,14 @@ validation environments.
   commits the backed-up convergence report, and uninstalls local RKE2 last. Incomplete
   cleanup returns a stable `CleanupRunId` and the observed recovery-plane disposition; an
   established plane remains live. The global tag audit is defense-in-depth only; it cannot select a
-  stack or prove one absent. `prodbox nuke` remains the operator-only total-decommission path. See
+  stack or prove one absent. Every provider observation answers with evidence the Provider Worker
+  validates — `validateProviderIntentEvidence` refuses evidence that is empty, over its per-intent
+  character bound, or carrying any character at or below `0x1f` — and the Lifecycle Authority
+  re-validates that evidence and retains it verbatim. Every family renders through one canonical
+  encoder against the bound of the intent it is answering, and no encoder can author a bound of its
+  own. `prodbox nuke`
+  remains the operator-only total-decommission path. See
+  [Provider Evidence Contract](./documents/engineering/provider_evidence_contract.md),
   [Lifecycle Reconciliation Doctrine](./documents/engineering/lifecycle_reconciliation_doctrine.md)
   and [Lifecycle Control-Plane Architecture §11.0](./documents/engineering/lifecycle_control_plane_architecture.md#110-ordinary-teardown-recovery-profile).
   Until the plan-tracked cutover lands, the current binary still uses the legacy handwritten
@@ -372,6 +379,27 @@ succeeding and no node group ever following, and two manual deletions where the 
 issued none. A cluster created 2026-09-08 accordingly billed for four days. These are measured
 current facts, not a qualification status; ownership and remaining work live in the [Development
 Plan](./DEVELOPMENT_PLAN/README.md#resume-here) under Sprints `4.96` and `7.41`.
+
+**Measured 2026-09-13, repaired 2026-09-14 — six provider-evidence encoders emitted a character the
+Provider Worker's own validator refuses, and three of them did so unconditionally.** The three that always fail are the
+wired desired-absence stack-family observation, the EKS IAM role family, and the cascade's terminal
+audit; the other three fail only when they have something to report, so those observations succeed
+exactly when they find nothing. The terminal audit additionally cannot fit its listing inside the
+4,096-character wire bound at any separator, so this is not a punctuation defect. The cause is that
+provider evidence was typed as bare `Text` on the capability signatures, which left nothing joining
+an encoder to the rule it must satisfy. It is now a sealed type minted by one canonical encoder, so a
+seventh encoder is a type error rather than a refusal on a cluster. No live cascade has yet carried
+one of these observations to settlement; that proof is outstanding.
+
+**The live correlation is recorded and the attribution is refused.** Two of the failing intents are
+also two of four live refusals this campaign has declined to attribute for six cycles. A
+correspondence of names is not evidence: the decoder maps any provider-side `Left` to
+`unobservable`, so an evidence refusal and a failed AWS call are the same word by the time a
+transcript sees them. The one available measurement came back negative — the rule's refusal text
+occurs zero times across the 336 cascade-qualification cycle transcripts this campaign has recorded
+— so the attribution stays refused for a stated reason rather than for want of one. These are measured current facts, not a qualification status; ownership
+and remaining work live in the [Development Plan](./DEVELOPMENT_PLAN/README.md#resume-here) under
+Sprint `4.99`.
 
 The measured-capacity recorder is available as
 `prodbox test integration gateway-pods --record-profile`. It writes
@@ -1127,7 +1155,7 @@ prodbox/
 - [Claude Code Patterns (CLAUDE.md)](./CLAUDE.md)
 - [Agent Guidelines (AGENTS.md)](./AGENTS.md)
 
-The list above is a starting point, not the index. `documents/engineering/` holds 42 governed
+The list above is a starting point, not the index. `documents/engineering/` holds 43 governed
 documents; [its README](./documents/engineering/README.md) is the complete one, and this file
 deliberately does not maintain a second copy of it
 ([documentation_standards.md § 1](./documents/documentation_standards.md)). The ones most often

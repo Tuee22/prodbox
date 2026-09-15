@@ -609,7 +609,7 @@ exactPresent :: ExactResourceObservation
 exactPresent = exactObservation presentInventory
 
 exactAbsent :: ExactResourceObservation
-exactAbsent = exactObservation (ExactResourceAbsent (AbsenceEvidence "eks-not-found"))
+exactAbsent = exactObservation (ExactResourceAbsent (providerWorkerAbsence "eks-not-found"))
 
 exactObservation :: ExactObservationResult -> ExactResourceObservation
 exactObservation = exactObservationAt scope
@@ -764,8 +764,8 @@ fixtureCleanupRunId =
     Left err -> error (show err)
     Right runId -> runId
 
-absenceEvidence :: AbsenceEvidence
-absenceEvidence = AbsenceEvidence "eks-not-found"
+absenceEvidence :: AbsenceEvidence 'ProviderApi
+absenceEvidence = providerWorkerAbsence "eks-not-found"
 
 bindingMismatch :: CleanupNodeOutcome
 bindingMismatch = CleanupNodeFailed "lifecycle observation binding mismatch"

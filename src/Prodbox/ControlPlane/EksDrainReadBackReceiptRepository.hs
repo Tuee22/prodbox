@@ -149,7 +149,8 @@ import Prodbox.Lifecycle.Teardown.EksDrainIntent
   )
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
-  ( AbsenceEvidence (..)
+  ( absenceEvidenceText
+  , kubernetesReadBackAbsence
   )
 import Prodbox.Lifecycle.Teardown.ScopeCodec
   ( ScopeWire
@@ -833,18 +834,18 @@ positiveReadBackWire observation =
     EksDrainObservedKubernetesTarget readBack -> do
       serviceEvidence <- case eksDrainReadBackLoadBalancerServiceClass readBack of
         LoadBalancerServiceClassReadBack
-          (EksDrainResourceClassAbsent (AbsenceEvidence detail)) ->
-            boundedAbsence detail
+          (EksDrainResourceClassAbsent detail) ->
+            boundedAbsence (absenceEvidenceText detail)
         _ -> Left EksDrainReadBackReceiptPositiveShapeInvalid
       ingressEvidence <- case eksDrainReadBackIngressClass readBack of
         IngressClassReadBack
-          (EksDrainResourceClassAbsent (AbsenceEvidence detail)) ->
-            boundedAbsence detail
+          (EksDrainResourceClassAbsent detail) ->
+            boundedAbsence (absenceEvidenceText detail)
         _ -> Left EksDrainReadBackReceiptPositiveShapeInvalid
       ownerEvidence <- case eksDrainReadBackControllerOwnerClass readBack of
         ControllerOwnerClassReadBack
-          (EksDrainResourceClassAbsent (AbsenceEvidence detail)) ->
-            boundedAbsence detail
+          (EksDrainResourceClassAbsent detail) ->
+            boundedAbsence (absenceEvidenceText detail)
         _ -> Left EksDrainReadBackReceiptPositiveShapeInvalid
       pvcs <- mapM pvcWire (eksDrainReadBackDeletePolicyPvcs readBack)
       Right
@@ -862,8 +863,8 @@ positiveReadBackWire observation =
       Left EksDrainReadBackReceiptPositiveShapeInvalid
  where
   pvcWire pvc = case eksDrainPvcReadBackResult pvc of
-    EksDrainPvcAbsent (AbsenceEvidence detail) -> do
-      absence <- boundedAbsence detail
+    EksDrainPvcAbsent detail -> do
+      absence <- boundedAbsence (absenceEvidenceText detail)
       Right
         ( PvcAbsenceWire
             (eksNamespacedNameNamespace (eksDrainPvcReadBackTarget pvc))
@@ -997,13 +998,13 @@ decodePositiveReadBack wire = case wire of
             , eksDrainReadBackCertificateAuthorityDigest = caDigest
             , eksDrainReadBackLoadBalancerServiceClass =
                 LoadBalancerServiceClassReadBack
-                  (EksDrainResourceClassAbsent (AbsenceEvidence service))
+                  (EksDrainResourceClassAbsent (kubernetesReadBackAbsence service))
             , eksDrainReadBackIngressClass =
                 IngressClassReadBack
-                  (EksDrainResourceClassAbsent (AbsenceEvidence ingress))
+                  (EksDrainResourceClassAbsent (kubernetesReadBackAbsence ingress))
             , eksDrainReadBackControllerOwnerClass =
                 ControllerOwnerClassReadBack
-                  (EksDrainResourceClassAbsent (AbsenceEvidence owner))
+                  (EksDrainResourceClassAbsent (kubernetesReadBackAbsence owner))
             , eksDrainReadBackDeletePolicyPvcs = decodedPvcs
             }
       )
@@ -1014,7 +1015,7 @@ decodePositiveReadBack wire = case wire of
       EksDrainPvcReadBack
         { eksDrainPvcReadBackTarget = target
         , eksDrainPvcReadBackResult =
-            EksDrainPvcAbsent (AbsenceEvidence absence)
+            EksDrainPvcAbsent (kubernetesReadBackAbsence absence)
         }
 
 decodeEnvelope

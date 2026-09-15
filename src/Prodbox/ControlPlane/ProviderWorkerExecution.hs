@@ -156,6 +156,7 @@ import Prodbox.Lifecycle.Lease
   , mkOwnerNonce
   , ownerNonceText
   )
+import Prodbox.Lifecycle.ProviderWorker.Evidence (providerEvidenceText)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
   , ProviderIntentCoordinate
@@ -178,6 +179,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkProviderCheckpointRef
   , mkProviderNativeStackFamilyRef
   , mkProviderRevision
+  , mkProviderRunMarker
   , mkProviderSpotPriceQuery
   , mkProviderStackRef
   , mkPublicARecordRef
@@ -188,12 +190,15 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkSesRuleSetRef
   , providerCheckpointRefText
   , providerIntentCoordinate
+  , providerIntentEvidenceBound
   , providerIntentResourceKey
   , providerNativeStackFamilyAccountId
   , providerNativeStackFamilyHostedZoneId
   , providerNativeStackFamilyRegion
   , providerNativeStackFamilyStackRef
   , providerRevisionNatural
+  , providerRunMarkerRunScope
+  , providerRunMarkerSubmission
   , providerSpotPriceInstanceType
   , providerSpotPriceProductDescription
   , providerStackRefText
@@ -537,7 +542,7 @@ validateProviderIntentValue bound intent = do
     then Right ()
     else Left (ProviderIntentResourceInvalid (providerIntentResourceKey intent))
   case intent of
-    ReconcileRegisteredStack ref requested config
+    ReconcileRegisteredStack ref requested config _
       | requested /= bound ->
           Left (ProviderIntentRevisionBindingMismatch bound requested)
       | Left _ <- validateProviderStackConfig ref config ->
@@ -562,8 +567,13 @@ data WireProviderIntent = WireProviderIntent
 
 wireProviderIntent :: ProviderIntent -> WireProviderIntent
 wireProviderIntent intent = case intent of
-  ReconcileRegisteredStack ref revision config ->
-    configured 0 ref revision config
+  ReconcileRegisteredStack ref revision config marker ->
+    -- Sprint 7.41: the run marker rides in the envelope's existing secondary and
+    -- tertiary slots, which tag 0 previously required to be absent.
+    (configured 0 ref revision config)
+      { wireProviderIntentSecondary = Just (providerRunMarkerRunScope marker)
+      , wireProviderIntentTertiary = Just (providerRunMarkerSubmission marker)
+      }
   ObserveRegisteredStack ref ->
     simple 1 (providerStackRefText ref)
   ReadBackRegisteredStack ref ->
@@ -1174,9 +1184,10 @@ providerIntentFromWire wire = case wireProviderIntentTag wire of
     revision <- mapIntentValue (mkProviderRevision revisionNumber)
     config <- requireStackConfig wire
     mapIntentValue (validateProviderStackConfig ref config)
-    noSecondary wire
-    noTertiary wire
-    pure (ReconcileRegisteredStack ref revision config)
+    runScope <- requireSecondary "missing create run scope" wire
+    submission <- requireTertiary "missing create submission key" wire
+    marker <- mapIntentValue (mkProviderRunMarker runScope submission)
+    pure (ReconcileRegisteredStack ref revision config marker)
   1 -> ObserveRegisteredStack <$> simpleRef (mkProviderStackRef resource)
   2 -> ReadBackRegisteredStack <$> simpleRef (mkProviderStackRef resource)
   3 -> BoundedScratchCheckpoint <$> simpleRef (mkProviderCheckpointRef resource)
@@ -1969,12 +1980,17 @@ executeVerifiedProviderIntentBoundWith observeStage boundary verified = do
       ProviderIntentMutation operation -> executeMutation session operation
 
   executeReadOnly session operation = do
-    result <- runProviderReadOnly operation session coordinate
+    -- Sprint 4.99: the arm is handed the bound for the intent it is serving, so
+    -- the evidence it returns has already satisfied the rule this boundary used
+    -- to be the first to apply.  The projection below is not a second check --
+    -- it is the value leaving the sealed region for a wire.
+    result <-
+      runProviderReadOnly operation session coordinate (providerIntentEvidenceBound intent)
     pure $ case result of
       Left detail -> Left (ProviderIntentExecutionReadOnlyUnavailable detail)
       Right evidence ->
         ProviderIntentExecutionObserved coordinate
-          <$> validateExecutionEvidence intent evidence
+          <$> validateExecutionEvidence intent (providerEvidenceText evidence)
 
   executeMutation session operation = do
     before <- observeProviderMutation operation session coordinate

@@ -188,7 +188,7 @@ data DurableReceiptObservation = DurableReceiptObservation
   deriving (Eq, Show)
 
 data LocalFoundationObservationResult
-  = LocalFoundationAbsent !AbsenceEvidence
+  = LocalFoundationAbsent !(AbsenceEvidence 'HostLocal)
   | LocalFoundationPresent
   | LocalFoundationUnobservable !ObservationFailure
   deriving (Eq, Show)

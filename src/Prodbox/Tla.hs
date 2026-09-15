@@ -1,5 +1,9 @@
 module Prodbox.Tla
-  ( runTlaCheck
+  ( TlaExpectation (..)
+  , TlaModel (..)
+  , runTlaCheck
+  , tlaModelDirectory
+  , tlaModels
   )
 where
 
@@ -17,7 +21,7 @@ import System.FilePath (takeDirectory)
 
 runTlaCheck :: FilePath -> IO ExitCode
 runTlaCheck repoRoot = do
-  let tlaDir = repoRoot ++ "/documents/engineering/tla"
+  let tlaDir = repoRoot ++ "/" ++ tlaModelDirectory
       resultPath = tlaDir ++ "/tlc_last_run.txt"
   availability <- traverse (observeModelFiles tlaDir) tlaModels
   case concatMap missingModelFiles availability of
@@ -28,20 +32,47 @@ runTlaCheck repoRoot = do
       results <- traverse (runModel repoRoot tlaDir) tlaModels
       writeResult resultPath (concatMap renderModelResult results)
       pure
-        ( if all ((== ExitSuccess) . modelResultExitCode) results
+        ( if all modelResultMatchesExpectation results
             then ExitSuccess
             else ExitFailure 1
         )
 
+-- | Sprint 5.48: what TLC is expected to report for a registered
+-- configuration.
+--
+-- A model that is only ever run in the configuration it passes under has been
+-- observed to pass, never to refuse. Registering the frozen superseded
+-- ordering alongside the repaired one, and refusing when it does /not/ produce
+-- a counterexample, is how this surface proves its invariant can fail --
+-- the same discipline a counterexample fixture uses against a frozen
+-- implementation.
+data TlaExpectation
+  = ExpectsNoCounterexample
+  | ExpectsCounterexample
+  deriving (Eq, Show)
+
 data TlaModel = TlaModel
   { tlaModelFile :: FilePath
   , tlaConfigFile :: FilePath
+  , tlaExpectation :: TlaExpectation
   }
+
+-- | The governed directory every registered model file lives in.
+tlaModelDirectory :: FilePath
+tlaModelDirectory = "documents/engineering/tla"
 
 tlaModels :: [TlaModel]
 tlaModels =
-  [ TlaModel "gateway_orders_rule.tla" "gateway_orders_rule.cfg"
-  , TlaModel "gateway_legacy_liveness.tla" "gateway_legacy_liveness.cfg"
+  [ TlaModel "gateway_orders_rule.tla" "gateway_orders_rule.cfg" ExpectsNoCounterexample
+  , TlaModel "gateway_legacy_liveness.tla" "gateway_legacy_liveness.cfg" ExpectsNoCounterexample
+  , TlaModel
+      "lifecycle_create_ownership.tla"
+      "lifecycle_create_ownership.cfg"
+      ExpectsNoCounterexample
+  , TlaModel
+      "lifecycle_create_ownership.tla"
+      "lifecycle_create_ownership_superseded.cfg"
+      ExpectsCounterexample
   ]
 
 data ModelAvailability = ModelAvailability
@@ -74,6 +105,7 @@ missingModelFiles availability =
 
 data ModelResult = ModelResult
   { modelResultName :: FilePath
+  , modelResultExpectation :: TlaExpectation
   , modelResultCommand :: [String]
   , modelResultExitCode :: ExitCode
   , modelResultStdout :: String
@@ -94,7 +126,8 @@ runModel repoRoot tlaDir model = do
   pure $ case outputResult of
     Failure err ->
       ModelResult
-        { modelResultName = tlaModelFile model
+        { modelResultName = modelLabel model
+        , modelResultExpectation = tlaExpectation model
         , modelResultCommand = command
         , modelResultExitCode = ExitFailure 1
         , modelResultStdout = ""
@@ -102,12 +135,28 @@ runModel repoRoot tlaDir model = do
         }
     Success output ->
       ModelResult
-        { modelResultName = tlaModelFile model
+        { modelResultName = modelLabel model
+        , modelResultExpectation = tlaExpectation model
         , modelResultCommand = command
         , modelResultExitCode = processExitCode output
         , modelResultStdout = processStdout output
         , modelResultStderr = processStderr output
         }
+
+-- | Sprint 5.48: a registered configuration is satisfied when TLC's
+-- disposition is the one the registry declares, not when it is success.
+modelResultMatchesExpectation :: ModelResult -> Bool
+modelResultMatchesExpectation result =
+  case (modelResultExpectation result, modelResultExitCode result) of
+    (ExpectsNoCounterexample, ExitSuccess) -> True
+    (ExpectsNoCounterexample, ExitFailure _) -> False
+    (ExpectsCounterexample, ExitSuccess) -> False
+    (ExpectsCounterexample, ExitFailure _) -> True
+
+-- | A registered model is identified by its configuration as well as its
+-- module, because one module is checked under two.
+modelLabel :: TlaModel -> String
+modelLabel model = tlaModelFile model ++ " (" ++ tlaConfigFile model ++ ")"
 
 dockerCommand :: FilePath -> TlaModel -> [String]
 dockerCommand tlaDir model =
@@ -128,6 +177,12 @@ dockerCommand tlaDir model =
   , "tlc2.TLC"
   , "-workers"
   , "8"
+  , -- Sprint 5.48: a registered configuration is expected to produce a
+    -- counterexample, so the run leaves trace-expression and state scratch
+    -- behind unless it is told not to. Both flags keep a governed directory
+    -- free of root-owned output this host cannot delete.
+    "-cleanup"
+  , "-noGenerateSpecTE"
   , "-config"
   , tlaConfigFile model
   , tlaModelFile model
@@ -137,6 +192,8 @@ renderModelResult :: ModelResult -> String
 renderModelResult result =
   unlines
     [ "model: " ++ modelResultName result
+    , "expectation: " ++ show (modelResultExpectation result)
+    , "satisfied: " ++ show (modelResultMatchesExpectation result)
     , "command: " ++ unwords (modelResultCommand result)
     , "returncode: " ++ show (exitCodeInt (modelResultExitCode result))
     , "stdout:"

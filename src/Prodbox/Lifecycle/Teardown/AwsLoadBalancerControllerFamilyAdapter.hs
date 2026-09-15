@@ -29,9 +29,11 @@ import Data.Text qualified as Text
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
+import Prodbox.Lifecycle.ProviderWorker.Evidence (decodeProviderEvidenceText)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
   , ProviderIntentCoordinate
+  , eksLoadBalancerControllerFamilyEvidenceFamily
   , providerIntentCoordinate
   )
 import Prodbox.Lifecycle.Teardown.Model
@@ -178,15 +180,14 @@ data LoadBalancerControllerMemberObservation
 
 parseAwsLoadBalancerControllerFamilyObservation
   :: Text -> Either Text [LoadBalancerControllerMemberObservation]
-parseAwsLoadBalancerControllerFamilyObservation evidence = case Text.lines evidence of
-  "prodbox-eks-lbc-family/v1" : rows -> do
-    parsed <- traverse parseRow rows
-    if length parsed == length (nub parsed)
-      then Right parsed
-      else Left "EKS load-balancer controller evidence duplicated a member"
-  _ -> Left "EKS load-balancer controller evidence omitted its canonical header"
+parseAwsLoadBalancerControllerFamilyObservation evidence = do
+  rows <- decodeProviderEvidenceText eksLoadBalancerControllerFamilyEvidenceFamily evidence
+  parsed <- traverse parseRow rows
+  if length parsed == length (nub parsed)
+    then Right parsed
+    else Left "EKS load-balancer controller evidence duplicated a member"
  where
-  parseRow row = case Text.splitOn "|" row of
+  parseRow row = case row of
     [rawKind, arn]
       | not (Text.null arn) ->
           LoadBalancerControllerMemberObservation <$> parseKind rawKind <*> pure arn
@@ -236,7 +237,7 @@ decodeExactAwsLoadBalancerControllerFamilyObservation request providerResult =
     [] ->
       observation
         ( ExactResourceAbsent
-            ( AbsenceEvidence
+            ( providerWorkerAbsence
                 "provider-worker exact EKS load-balancer controller family returned its canonical empty set"
             )
         )
@@ -299,7 +300,7 @@ awsLoadBalancerControllerFamilyReapProviderIntent authorization =
 confirmExactAwsLoadBalancerControllerFamilyAbsence
   :: ExactAwsLoadBalancerControllerFamilyObservationRequest
   -> Either Text ProviderIntentExecutionResult
-  -> Either AwsLoadBalancerControllerFamilyAdapterError AbsenceEvidence
+  -> Either AwsLoadBalancerControllerFamilyAdapterError (AbsenceEvidence 'ProviderApi)
 confirmExactAwsLoadBalancerControllerFamilyAbsence request result = do
   exact <- decodeExactAwsLoadBalancerControllerFamilyObservation request result
   complete <-

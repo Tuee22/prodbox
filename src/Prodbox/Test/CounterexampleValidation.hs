@@ -2,6 +2,7 @@
 
 module Prodbox.Test.CounterexampleValidation
   ( runControlPlaneCounterexampleValidation
+  , runCreateInterruptedValidation
   , runTeardownRecoveryValidation
   )
 where
@@ -10,6 +11,32 @@ import Data.List (intercalate)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Prodbox.CLI.Output (writeDiagnosticLine, writeOutputLine)
+import Prodbox.Test.Qualification.CounterexampleProfile
+  ( CounterexampleResourceProfile (..)
+  , profileTotals
+  )
+import Prodbox.Test.Qualification.CreateInterruptedCounterexample
+  ( CreateOracleOutcome (..)
+  , CreateOracleResult (..)
+  , CreateTraceFixture (CanonicalCreateTrace, MutatedCreateTrace)
+  , FrozenCreateCounterexample
+  , InterruptionRow (..)
+  , createArtifactDigestText
+  , createFixtureIdText
+  , createImplementationText
+  , createTransitionText
+  , frozenCreateArtifactDigest
+  , frozenCreateDeclaredCoordinates
+  , frozenCreateExternalStateMatrix
+  , frozenCreateFixtureId
+  , frozenCreateInterruptionMatrix
+  , frozenCreateObservedIdentities
+  , frozenCreateProviderTags
+  , interruptionKindText
+  , interruptionSideText
+  , loadCreateCounterexampleFixture
+  , runCreateInterruptedOracle
+  )
 import Prodbox.Test.Qualification.Evidence
 import Prodbox.Test.Qualification.FrozenCounterexample
 import Prodbox.Test.Qualification.Invite
@@ -29,7 +56,6 @@ import Prodbox.Test.Qualification.TeardownCounterexample
   , OracleFailure (..)
   , ReplacementTeardownResult (..)
   , ReportObservation (..)
-  , TeardownResourceProfile (..)
   , TeardownTraceFixture (..)
   , awsAuditArnText
   , canonicalTeardownRecoveryInterpreter
@@ -43,7 +69,6 @@ import Prodbox.Test.Qualification.TeardownCounterexample
   , frozenTeardownProductionProfile
   , frozenTeardownRequests
   , loadTeardownCounterexampleFixture
-  , profileTotals
   , runTeardownRecoveryOracle
   , teardownArtifactDigestText
   , teardownFixtureIdText
@@ -117,6 +142,103 @@ runControlPlaneCounterexampleValidation repoRoot = do
     (Left err, _, _) -> failWith err
     (_, Left err, _) -> failWith ("frozen receipt binding refused: " ++ show err)
     (_, _, Left err) -> failWith ("frozen generation binding refused: " ++ show err)
+
+-- | Select only the committed canonical or mutation artifact.
+resolveCreateTraceFixture :: IO (Either String CreateTraceFixture)
+resolveCreateTraceFixture = do
+  selector <- lookupEnv "PRODBOX_TEST_CREATE_COUNTEREXAMPLE_FIXTURE"
+  pure $ case selector of
+    Nothing -> Right CanonicalCreateTrace
+    Just "canonical" -> Right CanonicalCreateTrace
+    Just "mutated" -> Right MutatedCreateTrace
+    Just other ->
+      Left
+        ( "PRODBOX_TEST_CREATE_COUNTEREXAMPLE_FIXTURE="
+            ++ other
+            ++ " is not a known frozen fixture (expected `canonical` or `mutated`)."
+        )
+
+-- | Credential-free installed replay of the bounded
+-- @CREATE-INTERRUPTED-2026-09-08@ artifacts.  No boundary is contacted: the
+-- committed trace states each implementation's lane, and the oracle derives
+-- what a successor could say at every point either lane can stop at.
+--
+-- Success means the counterexample is closed in both directions -- the
+-- superseded lane orphans and the replacement lane never does -- and not merely
+-- that the files parsed.
+runCreateInterruptedValidation :: FilePath -> IO ExitCode
+runCreateInterruptedValidation repoRoot = do
+  fixtureSelection <- resolveCreateTraceFixture
+  case fixtureSelection of
+    Left err -> failWith err
+    Right traceFixture -> do
+      loaded <- loadCreateCounterexampleFixture repoRoot traceFixture
+      case loaded of
+        Left err -> failWith ("frozen create counterexample refused: " ++ show err)
+        Right fixture -> emitCreateInterruptedResult fixture
+
+emitCreateInterruptedResult
+  :: FrozenCreateCounterexample -> IO ExitCode
+emitCreateInterruptedResult fixture = do
+  let result = runCreateInterruptedOracle fixture
+      superseded = oracleSupersededOutcome result
+      replacement = oracleReplacementOutcome result
+  writeOutputLine
+    ( "CREATE_COUNTEREXAMPLE="
+        ++ Text.unpack (createFixtureIdText (frozenCreateFixtureId fixture))
+    )
+  writeOutputLine
+    ( "CREATE_ARTIFACT_DIGEST="
+        ++ Text.unpack (createArtifactDigestText (frozenCreateArtifactDigest fixture))
+    )
+  writeOutputLine
+    ( "DECLARED_COORDINATES="
+        ++ show (length (frozenCreateDeclaredCoordinates fixture))
+    )
+  writeOutputLine
+    ("OBSERVED_IDENTITIES=" ++ show (length (frozenCreateObservedIdentities fixture)))
+  writeOutputLine
+    ("PROVIDER_TAG_ROWS=" ++ show (length (frozenCreateProviderTags fixture)))
+  writeOutputLine
+    ("EXTERNAL_STATE_ROWS=" ++ show (length (frozenCreateExternalStateMatrix fixture)))
+  writeOutputLine
+    ("INTERRUPTION_SCHEDULE_ROWS=" ++ show (length (frozenCreateInterruptionMatrix fixture)))
+  emitCreateOutcome superseded
+  emitCreateOutcome replacement
+  if oracleCounterexampleClosed result
+    then do
+      writeOutputLine "CREATE_COUNTEREXAMPLE_CLOSED=true"
+      pure ExitSuccess
+    else
+      failWith
+        ( "the create counterexample did not close: the superseded lane must orphan "
+            ++ "and the replacement lane must not, with both running the effect."
+        )
+ where
+  emitCreateOutcome outcome = do
+    let label =
+          map
+            toUpperAscii
+            (Text.unpack (createImplementationText (oracleImplementation outcome)))
+    writeOutputLine
+      (label ++ "_RUNS_EFFECT=" ++ if oracleRunsTheEffect outcome then "true" else "false")
+    writeOutputLine
+      (label ++ "_ORPHAN_POINTS=" ++ show (length (oracleOrphanPoints outcome)))
+    writeOutputLine
+      (label ++ "_NAMED_POINTS=" ++ show (length (oracleNamedPoints outcome)))
+    mapM_ (writeOutputLine . ((label ++ "_ORPHAN_AT=") ++) . renderPoint) (oracleOrphanPoints outcome)
+
+  renderPoint row =
+    Text.unpack (interruptionKindText (interruptionRowKind row))
+      ++ " "
+      ++ Text.unpack (interruptionSideText (interruptionRowSide row))
+      ++ " "
+      ++ Text.unpack (createTransitionText (interruptionRowTransition row))
+
+  toUpperAscii character =
+    if character >= 'a' && character <= 'z'
+      then toEnum (fromEnum character - 32)
+      else character
 
 -- | Select only the committed canonical or mutation artifact.  This is a test
 -- fixture selector, never a caller-supplied residue observation.
@@ -227,7 +349,7 @@ emitTeardownRecoveryResult fixture result = do
           writeOutputLine "CASCADE_RESULT=CascadeIncomplete"
           pure ExitSuccess
  where
-  emitProfile :: String -> TeardownResourceProfile -> IO ()
+  emitProfile :: String -> CounterexampleResourceProfile -> IO ()
   emitProfile label profile = do
     writeOutputLine (label ++ "_PROFILE=" ++ Text.unpack (profile_id profile))
     writeOutputLine (label ++ "_PROFILE_KIND=" ++ Text.unpack (profile_kind profile))

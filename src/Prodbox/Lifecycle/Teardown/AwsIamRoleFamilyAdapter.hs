@@ -30,9 +30,11 @@ import Data.Text qualified as Text
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
+import Prodbox.Lifecycle.ProviderWorker.Evidence (decodeProviderEvidenceText)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
   , ProviderIntentCoordinate
+  , eksIamRoleFamilyEvidenceFamily
   , providerIntentCoordinate
   )
 import Prodbox.Lifecycle.Teardown.Model
@@ -161,16 +163,15 @@ data IamFamilyMemberObservation = IamFamilyMemberObservation
 
 parseAwsIamRoleFamilyObservation
   :: Text -> Either Text [IamFamilyMemberObservation]
-parseAwsIamRoleFamilyObservation evidence = case Text.lines evidence of
-  "prodbox-eks-iam-family/v1" : rows -> do
-    parsed <- traverse parseRow rows
-    if length parsed == length (nub (map memberKey parsed))
-      then Right parsed
-      else Left "EKS IAM family evidence duplicated a member"
-  _ -> Left "EKS IAM family evidence omitted its canonical header"
+parseAwsIamRoleFamilyObservation evidence = do
+  rows <- decodeProviderEvidenceText eksIamRoleFamilyEvidenceFamily evidence
+  parsed <- traverse parseRow rows
+  if length parsed == length (nub (map memberKey parsed))
+    then Right parsed
+    else Left "EKS IAM family evidence duplicated a member"
  where
   memberKey member = (iamFamilyMemberKind member, iamFamilyMemberName member)
-  parseRow row = case Text.splitOn "|" row of
+  parseRow row = case row of
     [rawKind, name, "absent"] ->
       IamFamilyMemberObservation <$> parseKind rawKind <*> pure name <*> pure Nothing
     [rawKind, name, "present", arn]
@@ -223,7 +224,7 @@ decodeExactAwsIamRoleFamilyObservation request providerResult =
     [] ->
       observation
         ( ExactResourceAbsent
-            (AbsenceEvidence "provider-worker exact EKS IAM family returned its canonical empty set")
+            (providerWorkerAbsence "provider-worker exact EKS IAM family returned its canonical empty set")
         )
     first : remaining ->
       observation
@@ -288,7 +289,7 @@ awsIamRoleFamilyReapProviderIntent authorization =
 confirmExactAwsIamRoleFamilyAbsence
   :: ExactAwsIamRoleFamilyObservationRequest
   -> Either Text ProviderIntentExecutionResult
-  -> Either AwsIamRoleFamilyAdapterError AbsenceEvidence
+  -> Either AwsIamRoleFamilyAdapterError (AbsenceEvidence 'ProviderApi)
 confirmExactAwsIamRoleFamilyAbsence request result = do
   exact <- decodeExactAwsIamRoleFamilyObservation request result
   complete <-

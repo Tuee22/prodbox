@@ -24,6 +24,7 @@ module Prodbox.Lifecycle.Teardown.OwnershipManifest
   , WriteAheadManifestIntent
   , mkWriteAheadManifestIntent
   , initialWriteAheadManifestWrite
+  , appendObservedIdentitiesToWriteAheadManifest
   , OwnershipManifestWrite
   , ownershipManifestWriteStackKey
   , ownershipManifestWriteScope
@@ -89,6 +90,7 @@ module Prodbox.Lifecycle.Teardown.OwnershipManifest
   )
 where
 
+import Control.Monad (when)
 import Data.Bifunctor (first)
 import Data.ByteString qualified as ByteString
 import Data.List (nub, sort, sortOn)
@@ -242,6 +244,55 @@ initialWriteAheadManifestWrite
   -> OwnershipManifestWrite 'WriteAheadOwnership surface
 initialWriteAheadManifestWrite (WriteAheadManifestIntent binding entries) =
   manifestWrite WriteAheadOwnershipValue binding entries
+
+-- | Sprint 7.41: the manifest gains the exact identities the provider returned.
+--
+-- An append is a /narrowing/, never a new claim. The entry set is the one the
+-- write-ahead record already committed — same keys, same coordinate digests,
+-- in the same canonical order — and the only thing this adds is the observed
+-- identity list on each entry. A key the intent never declared is refused
+-- rather than added, because a create that reports having made something it
+-- did not say it was about to make is the condition the write-ahead record
+-- exists to make impossible, not a fact to record.
+--
+-- An append with nothing to append is also refused. A completion manifest with
+-- no identity on any entry is byte-identical in shape to the write-ahead one
+-- and would claim, to a later read-back, that the create returned and made
+-- nothing — which is exactly the false reassurance the 2026-09-08 leak needed
+-- somebody to believe.
+appendObservedIdentitiesToWriteAheadManifest
+  :: WriteAheadManifestIntent surface
+  -> [(RegisteredResourceKey, [ObservedResourceIdentity])]
+  -> Either OwnershipManifestError (OwnershipManifestWrite 'WriteAheadOwnership surface)
+appendObservedIdentitiesToWriteAheadManifest
+  (WriteAheadManifestIntent binding entries)
+  observed = do
+    mapM_ requireDeclared observedKeys
+    when
+      (all (null . snd) observed)
+      (Left (OwnershipManifestAppendedIdentitiesEmpty declaredKeys))
+    Right (manifestWrite WriteAheadOwnershipValue binding appended)
+   where
+    declaredKeys = map ownershipManifestEntryKey entries
+    observedKeys = map fst observed
+
+    requireDeclared key
+      | key `elem` declaredKeys = Right ()
+      | otherwise =
+          Left (OwnershipManifestAppendedKeyUndeclared key declaredKeys)
+
+    appended =
+      [ entry
+          { ownershipManifestEntryObservedIdentities =
+              ownershipManifestEntryObservedIdentities entry
+                ++ concat
+                  [ identities
+                  | (key, identities) <- observed
+                  , key == ownershipManifestEntryKey entry
+                  ]
+          }
+      | entry <- entries
+      ]
 
 captureDurableWriteAheadOwnershipManifest
   :: OwnershipManifestWrite 'WriteAheadOwnership surface
@@ -842,6 +893,13 @@ data OwnershipManifestError
   | OwnershipManifestRegistryRevisionMismatch !RegistryRevision !RegistryRevision
   | OwnershipManifestAwsScopeMissing
   | OwnershipEdgeNotRegistered !RegisteredResourceKey !RegisteredResourceKey
+  | -- | Sprint 7.41: the provider reported an identity for a resource the
+    -- write-ahead record never declared.
+    OwnershipManifestAppendedKeyUndeclared
+      !RegisteredResourceKey
+      ![RegisteredResourceKey]
+  | -- | Sprint 7.41: an append that appends nothing.
+    OwnershipManifestAppendedIdentitiesEmpty ![RegisteredResourceKey]
   | OwnershipManifestReadBackPurposeMismatch
       !OwnershipManifestPurposeValue
       !OwnershipManifestPurposeValue

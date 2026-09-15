@@ -1,7 +1,7 @@
 # Vault Secret-Management Doctrine
 
 **Status**: Authoritative source
-**Supersedes**: N/A
+** Supersedes**: N/A
 **Generated sections**: none
 
 > **Purpose**: Single source of truth for Vault as the sole, fail-closed secrets,

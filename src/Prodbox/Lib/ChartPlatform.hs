@@ -15,7 +15,9 @@ module Prodbox.Lib.ChartPlatform
   , buildChartDeletePlanForSubstrate
   , buildChartDeploymentPlan
   , buildChartDeploymentPlanForSubstrate
-  , buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
+  , buildChartDeploymentPlanForSubstrateWithObservers
+  , ChartPlanObservers (..)
+  , productionChartPlanObservers
   , certManagerAdoptionAnnotations
   , chartReleasesToDeploy
   , KubernetesApiEgressCoordinate (..)
@@ -692,8 +694,8 @@ buildChartDeploymentPlanForSubstrate
   -> Map String String
   -> IO (Either String ChartDeploymentPlan)
 buildChartDeploymentPlanForSubstrate substrate repoRoot settings chartName chartSecrets gatewayEventKeys = do
-  buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
-    resolveRuntimeChartImageForSubstrate
+  buildChartDeploymentPlanForSubstrateWithObservers
+    productionChartPlanObservers
     substrate
     repoRoot
     settings
@@ -701,11 +703,38 @@ buildChartDeploymentPlanForSubstrate substrate repoRoot settings chartName chart
     chartSecrets
     gatewayEventKeys
 
--- | Subprocess/filesystem seam for deterministic planner tests. Production
--- always supplies 'resolveRuntimeChartImageForSubstrate'; callers cannot use
--- this helper through the CLI command surface.
-buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
-  :: (Substrate -> IO (Either String (Maybe ResolvedCustomImage)))
+-- | Sprint 5.47: the plan builder's two observations that leave this process,
+-- named together so a deterministic planner test cannot inject one and leave
+-- the other reaching a cluster.
+--
+-- The builder makes six observations. Four read the operator host's own files
+-- and are deterministic wherever the worktree is; two are not.
+-- 'observeRuntimeChartImage' shells to the local container runtime, and
+-- 'observeKubernetesApiEgress' shells to @kubectl@ against a live API server.
+-- Only the first had a seam, which is why one planner case in @prodbox-unit@
+-- invoked @kubectl@ and failed on any host with no cluster running — a unit
+-- assertion that could not be executed by a gate, which is precisely the
+-- condition Sprint `5.47`'s gated suite route exists to remove.
+data ChartPlanObservers = ChartPlanObservers
+  { observeRuntimeChartImage :: Substrate -> IO (Either String (Maybe ResolvedCustomImage))
+  , observeKubernetesApiEgress :: IO (Either String KubernetesApiEgressCoordinate)
+  }
+
+-- | The observers production always uses. The CLI command surface reaches the
+-- builder only through 'buildChartDeploymentPlanForSubstrate', which supplies
+-- this value; the seam below is not reachable from a command.
+productionChartPlanObservers :: ChartPlanObservers
+productionChartPlanObservers =
+  ChartPlanObservers
+    { observeRuntimeChartImage = resolveRuntimeChartImageForSubstrate
+    , observeKubernetesApiEgress = readKubernetesApiEgressCoordinate
+    }
+
+-- | Subprocess/cluster seam for deterministic planner tests. Production always
+-- supplies 'productionChartPlanObservers'; callers cannot use this helper
+-- through the CLI command surface.
+buildChartDeploymentPlanForSubstrateWithObservers
+  :: ChartPlanObservers
   -> Substrate
   -> FilePath
   -> ValidatedSettings
@@ -713,8 +742,8 @@ buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
   -> Map String String
   -> Map String String
   -> IO (Either String ChartDeploymentPlan)
-buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
-  resolveRuntimeImage
+buildChartDeploymentPlanForSubstrateWithObservers
+  observers
   substrate
   repoRoot
   settings
@@ -732,7 +761,7 @@ buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
           if any
             (`elem` releaseOrder)
             (["gateway", "api", "websocket", "bootstrap-broker"] ++ controlPlaneRoleChartNames)
-            then resolveRuntimeImage substrate
+            then observeRuntimeChartImage observers substrate
             else pure (Right Nothing)
         gatewayHostedZoneIdResult <-
           if "gateway" `elem` releaseOrder
@@ -757,7 +786,7 @@ buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
         -- API egress coordinate need it.
         apiEgressCoordinateResult <-
           if any (`elem` releaseOrder) kubernetesApiEgressChartNames
-            then fmap (fmap Just) readKubernetesApiEgressCoordinate
+            then fmap (fmap Just) (observeKubernetesApiEgress observers)
             else pure (Right Nothing)
         pure $ do
           maybeRuntimeImage <- runtimeImageResult

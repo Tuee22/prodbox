@@ -10,15 +10,32 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-09-12 on Sprints `4.95`–`4.98` (Standards A/L/P).** Own-surface reopen on the
-EKS drain session, the control-plane request boundary and its encrypted-backend commit ordering, the
-Provider response wire and the desired-absence decision, and the absence vocabulary — every one of
-them a surface this phase already owns. The reopen follows a live leak: an EKS cluster created
-2026-09-08 billed for four days and was removed by hand, and the analysis found that the create was
-cancelled by its own transport deadline after its AWS effects had landed, that the checkpoint
-describing them was never committed because the commit runs only on the return route, and that a
-later cascade read the missing checkpoint as positive absence. The phase recloses when all four
-reach `Done`; until then this entry records an open reopen, not a closure.
+✅ **Reclosed 2026-09-14 on Sprints `4.95`–`4.99` (Standards A/L/P).** All five reached `Done` on
+their code-owned surfaces with `prodbox dev check` at 0 and the unit suite at 5002/5002. The reopen
+below records what it was for; what closed it is worth one line each. The drain's lease arithmetic
+is satisfiable. A cancelled create commits what it built, because the commit no longer runs only on
+the return route. The provider response carries its execution kind and coordinate, so two refusal
+arms that compared a value against itself can fire. Absence is sealed and indexed by the authority
+that observed it, and the literal channel that carried it is deleted rather than joined. And the six
+provider-evidence encoders are one canonical encoder against a bound the executor supplies.
+
+Two live proofs remain outstanding and neither gates this closure (Standards O/P): no live cascade
+has yet carried one of the repaired observations to settlement, and the terminal audit's new listing
+cardinality is arithmetic rather than a measurement of a real escaping account. Both are recorded on
+Sprint `4.99`.
+
+🔄 **Reopened 2026-09-12 on Sprints `4.95`–`4.99`; widened 2026-09-13 (Standards A/L/P).**
+Own-surface reopen on the EKS drain session, the control-plane request boundary and its
+encrypted-backend commit ordering, the Provider response wire and the desired-absence decision, the
+absence vocabulary, and the provider evidence wire — every one of them a surface this phase already
+owns. The reopen follows a live leak: an EKS cluster created 2026-09-08 billed for four days and was
+removed by hand, and the analysis found that the create was cancelled by its own transport deadline
+after its AWS effects had landed, that the checkpoint describing them was never committed because
+the commit runs only on the return route, and that a later cascade read the missing checkpoint as
+positive absence. Sprint `4.99` was added on 2026-09-13 after Sprint `4.98`'s reconnaissance found
+that six provider-evidence encoders emit a character the Provider Worker's own validator refuses,
+three of them unconditionally — including the wired desired-absence decision observation and the
+cascade's terminal audit. All five reached `Done` on 2026-09-14; the reclose is recorded above.
 
 ✅ **Reclosed 2026-09-11 on Sprints `4.92`–`4.94` (Standards A/L/P); header corrected 2026-09-12.**
 Own-surface reopen on the lifecycle teardown scope, its durable wire codecs, the drain's
@@ -14368,20 +14385,23 @@ and unreached; and the retirement authorization payload awaits the conversion th
 - Record the Phase `4` own-surface reopen in [README.md](README.md) and
   [00-overview.md](00-overview.md).
 
-## Sprint 4.98: Absence Minted From A Grep [📋 Planned]
+## Sprint 4.98: Absence Minted From A Grep [✅ Done]
 
-**Status**: Planned. Phase `4` own-surface reopen (Standard A/L) on the absence vocabulary and its
-producers, which this phase owns.
+**Status**: Done (2026-09-13). Phase `4` own-surface reopen (Standard A/L) on the absence
+vocabulary and its producers, which this phase owns.
 **Doctrine**: [Lifecycle Reconciliation
 Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md)'s nominal separation
 between observation strata.
-**Implementation**: `src/Prodbox/ControlPlane/ProviderProduction.hs`,
-`src/Prodbox/Lifecycle/Teardown/AwsStackAdapter.hs`,
-`src/Prodbox/Lifecycle/Teardown/Observation.hs`, `src/Prodbox/Lifecycle/HostCleanupLocalAbsence.hs`,
-and `test/unit/Main.hs`.
+**Implementation**: `src/Prodbox/Lifecycle/Teardown/Observation.hs`,
+`src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs`,
+`src/Prodbox/ControlPlane/ProviderProduction.hs`,
+`src/Prodbox/Lifecycle/Teardown/AwsStackAdapter.hs`, `src/Prodbox/CheckCode.hs`,
+`test/unit/AbsenceStratumWitness.hs`, and `test/unit/Main.hs`; the stratum index reached
+twenty-three further modules mechanically.
 **Blocked by**: none.
 **Live-proof**: pending.
-**Deployment qualification**: pending — **invalidated** on lifecycle orchestration.
+**Deployment qualification**: pending — **invalidated** on lifecycle orchestration and
+persistence protocol.
 **Independent Validation**: a table proving a structured absence arm carries its coordinate; a
 policy check refusing a decoder that mints exact absence from subprocess output; the sealed type's
 own constructor tests; full unit suite; `prodbox dev check`.
@@ -14405,8 +14425,15 @@ enclosing wrapper types and not by the evidence type itself.
 
 ### Deliverables
 
-- Give the provider a structured absence arm carrying its coordinate, in the shape the native-family
-  path already uses, and delete the literal channel rather than joining its two ends.
+- Give the provider a structured absence arm carrying its coordinate, ~~in the shape the
+  native-family path already uses,~~ and delete the literal channel rather than joining its two ends.
+  **Corrected 2026-09-13 (Standard C).** The struck instruction names a shape that can never settle:
+  the native-family encoder joins its rows with `Text.unlines`, and `validateProviderIntentEvidence`
+  refuses every character at or below `0x1f`, so copying it would propagate a defect rather than a
+  pattern. Use the canonical encoder Sprint `4.99` introduces, or — if this sprint lands first — any
+  printable single-line rendering that its own intent's validator admits. The arm's grammar is owned
+  by [Provider Evidence
+  Contract](../documents/engineering/provider_evidence_contract.md), not by this bullet.
 - Seal the absence-evidence constructor and split it nominally per observation stratum, so a local
   host absence and a provider absence are different types.
 - Land the policy check that refuses any decoder constructing exact absence from a value derived
@@ -14415,8 +14442,9 @@ enclosing wrapper types and not by the evidence type itself.
 
 ### Validation
 
-1. A structured absence arm carries its coordinate end to end, and the literal has zero occurrences
-   in production modules.
+1. A structured absence arm carries its coordinate end to end, the arm's evidence is admitted by
+   `validateProviderIntentEvidence` for its own intent, and the literal has zero occurrences in
+   production modules.
 2. Host-local absence cannot inhabit a provider-absence position, proven by a type error in a
    synthetic mutation.
 3. The policy check fires on a synthetic decoder and passes the real tree.
@@ -14424,7 +14452,32 @@ enclosing wrapper types and not by the evidence type itself.
 
 ### Remaining Work
 
-All of it.
+None on the code-owned surface. `Live-proof` and `Deployment qualification` stay pending and
+non-blocking (Standards O/P).
+
+### Outcome
+
+All four deliverables landed, and two closed differently than authored.
+
+The absence arm carries its coordinate, which the sprint did not ask for and should have. The
+authored deliverable said only "carrying its coordinate"; what that turned out to mean is that
+before this sprint an absence observed for one registered stack satisfied a request for any other,
+because both sides authored the same sentence and neither named a stack. `decodeObservationEvidence`
+now takes the expected `ProviderStackRef` and refuses a mismatch, and the case proving it is new.
+
+The nominal split is three strata, not two. The sprint's sentence named only host-local and
+provider, and a two-way split would have left every Kubernetes drain site to pick one arbitrarily —
+all of them would have picked provider, because that is what the drain's own no-target field already
+stored. The third stratum is what makes the split stable rather than a relabelling.
+
+Two claims in this sprint's own text were false and are corrected in place rather than quietly
+dropped: the first deliverable instructed copying a shape that can never settle (corrected above),
+and the Documentation Requirements named a pulsar-doctrine edit that was not owed (corrected below).
+
+The sealing carried no wire risk, and that is worth recording because it is why it could be done at
+all: `AbsenceEvidence` has no `Serialise` instance, so the index is fully erased and every durable
+absence sentence is byte-identical to what it was. `test/unit/AbsenceStratumWitness.hs` asserts that
+rather than assuming it.
 
 ## Documentation Requirements
 
@@ -14432,6 +14485,13 @@ All of it.
 
 - `documents/engineering/lifecycle_reconciliation_doctrine.md` — the positive-absence definition the
   other nine documents will link to, and the dated correction to the opacity claim.
+- `documents/engineering/lifecycle_control_plane_architecture.md` — its `DecommissionAbsent` example
+  shows the unindexed type and is stale once the stratum index lands.
+- ~~`documents/engineering/pulsar_topic_lifecycle_doctrine.md` — it imports § 3.1 verbatim, including
+  the sentence the opacity correction retires.~~ **Corrected 2026-09-13 (Standard C):** checked and
+  false. That document cites § 3.1 for the *refusal* rule over partial and unobservable
+  observations, which this sprint does not touch, and its `AbsenceEvidence topic 'Topic` is a
+  hypothetical carrying its own index. No edit was owed and none was made.
 
 **Product docs to create/update:**
 
@@ -14441,6 +14501,193 @@ All of it.
 
 - Record the Phase `4` own-surface reopen in [README.md](README.md) and
   [00-overview.md](00-overview.md).
+
+## Sprint 4.99: Six Encoders, One Validator, Nothing Joining Them [✅ Done]
+
+**Status**: Done (2026-09-14). Phase `4` own-surface reopen (Standard A/L) on the provider
+evidence wire and its producers, which this phase owns.
+**Doctrine**: [Provider Evidence
+Contract](../documents/engineering/provider_evidence_contract.md).
+**Implementation**: `src/Prodbox/Lifecycle/ProviderWorker/Evidence.hs`,
+`src/Prodbox/Lifecycle/ProviderWorker/Evidence/Internal.hs`,
+`test/unit/ProviderEvidenceCodec.hs`, `src/Prodbox/ControlPlane/ProviderNarrowSession.hs`,
+`src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs`,
+`src/Prodbox/ControlPlane/ProviderProduction.hs`,
+`src/Prodbox/Lifecycle/Teardown/AwsNativeStackFamilyAdapter.hs`,
+`src/Prodbox/Lifecycle/OwnedResourceTagEvidence.hs`,
+`src/Prodbox/ControlPlane/ProviderWorkerExecution.hs`,
+`src/Prodbox/ControlPlane/ProviderWorkerAdapter.hs`, `src/Prodbox/CheckCode.hs`, and
+`test/unit/LifecycleAwsNativeStackFamily.hs`, and
+`src/Prodbox/Lifecycle/OwnedResourceTagEvidence.hs`.
+**Blocked by**: none.
+**Live-proof**: pending.
+**Deployment qualification**: pending — **invalidated** on persistence protocol and capability
+wiring.
+**Independent Validation**: the codec's own round-trip, canonicality, over-cardinality and
+retired-prefix suites; a two-sided table that calls `validateProviderIntentEvidence` with each
+producer's own intent, expecting a refusal on frozen superseded bytes and admission on replacement
+bytes; the minter gate firing on a synthetic internal import and passing the real tree; full unit
+suite; `prodbox dev check`. None of these needs live AWS, a deployed cluster, or an unsealed Vault.
+**Docs to update**: `documents/engineering/provider_evidence_contract.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/pure_fp_standards.md`, `documents/engineering/chaos_hardening_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`, `README.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Six provider-evidence encoders emit a character the Provider Worker's own validator refuses, and the
+reason is not the separator any of them chose. `ProviderReadOnly` and `ProviderMutation` type
+evidence as bare `Text`, so every `Text` is a legal answer at the type level and the wire rule lives
+in a function an encoder author never has to name. The native-family encoder was written 2026-08-24;
+the rule it violates has stood since 2026-08-02. Neither has ever read the other, because nothing
+joins them.
+
+Three of the six fail unconditionally, so those observations succeed exactly when they have nothing
+to report — an answer shaped so that its empty case is the only one that crosses. One of the three
+is the cascade's terminal audit, and it could not fit its listing inside the 4,096-character bound at
+any separator, so a separator-only repair would convert "always fails" into "fails on any real
+account".
+
+The sprint closes the class rather than the six instances: evidence becomes a sealed type minted by
+one canonical encoder against a bound supplied by the intent being served, so a seventh encoder is a
+type error in the author's editor rather than a refusal on a cluster months later. This is the same
+defect shape [Pure FP Standards](../documents/engineering/pure_fp_standards.md) already records for
+`ObservationEvidenceScope`'s eighteen encoders, with the writer and the reader on opposite sides of
+a process boundary instead of inside one process.
+
+### Deliverables
+
+- Seal `ProviderEvidence` and `ProviderEvidenceBound` behind two new leaf modules whose constructors
+  leave only through a canonical encoder, a total projection, and a wire-decode boundary. Only the
+  module that mints a bound from an intent may import the internal one.
+- Re-derive `providerIntentEvidenceMaximumCharacters` and `validateProviderIntentEvidence` from the
+  codec without changing either signature, so the rule stops being stated twice.
+- Thread the bound through the read-only and mutation capability signatures, so an encoder has
+  exactly one bound available: the one for the intent it is serving.
+- Convert all six producers to the canonical encoder, one family per commit, retiring
+  `maximumAwsNativeStackFamilyEvidenceBytes` rather than re-tuning it, and retiring
+  `parseLbcFamilyRows` in favour of the adapter's parser — it is a second reader of the same bytes
+  and it drives the reaper's deletions.
+- Bound the terminal audit's listing and refuse above it, reporting the audit's own observation
+  failure rather than emitting bytes the wire rejects or a truncation a reader would take for
+  completeness. The bound comes from a live measurement, not from this block.
+- Retire `validateEvidence` in `src/Prodbox/ControlPlane/ProviderWorkerAdapter.hs`, a third statement
+  of the same rule that hardcodes 4096 instead of the per-intent bound and collapses three causes
+  into one opaque constructor. Its only importer is a unit test, which is how it survived two
+  counterexample closures that each claimed to have deduplicated this rule.
+- Land the minter gate after the migration, not before: it ratchets a completed migration shut and is
+  not a substitute for one.
+- Flip `nativeFamilyEvidenceValidationCase` from asserting the defect to asserting the repair, and
+  freeze the two-sided fixture family under `test/qualification/` so both results stay auditable
+  after the superseded encoders are deleted (Standard P).
+
+### Validation
+
+1. Every one of the six producers round-trips: encode, project to text, pass
+   `validateProviderIntentEvidence` for that producer's own intent, and decode back to the same rows.
+2. A frozen two-sided table refuses the superseded bytes with the control-character cause and admits
+   the replacement bytes, for each of the six, without restating the predicate.
+3. No admitted payload contains a character at or below `0x1f` or `0x7f`, asserted as a property over
+   generated payloads rather than over a fixed corpus.
+4. A synthetic producer returning raw `Text` does not compile, and the minter gate fires on a
+   synthetic internal import while passing the real tree.
+5. The LB-controller reaper's member set is unchanged after its second reader is retired.
+6. The terminal audit refuses above its listing bound and reports its own observation failure.
+7. Full unit suite and `prodbox dev check` exit 0.
+
+### Outcome (2026-09-14)
+
+`prodbox dev check` exit 0, full unit suite 5002/5002:
+
+- The canonical codec and its sealed leaf module, with ten cases of its own
+  (`test/unit/ProviderEvidenceCodec.hs`): round trip, stated absence, canonicality,
+  arbitrary-tag escaping, control-character refusal at the encoder, over-cardinality,
+  retired-version-by-name, derived-bound arithmetic, and the assertion that no declared family
+  can exceed the wire it is answered on.
+- `validateProviderIntentEvidence` re-derived from the codec with **no signature change**, so
+  every existing caller and test kept compiling while the rule stopped being stated twice.
+- `ProviderReadOnly` now returns sealed evidence and is handed the bound for the intent it
+  serves. That is the change that closes the class: an encoder has exactly one bound available
+  and cannot return a bare `Text` at all.
+- All six families converted end to end — encoder *and* decoder — with their self-declared
+  bounds retired: `maximumAwsNativeStackFamilyEvidenceBytes`, `maximumAwsNativeStackFamilyIdentities`,
+  `lbcFamilyHeader`, and the terminal audit's bespoke separator check are deleted rather than
+  re-tuned.
+- `parseLbcFamilyRows` is retired. It was a second parser of the same bytes that selected which
+  ARNs the reaper deleted, and a kind it failed to recognise deleted nothing of that kind rather
+  than refusing. The reaper now reads the rows the encoder was handed.
+- The reproducer flips: `test/unit/LifecycleAwsNativeStackFamily.hs` asserts the repair against the
+  same intent and family it previously used to assert the defect.
+
+Three findings worth recording, because none was in the sprint's own text:
+
+1. **The terminal audit emitted rows in the provider's return order**, so two identical listings
+   paginated differently produced different bytes — which the Authority's byte-equality replay
+   comparison reads as a mismatch. Canonical ordering removes that, and fixes the query echo and
+   completion terminator in place as a side effect.
+2. **The audit declared no bound of any kind** — not bytes, not rows, not fields — on a listing
+   that follows pagination to a hundred pages. Its cardinality is now derived from what the wire
+   can carry, and it refuses above that rather than truncating.
+3. **The native family's two self-declared bounds were mutually unreachable** as well as both
+   wrong: 4,096 identities could never be the binding constraint under a 128 KiB byte cap, and
+   neither was ever consulted because the newline refused first.
+
+Also landed: the ratcheting gate (`providerEvidenceSealViolations`), which keeps the sealed
+constructors inside their leaf module and `providerEvidenceFromWire` at the wire boundary; the
+frozen two-sided family under `test/qualification/`, which Standard P compels because this sprint
+deletes the encoders its counterexample names; and the third statement of the rule in
+`src/Prodbox/ControlPlane/ProviderWorkerAdapter.hs`, now derived from
+`validateProviderIntentEvidence` rather than restating it with a different number.
+
+The gate landed **after** the migration, deliberately. One written first would have had to exempt
+every module it exists to constrain, which is how a rule ends up describing the tree instead of
+binding it.
+
+### Remaining Work
+
+None on the code-owned surface. Two things are stated rather than closed, and both are non-blocking
+under Standards O/P:
+
+- **The terminal audit's listing cardinality is arithmetic, not evidence.** It is derived from what
+  the wire can carry rather than measured against a real escaping account. The audit's normal answer
+  is that nothing escaped, so a bound this tight is defensible — but it is defensible by reasoning,
+  and a live measurement would replace that with a fact.
+- **No live cascade has carried one of these observations to settlement.** The repair is
+  self-consistent and asserted from both sides; what a unit table cannot establish is that a real
+  provider answer now reaches the Authority and settles, or that a re-dispatched operation returns
+  byte-identical evidence. Both belong to the next live cycle.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/provider_evidence_contract.md` — created 2026-09-13 as the SSoT this
+  subject never had; its target declaration is removed and Section 1's current-revision passage
+  rewritten when this sprint lands.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — the dated correction to the
+  terminal-audit round trip and the five further sites whose contracts were unreachable.
+- `documents/engineering/lifecycle_control_plane_architecture.md` — doctrine entries for the six
+  observation intents, and the clause locating the second validation boundary.
+- `documents/engineering/pure_fp_standards.md` — the second worked instance of the one-encoder
+  rule, beside the eighteen-encoder one.
+- `documents/engineering/chaos_hardening_doctrine.md` — one link from the conversions rule to that
+  instance.
+- `documents/engineering/unit_testing_policy.md` — the normalized terminal audit was unobtainable.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the widened Phase `4` own-surface reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md).
+- Add the provider-evidence sentences to the root `README.md` cascade bullet and the dated
+  measurement beside the existing EKS-create measurement.
+- Update the terminal-audit inventory row in [system-components.md](system-components.md).
 
 ## Related Documents
 

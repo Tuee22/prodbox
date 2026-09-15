@@ -544,7 +544,7 @@ mkAwsEksDestroyReadBackRequest destroyRequest readBackRevision = do
 data CompleteAwsEksDestroy = CompleteAwsEksDestroy
   { internalCompleteAwsEksDestroyAuthorization :: !AwsEksDestroyAuthorization
   , internalCompleteAwsEksDestroyObservationRevision :: !ObservationRevision
-  , internalCompleteAwsEksDestroyAbsenceEvidence :: !AbsenceEvidence
+  , internalCompleteAwsEksDestroyAbsenceEvidence :: !(AbsenceEvidence 'ProviderApi)
   }
   deriving (Eq, Show)
 
@@ -582,7 +582,7 @@ completeAwsEksDestroyObservationRevision =
   internalCompleteAwsEksDestroyObservationRevision
 
 completeAwsEksDestroyAbsenceEvidence
-  :: CompleteAwsEksDestroy -> AbsenceEvidence
+  :: CompleteAwsEksDestroy -> AbsenceEvidence 'ProviderApi
 completeAwsEksDestroyAbsenceEvidence = internalCompleteAwsEksDestroyAbsenceEvidence
 
 completeAwsEksDestroyReadBack

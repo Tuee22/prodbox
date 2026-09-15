@@ -55,6 +55,7 @@ import Prodbox.Lifecycle.Lease
   , mkFencingToken
   , mkOwnerNonce
   )
+import Prodbox.Lifecycle.ProviderWorker.Evidence (providerEvidenceFromWireText)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
 import Prodbox.Lifecycle.TargetCommitIntent
   ( TargetValueDigest
@@ -473,6 +474,7 @@ controlPlaneProviderWorkerExecutionSuite =
                 (stackRef "aws-eks")
                 (revision 2)
                 awsEksConfig
+                fixtureProviderRunMarker
             )
         )
         `shouldBe` Left (ProviderIntentRevisionBindingMismatch providerRevision (revision 2))
@@ -581,6 +583,7 @@ controlPlaneProviderWorkerExecutionSuite =
                     (stackRef "aws-eks")
                     (revision 2)
                     awsEksConfig
+                    fixtureProviderRunMarker
                 )
             )
               { providerIntentRevision = revision 2
@@ -1058,7 +1061,7 @@ fixtureSessionRunner fixture =
 fixtureCapabilities :: Fixture -> ProviderIntentCapabilities IO Text
 fixtureCapabilities fixture =
   ProviderIntentCapabilities
-    { reconcileRegisteredStackCapability = \ref requested _config ->
+    { reconcileRegisteredStackCapability = \ref requested _config _marker ->
         mutation
           fixture
           ("stack-reconcile:" <> providerStackRefText ref <> "@" <> revisionText requested)
@@ -1170,13 +1173,13 @@ mutation fixture label =
 
 readOnly :: Fixture -> Text -> ProviderReadOnly IO Text
 readOnly fixture label =
-  ProviderReadOnly $ \_session coordinate -> do
+  ProviderReadOnly $ \_session coordinate bound -> do
     modifyIORef' (fixtureCalls fixture) (("read:" <> label, coordinate) :)
     unavailable <- elem coordinate <$> readIORef (fixtureReadOnlyFailure fixture)
     pure $
       if unavailable
         then Left "injected read-only outage"
-        else Right ("evidence:" <> label)
+        else providerEvidenceFromWireText bound ("evidence:" <> label)
 
 executeFresh :: Fixture -> ProviderIntent -> IO ()
 executeFresh fixture intent = do
@@ -1355,7 +1358,11 @@ registeredResources =
 
 allIntents :: [ProviderIntent]
 allIntents =
-  [ ReconcileRegisteredStack (stackRef "aws-eks") providerRevision awsEksConfig
+  [ ReconcileRegisteredStack
+      (stackRef "aws-eks")
+      providerRevision
+      awsEksConfig
+      fixtureProviderRunMarker
   , DestroyRegisteredStack (stackRef "aws-eks") providerRevision awsEksConfig
   , ObserveRegisteredStack (stackRef "aws-eks")
   , ReadBackRegisteredStack (stackRef "aws-eks")
@@ -1399,7 +1406,11 @@ allIntents =
 -- wire vocabulary; this frozen digest makes reordering an existing tag fail.
 legacyProviderIntentsByOrdinal :: [ProviderIntent]
 legacyProviderIntentsByOrdinal =
-  [ ReconcileRegisteredStack (stackRef "aws-eks") providerRevision awsEksConfig
+  [ ReconcileRegisteredStack
+      (stackRef "aws-eks")
+      providerRevision
+      awsEksConfig
+      fixtureProviderRunMarker
   , ObserveRegisteredStack (stackRef "aws-eks")
   , ReadBackRegisteredStack (stackRef "aws-eks")
   , BoundedScratchCheckpoint (checkpointRef "scratch")
@@ -1454,9 +1465,17 @@ frozenProviderIntentV2Base64 :: ByteString.ByteString
 frozenProviderIntentV2Base64 =
   "gwCPAAIBc2xpZmVjeWNsZS1hdXRob3JpdHkEdHByb3ZpZGVyLW9wZXJhdGlvbi0xAHhAM2JkMjNkMTg2NzBkNDU2OWQ4YzFiMjc4YjU3OTA3NDIzZjFlYzNmMjZjNmE3ODJjOGJmYjQwNzk4NjU0MmFiY25wcm92aWRlci1vd25lcgYDhwAEZG1haWyAgICAeEBmNWZhNTkyNTRiNzZjZWY5YTMwNTc4MmU1ODczMjlkODk5N2MzMzA5NjBiZDljOWM0ZmI1NTZkYWJjNmNhYjdmGQPodnByb3ZpZGVyLWlkZW1wb3RlbmN5LTFYQNSP+sx24hDBvuPrUsf3pRp0zdGoDV0KrT6vlYf/6+aDGSWRSGA3s1UVKJHAwxKQpMZspyj6hD8qoARbtcAojww="
 
+-- | Re-frozen 2026-09-14 by Sprint `7.41`, which is the only reason this value
+-- may move.  The registered-stack reconcile now carries a run marker, and the
+-- wire projects it through the secondary and tertiary slots that intent kind
+-- did not use, so its bytes changed while its action ordinal did not — which is
+-- the property the assertion beside this value exists to hold.  The consequence
+-- is stated rather than hidden: an envelope minted before this change carries
+-- an empty marker and is refused at rebuild, which is fail-closed and bounded
+-- by one submission's lifetime.
 frozenLegacyV2EnvelopeSetDigest :: Text
 frozenLegacyV2EnvelopeSetDigest =
-  "eb237dee7e0a45c935a847428633c60bcaae82b180dd4c4dd2b56dbf000c5b9a"
+  "864ba66e9cd8a8c008238feb44341bd973e540fccc3115ab4fc57352096de3c1"
 
 publicARef :: PublicARecordRef
 publicARef = mustRight (mkPublicARecordRef "ZAWS" "edge.example.test" 60 ["192.0.2.10"])
@@ -1466,7 +1485,7 @@ defaultIntent = ReconcileSesSendingIdentity (identityRef "mail")
 
 labelFor :: ProviderIntent -> Text
 labelFor intent = case intent of
-  ReconcileRegisteredStack ref requested _config ->
+  ReconcileRegisteredStack ref requested _config _marker ->
     "stack-reconcile:" <> providerStackRefText ref <> "@" <> revisionText requested
   DestroyRegisteredStack ref requested _config ->
     "stack-destroy:" <> providerStackRefText ref <> "@" <> revisionText requested

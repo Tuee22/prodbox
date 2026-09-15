@@ -32,6 +32,8 @@ import Prodbox.ControlPlane.OwnershipManifestEndpoint
   , confirmOwnershipManifestReadBackResponse
   , decodeOwnershipManifestEndpointResponse
   , ownershipManifestCommitWireRequest
+  , ownershipManifestCompletionCommitWireRequest
+  , ownershipManifestCompletionReadBackWireRequest
   , ownershipManifestReadBackWireRequest
   , ownershipManifestWireResponseStatus
   )
@@ -51,23 +53,22 @@ lifecycleAuthorityOwnershipManifestAuthenticatedClient
   -> OwnershipManifestClient IO
 lifecycleAuthorityOwnershipManifestAuthenticatedClient transport =
   OwnershipManifestClient
-    { attemptOwnershipManifestWriteAheadCommit = attemptWriteAheadCommit
-    , readBackOwnershipManifestDecisionByIdentity = \target identity -> do
-        attempted <- callWire (ownershipManifestReadBackWireRequest identity)
-        pure $ do
-          response <- attempted
-          observed <-
-            first
-              endpointResponseError
-              (confirmOwnershipManifestReadBackResponse identity response)
-          confirmOwnershipManifestDecisionReadBack target identity observed
+    { attemptOwnershipManifestWriteAheadCommit =
+        attemptCommit ownershipManifestCommitWireRequest
+    , readBackOwnershipManifestDecisionByIdentity =
+        attemptReadBack ownershipManifestReadBackWireRequest
+    , -- Sprint 7.41: the completion slot, over the same authenticated route.
+      attemptOwnershipManifestCompletionCommit =
+        attemptCommit ownershipManifestCompletionCommitWireRequest
+    , readBackOwnershipManifestCompletionByIdentity =
+        attemptReadBack ownershipManifestCompletionReadBackWireRequest
     }
  where
-  attemptWriteAheadCommit write =
+  attemptCommit toRequest write =
     case prepareAuthorityOwnershipManifestWrite write of
       Left err -> pure (Left err)
       Right prepared -> do
-        attempted <- callWire (ownershipManifestCommitWireRequest prepared)
+        attempted <- callWire (toRequest prepared)
         pure $ do
           response <- attempted
           first
@@ -76,6 +77,16 @@ lifecycleAuthorityOwnershipManifestAuthenticatedClient transport =
                 (authorityOwnershipManifestWriteIdentity prepared)
                 response
             )
+
+  attemptReadBack toRequest target identity = do
+    attempted <- callWire (toRequest identity)
+    pure $ do
+      response <- attempted
+      observed <-
+        first
+          endpointResponseError
+          (confirmOwnershipManifestReadBackResponse identity response)
+      confirmOwnershipManifestDecisionReadBack target identity observed
 
   callWire request = do
     attempted <-

@@ -52,6 +52,7 @@ import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (DestroyRegisteredStack, ReconcileRegisteredStack)
   , ProviderRevision
+  , ProviderRunMarker
   , ProviderStackConfig
   , mkAwsTestProfileProviderStackConfig
   , mkProviderRevision
@@ -168,11 +169,11 @@ submitStackCreation
   -> Text.Text
   -> String
   -> ProviderRevision
-  -> ProviderIntent
+  -> (ProviderRunMarker -> ProviderIntent)
   -> IO ExitCode
-submitStackCreation authentication repoRoot prefix label revision intent = do
+submitStackCreation authentication repoRoot prefix label revision buildIntent = do
   submitted <-
-    submitRegisteredStackCreation authentication repoRoot prefix revision intent
+    submitRegisteredStackCreation authentication repoRoot prefix revision buildIntent
   case submitted of
     Left err -> failWith (renderRegisteredStackCreationSubmitError err)
     Right submission -> do

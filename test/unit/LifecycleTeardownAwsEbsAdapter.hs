@@ -88,7 +88,7 @@ lifecycleTeardownAwsEbsAdapterSuite =
           present = decode request canonicalPresent
       exactObservationResult absent
         `shouldBe` ExactResourceAbsent
-          ( AbsenceEvidence
+          ( providerWorkerAbsence
               "provider-worker exact test-scoped EBS family returned its canonical empty set"
           )
       exactObservationResult present

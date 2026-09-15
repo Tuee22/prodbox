@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Opaque result boundary for one registered-target reconcile operation.
@@ -100,7 +101,7 @@ data RegisteredTargetMutationAttempt
 -- | Auditable origin and outcome retained inside the opaque result.  Exporting
 -- this observation type does not grant construction authority for the result.
 data RegisteredTargetReconcileDisposition
-  = RegisteredTargetConfirmedAlreadyAbsent !AbsenceEvidence
+  = RegisteredTargetConfirmedAlreadyAbsent !(AbsenceEvidence 'ProviderApi)
   | RegisteredTargetAwsStackMutation !RegisteredTargetMutationAttempt
   | RegisteredTargetAwsEksMutation !RegisteredTargetMutationAttempt
   | RegisteredTargetAwsEbsMutation !RegisteredTargetMutationAttempt

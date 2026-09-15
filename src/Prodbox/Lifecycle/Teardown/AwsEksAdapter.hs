@@ -222,7 +222,7 @@ decodeAwsEksObservation request providerResult = case providerResult of
     | evidence == absentEvidence ->
         decoded
           ( ExactResourceAbsent
-              (AbsenceEvidence "Provider EKS DescribeCluster returned exact not-found evidence")
+              (providerWorkerAbsence "Provider EKS DescribeCluster returned exact not-found evidence")
           )
           Nothing
     | Just clusterArn <- Text.stripPrefix arnPrefix evidence ->

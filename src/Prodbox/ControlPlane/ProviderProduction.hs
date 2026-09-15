@@ -96,6 +96,7 @@ import Prodbox.ControlPlane.ProviderNarrowSession
   )
 import Prodbox.ControlPlane.ProviderPulumiConfigProjection
   ( providerPulumiPreviewArguments
+  , providerRunMarkerConfiguration
   )
 import Prodbox.Error (errorMsg)
 import Prodbox.Http.Client (renderHttpError)
@@ -149,6 +150,13 @@ import Prodbox.Lifecycle.OwnedResourceTagEvidence
   , renderOwnedResourceTagObservation
   )
 import Prodbox.Lifecycle.OwnedResourceTags (sesCaptureBucketTags)
+import Prodbox.Lifecycle.ProviderWorker.Evidence
+  ( ProviderEvidence
+  , ProviderEvidenceBound
+  , encodeProviderEvidence
+  , providerEvidenceFromWireText
+  , renderProviderEvidenceRefusal
+  )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( EksClientAuthRequest
   , EksClusterIdentityRequest
@@ -157,6 +165,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderNativeStackFamilyRef
   , ProviderOwnedTagQuery (..)
   , ProviderReadinessProbe (..)
+  , ProviderRunMarker
   , ProviderSpotPriceQuery
   , ProviderStackConfig
   , ProviderStackConfigView (..)
@@ -166,6 +175,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , SesDnsRef
   , SesIdentityRef
   , SesRuleSetRef
+  , dns01ChallengeRecordEvidenceFamily
   , eksClientAuthRequestAccountId
   , eksClientAuthRequestClusterName
   , eksClientAuthRequestDestinationPublicKey
@@ -173,6 +183,8 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , eksClusterIdentityRequestAccountId
   , eksClusterIdentityRequestClusterName
   , eksClusterIdentityRequestRegion
+  , eksIamRoleFamilyEvidenceFamily
+  , eksLoadBalancerControllerFamilyEvidenceFamily
   , providerCheckpointRefText
   , providerNativeStackFamilyAccountId
   , providerNativeStackFamilyRegion
@@ -184,6 +196,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , publicARecordHostedZoneId
   , publicARecordTtl
   , publicARecordValues
+  , registeredStackAbsenceEvidence
   , sesBucketRefText
   , sesDnsHostedZoneId
   , sesDnsIdentityDomain
@@ -192,6 +205,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , sesRuleSetCaptureBucket
   , sesRuleSetRecipient
   , sesRuleSetRefText
+  , validationHostedZoneEvidenceFamily
   )
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.Lifecycle.TaggedResourceQuery qualified as TaggedResourceQuery
@@ -291,14 +305,23 @@ providerProductionCapabilities
   :: ProviderIntentCapabilities IO ProviderProductionSession
 providerProductionCapabilities =
   ProviderIntentCapabilities
-    { reconcileRegisteredStackCapability = \ref _revision config ->
-        pulumiMutation DesiredPresent ref config
+    { reconcileRegisteredStackCapability = \ref _revision config marker ->
+        pulumiMutation DesiredPresent ref config (Just marker)
     , destroyRegisteredStackCapability = \ref _revision config ->
-        pulumiMutation DesiredAbsent ref config
+        -- A destroy names a stack that already exists and must not restate the
+        -- run that made it: the marker the provider holds is the creating run's
+        -- and a destroy has no standing to overwrite it.
+        pulumiMutation DesiredAbsent ref config Nothing
     , observeRegisteredStackCapability = \ref ->
-        ProviderReadOnly (\session _ -> observeStackRef session ref)
+        ProviderReadOnly
+          ( \session _ providerBound ->
+              sealProviderEvidence providerBound <$> observeStackRef session ref
+          )
     , readBackRegisteredStackCapability = \ref ->
-        ProviderReadOnly (\session _ -> observeStackRef session ref)
+        ProviderReadOnly
+          ( \session _ providerBound ->
+              sealProviderEvidence providerBound <$> observeStackRef session ref
+          )
     , boundedScratchCheckpointCapability = scratchCheckpointMutation
     , reconcileSesSendingIdentityCapability = sesIdentityMutation
     , reconcileSesDkimCapability = sesDkimMutation
@@ -410,8 +433,9 @@ data CompiledStackApplication
 compiledStackFor
   :: ProviderStackRef
   -> ProviderStackConfig
+  -> Maybe ProviderRunMarker
   -> Either Text CompiledStack
-compiledStackFor ref config = case (providerStackRefText ref, config) of
+compiledStackFor ref config marker = case (providerStackRefText ref, config) of
   ("aws-eks", _) -> case providerStackConfigView config of
     AwsEksLegacyConfig _ ->
       Right (stack "prodbox-aws-eks-test" "aws-eks-test" "aws-eks" [] CompiledStackObservationOnly)
@@ -461,9 +485,20 @@ compiledStackFor ref config = case (providerStackRefText ref, config) of
     CompiledStack
       { compiledStackPulumiRef = PulumiStackRef project stackId
       , compiledStackProjectDirectory = providerBuildRoot </> "pulumi" </> subdirectory
-      , compiledStackConfiguration = configuration
+      , compiledStackConfiguration = configuration ++ runMarkerConfiguration
       , compiledStackApplication = application
       }
+
+  -- Sprint 7.41: the two values the provider stamps onto every resource it
+  -- creates, projected on the preview as well as the apply.  Projecting them on
+  -- only one of the two is the exact defect
+  -- @PROVIDER-WORKER-PULUMI-STACK-CONFIG-ABSENT-2026-09-05@ froze: a preview run
+  -- against different configuration than the apply reports an agreement the
+  -- apply does not keep.  The consequence is stated rather than hidden -- a
+  -- reconcile of a present stack now previews a tag change and applies it, so
+  -- the marker the provider holds names the run that last proved it rather than
+  -- a run that has since been forgotten.
+  runMarkerConfiguration = maybe [] providerRunMarkerConfiguration marker
 
 providerBuildRoot :: FilePath
 providerBuildRoot = "/opt/build"
@@ -472,13 +507,14 @@ pulumiMutation
   :: DesiredState
   -> ProviderStackRef
   -> ProviderStackConfig
+  -> Maybe ProviderRunMarker
   -> ProviderMutation IO ProviderProductionSession
-pulumiMutation desired ref config =
+pulumiMutation desired ref config marker =
   ProviderMutation
     { observeProviderMutation = \session _coordinate ->
-        observeDesiredStack session desired ref config
+        observeDesiredStack session desired ref config marker
     , applyProviderMutation = \session _coordinate ->
-        applyDesiredStack session desired ref config
+        applyDesiredStack session desired ref config marker
     }
 
 observeDesiredStack
@@ -486,9 +522,10 @@ observeDesiredStack
   -> DesiredState
   -> ProviderStackRef
   -> ProviderStackConfig
+  -> Maybe ProviderRunMarker
   -> IO ProviderEffectObservation
-observeDesiredStack session desired ref config =
-  case compiledStackFor ref config of
+observeDesiredStack session desired ref config marker =
+  case compiledStackFor ref config marker of
     Left detail -> pure (ProviderEffectUnobservable detail)
     Right compiled
       | desired == DesiredPresent
@@ -504,7 +541,7 @@ observeDesiredStack session desired ref config =
           (productionSessionAuthorityTransport session)
           (compiledStackPulumiRef compiled)
           environment
-          (observePulumiStack desired compiled)
+          (observePulumiStack desired ref compiled)
       pure $ case observed of
         Left err -> ProviderEffectUnobservable (renderBackendError err)
         Right observation -> observation
@@ -514,9 +551,10 @@ applyDesiredStack
   -> DesiredState
   -> ProviderStackRef
   -> ProviderStackConfig
+  -> Maybe ProviderRunMarker
   -> IO (Either Text ())
-applyDesiredStack session desired ref config =
-  case compiledStackFor ref config of
+applyDesiredStack session desired ref config marker =
+  case compiledStackFor ref config marker of
     Left detail -> pure (Left detail)
     Right compiled -> do
       environment <- pulumiEnvironment (productionSessionCredentials session)
@@ -530,10 +568,11 @@ applyDesiredStack session desired ref config =
 
 observePulumiStack
   :: DesiredState
+  -> ProviderStackRef
   -> CompiledStack
   -> [(String, String)]
   -> IO (Either String ProviderEffectObservation)
-observePulumiStack desired compiled environment = do
+observePulumiStack desired ref compiled environment = do
   login <- runPulumi compiled environment ["login", backendUrl environment]
   case commandSuccess login of
     Left detail -> pure (Right (ProviderEffectUnobservable (Text.pack detail)))
@@ -548,8 +587,10 @@ observePulumiStack desired compiled environment = do
           | missingStack selected ->
               pure
                 ( Right $ case desired of
-                    DesiredPresent -> ProviderEffectNeedsApply "registered stack is absent"
-                    DesiredAbsent -> ProviderEffectSatisfied "registered stack is absent"
+                    DesiredPresent ->
+                      ProviderEffectNeedsApply (registeredStackAbsenceEvidence ref)
+                    DesiredAbsent ->
+                      ProviderEffectSatisfied (registeredStackAbsenceEvidence ref)
                 )
           | otherwise -> pure (Right (ProviderEffectUnobservable (Text.pack (commandDetail selected))))
         ExitSuccess -> case desired of
@@ -649,6 +690,21 @@ setPulumiConfiguration compiled environment = go (compiledStackConfiguration com
       Left detail -> pure (Left detail)
       Right _ -> go remaining
 
+-- | Seal an existing rendering against the bound of the intent being served.
+-- Sprint @4.99@.
+--
+-- This is the migration seam, not the destination.  It re-applies the wire's
+-- own rules to a value a producer has already rendered, so a producer that
+-- emits something the wire refuses now fails as a typed 'Left' where it is
+-- written rather than at a boundary 900 lines away -- which is where all six of
+-- the defective encoders were discovered.  A family that has moved to the
+-- canonical codec does not need it: 'encodeProviderEvidence' takes the same
+-- bound and cannot produce a value that fails here.
+sealProviderEvidence
+  :: ProviderEvidenceBound -> Either Text Text -> Either Text ProviderEvidence
+sealProviderEvidence providerBound result =
+  result >>= providerEvidenceFromWireText providerBound
+
 observeStackRef
   :: ProviderProductionSession
   -> ProviderStackRef
@@ -666,7 +722,8 @@ observeStackRef session ref =
           (readPulumiStack compiled)
       pure $ case result of
         Left err -> Left (renderBackendError err)
-        Right evidence -> Right evidence
+        Right PulumiStackObservedAbsent -> Right (registeredStackAbsenceEvidence ref)
+        Right (PulumiStackObservedPresent evidence) -> Right evidence
 
 defaultCompiledStack :: ProviderStackRef -> Either Text CompiledStack
 defaultCompiledStack ref = case providerStackRefText ref of
@@ -685,10 +742,17 @@ defaultCompiledStack ref = case providerStackRefText ref of
         , compiledStackApplication = CompiledStackObservationOnly
         }
 
+-- | What a registered-stack read reports.  Sprint @4.98@ split this out of a
+-- bare 'Text' so the absence arm is a constructor rather than a sentence, and
+-- so the coordinate is attached by the caller that actually holds one.
+data PulumiStackObservation
+  = PulumiStackObservedAbsent
+  | PulumiStackObservedPresent !Text
+
 readPulumiStack
   :: CompiledStack
   -> [(String, String)]
-  -> IO (Either String Text)
+  -> IO (Either String PulumiStackObservation)
 readPulumiStack compiled environment = do
   login <- runPulumi compiled environment ["login", backendUrl environment]
   case commandSuccess login of
@@ -700,13 +764,13 @@ readPulumiStack compiled environment = do
           environment
           ["stack", "select", "--stack", stackName compiled, "--non-interactive"]
       if missingStack selected
-        then pure (Right "registered stack is absent")
+        then pure (Right PulumiStackObservedAbsent)
         else case commandSuccess selected of
           Left detail -> pure (Left detail)
           Right _ -> do
             output <-
               runPulumi compiled environment ["stack", "output", "--stack", stackName compiled, "--json"]
-            pure (stackEvidence <$> commandSuccess output)
+            pure (PulumiStackObservedPresent . stackEvidence <$> commandSuccess output)
 
 pulumiEnvironment :: Credentials -> IO [(String, String)]
 pulumiEnvironment credentials = do
@@ -849,26 +913,27 @@ ebsReaperMutation clusterName =
 testEbsObservation
   :: Text
   -> ProviderReadOnly IO ProviderProductionSession
-testEbsObservation clusterName = ProviderReadOnly $ \session _ -> do
-  environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
-  observed <-
-    EbsVolume.discoverEbsVolumes
-      EbsVolume.EbsDiscoverInput
-        { EbsVolume.ebsDiscoverEnvironment = environment
-        , EbsVolume.ebsDiscoverWorkingDirectory = Nothing
-        , EbsVolume.ebsDiscoverScope =
-            EbsVolume.EbsPerRunTest (Text.unpack clusterName)
-        }
-  pure $ case observed of
-    Left detail -> Left (Text.pack detail)
-    Right volumes ->
-      Right
-        ( EbsVolume.renderTestScopedEbsObservation
-            ( EbsVolume.testScopedEbsObservation
-                (Text.unpack clusterName)
-                volumes
-            )
-        )
+testEbsObservation clusterName = ProviderReadOnly $ \session _ providerBound ->
+  sealProviderEvidence providerBound <$> do
+    environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+    observed <-
+      EbsVolume.discoverEbsVolumes
+        EbsVolume.EbsDiscoverInput
+          { EbsVolume.ebsDiscoverEnvironment = environment
+          , EbsVolume.ebsDiscoverWorkingDirectory = Nothing
+          , EbsVolume.ebsDiscoverScope =
+              EbsVolume.EbsPerRunTest (Text.unpack clusterName)
+          }
+    pure $ case observed of
+      Left detail -> Left (Text.pack detail)
+      Right volumes ->
+        Right
+          ( EbsVolume.renderTestScopedEbsObservation
+              ( EbsVolume.testScopedEbsObservation
+                  (Text.unpack clusterName)
+                  volumes
+              )
+          )
 
 -- | Checkpoint-independent observation of one closed registered stack family.
 -- The Provider credential is independently checked against the account and
@@ -877,11 +942,12 @@ nativeStackFamilyObservation
   :: ProviderNativeStackFamilyRef
   -> ProviderStackConfig
   -> ProviderReadOnly IO ProviderProductionSession
-nativeStackFamilyObservation ref config = ProviderReadOnly $ \session _ -> do
-  observed <- observeNativeStackFamilyForSession session ref config
-  pure $ do
-    identities <- observed
-    firstShow (encodeAwsNativeStackFamilyEvidence ref identities)
+nativeStackFamilyObservation ref config = ProviderReadOnly $ \session _ providerBound ->
+  sealProviderEvidence providerBound <$> do
+    observed <- observeNativeStackFamilyForSession session ref config
+    pure $ do
+      identities <- observed
+      firstShow (encodeAwsNativeStackFamilyEvidence ref identities)
 
 nativeStackFamilyReaperMutation
   :: ProviderNativeStackFamilyRef
@@ -956,9 +1022,13 @@ eksIamRoleFamilyObservation
   -> Text
   -> ProviderReadOnly IO ProviderProductionSession
 eksIamRoleFamilyObservation roleNames policyNames =
-  ProviderReadOnly $ \session _ -> do
+  ProviderReadOnly $ \session _ providerBound -> do
     observed <- observeEksIamRoleFamily session roleNames policyNames
-    pure (fst <$> observed)
+    pure $ do
+      (rows, _) <- observed
+      first
+        renderProviderEvidenceRefusal
+        (encodeProviderEvidence providerBound eksIamRoleFamilyEvidenceFamily rows)
 
 eksIamRoleFamilyReaperMutation
   :: Text
@@ -980,7 +1050,7 @@ observeEksIamRoleFamily
   :: ProviderProductionSession
   -> Text
   -> Text
-  -> IO (Either Text (Text, Bool))
+  -> IO (Either Text ([[Text]], Bool))
 observeEksIamRoleFamily session roleNames policyNames =
   case validateEksIamFamilyProjection roleNames policyNames of
     Left detail -> pure (Left detail)
@@ -996,10 +1066,7 @@ observeEksIamRoleFamily session roleNames policyNames =
             exactRoles <- sequence roleRows
             exactPolicies <- sequence policyRows
             let rows = exactRoles ++ exactPolicies
-            Right
-              ( Text.intercalate "\n" ("prodbox-eks-iam-family/v1" : map fst rows)
-              , all snd rows
-              )
+            Right (map fst rows, all snd rows)
  where
   observeRole environment roleName = do
     output <-
@@ -1013,11 +1080,11 @@ observeEksIamRoleFamily session roleNames policyNames =
         returnedName <- requireTextField "RoleName" role
         arn <- requireTextField "Arn" role
         if returnedName == roleName
-          then Right ("role|" <> roleName <> "|present|" <> arn, False)
+          then Right (["role", roleName, "present", arn], False)
           else Left "IAM get-role returned another role name"
       ExitFailure _
         | awsOutputIsNoSuchEntity output ->
-            Right ("role|" <> roleName <> "|absent", True)
+            Right (["role", roleName, "absent"], True)
         | otherwise -> Left (awsOutputFailure "IAM get-role" output)
 
   observePolicy environment accountId policyName = do
@@ -1033,11 +1100,11 @@ observeEksIamRoleFamily session roleNames policyNames =
         returnedName <- requireTextField "PolicyName" policy
         returnedArn <- requireTextField "Arn" policy
         if returnedName == policyName && returnedArn == arn
-          then Right ("policy|" <> policyName <> "|present|" <> arn, False)
+          then Right (["policy", policyName, "present", arn], False)
           else Left "IAM get-policy returned another managed policy"
       ExitFailure _
         | awsOutputIsNoSuchEntity output ->
-            Right ("policy|" <> policyName <> "|absent", True)
+            Right (["policy", policyName, "absent"], True)
         | otherwise -> Left (awsOutputFailure "IAM get-policy" output)
 
 reapEksIamRoleFamily
@@ -1193,10 +1260,18 @@ eksLoadBalancerControllerFamilyObservation
   -> Text
   -> ProviderReadOnly IO ProviderProductionSession
 eksLoadBalancerControllerFamilyObservation loadBalancerName tags =
-  ProviderReadOnly $ \session _ -> do
+  ProviderReadOnly $ \session _ providerBound -> do
     observed <-
       observeEksLoadBalancerControllerFamily session loadBalancerName tags
-    pure (fst <$> observed)
+    pure $ do
+      (rows, _) <- observed
+      first
+        renderProviderEvidenceRefusal
+        ( encodeProviderEvidence
+            providerBound
+            eksLoadBalancerControllerFamilyEvidenceFamily
+            rows
+        )
 
 eksLoadBalancerControllerFamilyReaperMutation
   :: Text
@@ -1223,7 +1298,7 @@ observeEksLoadBalancerControllerFamily
   :: ProviderProductionSession
   -> Text
   -> Text
-  -> IO (Either Text (Text, Bool))
+  -> IO (Either Text ([[Text]], Bool))
 observeEksLoadBalancerControllerFamily session loadBalancerName tags =
   case validateEksLoadBalancerControllerFamilyProjection loadBalancerName tags of
     Left detail -> pure (Left detail)
@@ -1242,7 +1317,7 @@ observeEksLoadBalancerControllerFamily session loadBalancerName tags =
           ]
       case processExitCode output of
         ExitFailure _
-          | awsOutputIsElbv2NotFound output -> pure (Right (lbcFamilyHeader, True))
+          | awsOutputIsElbv2NotFound output -> pure (Right ([], True))
           | otherwise ->
               pure (Left (awsOutputFailure "ELBv2 describe-load-balancers" output))
         ExitSuccess -> case decodeLoadBalancerRoot (processStdout output) of
@@ -1288,12 +1363,11 @@ observeEksLoadBalancerControllerFamily session loadBalancerName tags =
               let securityGroupArns =
                     map (securityGroupArn accountId region) exactSecurityGroups
                   rows =
-                    ["load-balancer|" <> loadBalancerArn]
-                      ++ map ("listener|" <>) exactListeners
-                      ++ map ("target-group|" <>) exactTargetGroups
-                      ++ map ("security-group|" <>) securityGroupArns
-              Right
-                (Text.intercalate "\n" (lbcFamilyHeader : sort rows), False)
+                    [["load-balancer", loadBalancerArn]]
+                      ++ map (\arn -> ["listener", arn]) exactListeners
+                      ++ map (\arn -> ["target-group", arn]) exactTargetGroups
+                      ++ map (\arn -> ["security-group", arn]) securityGroupArns
+              Right (rows, False)
 
 reapEksLoadBalancerControllerFamily
   :: ProviderProductionSession
@@ -1306,10 +1380,10 @@ reapEksLoadBalancerControllerFamily session loadBalancerName tags = do
   case observed of
     Left detail -> pure (Left detail)
     Right (_, True) -> pure (Right ())
-    Right (evidence, False) -> do
+    Right (observedRows, False) -> do
       environment <-
         awsCliSubprocessEnvironment (productionSessionCredentials session)
-      case parseLbcFamilyRows evidence of
+      case traverse lbcFamilyMember observedRows of
         Left detail -> pure (Left detail)
         Right rows -> do
           listeners <-
@@ -1343,9 +1417,6 @@ reapEksLoadBalancerControllerFamily session loadBalancerName tags = do
     ["elbv2", "delete-load-balancer", "--load-balancer-arn", Text.unpack arn]
   deleteTargetGroupArguments arn =
     ["elbv2", "delete-target-group", "--target-group-arn", Text.unpack arn]
-
-lbcFamilyHeader :: Text
-lbcFamilyHeader = "prodbox-eks-lbc-family/v1"
 
 validateEksLoadBalancerControllerFamilyProjection
   :: Text -> Text -> Either Text [(Text, Text)]
@@ -1487,17 +1558,22 @@ securityGroupIdFromArn :: Text -> Text
 securityGroupIdFromArn arn =
   maybe arn id (Text.stripPrefix "security-group/" (snd (Text.breakOnEnd ":" arn)))
 
-parseLbcFamilyRows :: Text -> Either Text [(Text, Text)]
-parseLbcFamilyRows evidence = case Text.lines evidence of
-  header : rows | header == lbcFamilyHeader -> traverse parseRow rows
-  _ -> Left "EKS load-balancer controller evidence omitted its header"
- where
-  parseRow row = case Text.splitOn "|" row of
-    [kind, arn]
-      | kind `elem` ["load-balancer", "listener", "target-group", "security-group"]
-      , not (Text.null arn) ->
-          Right (kind, arn)
-    _ -> Left "EKS load-balancer controller evidence row was malformed"
+-- | One member of the controller family, from the rows the observation
+-- returned.  Sprint @4.99@.
+--
+-- This replaces @parseLbcFamilyRows@, which re-parsed the rendered evidence a
+-- second time to decide what the reaper would delete.  That second parser was
+-- the hidden seam in this family: it selected ARNs for deletion, and a kind it
+-- failed to recognise silently deleted nothing of that kind rather than
+-- refusing.  The reaper now reads the same rows the encoder was handed, so
+-- there is no second grammar to drift.
+lbcFamilyMember :: [Text] -> Either Text (Text, Text)
+lbcFamilyMember row = case row of
+  [kind, arn]
+    | kind `elem` ["load-balancer", "listener", "target-group", "security-group"]
+    , not (Text.null arn) ->
+        Right (kind, arn)
+  _ -> Left "EKS load-balancer controller evidence row was malformed"
 
 membersOfKind :: Text -> [(Text, Text)] -> [Text]
 membersOfKind expected = map snd . filter ((== expected) . fst)
@@ -1667,7 +1743,7 @@ awsOutputFailure label output =
 validationHostedZoneObservation
   :: Text
   -> ProviderReadOnly IO ProviderProductionSession
-validationHostedZoneObservation namePrefix = ProviderReadOnly $ \session _ -> do
+validationHostedZoneObservation namePrefix = ProviderReadOnly $ \session _ providerBound -> do
   environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
   observed <-
     Route53ValidationZone.discoverValidationHostedZones
@@ -1676,11 +1752,13 @@ validationHostedZoneObservation namePrefix = ProviderReadOnly $ \session _ -> do
   pure $ case observed of
     Left detail -> Left (Text.pack detail)
     Right zones ->
-      Right
-        ( Text.intercalate
-            "\n"
-            ( namePrefix
-                : [ Text.pack (zoneId <> " " <> zoneName)
+      first
+        renderProviderEvidenceRefusal
+        ( encodeProviderEvidence
+            providerBound
+            validationHostedZoneEvidenceFamily
+            ( ["family", namePrefix]
+                : [ ["zone", Text.pack zoneId, Text.pack zoneName]
                   | (zoneId, zoneName) <- zones
                   ]
             )
@@ -1739,14 +1817,15 @@ dns01ChallengeRecordObservation
   -> ProviderReadOnly IO ProviderProductionSession
 dns01ChallengeRecordObservation zoneId recordNamePrefix =
   ProviderReadOnly
-    (\session _ -> scanDns01ChallengeRecords zoneId recordNamePrefix session)
+    (\session _ providerBound -> scanDns01ChallengeRecords providerBound zoneId recordNamePrefix session)
 
 scanDns01ChallengeRecords
-  :: Text
+  :: ProviderEvidenceBound
+  -> Text
   -> Text
   -> ProviderProductionSession
-  -> IO (Either Text Text)
-scanDns01ChallengeRecords zoneId recordNamePrefix session =
+  -> IO (Either Text ProviderEvidence)
+scanDns01ChallengeRecords providerBound zoneId recordNamePrefix session =
   case route53ClientForSession session of
     Left detail -> pure (Left detail)
     Right client -> do
@@ -1756,24 +1835,27 @@ scanDns01ChallengeRecords zoneId recordNamePrefix session =
           zoneId
           recordNamePrefix
           NativeRoute53.RecordTXT
-      pure (renderDns01ChallengeEvidence zoneId recordNamePrefix scanned)
+      pure (renderDns01ChallengeEvidence providerBound zoneId recordNamePrefix scanned)
 
 -- | The canonical evidence form: the echoed family line, then one record name
 -- per line.  The reader is
 -- 'Prodbox.Lifecycle.Teardown.Dns01ChallengeRecordAdapter.parseDns01ChallengeObservation'.
 renderDns01ChallengeEvidence
-  :: Text
+  :: ProviderEvidenceBound
+  -> Text
   -> Text
   -> Either AwsClientError [NativeRoute53.ResourceRecordSet]
-  -> Either Text Text
-renderDns01ChallengeEvidence zoneId recordNamePrefix scanned = case scanned of
+  -> Either Text ProviderEvidence
+renderDns01ChallengeEvidence providerBound zoneId recordNamePrefix scanned = case scanned of
   Left err -> Left (nativeRoute53Error err)
   Right recordSets ->
-    Right
-      ( Text.intercalate
-          "\n"
-          ( (zoneId <> " " <> recordNamePrefix)
-              : map NativeRoute53.rrsName recordSets
+    first
+      renderProviderEvidenceRefusal
+      ( encodeProviderEvidence
+          providerBound
+          dns01ChallengeRecordEvidenceFamily
+          ( ["family", zoneId, recordNamePrefix]
+              : [["record", NativeRoute53.rrsName recordSet] | recordSet <- recordSets]
           )
       )
 
@@ -1787,25 +1869,26 @@ providerWorkingDirectory = "."
 spotPriceObservation
   :: ProviderSpotPriceQuery
   -> ProviderReadOnly IO ProviderProductionSession
-spotPriceObservation query = ProviderReadOnly $ \session _ -> do
-  environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
-  output <-
-    runAws
-      environment
-      [ "ec2"
-      , "describe-spot-price-history"
-      , "--instance-types"
-      , Text.unpack (providerSpotPriceInstanceType query)
-      , "--product-descriptions"
-      , Text.unpack (providerSpotPriceProductDescription query)
-      , "--max-results"
-      , "1"
-      , "--output"
-      , "json"
-      ]
-  pure $ do
-    successful <- firstText (Text.pack . processStdout <$> commandSuccess output)
-    extractSpotPrice successful
+spotPriceObservation query = ProviderReadOnly $ \session _ providerBound ->
+  sealProviderEvidence providerBound <$> do
+    environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+    output <-
+      runAws
+        environment
+        [ "ec2"
+        , "describe-spot-price-history"
+        , "--instance-types"
+        , Text.unpack (providerSpotPriceInstanceType query)
+        , "--product-descriptions"
+        , Text.unpack (providerSpotPriceProductDescription query)
+        , "--max-results"
+        , "1"
+        , "--output"
+        , "json"
+        ]
+    pure $ do
+      successful <- firstText (Text.pack . processStdout <$> commandSuccess output)
+      extractSpotPrice successful
 
 extractSpotPrice :: Text -> Either Text Text
 extractSpotPrice payload = case eitherDecodeStrict' (TextEncoding.encodeUtf8 payload) of
@@ -1820,56 +1903,59 @@ extractSpotPrice payload = case eitherDecodeStrict' (TextEncoding.encodeUtf8 pay
   _ -> Left "spot price response is invalid JSON"
 
 operationalIdentityObservation :: ProviderReadOnly IO ProviderProductionSession
-operationalIdentityObservation = ProviderReadOnly $ \session _ -> do
-  environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
-  output <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
-  pure $ do
-    successful <- firstText (processStdout <$> commandSuccess output)
-    root <- decodeObject successful
-    arn <- requireTextField "Arn" root
-    if Text.null (Text.strip arn) || Text.length arn > 2048
-      then Left "STS identity ARN is absent or exceeds the evidence bound"
-      else Right ("sts-identity:" <> arn)
+operationalIdentityObservation = ProviderReadOnly $ \session _ providerBound ->
+  sealProviderEvidence providerBound <$> do
+    environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+    output <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
+    pure $ do
+      successful <- firstText (processStdout <$> commandSuccess output)
+      root <- decodeObject successful
+      arn <- requireTextField "Arn" root
+      if Text.null (Text.strip arn) || Text.length arn > 2048
+        then Left "STS identity ARN is absent or exceeds the evidence bound"
+        else Right ("sts-identity:" <> arn)
 
 -- | Exact account/region observation for lifecycle admission.  Account comes
 -- only from a successful STS response under the scoped Provider session;
 -- region comes from the same session's sealed Vault credentials.  The hidden
 -- codec emits neither credentials nor the raw STS response.
 providerAwsScopeObservation :: ProviderReadOnly IO ProviderProductionSession
-providerAwsScopeObservation = ProviderReadOnly $ \session _ -> do
-  let credentials = productionSessionCredentials session
-  environment <- awsCliSubprocessEnvironment credentials
-  output <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
-  pure $ do
-    successful <- firstText (processStdout <$> commandSuccess output)
-    root <- decodeObject successful
-    account <- requireTextField "Account" root
-    first
-      (Text.pack . show)
-      (encodeProviderAwsScopeEvidence account (region credentials))
+providerAwsScopeObservation = ProviderReadOnly $ \session _ providerBound ->
+  sealProviderEvidence providerBound <$> do
+    let credentials = productionSessionCredentials session
+    environment <- awsCliSubprocessEnvironment credentials
+    output <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
+    pure $ do
+      successful <- firstText (processStdout <$> commandSuccess output)
+      root <- decodeObject successful
+      account <- requireTextField "Account" root
+      first
+        (Text.pack . show)
+        (encodeProviderAwsScopeEvidence account (region credentials))
 
 readinessObservation
   :: ProviderReadinessProbe
   -> ProviderReadOnly IO ProviderProductionSession
-readinessObservation probe = ProviderReadOnly $ \session _ -> do
-  environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
-  case probe of
-    ProviderReadinessStsIdentity -> do
-      output <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
-      pure ("provider-readiness:" <> stackEvidence output <$ firstText (commandSuccess output))
-    ProviderReadinessRoute53Zone zoneId -> do
-      output <-
-        runAws environment ["route53", "get-hosted-zone", "--id", Text.unpack zoneId, "--output", "json"]
-      pure $ do
-        payload <- firstText (processStdout <$> commandSuccess output)
-        if length payload > 2400
-          then Left "Route 53 hosted-zone observation exceeds the evidence bound"
-          else
-            Right
-              ( "provider-readiness-route53-json:"
-                  <> TextEncoding.decodeUtf8
-                    (Base64.encode (TextEncoding.encodeUtf8 (Text.pack payload)))
-              )
+readinessObservation probe = ProviderReadOnly $ \session _ providerBound ->
+  sealProviderEvidence providerBound <$> do
+    environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+    case probe of
+      ProviderReadinessStsIdentity -> do
+        output <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
+        pure ("provider-readiness:" <> stackEvidence output <$ firstText (commandSuccess output))
+      ProviderReadinessRoute53Zone zoneId -> do
+        output <-
+          runAws environment ["route53", "get-hosted-zone", "--id", Text.unpack zoneId, "--output", "json"]
+        pure $ do
+          payload <- firstText (processStdout <$> commandSuccess output)
+          if length payload > 2400
+            then Left "Route 53 hosted-zone observation exceeds the evidence bound"
+            else
+              Right
+                ( "provider-readiness-route53-json:"
+                    <> TextEncoding.decodeUtf8
+                      (Base64.encode (TextEncoding.encodeUtf8 (Text.pack payload)))
+                )
 
 -- | Exact EKS control-plane identity observation.  Only a successful
 -- DescribeCluster response can produce an ARN.  Absence is recognized from
@@ -1878,55 +1964,56 @@ readinessObservation probe = ProviderReadOnly $ \session _ -> do
 eksClusterIdentityObservation
   :: EksClusterIdentityRequest
   -> ProviderReadOnly IO ProviderProductionSession
-eksClusterIdentityObservation request = ProviderReadOnly $ \session _ -> do
-  let credentials = productionSessionCredentials session
-      requestedAccount = eksClusterIdentityRequestAccountId request
-      requestedRegion = eksClusterIdentityRequestRegion request
-      requestedCluster = eksClusterIdentityRequestClusterName request
-  if Text.strip (region credentials) /= requestedRegion
-    then pure (Left "EKS identity request region does not match the Provider session")
-    else do
-      environment <- awsCliSubprocessEnvironment credentials
-      identityOutput <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
-      clusterOutput <-
-        runAws
-          environment
-          [ "eks"
-          , "describe-cluster"
-          , "--region"
-          , Text.unpack requestedRegion
-          , "--name"
-          , Text.unpack requestedCluster
-          , "--output"
-          , "json"
-          ]
-      pure $ do
-        identity <- firstText (processStdout <$> commandSuccess identityOutput) >>= decodeObject
-        account <- requireTextField "Account" identity
-        if account == requestedAccount
-          then Right ()
-          else Left "EKS identity request account does not match the Provider session"
-        case commandSuccess clusterOutput of
-          Left _
-            | exactEksClusterNotFound requestedCluster clusterOutput ->
-                Right "registered EKS cluster is absent"
-            | otherwise -> Left (Text.pack (commandDetail clusterOutput))
-          Right successful -> do
-            clusterRoot <- decodeObject (processStdout successful)
-            cluster <- requireObjectField "cluster" clusterRoot
-            clusterName <- requireTextField "name" cluster
-            clusterArn <- requireTextField "arn" cluster
-            if clusterName == requestedCluster
-              then Right ()
-              else Left "EKS describe-cluster returned the wrong cluster identity"
-            firstShow
-              ( validateEksClusterArnBinding
-                  account
-                  requestedRegion
-                  requestedCluster
-                  clusterArn
-              )
-            Right ("eks-cluster-arn:" <> clusterArn)
+eksClusterIdentityObservation request = ProviderReadOnly $ \session _ providerBound ->
+  sealProviderEvidence providerBound <$> do
+    let credentials = productionSessionCredentials session
+        requestedAccount = eksClusterIdentityRequestAccountId request
+        requestedRegion = eksClusterIdentityRequestRegion request
+        requestedCluster = eksClusterIdentityRequestClusterName request
+    if Text.strip (region credentials) /= requestedRegion
+      then pure (Left "EKS identity request region does not match the Provider session")
+      else do
+        environment <- awsCliSubprocessEnvironment credentials
+        identityOutput <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
+        clusterOutput <-
+          runAws
+            environment
+            [ "eks"
+            , "describe-cluster"
+            , "--region"
+            , Text.unpack requestedRegion
+            , "--name"
+            , Text.unpack requestedCluster
+            , "--output"
+            , "json"
+            ]
+        pure $ do
+          identity <- firstText (processStdout <$> commandSuccess identityOutput) >>= decodeObject
+          account <- requireTextField "Account" identity
+          if account == requestedAccount
+            then Right ()
+            else Left "EKS identity request account does not match the Provider session"
+          case commandSuccess clusterOutput of
+            Left _
+              | exactEksClusterNotFound requestedCluster clusterOutput ->
+                  Right "registered EKS cluster is absent"
+              | otherwise -> Left (Text.pack (commandDetail clusterOutput))
+            Right successful -> do
+              clusterRoot <- decodeObject (processStdout successful)
+              cluster <- requireObjectField "cluster" clusterRoot
+              clusterName <- requireTextField "name" cluster
+              clusterArn <- requireTextField "arn" cluster
+              if clusterName == requestedCluster
+                then Right ()
+                else Left "EKS describe-cluster returned the wrong cluster identity"
+              firstShow
+                ( validateEksClusterArnBinding
+                    account
+                    requestedRegion
+                    requestedCluster
+                    clusterArn
+                )
+              Right ("eks-cluster-arn:" <> clusterArn)
 
 exactEksClusterNotFound :: Text -> ProcessOutput -> Bool
 exactEksClusterNotFound clusterName output =
@@ -1942,50 +2029,51 @@ exactEksClusterNotFound clusterName output =
 eksClientAuthObservation
   :: EksClientAuthRequest
   -> ProviderReadOnly IO ProviderProductionSession
-eksClientAuthObservation request = ProviderReadOnly $ \session _ -> do
-  let credentials = productionSessionCredentials session
-      requestedRegion = eksClientAuthRequestRegion request
-      requestedCluster = eksClientAuthRequestClusterName request
-  if Text.strip (region credentials) /= requestedRegion
-    then pure (Left "EKS client-auth request region does not match the Provider session")
-    else do
-      environment <- awsCliSubprocessEnvironment credentials
-      identityOutput <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
-      clusterOutput <-
-        runAws
-          environment
-          [ "eks"
-          , "describe-cluster"
-          , "--region"
-          , Text.unpack requestedRegion
-          , "--name"
-          , Text.unpack requestedCluster
-          , "--output"
-          , "json"
-          ]
-      tokenOutput <-
-        runAws
-          environment
-          [ "eks"
-          , "get-token"
-          , "--region"
-          , Text.unpack requestedRegion
-          , "--cluster-name"
-          , Text.unpack requestedCluster
-          , "--output"
-          , "json"
-          ]
-      now <- floor <$> getPOSIXTime
-      case parseProjection now identityOutput clusterOutput tokenOutput of
-        Left detail -> pure (Left detail)
-        Right (projection, publicKey) -> do
-          sealed <- sealEksClientAuthProjection publicKey projection
-          pure $ do
-            envelope <- firstShow sealed
-            Right
-              ( eksClientAuthEvidenceMarker
-                  <> TextEncoding.decodeUtf8 (Base64.encode (encodeEksClientAuthEnvelope envelope))
-              )
+eksClientAuthObservation request = ProviderReadOnly $ \session _ providerBound ->
+  sealProviderEvidence providerBound <$> do
+    let credentials = productionSessionCredentials session
+        requestedRegion = eksClientAuthRequestRegion request
+        requestedCluster = eksClientAuthRequestClusterName request
+    if Text.strip (region credentials) /= requestedRegion
+      then pure (Left "EKS client-auth request region does not match the Provider session")
+      else do
+        environment <- awsCliSubprocessEnvironment credentials
+        identityOutput <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
+        clusterOutput <-
+          runAws
+            environment
+            [ "eks"
+            , "describe-cluster"
+            , "--region"
+            , Text.unpack requestedRegion
+            , "--name"
+            , Text.unpack requestedCluster
+            , "--output"
+            , "json"
+            ]
+        tokenOutput <-
+          runAws
+            environment
+            [ "eks"
+            , "get-token"
+            , "--region"
+            , Text.unpack requestedRegion
+            , "--cluster-name"
+            , Text.unpack requestedCluster
+            , "--output"
+            , "json"
+            ]
+        now <- floor <$> getPOSIXTime
+        case parseProjection now identityOutput clusterOutput tokenOutput of
+          Left detail -> pure (Left detail)
+          Right (projection, publicKey) -> do
+            sealed <- sealEksClientAuthProjection publicKey projection
+            pure $ do
+              envelope <- firstShow sealed
+              Right
+                ( eksClientAuthEvidenceMarker
+                    <> TextEncoding.decodeUtf8 (Base64.encode (encodeEksClientAuthEnvelope envelope))
+                )
  where
   parseProjection now identityOutput clusterOutput tokenOutput = do
     identity <- firstText (processStdout <$> commandSuccess identityOutput) >>= decodeObject
@@ -2240,12 +2328,13 @@ sesDnsMutation ref =
 
 publicARecordObservation
   :: PublicARecordRef -> ProviderReadOnly IO ProviderProductionSession
-publicARecordObservation ref = ProviderReadOnly $ \session _ -> do
-  observed <- observePublicARecord session ref
-  pure $ case observed of
-    ProviderEffectSatisfied evidence -> Right evidence
-    ProviderEffectNeedsApply evidence -> Right evidence
-    ProviderEffectUnobservable detail -> Left detail
+publicARecordObservation ref = ProviderReadOnly $ \session _ providerBound ->
+  sealProviderEvidence providerBound <$> do
+    observed <- observePublicARecord session ref
+    pure $ case observed of
+      ProviderEffectSatisfied evidence -> Right evidence
+      ProviderEffectNeedsApply evidence -> Right evidence
+      ProviderEffectUnobservable detail -> Left detail
 
 publicARecordMutation
   :: PublicARecordRef -> ProviderMutation IO ProviderProductionSession
@@ -3476,35 +3565,45 @@ providerAwsEvidence label outputs =
 ownedResourceTagObservation
   :: ProviderOwnedTagQuery
   -> ProviderReadOnly IO ProviderProductionSession
-ownedResourceTagObservation query = ProviderReadOnly $ \session _ -> do
-  environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
-  listed <-
-    TaggedResourceQuery.discoverTaggedResources
-      TaggedResourceQuery.TaggedResourceQueryInput
-        { TaggedResourceQuery.taggedResourceQueryEnvironment = environment
-        , TaggedResourceQuery.taggedResourceQueryWorkingDirectory = Nothing
-        , TaggedResourceQuery.taggedResourceQueryFilter = queryFilter
-        }
-  pure $ case listed of
-    Left detail -> Left (Text.pack detail)
-    Right listing ->
-      case renderOwnedResourceTagObservation
-        OwnedResourceTagObservation
-          { ownedResourceTagObservationQuery = queryEcho
-          , ownedResourceTagObservationEntries =
-              [ OwnedResourceTagEntry
-                  { ownedResourceTagEntryArn =
-                      TaggedResourceQuery.taggedResourceEntryArn entry
-                  , ownedResourceTagEntryTags =
-                      TaggedResourceQuery.taggedResourceEntryTags entry
-                  }
-              | entry <- TaggedResourceQuery.taggedResourceListingEntries listing
-              ]
-          , ownedResourceTagObservationPages =
-              TaggedResourceQuery.taggedResourceListingPages listing
-          } of
-        Left err -> Left (renderOwnedResourceTagEvidenceError err)
-        Right evidence -> Right evidence
+ownedResourceTagObservation query = ProviderReadOnly $ \session _ providerBound ->
+  sealProviderEvidence providerBound <$> do
+    environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+    listed <-
+      TaggedResourceQuery.discoverTaggedResources
+        TaggedResourceQuery.TaggedResourceQueryInput
+          { TaggedResourceQuery.taggedResourceQueryEnvironment = environment
+          , TaggedResourceQuery.taggedResourceQueryWorkingDirectory = Nothing
+          , TaggedResourceQuery.taggedResourceQueryFilter = queryFilter
+          , -- The session's own region, stated in the argv rather than left to
+            -- the environment this builder also sets.  The audit's *field of
+            -- view across regions* is a separate question and is unchanged
+            -- here: it belongs to
+            -- "Prodbox.Lifecycle.Teardown.TaggingApiReach", which bounds what
+            -- a clean verdict may claim when a service answers only from the
+            -- global-service region.
+            TaggedResourceQuery.taggedResourceQueryRegion =
+              region (productionSessionCredentials session)
+          }
+    pure $ case listed of
+      Left detail -> Left (Text.pack detail)
+      Right listing ->
+        case renderOwnedResourceTagObservation
+          OwnedResourceTagObservation
+            { ownedResourceTagObservationQuery = queryEcho
+            , ownedResourceTagObservationEntries =
+                [ OwnedResourceTagEntry
+                    { ownedResourceTagEntryArn =
+                        TaggedResourceQuery.taggedResourceEntryArn entry
+                    , ownedResourceTagEntryTags =
+                        TaggedResourceQuery.taggedResourceEntryTags entry
+                    }
+                | entry <- TaggedResourceQuery.taggedResourceListingEntries listing
+                ]
+            , ownedResourceTagObservationPages =
+                TaggedResourceQuery.taggedResourceListingPages listing
+            } of
+          Left err -> Left (renderOwnedResourceTagEvidenceError err)
+          Right evidence -> Right evidence
  where
   queryFilter = case query of
     ProviderOwnedTagKeyQuery key ->
@@ -3524,32 +3623,33 @@ ownedResourceTagObservation query = ProviderReadOnly $ \session _ -> do
 retainedEbsObservation
   :: Text
   -> ProviderReadOnly IO ProviderProductionSession
-retainedEbsObservation lifecycleValue = ProviderReadOnly $ \session _ ->
-  if Text.unpack lifecycleValue /= TagSweep.ebsRetainedLifecycleValue
-    then
-      pure
-        ( Left
-            ( "retained EBS observation is bound to lifecycle value "
-                <> lifecycleValue
-                <> ", not the registered retained family"
-            )
-        )
-    else do
-      environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
-      observed <-
-        EbsVolume.discoverEbsVolumes
-          EbsVolume.EbsDiscoverInput
-            { EbsVolume.ebsDiscoverEnvironment = environment
-            , EbsVolume.ebsDiscoverWorkingDirectory = Nothing
-            , EbsVolume.ebsDiscoverScope = EbsVolume.EbsRetainedProduction
-            }
-      pure $ case observed of
-        Left detail -> Left (Text.pack detail)
-        Right volumes ->
-          Right
-            ( EbsVolume.renderRetainedEbsObservation
-                (EbsVolume.retainedEbsObservation volumes)
-            )
+retainedEbsObservation lifecycleValue = ProviderReadOnly $ \session _ providerBound ->
+  fmap (sealProviderEvidence providerBound) $
+    if Text.unpack lifecycleValue /= TagSweep.ebsRetainedLifecycleValue
+      then
+        pure
+          ( Left
+              ( "retained EBS observation is bound to lifecycle value "
+                  <> lifecycleValue
+                  <> ", not the registered retained family"
+              )
+          )
+      else do
+        environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+        observed <-
+          EbsVolume.discoverEbsVolumes
+            EbsVolume.EbsDiscoverInput
+              { EbsVolume.ebsDiscoverEnvironment = environment
+              , EbsVolume.ebsDiscoverWorkingDirectory = Nothing
+              , EbsVolume.ebsDiscoverScope = EbsVolume.EbsRetainedProduction
+              }
+        pure $ case observed of
+          Left detail -> Left (Text.pack detail)
+          Right volumes ->
+            Right
+              ( EbsVolume.renderRetainedEbsObservation
+                  (EbsVolume.retainedEbsObservation volumes)
+              )
 
 -- | Sprint 7.36: the retained family's destructive reap, observed before it
 -- applies.  It refuses an intent bound to any other lifecycle value for the

@@ -114,6 +114,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkEksClusterIdentityRequest
   , mkProviderCheckpointRef
   , mkProviderRevision
+  , mkProviderRunMarker
   , mkProviderSpotPriceQuery
   , mkProviderStackRef
   , mkPublicARecordRef
@@ -271,7 +272,16 @@ rebuildIntent payload = case applyIntentKind payload of
     ref <- first (fieldReason "stack") (mkProviderStackRef rawRef)
     revision <- first (fieldReason "revision") (mkProviderRevision (applyRequestedRevision payload))
     config <- maybe (Left "stack-config:missing") Right (applyStackConfig payload)
-    Right (ReconcileRegisteredStack ref revision config)
+    -- Sprint 7.41: the run marker rides in the payload's existing secondary and
+    -- tertiary slots, which this intent kind did not use.
+    marker <-
+      first
+        (fieldReason "run-marker")
+        ( mkProviderRunMarker
+            (applySecondaryRef payload)
+            (applyTertiaryRef payload)
+        )
+    Right (ReconcileRegisteredStack ref revision config marker)
   DestroyStackIntent -> do
     ref <- first (fieldReason "stack") (mkProviderStackRef rawRef)
     revision <- first (fieldReason "revision") (mkProviderRevision (applyRequestedRevision payload))

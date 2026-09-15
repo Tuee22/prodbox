@@ -83,6 +83,7 @@ import Prodbox.Lifecycle.Lease
   , mkFencingToken
   , mkOwnerNonce
   )
+import Prodbox.Lifecycle.ProviderWorker.Evidence (providerEvidenceFromWireText)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
   , ProviderIntentCoordinate
@@ -508,7 +509,7 @@ boundaryAt revision evidence =
 capabilities :: Either Text Text -> ProviderIntentCapabilities IO ()
 capabilities evidence =
   ProviderIntentCapabilities
-    { reconcileRegisteredStackCapability = \_ _ _ -> unavailableMutation
+    { reconcileRegisteredStackCapability = \_ _ _ _ -> unavailableMutation
     , destroyRegisteredStackCapability = \_ _ _ -> unavailableMutation
     , observeRegisteredStackCapability = const unavailableReadOnly
     , readBackRegisteredStackCapability = const unavailableReadOnly
@@ -533,8 +534,10 @@ capabilities evidence =
     , observeOwnedResourceTagsCapability = const unavailableReadOnly
     , reapRetainedEbsVolumesCapability = const unavailableMutation
     , observeSpotPriceCapability = const unavailableReadOnly
-    , observeOperationalIdentityCapability = ProviderReadOnly (\_ _ -> pure evidence)
-    , observeProviderAwsScopeCapability = ProviderReadOnly (\_ _ -> pure evidence)
+    , observeOperationalIdentityCapability =
+        ProviderReadOnly (\_ _ bound -> pure (evidence >>= providerEvidenceFromWireText bound))
+    , observeProviderAwsScopeCapability =
+        ProviderReadOnly (\_ _ bound -> pure (evidence >>= providerEvidenceFromWireText bound))
     , observeProviderReadinessCapability = const unavailableReadOnly
     , issueEksClientAuthCapability = const unavailableReadOnly
     , observeEksClusterIdentityCapability = const unavailableReadOnly
@@ -543,7 +546,8 @@ capabilities evidence =
     }
 
 unavailableReadOnly :: ProviderReadOnly IO ()
-unavailableReadOnly = ProviderReadOnly (\_ _ -> pure (Left "unexpected read-only capability"))
+unavailableReadOnly =
+  ProviderReadOnly (\_ _ _ -> pure (Left "unexpected read-only capability"))
 
 unavailableMutation :: ProviderMutation IO ()
 unavailableMutation =

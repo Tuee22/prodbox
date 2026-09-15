@@ -1,6 +1,41 @@
 module Prodbox.CheckCode
   ( DoctrineViolation (..)
   , GeneratedSectionRule (..)
+  , absenceMinterOwners
+  , absenceMinterProvenanceViolations
+  , RenderingArm (..)
+  , UnconsumedTypedGuard (..)
+  , checkTlaModelRegistration
+  , checkTypedGuardConsumption
+  , checkSealedConstructors
+  , checkFacadeWithholdings
+  , FacadeWithholding (..)
+  , facadeWithholdingRegistry
+  , facadeWithholdingViolations
+  , SealedConstructorType (..)
+  , SealedConstructorOrigin (..)
+  , sealedConstructorRegistry
+  , sealedConstructorViolations
+  , moduleExportListIn
+  , exportListExposesConstructors
+  , exportListNamesType
+  , checkWireFidelity
+  , renderingArmsIn
+  , signatureResultType
+  , sumTypeIndexIn
+  , wireFidelityExemptions
+  , wireFidelityStaleExemptions
+  , wireFidelityViolations
+  , namesCleanupAuthority
+  , typedGuardAuthorityTypes
+  , typedGuardConsumptionFindings
+  , typedGuardConsumptionsIn
+  , typedGuardDeclarationsIn
+  , unconsumedTypedGuardRegistry
+  , tlaExpectationCoverageViolations
+  , tlaRegistrationViolations
+  , providerEvidenceSealOwners
+  , providerEvidenceSealViolations
   , awsCreateSiteViolations
   , awsCreateVerbs
   , bootstrapBrokerChartStaticViolations
@@ -293,7 +328,13 @@ import Prodbox.Repo (resolveTier0ConfigPath)
 import Prodbox.Result (Result (..))
 import Prodbox.Secret.VaultInventory (vaultIdentityRegistryViolations)
 import Prodbox.Subprocess qualified as Subprocess
-import Prodbox.TestPlan (routedHaskellSuites)
+import Prodbox.TestPlan (gatedCheckHaskellSuites, routedHaskellSuites)
+import Prodbox.Tla
+  ( TlaExpectation (..)
+  , TlaModel (..)
+  , tlaModelDirectory
+  , tlaModels
+  )
 import System.Directory
   ( copyFile
   , createDirectoryIfMissing
@@ -648,7 +689,39 @@ runCheckCode repoRoot = do
           syncResult <- syncBuiltOperatorBinary repoRoot environment
           case syncResult of
             Left err -> failWith err
-            Right _ -> pure ExitSuccess
+            Right _ -> runGatedTestSuites repoRoot environment
+
+-- | Sprint 5.47: execute the suites whose assertions this gate has, until now,
+-- only compiled.
+--
+-- Sprint `5.30` widened the gate's build region to the test stanzas, and
+-- Sprint `5.45` gave every stanza a runner. Neither made the gate execute one.
+-- The consequence is larger than an unexercised suite: every invariant this
+-- repository encodes as a @fixed…Regression :: Bool@ self-test was proven by
+-- the gate to typecheck and by nothing to hold, and the strongest absence rule
+-- in the lifecycle tree sat in exactly that position while an EKS cluster
+-- billed for four days.
+--
+-- It runs after 'syncBuiltOperatorBinary' rather than before the build,
+-- because several cases assert on @.build/prodbox@ existing, and it uses the
+-- streaming runner rather than a capture: a five-thousand-case suite buffered
+-- into a 'String' would print nothing for two minutes, and the capture path
+-- opens the pipes that trip this binary's non-threaded @select@ ceiling.
+--
+-- The set is 'gatedCheckHaskellSuites' and the gate holds it against the
+-- package manifest in both directions, so a suite cannot become
+-- gate-only or vanish from the manifest unnoticed.
+runGatedTestSuites :: FilePath -> [(String, String)] -> IO ExitCode
+runGatedTestSuites repoRoot environment = do
+  writeOutputLine "Running gated unit suites"
+  runFailFastPhases (map runGatedSuite gatedCheckHaskellSuites)
+ where
+  runGatedSuite suiteName =
+    runSubprocessStreaming
+      repoRoot
+      environment
+      "cabal"
+      ["test", "--builddir=.build", suiteName, "--test-show-details=direct"]
 
 runDocsCommand :: FilePath -> DocsCommand -> IO ExitCode
 runDocsCommand repoRoot command =
@@ -1899,6 +1972,14 @@ runDoctrineAlignmentCheck repoRoot = do
   -- 'Prodbox.ContainerImage' pin, never be re-pinned on a per-substrate
   -- branch. This is a doctrine-alignment check, so it is wired here.
   substrateImagePinningViolations' <- checkSubstrateImagePinning repoRoot
+  -- Sprint 5.47: a cleanup-authority guard with no production consumer is
+  -- registered rather than invisible. Wired beside the registries above
+  -- because it is the same register-or-fail shape, over the claims a leak
+  -- falsifies rather than over a value an operator supplies.
+  typedGuardConsumptionViolations <- checkTypedGuardConsumption repoRoot
+  -- Sprint 5.48: the TLA+ directory and the model registry agree, and at least
+  -- one registered configuration is expected to fail.
+  tlaRegistrationFindings <- checkTlaModelRegistration repoRoot
   case surfaceViolations
     ++ map ("- " ++) serviceErrorViolations
     ++ map ("- " ++) inlineRetryListViolations
@@ -1923,7 +2004,9 @@ runDoctrineAlignmentCheck repoRoot = do
     ++ map ("- " ++) chartDeploymentContextFindings
     ++ map ("- " ++) hostLifecycleContextFindings
     ++ map ("- " ++) harnessDeploymentConfigFindings
-    ++ map ("- " ++) substrateImagePinningViolations' of
+    ++ map ("- " ++) substrateImagePinningViolations'
+    ++ map ("- " ++) typedGuardConsumptionViolations
+    ++ map ("- " ++) tlaRegistrationFindings of
     [] -> pure ExitSuccess
     violations ->
       failWith
@@ -1989,6 +2072,11 @@ haskellStyleViolations repoRoot = do
   tier0CoordinateFindings <- forceViolationFindings (checkTier0CoordinateReads repoRoot)
   listenPortFindings <- forceViolationFindings (checkControlPlaneListenPortOwner repoRoot)
   residueMinterFindings <- forceViolationFindings (checkResidueObservationMinter repoRoot)
+  absenceMinterFindings <- forceViolationFindings (checkAbsenceMinterProvenance repoRoot)
+  evidenceSealFindings <- forceViolationFindings (checkProviderEvidenceSeal repoRoot)
+  wireFidelityFindings <- forceViolationFindings (checkWireFidelity repoRoot)
+  sealedConstructorFindings <- forceViolationFindings (checkSealedConstructors repoRoot)
+  facadeWithholdingFindings <- forceViolationFindings (checkFacadeWithholdings repoRoot)
   workerImagePullFindings <- forceViolationFindings (checkWorkerImagePullReferenceOwner repoRoot)
   testNamespaceFindings <- forceViolationFindings (checkTestNamespaceBoundary repoRoot)
   pure
@@ -2026,6 +2114,11 @@ haskellStyleViolations repoRoot = do
         ++ workerImagePullFindings
         ++ testNamespaceFindings
         ++ residueMinterFindings
+        ++ absenceMinterFindings
+        ++ evidenceSealFindings
+        ++ wireFidelityFindings
+        ++ sealedConstructorFindings
+        ++ facadeWithholdingFindings
     )
 
 -- | Force a check's complete finding payload before its file-reading frame can
@@ -3010,6 +3103,1824 @@ residueObservationMinterOwners =
   [ "src/Prodbox/Lifecycle/ResidueStatus.hs"
   , "src/Prodbox/Lifecycle/LiveResidue.hs"
   ]
+
+-- | Sprint 4.98: exact absence is not minted from a predicate over subprocess
+-- output.
+--
+-- The defect this rule exists to prevent is on the record. A predicate grepped
+-- the merged standard error and standard output of a Pulumi invocation for
+-- three English phrases; the boolean it returned selected a fixed sentence;
+-- that sentence crossed the Provider wire; a second module compared it by
+-- equality against an independently authored copy and returned exact resource
+-- absence. Nothing joined the two copies, no coordinate travelled with the
+-- claim, and the backend the grep ran against had been hydrated from the local
+-- checkpoint -- so the strongest absence type in the repository was a statement
+-- about local state, reached by a substring match.
+--
+-- Two properties are checked, and they are load-bearing together. The first is
+-- ownership: an absence minter names the authority that observed the absence,
+-- so only a module that holds such an observation boundary may name one. The
+-- second is the rule proper: an owner may not also reduce subprocess output to
+-- a substring match, because that is the move that turns a diagnostic string
+-- into a claim about a resource.
+--
+-- __The bound is stated__ (@chaos_hardening_doctrine.md § 22@): this is a
+-- compiled rule over a source region, not a property of the type. It cannot
+-- prove that a permitted module consulted the layer it names -- only that a
+-- module with no observation boundary cannot mint absence at all, and that no
+-- owner reaches a verdict by grepping a subprocess.
+absenceMinterOwners :: [FilePath]
+absenceMinterOwners =
+  [ "src/Prodbox/Lifecycle/Teardown/Observation.hs"
+  , "src/Prodbox/Lifecycle/HostCleanupLocalAbsence.hs"
+  , "src/Prodbox/Lifecycle/HostCleanupLocalData.hs"
+  , "src/Prodbox/Lifecycle/HostCleanupRke2.hs"
+  , "src/Prodbox/Lifecycle/Teardown/AwsEbsAdapter.hs"
+  , "src/Prodbox/Lifecycle/Teardown/AwsEksAdapter.hs"
+  , "src/Prodbox/Lifecycle/Teardown/AwsIamRoleFamilyAdapter.hs"
+  , "src/Prodbox/Lifecycle/Teardown/AwsLoadBalancerControllerFamilyAdapter.hs"
+  , "src/Prodbox/Lifecycle/Teardown/AwsNativeStackFamilyAdapter.hs"
+  , "src/Prodbox/Lifecycle/Teardown/AwsRetainedEbsAdapter.hs"
+  , "src/Prodbox/Lifecycle/Teardown/AwsRoute53ZoneAdapter.hs"
+  , "src/Prodbox/Lifecycle/Teardown/AwsStackAdapter.hs"
+  , "src/Prodbox/Lifecycle/Teardown/CascadeEvidence/Internal.hs"
+  , "src/Prodbox/Lifecycle/Teardown/Dns01ChallengeRecordAdapter.hs"
+  , "src/Prodbox/Lifecycle/Teardown/EksDrainIntent.hs"
+  , "src/Prodbox/Lifecycle/Teardown/EksDrainInterpreter.hs"
+  , "src/Prodbox/ControlPlane/EksDrainReadBackReceiptRepository.hs"
+  ]
+
+absenceMinterNames :: [String]
+absenceMinterNames =
+  ["providerWorkerAbsence", "hostLocalAbsence", "kubernetesReadBackAbsence"]
+
+subprocessOutputAccessors :: [String]
+subprocessOutputAccessors = ["processStdout", "processStderr", "commandDetail"]
+
+substringPredicateNames :: [String]
+substringPredicateNames =
+  ["isInfixOf", "isPrefixOf", "isSuffixOf", "containsAny"]
+
+checkAbsenceMinterProvenance :: FilePath -> IO [String]
+checkAbsenceMinterProvenance repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (absenceMinterProvenanceViolations (path, contents))
+      )
+
+absenceMinterProvenanceViolations :: (FilePath, String) -> [String]
+absenceMinterProvenanceViolations (path, contents)
+  | not mintsAbsence = []
+  | path `notElem` absenceMinterOwners =
+      [ path
+          ++ " names an absence minter ("
+          ++ intercalate ", " mintedHere
+          ++ ") outside an observation boundary. Absence evidence records which "
+          ++ "authority observed the absence, so it must be minted where the "
+          ++ "observation is made, not asserted by a consumer downstream "
+          ++ "(chaos_hardening_doctrine.md § 21 class-A, § 24). The modules "
+          ++ "permitted to mint are: "
+          ++ intercalate ", " absenceMinterOwners
+          ++ ". If this module genuinely observes absence at a new authority, "
+          ++ "add it to `absenceMinterOwners` in the same change that adds the "
+          ++ "boundary -- never to silence this rule."
+      ]
+  | not (null grepLines) =
+      [ path
+          ++ ":"
+          ++ show lineNumber
+          ++ " reduces subprocess output to a substring match in a module that "
+          ++ "mints exact absence. A predicate over merged standard error and "
+          ++ "standard output is a statement about a diagnostic string, not an "
+          ++ "observation of a resource, and promoting one to absence is the "
+          ++ "defect Sprint `4.98` closed. Return the typed failure and let the "
+          ++ "caller decide, or observe the resource "
+          ++ "(lifecycle_reconciliation_doctrine.md § 3.0)."
+      | (lineNumber, _) <- grepLines
+      ]
+  | otherwise = []
+ where
+  sourceLines = zip [1 :: Int ..] (lines contents)
+  effective line = not ("--" `isPrefixOf` dropWhile isSpace line)
+  mentions names line = any (`isInfixOf` line) names
+  mintedHere =
+    [ name
+    | name <- absenceMinterNames
+    , any (\(_, line) -> effective line && name `isInfixOf` line) sourceLines
+    ]
+  mintsAbsence = not (null mintedHere)
+  grepLines =
+    [ (lineNumber, line)
+    | (lineNumber, line) <- sourceLines
+    , effective line
+    , mentions substringPredicateNames line
+    , mentions subprocessOutputAccessors line
+    ]
+
+-- | Sprint 4.99: the provider-evidence seal stays shut.
+--
+-- The codec closed a class rather than six instances: evidence is a sealed type
+-- minted by one canonical encoder against a bound the executor supplies, so a
+-- seventh encoder is a type error in the author's editor rather than a refusal
+-- on a cluster months later. Two source-level facts hold that shut, and neither
+-- is expressible in the type system.
+--
+-- The first is that the constructors live in a leaf module nothing else may
+-- import. A module holding 'ProviderEvidence''s constructor could mint evidence
+-- without going through the encoder, which is the hole the seal exists to
+-- close; a module holding 'ProviderEvidenceBound''s could author a size limit
+-- for itself, which is how the native-family encoder came to declare 128 KiB on
+-- a wire that carries 4,096 characters.
+--
+-- The second is that 'providerEvidenceFromWire' -- which re-derives evidence
+-- from bytes rather than rendering it -- belongs to the wire boundary. A
+-- producer that reaches for it is asserting that whatever it already rendered
+-- is admissible, which is the move the canonical encoder exists to replace.
+-- Producers take 'providerEvidenceFromWireText' during migration, or the
+-- encoder afterwards.
+--
+-- __The bound is stated__ (@chaos_hardening_doctrine.md § 22@): this is a
+-- compiled rule over a source region. It cannot prove the owners use the seam
+-- correctly -- only that no module outside the seam can reach past it. That it
+-- lands after the migration rather than before is deliberate: a gate ratchets a
+-- completed migration shut and is not a substitute for one
+-- (@chaos_hardening_doctrine.md § 23@).
+providerEvidenceSealOwners :: [FilePath]
+providerEvidenceSealOwners =
+  [ "src/Prodbox/Lifecycle/ProviderWorker/Evidence.hs"
+  , "src/Prodbox/Lifecycle/ProviderWorker/Evidence/Internal.hs"
+  , "src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs"
+  ]
+
+providerEvidenceSealedNames :: [String]
+providerEvidenceSealedNames =
+  [ "Prodbox.Lifecycle.ProviderWorker.Evidence.Internal"
+  , "providerEvidenceFromWire "
+  , "providerEvidenceFromWire("
+  ]
+
+checkProviderEvidenceSeal :: FilePath -> IO [String]
+checkProviderEvidenceSeal repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      , path `notElem` providerEvidenceSealOwners
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (providerEvidenceSealViolations (path, contents))
+      )
+
+providerEvidenceSealViolations :: (FilePath, String) -> [String]
+providerEvidenceSealViolations (path, contents)
+  | path `elem` providerEvidenceSealOwners = []
+  | otherwise =
+      [ path
+          ++ ":"
+          ++ show lineNumber
+          ++ " reaches past the provider-evidence seal by naming `"
+          ++ trim name
+          ++ "`. Evidence is minted by the canonical encoder against the bound "
+          ++ "the executor supplies, so a producer neither holds a constructor "
+          ++ "nor re-derives evidence from bytes it rendered itself -- that is "
+          ++ "the move six superseded encoders made, and it is why they could "
+          ++ "disagree with the rule that refused them "
+          ++ "(chaos_hardening_doctrine.md § 22, § 23). Use "
+          ++ "`encodeProviderEvidence`, or `providerEvidenceFromWireText` at a "
+          ++ "genuine wire boundary. The modules permitted past the seal are: "
+          ++ intercalate ", " providerEvidenceSealOwners
+          ++ ". Adding one is a change to where the seam is, never a way to "
+          ++ "silence this rule."
+      | (lineNumber, line) <- zip [1 :: Int ..] (lines contents)
+      , not ("--" `isPrefixOf` dropWhile isSpace line)
+      , name <- providerEvidenceSealedNames
+      , name `isInfixOf` line
+      ]
+ where
+  trim = dropWhileEnd (\character -> character == ' ' || character == '(')
+
+-- | Sprint 5.47: a value-level guard with no production consumer is not a
+-- guard.
+--
+-- Thirty-four sprints applied a type-level device to cleanup, absence and
+-- residue. Each makes a value unconstructible and each claim is true; none
+-- makes an outcome in a cloud account unconstructible, and
+-- [Pure FP Standards](pure_fp_standards.md) now says so in as many words. The
+-- residue those sprints left behind is a guard that is declared, tested, and
+-- called from nothing -- and before this rule the repository had no way to
+-- tell one from a live one. Two of the four rows in the
+-- @DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md@ entry this gate closes
+-- were found by reading; the other two were not.
+--
+-- The subject is deliberately narrow. It is not "a function whose name looks
+-- like a guard" -- that heuristic selects 208 bindings in this tree, of which
+-- roughly three in five are ordinary record accessors, and a rule whose
+-- registry is larger than its finding set constrains nothing. The subject is a
+-- binding whose __declared result type is one of the repository's own
+-- cleanup-authority types__: the types whose entire purpose is to make a claim
+-- about a resource's absence, its ownership, or a permission to destroy or
+-- retire it. Those are the claims a leak falsifies, and they are listed by
+-- name in 'typedGuardAuthorityTypes'.
+--
+-- __The bound is stated__ (@chaos_hardening_doctrine.md § 22@): this is a
+-- compiled rule over a source region, and three things are outside it.
+--
+-- It cannot see a guard whose authority travels in a type nobody registered
+-- here; 'unconsumedTypedGuardRegistry' is therefore a superset of what the
+-- discovery half finds, and a row for a symbol the discovery half does not
+-- produce is admitted rather than refused as stale.
+--
+-- It cannot see a guard that is consumed only by a caller that is itself
+-- dead. @observeAndPlanLegacyAdoption@ has no caller, and the four helpers it
+-- calls therefore have exactly one -- so the leaves of that lane are found
+-- here and its interior is not.
+--
+-- And it decides whether a symbol is read, never whether reading it was the
+-- right thing to do. A record field written into a literal is not a read of
+-- that field, and a mention inside a @fixed…Regression@ self-test is not a
+-- production consumer -- that is the whole distinction the 2026-09-08 leak
+-- turned on, because the strongest absence rule in the tree was asserted by
+-- exactly such a boolean and reached no decision. A field of a record that
+-- derives any instance is out of scope in the other direction: the derived
+-- code observes it, so it is consumed even with no selector call.
+typedGuardAuthorityTypes :: [(String, [String])]
+typedGuardAuthorityTypes =
+  [ ("AbsenceEvidence", [])
+  , ("AdminLegacyAdoptionPermit", [])
+  , ("CapabilityDisposition", ["CustodyRetire"])
+  , ("CapabilityRef", ["ManagedDestroy"])
+  , ("ConfirmedLegacyAdoptionPlan", [])
+  , ("DesiredAbsenceReportClassification", [])
+  , ("ObservedDurableWriteAheadOwnershipManifest", [])
+  , ("OwnershipManifestDecisionEvidence", [])
+  , ("VerifiedEksDrainSelection", [])
+  , ("VerifiedOwnershipManifest", [])
+  , ("VerifiedRestoredPrimaryCheckpoint", [])
+  ]
+
+-- | Sprint 5.47 (pure). Whether a declared type names a cleanup authority.
+--
+-- Whole-identifier, never substring. A substring match reads
+-- @CascadeAbsenceEvidence@ as @AbsenceEvidence@ and silently widens the region
+-- past what 'typedGuardAuthorityTypes' says it covers, which is the shape a
+-- gate region acquires when it is drawn to fit the code rather than stated.
+-- The cascade's aggregate is deliberately not listed: it carries evidence
+-- minted elsewhere, and the minters are what this rule governs.
+namesCleanupAuthority :: String -> Bool
+namesCleanupAuthority declaredType =
+  any matches typedGuardAuthorityTypes
+ where
+  tokens = haskellIdentifiersIn declaredType
+  matches (typeName, requiredIndices) =
+    typeName `elem` tokens && all (`elem` tokens) requiredIndices
+
+-- | Sprint 5.47: one registered cleanup-authority guard that production does
+-- not consume today, bound to the deletion ledger row that owns its
+-- consumption.
+--
+-- This is the declared-symbol and deletion-condition shape the legacy-escape
+-- registry established, applied to a second subject. The symbol is matched as
+-- a whole identifier, so a longer name that merely contains it is not an
+-- occurrence; the owner is the exact module that declares it, so a registry
+-- entry cannot outlive the code it describes; and
+-- 'unconsumedGuardConsumptionCondition' says what must become true before the
+-- symbol and this row are deleted together.
+--
+-- The registry is an inventory of a defect, not a licence for it. Every row
+-- names a ledger row that a scheduled sprint owns, and the moment a symbol
+-- gains a production consumer the row fails -- so wiring a guard up is a
+-- build failure until its ledger row is closed in the same change.
+data UnconsumedTypedGuard = UnconsumedTypedGuard
+  { unconsumedGuardSymbol :: String
+  -- ^ The exact declared symbol, matched as a whole identifier.
+  , unconsumedGuardOwner :: FilePath
+  -- ^ The repo-relative module that declares it.
+  , unconsumedGuardLedgerRow :: String
+  -- ^ The @Pending Removal@ row in
+  -- @DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md@ that owns the
+  -- consumption, quoted closely enough to find by search.
+  , unconsumedGuardConsumptionCondition :: String
+  -- ^ What must become true before the symbol has a production consumer and
+  -- this row is deleted.
+  }
+  deriving (Eq, Show)
+
+-- | Sprint 5.47: every cleanup-authority guard the worktree declares and
+-- production does not consume, with the ledger row that owns its consumption.
+--
+-- The rows are grouped by that ledger row rather than by module, because the
+-- reason each guard is unconsumed is a scheduled sprint and not a property of
+-- where it happens to live.
+unconsumedTypedGuardRegistry :: [UnconsumedTypedGuard]
+unconsumedTypedGuardRegistry =
+  map
+    writeAheadOwnershipRow
+    [ ("independentlyReadBackOwnershipManifestDecisionEvidence", ownershipRepositoryModule)
+    , ("verifiedOwnershipManifestDigest", ownershipManifestModule)
+    , ("verifiedOwnershipManifestEntries", ownershipManifestModule)
+    , ("verifiedOwnershipManifestProvenance", ownershipManifestModule)
+    , ("verifiedOwnershipManifestPurpose", ownershipManifestModule)
+    , ("verifiedOwnershipManifestScope", ownershipManifestModule)
+    , ("verifiedOwnershipManifestStackKey", ownershipManifestModule)
+    , ("verifiedOwnershipManifestVersion", ownershipManifestModule)
+    ]
+    ++ map
+      legacyAdoptionRow
+      [ ("commitAndReadBackConfirmedLegacyAdoptionManifest", legacyAdoptionRepositoryModule)
+      , ("adminLegacyAdoptionPermitNonce", legacyAdoptionPlanModule)
+      , ("adminLegacyAdoptionPermitPlanDigest", legacyAdoptionPlanModule)
+      , ("adminLegacyAdoptionPermitStackKey", legacyAdoptionPlanModule)
+      , ("admitAdminLegacyAdoptionPermit", legacyAdoptionPlanModule)
+      , ("confirmLegacyAdoptionPlan", legacyAdoptionPlanModule)
+      ]
+    ++ map
+      awsAdapterRow
+      [
+        ( "confirmExactAwsEbsAbsence"
+        , "src/Prodbox/Lifecycle/Teardown/AwsEbsAdapter.hs"
+        )
+      ,
+        ( "completeAwsEksDestroyAbsenceEvidence"
+        , "src/Prodbox/Lifecycle/Teardown/AwsEksDestroyAdapter.hs"
+        )
+      ,
+        ( "confirmExactAwsIamRoleFamilyAbsence"
+        , "src/Prodbox/Lifecycle/Teardown/AwsIamRoleFamilyAdapter.hs"
+        )
+      ,
+        ( "confirmExactAwsLoadBalancerControllerFamilyAbsence"
+        , "src/Prodbox/Lifecycle/Teardown/AwsLoadBalancerControllerFamilyAdapter.hs"
+        )
+      ,
+        ( "confirmExactAwsRetainedEbsAbsence"
+        , "src/Prodbox/Lifecycle/Teardown/AwsRetainedEbsAdapter.hs"
+        )
+      ,
+        ( "confirmExactAwsValidationZoneAbsence"
+        , "src/Prodbox/Lifecycle/Teardown/AwsRoute53ZoneAdapter.hs"
+        )
+      ,
+        ( "completeAwsStackDestroyAbsenceEvidence"
+        , "src/Prodbox/Lifecycle/Teardown/AwsStackAdapter.hs"
+        )
+      ,
+        ( "confirmExactDns01ChallengeAbsence"
+        , "src/Prodbox/Lifecycle/Teardown/Dns01ChallengeRecordAdapter.hs"
+        )
+      ,
+        ( "observeVerifiedEksDrainSelection"
+        , "src/Prodbox/Lifecycle/Teardown/EksDrainInterpreter.hs"
+        )
+      ,
+        ( "eksDrainNoTargetProviderEvidence"
+        , "src/Prodbox/Lifecycle/Teardown/EksDrainIntent.hs"
+        )
+      ]
+    ++ map
+      publicCascadeRow
+      [
+        ( "confirmRestoredCheckpoint"
+        , "src/Prodbox/Lifecycle/Teardown/Checkpoint.hs"
+        )
+      ,
+        ( "verifiedRestoredPrimaryOperationId"
+        , "src/Prodbox/Lifecycle/Teardown/Checkpoint.hs"
+        )
+      ,
+        ( "verifiedRestoredPrimaryProvenance"
+        , "src/Prodbox/Lifecycle/Teardown/Checkpoint.hs"
+        )
+      ,
+        ( "verifiedRestoredPrimaryStackKey"
+        , "src/Prodbox/Lifecycle/Teardown/Checkpoint.hs"
+        )
+      ,
+        ( "verifiedRestoredPrimaryVersion"
+        , "src/Prodbox/Lifecycle/Teardown/Checkpoint.hs"
+        )
+      ,
+        ( "dischargeByObservedAbsence"
+        , "src/Prodbox/Lifecycle/Teardown/CapabilityCustody/Internal.hs"
+        )
+      ,
+        ( "resourceDestroyCapability"
+        , "src/Prodbox/Lifecycle/ResourceRegistry.hs"
+        )
+      ,
+        ( "classifyDesiredAbsenceReport"
+        , "src/Prodbox/Lifecycle/Teardown/Report/Internal.hs"
+        )
+      ,
+        ( "classificationCompletesWith"
+        , "src/Prodbox/Lifecycle/Teardown/Report/Internal.hs"
+        )
+      ,
+        ( "classificationIncompleteWith"
+        , "src/Prodbox/Lifecycle/Teardown/Report/Internal.hs"
+        )
+      ,
+        ( "classificationRefusedDisposition"
+        , "src/Prodbox/Lifecycle/Teardown/Report/Internal.hs"
+        )
+      ,
+        ( "classificationSurface"
+        , "src/Prodbox/Lifecycle/Teardown/Report/Internal.hs"
+        )
+      ,
+        ( "custodyReleaseDispositions"
+        , "src/Prodbox/Lifecycle/Teardown/CapabilityCustody/Internal.hs"
+        )
+      ,
+        ( "internalCascadeCompleteLocalAbsence"
+        , "src/Prodbox/Lifecycle/Teardown/CascadeEvidence/Internal.hs"
+        )
+      ,
+        ( "residueResolutionConfirmedAbsence"
+        , "src/Prodbox/Lifecycle/ResidueStatus.hs"
+        )
+      ]
+ where
+  ownershipRepositoryModule = "src/Prodbox/ControlPlane/OwnershipManifestRepository.hs"
+  ownershipManifestModule = "src/Prodbox/Lifecycle/Teardown/OwnershipManifest.hs"
+  legacyAdoptionRepositoryModule =
+    "src/Prodbox/ControlPlane/LegacyAdoptionManifestRepository.hs"
+  legacyAdoptionPlanModule = "src/Prodbox/Lifecycle/Teardown/LegacyAdoptionPlan.hs"
+
+  writeAheadOwnershipRow (symbol, owner) =
+    UnconsumedTypedGuard
+      { unconsumedGuardSymbol = symbol
+      , unconsumedGuardOwner = owner
+      , unconsumedGuardLedgerRow =
+          "The write-ahead ownership manifest has no production writer"
+      , unconsumedGuardConsumptionCondition =
+          "Sprint `7.41` commits the write-ahead manifest and reads it back "
+            ++ "between the generation commit and the execute, implements the "
+            ++ "append so the manifest carries the identities the provider "
+            ++ "returned, and makes the read-back witness the only way to "
+            ++ "construct what the execute step consumes."
+      }
+
+  legacyAdoptionRow (symbol, owner) =
+    UnconsumedTypedGuard
+      { unconsumedGuardSymbol = symbol
+      , unconsumedGuardOwner = owner
+      , unconsumedGuardLedgerRow =
+          "The bounded legacy-adoption protocol has no authorization surface"
+      , unconsumedGuardConsumptionCondition =
+          "Sprint `7.42` lands the operator surface that mints an admin permit "
+            ++ "over the exact rendered plan digest, so the observer, the "
+            ++ "permit admission and the receipt commit have a caller."
+      }
+
+  awsAdapterRow (symbol, owner) =
+    UnconsumedTypedGuard
+      { unconsumedGuardSymbol = symbol
+      , unconsumedGuardOwner = owner
+      , unconsumedGuardLedgerRow =
+          "The AWS cascade adapter can still make a clean-completion"
+      , unconsumedGuardConsumptionCondition =
+          "The typed recover-to-clean graph becomes the AWS teardown route, so "
+            ++ "the exact desired-absence adapters Sprint `7.36` built are "
+            ++ "reached by a destroy rather than only by a table."
+      }
+
+  publicCascadeRow (symbol, owner) =
+    UnconsumedTypedGuard
+      { unconsumedGuardSymbol = symbol
+      , unconsumedGuardOwner = owner
+      , unconsumedGuardLedgerRow =
+          "The surviving ad-hoc residue assembly and bespoke public teardown executor"
+      , unconsumedGuardConsumptionCondition =
+          "Sprint `6.5` activates the typed writer as the sole public route and "
+            ++ "deletes the bespoke public cascade executor, so the "
+            ++ "restored-checkpoint, custody-discharge, managed-destroy and "
+            ++ "report classifications are consumed by the route that replaces "
+            ++ "it."
+      }
+
+-- | Sprint 5.47 (pure). Whether a Haskell identifier character continues an
+-- identifier, so a whole-identifier match is possible over tokenized source.
+isHaskellIdentifierCharacter :: Char -> Bool
+isHaskellIdentifierCharacter character =
+  isAlphaNum character || character == '_' || character == '\''
+
+-- | Sprint 5.47 (pure). Every Haskell identifier a source text mentions.
+--
+-- 'sourceIdentifiers' is not usable here. It reads a leading @'@ as an opening
+-- character quote and skips to the next one, so a promoted constructor --
+-- @AbsenceEvidence 'HostLocal@, which is the notation the entire absence
+-- vocabulary is written in -- swallows the text after it. This tokenizer reads
+-- the tick as punctuation, which is what it is in that position.
+haskellIdentifiersIn :: String -> [String]
+haskellIdentifiersIn = tokensIn . stripHaskellComments
+ where
+  tokensIn [] = []
+  tokensIn text@(character : rest)
+    | isAlpha character || character == '_' =
+        let (name, remaining) = span isHaskellIdentifierCharacter text
+         in name : tokensIn remaining
+    | otherwise = tokensIn rest
+
+-- | Sprint 5.47 (pure). A declaration's continuation: its indented lines, plus
+-- any blank line between them.
+--
+-- Blank-tolerant on purpose. Comments are blanked before this runs, so a body
+-- with a comment in it would otherwise end at that comment and leak the rest of
+-- the body into the scan -- which is how a self-test's own call to the guard it
+-- tests first read as a production consumer.
+spanDeclarationBody :: [String] -> ([String], [String])
+spanDeclarationBody = span (\line -> all isSpace line || isIndentedContinuation line)
+
+-- | Sprint 5.47 (pure). A column-0 lowercase binder and the rest of its line.
+topLevelBinderName :: String -> Maybe (String, String)
+topLevelBinderName line = case line of
+  (first : _)
+    | isAsciiLower first || first == '_' ->
+        case span isHaskellIdentifierCharacter line of
+          ([], _) -> Nothing
+          (name, rest) -> Just (name, rest)
+  _ -> Nothing
+
+-- | Sprint 5.47 (pure). Whether a line is an indented, non-blank continuation.
+isIndentedContinuation :: String -> Bool
+isIndentedContinuation line = case line of
+  (first : _) -> isSpace first && not (all isSpace line)
+  [] -> False
+
+-- | Sprint 5.47 (pure). A top-level signature starting at this line, its
+-- complete type text, and the lines after it.
+--
+-- Both spellings the formatter produces are recognized: @name :: ty@ on one
+-- line, and the leading-arrow form where @name@ sits alone and @::@ opens the
+-- next line. Forty-one percent of this tree's top-level signatures are the
+-- second spelling, so a rule that reads only the first silently covers the
+-- majority of no module.
+topLevelSignatureAt :: String -> [String] -> Maybe (String, String, [String])
+topLevelSignatureAt line remaining = case topLevelBinderName line of
+  Nothing -> Nothing
+  Just (name, rest)
+    | Just opening <- stripPrefix "::" (dropWhile isSpace rest) ->
+        let (continuation, after) = spanDeclarationBody remaining
+         in Just (name, unwords (opening : map (dropWhile isSpace) continuation), after)
+    | all isSpace rest
+    , (next : afterNext) <- remaining
+    , isIndentedContinuation next
+    , Just opening <- stripPrefix "::" (dropWhile isSpace next) ->
+        let (continuation, after) = spanDeclarationBody afterNext
+         in Just (name, unwords (opening : map (dropWhile isSpace) continuation), after)
+    | otherwise -> Nothing
+
+-- | Sprint 5.47 (pure). The leading binder of a field or definition position,
+-- after any record-literal separator.
+leadingBinder :: String -> Maybe String
+leadingBinder text =
+  case span isHaskellIdentifierCharacter (dropSeparator text) of
+    ([], _) -> Nothing
+    (name@(first : _), _)
+      | isAsciiLower first || first == '_' -> Just name
+    _ -> Nothing
+ where
+  dropSeparator =
+    dropWhile isSpace . dropWhile (`elem` (",{" :: String)) . dropWhile isSpace
+
+-- | Sprint 5.47 (pure). A record field declaration on this line: its binder and
+-- the type text, which may open on the following line.
+recordFieldAt :: String -> [String] -> Maybe (String, String)
+recordFieldAt line remaining
+  | not (isIndentedContinuation line) = Nothing
+  | otherwise = case leadingBinder line of
+      Nothing -> Nothing
+      Just name ->
+        let afterName =
+              drop
+                (length name)
+                (dropWhile isSpace (dropWhile (`elem` (",{" :: String)) (dropWhile isSpace line)))
+         in case stripPrefix "::" (dropWhile isSpace afterName) of
+              Just opening -> Just (name, opening)
+              Nothing
+                | all isSpace afterName
+                , (next : _) <- remaining
+                , Just opening <- stripPrefix "::" (dropWhile isSpace next) ->
+                    Just (name, opening)
+                | otherwise -> Nothing
+
+-- | Sprint 5.47 (pure). The cleanup-authority guards a module declares.
+--
+-- A record field counts only when its enclosing declaration derives nothing.
+-- A derived instance observes every field, so a field of a deriving record is
+-- consumed whether or not a selector is ever called; a field of a record that
+-- derives nothing is observable only through its selector, which is what makes
+-- an unused one dead rather than merely unreferenced.
+typedGuardDeclarationsIn :: String -> [String]
+typedGuardDeclarationsIn contents =
+  dedupeSorted (signatureNames sourceLines ++ concatMap fieldNames declarationBlocks)
+ where
+  sourceLines = lines (stripHaskellComments contents)
+
+  namesAuthority = namesCleanupAuthority
+
+  signatureNames [] = []
+  signatureNames (line : remaining) = case topLevelSignatureAt line remaining of
+    Just (name, signatureText, after)
+      | namesAuthority signatureText -> name : signatureNames after
+      | otherwise -> signatureNames after
+    Nothing -> signatureNames remaining
+
+  declarationBlocks = blocksIn sourceLines
+   where
+    blocksIn [] = []
+    blocksIn (line : remaining)
+      | any (`isPrefixOf` line) ["data ", "newtype "] =
+          let (body, after) = spanDeclarationBody remaining
+           in (line : body) : blocksIn after
+      | otherwise = blocksIn remaining
+
+  fieldNames block
+    | any ("deriving" `isInfixOf`) block = []
+    | otherwise = fieldsIn block
+   where
+    fieldsIn [] = []
+    fieldsIn (line : remaining) = case recordFieldAt line remaining of
+      Just (name, fieldType)
+        | namesAuthority fieldType -> name : fieldsIn remaining
+      _ -> fieldsIn remaining
+
+-- | Sprint 5.47 (pure). Which of the candidate guards a module reads.
+--
+-- Four positions are deliberately not reads. A module header and an import
+-- list name a symbol without consuming it. A signature block declares a type
+-- rather than calling anything. A binder position -- a field declaration, a
+-- field written into a record literal, or the left of a definition's @=@ --
+-- writes the symbol rather than reading it, which is the distinction that
+-- separates a manifest field nothing ever inspects from one a decision reads.
+-- And a @fixed...Regression@ body is a self-test: it proves the guard can
+-- refuse, and it is not a production consumer, which is exactly the shape the
+-- 2026-09-08 leak crossed.
+typedGuardConsumptionsIn :: [String] -> String -> [String]
+typedGuardConsumptionsIn candidates contents =
+  dedupeSorted
+    [ name
+    | text <- consumingTexts (dropModuleHeader (lines (stripHaskellComments contents)))
+    , name <- haskellIdentifiersIn (stripStringLiterals text)
+    , name `elem` candidates
+    ]
+ where
+  dropModuleHeader sourceLines =
+    case break (\line -> dropWhileEnd isSpace line == "where") sourceLines of
+      (_, _ : afterWhere) -> afterWhere
+      (whole, []) -> whole
+
+  consumingTexts [] = []
+  consumingTexts (line : remaining)
+    | "import" `isPrefixOf` line = consumingTexts (snd (spanDeclarationBody remaining))
+    | Just (_, _, after) <- topLevelSignatureAt line remaining = consumingTexts after
+    | isRegressionBinder line = consumingTexts (snd (spanDeclarationBody remaining))
+    | otherwise = rightHandSideOf line : consumingTexts remaining
+
+  isRegressionBinder line = case topLevelBinderName line of
+    Just (name, _) -> "fixed" `isPrefixOf` name && "Regression" `isInfixOf` name
+    Nothing -> False
+
+  rightHandSideOf line
+    | isFieldDeclaration line = ""
+    -- A column-0 binder opens a definition, so the binder itself is the name
+    -- being written and never a read of it -- including the formatter's
+    -- spelling where the binder sits alone above its argument patterns.
+    | Just (_, afterBinder) <- topLevelBinderName line = afterBinder
+    | otherwise = case breakOnDefinitionEquals line of
+        Just (before, after) | isBinderPosition before -> after
+        _ -> line
+
+  isFieldDeclaration line = case leadingBinder line of
+    Nothing -> False
+    Just name ->
+      let afterName =
+            drop
+              (length name)
+              (dropWhile isSpace (dropWhile (`elem` (",{" :: String)) (dropWhile isSpace line)))
+       in "::" `isPrefixOf` dropWhile isSpace afterName
+
+  breakOnDefinitionEquals = go ""
+   where
+    go _ [] = Nothing
+    go acc (' ' : '=' : ' ' : rest) = Just (reverse acc, rest)
+    go acc (character : rest) = go (character : acc) rest
+
+  isBinderPosition before = case leadingBinder before of
+    Just _ -> True
+    Nothing -> False
+
+-- | Sprint 5.47 (pure). The four directions of the guard-consumption
+-- bijection, over observations rather than over the filesystem, so each is
+-- injection-testable.
+--
+-- The registry is a parameter for the reason Sprint `1.91` gave for the
+-- coordinate registry: a gate that can only be exercised against the tree it
+-- already passes on has been observed to pass, not to refuse.
+typedGuardConsumptionFindings
+  :: [UnconsumedTypedGuard]
+  -- ^ The registry under test.
+  -> [FilePath]
+  -- ^ Every scanned path.
+  -> [(FilePath, [String])]
+  -- ^ The cleanup-authority guards declared per scanned path.
+  -> [(FilePath, [String])]
+  -- ^ The guards each scanned path reads.
+  -> [(FilePath, [String])]
+  -- ^ Every identifier each scanned path mentions at all, for symbol survival.
+  -> [String]
+typedGuardConsumptionFindings registry scanned declarationsByPath consumptionsByPath identifiersByPath =
+  sort (unregistered ++ staleEntries ++ consumedEntries ++ missingOwners)
+ where
+  consumed = dedupeSorted (concatMap snd consumptionsByPath)
+  registered = map unconsumedGuardSymbol registry
+
+  unregistered =
+    [ path
+        ++ " declares `"
+        ++ name
+        ++ "`, whose declared type names one of the repository's "
+        ++ "cleanup-authority types, and no module under `src/` reads it. A value-level guard "
+        ++ "with no production consumer is not a guard "
+        ++ "(pure_fp_standards.md, chaos_hardening_doctrine.md \167 22). Give it a "
+        ++ "caller, delete it, or register it in `unconsumedTypedGuardRegistry` "
+        ++ "with the deletion-ledger row that owns its consumption -- never to "
+        ++ "silence this rule, because the registry is an inventory of a defect "
+        ++ "and every row names a scheduled sprint."
+    | (path, names) <- declarationsByPath
+    , name <- names
+    , name `notElem` consumed
+    , name `notElem` registered
+    ]
+
+  staleEntries =
+    [ "`unconsumedTypedGuardRegistry` registers `"
+        ++ unconsumedGuardSymbol entry
+        ++ "` against "
+        ++ unconsumedGuardOwner entry
+        ++ ", which no longer names it. Remove the entry so the registry stays "
+        ++ "a description of the worktree rather than a memory of it."
+    | entry <- registry
+    , unconsumedGuardOwner entry `elem` scanned
+    , unconsumedGuardSymbol entry
+        `notElem` concat [names | (path, names) <- identifiersByPath, path == unconsumedGuardOwner entry]
+    ]
+
+  consumedEntries =
+    [ "`unconsumedTypedGuardRegistry` records `"
+        ++ unconsumedGuardSymbol entry
+        ++ "` as consumed by no production path, and it is consumed now. "
+        ++ "Delete the entry in the same change that wires it, and close the "
+        ++ "deletion-ledger row it names: \""
+        ++ unconsumedGuardLedgerRow entry
+        ++ "\"."
+    | entry <- registry
+    , unconsumedGuardSymbol entry `elem` consumed
+    ]
+
+  missingOwners =
+    [ scopedPathMissingViolation "`unconsumedTypedGuardRegistry`" relativePath
+    | relativePath <- dedupeSorted (map unconsumedGuardOwner registry)
+    , relativePath `notElem` scanned
+    ]
+
+-- | Sprint 5.47 (IO). The cleanup-authority guard-consumption bijection.
+checkTypedGuardConsumption :: FilePath -> IO [String]
+checkTypedGuardConsumption repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let scanned =
+        [ path
+        | path <- repoPaths
+        , "src/" `isPrefixOf` path
+        , ".hs" `isSuffixOf` path
+        , path /= "src/Prodbox/CheckCode.hs"
+        ]
+  observed <-
+    forM scanned $ \relativePath -> do
+      contents <- readFileStrict (repoRoot </> relativePath)
+      pure (relativePath, contents)
+  let declarationsByPath =
+        [(path, typedGuardDeclarationsIn contents) | (path, contents) <- observed]
+      identifiersByPath =
+        [(path, dedupeSorted (haskellIdentifiersIn contents)) | (path, contents) <- observed]
+      candidates =
+        dedupeSorted
+          ( concatMap snd declarationsByPath
+              ++ map unconsumedGuardSymbol unconsumedTypedGuardRegistry
+          )
+      consumptionsByPath =
+        [(path, typedGuardConsumptionsIn candidates contents) | (path, contents) <- observed]
+  pure
+    ( typedGuardConsumptionFindings
+        unconsumedTypedGuardRegistry
+        scanned
+        declarationsByPath
+        consumptionsByPath
+        identifiersByPath
+    )
+
+-- | Sprint 5.47: a serialised sum may not lose arms its in-process type
+-- distinguishes.
+--
+-- This defect class has been found and repaired six times: Sprints @2.46@
+-- through @2.49@ on the Bootstrap Broker's refusals, Sprint @4.97@ on the
+-- provider execution wire, and Sprint @4.99@ on the provider evidence wire.
+-- Each repair was correct and none of them left a rule behind, so the seventh
+-- instance was written after the sixth was closed.
+--
+-- The rule is over a *rendering*: a function from a sum type to a wire scalar.
+-- Two arms that render distinct constructors to the same literal make the wire
+-- unable to say which one happened, and a catch-all that renders twenty
+-- constructors as one sentence is the same defect with the arms not written
+-- down. The worst spelling of it renders them as the empty string, so absence
+-- is implied where a cause was meant.
+--
+-- __The bound is stated__ (@chaos_hardening_doctrine.md § 22@), and it is
+-- larger here than for any other rule in this module, because the property
+-- that actually matters is not decidable from source text.
+--
+-- What matters is whether __the record that crosses__ is injective over the
+-- in-process sum. Sprint @4.97@'s repair did not make its scalar injective: it
+-- put the tag beside it on the same record, which is correct and which this
+-- rule reads as a collapse. Such a site is registered with the sibling that
+-- carries the tag, so the exemption is a claim a reader can check rather than
+-- a mute.
+--
+-- It also cannot tell a classifier from an identity encoder. Four functions in
+-- the Broker's engine adapter deliberately map twelve, seven, nine and
+-- fourteen causes onto three boundary words that cross an HTTP wire, and the
+-- collapse is the design. No matcher separates those from a defect, and
+-- inventing one that happened to exclude them would be a region drawn to fit
+-- the code.
+--
+-- And it would not have caught either of the defects that motivated it. Sprint
+-- @4.99@'s were a control character inside an otherwise-distinct literal and
+-- rows emitted in the provider's pagination order; Sprint @4.97@'s was a
+-- caller that rebuilt the result from the intent it had sent. Those are value
+-- and dataflow facts. __This rule is a ratchet on a repaired tree, and it is
+-- credited with catching neither.__
+wireFidelityExemptions :: [(FilePath, String, String)]
+wireFidelityExemptions =
+  map
+    brokerBoundaryClassifier
+    [ "provisionerAccessorAbsenceBoundaryName"
+    , "provisionerAccessorCleanupBoundaryName"
+    , "provisionerAccessorRevocationBoundaryName"
+    , "rootAccessorAbsenceBoundaryName"
+    , "rootAccessorInventoryBoundaryName"
+    , "rootAccessorRevocationBoundaryName"
+    ]
+    ++ [
+         ( "src/Prodbox/Bootstrap/Broker/PgpBoundary.hs"
+         , "generatedRootActionFailureStageName"
+         , "The value names the stage reached within one generated-root action, "
+             ++ "not the action. Observe and revoke both fail on the same Vault "
+             ++ "accessor request, so `accessor-request` is the correct stage for "
+             ++ "each; the action is carried by the sibling "
+             ++ "`generatedRootActionKindName` segment that `pgpBoundaryErrorName` "
+             ++ "emits immediately before it, leaving the composed values "
+             ++ "distinct."
+         )
+       ,
+         ( "src/Prodbox/Bootstrap/Broker/ProductionEngine.hs"
+         , "absenceReceiptName"
+         , "The two `none` arms are unreachable from the only call site, which "
+             ++ "sits inside the arm `decideBootstrapFenceRetire` reaches only "
+             ++ "for an observed absence; they keep the case total. The "
+             ++ "still-present and unobservable observations take the refusal "
+             ++ "branch three lines earlier, where `bootstrapFenceRetireRefusalName` "
+             ++ "narrates them apart -- so the distinction "
+             ++ "lifecycle_reconciliation_doctrine.md \167 3.0 requires is drawn "
+             ++ "where it licenses a decision."
+         )
+       ,
+         ( "src/Prodbox/ControlPlane/LocalClient.hs"
+         , "localClientStartupProbePath"
+         , "The codomain is a URL path, not a role identity. Every control-plane "
+             ++ "runtime exposes exactly two probe routes, so six roles sharing "
+             ++ "`/readyz` exhausts the range rather than losing a distinction, "
+             ++ "and what the function does encode -- that the Authority Backup "
+             ++ "waits on listener liveness alone, because genesis contacts it "
+             ++ "before its object-store credential exists -- is the one arm that "
+             ++ "differs. Role identity is carried injectively by the sibling "
+             ++ "`runtimeRoleName`."
+         )
+       ,
+         ( "src/Prodbox/ControlPlane/TargetSecretWorkerRuntime.hs"
+         , "renderTargetSecretWorkerRuntimeRefusal"
+         , "A real defect, deferred rather than exempted on its merits: twenty "
+             ++ "of twenty-eight runtime failures reach the coordinator as one "
+             ++ "token, and the provisional frame carries no sibling field that "
+             ++ "could distinguish them. Widening the token set changes the "
+             ++ "refusal vocabulary the standing Target Agent parses and the "
+             ++ "protected Target log records, which is a deployed-protocol change "
+             ++ "Sprint `5.47` is forbidden to make. Owned by the deletion-ledger "
+             ++ "row \"Twenty of the Target Secret Worker's twenty-eight runtime "
+             ++ "failures reach the coordinator as one refusal token\"."
+         )
+       ,
+         ( "src/Prodbox/ControlPlane/TargetSecretWorkerRuntime.hs"
+         , "renderTlsDekTransitFailureSuffix"
+         , "An optional second-level suffix, not the discriminator. The cause is "
+             ++ "already rendered by `renderTlsDekExchangeRefusalCause` over a "
+             ++ "classifier total on all eleven constructors, so the empty string "
+             ++ "means no further refinement for that cause and loses nothing the "
+             ++ "preceding component carries."
+         )
+       ,
+         ( "src/Prodbox/ControlPlane/TargetSecretWorkerRuntime.hs"
+         , "renderTlsHomeRewrapTargetError"
+         , "The home-rewrap path constructs only the DEK-exchange arm, so the "
+             ++ "other eight constructors are unreachable here and "
+             ++ "`other-target-error` names that residue rather than collapsing "
+             ++ "live causes. The sibling `renderTlsTargetAgentError` renders all "
+             ++ "nine distinctly on the retain and restore prefixes, where every "
+             ++ "arm is reachable."
+         )
+       ,
+         ( "src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs"
+         , "providerIntentResourceKey"
+         , "The key names the registered resource family the Authority grants, "
+             ++ "not the operation, so an observe and its reap share one key by "
+             ++ "contract -- it is the grant both halves draw on. The read/mutate "
+             ++ "distinction is restored by `operationForProviderIntent` and by "
+             ++ "the dispatch validators that refuse a reap under an observation "
+             ++ "purpose, and `providerIntentCoordinate` is the injective sibling "
+             ++ "that renders all thirty-two intents apart."
+         )
+       ,
+         ( "src/Prodbox/Pulumi/EncryptedBackend.hs"
+         , "checkpointObservationToken"
+         , "Every arm drops its payload: the token names the observation class "
+             ++ "for one operator sentence, and a corrupt checkpoint with a "
+             ++ "predecessor digest and one without are the same class to a "
+             ++ "reader of that sentence. Where the digest is load-bearing it is "
+             ++ "re-observed rather than carried: `pruneLogicalPulumiStack` "
+             ++ "branches on the two arms and refuses the payload-free one by "
+             ++ "name."
+         )
+       ,
+         ( "src/Prodbox/Settings/Coordinate.hs"
+         , "renderCoordinateError"
+         , "The two arms are the two directions of one interval predicate, and "
+             ++ "the sentence states the admissible window either direction "
+             ++ "violates, which is the fact an operator choosing a replacement "
+             ++ "value needs. The direction is not destroyed: both constructors "
+             ++ "are exported and each carries the offending value, so a caller "
+             ++ "that needs the crossed bound can match on it."
+         )
+       ]
+ where
+  brokerBoundaryClassifier name =
+    ( "src/Prodbox/Bootstrap/Broker/EngineAdapter.hs"
+    , name
+    , "A deliberate three-valued classifier whose collapse is the published "
+        ++ "contract. `boundaryReply` string-matches the returned value to "
+        ++ "select the HTTP status and emits it verbatim as the reply body, so "
+        ++ "refused, unavailable and ambiguous are three client decisions rather "
+        ++ "than a lost cause. The exact constructor survives on the protected "
+        ++ "baseline diagnostic through the matching `...CauseName` renderer in "
+        ++ "`src/Prodbox/Bootstrap/Broker/Engine.hs`, and vault_doctrine.md and "
+        ++ "bootstrap_readiness_doctrine.md both require the public arm to stay "
+        ++ "generic until live evidence licenses a behavior change."
+    )
+
+-- | Sprint 5.47 (pure). The sum types a source corpus declares, as
+-- @(type name, constructor names)@.
+--
+-- Only plain algebraic declarations are indexed. A GADT-syntax declaration
+-- (@where@ on the head line) is skipped rather than guessed at, and a type
+-- name two modules both declare is dropped from the index entirely -- without
+-- a typechecker there is no sound way to say which one an arm is matching, and
+-- refusing to judge is the honest answer.
+sumTypeIndexIn :: [(FilePath, String)] -> [(String, [String])]
+sumTypeIndexIn corpus =
+  [ (typeName, constructors)
+  | (typeName, constructors) <- indexed
+  , length [() | (other, _) <- indexed, other == typeName] == 1
+  ]
+ where
+  indexed =
+    [ entry
+    | (_, contents) <- corpus
+    , entry <- declarationsIn (lines (stripHaskellComments contents))
+    ]
+
+  declarationsIn [] = []
+  declarationsIn (line : remaining)
+    | any (`isPrefixOf` line) ["data ", "newtype "] =
+        let (body, after) = spanDeclarationBody remaining
+         in case sumDeclarationEntry (unwords (line : map (dropWhile isSpace) body)) of
+              Just entry -> entry : declarationsIn after
+              Nothing -> declarationsIn after
+    | otherwise = declarationsIn remaining
+
+-- | Sprint 5.47 (pure). One flattened @data@ declaration as a sum-type entry.
+sumDeclarationEntry :: String -> Maybe (String, [String])
+sumDeclarationEntry declaration = do
+  afterKeyword <-
+    case stripPrefix "data " declaration of
+      Just rest -> Just rest
+      Nothing -> stripPrefix "newtype " declaration
+  let (typeName, afterName) = span isHaskellIdentifierCharacter (dropWhile isSpace afterKeyword)
+      beforeDeriving = takeUntilInfix "deriving" afterName
+  if null typeName || "where" `elem` words afterName
+    then Nothing
+    else case break (== '=') beforeDeriving of
+      (_, '=' : alternatives) ->
+        let constructors =
+              [ constructor
+              | alternative <- splitTopLevelBars alternatives
+              , constructor <- take 1 (words (dropWhile isSpace alternative))
+              , (first : _) <- [constructor]
+              , isAsciiUpper first
+              ]
+         in if length constructors >= 2 then Just (typeName, constructors) else Nothing
+      _ -> Nothing
+
+-- | Sprint 5.47 (pure). Everything before the first occurrence of a marker.
+takeUntilInfix :: String -> String -> String
+takeUntilInfix marker = go ""
+ where
+  go acc [] = reverse acc
+  go acc text@(character : rest)
+    | marker `isPrefixOf` text = reverse acc
+    | otherwise = go (character : acc) rest
+
+-- | Sprint 5.47 (pure). Split alternatives on @|@ at bracket depth zero.
+splitTopLevelBars :: String -> [String]
+splitTopLevelBars = go (0 :: Int) ""
+ where
+  go _ acc [] = [reverse acc]
+  go depth acc (character : rest)
+    | character `elem` ("([{" :: String) = go (depth + 1) (character : acc) rest
+    | character `elem` (")]}" :: String) = go (depth - 1) (character : acc) rest
+    | character == '|' && depth == 0 = reverse acc : go depth "" rest
+    | otherwise = go depth (character : acc) rest
+
+-- | Sprint 5.47 (pure). The result component of a signature, at arrow depth
+-- zero.
+signatureResultType :: String -> String
+signatureResultType signatureText =
+  dropWhileEnd isSpace (dropWhile isSpace (lastComponent (splitTopLevelArrows signatureText)))
+ where
+  lastComponent components = case reverse components of
+    (final : _) -> final
+    [] -> ""
+
+-- | Sprint 5.47 (pure). Split a type on @->@ at bracket depth zero.
+splitTopLevelArrows :: String -> [String]
+splitTopLevelArrows = go (0 :: Int) ""
+ where
+  go _ acc [] = [reverse acc]
+  go depth acc text@(character : rest)
+    | character `elem` ("([{" :: String) = go (depth + 1) (character : acc) rest
+    | character `elem` (")]}" :: String) = go (depth - 1) (character : acc) rest
+    | depth == 0 && "->" `isPrefixOf` text = reverse acc : go depth "" (drop 2 text)
+    | otherwise = go depth (character : acc) rest
+
+-- | Sprint 5.47 (pure). One rendering arm: its pattern head and its complete
+-- right-hand side.
+data RenderingArm = RenderingArm
+  { renderingArmHead :: String
+  , renderingArmBody :: String
+  }
+  deriving (Eq, Show)
+
+-- | Sprint 5.47 (pure). The arms of every @case@ or @\\case@ inside a
+-- function body.
+--
+-- An arm is a line whose first token is a constructor or @_@ and which carries
+-- a top-level @->@; the arms of a nested @case@ join the same list, which
+-- over-approximates and is stated: a nested match on a second type can only
+-- add heads this rule then fails to place in any indexed type, and an unplaced
+-- head is skipped.
+renderingArmsIn :: [String] -> [RenderingArm]
+renderingArmsIn bodyLines = collect bodyLines
+ where
+  collect [] = []
+  collect (line : remaining) = case armAt line of
+    Nothing -> collect remaining
+    Just (armHead, armBody) ->
+      let (continuation, after) = break isArmLine remaining
+       in RenderingArm armHead (unwords (armBody : map (dropWhile isSpace) continuation))
+            : collect after
+
+  isArmLine line = case armAt line of
+    Just _ -> True
+    Nothing -> False
+
+  -- `_` is an identifier character in Haskell, so the catch-all arm's head
+  -- comes back from the same span as a constructor's does. Reading it as one
+  -- is what made the first draft of this rule report no catch-all anywhere in
+  -- a tree that has several.
+  armAt line =
+    let trimmed = dropWhile isSpace line
+     in case span isHaskellIdentifierCharacter trimmed of
+          (headToken@(first : _), rest)
+            | headToken == "_" || isAsciiUpper first
+            , Just body <- arrowBody rest ->
+                Just (headToken, body)
+          _ -> Nothing
+
+  arrowBody text = case splitOnTopLevelArrow text of
+    Just body -> Just (dropWhile isSpace body)
+    Nothing -> Nothing
+
+-- | Sprint 5.47 (pure). Everything after the first top-level @->@.
+splitOnTopLevelArrow :: String -> Maybe String
+splitOnTopLevelArrow = go (0 :: Int)
+ where
+  go _ [] = Nothing
+  go depth text@(character : rest)
+    | character `elem` ("([{" :: String) = go (depth + 1) rest
+    | character `elem` (")]}" :: String) = go (depth - 1) rest
+    | depth == 0 && "->" `isPrefixOf` text = Just (drop 2 text)
+    | depth == 0 && "::" `isPrefixOf` text = Nothing
+    | otherwise = go depth rest
+
+-- | Sprint 5.47 (pure). Whether a rendered body is exactly one string literal.
+--
+-- Nothing else counts, and the reason is measured rather than assumed. Two
+-- arms that share the text @" (" ++ boundaryName boundary ++ ")"@ render
+-- *different* bytes, because @boundary@ is bound by each arm's own pattern;
+-- reading a shared literal prefix as a shared value reported 30 percent false
+-- positives on the one rule that is supposed to be the high-confidence half.
+isWireLiteralBody :: String -> Bool
+isWireLiteralBody body = case dropWhile isSpace body of
+  ('"' : rest) -> all isSpace (afterLiteral rest)
+  _ -> False
+ where
+  afterLiteral [] = []
+  afterLiteral ('\\' : _escaped : rest) = afterLiteral rest
+  afterLiteral ('"' : rest) = rest
+  afterLiteral (_ : rest) = afterLiteral rest
+
+-- | Sprint 5.47 (pure). The wire-fidelity findings for one module.
+--
+-- Two shapes, both build-failing, both over a function whose declared result
+-- is exactly @Text@ or @String@ and whose arms name the constructors of one
+-- indexed sum:
+--
+--   * two arms with distinct constructor heads and the same literal body, and
+--   * a catch-all whose body is a literal, over a type with more constructors
+--     than the function writes arms for.
+--
+-- A catch-all that delegates -- @_ -> f x@ -- is not reported, because @f@ may
+-- be total over the same sum and frequently is. That is a stated false
+-- negative rather than a cleverer matcher.
+wireFidelityViolations
+  :: [(FilePath, String, String)]
+  -- ^ The exemption registry under test.
+  -> [(String, [String])]
+  -- ^ The sum-type index.
+  -> (FilePath, String)
+  -- ^ The module under test.
+  -> [String]
+wireFidelityViolations exemptions sumTypes (path, contents) =
+  concatMap findingsFor renderers
+ where
+  sourceLines = lines (stripHaskellComments contents)
+
+  renderers = renderersIn sourceLines
+
+  renderersIn [] = []
+  renderersIn (line : remaining) = case topLevelSignatureAt line remaining of
+    Nothing -> renderersIn remaining
+    Just (name, signatureText, afterSignature)
+      | signatureResultType signatureText `elem` ["Text", "String"] ->
+          let (body, afterBody) = definitionBodyAt name afterSignature
+           in (name, body) : renderersIn afterBody
+      | otherwise -> renderersIn afterSignature
+
+  definitionBodyAt name candidateLines = case candidateLines of
+    (line : remaining)
+      | Just (binder, _) <- topLevelBinderName line
+      , binder == name ->
+          let (body, after) = spanDeclarationBody remaining
+           in (line : body, after)
+    _ -> ([], candidateLines)
+
+  findingsFor (name, body)
+    | any exempted exemptions = []
+    | otherwise = duplicateFindings ++ catchAllFindings
+   where
+    exempted (exemptPath, exemptName, _) = exemptPath == path && exemptName == name
+
+    arms = renderingArmsIn body
+    constructorHeads = [renderingArmHead arm | arm <- arms, renderingArmHead arm /= "_"]
+
+    -- The catch-all rule needs one scrutinee, because its whole claim is an
+    -- arm count against a constructor count.
+    scrutinised =
+      take
+        1
+        [ (typeName, constructors)
+        | not (null constructorHeads)
+        , (typeName, constructors) <- sumTypes
+        , all (`elem` constructors) constructorHeads
+        ]
+
+    -- The duplicate rule does not, and must not. `renderingArmsIn` joins the
+    -- arms of every `case` in a function body, including `where`-bound ones
+    -- over different types, so comparing literals across the whole body reads
+    -- a composite renderer's `size=empty` and `shape=empty` -- two
+    -- constructors of two types written into two labelled fields -- as one
+    -- collapsed value. Comparing within each type separately is what the
+    -- rule's own sentence says, and it is why a nested match on a second type
+    -- neither invents a finding nor silences the outer one.
+    typesInPlay =
+      [ (typeName, constructors)
+      | (typeName, constructors) <- sumTypes
+      , any (`elem` constructors) constructorHeads
+      ]
+
+    -- One finding per collapsed value, never per pair: a three-valued
+    -- classifier over fourteen constructors has ninety-one pairs and one
+    -- decision to make about it.
+    --
+    -- Both shapes are guarded by `scrutinised`, and that is not a refinement:
+    -- `renderingArmsIn` joins the arms of every `case` in a function body,
+    -- including `where`-bound ones over different types, so an unguarded
+    -- duplicate rule reads a composite renderer's `size=empty` and
+    -- `shape=empty` -- two constructors of two types written into two labelled
+    -- fields -- as one collapsed value. Three of the rule's first twenty-seven
+    -- findings were exactly that, and the rule's own sentence says "the
+    -- constructors of one sum type".
+    literalArmsOf constructors =
+      [ (dropWhileEnd isSpace (dropWhile isSpace (renderingArmBody arm)), renderingArmHead arm)
+      | arm <- arms
+      , renderingArmHead arm /= "_"
+      , renderingArmHead arm `elem` constructors
+      , isWireLiteralBody (renderingArmBody arm)
+      ]
+
+    duplicateFindings =
+      [ path
+          ++ " renders `"
+          ++ name
+          ++ "` arms "
+          ++ intercalate ", " (map (\head' -> "`" ++ head' ++ "`") sharingHeads)
+          ++ " of `"
+          ++ typeName
+          ++ "` to the same wire value "
+          ++ literal
+          ++ ". A reader of that value cannot say which constructor happened, "
+          ++ "which is the defect Sprints `2.46`-`2.49`, `4.97` and `4.99` each "
+          ++ "found again (chaos_hardening_doctrine.md \167 22). Give the arms "
+          ++ "distinct values, carry the tag on a sibling field of the record "
+          ++ "that crosses, or register the site in `wireFidelityExemptions` "
+          ++ "naming what restores the distinction."
+      | (typeName, constructors) <- typesInPlay
+      , let literalArms = literalArmsOf constructors
+      , literal <- dedupeSorted (map fst literalArms)
+      , let sharingHeads = dedupeSorted [armHead | (value, armHead) <- literalArms, value == literal]
+      , length sharingHeads >= 2
+      ]
+
+    catchAllFindings =
+      [ path
+          ++ " renders `"
+          ++ name
+          ++ "` with a catch-all to "
+          ++ renderedCatchAll
+          ++ ", collapsing "
+          ++ show (length constructors - length constructorHeads)
+          ++ " of `"
+          ++ typeName
+          ++ "`'s "
+          ++ show (length constructors)
+          ++ " constructors into one wire value. Write the arms, or register "
+          ++ "the site in `wireFidelityExemptions` with the reason the "
+          ++ "collapse is the contract."
+      | (typeName, constructors) <- scrutinised
+      , length constructorHeads < length constructors
+      , arm <- arms
+      , renderingArmHead arm == "_"
+      , isWireLiteralBody (renderingArmBody arm)
+          || null (dropWhile isSpace (renderingArmBody arm))
+      , let renderedCatchAll =
+              if null (dropWhile isSpace (renderingArmBody arm))
+                then "nothing at all"
+                else dropWhileEnd isSpace (renderingArmBody arm)
+      ]
+
+-- | Sprint 6.5: a type whose unconstructibility claim lives in its export list.
+--
+-- Several sprints rest on "this state cannot be built from outside" — a
+-- dual-writer cutover state, a post-activation rollback, an execute step called
+-- without the read-back that authorizes it. Each is true only while the type's
+-- constructors stay inside its module, and each is untestable by construction:
+-- the test that would notice is the one that cannot be written, because there
+-- is nothing to call. Widening an export list to @Type (..)@ would void the
+-- claim without changing a line of logic and without failing anything.
+data SealedConstructorType = SealedConstructorType
+  { sealedConstructorModulePath :: !FilePath
+  -- ^ The module whose export list carries the seal.
+  , sealedConstructorTypeName :: !String
+  , sealedConstructorOrigin :: !SealedConstructorOrigin
+  , sealedConstructorReason :: !String
+  }
+
+-- | Where the sealed type is declared.
+--
+-- Both shapes occur and they are not interchangeable.  A type declared and
+-- sealed in one module is the simple case.  The other is this repository's
+-- usual one: an @\.\.\.Internal@ module declares the type and exports its
+-- constructors for its own family, and a public facade re-exports it
+-- abstractly.  The claim then lives in the /facade's/ export list, so that is
+-- the module a row must name — and the origin is named too, so a row cannot
+-- outlive the declaration it is sealing.
+data SealedConstructorOrigin
+  = SealedDeclaredHere
+  | SealedReExportedFrom !FilePath
+
+-- | The registry.  Deliberately small: a row belongs here only when a written
+-- claim somewhere else depends on the constructor staying sealed, so the list
+-- is an inventory of load-bearing claims rather than of opaque types.
+--
+-- __A row names the module that actually holds the seal.__  When the declaring
+-- module exports the type abstractly, that is the tightest seal and the row
+-- names it; a facade cannot re-export constructors it never received.  When the
+-- declaring module exports its constructors to its own family — the
+-- @\.\.\.Internal@ shape — the seal is the public facade's, and the row names
+-- the facade and the origin both.
+--
+-- __The bound on a facade row is worth stating.__  It bounds the /public/
+-- boundary only.  The declaring internal module exports its constructors to
+-- whatever imports it, and nothing in this repository restricts who does: 18
+-- modules import @CascadeEvidence.Internal@ directly today.  So a facade row
+-- holds \"not mintable through the public API\", which is what the facade's own
+-- Haddock claims, and not \"not mintable in this package\".
+sealedConstructorRegistry :: [SealedConstructorType]
+sealedConstructorRegistry =
+  [ SealedConstructorType
+      "src/Prodbox/Test/CleanRoomHandoff.hs"
+      "CutoverState"
+      SealedDeclaredHere
+      "Sprint 6.5: a dual-writer state and a post-activation legacy rollback are \
+      \unrepresentable only while the phase constructors stay inside the module."
+  , SealedConstructorType
+      "src/Prodbox/Test/CleanRoomHandoff.hs"
+      "QualificationPassed"
+      SealedDeclaredHere
+      "Sprint 6.5: activation without qualification is unrepresentable only while \
+      \the witness can be minted nowhere but `qualifyReplacement`."
+  , SealedConstructorType
+      "src/Prodbox/Test/CleanRoomHandoff.hs"
+      "AdmittedCutoverStage"
+      SealedDeclaredHere
+      "Sprint 6.5: a cutover stage admitted without the witness it requires is \
+      \unrepresentable only while `admitCutoverStage` is the sole producer."
+  , SealedConstructorType
+      "src/Prodbox/ControlPlane/RegisteredStackCreationSubmitter.hs"
+      "WriteAheadOwnershipProof"
+      SealedDeclaredHere
+      "Sprint 7.41: an execute that skips the write-ahead read-back does not \
+      \compile only while `proveWriteAheadOwnership` is the sole minter."
+  , -- Sprint 6.5 validation item 6 calls these three private, and the public
+    -- facade is where that is true: the family-internal module declares them and
+    -- exports their constructors to its own decoder and restoration bridge.
+    SealedConstructorType
+      "src/Prodbox/Lifecycle/Teardown/CascadeEvidence.hs"
+      "ReadyToUninstallEvidence"
+      (SealedReExportedFrom "src/Prodbox/Lifecycle/Teardown/CascadeEvidence/Internal.hs")
+      "Sprint 6.5: no uninstall plan is constructible without this evidence, which \
+      \holds only while the public boundary refuses to mint it from raw fields."
+  , SealedConstructorType
+      "src/Prodbox/Lifecycle/Teardown/CascadeEvidence.hs"
+      "LocalUninstallEvidence"
+      (SealedReExportedFrom "src/Prodbox/Lifecycle/Teardown/CascadeEvidence/Internal.hs")
+      "Sprint 6.5: cascade completion requires exact local-uninstall evidence, \
+      \which holds only while the public boundary refuses to mint it."
+  , SealedConstructorType
+      "src/Prodbox/Lifecycle/Teardown/CascadeEvidence.hs"
+      "CascadeCompleteEvidence"
+      (SealedReExportedFrom "src/Prodbox/Lifecycle/Teardown/CascadeEvidence/Internal.hs")
+      "Sprint 6.5: a completion claim is constructible only from the exact chain, \
+      \which holds only while the public boundary refuses to mint it."
+  , -- These two seal themselves: the declaring module exports them abstractly
+    -- and mints through one internal constructor, so no facade row is needed.
+    SealedConstructorType
+      "src/Prodbox/Lifecycle/Teardown/RecoveryPlane/Internal.hs"
+      "RecoveryPlaneFinalEvidence"
+      SealedDeclaredHere
+      "Sprint 6.5: an incomplete cascade may claim a preserved live plane only \
+      \for `Established`. A `Lost` observation retains the prior Ready inside its \
+      \constructor, so exporting the constructors would let a caller recover the \
+      \very value `recoveryPlaneFinalEstablishedReady` withholds."
+  , SealedConstructorType
+      "src/Prodbox/Lifecycle/Teardown/RecoveryPlane/Internal.hs"
+      "RecoveryPlaneReady"
+      SealedDeclaredHere
+      "Sprint 6.5: readiness is a proof rather than a record, and a caller that \
+      \could build one would be asserting the live plane it is supposed to have \
+      \observed."
+  ]
+
+-- | The export list a module header declares, as written.
+--
+-- Read from the module header only: the span from @module@ to the @where@ that
+-- closes it.  A re-export elsewhere in the file is not an export list, and a
+-- looser scan would read one.
+--
+-- @Nothing@ means the header carries no list at all — @module M where@ — which
+-- is not an empty export list but the opposite: it exports everything the
+-- module defines, so every seal in it is already broken.  Distinguishing the
+-- two is the whole point of returning a 'Maybe' here.
+moduleExportListIn :: String -> Maybe String
+moduleExportListIn contents =
+  case dropWhile (not . isModuleHeader) (lines contents) of
+    [] -> Nothing
+    headerLines ->
+      let header = unwords (takeThroughWhere headerLines)
+       in if '(' `elem` header then Just header else Nothing
+ where
+  isModuleHeader line = "module " `isPrefixOf` line
+  takeThroughWhere [] = []
+  takeThroughWhere (line : rest)
+    | closesHeader line = [line]
+    | otherwise = line : takeThroughWhere rest
+  closesHeader line = "where" `isPrefixOf` dropWhile isSpace line
+
+-- | Whether an export list names this type's constructors.
+--
+-- Matches @Type (@ with any spacing, which covers both @Type (..)@ and an
+-- explicit constructor list.  It deliberately does not try to decide /which/
+-- constructors: exporting one is the same defect as exporting all of them.
+exportListExposesConstructors :: String -> String -> Bool
+exportListExposesConstructors typeName exportList =
+  any exposesAt (tails exportList)
+ where
+  exposesAt candidate = case stripPrefix typeName candidate of
+    Just remainder
+      | precededByBoundary candidate ->
+          "(" `isPrefixOf` dropWhile isSpace remainder
+    _ -> False
+  precededByBoundary candidate =
+    case [ before
+         | (before, after) <- [splitAt (length exportList - length candidate) exportList]
+         , not (null after)
+         ] of
+      [] -> True
+      before : _ -> null before || not (isHaskellIdentifierCharacter (last before))
+
+-- | Whether the export list names the type at all.
+exportListNamesType :: String -> String -> Bool
+exportListNamesType typeName exportList =
+  any namesAt (tails exportList)
+ where
+  namesAt candidate = case stripPrefix typeName candidate of
+    Just remainder ->
+      not (startsIdentifier remainder) && not (endsIdentifier candidate)
+    Nothing -> False
+  startsIdentifier remainder = case remainder of
+    character : _ -> isHaskellIdentifierCharacter character
+    [] -> False
+  endsIdentifier candidate =
+    case [ before
+         | (before, after) <- [splitAt (length exportList - length candidate) exportList]
+         , not (null after)
+         ] of
+      [] -> False
+      before : _ -> not (null before) && isHaskellIdentifierCharacter (last before)
+
+-- | Sprint 6.5 (pure). Both directions over one registered row.
+--
+-- A row whose module no longer declares the type, or no longer exports it, is
+-- as much a defect as one whose constructors leaked: a registry that names
+-- types the tree has moved on from is a list nothing checks.
+sealedConstructorViolations
+  :: [(FilePath, String)] -> SealedConstructorType -> [String]
+sealedConstructorViolations corpus row =
+  case lookup (sealedConstructorModulePath row) corpus of
+    Nothing ->
+      [ scopedPathMissingViolation
+          "sealedConstructorRegistry"
+          (sealedConstructorModulePath row)
+      ]
+    Just contents -> case moduleExportListIn contents of
+      Nothing ->
+        [ sealedConstructorModulePath row
+            ++ " declares no module export list, so it exports everything it "
+            ++ "defines and the seal on `"
+            ++ sealedConstructorTypeName row
+            ++ "` is already broken. "
+            ++ sealedConstructorReason row
+            ++ " Give the module an export list that names the type abstractly."
+        ]
+      Just exportList
+        | not (originDeclaresType) ->
+            [ "`sealedConstructorRegistry` names `"
+                ++ sealedConstructorTypeName row
+                ++ "` as declared in "
+                ++ originPath
+                ++ ", which no longer declares it. Move the row to the module "
+                ++ "that does, or delete it with the claim it was holding."
+            ]
+        | not (exportListNamesType (sealedConstructorTypeName row) exportList) ->
+            [ "`sealedConstructorRegistry` names `"
+                ++ sealedConstructorTypeName row
+                ++ "` in "
+                ++ sealedConstructorModulePath row
+                ++ ", which no longer exports it. A type nobody outside can name "
+                ++ "needs no seal; delete the row."
+            ]
+        | exportListExposesConstructors (sealedConstructorTypeName row) exportList ->
+            [ sealedConstructorModulePath row
+                ++ " exports `"
+                ++ sealedConstructorTypeName row
+                ++ "` with its constructors. "
+                ++ sealedConstructorReason row
+                ++ " Export the type abstractly, or delete the registry row "
+                ++ "together with the claim that depends on it."
+            ]
+        | otherwise -> []
+ where
+  originPath = case sealedConstructorOrigin row of
+    SealedDeclaredHere -> sealedConstructorModulePath row
+    SealedReExportedFrom declaringPath -> declaringPath
+  originDeclaresType =
+    maybe False declaresTypeIn (lookup originPath corpus)
+  declaresTypeIn contents = any declaresOn (lines contents)
+   where
+    declaresOn line =
+      any
+        (\keyword -> (keyword ++ " " ++ sealedConstructorTypeName row) `isPrefixOf` line)
+        ["data", "newtype", "type"]
+
+-- | Sprint 6.5: a name a public facade deliberately withholds.
+--
+-- The sibling of the sealed-constructor rule, for the claims that are about a
+-- /name/ rather than a constructor.  Two facades in this tree say in their own
+-- Haddock what they are keeping back — "the drive itself remains
+-- package-private, so holding one of these booleans authorizes nothing and
+-- cannot start a cascade", and "their decoder and restoration bridge are
+-- deliberately kept in the library-internal module ... so raw fields cannot
+-- mint readiness evidence through this public API".  Both claims are false the
+-- moment the facade re-exports the name, and nothing else would notice: the
+-- code still compiles, every test still passes, and the sentence in the Haddock
+-- goes on reading as though it were true.
+data FacadeWithholding = FacadeWithholding
+  { facadeWithholdingFacadePath :: !FilePath
+  , facadeWithholdingOriginPath :: !FilePath
+  , facadeWithholdingNames :: ![String]
+  , facadeWithholdingReason :: !String
+  }
+
+facadeWithholdingRegistry :: [FacadeWithholding]
+facadeWithholdingRegistry =
+  [ FacadeWithholding
+      "src/Prodbox/Lifecycle/Teardown/CascadeCandidate.hs"
+      "src/Prodbox/Lifecycle/Teardown/CascadeCandidate/Internal.hs"
+      [ "CascadeCandidateInputs"
+      , "CascadeCandidateEnvironment"
+      , "CascadeCandidatePlan"
+      , "resolveCascadeCandidatePlan"
+      , "runCascadeCandidate"
+      ]
+      "Sprint 6.5: the candidate entrypoint is not the public writer until a \
+      \qualified activation makes it one, and this facade\'s own claim is that \
+      \holding its diagnostics authorizes nothing and cannot start a cascade."
+  , FacadeWithholding
+      "src/Prodbox/Lifecycle/Teardown/CascadeEvidence.hs"
+      "src/Prodbox/Lifecycle/Teardown/CascadeEvidence/Internal.hs"
+      [ "decodeDurableReadyToUninstallBinding"
+      , "restoreReadyToUninstallEvidence"
+      ]
+      "Sprint 6.5: the decoder and the restoration bridge are what could mint \
+      \readiness evidence from raw fields, and this facade\'s own claim is that \
+      \they stay out of the public API."
+  ]
+
+-- | Sprint 6.5 (pure). Both directions over one withholding row.
+--
+-- The forward direction is the rule.  The others keep the row honest: a facade
+-- that stopped having an export list withholds nothing, and a name the origin
+-- no longer exports is a name this row is guarding in the abstract.
+facadeWithholdingViolations
+  :: [(FilePath, String)] -> FacadeWithholding -> [String]
+facadeWithholdingViolations corpus row =
+  case ( lookup (facadeWithholdingFacadePath row) corpus
+       , lookup (facadeWithholdingOriginPath row) corpus
+       ) of
+    (Nothing, _) ->
+      [ scopedPathMissingViolation
+          "facadeWithholdingRegistry"
+          (facadeWithholdingFacadePath row)
+      ]
+    (_, Nothing) ->
+      [ scopedPathMissingViolation
+          "facadeWithholdingRegistry"
+          (facadeWithholdingOriginPath row)
+      ]
+    (Just facadeContents, Just originContents) ->
+      case (moduleExportListIn facadeContents, moduleExportListIn originContents) of
+        (Nothing, _) ->
+          [ facadeWithholdingFacadePath row
+              ++ " declares no module export list, so it withholds nothing. "
+              ++ facadeWithholdingReason row
+          ]
+        (_, Nothing) ->
+          [ facadeWithholdingOriginPath row
+              ++ " declares no module export list, so `facadeWithholdingRegistry`"
+              ++ " cannot tell whether the names it withholds are still the ones"
+              ++ " being withheld."
+          ]
+        (Just facadeExports, Just originExports) ->
+          concatMap (checkName facadeExports originExports) (facadeWithholdingNames row)
+ where
+  checkName facadeExports originExports name
+    | not (exportListNamesType name originExports) =
+        [ "`facadeWithholdingRegistry` withholds `"
+            ++ name
+            ++ "` from "
+            ++ facadeWithholdingFacadePath row
+            ++ ", but "
+            ++ facadeWithholdingOriginPath row
+            ++ " no longer exports it. Update the row to the name that replaced "
+            ++ "it, or delete it with the claim it was holding."
+        ]
+    | exportListNamesType name facadeExports =
+        [ facadeWithholdingFacadePath row
+            ++ " exports `"
+            ++ name
+            ++ "`, which it is written to withhold. "
+            ++ facadeWithholdingReason row
+            ++ " Remove it from the export list, or delete the registry row "
+            ++ "together with the claim that depends on it."
+        ]
+    | otherwise = []
+
+-- | Sprint 6.5 (IO). The facade-withholding registry over @src/@.
+checkFacadeWithholdings :: FilePath -> IO [String]
+checkFacadeWithholdings repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let scanned =
+        nub
+          [ path
+          | path <- repoPaths
+          , "src/" `isPrefixOf` path
+          , ".hs" `isSuffixOf` path
+          ]
+  corpus <-
+    forM scanned $ \relativePath -> do
+      contents <- readFileStrict (repoRoot </> relativePath)
+      pure (relativePath, contents)
+  pure (sort (concatMap (facadeWithholdingViolations corpus) facadeWithholdingRegistry))
+
+-- | Sprint 6.5 (IO). The sealed-constructor registry over @src/@.
+checkSealedConstructors :: FilePath -> IO [String]
+checkSealedConstructors repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let scanned =
+        nub
+          [ path
+          | path <- repoPaths
+          , "src/" `isPrefixOf` path
+          , ".hs" `isSuffixOf` path
+          ]
+  corpus <-
+    forM scanned $ \relativePath -> do
+      contents <- readFileStrict (repoRoot </> relativePath)
+      pure (relativePath, contents)
+  pure (sort (concatMap (sealedConstructorViolations corpus) sealedConstructorRegistry))
+
+-- | Sprint 5.47 (IO). The wire-fidelity rule over @src/@.
+checkWireFidelity :: FilePath -> IO [String]
+checkWireFidelity repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let scanned =
+        [ path
+        | path <- repoPaths
+        , "src/" `isPrefixOf` path
+        , ".hs" `isSuffixOf` path
+        , path /= "src/Prodbox/CheckCode.hs"
+        ]
+  corpus <-
+    forM scanned $ \relativePath -> do
+      contents <- readFileStrict (repoRoot </> relativePath)
+      pure (relativePath, contents)
+  let sharedTypes = sumTypeIndexIn corpus
+      -- A module's own declarations win. `CoordinateError` is declared by two
+      -- modules, so the shared index drops it and the rule would be blind to a
+      -- renderer in either -- but inside one of those modules the name is
+      -- unambiguous, and that is the common case for a type a renderer is
+      -- written beside.
+      typesFor entry =
+        localTypes ++ [shared | shared <- sharedTypes, fst shared `notElem` map fst localTypes]
+       where
+        localTypes = sumTypeIndexIn [entry]
+      unexempted = concatMap (\entry -> wireFidelityViolations [] (typesFor entry) entry) corpus
+      findings =
+        concatMap (\entry -> wireFidelityViolations wireFidelityExemptions (typesFor entry) entry) corpus
+  pure (sort (findings ++ wireFidelityStaleExemptions wireFidelityExemptions unexempted))
+
+-- | Sprint 5.47 (pure). An exemption for a site the rule no longer reports.
+--
+-- Without this direction the registry silently becomes a description of the
+-- tree instead of a bound on it, which is the failure the exemption-registry
+-- idiom has recorded twice.
+wireFidelityStaleExemptions :: [(FilePath, String, String)] -> [String] -> [String]
+wireFidelityStaleExemptions exemptions unexemptedFindings =
+  [ "`wireFidelityExemptions` exempts `"
+      ++ exemptName
+      ++ "` in "
+      ++ exemptPath
+      ++ ", which the rule no longer reports. Delete the stale exemption so "
+      ++ "the registry stays a bound on the tree rather than a description of "
+      ++ "it."
+  | (exemptPath, exemptName, _) <- exemptions
+  , not
+      ( any
+          (\finding -> exemptPath `isPrefixOf` finding && ("`" ++ exemptName ++ "`") `isInfixOf` finding)
+          unexemptedFindings
+      )
+  ]
+
+-- | Sprint 5.48: a model file nobody registered is an ungoverned file.
+--
+-- The TLA surface had two models and a directory, and nothing held the two
+-- against each other: a third module could be written, committed, cited by a
+-- governed document and checked by nothing, which is the same shape as a test
+-- stanza no scope runs. The registry in "Prodbox.Tla" is now the authority and
+-- this rule holds the directory to it in both directions.
+--
+-- __The bound is stated__ (@chaos_hardening_doctrine.md § 22@): it decides
+-- whether a file is registered, never whether the model says anything true.
+-- What a model proves is the protocol and never the boundary implementation,
+-- which @tla_modelling_assumptions.md@ owns and no gate can check.
+tlaRegistrationViolations :: [FilePath] -> [String]
+tlaRegistrationViolations presentFiles =
+  sort (unregistered ++ missing)
+ where
+  registeredFiles =
+    dedupeSorted (concatMap (\model -> [tlaModelFile model, tlaConfigFile model]) tlaModels)
+
+  unregistered =
+    [ tlaModelDirectory
+        ++ "/"
+        ++ name
+        ++ " is a TLA+ model or configuration file that `Prodbox.Tla.tlaModels` "
+        ++ "does not register, so `prodbox dev tla-check` never runs it. "
+        ++ "Register it with its expected disposition, or delete it -- an "
+        ++ "unregistered model is a proof surface that does not run (Sprint "
+        ++ "`5.48`)."
+    | name <- presentFiles
+    , name `notElem` registeredFiles
+    ]
+
+  missing =
+    [ "`Prodbox.Tla.tlaModels` registers "
+        ++ name
+        ++ ", which is not in "
+        ++ tlaModelDirectory
+        ++ ". Remove the entry so the registry stays a description of the "
+        ++ "worktree rather than a memory of it."
+    | name <- registeredFiles
+    , name `notElem` presentFiles
+    ]
+
+-- | Sprint 5.48 (pure). The registry must exercise both dispositions.
+--
+-- A model checked only in the configuration it passes under has been observed
+-- to pass, never to refuse. At least one registered configuration must expect
+-- a counterexample, or the surface cannot show that its invariants can fail.
+tlaExpectationCoverageViolations :: [TlaModel] -> [String]
+tlaExpectationCoverageViolations models =
+  [ "`Prodbox.Tla.tlaModels` registers no configuration expecting a "
+      ++ "counterexample, so no registered model is shown to be able to fail. "
+      ++ "Register the frozen superseded ordering beside the repaired one "
+      ++ "(Sprint `5.48`)."
+  | not (any ((== ExpectsCounterexample) . tlaExpectation) models)
+  ]
+
+-- | Sprint 5.48 (IO). The TLA+ registry bijection over its governed directory.
+checkTlaModelRegistration :: FilePath -> IO [String]
+checkTlaModelRegistration repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  let prefix = tlaModelDirectory ++ "/"
+      presentFiles =
+        [ drop (length prefix) path
+        | path <- repoPaths
+        , prefix `isPrefixOf` path
+        , any (`isSuffixOf` path) [".tla", ".cfg"]
+        ]
+  pure (tlaRegistrationViolations presentFiles ++ tlaExpectationCoverageViolations tlaModels)
 
 checkResidueObservationMinter :: FilePath -> IO [String]
 checkResidueObservationMinter repoRoot = do
@@ -8587,12 +10498,13 @@ checkTestSuiteInterfaces repoRoot = do
 -- passes.
 testSuiteStanzaViolations :: String -> [String]
 testSuiteStanzaViolations contents =
-  interfaceViolations ++ unroutedViolations ++ undeclaredViolations
+  interfaceViolations ++ unroutedViolations ++ undeclaredViolations ++ ungatedViolations
  where
   interfaceViolations = go [] Nothing (lines contents)
 
   declared = declaredTestSuiteNames contents
   routed = map (drop (length ("test:" :: String))) routedHaskellSuites
+  gated = map (drop (length ("test:" :: String))) gatedCheckHaskellSuites
 
   unroutedViolations =
     [ "Test suite `"
@@ -8609,6 +10521,27 @@ testSuiteStanzaViolations contents =
         ++ "`, which `prodbox.cabal` does not declare (Sprint 5.45)."
     | suiteName <- routed
     , suiteName `notElem` declared
+    ]
+
+  -- Sprint 5.47: the third direction. A suite the canonical gate executes but
+  -- no `prodbox test` scope names would be reachable only from the gate, which
+  -- is the Sprint-5.45 defect wearing the gate's clothes; and a gated name the
+  -- package does not declare fails at `cabal test` on a name nobody typed.
+  ungatedViolations =
+    [ "`Prodbox.TestPlan` gates `test:"
+        ++ suiteName
+        ++ "` into `prodbox dev check`, and "
+        ++ reason
+        ++ " Every gated suite is also a routed suite, so a developer can run "
+        ++ "it by name (Sprint 5.47)."
+    | suiteName <- gated
+    , reason <-
+        [ "`prodbox.cabal` does not declare it."
+        | suiteName `notElem` declared
+        ]
+          ++ [ "no `prodbox test` scope names it."
+             | suiteName `notElem` routed
+             ]
     ]
 
   go violations _ [] = reverse violations

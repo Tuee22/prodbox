@@ -224,7 +224,7 @@ decisionMatrix =
 -- 256-row matrix asserts the shape and the mandate gets its own assertion,
 -- where it can be checked against the inputs it was minted from.
 data DecisionShape
-  = ShapeAlreadyAbsent !RegisteredResourceKey !AbsenceEvidence
+  = ShapeAlreadyAbsent !RegisteredResourceKey !(AbsenceEvidence 'ProviderApi)
   | ShapeDestroyFromVerifiedPrimary
       !RegisteredResourceKey
       !ExactResourceInventory
@@ -610,8 +610,8 @@ otherScope =
     )
     ReconcileDesiredAbsent
 
-absenceEvidence :: AbsenceEvidence
-absenceEvidence = AbsenceEvidence "provider-authoritative-not-found"
+absenceEvidence :: AbsenceEvidence 'ProviderApi
+absenceEvidence = providerWorkerAbsence "provider-authoritative-not-found"
 
 partialEvidence :: PartialEvidence
 partialEvidence = PartialEvidence [ObservedResourceIdentity "arn:aws:fixture:partial"]

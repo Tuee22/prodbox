@@ -185,7 +185,7 @@ import Prodbox.Lifecycle.Teardown.Model
   ( CleanupSurface (Cascade)
   , ObservationEvidenceScope
   )
-import Prodbox.Lifecycle.Teardown.Observation (AbsenceEvidence (AbsenceEvidence))
+import Prodbox.Lifecycle.Teardown.Observation (absenceEvidenceText)
 import Prodbox.Lifecycle.Teardown.ScopeCodec
   ( ScopeWire
   , renderScopeWireError
@@ -344,9 +344,6 @@ localCompletionReferenceDigest reference =
 
 frame :: Text -> Text
 frame value = Text.pack (show (Text.length value)) <> ":" <> value
-
-absenceEvidenceText :: AbsenceEvidence -> Text
-absenceEvidenceText (AbsenceEvidence evidence) = evidence
 
 -- | One completion entry, prepared but not yet durable.
 --

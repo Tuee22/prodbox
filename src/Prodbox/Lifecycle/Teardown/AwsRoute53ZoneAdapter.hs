@@ -39,10 +39,12 @@ import Data.Text qualified as Text
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
+import Prodbox.Lifecycle.ProviderWorker.Evidence (decodeProviderEvidenceText)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
   , ProviderIntentCoordinate
   , providerIntentCoordinate
+  , validationHostedZoneEvidenceFamily
   )
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
@@ -159,18 +161,20 @@ namePrefixFromCoordinate coordinate = case coordinate of
 --
 -- Pure and exposed so the decode is exercised without a Provider Worker.
 parseValidationZoneObservation :: Text -> Either Text (Text, [Text])
-parseValidationZoneObservation evidence = case Text.lines evidence of
-  [] -> Left "validation hosted-zone observation carried no family line"
-  familyLine : zoneLines ->
-    let identities =
-          [ zoneIdentity
-          | zoneLine <- zoneLines
-          , let zoneIdentity = Text.strip zoneLine
-          , not (Text.null zoneIdentity)
-          ]
-     in if Text.null (Text.strip familyLine)
-          then Left "validation hosted-zone observation named no family"
-          else Right (Text.strip familyLine, identities)
+parseValidationZoneObservation evidence = do
+  rows <- decodeProviderEvidenceText validationHostedZoneEvidenceFamily evidence
+  case rows of
+    ["family", familyName] : zoneRows
+      | not (Text.null (Text.strip familyName)) ->
+          (,) familyName <$> traverse zoneIdentity zoneRows
+    _ -> Left "validation hosted-zone observation named no family"
+ where
+  zoneIdentity row = case row of
+    ["zone", zoneId, zoneName]
+      | not (Text.null zoneId)
+      , not (Text.null zoneName) ->
+          Right (zoneId <> " " <> zoneName)
+    _ -> Left "validation hosted-zone observation row was malformed"
 
 -- | Convert one independently signed Provider observation into the flat exact
 -- observation algebra.
@@ -223,7 +227,7 @@ decodeExactAwsValidationZoneObservation request providerResult =
     [] ->
       observation
         ( ExactResourceAbsent
-            ( AbsenceEvidence
+            ( providerWorkerAbsence
                 "provider-worker exact validation hosted-zone family returned its canonical empty set"
             )
         )
@@ -293,7 +297,7 @@ awsValidationZoneReapProviderIntent authorization =
 confirmExactAwsValidationZoneAbsence
   :: ExactAwsValidationZoneObservationRequest
   -> Either Text ProviderIntentExecutionResult
-  -> Either AwsValidationZoneAdapterError AbsenceEvidence
+  -> Either AwsValidationZoneAdapterError (AbsenceEvidence 'ProviderApi)
 confirmExactAwsValidationZoneAbsence request result = do
   exact <- decodeExactAwsValidationZoneObservation request result
   complete <-

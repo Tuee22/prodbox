@@ -131,7 +131,7 @@ data CheckpointRestoreAttempt
 -- binds this value to the stable operation reference and exact stack scope.
 data CheckpointRestoreDisposition
   = CheckpointRestorePrimaryAlreadyAvailable
-  | CheckpointRestoreResourceAlreadyAbsent !AbsenceEvidence
+  | CheckpointRestoreResourceAlreadyAbsent !(AbsenceEvidence 'ProviderApi)
   | CheckpointRestoreNoUsableBackup
   | CheckpointRestoreMutationAttempted !CheckpointRestoreAttempt
   deriving (Eq, Show)
@@ -182,7 +182,7 @@ data CheckpointRecoveryDisposition
   = CheckpointRecoveryPrimaryAvailable
       !CheckpointProvenance
       !CheckpointVersion
-  | CheckpointRecoveryRestoreNotRequired !AbsenceEvidence
+  | CheckpointRecoveryRestoreNotRequired !(AbsenceEvidence 'ProviderApi)
   | CheckpointRecoveryNoUsableCheckpoint
       !CheckpointResult
       !CheckpointResult
@@ -491,7 +491,7 @@ validateExactStackAbsence
   :: RegisteredResourceKey
   -> ObservationEvidenceScope
   -> ExactResourceObservation
-  -> Either CheckpointRestoreError AbsenceEvidence
+  -> Either CheckpointRestoreError (AbsenceEvidence 'ProviderApi)
 validateExactStackAbsence stackKey scope observation = do
   _ <-
     either

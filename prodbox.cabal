@@ -420,6 +420,8 @@ library
         Prodbox.Lifecycle.Authority.TlsRetention
         Prodbox.Lifecycle.AuthorityBackup.ChartStatics
         Prodbox.Lifecycle.ProviderWorker.ChartStatics
+        Prodbox.Lifecycle.ProviderWorker.Evidence
+        Prodbox.Lifecycle.ProviderWorker.Evidence.Internal
         Prodbox.Lifecycle.ProviderWorker.ProviderWork
         Prodbox.Lifecycle.AwsNativeStackFamily
         Prodbox.Lifecycle.CredentialProvisioner.Execution
@@ -650,6 +652,8 @@ library
         Prodbox.Test.CleanRoomHandoff
         Prodbox.Test.LifecycleCleanupClient
         Prodbox.Test.TemporalQualification
+        Prodbox.Test.Qualification.CounterexampleProfile
+        Prodbox.Test.Qualification.CreateInterruptedCounterexample
         Prodbox.Test.Qualification.FrozenCounterexample
         Prodbox.Test.Qualification.Invite
         Prodbox.Test.Qualification.Evidence
@@ -835,6 +839,9 @@ test-suite prodbox-unit
         Dns01ChallengeSuite
         DependencyAdmissionSuite
         EscapeRegistry
+        RegisteredStackCreationOwnership
+        TypedGuardConsumption
+        WireFidelity
         FencedCheckpoint
         GatewayAuthority
         GatewayBounded
@@ -1005,6 +1012,8 @@ test-suite prodbox-unit
         QualificationFrozenCounterexample
         QualificationEvidence
         QualificationSourceIdentity
+        SealedConstructors
+        QualificationCreateInterruptedCounterexample
         QualificationTeardownCounterexample
         TemporalQualification
         RetainedSesPreparation
@@ -1018,6 +1027,9 @@ test-suite prodbox-unit
         CredentialDeliveryHarness
         ScopeCodecProperties
         ScopeCodecWitness
+        AbsenceStratumWitness
+        ProviderEvidenceCodec
+        ProviderEvidenceQualification
         StoreLifetimeWitness
         SupervisionWitness
         TargetCommitSmtp

@@ -6209,22 +6209,37 @@ it, the owning module admitted, and the ordinary binder admitted. Exercised agai
 well as synthetically: a probe added to `src/Prodbox/Infra/SubstrateKubectl.hs` produces both
 refusals and the tree is clean without it. Every converted call site keeps its existing tables.
 Primary unit **4,966/4,966**, canonical `prodbox dev check` exits 0.
+## Sprint 7.41: A Create That Says What It Is About To Make [✅ Done]
 
-## Sprint 7.41: A Create That Says What It Is About To Make [📋 Planned]
-
-**Status**: Planned. Phase `7` own-surface reopen (Standard A/L/P) on the registered stack-creation
-lane this phase built and owns. It completes the half of Sprint `7.36` that was recorded as
-delivered and has no production writer.
+**Status**: Done 2026-09-14 on the code-local surface; live proof pending. Phase `7` own-surface
+reopen (Standard A/L/P) on the registered stack-creation lane this phase built and owns. It
+completes the half of Sprint `7.36` that was recorded as delivered and had no production writer.
+All six deliverables are landed: the commit, the read-back, the witness, the append, the durable
+obligation on the one failure arm that can leave a resource, the provider-side default tags, and the
+frozen counterexample family.
 **Doctrine**: [Lifecycle Reconciliation
 Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md)'s write-ahead ownership
 manifest and [Lifecycle Control-Plane
 Architecture](../documents/engineering/lifecycle_control_plane_architecture.md)'s
 commit-before-effect invariant.
 **Implementation**: `src/Prodbox/ControlPlane/RegisteredStackCreationSubmitter.hs`,
-`src/Prodbox/ControlPlane/RegisteredStackCreationProducer.hs`,
 `src/Prodbox/ControlPlane/OwnershipManifestRepository.hs`,
-`src/Prodbox/Lifecycle/Teardown/OwnershipManifest.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
-`src/Prodbox/Test/CounterexampleValidation.hs`, `pulumi/aws-eks/Main.yaml`, and `test/unit/Main.hs`.
+`src/Prodbox/ControlPlane/OwnershipManifestEndpoint.hs`,
+`src/Prodbox/ControlPlane/OwnershipManifestTransportClient.hs`,
+`src/Prodbox/Lifecycle/Teardown/OwnershipManifest.hs`,
+`src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs`, `src/Prodbox/CheckCode.hs`,
+`test/unit/RegisteredStackCreationOwnership.hs`,
+`test/unit/ControlPlaneOwnershipManifestRepository.hs`, and `prodbox.cabal` for the core;
+`src/Prodbox/ControlPlane/ProviderProduction.hs`,
+`src/Prodbox/ControlPlane/ProviderPulumiConfigProjection.hs`,
+`src/Prodbox/Lifecycle/Teardown/AuditFieldOfView.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
+`src/Prodbox/Infra/AwsTestStack.hs`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml`,
+`pulumi/aws-eks-subzone/Main.yaml`,
+`src/Prodbox/Test/Qualification/CounterexampleProfile.hs`,
+`src/Prodbox/Test/Qualification/CreateInterruptedCounterexample.hs`,
+`src/Prodbox/Test/CounterexampleValidation.hs`, `src/Prodbox/TestPlan.hs`,
+`src/Prodbox/CLI/Spec.hs`, `test/qualification/CREATE-INTERRUPTED-2026-09-08.*`, and
+`test/unit/QualificationCreateInterruptedCounterexample.hs` for the remaining half.
 **Blocked by**: none.
 **Live-proof**: pending. The proof this class has never had is a create interrupted on purpose,
 followed by a cascade that names and destroys what it made.
@@ -6267,19 +6282,43 @@ Provider Worker is kept out of manifest authority by doctrine in any case.
 
 ### Deliverables
 
-- Commit the write-ahead ownership manifest and read it back independently between the generation
-  commit and the execute, at the same submission key.
-- Make the read-back witness the only way to construct what the execute step consumes, carrying the
-  purpose index so a cleanup-only adoption receipt can never inhabit the slot.
-- Implement the appending operation so the manifest gains the exact identities the provider
-  returned, and prove the destroy authorization consumes them.
-- Stamp provider-level default tags carrying run scope and cycle in the stack programs, and record
+- ~~Commit the write-ahead ownership manifest and read it back independently between the generation
+  commit and the execute, at the same submission key.~~ **Landed 2026-09-14.** One correction the
+  bullet did not anticipate: the manifest cannot be keyed under the caller's creation scope, because
+  that scope carries no AWS coordinates by design and the manifest identity refuses one that does
+  not. It is keyed under the scope the committed generation proved, read back by the host through
+  `selectRegisteredStackGenerationForCleanup` — the same derivation the Authority already uses for
+  the creation binding, and for the same stated reason.
+- ~~Make the read-back witness the only way to construct what the execute step consumes, carrying
+  the purpose index so a cleanup-only adoption receipt can never inhabit the slot.~~ **Landed
+  2026-09-14** as `WriteAheadOwnershipProof`, a GADT indexed by `OwnershipManifestPurpose` whose
+  only inhabited index is `'WriteAheadOwnership`, whose constructor is unexported, and whose only
+  minter accepts complete decision evidence. The execute step takes it as an argument.
+- ~~Implement the appending operation so the manifest gains the exact identities the provider
+  returned, and prove the destroy authorization consumes them.~~ **Landed 2026-09-14.** The append
+  could not write to the write-ahead slot: that slot is immutable by construction, so the identities
+  go to a second durable object under the same identity in a completion namespace, and the cleanup
+  read-back prefers it and falls back.
+- ~~Stamp provider-level default tags carrying run scope and cycle in the stack programs, and record
   those values durably before the effect. This is the only marker that survives a process kill,
-  because the provider holds it rather than the host.
-- Give the one create-failure arm that can leave a resource behind a durable obligation instead of
-  the string it currently dies as.
-- Mint the counterexample fixture family for an interrupted create, in the established five-file
-  form, with its causal profile holding the topology-normalized budget constant.
+  because the provider holds it rather than the host.~~ **Landed 2026-09-14.** Two corrections the
+  bullet did not anticipate. The cycle is named by the durable run scope rather than by the
+  generation ordinal, because the ordinal is assigned by the Authority *after* admission while the
+  tag value must be inside the intent, whose serialisation is hashed into the admit and execute
+  replay digest — and the run scope is what the write-ahead manifest is keyed under, so it is the
+  better join in any case. And `aws-ses` is excluded: a per-run marker on the retained long-lived
+  stack would tell a per-run sweep that the one stack nothing may reap belongs to the run currently
+  reaping.
+- ~~Give the one create-failure arm that can leave a resource behind a durable obligation instead of
+  the string it currently dies as.~~ **Landed 2026-09-14.** `RegisteredStackCreationDispatchFailed`
+  carries the proof, and its rendering names the stack, the manifest version, the command that
+  consumes it, and that the obligation is not discharged until exact absence is observed.
+- ~~Mint the counterexample fixture family for an interrupted create, in the established five-file
+  form, with its causal profile holding the topology-normalized budget constant.~~ **Landed
+  2026-09-14** as `CREATE-INTERRUPTED-2026-09-08`, behind
+  `prodbox test integration create-interrupted`. Both profiles hold the constant, and the loader
+  refuses a family that does not: a family whose replacement composition costs more proves only that
+  the defect was reachable at the old budget.
 
 ### Validation
 
@@ -6291,9 +6330,79 @@ Provider Worker is kept out of manifest authority by doctrine in any case.
    replacement, with its mutation fixture proving the oracle can fail.
 5. Full unit suite and `prodbox dev check` exit 0.
 
-### Remaining Work
+### Outcome
 
-All of it.
+All six deliverables are landed and validated code-locally. What is *not* proven is stated in the
+`Live-proof` field above and is unchanged: no create has yet been interrupted on purpose and
+followed by a cascade that names and destroys what it made. One deployment fact belongs with it —
+the Provider Worker reads `/opt/build/pulumi` from its runtime image, so the stamped default tags
+reach a live cluster only after that image is rebuilt.
+
+### Progress 2026-09-14 — the indivisible core
+
+**The trap the sprint block names as "worse than neutral" was real, and closing it required
+absorbing a row this plan had recorded `Unowned` one day earlier.**
+`confirmOwnershipManifestDecisionReadBack` degraded *every* arm to observation-only, including a
+`Present` arm that successfully decoded a manifest carrying its entries, and
+`Decision.manifestAuthority` maps that to `StackOwnershipManifestPresentWithoutCompleteEvidence` —
+a refusal. Committing the manifest without changing that arm would have converted a quiet teardown
+into a different refusal and bought no destroy path. The ledger row said closing it "needs its own
+sprint"; it did not, because this sprint already declares the invalidation that change makes.
+
+**The two minters it consumes were registered unconsumed guards, and Sprint `5.47`'s gate refused
+the build until their rows were deleted.** That is the ratchet landed eight hours earlier doing
+exactly what it was built for: wiring a guard up is a build failure until its ledger row closes in
+the same change.
+
+**Three things the sprint block did not anticipate.** The manifest cannot be keyed under the
+caller's creation scope, which carries no AWS coordinates by design — it is keyed under the scope
+the committed generation proved. The append cannot rewrite the write-ahead slot, which is immutable
+by construction — it writes a second object under the same identity in a completion namespace, and
+the cleanup read-back prefers the completion and falls back to the write-ahead record, so an
+interrupted create is addressable rather than invisible and its identity-less manifest is refused by
+naming the missing entry rather than by destroying nothing. And the ownership-manifest wire needed
+two additional actions for that second object; the tags are additive and an unknown tag still fails
+the decode.
+
+Focused **10/10**, ownership-manifest repository **10/10**, primary unit **5,062/5,062**, canonical
+`prodbox dev check` exits 0.
+
+### Progress 2026-09-14 — the provider's tag and the frozen family
+
+**The provider holds the marker, and the host no longer has to be alive for it to mean something.**
+`prodbox.io/run-scope` and `prodbox.io/submission` are stamped as `defaultTags` on the default AWS
+provider each per-run program already declared, so a resource added to a program carries the pair
+without anyone remembering to author it, and the run scope is the same value the write-ahead
+ownership manifest is keyed under. The measured obstacle the sprint block named closed the way it
+said: the lane now takes a `ProviderRunMarker -> ProviderIntent` builder and mints the marker before
+the intent exists, so one marker reaches both the admit and the execute and the replay digest Sprint
+`7.36` engineered stays stable.
+
+**Two things the block did not anticipate.** The pair is projected onto the Pulumi *preview* as well
+as the apply, because a preview run against different configuration than the apply reports an
+agreement the apply does not keep — the exact defect
+`PROVIDER-WORKER-PULUMI-STACK-CONFIG-ABSENT-2026-09-05` froze. Since the pair is per-submission, the
+consequence is that a reconcile of a present stack now previews a tag change and applies it; that is
+stated rather than hidden, and it is the honest behaviour, because the marker the provider holds
+should name the run whose write-ahead record a cascade will find. And the field-of-view parser had
+to learn that provider default tags belong to *every* declared resource, which is what the provider
+does with them — reading them as authored on the provider alone would report a resource as
+invisible to the terminal audit while the audit can plainly see it. An eight-column `tags:` that is not an
+adjacent `defaultTags:` block still refuses, so the parser gained one shape and not a tolerance.
+
+**The fourth frozen family separates the two lanes rather than describing one.** Its rows are
+derived from each implementation's lane rather than authored — the loader recomputes the whole
+matrix and refuses the file if one row disagrees, which is what the committed mutation demonstrates.
+The superseded lane answers `orphan-unnameable` at all five interruption kinds at or after its
+effect and `coordinates-named` nowhere; the replacement lane answers `coordinates-named` at
+thirty-five points and `orphan-unnameable` nowhere; and the oracle requires *both* lanes to run the
+effect, because an implementation that never mutates never orphans either and would pass a
+one-sided test while fixing nothing. The profile schema and the artifact digest moved to a shared
+`CounterexampleProfile` module in the same change, so the second family is the same artifact rather
+than a second dialect of one.
+
+Create-interrupted oracle **23/23**, write-ahead ownership **14/14**, terminal-audit field of view
+**26/26**, primary unit **5,094/5,094**, canonical `prodbox dev check` exits 0.
 
 ## Documentation Requirements
 

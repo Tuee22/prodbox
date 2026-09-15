@@ -138,6 +138,141 @@ in the executable-sibling Tier-0 `prodbox.dhall` on the Haskell stack.
 - Environment-dependent rerun success for this phase remains owned by the named `prodbox`
   commands rather than restated here as a fresh execution log.
 
+- **The postflight sweep can now see what it is sweeping for, and it runs while something can still
+  act on the answer (2026-09-14).** Three of this sprint's deliverables were separable from the
+  activation and none of them needed infrastructure to close. The sweep passed no region and read one
+  response body, so it saw one region, one page, and — because the Tagging API returns IAM only from
+  the global-service region — no IAM role at all, which is why the 2026-09-07 residue had to be
+  cleared by hand from outside the product. It now issues each filter in the run's region and in the
+  global-service region, through the same bounded cursor-following listing the compiled audit uses,
+  and `TaggedResourceQueryInput` gained a required region so the audit states its region in the argv
+  rather than inheriting one from the environment its own builder sets.
+
+  **A defect no bullet named surfaced while repairing it.** The superseded parser dropped a returned
+  resource whose tag list it could not read. The API returns a resource *because* it matched the
+  filter, so the match is a fact even when the row's tags are not readable, and dropping it is
+  residue becoming absence — the same direction as the page and region blindness. A tagless row is
+  now kept, attributed to the filter that returned it, and reaches the escaped list.
+
+  **The ordering is inverted and the uninstall is gated.** The cascade destroyed the local control
+  plane — the only surface permitted to mutate AWS — and only then asked whether anything was left to
+  mutate. The sweep now precedes the uninstall, and an unconfirmed or non-empty sweep withholds it:
+  the run still fails, and the retained local plane is what makes the failure recoverable. The
+  uninstall phase is derived from the sweep, so a withheld uninstall reads as downstream of it
+  rather than as a second independent fault.
+
+  **Whether the sweep is owed comes from the declared substrate.** It came from three per-run
+  checkpoints reading absent; a checkpoint is Pulumi state, and its absence is exactly the condition
+  under which a resource is most likely to be stranded. An unreadable declaration refuses rather than
+  reading as a declaration of nothing. The registered-creation-binding half of that deliverable is
+  recorded as not landed, with its measured obstacle, rather than approximated.
+
+  Cascade group **139/139**, tag sweep **22/22**, uninstall gate **8/8**, primary unit
+  **5,109/5,109**, canonical `prodbox dev check` exits 0. The legacy public writer remains sole and
+  no qualification artifact or activation witness exists.
+
+- **The sprint's central claims rested on an export list, and nothing held it (2026-09-14).** Found
+  by auditing this sprint's own validation items against the tree rather than by a failing run.
+  Validation item 3 says a dual-writer state and a post-activation legacy rollback cannot be
+  constructed, and Sprint `7.41`'s item 2 says an execute that skips the read-back does not compile.
+  Both are true, and both are true *only* while the constructors stay inside their modules —
+  widening `CutoverState` to `CutoverState (..)` would void them without changing a line of logic.
+  No test could notice, and the reason is the interesting part: the test that would notice is the
+  one that cannot be written, because after the widening there is still nothing wrong to *call*
+  until someone writes the call.
+
+  `checkSealedConstructors` holds the **nine** types whose unconstructibility claim is load-bearing
+  and refuses an export list that names any of their constructors, carrying the claim's own reason
+  into the refusal. Three refusals run the other way so the registry cannot rot into a list of names
+  nothing checks: a row whose module is outside the scanned set, one whose declaring module no
+  longer declares the type, and one whose module no longer exports it — a type nobody outside can
+  name needs no seal. A module with no export list at all is its own refusal, because it exports
+  everything it defines.
+
+  **Three of the seven rows are the ones this sprint's own validation item 6 calls private**, and
+  they are the reason the rule had to model a second shape. `ReadyToUninstallEvidence`,
+  `LocalUninstallEvidence` and `CascadeCompleteEvidence` are declared by a family-internal module
+  that exports their constructors to its own decoder and restoration bridge; the seal lives in the
+  public `CascadeEvidence` facade that re-exports them abstractly. A row therefore names the module
+  whose export list carries the seal *and* the module that declares the type, so a facade cannot go
+  on re-exporting a name long after the declaration it was sealing has moved. Registering only the
+  types I had written that day would have produced a registry that looked complete and covered the
+  newest claims rather than the longest-standing ones.
+
+  **Two more rows came from deliverable 5 rather than from the validation items.** That deliverable
+  says an incomplete result may claim a preserved live plane only for `Established`, and the
+  mechanism is real: `recoveryPlaneFinalEstablishedReady` is the sole eliminator and answers
+  `Nothing` for `Lost`. But the `Lost` constructor *retains* the prior Ready value internally, so
+  exporting `RecoveryPlaneFinalEvidence`'s constructors would let a caller recover exactly what the
+  eliminator withholds — the Haddock says it "cannot be recovered through this or any other public
+  eliminator", and until now nothing held that. It and `RecoveryPlaneReady` are registered at their
+  declaring module, which is the tightest seal.
+
+  **Proven to refuse rather than only to pass, in every shape.** The committed `CutoverState` export
+  was widened in the worktree and the freshly built binary's `dev lint haskell` exited 1 naming the
+  type and the claim; the facade's `ReadyToUninstallEvidence` export was widened and it exited 1
+  again, naming the facade rather than the internal module; the declaring module's
+  `RecoveryPlaneFinalEvidence` export was widened and it exited 1 a third time. Every file was
+  restored and verified byte-identical. Sealed constructors **19/19**, primary unit
+  **5,136/5,136**.
+
+  **A second rule followed from the same reading, for claims about a name rather than a
+  constructor.** `CascadeCandidate`'s facade says the drive itself stays package-private, *"so
+  holding one of these booleans authorizes nothing and cannot start a cascade"* — which is this
+  sprint's validation item 4 stated in a Haddock, and is false the moment the facade re-exports
+  `runCascadeCandidate`. `CascadeEvidence`'s facade makes the matching claim about the decoder and
+  the restoration bridge. `checkFacadeWithholdings` holds two rows and seven names, refuses a facade
+  that exports one of them, and refuses a row whose origin no longer exports the name it is
+  guarding. Proven by adding `runCascadeCandidate` to the committed facade's export list: the
+  freshly built binary exited 1 naming the export and the claim, and the file was restored.
+  Withholding cases **7/7**; the sealed and withheld groups together are **27/27**.
+
+  **What the gates do not reach is registered rather than implied.** A facade row bounds the public
+  boundary only: the declaring `…Internal` module hands its constructors to whatever imports it, and
+  nothing in this repository defines or restricts that family — 18 modules import
+  `CascadeEvidence.Internal` directly, 8 import `RecoveryPlane.Internal`. So validation item 6's
+  word *private* is true of the boundary it names and weaker than it reads. That is a new `Unowned`
+  deletion-ledger row, not a silence, and deliberately not closed here: narrowing it means deciding
+  what a module family is and enforcing it for every `…Internal` module in the tree.
+  The bound is narrow and stated: it reads the module header only, so a re-export elsewhere is out
+  of scope, and it decides nothing about whether the seal was the right design.
+
+- **The campaign's four closed counterexamples were re-verified against the current tree, and all
+  four hold (2026-09-15).** Sprints `4.95`–`4.99`, `5.47`–`5.48` and `7.41` have all landed since
+  those closures, so the question was whether any of them had been undone; none has.
+  `observe_authority_backup_rollout_ready` is still the non-admitting requested-revision barrier and
+  the `DeploymentAvailable` half still sits at the two post-establishment stages, exactly as the
+  later correction bullet records; the target-source classifier still exhausts its branches into
+  `refused-other`/`unavailable-other`; positive absence is still the distinct typed
+  `TargetRetainedMaterialSourcePositivelyAbsent` rather than a refusal string; and the receipt
+  carrier is still a fixed-version prefixed envelope. **One caution for a future reader**: read this
+  section as the continuous narrative Standard A requires. Two of the four bullets state a mechanism
+  that a later bullet in the same section then corrects — the rollout barrier and the receipt
+  envelope version — and checking either earlier bullet against the tree in isolation produces a
+  false discrepancy. That happened once during this pass.
+
+- **Measured 2026-09-15: the 19 minutes every live cycle spends rebuilding is the price of a small
+  image, not an oversight.** Each cycle costs ~65 minutes and ~1,120–1,145 s of that is one
+  `docker build` layer. The cause is structural: `docker/prodbox.Dockerfile` copies `src/` *before*
+  the single `RUN cabal build`, so a one-line source change — which is the point of a cycle —
+  invalidates that layer and rebuilds every dependency from scratch.
+
+  The obvious repair is to build dependencies against `prodbox.cabal`/`cabal.project` alone in an
+  earlier layer. **It would not be free, and the numbers say so**: the dependency store measured on
+  this host is **5.8 GB** with a further **1.2 GB** of fetched sources, and the current single `RUN`
+  deletes all of it in the same layer, so the shipped image carries none. Splitting the layer keeps
+  those bytes in the image permanently — Docker layers are additive and the earlier layer's bytes
+  survive a later `rm -rf` — which would trade ~15 minutes of build for several gigabytes on every
+  registry publish and `ctr image import`, both of which the cycle also pays (~95–125 s today).
+  [Dependency Management § 1](../documents/engineering/dependency_management.md) forbids BuildKit
+  cache mounts, which are the tool that would otherwise resolve this.
+
+  **No change is made here.** The one repair that gets both — a builder stage with
+  `COPY --from=builder` — is a change to the single-stage image doctrine and to a Standard-P
+  component-image surface, and it cannot be validated end to end from this worktree because the
+  publish and import halves need the live campaign. It is recorded with its numbers so the cost is a
+  decision rather than an accepted background fact.
+
 ### Remaining Work
 
 None.
@@ -395,8 +530,11 @@ a durable descriptor-bound run. Sprints `7.39` and `7.40` closed the last of the
 ephemeral Kubernetes client's credential mechanism, which this sprint's own live campaign proved had
 never authenticated. Deploy the corrected runtime, recover the registered AWS graph, then resume
 activation qualification. It is no longer the plan suite's only open row: Sprint `0.34` opened
-eight code sprints on 2026-09-12 after a four-day EKS leak, and this sprint's closure now waits on
-Sprint `7.41`'s create lane.
+eight code sprints on 2026-09-12 after a four-day EKS leak. **Sprint `7.41` is Done (2026-09-14) and
+that closure dependency is discharged**: a create now commits and independently reads back a record
+naming the coordinates it is about to make, and stamps the same run scope provider-side, so
+activating the typed writer would no longer delete the operator's fallback while the replacement
+still cannot name a resource it created.
 **Deployment qualification**: pending — clean-room/destructive evidence from the superseded
 cascade is invalid for the replacement composition.
 **Doctrine**: [Lifecycle Control-Plane Architecture § 12, “Cutover and
@@ -413,10 +551,9 @@ Fixtures”](../documents/engineering/integration_fixture_doctrine.md#7-clean-ro
 `src/Prodbox/Test/Qualification/Evidence.hs`,
 `src/Prodbox/Capacity/ProviderWorkerBudget.hs`, `docker/prodbox.Dockerfile`, the four
 `pulumi/*/Pulumi.yaml` projects, and the registered retired-symbol scanner.
-**Closure dependency**: Sprint `7.41`. Sprint `7.40`, which completed the ephemeral Kubernetes
-client's consolidation onto the credential mechanism Sprint `7.39` established, landed 2026-09-11
-and that dependency is discharged; it is named here because its admission below must stay legible.
-**Backward dependency**: Sprint `7.41`, and Sprint `7.40` discharged 2026-09-11. Activating the
+**Closure dependency**: none outstanding. Sprint `7.41` discharged 2026-09-14 and Sprint `7.40`
+discharged 2026-09-11; both are named here because their admissions below must stay legible.
+**Backward dependency**: Sprint `7.41` and Sprint `7.40`, both discharged, the first on 2026-09-14 and the second on 2026-09-11. Activating the
 typed writer as the sole public route before a create records what it made would delete the legacy
 route while the replacement still cannot name a resource it created — precisely the state that
 stranded the 2026-09-08 generation, whose cycle was addressable while its VPC, roles, policy and
@@ -523,19 +660,35 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
   in the field above**. Held in Phase 4 it was a Phase-4 validation item that only a Phase-6/7
   composition could satisfy; it belongs here.
 
-- **Bind the postflight enumerator to a region and follow its pages, and query the global-service
+- ~~**Bind the postflight enumerator to a region and follow its pages, and query the global-service
   region for IAM.** The current sweep passes no region and reads one page, so it sees one region,
   one page, and no IAM at all — which is why the 2026-09-07 residue had to be cleared by hand from
-  outside the product. The correct shape already exists in the native-family observer; copy it.
-- **Run the postflight sweep before the local substrate uninstall, and gate the uninstall on a
+  outside the product. The correct shape already exists in the native-family observer; copy it.~~
+  **Landed 2026-09-14.** Reused rather than copied: the sweep issues each filter through
+  `Prodbox.Lifecycle.TaggedResourceQuery`, and `TaggedResourceQueryInput` gained a **required**
+  region so the compiled audit states its region too instead of inheriting one. One defect the
+  bullet did not name surfaced while repairing it — the superseded parser dropped a returned
+  resource whose tag list it could not read, which is residue becoming absence.
+- ~~**Run the postflight sweep before the local substrate uninstall, and gate the uninstall on a
   confirmed-empty result.** Today the cascade destroys the local Authority — the only permitted
   mutation path — before checking whether anything is left to mutate, so detection without
-  remediation is the best outcome the ordering allows.
-- **Decide whether AWS was ever in scope from program-owned facts rather than from three checkpoints
+  remediation is the best outcome the ordering allows.~~ **Landed 2026-09-14.** The canonical order
+  is now `confirm-MinIO → drain → per-run destroys → test-EBS reaper → sweep → uninstall`, and the
+  uninstall phase is derived from the sweep so a withheld uninstall is reported as downstream of it
+  rather than as a second independent fault.
+- ~~**Decide whether AWS was ever in scope from program-owned facts rather than from three checkpoints
   reading absent.** The declared substrate and the presence of any registered creation binding are
   facts this repository authored; three absent checkpoints are not evidence about a cloud account. A
   non-empty sweep refutes a claimed clean run; it never proves absence and never becomes an exact
-  observation.
+  observation.~~ **Landed 2026-09-14 on the declared-substrate half only, and the other half is not
+  landed rather than quietly dropped.** `CascadeAwsScope` is read from the declared substrate and
+  decides whether the sweep is owed; an unreadable declaration refuses rather than reading as a
+  declaration of nothing. The registered-creation-binding half is **not** landed: the only reader,
+  `selectRegisteredStackGenerationForCleanup`, dispatches an `ObserveProviderAwsScope` per stack
+  because the series identity is keyed by account and region, so consulting it would add three
+  Provider round trips inside a destructive path and make the *owed* question depend on the Provider
+  Worker still serving. It changes no exit — the declared substrate already decides — so it is
+  narration, and narration is not worth that dependency without a live cycle to measure it on.
 
 ### Validation
 
@@ -6740,6 +6893,14 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
      does.
    - **The installed fake traces are of the activated public cascade**, which does not exist yet;
      the five rows that exist today are static constants over the qualification-only summary.
+   **What landed 2026-09-14, and it is none of the above.** The sprint's three non-activation
+   deliverables — the postflight sweep's region binding and pagination, its ordering before the
+   uninstall with the uninstall gated on it, and the AWS-in-scope decision from the declared
+   substrate — are done. They were separable from the activation because they repair the executor
+   the activation *deletes*, which is worth doing only because that deletion is gated on a live
+   campaign and the defects were reachable on every cascade run in the meantime. They do not move
+   the activation one step closer and are not counted as if they had.
+
 2. Run the complete code-local validation matrix and keep the legacy public writer sole while the
    home qualification row is pending.
 3. Run two consecutive home candidate cycles, record the exact current-revision Standard-P

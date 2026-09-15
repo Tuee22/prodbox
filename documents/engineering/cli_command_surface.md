@@ -362,6 +362,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox test integration gateway-pods` | none | `--coverage`, `--cov-fail-under`, `--substrate`, `--record-profile` |
 | `prodbox test integration control-plane-counterexample` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration teardown-recovery` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration create-interrupted` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration certificate-scope` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration clean-room-handoff` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration cascade-qualification` | none | `--coverage`, `--cov-fail-under`, `--substrate` |

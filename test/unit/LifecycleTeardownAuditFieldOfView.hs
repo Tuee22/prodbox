@@ -100,6 +100,61 @@ lifecycleTeardownAuditFieldOfViewSuite =
           "resources:\n  vpc:\n    type: aws:ec2:Vpc\n    properties:\n      spec:\n        tags:\n          Name: x\n"
           `shouldBe` Left (ProgramTagBlockNotRecognized "fixture" 8)
 
+      it "reads a provider default-tags block onto every declared resource" $
+        -- Sprint 7.41. The provider stamps these, so a resource that authors no
+        -- tags of its own still carries them; reading them as authored on the
+        -- provider alone would report a resource as invisible to the audit
+        -- while the audit can plainly see it.
+        fmap
+          (map declaredResourceTags)
+          (parseProvisioningProgram "fixture" defaultTaggedProgram)
+          `shouldBe` Right
+            [ [("prodbox.io/run-scope", "${prodboxRunScope}")]
+            , [("prodbox.io/run-scope", "${prodboxRunScope}")]
+            ,
+              [ ("prodbox.io/run-scope", "${prodboxRunScope}")
+              , ("Name", "${stackName}-vpc")
+              ]
+            ]
+
+      it "still refuses an eight-column tag block that is not a default-tags block" $
+        -- Recognition is by the exact adjacent shape and nothing looser. A
+        -- `tags:` at eight columns under any other key is still a shape this
+        -- parser has not been shown, and reading past it would report a partial
+        -- tag set as a complete one.
+        parseProvisioningProgram
+          "fixture"
+          ( Text.unlines
+              [ "resources:"
+              , "  awsProvider:"
+              , "    type: pulumi:providers:aws"
+              , "    properties:"
+              , "      inheritedTags:"
+              , "        tags:"
+              , "          prodbox.io/run-scope: ${prodboxRunScope}"
+              ]
+          )
+          `shouldBe` Left (ProgramTagBlockNotRecognized "fixture" 8)
+
+      it "refuses a default-tags key whose tags map is not the next line" $
+        -- The gap could be a comment, another property, or a different map
+        -- entirely. Guessing which would attribute tags to resources that do
+        -- not carry them, which is the direction this module never guesses in.
+        parseProvisioningProgram
+          "fixture"
+          ( Text.unlines
+              [ "resources:"
+              , "  awsProvider:"
+              , "    type: pulumi:providers:aws"
+              , "    properties:"
+              , "      defaultTags:"
+              , "        # stamped by the create lane"
+              , "        tags:"
+              , "          prodbox.io/run-scope: ${prodboxRunScope}"
+              ]
+          )
+          `shouldBe` Left (ProgramTagBlockNotRecognized "fixture" 8)
+
     describe "Tagging API reach" $ do
       it "separates regional, global-service, untaggable, and non-AWS types" $ do
         classifyTaggingApiReach "aws:ec2:Instance" `shouldBe` Just ReachableWhenTagged
@@ -240,6 +295,34 @@ queries :: [TerminalAuditQuery]
 queries = case mkRetainedNameBinding "state" "capture" "sender.invalid" "cluster" of
   Left _ -> []
   Right binding -> terminalAuditQueryCatalog binding
+
+-- | Sprint 7.41's committed shape: a default provider that stamps a run tag
+-- onto every resource, one resource that authors nothing of its own, and one
+-- that authors a @Name@ the provider tag is merged with.
+defaultTaggedProgram :: Text
+defaultTaggedProgram =
+  Text.unlines
+    [ "resources:"
+    , "  awsProvider:"
+    , "    type: pulumi:providers:aws"
+    , "    defaultProvider: true"
+    , "    properties:"
+    , "      defaultTags:"
+    , "        tags:"
+    , "          prodbox.io/run-scope: ${prodboxRunScope}"
+    , ""
+    , "  rta0:"
+    , "    type: aws:ec2:RouteTableAssociation"
+    , "    properties:"
+    , "      subnetId: ${publicSubnet0.id}"
+    , ""
+    , "  vpc:"
+    , "    type: aws:ec2:Vpc"
+    , "    properties:"
+    , "      cidrBlock: \"10.90.0.0/16\""
+    , "      tags:"
+    , "        Name: ${stackName}-vpc"
+    ]
 
 program :: Text
 program =

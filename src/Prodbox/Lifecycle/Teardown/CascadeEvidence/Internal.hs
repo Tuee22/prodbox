@@ -1276,11 +1276,11 @@ decodeScopeWire =
 data LocalUninstallEvidence (surface :: CleanupSurface) where
   CascadeLocalUninstallEvidence
     :: !ReadyFingerprint
-    -> !AbsenceEvidence
+    -> !(AbsenceEvidence 'HostLocal)
     -> LocalUninstallEvidence 'Cascade
   LocalOnlyUninstallEvidence
     :: !LocalOnlyProofBinding
-    -> !AbsenceEvidence
+    -> !(AbsenceEvidence 'HostLocal)
     -> LocalUninstallEvidence 'LocalOnly
 
 deriving stock instance Eq (LocalUninstallEvidence surface)
@@ -1288,7 +1288,7 @@ deriving stock instance Eq (LocalUninstallEvidence surface)
 deriving stock instance Show (LocalUninstallEvidence surface)
 
 localUninstallAbsenceEvidence
-  :: LocalUninstallEvidence surface -> AbsenceEvidence
+  :: LocalUninstallEvidence surface -> AbsenceEvidence 'HostLocal
 localUninstallAbsenceEvidence evidence = case evidence of
   CascadeLocalUninstallEvidence _ absence -> absence
   LocalOnlyUninstallEvidence _ absence -> absence
@@ -1325,7 +1325,7 @@ mkLocalOnlyUninstallEvidence compiled observation = do
 localFoundationAbsence
   :: ObservationEvidenceScope
   -> LocalFoundationObservation
-  -> Either CascadeEvidenceError AbsenceEvidence
+  -> Either CascadeEvidenceError (AbsenceEvidence 'HostLocal)
 localFoundationAbsence expectedScope observation = do
   if localFoundationObservationScope observation == expectedScope
     then Right ()
@@ -1352,7 +1352,7 @@ localOnlyProofBinding = cleanupProofBinding LocalOnlySurface
 -- conversion: the whole content of the local-only surface is that it completes
 -- /without/ claiming anything about AWS.
 data LocalOnlyCompleteEvidence
-  = LocalOnlyCompleteEvidence !LocalOnlyProofBinding !AbsenceEvidence
+  = LocalOnlyCompleteEvidence !LocalOnlyProofBinding !(AbsenceEvidence 'HostLocal)
   deriving (Eq, Show)
 
 localOnlyCompleteRunId :: LocalOnlyCompleteEvidence -> CleanupRunId
@@ -1416,7 +1416,7 @@ validateLocalOnlyReceipt binding expectedKind receipt
 
 data CascadeCompleteEvidence = CascadeCompleteEvidence
   { internalCascadeCompleteFingerprint :: !ReadyFingerprint
-  , internalCascadeCompleteLocalAbsence :: !AbsenceEvidence
+  , internalCascadeCompleteLocalAbsence :: !(AbsenceEvidence 'HostLocal)
   }
   deriving (Eq, Show)
 
@@ -1856,7 +1856,7 @@ fixedCascadeEvidenceRegression = do
               compiledDesiredAbsenceObservationScope program
           , localFoundationObservationResult =
               LocalFoundationAbsent
-                (AbsenceEvidence "local-rke2-fixed-local-only-not-found")
+                (hostLocalAbsence "local-rke2-fixed-local-only-not-found")
           }
       localOnlyChain = case localOnlyCompiled of
         Left _ -> False
@@ -2107,7 +2107,7 @@ fixedCascadeEvidenceFixtureFor rawRunId foundation = do
                 compiledDesiredAbsenceObservationScope compiled
             , localFoundationObservationResult =
                 LocalFoundationAbsent
-                  (AbsenceEvidence "local-rke2-fixed-authoritative-not-found")
+                  (hostLocalAbsence "local-rke2-fixed-authoritative-not-found")
             }
       )
   complete <-
@@ -2256,7 +2256,7 @@ fixedObservationSet compiled keys =
             (mustRegisteredIdentityInternal key)
             (ObservationRevision 1)
             scope
-            (ExactResourceAbsent (AbsenceEvidence "provider-fixed-authoritative-not-found"))
+            (ExactResourceAbsent (providerWorkerAbsence "provider-fixed-authoritative-not-found"))
         | key <- keys
         ]
     )

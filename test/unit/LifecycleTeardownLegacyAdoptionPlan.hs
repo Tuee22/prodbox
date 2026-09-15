@@ -241,7 +241,7 @@ observationsFor rows = [presentObservation key identities | (key, identities) <-
 presentObservation :: RegisteredResourceKey -> [Text] -> ExactResourceObservation
 presentObservation key identities =
   observationFor key $ case identities of
-    [] -> ExactResourceAbsent (AbsenceEvidence "fixture observed an empty family")
+    [] -> ExactResourceAbsent (providerWorkerAbsence "fixture observed an empty family")
     first : remaining ->
       ExactResourcePresent
         ( ExactResourceInventory

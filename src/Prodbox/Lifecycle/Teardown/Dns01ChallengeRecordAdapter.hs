@@ -46,9 +46,11 @@ import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
 import Prodbox.Lifecycle.DnsRecord (HostedZoneId, hostedZoneIdText)
+import Prodbox.Lifecycle.ProviderWorker.Evidence (decodeProviderEvidenceText)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
   , ProviderIntentCoordinate
+  , dns01ChallengeRecordEvidenceFamily
   , providerIntentCoordinate
   )
 import Prodbox.Lifecycle.Teardown.Model
@@ -175,18 +177,17 @@ recordNamePrefixFromCoordinate coordinate = case coordinate of
 --
 -- Pure and exposed so the decode is exercised without a Provider Worker.
 parseDns01ChallengeObservation :: Text -> Either Text (Text, [Text])
-parseDns01ChallengeObservation evidence = case Text.lines evidence of
-  [] -> Left "DNS01 challenge observation carried no family line"
-  familyLine : recordLines ->
-    let records =
-          [ recordName
-          | recordLine <- recordLines
-          , let recordName = Text.strip recordLine
-          , not (Text.null recordName)
-          ]
-     in if Text.null (Text.strip familyLine)
-          then Left "DNS01 challenge observation named no family"
-          else Right (Text.strip familyLine, records)
+parseDns01ChallengeObservation evidence = do
+  rows <- decodeProviderEvidenceText dns01ChallengeRecordEvidenceFamily evidence
+  case rows of
+    ["family", zoneId, recordNamePrefix] : recordRows
+      | not (Text.null zoneId) ->
+          (,) (zoneId <> " " <> recordNamePrefix) <$> traverse recordName recordRows
+    _ -> Left "DNS01 challenge observation named no family"
+ where
+  recordName row = case row of
+    ["record", name] | not (Text.null name) -> Right name
+    _ -> Left "DNS01 challenge observation row was malformed"
 
 -- | Convert one independently signed Provider observation into the flat exact
 -- observation algebra.
@@ -241,7 +242,7 @@ decodeExactDns01ChallengeObservation request providerResult =
     [] ->
       observation
         ( ExactResourceAbsent
-            ( AbsenceEvidence
+            ( providerWorkerAbsence
                 "provider-worker exact DNS01 challenge record family returned its canonical empty set"
             )
         )
@@ -340,7 +341,7 @@ authorizeExactDns01ChallengeOwnerDelete request exact = do
 confirmExactDns01ChallengeAbsence
   :: ExactDns01ChallengeObservationRequest
   -> Either Text ProviderIntentExecutionResult
-  -> Either Dns01ChallengeAdapterError AbsenceEvidence
+  -> Either Dns01ChallengeAdapterError (AbsenceEvidence 'ProviderApi)
 confirmExactDns01ChallengeAbsence request result = do
   exact <- decodeExactDns01ChallengeObservation request result
   complete <-

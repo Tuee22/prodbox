@@ -14,8 +14,14 @@ import Prodbox.ControlPlane.ProviderWorkerExecution
 import Prodbox.Lifecycle.CleanupRun (mkCleanupRunId)
 import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.OwnedResourceTags (dns01ChallengeRecordNamePrefix)
+import Prodbox.Lifecycle.ProviderWorker.Evidence
+  ( encodeProviderEvidence
+  , providerEvidenceFamilyOwnBound
+  , providerEvidenceText
+  )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
+  , dns01ChallengeRecordEvidenceFamily
   , providerIntentCoordinate
   )
 import Prodbox.Lifecycle.Teardown.Dns01ChallengeOwnerDeleteInterpreter
@@ -89,8 +95,8 @@ lifecycleTeardownDns01ChallengeRecordAdapterSuite =
 
     it "reads an empty family as absent and a listed record as present" $ do
       let cascade = requestFor CascadeSurface cascadeScope
-          absent = decode cascade familyLine
-          present = decode cascade (familyLine <> "\n" <> challengeRecord)
+          absent = decode cascade (challengeEvidence [])
+          present = decode cascade (challengeEvidence [["record", challengeRecord]])
       exactObservationResult absent `shouldSatisfy` isExactAbsent
       exactObservationResult present `shouldSatisfy` isExactPresent
 
@@ -125,8 +131,8 @@ lifecycleTeardownDns01ChallengeRecordAdapterSuite =
 
     it "authorizes the Kubernetes owner delete only from a positive observation" $ do
       let cascade = requestFor CascadeSurface cascadeScope
-          absent = decode cascade familyLine
-          present = decode cascade (familyLine <> "\n" <> challengeRecord)
+          absent = decode cascade (challengeEvidence [])
+          present = decode cascade (challengeEvidence [["record", challengeRecord]])
       fmap
         (fmap dns01ChallengeOwnerDeleteRecordNamePrefix)
         (authorizeExactDns01ChallengeOwnerDelete cascade absent)
@@ -143,18 +149,26 @@ lifecycleTeardownDns01ChallengeRecordAdapterSuite =
       let cascade = requestFor CascadeSurface cascadeScope
       confirmExactDns01ChallengeAbsence
         cascade
-        (observedResult cascade (familyLine <> "\n" <> challengeRecord))
+        (observedResult cascade (challengeEvidence [["record", challengeRecord]]))
         `shouldSatisfy` isLeftResult
       confirmExactDns01ChallengeAbsence
         cascade
-        (observedResult cascade familyLine)
+        (observedResult cascade (challengeEvidence []))
         `shouldSatisfy` isRightResult
 
     it "parses the family line and its record names" $ do
       parseDns01ChallengeObservation "" `shouldSatisfy` isLeftResult
-      parseDns01ChallengeObservation familyLine `shouldBe` Right (familyLine, [])
-      parseDns01ChallengeObservation (familyLine <> "\n_acme-challenge.a.\n\n_acme-challenge.b.")
+      parseDns01ChallengeObservation (challengeEvidence [])
+        `shouldBe` Right (familyLine, [])
+      parseDns01ChallengeObservation
+        ( challengeEvidence
+            [["record", "_acme-challenge.a."], ["record", "_acme-challenge.b."]]
+        )
         `shouldBe` Right (familyLine, ["_acme-challenge.a.", "_acme-challenge.b."])
+      -- Sprint 4.99: the superseded form silently dropped a blank line.  A
+      -- malformed row is now a refusal rather than something the reader eats.
+      parseDns01ChallengeObservation (challengeEvidence [["record"]])
+        `shouldSatisfy` isLeftResult
 
     it "joins observed records to owners through the one prefix constant" $ do
       -- Route 53 answers with a trailing dot and cert-manager's spec.dnsName
@@ -201,6 +215,18 @@ owner namespace name dnsName =
 
 familyLine :: Text
 familyLine = "Z0123456789ABCDEFGHIJ " <> dns01ChallengeRecordNamePrefix
+
+-- | Sprint 4.99: fixtures render through the production encoder.
+challengeEvidence :: [[Text]] -> Text
+challengeEvidence recordRows =
+  case encodeProviderEvidence
+    (providerEvidenceFamilyOwnBound dns01ChallengeRecordEvidenceFamily)
+    dns01ChallengeRecordEvidenceFamily
+    ( ["family", "Z0123456789ABCDEFGHIJ", dns01ChallengeRecordNamePrefix]
+        : recordRows
+    ) of
+    Right evidence -> providerEvidenceText evidence
+    Left refusal -> error ("fixture refused: " <> show refusal)
 
 challengeRecord :: Text
 challengeRecord = "_acme-challenge.app.example.test."

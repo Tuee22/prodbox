@@ -50,7 +50,7 @@ import Control.Monad (foldM, unless)
 import Data.Aeson (encode, object, (.=))
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char qualified as Char
-import Data.List (dropWhileEnd, find, isPrefixOf, stripPrefix)
+import Data.List (dropWhileEnd, find, intercalate, isPrefixOf, stripPrefix)
 import Data.Text qualified as Text
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
@@ -185,6 +185,7 @@ import Prodbox.TestPlan
   , NativeValidation (..)
   , TestExecutionMode (..)
   , TestExecutionPlan (..)
+  , gatedCheckHaskellSuites
   , retainedSesRequirementForValidations
   , testExecutionPlan
   )
@@ -336,13 +337,35 @@ runLegacyTestCommand repoRoot command = do
     TestAll -> do
       lintExit <- runLintFirst repoRoot environment
       case lintExit of
-        ExitSuccess ->
-          runPlannedTests repoRoot environment plan
+        ExitSuccess -> do
+          -- Sprint 5.47: `dev check` executes the gated unit suites, and
+          -- `runLintFirst` has just run it against this exact revision and
+          -- build directory. Running them again here would double a
+          -- five-thousand-case suite inside one command. The subtraction is
+          -- printed rather than silent: a bounded coverage decision a reader
+          -- cannot see is the shape this sprint exists to remove.
+          writeOutputLine
+            ( "Already executed by prodbox dev check, not repeated here: "
+                ++ intercalate ", " gatedCheckHaskellSuites
+            )
+          runPlannedTests repoRoot environment (withoutGatedSuites plan)
         failure@(ExitFailure _) -> pure failure
     _ -> runPlannedTests repoRoot environment plan
   case (testExit, testRecordProfile command) of
     (ExitSuccess, True) -> recordGatewayMeasuredProfile (testSubstrate command) repoRoot
     _ -> pure testExit
+
+-- | Sprint 5.47: the suites the canonical gate has already executed.
+--
+-- Only the aggregate scope needs this. Every other scope reaches
+-- 'runPlannedTests' without entering the gate, so its suite list is already
+-- exactly what it runs.
+withoutGatedSuites :: TestExecutionPlan -> TestExecutionPlan
+withoutGatedSuites plan =
+  plan
+    { testPlanHaskellSuites =
+        filter (`notElem` gatedCheckHaskellSuites) (testPlanHaskellSuites plan)
+    }
 
 runTestModePreflight :: FilePath -> IO ExitCode
 runTestModePreflight repoRoot = do
@@ -2004,6 +2027,7 @@ gatewayRuntimeValidationBoundary substrate validation =
     ValidationGatewayPods -> GatewayRuntimeNoBoundary
     ValidationControlPlaneCounterexample -> GatewayRuntimeNoBoundary
     ValidationTeardownRecovery -> GatewayRuntimeNoBoundary
+    ValidationCreateInterrupted -> GatewayRuntimeNoBoundary
     ValidationCertificateScope -> GatewayRuntimeNoBoundary
     ValidationCleanRoomHandoff -> GatewayRuntimeNoBoundary
     ValidationCascadeQualification -> GatewayRuntimeNoBoundary

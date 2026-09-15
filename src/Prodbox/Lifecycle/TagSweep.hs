@@ -21,9 +21,10 @@ module Prodbox.Lifecycle.TagSweep
   , tagSweepVerdictExit
   , renderTagSweepVerdict
   , discoverClusterTaggedAwsResources
-  , tagSweepFilterSets
+  , tagSweepRegions
+  , tagSweepQueries
   , unionTaggedResources
-  , parseTagSweepPayload
+  , taggedResourceRowsFor
   , renderTagSweepRefusal
   , prodboxManagedByTagKey
   , prodboxManagedByTagValue
@@ -40,20 +41,16 @@ module Prodbox.Lifecycle.TagSweep
   )
 where
 
-import Data.Aeson
-  ( Value (..)
-  , eitherDecode
-  )
-import Data.Aeson.KeyMap qualified as KeyMap
-import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.List (intercalate, nub)
+import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Vector qualified as Vector
-import Prodbox.Result (Result (..))
-import Prodbox.Subprocess
-  ( ProcessOutput (..)
-  , Subprocess (..)
-  , captureSubprocessResult
+import Prodbox.Aws.Region (awsGlobalServiceRegion)
+import Prodbox.Lifecycle.TaggedResourceQuery
+  ( TaggedResourceEntry (..)
+  , TaggedResourceFilter (..)
+  , TaggedResourceListing (..)
+  , TaggedResourceQueryInput (..)
+  , discoverTaggedResources
   )
 import System.Exit (ExitCode (..))
 
@@ -69,6 +66,11 @@ data TagSweepInput = TagSweepInput
   -- ^ Used to build the @kubernetes.io/cluster/<name>@ filter when
   -- the operator has named the cluster.
   , tagSweepWorkingDirectory :: Maybe FilePath
+  , tagSweepRunRegion :: !Text
+  -- ^ The region this cluster lifecycle provisioned into.  Required: the
+  -- Tagging API answers for the region it is called in, so a sweep that
+  -- does not say which region it asked cannot say what its empty answer
+  -- covers.
   }
   deriving (Eq, Show)
 
@@ -93,38 +95,91 @@ data TaggedResource = TaggedResource
 -- it named nor the relation it wanted:
 --
 -- 1. The AWS CLI parses list-valued options with @store@, so a repeated option
---    replaces the earlier occurrence. @tagFilterArgs@ passed @--tag-filters@
---    twice, and only the last survived. Measured:
---
---    > aws resourcegroupstaggingapi get-resources --tag-filters K1 --tag-filters K2
---    >   -> body: TagFilters = [K2]      (K1 never sent)
---
---    Because the ownership filter was emitted second, the
---    @kubernetes.io\/cluster\/\<name\>@ filter never reached AWS — leaving the
---    sweep structurally blind to precisely the controller-created ENIs, ALBs,
---    and security groups it exists to backstop, which carry the cluster tag and
---    not the ownership tag.
+--    replaces the earlier occurrence. The argv passed @--tag-filters@ twice,
+--    and only the last survived, leaving the sweep structurally blind to
+--    precisely the controller-created ENIs, ALBs, and security groups it
+--    exists to backstop, which carry the cluster tag and not the ownership tag.
 -- 2. The Tagging API **ANDs** the @TagFilters@ within one call. Even had both
 --    reached AWS, one call with two filters asks for resources carrying *both*
 --    tags; the sweep wants either. The OR is therefore two calls unioned, not
 --    one call with two filters.
+--
+-- __Sprint 6.5: the sweep is also one query per region, and it follows its
+-- cursor.__ Both were measured against the 2026-09-07 residue, which had to be
+-- cleared by hand from outside the product. The sweep passed no region and read
+-- one response body, so it saw one region, one page, and — because IAM is a
+-- global service whose rows are returned only from
+-- 'Prodbox.Aws.Region.awsGlobalServiceRegion' — no IAM role at all. The
+-- listing now comes from "Prodbox.Lifecycle.TaggedResourceQuery", whose shape
+-- the native-family observer already used: an explicit @--region@, the cursor
+-- followed to exhaustion, a repeated cursor refused, and a bounded page count
+-- beyond which truncation fails rather than shortening.
 --
 -- A failure of *any* constituent query fails the whole discovery, so a partial
 -- union is never reported as a complete one.
 discoverClusterTaggedAwsResources
   :: TagSweepInput -> IO (Either String [TaggedResource])
 discoverClusterTaggedAwsResources input = do
-  results <- traverse (runTagSweepQuery input) (tagSweepFilterSets input)
+  results <- traverse runOne (tagSweepQueries input)
   pure (unionTaggedResources <$> sequence results)
+ where
+  runOne (regionValue, filterValue) = do
+    listed <-
+      discoverTaggedResources
+        TaggedResourceQueryInput
+          { taggedResourceQueryEnvironment = tagSweepEnvironment input
+          , taggedResourceQueryWorkingDirectory = tagSweepWorkingDirectory input
+          , taggedResourceQueryFilter = filterValue
+          , taggedResourceQueryRegion = regionValue
+          }
+    pure
+      ( concatMap (taggedResourceRowsFor filterValue) . taggedResourceListingEntries
+          <$> listed
+      )
 
--- | Each element is the argv for ONE @get-resources@ call and carries exactly
--- one @--tag-filters@ occurrence.
-tagSweepFilterSets :: TagSweepInput -> [[String]]
-tagSweepFilterSets input =
-  ["--tag-filters", "Key=" ++ prodboxManagedByTagKey ++ ",Values=" ++ prodboxManagedByTagValue]
-    : [ ["--tag-filters", "Key=kubernetes.io/cluster/" ++ name]
-      | Just name <- [tagSweepClusterName input]
-      ]
+-- | The regions one sweep asks, in order, without repeats.
+--
+-- Two, and the second is not a widening of scope. The run's own region answers
+-- for everything this lifecycle provisioned there; the global-service region
+-- answers for IAM, which prodbox creates and which a regional call cannot
+-- return at all. A deployment that already runs in the global-service region
+-- asks once.
+tagSweepRegions :: TagSweepInput -> [Text]
+tagSweepRegions input =
+  nub [tagSweepRunRegion input, awsGlobalServiceRegion]
+
+-- | Every (region, filter) pair this sweep issues as its own call.
+tagSweepQueries :: TagSweepInput -> [(Text, TaggedResourceFilter)]
+tagSweepQueries input =
+  [ (regionValue, filterValue)
+  | regionValue <- tagSweepRegions input
+  , filterValue <- filters
+  ]
+ where
+  filters =
+    TaggedResourceTagPairFilter
+      (Text.pack prodboxManagedByTagKey)
+      (Text.pack prodboxManagedByTagValue)
+      : [ TaggedResourceTagKeyFilter
+            (Text.pack ("kubernetes.io/cluster/" ++ name))
+        | Just name <- [tagSweepClusterName input]
+        ]
+
+-- | One returned resource becomes one row per tag it carries.
+--
+-- An entry carrying no readable tag still becomes a row, attributed to the
+-- filter that returned it. Dropping it — which the superseded parser did — is
+-- residue becoming absence: the API returned the resource *because* it matched,
+-- so the match is a fact even when the tag list is not readable from the row.
+taggedResourceRowsFor :: TaggedResourceFilter -> TaggedResourceEntry -> [TaggedResource]
+taggedResourceRowsFor filterValue entry = case taggedResourceEntryTags entry of
+  [] -> [TaggedResource arn matchedKey matchedValue]
+  tags -> [TaggedResource arn (Text.unpack key) (Text.unpack value) | (key, value) <- tags]
+ where
+  arn = Text.unpack (taggedResourceEntryArn entry)
+  (matchedKey, matchedValue) = case filterValue of
+    TaggedResourceTagKeyFilter key -> (Text.unpack key, "")
+    TaggedResourceTagPairFilter key value -> (Text.unpack key, Text.unpack value)
 
 -- | Concatenate the per-query results and drop rows that appear in more than
 -- one query. A resource carrying both the ownership tag and the cluster tag is
@@ -134,75 +189,6 @@ tagSweepFilterSets input =
 -- decide over.
 unionTaggedResources :: [[TaggedResource]] -> [TaggedResource]
 unionTaggedResources = nub . concat
-
-runTagSweepQuery
-  :: TagSweepInput -> [String] -> IO (Either String [TaggedResource])
-runTagSweepQuery input filterArgs = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "aws"
-        , subprocessArguments =
-            [ "resourcegroupstaggingapi"
-            , "get-resources"
-            , "--output"
-            , "json"
-            ]
-              ++ filterArgs
-        , subprocessEnvironment = Just (tagSweepEnvironment input)
-        , subprocessWorkingDirectory = tagSweepWorkingDirectory input
-        }
-  pure $ case result of
-    Failure err -> Left ("failed to start `aws resourcegroupstaggingapi`: " ++ err)
-    Success output ->
-      case processExitCode output of
-        ExitFailure _ ->
-          Left
-            ( "aws resourcegroupstaggingapi get-resources failed: "
-                ++ processStderr output
-                ++ processStdout output
-            )
-        ExitSuccess -> parseTagSweepPayload (processStdout output)
-
--- | Sprint 4.77: a payload without a readable @ResourceTagMappingList@ is
--- **unparseable**, not empty. Both non-array arms previously returned
--- @Right []@, so a payload shape this parser did not recognise — an error
--- envelope, a paginated response whose key was renamed, a truncated body — was
--- indistinguishable from a clean sweep. Since Sprint 4.76 made the sweep
--- fail-closed, a @Left@ here reaches 'TagSweepUnconfirmed' and refuses.
-parseTagSweepPayload :: String -> Either String [TaggedResource]
-parseTagSweepPayload payload = do
-  value <- eitherDecode (BL8.pack payload) :: Either String Value
-  case value of
-    Object obj -> case KeyMap.lookup "ResourceTagMappingList" obj of
-      Just (Array entries) ->
-        pure (concatMap parseEntry (Vector.toList entries))
-      Just _ ->
-        Left
-          "aws resourcegroupstaggingapi payload field `ResourceTagMappingList` is not an array"
-      Nothing ->
-        Left
-          "aws resourcegroupstaggingapi payload has no `ResourceTagMappingList` key"
-    _ -> Left "aws resourcegroupstaggingapi payload is not a JSON object"
- where
-  parseEntry :: Value -> [TaggedResource]
-  parseEntry entry = case entry of
-    Object obj ->
-      case KeyMap.lookup "ResourceARN" obj of
-        Just (String arnText) ->
-          let arn = Text.unpack arnText
-              tagList = case KeyMap.lookup "Tags" obj of
-                Just (Array tags) -> Vector.toList tags
-                _ -> []
-           in [ TaggedResource arn (Text.unpack key) (tagValueOf tagObj)
-              | Object tagObj <- tagList
-              , Just (String key) <- [KeyMap.lookup "Key" tagObj]
-              ]
-        _ -> []
-    _ -> []
-  tagValueOf tagObj = case KeyMap.lookup "Value" tagObj of
-    Just (String v) -> Text.unpack v
-    _ -> ""
 
 -- | Sprint 4.76: which sweep-owning surface is asking
 -- (@lifecycle_reconciliation_doctrine.md § 5@ assigns the mandatory

@@ -13,6 +13,7 @@ import Data.Text qualified as Text
 import Data.Text.IO qualified as TextIO
 import Prodbox.CLI.Command (IntegrationSuite (..), TestScope (..))
 import Prodbox.Substrate (Substrate (SubstrateHomeLocal))
+import Prodbox.Test.Qualification.CounterexampleProfile
 import Prodbox.Test.Qualification.TeardownCounterexample
 import Prodbox.TestPlan
   ( NativeSuitePlan (..)

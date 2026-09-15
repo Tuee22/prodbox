@@ -526,6 +526,7 @@ data IntegrationSuite
   | IntegrationGatewayPods
   | IntegrationControlPlaneCounterexample
   | IntegrationTeardownRecovery
+  | IntegrationCreateInterrupted
   | IntegrationCertificateScope
   | IntegrationCleanRoomHandoff
   | IntegrationCascadeQualification

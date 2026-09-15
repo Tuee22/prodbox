@@ -116,6 +116,7 @@ prodbox
       gateway-pods
       control-plane-counterexample
       teardown-recovery
+      create-interrupted
       certificate-scope
       clean-room-handoff
       cascade-qualification

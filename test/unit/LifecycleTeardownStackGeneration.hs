@@ -143,6 +143,7 @@ import Prodbox.Lifecycle.Lease
   , mkFencingToken
   , mkOwnerNonce
   )
+import Prodbox.Lifecycle.ProviderWorker.Evidence (providerEvidenceFromWireText)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
   , ProviderRevision
@@ -1181,7 +1182,12 @@ fixtureObservedCreationAttempt label digestCharacter = do
     admitFixtureIntent
       label
       digestCharacter
-      (ReconcileRegisteredStack fixtureStackRef fixtureRevision fixtureProviderConfig)
+      ( ReconcileRegisteredStack
+          fixtureStackRef
+          fixtureRevision
+          fixtureProviderConfig
+          fixtureProviderRunMarker
+      )
   observed <-
     mustRightIO
       =<< observeAuthorityAwsStackCreationOperation
@@ -1200,7 +1206,12 @@ fixtureObservedEksCreation = do
     admitFixtureIntent
       "eks"
       "5"
-      (ReconcileRegisteredStack eksRef fixtureRevision eksConfig)
+      ( ReconcileRegisteredStack
+          eksRef
+          fixtureRevision
+          eksConfig
+          fixtureProviderRunMarker
+      )
   observed <-
     mustRightIO
       =<< observeAuthorityAwsStackCreationOperation
@@ -1321,7 +1332,7 @@ providerBoundary =
 scopeCapabilities :: ProviderIntentCapabilities IO ()
 scopeCapabilities =
   ProviderIntentCapabilities
-    { reconcileRegisteredStackCapability = \_ _ _ -> unavailableMutation
+    { reconcileRegisteredStackCapability = \_ _ _ _ -> unavailableMutation
     , destroyRegisteredStackCapability = \_ _ _ -> unavailableMutation
     , observeRegisteredStackCapability = const unavailableReadOnly
     , readBackRegisteredStackCapability = const unavailableReadOnly
@@ -1348,7 +1359,10 @@ scopeCapabilities =
     , observeSpotPriceCapability = const unavailableReadOnly
     , observeOperationalIdentityCapability = unavailableReadOnly
     , observeProviderAwsScopeCapability =
-        ProviderReadOnly (\_ _ -> pure (Right validScopeEvidence))
+        ProviderReadOnly
+          ( \_ _ bound ->
+              pure (providerEvidenceFromWireText bound validScopeEvidence)
+          )
     , observeProviderReadinessCapability = const unavailableReadOnly
     , issueEksClientAuthCapability = const unavailableReadOnly
     , observeEksClusterIdentityCapability = const unavailableReadOnly
@@ -1358,7 +1372,7 @@ scopeCapabilities =
 
 unavailableReadOnly :: ProviderReadOnly IO ()
 unavailableReadOnly =
-  ProviderReadOnly (\_ _ -> pure (Left "unexpected read-only capability"))
+  ProviderReadOnly (\_ _ _ -> pure (Left "unexpected read-only capability"))
 
 unavailableMutation :: ProviderMutation IO ()
 unavailableMutation =

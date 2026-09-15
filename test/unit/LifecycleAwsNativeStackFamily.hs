@@ -226,25 +226,22 @@ lifecycleAwsNativeStackFamilySuite =
         )
         `shouldSatisfy` isRight
 
--- | Sprint 4.98 reproducer, registered rather than repaired here.
+-- | Sprint 4.99: the reproducer, now asserting the repair.
 --
--- `encodeAwsNativeStackFamilyEvidence` joins its fields with `Text.unlines`, so
--- every value it produces carries newlines and a trailing one. The Provider
--- Worker validates observed evidence with `validateProviderIntentEvidence`,
--- which refuses any character at or below `0x1f` — and `ObserveNativeStackFamily`
--- takes the shared bound rather than an exemption. The encoder and the validator
--- therefore disagree, and this is the wired decision observation: Sprint `4.97`
--- established that `ObserveNativeStackFamily` is what the desired-absence
--- decision actually runs, not the checkpoint-hydrated observers the doctrine
--- described.
+-- It was registered by Sprint @4.98@'s reconnaissance asserting the defect:
+-- @encodeAwsNativeStackFamilyEvidence@ joined its fields with @Text.unlines@,
+-- so every value it produced carried newlines, and
+-- 'validateProviderIntentEvidence' refuses any character at or below @0x1f@.
+-- The encoder and the validator disagreed, and this is the wired decision
+-- observation -- Sprint @4.97@ established that @ObserveNativeStackFamily@ is
+-- what the desired-absence decision actually runs.
 --
--- This asserts the disagreement rather than describing it, so the claim in the
--- deletion ledger rests on an executed check. Repairing it means changing a
--- wire shape, which is a Standard-P surface and belongs to the sprint that owns
--- the codec.
+-- The same case now asserts the opposite, against the same intent and the same
+-- family. That is deliberate: a reproducer that is deleted when it passes
+-- leaves nothing behind to notice a regression, and this one is cheap to keep.
 nativeFamilyEvidenceValidationCase :: SuiteBuilder ()
 nativeFamilyEvidenceValidationCase =
-  it "native-family evidence carries newlines the Provider validator refuses" $ do
+  it "native-family evidence is admitted by the Provider validator" $ do
     let request =
           mustRight
             ( mkAwsNativeStackFamilyObservationRequest
@@ -257,8 +254,14 @@ nativeFamilyEvidenceValidationCase =
         evidence =
           mustRight (encodeAwsNativeStackFamilyEvidence ref ["vpc/vpc-1"])
         intent = ObserveNativeStackFamily ref testConfig
-    Text.any (\character -> character <= '\x1f') evidence `shouldBe` True
-    validateProviderIntentEvidence intent evidence `shouldSatisfy` isLeft
+    Text.any (\character -> character <= '\x1f' || character == '\x7f') evidence
+      `shouldBe` False
+    validateProviderIntentEvidence intent evidence `shouldBe` Right evidence
+    -- An empty family states its absence rather than implying it from a header
+    -- with no rows after it, which the superseded form could not distinguish
+    -- from a listing truncated mid-stream.
+    let absent = mustRight (encodeAwsNativeStackFamilyEvidence ref [])
+    validateProviderIntentEvidence intent absent `shouldBe` Right absent
 
 recordingRunner
   :: IORef [[String]]

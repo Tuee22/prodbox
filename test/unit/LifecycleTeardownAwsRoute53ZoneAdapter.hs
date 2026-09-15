@@ -11,9 +11,15 @@ import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
 import Prodbox.Lifecycle.OwnedResourceTags (dnsValidationHostedZoneNamePrefix)
+import Prodbox.Lifecycle.ProviderWorker.Evidence
+  ( encodeProviderEvidence
+  , providerEvidenceFamilyOwnBound
+  , providerEvidenceText
+  )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
   , providerIntentCoordinate
+  , validationHostedZoneEvidenceFamily
   )
 import Prodbox.Lifecycle.Teardown.AwsRoute53ZoneAdapter
 import Prodbox.Lifecycle.Teardown.Model
@@ -44,13 +50,11 @@ lifecycleTeardownAwsRoute53ZoneAdapterSuite =
 
     it "reads an empty family as absent and a listed zone as present" $ do
       let cascade = requestFor CascadeSurface cascadeScope
-          absent = decode cascade dnsValidationHostedZoneNamePrefix
+          absent = decode cascade (zoneEvidence [])
           present =
             decode
               cascade
-              ( dnsValidationHostedZoneNamePrefix
-                  <> "\nZ1234 prodbox-dns-aws-abc.example.test."
-              )
+              (zoneEvidence [["zone", "Z1234", "prodbox-dns-aws-abc.example.test."]])
       exactObservationResult absent `shouldSatisfy` isExactAbsent
       exactObservationResult present `shouldSatisfy` isExactPresent
 
@@ -86,11 +90,11 @@ lifecycleTeardownAwsRoute53ZoneAdapterSuite =
 
     it "authorizes a reap only from a positive observation" $ do
       let cascade = requestFor CascadeSurface cascadeScope
-          absent = decode cascade dnsValidationHostedZoneNamePrefix
+          absent = decode cascade (zoneEvidence [])
           present =
             decode
               cascade
-              (dnsValidationHostedZoneNamePrefix <> "\nZ1234 zone.example.test.")
+              (zoneEvidence [["zone", "Z1234", "zone.example.test."]])
       -- Absence needs no mutation at all.
       fmap
         (fmap awsValidationZoneReapProviderIntent)
@@ -107,19 +111,34 @@ lifecycleTeardownAwsRoute53ZoneAdapterSuite =
       -- A reaper return value is not absence; only the read-back closes it.
       confirmExactAwsValidationZoneAbsence
         cascade
-        (observedResult cascade (dnsValidationHostedZoneNamePrefix <> "\nZ1 z."))
+        (observedResult cascade (zoneEvidence [["zone", "Z1", "z."]]))
         `shouldSatisfy` isLeftResult
       confirmExactAwsValidationZoneAbsence
         cascade
-        (observedResult cascade dnsValidationHostedZoneNamePrefix)
+        (observedResult cascade (zoneEvidence []))
         `shouldSatisfy` isRightResult
 
     it "parses the family line and its zone identities" $ do
       parseValidationZoneObservation "" `shouldSatisfy` isLeftResult
-      parseValidationZoneObservation "prodbox-dns-aws-"
-        `shouldBe` Right ("prodbox-dns-aws-", [])
-      parseValidationZoneObservation "prodbox-dns-aws-\nZ1 a.\n\nZ2 b."
-        `shouldBe` Right ("prodbox-dns-aws-", ["Z1 a.", "Z2 b."])
+      parseValidationZoneObservation (zoneEvidence [])
+        `shouldBe` Right (dnsValidationHostedZoneNamePrefix, [])
+      parseValidationZoneObservation
+        (zoneEvidence [["zone", "Z1", "a."], ["zone", "Z2", "b."]])
+        `shouldBe` Right (dnsValidationHostedZoneNamePrefix, ["Z1 a.", "Z2 b."])
+      -- Sprint 4.99: the superseded form let a blank line vanish silently.  A
+      -- malformed row is now a refusal rather than something the reader drops.
+      parseValidationZoneObservation (zoneEvidence [["zone", "Z1"]])
+        `shouldSatisfy` isLeftResult
+
+-- | Sprint 4.99: fixtures render through the production encoder.
+zoneEvidence :: [[Text]] -> Text
+zoneEvidence zoneRows =
+  case encodeProviderEvidence
+    (providerEvidenceFamilyOwnBound validationHostedZoneEvidenceFamily)
+    validationHostedZoneEvidenceFamily
+    (["family", dnsValidationHostedZoneNamePrefix] : zoneRows) of
+    Right evidence -> providerEvidenceText evidence
+    Left refusal -> error ("fixture refused: " <> show refusal)
 
 requestFor
   :: CleanupSurfaceWitness surface

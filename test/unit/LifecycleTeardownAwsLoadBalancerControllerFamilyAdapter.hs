@@ -11,8 +11,14 @@ import Data.Text qualified as Text
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
+import Prodbox.Lifecycle.ProviderWorker.Evidence
+  ( encodeProviderEvidence
+  , providerEvidenceFamilyOwnBound
+  , providerEvidenceText
+  )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
+  , eksLoadBalancerControllerFamilyEvidenceFamily
   , providerIntentCoordinate
   )
 import Prodbox.Lifecycle.Teardown.AwsLoadBalancerControllerFamilyAdapter
@@ -65,7 +71,7 @@ lifecycleTeardownAwsLoadBalancerControllerFamilyAdapterSuite =
       map
         (exactObservationResult . decode)
         [ ""
-        , "prodbox-eks-lbc-family/v1\nunknown|arn:aws:unknown"
+        , "prodbox-eks-lbc-family/v2:present:unknown|arn:aws:unknown"
         , presentEvidence <> "load-balancer|arn:aws:elasticloadbalancing:lb/public-edge\n"
         ]
         `shouldSatisfy` all isExactUnobservable
@@ -124,19 +130,33 @@ observed evidence =
         evidence
     )
 
+-- | Sprint 4.99: both fixtures render through the production encoder, so an
+-- absent family now *states* its absence instead of being a bare header line
+-- that a truncated listing was byte-identical to.
+lbcEvidenceFor :: [[Text]] -> Text
+lbcEvidenceFor rows =
+  case encodeProviderEvidence
+    (providerEvidenceFamilyOwnBound eksLoadBalancerControllerFamilyEvidenceFamily)
+    eksLoadBalancerControllerFamilyEvidenceFamily
+    rows of
+    Right evidence -> providerEvidenceText evidence
+    Left refusal -> error ("fixture refused: " <> show refusal)
+
 absentEvidence :: Text
-absentEvidence = "prodbox-eks-lbc-family/v1"
+absentEvidence = lbcEvidenceFor []
 
 presentEvidence :: Text
 presentEvidence =
-  Text.unlines
-    [ "prodbox-eks-lbc-family/v1"
-    , "load-balancer|arn:aws:elasticloadbalancing:lb/public-edge"
-    , "listener|arn:aws:elasticloadbalancing:listener/public-edge/443"
-    , "target-group|arn:aws:elasticloadbalancing:targetgroup/public-edge"
-    , "security-group|arn:aws:ec2:"
-        <> fixtureAwsRegion FixtureCaCentral1
-        <> ":123456789012:security-group/sg-public-edge"
+  lbcEvidenceFor
+    [ ["load-balancer", "arn:aws:elasticloadbalancing:lb/public-edge"]
+    , ["listener", "arn:aws:elasticloadbalancing:listener/public-edge/443"]
+    , ["target-group", "arn:aws:elasticloadbalancing:targetgroup/public-edge"]
+    ,
+      [ "security-group"
+      , "arn:aws:ec2:"
+          <> fixtureAwsRegion FixtureCaCentral1
+          <> ":123456789012:security-group/sg-public-edge"
+      ]
     ]
 
 familyName :: Text

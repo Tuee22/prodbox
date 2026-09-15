@@ -220,6 +220,17 @@ auditFieldOfViewViolations queries resources =
 -- @tags:@ block of eight-column pairs — and refuses anything else rather than
 -- reading past it.  It is a reader for a checked property, not a general YAML
 -- loader; every shape it declines is a build failure that names the line.
+--
+-- It models one further shape, because Sprint @7.41@ authors one: a provider
+-- resource's @defaultTags:@ at six columns, whose own @tags:@ sits at eight and
+-- whose pairs sit at ten.  Those tags are attributed to __every__ resource the
+-- program declares, which is what the AWS provider actually does with them, so
+-- a tag authored once provider-side counts as authored on each resource rather
+-- than on none.  Reading it any other way would make a provider-stamped tag
+-- invisible to the field-of-view join while it is plainly visible on the
+-- resource, which is the same class of silent gap this module exists to close.
+-- A @tags:@ block at eight columns that is /not/ a recognized provider
+-- default-tags block still refuses.
 parseProvisioningProgram
   :: Text
   -- ^ The program directory name.
@@ -253,14 +264,39 @@ parseProvisioningProgram program source
   startsTopLevelKey line =
     not (Text.null line) && not (" " `Text.isPrefixOf` line)
 
+  indexedSectionLines = zip [0 :: Int ..] sectionLines
+
+  -- A provider `defaultTags:` block, recognized only in the exact committed
+  -- shape: the key at six columns with its `tags:` on the very next line at
+  -- eight.  Requiring adjacency is deliberate — it is the difference between
+  -- reading a shape and guessing at one, and a guess here would attribute tags
+  -- to resources that do not carry them.
+  defaultTagBlocks =
+    [ (index + 1, takeWhile ((== defaultTagPairIndentation) . indentationOf) pairLines)
+    | (index, line) <- indexedSectionLines
+    , Text.strip line == "defaultTags:"
+    , indentationOf line == defaultTagsKeyIndentation
+    , tagsHeader : pairLines <- [drop (index + 1) sectionLines]
+    , Text.strip tagsHeader == "tags:"
+    , indentationOf tagsHeader == defaultTagBlockIndentation
+    ]
+
+  -- Attributed to every declared resource: this is what the provider does with
+  -- them, and the join is about what a discovery query can return.
+  programDefaultTags = concatMap (tagPairsAt defaultTagPairIndentation . snd) defaultTagBlocks
+
+  recognizedDefaultTagHeaders = map fst defaultTagBlocks
+
   -- Every `tags:` in the section must be the six-column property form the
-  -- classifier reads.  One at another depth means the committed shape moved and
-  -- the tag sets read here may be partial.
+  -- classifier reads, or the eight-column half of a recognized provider
+  -- `defaultTags:` block.  One at another depth means the committed shape moved
+  -- and the tag sets read here may be partial.
   unexpectedTagBlock =
     case [ indentationOf line
-         | line <- sectionLines
+         | (index, line) <- indexedSectionLines
          , Text.strip line == "tags:"
          , indentationOf line /= tagBlockIndentation
+         , index `notElem` recognizedDefaultTagHeaders
          ] of
       indentation : _ -> Left (ProgramTagBlockNotRecognized program indentation)
       [] -> Right ()
@@ -294,7 +330,7 @@ parseProvisioningProgram program source
           { declaredResourceProgram = program
           , declaredResourceName = name
           , declaredResourceType = resourceType
-          , declaredResourceTags = declaredTags body
+          , declaredResourceTags = programDefaultTags ++ declaredTags body
           }
 
   declaredType body =
@@ -308,13 +344,15 @@ parseProvisioningProgram program source
 
   declaredTags body =
     case break isTagHeader body of
-      (_, _ : rest) ->
-        [ (Text.strip key, unquote (Text.strip (Text.drop 1 value)))
-        | line <- takeWhile ((== tagPairIndentation) . indentationOf) rest
-        , let (key, value) = Text.breakOn ":" line
-        , not (Text.null value)
-        ]
+      (_, _ : rest) -> tagPairsAt tagPairIndentation rest
       _ -> []
+
+  tagPairsAt indentation candidates =
+    [ (Text.strip key, unquote (Text.strip (Text.drop 1 value)))
+    | line <- takeWhile ((== indentation) . indentationOf) candidates
+    , let (key, value) = Text.breakOn ":" line
+    , not (Text.null value)
+    ]
 
   isTagHeader line =
     Text.strip line == "tags:" && indentationOf line == tagBlockIndentation
@@ -353,3 +391,15 @@ tagBlockIndentation = 6
 
 tagPairIndentation :: Int
 tagPairIndentation = 8
+
+-- | A provider resource's @defaultTags:@ key, and the @tags:@ map and pairs
+-- nested under it.  One level deeper than a resource's own property tags at
+-- every step, because it is a property of a property.
+defaultTagsKeyIndentation :: Int
+defaultTagsKeyIndentation = 6
+
+defaultTagBlockIndentation :: Int
+defaultTagBlockIndentation = 8
+
+defaultTagPairIndentation :: Int
+defaultTagPairIndentation = 10

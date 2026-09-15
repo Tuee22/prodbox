@@ -24,6 +24,8 @@ module Prodbox.ControlPlane.OwnershipManifestRepository
   , ownershipManifestAuthorityFoundation
   , ownershipManifestAuthorityAwsScope
   , ownershipManifestAuthorityLogicalName
+  , OwnershipManifestSlotStage (..)
+  , ownershipManifestSlotLogicalName
   , encodeOwnershipManifestAuthorityIdentity
   , decodeOwnershipManifestAuthorityIdentity
   , maximumOwnershipManifestAuthorityIdentityBytes
@@ -38,6 +40,7 @@ module Prodbox.ControlPlane.OwnershipManifestRepository
   , ownershipManifestModelBCodec
   , modelBOwnershipManifestRepository
   , commitOwnershipManifestWriteAheadAttempt
+  , commitOwnershipManifestCompletionAttempt
   , independentlyReadBackOwnershipManifestDecisionEvidence
   , readBackOwnershipManifestDecisionForScope
   , confirmOwnershipManifestDecisionReadBack
@@ -77,27 +80,30 @@ import Prodbox.Lifecycle.Teardown.Observation
   ( OwnershipManifestObservation (..)
   , OwnershipManifestProvenance (..)
   , OwnershipManifestResult (..)
-  , OwnershipManifestVersion (..)
   )
 import Prodbox.Lifecycle.Teardown.OwnershipManifest
   ( DurableWriteAheadOwnershipManifestError
   , OwnershipManifestDecisionEvidence
+  , OwnershipManifestDecisionView (..)
   , OwnershipManifestError
   , OwnershipManifestPurpose (WriteAheadOwnership)
   , OwnershipManifestTarget
   , OwnershipManifestWrite
+  , bindObservedDurableWriteAheadOwnershipManifestForCleanup
   , captureDurableWriteAheadOwnershipManifest
   , durableWriteAheadOwnershipManifestBytes
   , durableWriteAheadOwnershipManifestScope
   , durableWriteAheadOwnershipManifestStackKey
   , maximumDurableWriteAheadOwnershipManifestBytes
   , mkOwnershipManifestTarget
+  , ownershipManifestDecisionView
   , ownershipManifestObservationOnly
   , ownershipManifestTargetScope
   , ownershipManifestTargetStackKey
   )
 import Prodbox.Lifecycle.Teardown.OwnershipManifest.Internal
   ( decodeDurableWriteAheadOwnershipManifest
+  , observedDurableWriteAheadOwnershipManifest
   )
 import Prodbox.Lifecycle.Teardown.Registry
   ( cleanupSurfaceAllows
@@ -182,9 +188,42 @@ ownershipManifestAuthorityAwsScope = internalOwnershipManifestAuthorityAwsScope
 
 ownershipManifestAuthorityLogicalName
   :: OwnershipManifestAuthorityIdentity -> Text
-ownershipManifestAuthorityLogicalName identity =
-  "authority/ownership-manifests/"
-    <> ownershipManifestAuthoritySubmissionKey identity
+ownershipManifestAuthorityLogicalName =
+  ownershipManifestSlotLogicalName WriteAheadSlot
+
+-- | Sprint 7.41: which of one submission's two durable manifest objects is
+-- addressed.
+--
+-- One identity, two objects, because the write-ahead slot is immutable by
+-- construction: 'createOrReplayOwnershipManifest' only ever issues a
+-- 'ModelBInitialize', and an existing object yields an exact replay or a
+-- conflict. That immutability is the property the write-ahead record exists
+-- for — what a create said it was about to make cannot be edited after it made
+-- it — so the identities the provider returned cannot be appended to it and
+-- must land somewhere else.
+--
+-- The stage is a namespace on the logical name rather than a field of the
+-- identity. The identity answers /which run, which stack/, and that answer is
+-- the same for both objects; making the stage part of it would move every
+-- submission key and rewrite an encoding whose version was bumped one sprint
+-- ago for a reason that has nothing to do with this one.
+data OwnershipManifestSlotStage
+  = -- | Committed before the effect. Names the coordinates a create may make,
+    -- with no observed identity on any entry.
+    WriteAheadSlot
+  | -- | Committed on the return route. The same entry set, carrying the exact
+    -- identities the provider returned.
+    CompletionSlot
+  deriving stock (Eq, Ord, Show, Enum, Bounded)
+
+ownershipManifestSlotLogicalName
+  :: OwnershipManifestSlotStage -> OwnershipManifestAuthorityIdentity -> Text
+ownershipManifestSlotLogicalName stage identity =
+  prefix <> ownershipManifestAuthoritySubmissionKey identity
+ where
+  prefix = case stage of
+    WriteAheadSlot -> "authority/ownership-manifests/"
+    CompletionSlot -> "authority/ownership-manifest-completions/"
 
 -- | The durable encoding of an authority identity.
 --
@@ -347,6 +386,13 @@ data OwnershipManifestRepository m = OwnershipManifestRepository
   , independentlyReadBackOwnershipManifest
       :: OwnershipManifestAuthorityIdentity
       -> m OwnershipManifestAuthorityReadBack
+  , createOrReplayOwnershipManifestCompletion
+      :: AuthorityOwnershipManifestWrite -> m OwnershipManifestCommitResult
+  -- ^ Sprint 7.41: the completion slot. Same shape, same immutability, a
+  -- different object.
+  , independentlyReadBackOwnershipManifestCompletion
+      :: OwnershipManifestAuthorityIdentity
+      -> m OwnershipManifestAuthorityReadBack
   }
 
 data OwnershipManifestRepositoryError
@@ -426,6 +472,25 @@ data OwnershipManifestClient m = OwnershipManifestClient
                OwnershipManifestRepositoryError
                OwnershipManifestDecisionEvidence
            )
+  , attemptOwnershipManifestCompletionCommit
+      :: forall surface
+       . OwnershipManifestWrite 'WriteAheadOwnership surface
+      -> m
+           ( Either
+               OwnershipManifestRepositoryError
+               OwnershipManifestCommitResult
+           )
+  -- ^ Sprint 7.41: commit the same manifest, carrying the identities the
+  -- provider returned, to the completion slot.
+  , readBackOwnershipManifestCompletionByIdentity
+      :: forall surface
+       . OwnershipManifestTarget surface
+      -> OwnershipManifestAuthorityIdentity
+      -> m
+           ( Either
+               OwnershipManifestRepositoryError
+               OwnershipManifestDecisionEvidence
+           )
   }
 
 commitOwnershipManifestWriteAheadAttempt
@@ -438,6 +503,24 @@ commitOwnershipManifestWriteAheadAttempt repository write =
     Left err -> pure (Left err)
     Right candidate ->
       Right <$> createOrReplayOwnershipManifest repository candidate
+
+-- | Sprint 7.41: commit the completion manifest — the same entry set, carrying
+-- the identities the provider returned.
+--
+-- The encoder is the write-ahead encoder, deliberately. An append that invented
+-- a second encoding of the same record would be the defect Sprint `4.92` spent
+-- four hundred lines removing; what distinguishes the two objects is the slot
+-- they are written to, not the shape of what is written.
+commitOwnershipManifestCompletionAttempt
+  :: (Monad m)
+  => OwnershipManifestRepository m
+  -> OwnershipManifestWrite 'WriteAheadOwnership surface
+  -> m (Either OwnershipManifestRepositoryError OwnershipManifestCommitResult)
+commitOwnershipManifestCompletionAttempt repository write =
+  case prepareAuthorityOwnershipManifestWrite write of
+    Left err -> pure (Left err)
+    Right candidate ->
+      Right <$> createOrReplayOwnershipManifestCompletion repository candidate
 
 independentlyReadBackOwnershipManifestDecisionEvidence
   :: (Monad m)
@@ -475,9 +558,29 @@ readBackOwnershipManifestDecisionForScope client key scope =
         Left err -> pure (Left (targetInvalid err))
         Right target -> case identityFor key scope of
           Left err -> pure (Left err)
-          Right expected ->
-            readBackOwnershipManifestDecisionByIdentity client target expected
+          Right expected -> do
+            -- Sprint 7.41: the completion slot first, the write-ahead slot only
+            -- when it is absent. A completion exists exactly when the create
+            -- returned and said what it had made, so preferring it is
+            -- preferring the record with identities on it; falling back is what
+            -- makes an interrupted create addressable rather than invisible,
+            -- and the fallback's manifest has no identities, so the decision
+            -- ladder refuses it by naming the missing entry rather than by
+            -- destroying nothing.
+            completion <-
+              readBackOwnershipManifestCompletionByIdentity client target expected
+            case completion of
+              Right evidence
+                | not (isAbsentObservation evidence) -> pure (Right evidence)
+              Right _ ->
+                readBackOwnershipManifestDecisionByIdentity client target expected
+              Left err -> pure (Left err)
  where
+  isAbsentObservation evidence = case ownershipManifestDecisionView evidence of
+    OwnershipManifestDecisionObservation observation ->
+      ownershipManifestResult observation == OwnershipManifestAbsent
+    OwnershipManifestDecisionComplete {} -> False
+
   targetInvalid :: OwnershipManifestError -> OwnershipManifestRepositoryError
   targetInvalid = OwnershipManifestRepositoryIdentityInvalid . Text.pack . show
 
@@ -539,13 +642,36 @@ confirmOwnershipManifestDecisionReadBack target expected observation = do
                       expected
                       actual
                   )
-            | otherwise ->
-                Right
-                  ( observationOnly
-                      ( OwnershipManifestPresent
-                          (OwnershipManifestVersion (modelBObjectVersionText version))
-                      )
-                  )
+            | otherwise -> Right (completeFromDurable version durable)
+
+  -- Sprint 7.41: a manifest that decodes, and whose identity is the one this
+  -- read-back asked for, is authority.
+  --
+  -- Until this sprint every arm of this function degraded to observation-only,
+  -- including this one, and the decision ladder maps a present-but-incomplete
+  -- observation to `StackOwnershipManifestPresentWithoutCompleteEvidence` --
+  -- a refusal.  So a manifest could be committed, read back, and decoded
+  -- carrying its entries, and the teardown still could not use it.  Committing
+  -- the write-ahead manifest without this would have converted one refusal into
+  -- another rather than buying a destroy path, which is why this sprint's own
+  -- block says its commit alone is worse than neutral.
+  --
+  -- Neither minter this consumes is new.  Both were written, tested, and called
+  -- from nothing -- the state Sprint `5.47`'s guard-consumption gate registered
+  -- them in, and their registry rows are deleted by this change.  Nothing about
+  -- the decode is relaxed: the entry set is still held against the registered
+  -- ownership edges by shape, and a binding the surface does not admit still
+  -- refuses.
+  completeFromDurable version durable =
+    case observedDurableWriteAheadOwnershipManifest
+      authorityProvenance
+      (modelBObjectVersionText version)
+      durable of
+      Left err -> unobservable "invalid observed manifest" (Text.pack (show err))
+      Right observed ->
+        case bindObservedDurableWriteAheadOwnershipManifestForCleanup target observed of
+          Left err -> unobservable "manifest not bindable" (Text.pack (show err))
+          Right evidence -> evidence
 
   observationOnly result =
     ownershipManifestObservationOnly
@@ -574,10 +700,17 @@ lifecycleAuthorityOwnershipManifestClient repository =
     { attemptOwnershipManifestWriteAheadCommit =
         commitOwnershipManifestWriteAheadAttempt repository
     , readBackOwnershipManifestDecisionByIdentity = readBack
+    , attemptOwnershipManifestCompletionCommit =
+        commitOwnershipManifestCompletionAttempt repository
+    , readBackOwnershipManifestCompletionByIdentity = readBackCompletion
     }
  where
   readBack target expected = do
     observed <- independentlyReadBackOwnershipManifest repository expected
+    pure (confirmOwnershipManifestDecisionReadBack target expected observed)
+
+  readBackCompletion target expected = do
+    observed <- independentlyReadBackOwnershipManifestCompletion repository expected
     pure (confirmOwnershipManifestDecisionReadBack target expected observed)
 
 ownershipManifestModelBCodec :: ModelBCodec ByteString
@@ -594,12 +727,14 @@ modelBOwnershipManifestRepository
   -> OwnershipManifestRepository m
 modelBOwnershipManifestRepository authority adapter =
   OwnershipManifestRepository
-    { createOrReplayOwnershipManifest = createOrReplay
-    , independentlyReadBackOwnershipManifest = readBack
+    { createOrReplayOwnershipManifest = createOrReplay WriteAheadSlot
+    , independentlyReadBackOwnershipManifest = readBack WriteAheadSlot
+    , createOrReplayOwnershipManifestCompletion = createOrReplay CompletionSlot
+    , independentlyReadBackOwnershipManifestCompletion = readBack CompletionSlot
     }
  where
-  createOrReplay write =
-    case coordinateFor (authorityOwnershipManifestWriteIdentity write) of
+  createOrReplay stage write =
+    case coordinateFor stage (authorityOwnershipManifestWriteIdentity write) of
       Left failure -> pure (OwnershipManifestCommitUnavailable failure)
       Right coordinate -> do
         observed <- modelBObserve adapter coordinate
@@ -627,7 +762,7 @@ modelBOwnershipManifestRepository authority adapter =
         OwnershipManifestCommitResponseLost
           (repositoryFailure "cas-response-unobservable" detail)
 
-  readBack identity = case coordinateFor identity of
+  readBack stage identity = case coordinateFor stage identity of
     Left failure -> pure (OwnershipManifestAuthorityReadBackUnobservable failure)
     Right coordinate -> do
       observed <- modelBObserve adapter coordinate
@@ -645,12 +780,12 @@ modelBOwnershipManifestRepository authority adapter =
         ModelBEndpointUnready detail -> unobservable "endpoint-unready" detail
         ModelBUnobservable detail -> unobservable "unobservable" detail
 
-  coordinateFor identity =
+  coordinateFor stage identity =
     first
       (repositoryFailure "coordinate" . Text.pack . show)
       ( mkClusterRetainedCoordinate
           authority
-          (ownershipManifestAuthorityLogicalName identity)
+          (ownershipManifestSlotLogicalName stage identity)
       )
   unavailable category detail =
     OwnershipManifestCommitUnavailable (repositoryFailure category detail)

@@ -55,6 +55,7 @@ a host-direct provider, Pulumi, or AWS-CLI mutation fallback.
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
 | [haskell_code_guide.md](./haskell_code_guide.md) | Hard-gate Haskell quality doctrine, review-guidance split, and the landed opaque runtime-memory/generated RTS boundary |
 | [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) | Integration preparation, receipt-backed cleanup registration, and validation-specific consumption of the shared lifecycle cleanup report |
+| [provider_evidence_contract.md](./provider_evidence_contract.md) | The provider-evidence wire a fenced Provider Worker capability returns: canonical grammar, printable-character rule, codec-derived bounds, canonical escaping, verbatim retention and byte-exact replay comparison, and version retirement by name |
 | [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) | Exact-keyed desired-absence reconciliation: pure lifecycle-indexed registry, separate checkpoint/resource/audit observations, total recovery decisions, result-indexed teardown programs, durable cleanup graph, and proof-carrying recover-to-clean cascade |
 | [local_registry_pipeline.md](./local_registry_pipeline.md) | In-cluster registry (registry:2) workload sourcing, public-image reconcile, and native-host-architecture image publication |
 | [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Unified block-storage doctrine: preserved recovery roots, static `Retain` PVs on both substrates, deterministic rebinding, and storage consequences of uninstall-last cleanup |
@@ -96,6 +97,7 @@ a host-direct provider, Pulumi, or AWS-CLI mutation fallback.
 
 - [Architecture](./distributed_gateway_architecture.md)
 - [Lifecycle Control-Plane Boundary](./lifecycle_control_plane_architecture.md)
+- [Provider Evidence Contract](./provider_evidence_contract.md)
 - [Compiled Service Boundary](./lifecycle_control_plane_architecture.md#102-compiled-service-boundary)
 - [Bounded Semantic State and Delta Replication](./distributed_gateway_architecture.md#72-bounded-delta-replication)
 - [Runtime Memory Contract](./distributed_gateway_architecture.md#123-runtime-memory-contract)

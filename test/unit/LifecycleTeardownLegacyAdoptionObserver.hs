@@ -12,15 +12,25 @@ import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
 import Prodbox.Lifecycle.DnsRecord (mkHostedZoneId)
+import Prodbox.Lifecycle.ProviderWorker.Evidence
+  ( ProviderEvidenceFamily
+  , encodeProviderEvidence
+  , providerEvidenceFamilyOwnBound
+  , providerEvidenceText
+  )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
   , ProviderStackConfig
+  , eksIamRoleFamilyEvidenceFamily
+  , eksLoadBalancerControllerFamilyEvidenceFamily
   , mkAwsEksProviderStackConfig
   , mkAwsEksSubzoneProviderStackConfig
   , mkAwsTestProviderStackConfig
+  , mkProviderStackRef
   , providerIntentCoordinate
   , providerNativeStackFamilyStackRef
   , providerStackRefText
+  , registeredStackAbsenceEvidence
   )
 import Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
   ( encodeAwsNativeStackFamilyEvidence
@@ -154,19 +164,28 @@ providerIntentResourceKey intent = case intent of
 ebsAbsentEvidence :: Text.Text
 ebsAbsentEvidence = "prodbox-test-ebs-observation/v1:absent"
 
+-- | Sprint 4.99: fixtures render through the production encoder.
+familyEvidenceFor :: ProviderEvidenceFamily -> [[Text.Text]] -> Text.Text
+familyEvidenceFor family rows =
+  case encodeProviderEvidence (providerEvidenceFamilyOwnBound family) family rows of
+    Right evidence -> providerEvidenceText evidence
+    Left refusal -> error ("fixture refused: " <> show refusal)
+
 iamAbsentEvidence :: Text.Text
 iamAbsentEvidence =
-  Text.unlines
-    ( ["prodbox-eks-iam-family/v1"]
-        <> map (\name -> "role|" <> name <> "|absent") awsEksIamRoleNames
-        <> map (\name -> "policy|" <> name <> "|absent") awsEksIamManagedPolicyNames
+  familyEvidenceFor
+    eksIamRoleFamilyEvidenceFamily
+    ( map (\name -> ["role", name, "absent"]) awsEksIamRoleNames
+        <> map (\name -> ["policy", name, "absent"]) awsEksIamManagedPolicyNames
     )
 
 lbcAbsentEvidence :: Text.Text
-lbcAbsentEvidence = "prodbox-eks-lbc-family/v1"
+lbcAbsentEvidence =
+  familyEvidenceFor eksLoadBalancerControllerFamilyEvidenceFamily []
 
 stackAbsentEvidence :: Text.Text
-stackAbsentEvidence = "registered stack is absent"
+stackAbsentEvidence =
+  registeredStackAbsenceEvidence (mustRight (mkProviderStackRef "aws-eks"))
 
 observationRevision :: ObservationRevision
 observationRevision = ObservationRevision 73

@@ -5,6 +5,7 @@
 
 module Main (main) where
 
+import AbsenceStratumWitness (absenceStratumWitnessSuite)
 import AdminActionLifecycle (adminActionLifecycleSuite)
 import AdminActionQuotaJournal (adminActionQuotaJournalSuite)
 import Allocation (allocationSuite)
@@ -507,6 +508,7 @@ import Prodbox.Aws
   , spotObservationFromAwsSpotPriceOutput
   , tlsRetentionIamUserName
   )
+import Prodbox.Aws.Region (awsGlobalServiceRegion)
 import Prodbox.AwsEnvironment
   ( awsCliSubprocessEnvironment
   , overlayAwsCredentials
@@ -606,8 +608,11 @@ import Prodbox.CLI.Pulumi
   )
 import Prodbox.CLI.Rke2
   ( AuthorityBackupReadinessStage (..)
+  , CascadeAwsScope (..)
   , CascadePhaseOutcome (..)
+  , CascadePostflightSweep (..)
   , CascadeSubstrateDecision (..)
+  , CascadeUninstallGate (..)
   , DeleteTerminalArm (..)
   , GatewayFullModeProbe (..)
   , KubernetesReadinessCheck (..)
@@ -632,12 +637,14 @@ import Prodbox.CLI.Rke2
   , buildNativeDeletePlan
   , buildNativeInstallExecutionPlan
   , cascadeOrderNarration
+  , cascadePostflightSweepExit
   , cascadeSweepCredentialAbsentExit
   , classifyBrokerVaultUnsealedStatus
   , classifyGatewayFullModeProbe
   , classifyKubernetesReadiness
   , classifyRegistryStorageEdgeProbe
   , componentReadinessRetryPolicyFor
+  , decideCascadeUninstallGate
   , decideRke2ImageImport
   , derivedPhase
   , gatewayDaemonWorkloadRefs
@@ -1123,6 +1130,7 @@ import Prodbox.Lib.AwsSubstratePlatform qualified
 import Prodbox.Lib.ChartPlatform
   ( ChartDefinition (..)
   , ChartDeploymentPlan (..)
+  , ChartPlanObservers (..)
   , ChartReleasePlan (..)
   , HelmUpgradeFailureDisposition (..)
   , KubernetesApiEgressCoordinate (..)
@@ -1134,7 +1142,7 @@ import Prodbox.Lib.ChartPlatform
   , buildChartDeletePlanForSubstrate
   , buildChartDeploymentPlan
   , buildChartDeploymentPlanForSubstrate
-  , buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
+  , buildChartDeploymentPlanForSubstrateWithObservers
   , certManagerAdoptionAnnotations
   , chartReleasesToDeploy
   , classifyPublicEdgePreserve
@@ -1241,6 +1249,7 @@ import Prodbox.Lifecycle.ResidueStatus qualified as Residue
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
+import Prodbox.Lifecycle.TaggedResourceQuery qualified as TaggedResourceQuery
 import Prodbox.Lifecycle.TargetSinkVersion (targetSinkVersionValue)
 import Prodbox.Lifecycle.TargetSinkVersion.Internal
   ( targetSinkVersionFromStoreVersion
@@ -1560,6 +1569,7 @@ import Prodbox.TestValidation
   , verifyAwsTestSshReachability
   , volumeRebindReport
   )
+import Prodbox.Tla qualified as Tla
 import Prodbox.Tls.CertScope
   ( ScopeError (..)
   , certScopeSetDnsNames
@@ -1688,12 +1698,18 @@ import Prodbox.Workload
   , workloadLiveConfigFromDhallWith
   )
 import Prodbox.Workload.Settings qualified as WorkloadSettings
+import ProviderEvidenceCodec (providerEvidenceCodecSuite)
+import ProviderEvidenceQualification (providerEvidenceQualificationSuite)
+import QualificationCreateInterruptedCounterexample
+  ( qualificationCreateInterruptedCounterexampleSuite
+  )
 import QualificationEvidence (qualificationEvidenceSuite)
 import QualificationFrozenCounterexample (qualificationFrozenCounterexampleSuite)
 import QualificationSourceIdentity (qualificationSourceIdentitySuite)
 import QualificationTeardownCounterexample
   ( qualificationTeardownCounterexampleSuite
   )
+import RegisteredStackCreationOwnership (registeredStackCreationOwnershipSuite)
 import ResponseObligationSuite (responseObligationSuite)
 import RestoreGraphSuite (restoreGraphSuite)
 import RetainedSesPreparation (retainedSesPreparationSuite)
@@ -1701,6 +1717,7 @@ import RetainedSesTargetRecovery (retainedSesTargetRecoverySuite)
 import RoleReadinessSuite (roleReadinessSuite)
 import ScopeCodecProperties (scopeCodecPropertiesSuite)
 import ScopeCodecWitness (scopeCodecWitnessSuite)
+import SealedConstructors (sealedConstructorsSuite)
 import SesWorkflow (sesWorkflowSuite)
 import SigV4 (sigV4Suite)
 import SmtpKeyRepairInterpreter (smtpKeyRepairInterpreterSuite)
@@ -1746,8 +1763,10 @@ import Tier0Fixture
   )
 import Tier0FixtureSuite (tier0FixtureSuite)
 import Tier0PlanAssert (tier0PlanAssertSuite)
+import TypedGuardConsumption (typedGuardConsumptionSuite)
 import VaultSession (vaultSessionSuite)
 import VaultSessionSafety (vaultSessionSafetySuite)
+import WireFidelity (wireFidelitySuite)
 
 -- | Sprint 5.34: takes a 'Tier0Fixture' rather than a raw 'String', and writes
 -- it through 'writeTier0Fixture'.
@@ -2856,6 +2875,8 @@ unitSuite = do
   qualificationFrozenCounterexampleSuite
   qualificationEvidenceSuite
   qualificationSourceIdentitySuite
+  sealedConstructorsSuite
+  qualificationCreateInterruptedCounterexampleSuite
   qualificationTeardownCounterexampleSuite
   temporalQualificationSuite
   awsSesLifecycleSuite
@@ -2916,6 +2937,9 @@ unitSuite = do
   roleReadinessSuite
   responseObligationSuite
   escapeRegistrySuite
+  registeredStackCreationOwnershipSuite
+  typedGuardConsumptionSuite
+  wireFidelitySuite
   fencedCheckpointSuite
   gatewayAuthoritySuite
   gatewayBoundedSuite
@@ -3083,6 +3107,9 @@ unitSuite = do
   ephemeralKubectlCredentialSuite
   scopeCodecPropertiesSuite
   scopeCodecWitnessSuite
+  absenceStratumWitnessSuite
+  providerEvidenceCodecSuite
+  providerEvidenceQualificationSuite
   storeLifetimeWitnessSuite
   supervisionWitnessSuite
   targetCommitSmtpSuite
@@ -3579,6 +3606,92 @@ unitSuite = do
       case classifyVaultCasOutcome (Left (HttpStatus 409 "conflict")) of
         VaultCasUnobservable _ -> pure ()
         other -> expectationFailure ("a 409 was classified as " <> show other)
+
+    it "Sprint 4.99: reaching past the provider-evidence seal fails the build" $ do
+      -- The two ways past the seal, and the two reasons each matters.  A module
+      -- holding the constructor could mint evidence without the encoder; a
+      -- module holding the bound's constructor could author a size limit for
+      -- itself, which is how one superseded encoder came to declare 128 KiB on
+      -- a wire carrying 4,096 characters.
+      let importsInternal =
+            "import Prodbox.Lifecycle.ProviderWorker.Evidence.Internal (ProviderEvidence (..))\n"
+          rederivesFromWire =
+            "  sealed = providerEvidenceFromWire bound (renderMyOwnWay rows)\n"
+          usesTheEncoder =
+            "  sealed = encodeProviderEvidence bound myFamily rows\n"
+      length
+        ( Prodbox.CheckCode.providerEvidenceSealViolations
+            ("src/Prodbox/ControlPlane/ProviderProduction.hs", importsInternal)
+        )
+        `shouldBe` 1
+      length
+        ( Prodbox.CheckCode.providerEvidenceSealViolations
+            ("src/Prodbox/ControlPlane/ProviderProduction.hs", rederivesFromWire)
+        )
+        `shouldBe` 1
+      -- The canonical encoder is the supported way in, and is not a violation.
+      Prodbox.CheckCode.providerEvidenceSealViolations
+        ("src/Prodbox/ControlPlane/ProviderProduction.hs", usesTheEncoder)
+        `shouldBe` []
+      -- The rendered-refusal variant is what a producer or a fake takes.
+      Prodbox.CheckCode.providerEvidenceSealViolations
+        ( "src/Prodbox/ControlPlane/ProviderProduction.hs"
+        , "  sealed = providerEvidenceFromWireText bound value\n"
+        )
+        `shouldBe` []
+      -- The seam's own modules are the exemption, and there are exactly three.
+      forM_ Prodbox.CheckCode.providerEvidenceSealOwners $ \owner ->
+        Prodbox.CheckCode.providerEvidenceSealViolations (owner, importsInternal)
+          `shouldBe` []
+      length Prodbox.CheckCode.providerEvidenceSealOwners `shouldBe` 3
+      -- A commented-out import is not an import.
+      Prodbox.CheckCode.providerEvidenceSealViolations
+        ("src/Prodbox/ControlPlane/ProviderProduction.hs", "-- " <> importsInternal)
+        `shouldBe` []
+
+    it "Sprint 4.98: absence minted outside an observation boundary fails the build" $ do
+      -- The shape this rule exists to refuse, reduced to its two moves: grep
+      -- the merged subprocess output, then call the answer an absence.
+      let grepsThenMints =
+            unlines
+              [ "missingStack = containsAny [\"no stack named\"] . commandDetail"
+              , "decode output ="
+              , "  if missingStack output"
+              , "    then Just (providerWorkerAbsence \"registered stack is absent\")"
+              , "    else Nothing"
+              ]
+          mintsOnly = "decode _ = Just (providerWorkerAbsence \"canonical empty set\")\n"
+          grepsOnly = "missingStack = containsAny [\"no stack named\"] . commandDetail\n"
+      -- A module with no observation boundary may not mint at all.
+      length
+        ( Prodbox.CheckCode.absenceMinterProvenanceViolations
+            ("src/Prodbox/ControlPlane/ProviderProduction.hs", grepsThenMints)
+        )
+        `shouldBe` 1
+      length
+        ( Prodbox.CheckCode.absenceMinterProvenanceViolations
+            ("src/Prodbox/ControlPlane/ProviderProduction.hs", mintsOnly)
+        )
+        `shouldBe` 1
+      -- An owner may mint...
+      Prodbox.CheckCode.absenceMinterProvenanceViolations
+        ("src/Prodbox/Lifecycle/Teardown/AwsStackAdapter.hs", mintsOnly)
+        `shouldBe` []
+      -- ...but not by grepping a subprocess for its verdict.
+      length
+        ( Prodbox.CheckCode.absenceMinterProvenanceViolations
+            ("src/Prodbox/Lifecycle/Teardown/AwsStackAdapter.hs", grepsThenMints)
+        )
+        `shouldBe` 1
+      -- Reading subprocess output is not itself the defect: a module that never
+      -- mints absence is free to render a diagnostic from it.
+      Prodbox.CheckCode.absenceMinterProvenanceViolations
+        ("src/Prodbox/ControlPlane/ProviderProduction.hs", grepsOnly)
+        `shouldBe` []
+      -- A commented-out minter is not a minter.
+      Prodbox.CheckCode.absenceMinterProvenanceViolations
+        ("src/Prodbox/ControlPlane/ProviderProduction.hs", "-- providerWorkerAbsence is not called here\n")
+        `shouldBe` []
 
     it "Sprint 4.74: a CAS call site that does not classify fails the build" $ do
       let unclassified = "  written <- vaultKvCasWriteV2 address token mount path cas fields\n"
@@ -8802,6 +8915,7 @@ unitSuite = do
                            , "gateway-daemon"
                            , "control-plane-counterexample"
                            , "teardown-recovery"
+                           , "create-interrupted"
                            , "certificate-scope"
                            , "clean-room-handoff"
                            , "charts-platform"
@@ -11433,8 +11547,8 @@ unitSuite = do
               }
       withBinarySiblingTier0 (tier0Fixture homeTier0) $ do
         planAResult <-
-          buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
-            imageResolver
+          buildChartDeploymentPlanForSubstrateWithObservers
+            (fixtureChartPlanObservers imageResolver)
             SubstrateHomeLocal
             "/tmp/prodbox"
             settingsA
@@ -11442,8 +11556,8 @@ unitSuite = do
             testChartSecrets
             Map.empty
         planBResult <-
-          buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
-            imageResolver
+          buildChartDeploymentPlanForSubstrateWithObservers
+            (fixtureChartPlanObservers imageResolver)
             SubstrateHomeLocal
             "/tmp/prodbox"
             settingsB
@@ -11485,8 +11599,8 @@ unitSuite = do
           renderPlans settings =
             mapM
               ( \rootChart ->
-                  buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
-                    imageResolver
+                  buildChartDeploymentPlanForSubstrateWithObservers
+                    (fixtureChartPlanObservers imageResolver)
                     SubstrateHomeLocal
                     "/tmp/prodbox"
                     settings
@@ -11939,8 +12053,8 @@ unitSuite = do
               }
       withBinarySiblingTier0 (tier0Fixture homeTier0) $ do
         homeResult <-
-          buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
-            fixtureRuntimeImageResolver
+          buildChartDeploymentPlanForSubstrateWithObservers
+            (fixtureChartPlanObservers fixtureRuntimeImageResolver)
             SubstrateHomeLocal
             "/tmp/prodbox"
             (testValidatedSettings "/tmp/prodbox/.data")
@@ -11948,8 +12062,8 @@ unitSuite = do
             testChartSecrets
             Map.empty
         awsResult <-
-          buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
-            fixtureRuntimeImageResolver
+          buildChartDeploymentPlanForSubstrateWithObservers
+            (fixtureChartPlanObservers fixtureRuntimeImageResolver)
             SubstrateAws
             "/tmp/prodbox"
             (testValidatedSettings "/tmp/prodbox/.data")
@@ -15346,8 +15460,12 @@ unitSuite = do
     it "narration places confirm-MinIO first" $
       ("confirm-MinIO → drain" `isInfixOf` cascadeOrderNarration) `shouldBe` True
 
-    it "narration places uninstall between per-run destroys and sweep" $
-      ("per-run destroys → test-EBS reaper → uninstall → sweep" `isInfixOf` cascadeOrderNarration)
+    it "narration places the sweep between the test-EBS reaper and the uninstall" $
+      -- Sprint 6.5 inverted the last pair. The sweep ran after the uninstall,
+      -- so the cascade destroyed the local Authority -- the only surface
+      -- permitted to mutate AWS -- and only then asked whether anything was
+      -- left to mutate.
+      ("per-run destroys → test-EBS reaper → sweep → uninstall" `isInfixOf` cascadeOrderNarration)
         `shouldBe` True
 
     it "narration places the test-EBS reaper after per-run destroys" $
@@ -15358,7 +15476,7 @@ unitSuite = do
 
     it "narration is the full canonical cascade phrase" $
       cascadeOrderNarration
-        `shouldBe` "rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → test-EBS reaper → uninstall → sweep"
+        `shouldBe` "rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → test-EBS reaper → sweep → uninstall"
 
   describe "Sprint 4.17.b cascade substrate inference" $ do
     it "all-absent residue → SubstrateHomeLocal (drain targets local cluster)" $
@@ -15398,10 +15516,67 @@ unitSuite = do
       -- skip and registered the reason as a POLICY question: refusing outright
       -- would fail `cluster delete --cascade` on every host that never
       -- provisioned an AWS substrate, which is the recommended wipe-and-rebuild
-      -- path. The question is settled without adding a requirement, because the
-      -- cascade already computes the fact that decides it.
-      cascadeSweepCredentialAbsentExit SubstrateHomeLocal `shouldBe` ExitSuccess
-      cascadeSweepCredentialAbsentExit SubstrateAws `shouldBe` ExitFailure 1
+      -- path.
+      --
+      -- Sprint 6.5 changed WHICH fact decides it. The answer used to come from
+      -- the substrate inferred from three per-run checkpoints; a checkpoint is
+      -- Pulumi state, and its absence is exactly the condition under which a
+      -- resource is most likely to be stranded. It now comes from the declared
+      -- substrate.
+      cascadeSweepCredentialAbsentExit CascadeAwsUndeclared `shouldBe` ExitSuccess
+      cascadeSweepCredentialAbsentExit CascadeAwsDeclared `shouldBe` ExitFailure 1
+
+    it "Sprint 6.5: an unreadable declaration is not a declaration of nothing" $
+      cascadeSweepCredentialAbsentExit (CascadeAwsScopeUnreadable "settings refused")
+        `shouldBe` ExitFailure 1
+
+  describe "Sprint 6.5 the uninstall is gated on a confirmed-empty sweep" $ do
+    let escapee = TagSweep.TaggedResource "arn:aws:eks:x:1:cluster/c" "prodbox.io/managed-by" "prodbox"
+
+    it "admits the uninstall when the sweep is not owed" $
+      -- A deployment with no declared AWS substrate has no account for residue
+      -- to be in, so there is nothing for the gate to wait on.
+      decideCascadeUninstallGate CascadeSweepNotOwed `shouldBe` CascadeUninstallAdmitted
+
+    it "admits the uninstall on a confirmed-clean sweep" $
+      decideCascadeUninstallGate
+        (CascadeSweepRan (TagSweep.TagSweepConfirmedClean []))
+        `shouldBe` CascadeUninstallAdmitted
+
+    it "withholds the uninstall when the sweep found something" $
+      -- The local Authority is the only surface permitted to mutate AWS.
+      -- Destroying it here is what turned detection into detection without
+      -- remediation.
+      decideCascadeUninstallGate
+        (CascadeSweepRan (TagSweep.TagSweepEscaped [] [escapee]))
+        `shouldSatisfy` isUninstallWithheld
+
+    it "withholds the uninstall when the sweep could not be confirmed" $
+      decideCascadeUninstallGate
+        (CascadeSweepRan (TagSweep.TagSweepUnconfirmed "Tagging API unreachable"))
+        `shouldSatisfy` isUninstallWithheld
+
+    it "withholds the uninstall when an owed sweep did not run" $
+      decideCascadeUninstallGate (CascadeSweepNotRun "no admin credential")
+        `shouldSatisfy` isUninstallWithheld
+
+    it "names what it is waiting on rather than refusing anonymously" $
+      case decideCascadeUninstallGate (CascadeSweepRan (TagSweep.TagSweepEscaped [] [escapee])) of
+        CascadeUninstallWithheld reason -> reason `shouldContain` "1 resource(s)"
+        CascadeUninstallAdmitted -> expectationFailure "expected the uninstall to be withheld"
+
+    it "carries every sweep outcome to the phase exit it deserves" $ do
+      cascadePostflightSweepExit CascadeSweepNotOwed `shouldBe` ExitSuccess
+      cascadePostflightSweepExit (CascadeSweepNotRun "x") `shouldBe` ExitFailure 1
+      cascadePostflightSweepExit (CascadeSweepRan (TagSweep.TagSweepConfirmedClean []))
+        `shouldBe` ExitSuccess
+      cascadePostflightSweepExit (CascadeSweepRan (TagSweep.TagSweepUnconfirmed "x"))
+        `shouldBe` ExitFailure 1
+
+    it "narrates the order it actually runs" $
+      -- The narration is what an operator reads before a destructive run; it
+      -- said uninstall before sweep for as long as that was true.
+      cascadeOrderNarration `shouldContain` "sweep → uninstall"
 
   describe "Sprint 4.76 cascade phase fold" $ do
     -- Sprint 2.47 correction: this constructed `CascadePhaseOutcome` as a
@@ -15651,7 +15826,9 @@ unitSuite = do
             { TagSweep.tagSweepEnvironment = []
             , TagSweep.tagSweepClusterName = clusterName
             , TagSweep.tagSweepWorkingDirectory = Nothing
+            , TagSweep.tagSweepRunRegion = fixtureAwsRegion FixtureCaCentral1
             }
+        filtersOf = map snd . TagSweep.tagSweepQueries
 
     it "issues one query per filter, because the Tagging API ANDs TagFilters" $
       -- Before Sprint 4.77 this was ONE query with `--tag-filters` twice.
@@ -15659,21 +15836,44 @@ unitSuite = do
       -- so the sweep never saw the controller-created ENIs / ALBs / security
       -- groups it exists to backstop; and even both-sent would have asked for
       -- resources carrying BOTH tags, when the sweep wants either.
-      TagSweep.tagSweepFilterSets (sweepInput (Just "aws-eks-test-cluster"))
-        `shouldBe` [ ["--tag-filters", "Key=prodbox.io/managed-by,Values=prodbox"]
-                   , ["--tag-filters", "Key=kubernetes.io/cluster/aws-eks-test-cluster"]
+      nub (filtersOf (sweepInput (Just "aws-eks-test-cluster")))
+        `shouldBe` [ TaggedResourceQuery.TaggedResourceTagPairFilter
+                       "prodbox.io/managed-by"
+                       "prodbox"
+                   , TaggedResourceQuery.TaggedResourceTagKeyFilter
+                       "kubernetes.io/cluster/aws-eks-test-cluster"
                    ]
 
-    it "every query carries exactly one --tag-filters occurrence" $
-      mapM_
-        ( \filterSet ->
-            length (filter (== "--tag-filters") filterSet) `shouldBe` 1
-        )
-        (TagSweep.tagSweepFilterSets (sweepInput (Just "aws-eks-test-cluster")))
-
     it "an unnamed cluster drops that query rather than the option's value" $
-      TagSweep.tagSweepFilterSets (sweepInput Nothing)
-        `shouldBe` [["--tag-filters", "Key=prodbox.io/managed-by,Values=prodbox"]]
+      nub (filtersOf (sweepInput Nothing))
+        `shouldBe` [ TaggedResourceQuery.TaggedResourceTagPairFilter
+                       "prodbox.io/managed-by"
+                       "prodbox"
+                   ]
+
+    it "asks the run's region and the global-service region, and no others" $
+      -- Sprint 6.5. The Tagging API answers for the region it is called in and
+      -- returns IAM only from the global-service region, so a sweep bound to
+      -- the run's region alone cannot see an IAM role at all -- which is why
+      -- the 2026-09-07 residue had to be cleared by hand from outside the
+      -- product.
+      TagSweep.tagSweepRegions (sweepInput (Just "aws-eks-test-cluster"))
+        `shouldBe` [fixtureAwsRegion FixtureCaCentral1, awsGlobalServiceRegion]
+
+    it "asks once when the run already lives in the global-service region" $
+      -- A repeated region is a doubled bill and a doubled listing, not a wider
+      -- field of view.
+      TagSweep.tagSweepRegions
+        (sweepInput (Just "aws-eks-test-cluster"))
+          { TagSweep.tagSweepRunRegion = awsGlobalServiceRegion
+          }
+        `shouldBe` [awsGlobalServiceRegion]
+
+    it "issues every filter in every region it asks" $ do
+      let queries = TagSweep.tagSweepQueries (sweepInput (Just "aws-eks-test-cluster"))
+      length queries `shouldBe` 4
+      nub (map fst queries)
+        `shouldBe` [fixtureAwsRegion FixtureCaCentral1, awsGlobalServiceRegion]
 
     it "unions the per-query results by row, so a doubly-tagged resource appears once" $ do
       let arn = ("arn:aws:ec2:" <> (fixtureAwsRegion FixtureUsEast1) <> ":1:security-group/sg-1")
@@ -15684,30 +15884,80 @@ unitSuite = do
         [[ownershipRow, clusterRow], [clusterRow]]
         `shouldBe` [ownershipRow, clusterRow]
 
+  describe "Sprint 6.5 a returned resource never becomes an absence" $ do
+    it "emits one row per tag the entry carries" $
+      TagSweep.taggedResourceRowsFor
+        (TaggedResourceQuery.TaggedResourceTagKeyFilter "prodbox.io/managed-by")
+        ( TaggedResourceQuery.TaggedResourceEntry
+            "arn:aws:iam::111122223333:role/prodbox-role"
+            [("prodbox.io/managed-by", "prodbox"), ("Name", "prodbox-role")]
+        )
+        `shouldBe` [ TagSweep.TaggedResource
+                       "arn:aws:iam::111122223333:role/prodbox-role"
+                       "prodbox.io/managed-by"
+                       "prodbox"
+                   , TagSweep.TaggedResource
+                       "arn:aws:iam::111122223333:role/prodbox-role"
+                       "Name"
+                       "prodbox-role"
+                   ]
+
+    it "keeps a tagless returned resource, attributed to the filter that returned it" $
+      -- The superseded parser dropped it. The API returned the resource
+      -- \*because* it matched, so the match is a fact even when the row carries
+      -- no readable tag list, and dropping it is residue becoming absence.
+      TagSweep.taggedResourceRowsFor
+        (TaggedResourceQuery.TaggedResourceTagPairFilter "prodbox.io/managed-by" "prodbox")
+        (TaggedResourceQuery.TaggedResourceEntry "arn:aws:eks:x:1:cluster/c" [])
+        `shouldBe` [ TagSweep.TaggedResource
+                       "arn:aws:eks:x:1:cluster/c"
+                       "prodbox.io/managed-by"
+                       "prodbox"
+                   ]
+
+    it "a tagless resource reaches the escaped list rather than a clean verdict" $
+      TagSweep.decideTagSweep
+        TagSweep.TagSweepCascade
+        ( Right
+            ( TagSweep.taggedResourceRowsFor
+                (TaggedResourceQuery.TaggedResourceTagKeyFilter "prodbox.io/managed-by")
+                (TaggedResourceQuery.TaggedResourceEntry "arn:aws:eks:x:1:cluster/c" [])
+            )
+        )
+        `shouldSatisfy` isTagSweepEscaped
+
   describe "Sprint 4.77 an unreadable tag-sweep payload is unparseable, not empty" $ do
     it "a payload with no ResourceTagMappingList key refuses" $
-      case TagSweep.parseTagSweepPayload "{\"Message\":\"AccessDenied\"}" of
+      case TaggedResourceQuery.parseTaggedResourcePage "{\"Message\":\"AccessDenied\"}" of
         Left detail -> detail `shouldContain` "ResourceTagMappingList"
-        Right rows -> expectationFailure ("expected a refusal, got: " ++ show rows)
+        Right page -> expectationFailure ("expected a refusal, got: " ++ show page)
 
     it "a payload whose ResourceTagMappingList is not an array refuses" $
-      case TagSweep.parseTagSweepPayload "{\"ResourceTagMappingList\":null}" of
+      case TaggedResourceQuery.parseTaggedResourcePage "{\"ResourceTagMappingList\":null}" of
         Left detail -> detail `shouldContain` "not an array"
-        Right rows -> expectationFailure ("expected a refusal, got: " ++ show rows)
+        Right page -> expectationFailure ("expected a refusal, got: " ++ show page)
 
     it "a non-object payload refuses" $
-      case TagSweep.parseTagSweepPayload "[]" of
+      case TaggedResourceQuery.parseTaggedResourcePage "[]" of
         Left detail -> detail `shouldContain` "not a JSON object"
-        Right rows -> expectationFailure ("expected a refusal, got: " ++ show rows)
+        Right page -> expectationFailure ("expected a refusal, got: " ++ show page)
 
     it "an empty ResourceTagMappingList is still a genuinely clean answer" $
-      TagSweep.parseTagSweepPayload "{\"ResourceTagMappingList\":[]}" `shouldBe` Right []
+      fmap
+        TaggedResourceQuery.taggedResourcePageEntries
+        (TaggedResourceQuery.parseTaggedResourcePage "{\"ResourceTagMappingList\":[]}")
+        `shouldBe` Right []
 
     it "a refused payload reaches TagSweepUnconfirmed rather than a clean sweep" $ do
       let verdict =
             TagSweep.decideTagSweep
               TagSweep.TagSweepCascade
-              (TagSweep.parseTagSweepPayload "{\"Message\":\"AccessDenied\"}")
+              ( fmap
+                  (const [])
+                  ( TaggedResourceQuery.parseTaggedResourcePage
+                      "{\"Message\":\"AccessDenied\"}"
+                  )
+              )
       TagSweep.tagSweepVerdictExit verdict `shouldBe` ExitFailure 1
 
   describe "Sprint 4.16 StackOutputs pulumi-shape parsing" $ do
@@ -16337,15 +16587,17 @@ unitSuite = do
       let rendered = TagSweep.renderTagSweepRefusal []
       rendered `shouldContain` "Postflight tag sweep refused"
 
-    it "TagSweepInput record is constructible with all three fields" $ do
+    it "TagSweepInput record carries the region the sweep will name" $ do
       let input =
             TagSweep.TagSweepInput
               { TagSweep.tagSweepEnvironment = [("AWS_REGION", (fixtureAwsRegion FixtureUsEast1))]
               , TagSweep.tagSweepClusterName = Just "aws-eks-test-cluster"
               , TagSweep.tagSweepWorkingDirectory = Just "/tmp/work"
+              , TagSweep.tagSweepRunRegion = fixtureAwsRegion FixtureUsEast1
               }
       TagSweep.tagSweepClusterName input `shouldBe` Just "aws-eks-test-cluster"
       TagSweep.tagSweepWorkingDirectory input `shouldBe` Just "/tmp/work"
+      TagSweep.tagSweepRunRegion input `shouldBe` fixtureAwsRegion FixtureUsEast1
 
   describe "Sprint 7.29 EKS VPC ownership hardening" $ do
     it "tags every VPC-scoped aws-eks Pulumi resource with prodbox ownership" $ do
@@ -20173,6 +20425,92 @@ unitSuite = do
         )
         `shouldSatisfy` ((== length declaredNames) . length)
 
+  describe "Sprint 5.48 TLA+ model registration" $ do
+    let registered =
+          nub
+            ( concatMap
+                (\model -> [Tla.tlaModelFile model, Tla.tlaConfigFile model])
+                Tla.tlaModels
+            )
+
+    it "registers the create-ownership model in both dispositions" $
+      -- A model checked only in the configuration it passes under has been
+      -- observed to pass, never to refuse.
+      sort
+        [ Tla.tlaConfigFile model
+        | model <- Tla.tlaModels
+        , Tla.tlaModelFile model == "lifecycle_create_ownership.tla"
+        ]
+        `shouldBe` sort
+          [ "lifecycle_create_ownership.cfg"
+          , "lifecycle_create_ownership_superseded.cfg"
+          ]
+
+    it "expects a counterexample from the frozen superseded ordering" $
+      [ Tla.tlaExpectation model
+      | model <- Tla.tlaModels
+      , Tla.tlaConfigFile model == "lifecycle_create_ownership_superseded.cfg"
+      ]
+        `shouldBe` [Tla.ExpectsCounterexample]
+
+    it "refuses a model file the registry does not name" $
+      Prodbox.CheckCode.tlaRegistrationViolations (registered ++ ["unregistered_model.tla"])
+        `shouldSatisfy` any ("does not register" `isInfixOf`)
+
+    it "refuses a registry entry with no file on disk" $
+      Prodbox.CheckCode.tlaRegistrationViolations
+        (filter (/= "lifecycle_create_ownership.cfg") registered)
+        `shouldSatisfy` any ("which is not in" `isInfixOf`)
+
+    it "admits the governed directory exactly as it stands" $ do
+      repoRoot <- getCurrentDirectory
+      violations <- Prodbox.CheckCode.checkTlaModelRegistration repoRoot
+      violations `shouldBe` []
+
+    it "refuses a registry in which nothing is expected to fail" $
+      Prodbox.CheckCode.tlaExpectationCoverageViolations
+        [ model
+        | model <- Tla.tlaModels
+        , Tla.tlaExpectation model == Tla.ExpectsNoCounterexample
+        ]
+        `shouldSatisfy` any ("shown to be able to fail" `isInfixOf`)
+
+  describe "Sprint 5.47 gated suite execution" $ do
+    let manifest names =
+          unlines
+            (concatMap (\name -> ["test-suite " ++ name, "    type: exitcode-stdio-1.0"]) names)
+        declaredNames = map (drop (length ("test:" :: String))) TestPlan.routedHaskellSuites
+        gatedName = drop (length ("test:" :: String))
+
+    it "gates exactly the four unit stanzas" $
+      -- The boundary is a property of the tier, not a preference: a unit
+      -- stanza asserts over pure values and interpreter-boundary fakes, so it
+      -- needs no cluster, no socket and no credential, and the canonical gate
+      -- may depend on none of those.
+      sort TestPlan.gatedCheckHaskellSuites
+        `shouldBe` sort
+          [ "test:prodbox-authority-admission-unit"
+          , "test:prodbox-control-plane-authenticated-transport-unit"
+          , "test:prodbox-control-plane-authentication-unit"
+          , "test:prodbox-unit"
+          ]
+
+    it "gates only suites a `prodbox test` scope also names" $
+      -- A suite reachable only from the gate is the Sprint 5.45 defect wearing
+      -- the gate's clothes: a developer could not run it by name.
+      filter (`notElem` TestPlan.routedHaskellSuites) TestPlan.gatedCheckHaskellSuites
+        `shouldBe` []
+
+    it "refuses a gated name the package does not declare" $
+      Prodbox.CheckCode.testSuiteStanzaViolations
+        (manifest (filter (/= gatedName "test:prodbox-unit") declaredNames))
+        `shouldSatisfy` any ("gates `test:prodbox-unit`" `isInfixOf`)
+
+    it "admits the package exactly as it stands" $ do
+      repoRoot <- getCurrentDirectory
+      cabalContents <- readFile' (repoRoot </> "prodbox.cabal")
+      Prodbox.CheckCode.testSuiteStanzaViolations cabalContents `shouldBe` []
+
   describe "Sprint 7.40 ephemeral credential machinery" $ do
     let owner = "src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs"
         elsewhere = "src/Prodbox/Infra/Synthetic.hs"
@@ -23378,8 +23716,8 @@ unitSuite = do
               }
           imageResolver _ = pure (Right (Just runtimeImage))
       result <-
-        buildChartDeploymentPlanForSubstrateWithRuntimeImageResolver
-          imageResolver
+        buildChartDeploymentPlanForSubstrateWithObservers
+          (fixtureChartPlanObservers imageResolver)
           SubstrateAws
           "/tmp/prodbox"
           (testValidatedSettings "/tmp/prodbox/.data")
@@ -25087,6 +25425,32 @@ gatewayMinioCredsNoneLines =
       ++ " }"
   ]
 
+-- | Sprint 5.47: planner observers that reach nothing outside this process.
+--
+-- The chart plan builder makes two observations that leave the process: the
+-- local container runtime's image identity, and the Kubernetes API egress
+-- coordinate, which production reads with @kubectl get endpoints kubernetes@.
+-- Only the first had a seam, so the planner case rooted at @provider-worker@
+-- invoked a real @kubectl@ and failed on any host with no cluster running. A
+-- unit assertion that cannot be executed on the host the gate runs on is not a
+-- proof surface, which is the condition Sprint `5.47`'s gated suite route
+-- exists to remove.
+fixtureChartPlanObservers
+  :: (Substrate -> IO (Either String (Maybe ResolvedCustomImage)))
+  -> ChartPlanObservers
+fixtureChartPlanObservers imageResolver =
+  ChartPlanObservers
+    { observeRuntimeChartImage = imageResolver
+    , observeKubernetesApiEgress =
+        pure
+          ( Right
+              KubernetesApiEgressCoordinate
+                { kubernetesApiEgressAddresses = ["10.0.0.1"]
+                , kubernetesApiEgressPort = 6443
+                }
+          )
+    }
+
 testChartSecrets :: Map.Map String String
 testChartSecrets =
   Map.fromList
@@ -25143,3 +25507,15 @@ isBrokerReadinessStarting :: BrokerReadinessState -> Bool
 isBrokerReadinessStarting state = case state of
   BrokerReadinessStarting _ -> True
   _ -> False
+
+-- | Sprint 6.5: a verdict that names at least one escapee.
+isTagSweepEscaped :: TagSweep.TagSweepVerdict -> Bool
+isTagSweepEscaped verdict = case verdict of
+  TagSweep.TagSweepEscaped _ escaped -> not (null escaped)
+  _ -> False
+
+-- | Sprint 6.5: a gate that withheld the uninstall, whatever its reason.
+isUninstallWithheld :: CascadeUninstallGate -> Bool
+isUninstallWithheld gate = case gate of
+  CascadeUninstallWithheld _ -> True
+  CascadeUninstallAdmitted -> False

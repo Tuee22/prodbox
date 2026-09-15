@@ -1,0 +1,36 @@
+# PROVIDER-EVIDENCE-CONTROL-CHARACTER-UNSETTLEABLE-2026-09-13 dispositions.
+#
+# Six provider-evidence encoders emitted a character the Provider Worker's own
+# validator refuses, so three observations could never settle and three settled
+# only when they had nothing to report. The superseded bytes are frozen beside
+# this file because Sprint 4.99 deletes the encoders that produced them, and
+# Standard P requires both sides to stay auditable after that deletion.
+#
+# The refusal cause is the same for all six and is not restated here: the
+# expected-failure result is whatever validateProviderIntentEvidence returns for
+# the producer's own intent, compared against its published wording.
+
+format-version 1
+fixture-id PROVIDER-EVIDENCE-CONTROL-CHARACTER-UNSETTLEABLE-2026-09-13
+superseded-result control-character-refused expected-failure
+replacement-result canonical-evidence-admitted expected-pass
+
+producer native-stack-family separator newline always-refused
+producer eks-iam-role-family separator newline always-refused
+producer owned-resource-tags separator tab-and-newline always-refused
+producer eks-lbc-family separator newline refused-when-present
+producer validation-hosted-zones separator newline refused-when-non-empty
+producer dns01-challenge-records separator newline refused-when-non-empty
+
+# The terminal audit is the one producer a separator repair alone could not have
+# reached: at a hundred pages its listing cannot fit the 4,096-character wire
+# bound in any encoding, and it declared no bound of its own to notice.
+bound owned-resource-tags superseded none-declared
+bound owned-resource-tags replacement derived-from-character-bound
+bound native-stack-family superseded 131072-bytes-and-4096-identities
+bound native-stack-family replacement derived-from-character-bound
+
+# Retained-record safety. For every intent in this family no AuthorityProviderCompleted
+# record can exist, because its evidence was never admissible; the defect is what
+# makes the wire-shape change byte-safe.
+retained-record every-producer none-possible

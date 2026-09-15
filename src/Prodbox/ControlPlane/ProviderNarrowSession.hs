@@ -22,6 +22,10 @@ import Prodbox.ControlPlane.ProviderCredentialSession
   ( ProviderCredentialSessionBinding
   )
 import Prodbox.Lifecycle.Lease (AuthorityTime)
+import Prodbox.Lifecycle.ProviderWorker.Evidence
+  ( ProviderEvidence
+  , ProviderEvidenceBound
+  )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( EksClientAuthRequest
   , EksClusterIdentityRequest
@@ -32,6 +36,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderOwnedTagQuery
   , ProviderReadinessProbe
   , ProviderRevision
+  , ProviderRunMarker
   , ProviderSpotPriceQuery
   , ProviderStackConfig
   , ProviderStackRef
@@ -63,11 +68,21 @@ data ProviderMutation m session = ProviderMutation
   }
 
 -- | One observation-only arm.  There is structurally no mutation callback.
+--
+-- Sprint @4.99@: the arm returns sealed 'ProviderEvidence' and is handed the
+-- bound for the intent it is serving.  Before that it returned a bare 'Text',
+-- so every 'Text' was a legal answer and the rule an encoder had to satisfy
+-- lived in a function 900 lines away that the author never had to name.  Six
+-- encoders were written against that signature and all six emitted a character
+-- the rule refuses.  Handing the bound in rather than letting a codec look one
+-- up is the other half: an encoder now has exactly one bound available, the one
+-- belonging to the intent it is answering.
 newtype ProviderReadOnly m session = ProviderReadOnly
   { runProviderReadOnly
       :: session
       -> ProviderIntentCoordinate
-      -> m (Either Text Text)
+      -> ProviderEvidenceBound
+      -> m (Either Text ProviderEvidence)
   }
 
 -- | Total role-separated capability registry for the closed
@@ -77,6 +92,7 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
       :: ProviderStackRef
       -> ProviderRevision
       -> ProviderStackConfig
+      -> ProviderRunMarker
       -> ProviderMutation m session
   , destroyRegisteredStackCapability
       :: ProviderStackRef
@@ -209,9 +225,9 @@ operationForProviderIntent
   -> ProviderIntent
   -> ProviderIntentOperation m session
 operationForProviderIntent capabilities intent = case intent of
-  ReconcileRegisteredStack ref revision config ->
+  ReconcileRegisteredStack ref revision config marker ->
     ProviderIntentMutation
-      (reconcileRegisteredStackCapability capabilities ref revision config)
+      (reconcileRegisteredStackCapability capabilities ref revision config marker)
   DestroyRegisteredStack ref revision config ->
     ProviderIntentMutation
       (destroyRegisteredStackCapability capabilities ref revision config)

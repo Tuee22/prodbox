@@ -225,7 +225,7 @@ import Prodbox.Runtime.Role
   )
 import Prodbox.Settings
   ( ConfigFile (storage)
-  , Credentials
+  , Credentials (region)
   , StorageSection (manual_pv_host_root)
   , loadConfigFile
   )
@@ -1098,6 +1098,7 @@ productionFinalNoRetentionAuditCapability repoRoot adminCredentials =
             { TagSweep.tagSweepEnvironment = environment
             , TagSweep.tagSweepClusterName = Just awsEksCanonicalClusterName
             , TagSweep.tagSweepWorkingDirectory = Just repoRoot
+            , TagSweep.tagSweepRunRegion = region adminCredentials
             }
     let narration = TagSweep.renderTagSweepVerdict TagSweep.TagSweepNuke verdict
     -- The three verdicts stay three. Collapsing "escapees found" and "the

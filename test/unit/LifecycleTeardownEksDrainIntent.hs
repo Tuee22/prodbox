@@ -466,13 +466,13 @@ fixtureKubernetesReadBack attempt =
               eksDrainSessionCertificateAuthorityDigest fixtureSession
           , eksDrainReadBackLoadBalancerServiceClass =
               LoadBalancerServiceClassReadBack
-                (EksDrainResourceClassAbsent (AbsenceEvidence "all LB Services absent"))
+                (EksDrainResourceClassAbsent (kubernetesReadBackAbsence "all LB Services absent"))
           , eksDrainReadBackIngressClass =
               IngressClassReadBack
-                (EksDrainResourceClassAbsent (AbsenceEvidence "all Ingresses absent"))
+                (EksDrainResourceClassAbsent (kubernetesReadBackAbsence "all Ingresses absent"))
           , eksDrainReadBackControllerOwnerClass =
               ControllerOwnerClassReadBack
-                (EksDrainResourceClassAbsent (AbsenceEvidence "controller owner absent"))
+                (EksDrainResourceClassAbsent (kubernetesReadBackAbsence "controller owner absent"))
           , eksDrainReadBackDeletePolicyPvcs =
               [pvcAbsent fixturePvcB, pvcAbsent fixturePvcA]
           }
@@ -486,7 +486,7 @@ observedKubernetesReadBack observation = case eksDrainTargetReadBackResult obser
 
 pvcAbsent :: EksNamespacedName -> EksDrainPvcReadBack
 pvcAbsent target =
-  EksDrainPvcReadBack target (EksDrainPvcAbsent (AbsenceEvidence "PVC absent"))
+  EksDrainPvcReadBack target (EksDrainPvcAbsent (kubernetesReadBackAbsence "PVC absent"))
 
 fixtureNoTargetIntent :: EksDrainIntent
 fixtureNoTargetIntent =

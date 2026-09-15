@@ -74,7 +74,7 @@ data StackDecisionRefusal
 data StackDesiredAbsenceDecision (surface :: CleanupSurface)
   = StackAlreadyAbsent
       !RegisteredResourceKey
-      !AbsenceEvidence
+      !(AbsenceEvidence 'ProviderApi)
   | StackDestroyFromVerifiedPrimary
       !RegisteredResourceKey
       !ExactResourceInventory

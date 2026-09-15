@@ -250,7 +250,7 @@ plan =
             (ObservationRevision 74)
             perRunScope
             ( ExactResourceAbsent
-                (AbsenceEvidence "fixture observed registered stack absence")
+                (providerWorkerAbsence "fixture observed registered stack absence")
             )
         ]
     )

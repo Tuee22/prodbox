@@ -555,7 +555,7 @@ observeAuthorityAwsStackCreationOperation repository currentRevision operationId
       (digest == operationIdDigest operationId)
       (Left (AwsStackCreationOperationDigestMismatch operationId))
     case intent of
-      ReconcileRegisteredStack ref revision config -> do
+      ReconcileRegisteredStack ref revision config _ -> do
         unless
           (revision == currentRevision)
           ( Left

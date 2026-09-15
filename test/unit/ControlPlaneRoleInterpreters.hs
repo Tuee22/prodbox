@@ -152,6 +152,8 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkAwsEksProviderStackConfig
   , mkProviderRevision
   , mkRegisteredProviderResources
+  , providerRunMarkerRunScope
+  , providerRunMarkerSubmission
   )
 import Prodbox.Lifecycle.TargetCommitIntent
   ( mkRegisteredTargetSet
@@ -405,13 +407,15 @@ controlPlaneRoleInterpretersSuite =
   serveTls interpreter request = serveControlPlaneRequest fixtureRoleReadinessResolver interpreter TlsRetentionRuntime request
   serveBackup interpreter request = serveControlPlaneRequest fixtureRoleReadinessResolver interpreter AuthorityBackupRuntime request
   serveProvider interpreter request = serveControlPlaneRequest fixtureRoleReadinessResolver interpreter ProviderWorkerRuntime request
+  -- Sprint 7.41: the reconcile's run marker rides in the secondary and tertiary
+  -- slots, and a payload without it is refused rather than admitted unmarked.
   submitReconcile =
     ProviderWorkApplyPayload
       { applyCommandKind = SubmitCommand
       , applyIntentKind = ReconcileStackIntent
       , applyResourceRef = "aws-eks"
-      , applySecondaryRef = ""
-      , applyTertiaryRef = ""
+      , applySecondaryRef = providerRunMarkerRunScope fixtureProviderRunMarker
+      , applyTertiaryRef = providerRunMarkerSubmission fixtureProviderRunMarker
       , applyRequestedRevision = 3
       , applyStackConfig =
           Just (either (error . show) id (mkAwsEksProviderStackConfig "127.0.0.1/32"))

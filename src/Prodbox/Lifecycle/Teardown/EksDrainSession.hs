@@ -94,7 +94,7 @@ eksDrainSessionIdText (EksDrainSessionId value) = value
 -- cluster-wide AWS audit.
 data EksKubernetesIdentityResult
   = EksKubernetesIdentityPresent !Text
-  | EksKubernetesIdentityAbsent !AbsenceEvidence
+  | EksKubernetesIdentityAbsent !(AbsenceEvidence 'KubernetesApi)
   | EksKubernetesIdentityUnobservable !ObservationFailure
   deriving (Eq, Show)
 

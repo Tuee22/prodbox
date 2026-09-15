@@ -35,7 +35,13 @@ module Prodbox.CLI.Rke2
   , aggregateCascadeExit
   , cascadeOrderNarration
   , inferCascadeSubstrate
+  , CascadeAwsScope (..)
+  , CascadePostflightSweep (..)
+  , CascadeUninstallGate (..)
+  , cascadeAwsScopeOwesSweep
+  , cascadePostflightSweepExit
   , cascadeSweepCredentialAbsentExit
+  , decideCascadeUninstallGate
   , retainedStateNoticePerRunLine
   , isMinioSecretKeyArgumentSafe
   , OperationalAwsCredentialGate (..)
@@ -527,6 +533,7 @@ import Prodbox.Settings
   , renderPublicEdgeAdvertisementMode
   , renderSeedInForceOutcome
   , requireAcmeAccount
+  , requireAwsSubstrateProfile
   , requireOperationalAwsRegion
   , storage
   , validateAndLoadBootstrapSettings
@@ -3509,12 +3516,14 @@ renderNativeDeletePlan repoRoot flags
                | resource <- ResourceRegistry.perRunManagedResources
                ]
             ++ [ "STEP=test_ebs_reaper"
+               , -- Sprint 6.5: the sweep precedes the uninstall, and the
+                 -- uninstall runs only on a confirmed-empty result.
+                 "STEP=postflight_tag_sweep"
                , "STEP=delete_rke2_cluster_substrate"
                , "STEP=remove_calico_endpoint_status_residue"
                , "STEP=remove_managed_kubeconfig"
                , "STEP=host_firewall_gateway_unrestrict"
                , "STEP=render_retained_state_notice"
-               , "STEP=postflight_tag_sweep"
                ]
         )
   | otherwise =
@@ -3739,7 +3748,7 @@ data DeleteMode
 -- @documents/engineering/lifecycle_reconciliation_doctrine.md §5b@.
 cascadeOrderNarration :: String
 cascadeOrderNarration =
-  "rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → test-EBS reaper → uninstall → sweep"
+  "rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → test-EBS reaper → sweep → uninstall"
 
 -- | Sprint 4.76: one cascade phase's name and verdict. The cascade folds
 -- these rather than short-circuiting, because
@@ -3905,23 +3914,43 @@ runAuthorizedDeleteCascade repoRoot cascadeSubstrate exactAnswers = do
   -- Step 4: Sprint 4.40 test-scoped EBS reaper. Retained-production EBS
   -- survives by tag policy and by the reaper's test-scoped filter.
   reaperExit <- runCascadeTestEbsReaper repoRoot
-  -- Step 5: RKE2 uninstall + cluster-substrate cleanup.
-  retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
-  uninstallExit <-
-    runSequentially
-      [ deleteRke2ClusterSubstrate repoRoot
-      , removeCalicoEndpointStatusResidue
-      , removeManagedKubeconfig
-      , runHostFirewallGatewayUnrestrict defaultGatewayNodePort
-      , renderRetainedStateNotice DeleteArmCascadeReachedPhases retainedManualPvRoot
-      ]
-  -- Step 6: postflight cluster-tag sweep. Fail-closed since Sprint 4.76
+  -- Step 5: postflight cluster-tag sweep. Fail-closed since Sprint 4.76
   -- (doctrine § 6): a non-empty escapee list or an unreachable Tagging
-  -- API is a hard failure, not a diagnostic. Sprint 4.80 closed the last
-  -- skip arm the same way, using the substrate already inferred above:
-  -- a missing admin credential is a cannot-confirm only when this cluster
-  -- lifecycle actually had AWS state in scope.
-  sweepExit <- runCascadePostflightTagSweep repoRoot cascadeSubstrate
+  -- API is a hard failure, not a diagnostic.
+  --
+  -- Sprint 6.5 moved it ahead of the uninstall. It ran after, so the cascade
+  -- destroyed the local Authority — the only surface permitted to mutate AWS —
+  -- and only then asked whether anything was left to mutate. Detection without
+  -- remediation was the best outcome that ordering allowed, and the
+  -- 2026-09-07 residue is what it produced. Whether the sweep is owed is now
+  -- decided from the declared substrate rather than from three per-run
+  -- checkpoints reading absent.
+  sweep <- runCascadePostflightTagSweep repoRoot
+  let sweepExit = cascadePostflightSweepExit sweep
+      uninstallGate = decideCascadeUninstallGate sweep
+  -- Step 6: RKE2 uninstall + cluster-substrate cleanup, gated on a
+  -- confirmed-empty sweep.
+  retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
+  uninstallExit <- case uninstallGate of
+    CascadeUninstallWithheld reason -> do
+      writeDiagnosticLine
+        ( "cluster delete --cascade did NOT uninstall the local substrate: "
+            ++ reason
+            ++ ". The retained local RKE2 control plane is left running on "
+            ++ "purpose — it is the only surface this repository permits to "
+            ++ "mutate AWS, and destroying it here would leave the answer above "
+            ++ "with nothing able to act on it. Resolve what the sweep reported, "
+            ++ "then re-run `cluster delete --cascade`."
+        )
+      pure (ExitFailure 1)
+    CascadeUninstallAdmitted ->
+      runSequentially
+        [ deleteRke2ClusterSubstrate repoRoot
+        , removeCalicoEndpointStatusResidue
+        , removeManagedKubeconfig
+        , runHostFirewallGatewayUnrestrict defaultGatewayNodePort
+        , renderRetainedStateNotice DeleteArmCascadeReachedPhases retainedManualPvRoot
+        ]
   let phases =
         confirmPhase
           : derivedPhase "drain" drainExit "confirm-MinIO" [confirmPhase]
@@ -3929,11 +3958,12 @@ runAuthorizedDeleteCascade repoRoot cascadeSubstrate exactAnswers = do
                 "per-run destroys"
                 (ResourceRegistry.absentReconcileDestroyExit destroyOutcome)
             , independentPhase "test-EBS reaper" reaperExit
-            , independentPhase "uninstall" uninstallExit
-            , independentPhase "sweep" sweepExit
+            , sweepPhase
+            , derivedPhase "uninstall" uninstallExit "sweep" [sweepPhase]
             ]
       confirmPhase =
         independentPhase "confirm-MinIO" (perRunResidueObservationExit destroyOutcome)
+      sweepPhase = independentPhase "sweep" sweepExit
       aggregate = aggregateCascadeExit phases
   case failedCascadePhases phases of
     [] -> writeOutputLine "cluster delete --cascade: every phase reported success."
@@ -4021,14 +4051,14 @@ runCascadeDrainPhase repoRoot substrate = do
   case K8sDrain.cascadeDecisionFromDrainResult drainResult of
     K8sDrain.CascadeContinue Nothing -> do
       writeOutputLine
-        "K8s drain phase complete. Proceeding with per-run destroys + uninstall + postflight sweep."
+        "K8s drain phase complete. Proceeding with per-run destroys + postflight sweep + uninstall."
       pure ExitSuccess
     K8sDrain.CascadeContinue (Just reason) -> case substrate of
       SubstrateHomeLocal -> do
         writeOutputLine
           ( "K8s drain skipped: "
               ++ reason
-              ++ " Proceeding with per-run destroys + uninstall + postflight sweep."
+              ++ " Proceeding with per-run destroys + postflight sweep + uninstall."
           )
         pure ExitSuccess
       SubstrateAws -> do
@@ -4177,10 +4207,92 @@ runCascadeTestEbsReaper repoRoot = do
 --
 -- The AWS-free host keeps exiting 0, and the host that actually had AWS state
 -- can no longer pass a cascade whose backstop never ran.
-cascadeSweepCredentialAbsentExit :: Substrate -> ExitCode
-cascadeSweepCredentialAbsentExit substrate = case substrate of
-  SubstrateHomeLocal -> ExitSuccess
-  SubstrateAws -> ExitFailure 1
+-- | Sprint 6.5: whether this cluster lifecycle ever had AWS in scope.
+--
+-- Decided from the declared substrate, which is a fact this repository
+-- authored, and never from three per-stack checkpoints reading absent. A
+-- checkpoint is Pulumi state: its absence says the state is gone, which is
+-- precisely the condition under which an AWS resource is most likely to be
+-- stranded and least likely to be nameable. Reading that as "this lifecycle
+-- had no AWS in scope" is how the 2026-09-07 residue passed a cascade that
+-- reported every phase successful.
+data CascadeAwsScope
+  = -- | The deployment declares no AWS substrate, so there is no account for
+    -- residue to be in.
+    CascadeAwsUndeclared
+  | -- | The deployment declares an AWS substrate. The sweep is owed whether or
+    -- not this particular run created anything, because a run that created
+    -- nothing cannot prove that an earlier one did not.
+    CascadeAwsDeclared
+  | -- | The declaration itself could not be read. Fail-closed: an unreadable
+    -- configuration is not a configuration that declares nothing.
+    CascadeAwsScopeUnreadable !String
+  deriving (Eq, Show)
+
+-- | Pure: the sweep is owed unless the deployment provably declares no AWS
+-- substrate.
+cascadeAwsScopeOwesSweep :: CascadeAwsScope -> Bool
+cascadeAwsScopeOwesSweep scope = case scope of
+  CascadeAwsUndeclared -> False
+  CascadeAwsDeclared -> True
+  CascadeAwsScopeUnreadable _ -> True
+
+-- | What the postflight sweep produced, as three distinct facts.
+--
+-- "Not owed", "owed and not run", and "owed and answered" are three
+-- different things to know before destroying the only surface that could act on
+-- an answer, and only the third can admit the uninstall.
+data CascadePostflightSweep
+  = CascadeSweepNotOwed
+  | CascadeSweepNotRun !String
+  | CascadeSweepRan !TagSweep.TagSweepVerdict
+  deriving (Eq, Show)
+
+cascadePostflightSweepExit :: CascadePostflightSweep -> ExitCode
+cascadePostflightSweepExit sweep = case sweep of
+  CascadeSweepNotOwed -> ExitSuccess
+  CascadeSweepNotRun _ -> ExitFailure 1
+  CascadeSweepRan verdict -> TagSweep.tagSweepVerdictExit verdict
+
+-- | Whether the local substrate uninstall may run.
+data CascadeUninstallGate
+  = CascadeUninstallAdmitted
+  | CascadeUninstallWithheld !String
+  deriving (Eq, Show)
+
+-- | Sprint 6.5: the uninstall is gated on a confirmed-empty sweep.
+--
+-- The cascade used to destroy the local Authority — the only surface permitted
+-- to mutate AWS — and only then ask whether anything was left to mutate, so
+-- detection without remediation was the best outcome the ordering allowed. The
+-- gate inverts that: an unconfirmed or non-empty sweep withholds the uninstall
+-- and leaves the operator every mechanism this repository has for acting on the
+-- answer. Withholding is the safe direction; the run still fails, and the
+-- retained local plane is what makes the failure recoverable.
+decideCascadeUninstallGate :: CascadePostflightSweep -> CascadeUninstallGate
+decideCascadeUninstallGate sweep = case sweep of
+  CascadeSweepNotOwed -> CascadeUninstallAdmitted
+  CascadeSweepNotRun detail ->
+    CascadeUninstallWithheld
+      ( "the postflight tag sweep is owed and was not run ("
+          ++ detail
+          ++ "), so nothing has confirmed that this lifecycle left no AWS residue"
+      )
+  CascadeSweepRan verdict -> case verdict of
+    TagSweep.TagSweepConfirmedClean _ -> CascadeUninstallAdmitted
+    TagSweep.TagSweepEscaped _ escaped ->
+      CascadeUninstallWithheld
+        ( "the postflight tag sweep returned "
+            ++ show (length escaped)
+            ++ " resource(s) this cascade did not destroy"
+        )
+    TagSweep.TagSweepUnconfirmed detail ->
+      CascadeUninstallWithheld
+        ("the postflight tag sweep could not be confirmed: " ++ detail)
+
+cascadeSweepCredentialAbsentExit :: CascadeAwsScope -> ExitCode
+cascadeSweepCredentialAbsentExit scope =
+  if cascadeAwsScopeOwesSweep scope then ExitFailure 1 else ExitSuccess
 
 -- | Run the cluster-wide AWS tag query as terminal audit evidence when an
 -- exact checkpoint observation is unavailable. This answer is never threaded
@@ -4203,6 +4315,7 @@ queryAwsLayerForPerRun repoRoot = do
               { TagSweep.tagSweepEnvironment = environment
               , TagSweep.tagSweepClusterName = Just awsEksCanonicalClusterName
               , TagSweep.tagSweepWorkingDirectory = Just repoRoot
+              , TagSweep.tagSweepRunRegion = region adminCredentials
               }
       discovered <- TagSweep.discoverClusterTaggedAwsResources input
       pure $ case discovered of
@@ -4221,51 +4334,61 @@ perRunNeedsAwsLayer :: [ResidueStatus.ResidueObservation] -> Bool
 perRunNeedsAwsLayer =
   any (ResidueStatus.isResidueUnreachable . ResidueStatus.residueObservationStatus)
 
-runCascadePostflightTagSweep :: FilePath -> Substrate -> IO ExitCode
-runCascadePostflightTagSweep repoRoot cascadeSubstrate = do
-  adminResult <- loadAdminAwsCredentials repoRoot
-  case adminResult of
-    Left _ -> do
-      let exit = cascadeSweepCredentialAbsentExit cascadeSubstrate
-          narration =
-            "Postflight tag sweep: NOT RUN (no ephemeral admin AWS credential available \
-            \— no test-secrets.dhall and no TTY — so no Tagging API query was attempted). \
-            \This is not a confirmation that no AWS residue exists."
-      case exit of
-        ExitSuccess ->
-          writeOutputLine
-            ( narration
-                ++ " Every per-run AWS stack was observed absent, so this cluster \
-                   \lifecycle created no AWS resources for the sweep to backstop."
-            )
-        ExitFailure _ ->
+-- | Sprint 6.5: read the declared AWS substrate, which is the program-owned
+-- fact that decides whether a sweep is owed at all.
+observeCascadeAwsScope :: FilePath -> IO CascadeAwsScope
+observeCascadeAwsScope repoRoot = do
+  settingsResult <- validateAndLoadSettings repoRoot
+  pure $ case settingsResult of
+    Left detail -> CascadeAwsScopeUnreadable detail
+    Right settings -> case requireAwsSubstrateProfile settings of
+      Left _ -> CascadeAwsUndeclared
+      Right _ -> CascadeAwsDeclared
+
+runCascadePostflightTagSweep :: FilePath -> IO CascadePostflightSweep
+runCascadePostflightTagSweep repoRoot = do
+  scope <- observeCascadeAwsScope repoRoot
+  if not (cascadeAwsScopeOwesSweep scope)
+    then do
+      writeOutputLine
+        "Postflight tag sweep: NOT OWED. This deployment declares no AWS \
+        \substrate, so there is no account for residue to be in."
+      pure CascadeSweepNotOwed
+    else do
+      adminResult <- loadAdminAwsCredentials repoRoot
+      case adminResult of
+        Left detail -> do
           writeDiagnosticLine
-            ( narration
-                ++ " Per-run AWS state was present or could not be observed, so the \
-                   \sweep is the backstop for it and its absence is unconfirmed. \
-                   \Re-run with an admin AWS credential available."
+            ( "Postflight tag sweep: NOT RUN (no ephemeral admin AWS credential \
+              \available — no test-secrets.dhall and no TTY — so no Tagging API \
+              \query was attempted). This is not a confirmation that no AWS \
+              \residue exists, and this deployment declares an AWS substrate, so \
+              \the sweep is the backstop for it. Re-run with an admin AWS \
+              \credential available. Detail: "
+                ++ detail
             )
-      pure exit
-    Right adminCredentials -> do
-      environment <- adminAwsEnvironment adminCredentials
-      let input =
-            TagSweep.TagSweepInput
-              { TagSweep.tagSweepEnvironment = environment
-              , TagSweep.tagSweepClusterName = Just awsEksCanonicalClusterName
-              , TagSweep.tagSweepWorkingDirectory = Just repoRoot
-              }
-      -- Sprint 7.26: `TagSweepCascade` carves out intentionally-RETAINED
-      -- long-lived shared infrastructure (the `pulumi_state_backend`
-      -- bucket + `aws-ses`) — `cluster delete --cascade` keeps these by
-      -- design, so they are NOT escaped residue.
-      verdict <-
-        TagSweep.decideTagSweep TagSweep.TagSweepCascade
-          <$> TagSweep.discoverClusterTaggedAwsResources input
-      let exit = TagSweep.tagSweepVerdictExit verdict
-      case exit of
-        ExitSuccess -> writeOutputLine (TagSweep.renderTagSweepVerdict TagSweep.TagSweepCascade verdict)
-        ExitFailure _ -> writeDiagnosticLine (TagSweep.renderTagSweepVerdict TagSweep.TagSweepCascade verdict)
-      pure exit
+          pure (CascadeSweepNotRun detail)
+        Right adminCredentials -> do
+          environment <- adminAwsEnvironment adminCredentials
+          let input =
+                TagSweep.TagSweepInput
+                  { TagSweep.tagSweepEnvironment = environment
+                  , TagSweep.tagSweepClusterName = Just awsEksCanonicalClusterName
+                  , TagSweep.tagSweepWorkingDirectory = Just repoRoot
+                  , TagSweep.tagSweepRunRegion = region adminCredentials
+                  }
+          -- Sprint 7.26: `TagSweepCascade` carves out intentionally-RETAINED
+          -- long-lived shared infrastructure (the `pulumi_state_backend`
+          -- bucket + `aws-ses`) — `cluster delete --cascade` keeps these by
+          -- design, so they are NOT escaped residue.
+          verdict <-
+            TagSweep.decideTagSweep TagSweep.TagSweepCascade
+              <$> TagSweep.discoverClusterTaggedAwsResources input
+          let rendered = TagSweep.renderTagSweepVerdict TagSweep.TagSweepCascade verdict
+          case TagSweep.tagSweepVerdictExit verdict of
+            ExitSuccess -> writeOutputLine rendered
+            ExitFailure _ -> writeDiagnosticLine rendered
+          pure (CascadeSweepRan verdict)
 
 -- Sprint 1.89: the binding is named for its provenance. This reads a config
 -- 'validateConfig' has not seen and cannot see — the retained manual-PV root

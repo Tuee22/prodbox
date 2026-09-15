@@ -42,6 +42,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkProviderRevision
   , mkProviderStackRef
   , providerIntentCoordinate
+  , registeredStackAbsenceEvidence
   )
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.Lifecycle.Teardown.ProviderDispatch
@@ -254,7 +255,12 @@ lifecycleTeardownProviderDispatchSuite =
     it "admits only the three registered teardown mutation constructors" $ do
       let mutationKey = keyFor ProviderRegisteredMutation
           boundary = appliedBoundary "unused"
-          forbidden = ReconcileRegisteredStack stackRef providerRevision stackConfig
+          forbidden =
+            ReconcileRegisteredStack
+              stackRef
+              providerRevision
+              stackConfig
+              fixtureProviderRunMarker
       refused <- dispatchRegisteredProviderMutation boundary mutationKey forbidden
       refused
         `shouldBe` Left
@@ -421,7 +427,8 @@ stackConfig :: ProviderStackConfig
 stackConfig = mustRight (mkAwsEksProviderStackConfig "127.0.0.1/32")
 
 canonicalAbsent :: Text
-canonicalAbsent = "registered stack is absent"
+canonicalAbsent =
+  registeredStackAbsenceEvidence (mustRight (mkProviderStackRef "aws-eks"))
 
 mustRight :: (Show error) => Either error value -> value
 mustRight result = case result of

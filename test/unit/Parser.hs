@@ -495,6 +495,7 @@ commandPathOfRequest request =
                     IntegrationGatewayPods -> ["gateway-pods"]
                     IntegrationControlPlaneCounterexample -> ["control-plane-counterexample"]
                     IntegrationTeardownRecovery -> ["teardown-recovery"]
+                    IntegrationCreateInterrupted -> ["create-interrupted"]
                     IntegrationCertificateScope -> ["certificate-scope"]
                     IntegrationCleanRoomHandoff -> ["clean-room-handoff"]
                     IntegrationCascadeQualification -> ["cascade-qualification"]

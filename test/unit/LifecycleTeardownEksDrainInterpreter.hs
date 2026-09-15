@@ -1947,9 +1947,9 @@ destroyDrainEvidence =
               EksDrainMutationApplied
           )
       )
-  absentClass detail = EksDrainResourceClassAbsent (AbsenceEvidence detail)
+  absentClass detail = EksDrainResourceClassAbsent (kubernetesReadBackAbsence detail)
   absentPvcReadBack target =
-    EksDrainPvcReadBack target (EksDrainPvcAbsent (AbsenceEvidence "PVC absent"))
+    EksDrainPvcReadBack target (EksDrainPvcAbsent (kubernetesReadBackAbsence "PVC absent"))
   readBack =
     eksDrainTargetReadBackObservationFor
       attemptEvidence
@@ -2233,7 +2233,7 @@ fixturePvcA = mustRight (mkEksNamespacedName "api" "api-data")
 fixturePvcB = mustRight (mkEksNamespacedName "keycloak" "postgres-data")
 
 absentPvc :: Text -> EksDrainPvcObservation
-absentPvc = EksDrainPvcObservedAbsent . AbsenceEvidence
+absentPvc = EksDrainPvcObservedAbsent . kubernetesReadBackAbsence
 
 mustOperation :: Text -> CleanupOperationId
 mustOperation = mustRight . mkCleanupOperationId

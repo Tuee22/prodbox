@@ -328,7 +328,7 @@ data EksDrainIntentTarget
       }
   | EksDrainNoKubernetesTarget
       { eksDrainNoTargetProviderRevision :: !ObservationRevision
-      , eksDrainNoTargetProviderEvidence :: !AbsenceEvidence
+      , eksDrainNoTargetProviderEvidence :: !(AbsenceEvidence 'ProviderApi)
       }
   deriving (Eq, Show)
 
@@ -568,10 +568,10 @@ encodeTarget target = case target of
       [ (eksNamespacedNameNamespace pvc, eksNamespacedNameName pvc)
       | pvc <- pvcs
       ]
-  EksDrainNoKubernetesTarget revision (AbsenceEvidence evidence) ->
+  EksDrainNoKubernetesTarget revision evidence ->
     EksDrainNoKubernetesTargetWire
       (observationRevisionWord revision)
-      evidence
+      (absenceEvidenceText evidence)
 
 decodeEnvelope
   :: EksDrainIntentEnvelope -> Either EksDrainIntentError EksDrainIntent
@@ -697,7 +697,7 @@ decodeTarget scope wire = case wire of
           , eksDrainTargetDeletePolicyPvcs = pvcs
           }
   EksDrainNoKubernetesTargetWire revision evidence -> do
-    absence <- validateAbsenceEvidence (AbsenceEvidence evidence)
+    absence <- validateAbsenceEvidence (providerWorkerAbsence evidence)
     Right
       EksDrainNoKubernetesTarget
         { eksDrainNoTargetProviderRevision = ObservationRevision revision
@@ -854,7 +854,7 @@ eksDrainAttemptOutcome :: EksDrainAttemptEvidence -> EksDrainAttemptOutcome
 eksDrainAttemptOutcome = internalEksDrainAttemptOutcome
 
 data EksDrainResourceClassReadBack
-  = EksDrainResourceClassAbsent !AbsenceEvidence
+  = EksDrainResourceClassAbsent !(AbsenceEvidence 'KubernetesApi)
   | EksDrainResourceClassPresent !(NonEmpty EksNamespacedName)
   | EksDrainResourceClassPartial
       ![EksNamespacedName]
@@ -875,7 +875,7 @@ newtype ControllerOwnerClassReadBack
   deriving (Eq, Show)
 
 data EksDrainPvcReadBackResult
-  = EksDrainPvcAbsent !AbsenceEvidence
+  = EksDrainPvcAbsent !(AbsenceEvidence 'KubernetesApi)
   | EksDrainPvcPresent
   | EksDrainPvcUnobservable !(NonEmpty ObservationFailure)
   deriving (Eq, Show)
@@ -1278,11 +1278,14 @@ validateSha256 label value
   isLowerHex character = character `elem` ("0123456789abcdef" :: String)
 
 validateAbsenceEvidence
-  :: AbsenceEvidence -> Either EksDrainIntentError AbsenceEvidence
-validateAbsenceEvidence evidence@(AbsenceEvidence value)
+  :: AbsenceEvidence stratum
+  -> Either EksDrainIntentError (AbsenceEvidence stratum)
+validateAbsenceEvidence evidence
   | Text.null value || Text.length value > 512 =
       Left (EksDrainAbsenceEvidenceInvalid value)
   | otherwise = Right evidence
+ where
+  value = absenceEvidenceText evidence
 
 validateAttemptObservationBinding
   :: EksDrainAttempt

@@ -36,12 +36,6 @@ module Prodbox.Test.Qualification.TeardownCounterexample
   , InterruptionSide (..)
   , interruptionSideText
   , InterruptionScheduleRow (..)
-  , TeardownProfileEnvelope (..)
-  , TeardownBackgroundLoad (..)
-  , TeardownEnvelopeMapping (..)
-  , TeardownResourceProfile (..)
-  , ResourceTotals (..)
-  , profileTotals
   , TeardownArtifactDigest
   , teardownArtifactDigestText
   , FrozenTeardownCounterexample
@@ -98,7 +92,6 @@ module Prodbox.Test.Qualification.TeardownCounterexample
 where
 
 import Control.Exception (IOException, SomeException, try)
-import Crypto.Hash.SHA256 qualified as SHA256
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.List (find, group, sort)
@@ -108,10 +101,15 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Dhall qualified
-import GHC.Generics (Generic)
-import Numeric (showHex)
 import Numeric.Natural (Natural)
 import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
+import Prodbox.Test.Qualification.CounterexampleProfile
+  ( CounterexampleResourceProfile (..)
+  , ProfileBackgroundLoad (..)
+  , ProfileEnvelope (..)
+  , ProfileEnvelopeMapping (..)
+  , counterexampleArtifactDigestText
+  )
 import System.FilePath ((</>))
 import System.IO (IOMode (ReadMode), withBinaryFile)
 import Text.Read (readMaybe)
@@ -340,66 +338,12 @@ data InterruptionScheduleRow = InterruptionScheduleRow
   }
   deriving stock (Eq, Ord, Show)
 
-data TeardownProfileEnvelope = TeardownProfileEnvelope
-  { component :: !Text
-  , cpu_millis :: !Natural
-  , memory_mib :: !Natural
-  , ephemeral_mib :: !Natural
-  , persistence_mib :: !Natural
-  }
-  deriving stock (Eq, Ord, Show, Generic)
-  deriving anyclass (Dhall.FromDhall)
+-- | The profile artifact schema belongs to the counterexample family form, not
+-- to this counterexample.  These names stay so every reader of this module
+-- still reads teardown vocabulary.
+type TeardownProfileEnvelope = ProfileEnvelope
 
-data TeardownBackgroundLoad = TeardownBackgroundLoad
-  { request_rate_per_second :: !Natural
-  , concurrent_clients :: !Natural
-  , payload_bytes :: !Natural
-  }
-  deriving stock (Eq, Ord, Show, Generic)
-  deriving anyclass (Dhall.FromDhall)
-
-data TeardownEnvelopeMapping = TeardownEnvelopeMapping
-  { superseded_component :: !Text
-  , replacement_components :: ![Text]
-  }
-  deriving stock (Eq, Ord, Show, Generic)
-  deriving anyclass (Dhall.FromDhall)
-
-data TeardownResourceProfile = TeardownResourceProfile
-  { format_version :: !Natural
-  , fixture_id :: !Text
-  , profile_id :: !Text
-  , profile_kind :: !Text
-  , background_load :: !TeardownBackgroundLoad
-  , fault_schedule :: ![Text]
-  , fault_schedule_digest :: !Text
-  , independently_justified :: !Bool
-  , superseded_envelopes :: ![TeardownProfileEnvelope]
-  , replacement_envelopes :: ![TeardownProfileEnvelope]
-  , envelope_mapping :: ![TeardownEnvelopeMapping]
-  }
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Dhall.FromDhall)
-
-data ResourceTotals = ResourceTotals
-  { totalCpuMillis :: !Natural
-  , totalMemoryMib :: !Natural
-  , totalEphemeralMib :: !Natural
-  , totalPersistenceMib :: !Natural
-  }
-  deriving stock (Eq, Ord, Show)
-
-profileTotals :: [TeardownProfileEnvelope] -> ResourceTotals
-profileTotals = foldr addEnvelope (ResourceTotals 0 0 0 0)
- where
-  addEnvelope profileEnvelope accumulatedTotals =
-    ResourceTotals
-      { totalCpuMillis = cpu_millis profileEnvelope + totalCpuMillis accumulatedTotals
-      , totalMemoryMib = memory_mib profileEnvelope + totalMemoryMib accumulatedTotals
-      , totalEphemeralMib = ephemeral_mib profileEnvelope + totalEphemeralMib accumulatedTotals
-      , totalPersistenceMib =
-          persistence_mib profileEnvelope + totalPersistenceMib accumulatedTotals
-      }
+type TeardownResourceProfile = CounterexampleResourceProfile
 
 newtype TeardownArtifactDigest = TeardownArtifactDigest Text
   deriving stock (Eq, Ord, Show)
@@ -424,8 +368,8 @@ data FrozenTeardownCounterexample = FrozenTeardownCounterexample
   , internalFrozenTeardownDurableTransitions :: ![DurableTransition]
   , internalFrozenTeardownExternalStateRows :: ![ExternalStateDispositionRow]
   , internalFrozenTeardownInterruptionSchedule :: ![InterruptionScheduleRow]
-  , internalFrozenTeardownCausalProfile :: !TeardownResourceProfile
-  , internalFrozenTeardownProductionProfile :: !TeardownResourceProfile
+  , internalFrozenTeardownCausalProfile :: !CounterexampleResourceProfile
+  , internalFrozenTeardownProductionProfile :: !CounterexampleResourceProfile
   , internalFrozenTeardownArtifactDigest :: !TeardownArtifactDigest
   }
   deriving stock (Eq, Show)
@@ -478,10 +422,10 @@ frozenTeardownExternalStateRows = internalFrozenTeardownExternalStateRows
 frozenTeardownInterruptionSchedule :: FrozenTeardownCounterexample -> [InterruptionScheduleRow]
 frozenTeardownInterruptionSchedule = internalFrozenTeardownInterruptionSchedule
 
-frozenTeardownCausalProfile :: FrozenTeardownCounterexample -> TeardownResourceProfile
+frozenTeardownCausalProfile :: FrozenTeardownCounterexample -> CounterexampleResourceProfile
 frozenTeardownCausalProfile = internalFrozenTeardownCausalProfile
 
-frozenTeardownProductionProfile :: FrozenTeardownCounterexample -> TeardownResourceProfile
+frozenTeardownProductionProfile :: FrozenTeardownCounterexample -> CounterexampleResourceProfile
 frozenTeardownProductionProfile = internalFrozenTeardownProductionProfile
 
 frozenTeardownArtifactDigest :: FrozenTeardownCounterexample -> TeardownArtifactDigest
@@ -696,44 +640,44 @@ canonicalInterruptionSchedule =
   , interruptionSide <- [minBound .. maxBound]
   ]
 
-canonicalCausalProfile :: TeardownResourceProfile
+canonicalCausalProfile :: CounterexampleResourceProfile
 canonicalCausalProfile =
   canonicalProfile
     "teardown-causal-v1"
     "causal"
-    (TeardownBackgroundLoad 4 2 1024)
+    (ProfileBackgroundLoad 4 2 1024)
     False
-    (TeardownProfileEnvelope "legacy-cleanup-runner" 1000 1024 1024 1024)
-    [ TeardownProfileEnvelope "lifecycle-authority" 300 300 256 512
-    , TeardownProfileEnvelope "provider-worker" 250 256 256 128
-    , TeardownProfileEnvelope "backup-adapter" 200 212 256 256
-    , TeardownProfileEnvelope "recovery-runner" 250 256 256 128
+    (ProfileEnvelope "legacy-cleanup-runner" 1000 1024 1024 1024)
+    [ ProfileEnvelope "lifecycle-authority" 300 300 256 512
+    , ProfileEnvelope "provider-worker" 250 256 256 128
+    , ProfileEnvelope "backup-adapter" 200 212 256 256
+    , ProfileEnvelope "recovery-runner" 250 256 256 128
     ]
 
-canonicalProductionProfile :: TeardownResourceProfile
+canonicalProductionProfile :: CounterexampleResourceProfile
 canonicalProductionProfile =
   canonicalProfile
     "teardown-production-v1"
     "production"
-    (TeardownBackgroundLoad 20 4 2048)
+    (ProfileBackgroundLoad 20 4 2048)
     True
-    (TeardownProfileEnvelope "legacy-cleanup-runner" 1600 2048 2048 2048)
-    [ TeardownProfileEnvelope "lifecycle-authority" 500 640 512 1024
-    , TeardownProfileEnvelope "provider-worker" 400 512 512 256
-    , TeardownProfileEnvelope "backup-adapter" 300 384 512 512
-    , TeardownProfileEnvelope "recovery-runner" 400 512 512 256
+    (ProfileEnvelope "legacy-cleanup-runner" 1600 2048 2048 2048)
+    [ ProfileEnvelope "lifecycle-authority" 500 640 512 1024
+    , ProfileEnvelope "provider-worker" 400 512 512 256
+    , ProfileEnvelope "backup-adapter" 300 384 512 512
+    , ProfileEnvelope "recovery-runner" 400 512 512 256
     ]
 
 canonicalProfile
   :: Text
   -> Text
-  -> TeardownBackgroundLoad
+  -> ProfileBackgroundLoad
   -> Bool
-  -> TeardownProfileEnvelope
+  -> ProfileEnvelope
   -> [TeardownProfileEnvelope]
-  -> TeardownResourceProfile
+  -> CounterexampleResourceProfile
 canonicalProfile profileId profileKind backgroundLoad justified supersededEnvelope replacementEnvelopes =
-  TeardownResourceProfile
+  CounterexampleResourceProfile
     { format_version = 1
     , fixture_id = "TEARDOWN-2026-08-15"
     , profile_id = profileId
@@ -745,7 +689,7 @@ canonicalProfile profileId profileKind backgroundLoad justified supersededEnvelo
     , superseded_envelopes = [supersededEnvelope]
     , replacement_envelopes = replacementEnvelopes
     , envelope_mapping =
-        [ TeardownEnvelopeMapping
+        [ ProfileEnvelopeMapping
             "legacy-cleanup-runner"
             [ "lifecycle-authority"
             , "provider-worker"
@@ -969,8 +913,8 @@ decodeProfile artifactKind contents = do
 
 requireProfile
   :: ArtifactKind
-  -> TeardownResourceProfile
-  -> TeardownResourceProfile
+  -> CounterexampleResourceProfile
+  -> CounterexampleResourceProfile
   -> Either TeardownCounterexampleError ()
 requireProfile artifactKind expected observed =
   if observed == expected
@@ -1348,20 +1292,7 @@ duplicateValues = foldr collectDuplicate [] . group . sort
     _ -> duplicates
 
 artifactDigest :: [Text] -> TeardownArtifactDigest
-artifactDigest contents =
-  TeardownArtifactDigest
-    ( Text.pack
-        ( concatMap
-            renderHexByte
-            ( ByteString.unpack
-                (SHA256.hash (ByteString.intercalate (ByteString.singleton 0) (map TextEncoding.encodeUtf8 contents)))
-            )
-        )
-    )
- where
-  renderHexByte byte = case showHex byte "" of
-    [digit] -> ['0', digit]
-    digits -> digits
+artifactDigest = TeardownArtifactDigest . counterexampleArtifactDigestText
 
 data SupersededGlobalCopyResult = SupersededGlobalCopyResult
   { supersededDecodedAuditRows :: ![AuditTagRow]

@@ -628,6 +628,71 @@ integrationCliSuite = do
         stderrText
           `shouldContain` "TeardownExternalStateDispositionMismatch ExternalAwsUnobservable"
 
+    it "runs the frozen create-interrupted oracle and closes it in both directions" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        repoRoot <- getCurrentDirectory
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
+
+        (exitCode, stdoutText, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "integration", "create-interrupted"])
+              { cwd = Just repoRoot
+              }
+            ""
+
+        exitCode `shouldBe` ExitSuccess
+        stderrText
+          `shouldContain` "[validation=create-interrupted substrate=home-local] body exit=ExitSuccess"
+        stdoutText `shouldContain` "CREATE_COUNTEREXAMPLE=CREATE-INTERRUPTED-2026-09-08"
+        stdoutText `shouldContain` "DECLARED_COORDINATES=5"
+        stdoutText `shouldContain` "OBSERVED_IDENTITIES=5"
+        stdoutText `shouldContain` "PROVIDER_TAG_ROWS=2"
+        stdoutText `shouldContain` "EXTERNAL_STATE_ROWS=13"
+        stdoutText `shouldContain` "INTERRUPTION_SCHEDULE_ROWS=100"
+        stdoutText `shouldContain` "SUPERSEDED_RUNS_EFFECT=true"
+        stdoutText `shouldContain` "SUPERSEDED_ORPHAN_POINTS=5"
+        stdoutText
+          `shouldContain` "SUPERSEDED_ORPHAN_AT=sigkill after execute-admitted-create"
+        stdoutText `shouldContain` "REPLACEMENT_RUNS_EFFECT=true"
+        stdoutText `shouldContain` "REPLACEMENT_ORPHAN_POINTS=0"
+        stdoutText `shouldContain` "CREATE_COUNTEREXAMPLE_CLOSED=true"
+
+    it "fails against the committed create-interrupted mutation fixture" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        repoRoot <- getCurrentDirectory
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
+        parentEnv <- getEnvironment
+        let mutatedEnvironment =
+              ("PRODBOX_TEST_CREATE_COUNTEREXAMPLE_FIXTURE", "mutated")
+                : filter
+                  ((/= "PRODBOX_TEST_CREATE_COUNTEREXAMPLE_FIXTURE") . fst)
+                  parentEnv
+
+        (exitCode, stdoutText, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "integration", "create-interrupted"])
+              { cwd = Just repoRoot
+              , env = Just mutatedEnvironment
+              }
+            ""
+
+        exitCode `shouldBe` ExitFailure 1
+        stdoutText `shouldContain` "Validation: create-interrupted (substrate=home-local)"
+        stdoutText `shouldNotContain` "CREATE_COUNTEREXAMPLE_CLOSED="
+        stderrText
+          `shouldContain` "CreateInterruptionDispositionMismatch ReplacementCreate ExecuteAdmittedCreate"
+
+    it "exposes the exact create-interrupted integration command in help" $ do
+      binary <- resolveBinaryPath
+      (exitCode, stdoutText, stderrText) <-
+        readCreateProcessWithExitCode
+          (proc binary ["test", "integration", "create-interrupted", "--help"])
+          ""
+      exitCode `shouldBe` ExitSuccess
+      stderrText `shouldBe` ""
+      stdoutText
+        `shouldContain` "Run the frozen interrupted registered-stack create counterexample"
+
     it "exposes the exact teardown-recovery integration command in help" $ do
       binary <- resolveBinaryPath
       (exitCode, stdoutText, stderrText) <-

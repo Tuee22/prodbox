@@ -55,7 +55,9 @@ policy is owned by [Retained Storage Lifecycle Doctrine](./storage_lifecycle_doc
 The EKS drain attempt precedes provider stack destruction so live controllers can unwind children;
 failure still opens only the registered `RequiresAttempt` backstops. The terminal audit follows
 exact cleanup and reports unexpected resources or incomplete observation. Neither phase manufactures
-an owner or changes lifecycle class.
+an owner or changes lifecycle class. **Corrected 2026-09-13 (Standard C):** until Sprint `4.99` closed it on 2026-09-14
+the audit reported incomplete on every AWS path unconditionally, and not for any of the reasons this
+sentence implies — its evidence is refused before the query's own result is consulted ([§ 6.0b](#60b-the-audits-queries-are-one-provider-effect-per-query)).
 
 The drain-intent commit begins with recovery of its exact retained slot. On that recovery action
 only, the authenticated Authority wire's canonical not-found response is preserved as typed
@@ -76,7 +78,7 @@ is rejected by the same totality check.
 
 | Class | Checkpoint store | Runtime backend URL shape | Lifetime |
 |---|---|---|---|
-| Per-run stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) | Immutable encrypted checkpoint blobs referenced from the retained Lifecycle Authority aggregate in primary `prodbox-state` and read-back in the independently registered backup store before promotion | Scratch `file://<tmp>` backend hydrated by `Prodbox.Pulumi.EncryptedBackend` inside the fenced provider worker | Selected for lifecycle-owned always-run cleanup; operation/checkpoint evidence remains queryable until exact absence or an explicit incomplete result |
+| Per-run stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) | Immutable encrypted checkpoint blobs referenced from the retained Lifecycle Authority aggregate in primary `prodbox-state` and read-back in the independently registered backup store before promotion | Scratch `file://<tmp>` backend hydrated by `Prodbox.Pulumi.EncryptedBackend` inside the fenced provider worker | Selected for lifecycle-owned always-run cleanup; operation/checkpoint evidence remains queryable until exact absence or an explicit incomplete result — **though until Sprint `4.99` the native-family observation could not reach that terminus, see 6.0b** |
 | Long-lived shared stacks (`aws-ses`, and any future cross-substrate long-lived stack) | The same receipt-backed primary/independent-backup blob pair | Scratch `file://<tmp>` backend hydrated by `Prodbox.Pulumi.EncryptedBackend` inside the fenced provider worker | Long-lived resource class; destroyed only by explicit long-lived teardown |
 
 `LifecycleClass` controls **cleanup ownership**, not whether setup may depend on ambient state.
@@ -1141,6 +1143,24 @@ description of the tree, and a substring match on a subprocess's error output re
 `ExactResourceAbsent` through exactly the gap it denies. Status lives only in the [Development
 Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
+**Closed 2026-09-13 by Sprint `4.98` (Standard C).** The sentence is now true of the tree, and it is
+true more narrowly than it claimed. `AbsenceEvidence` is exported as a type only; its constructor is
+private, and every value is minted through one of three functions named for the authority that
+observed the absence — `hostLocalAbsence`, `providerWorkerAbsence`, `kubernetesReadBackAbsence`. The
+type is indexed by that authority, so the three are nominally distinct and there is deliberately no
+conversion in any direction: a host-local absence can no longer inhabit the position where a
+provider absence belongs, and `ExactResourceAbsent` accepts only the provider stratum. The gap the
+substring match reached through is closed on both sides — the predicate no longer selects a sentence
+that becomes absence, and a module with no observation boundary can no longer name a minter at all,
+which `absenceMinterProvenanceViolations` in `src/Prodbox/CheckCode.hs` enforces over the compiled
+source region.
+
+What remains true of the original paragraph's *other* claim is worth stating plainly, because the
+correction above did not reach it: minting is gated by naming an authority, not by holding a proof
+that the authority answered. A permitted module still asserts which stratum it observed. That bound
+is stated rather than closed, and it is the same bound every source-region rule in this repository
+carries.
+
 
 `ObservationEvidenceScope` is also opaque: only the durable run descriptor can mint it, and the
 exact observer must return the same indexed scope it received. Checkpoint-pair and ownership-
@@ -1418,7 +1438,7 @@ The decision table is:
 
 | Exact provider observation | Checkpoint evidence | Decision |
 |---|---|---|
-| Absent | any checkpoint state | Close the resource obligation from exact absence; retire or quarantine stale checkpoint material only after the absence receipt is durable |
+| Absent | any checkpoint state | Close the resource obligation from exact absence; retire or quarantine stale checkpoint material only after the absence receipt is durable. **Corrected 2026-09-13 (Standard C):** for stack-family keys this row was unreachable until Sprint `4.99` — the absence answer arrived as refused evidence rather than as an observed absence, so the decision never saw the input this row selects on ([§ 6.0b](#60b-the-audits-queries-are-one-provider-effect-per-query)) |
 | Present, complete | verified primary | Submit or resume the fenced provider destroy |
 | Present, complete | primary unusable; verified independent backup | Restore and read back the primary, then submit or resume the fenced provider destroy |
 | Present, complete | both copies unusable; complete write-ahead or confirmed-legacy ownership manifest | Run the closed native desired-absence program for exactly the registered coordinates |
@@ -1463,8 +1483,17 @@ mechanism behind the 2026-09-08 orphan.
 Two consequences for a reader. A rule of the form "corroborate the checkpoint against a provider
 observation" is **not** circular on the decision path as wired — the first column is a real provider
 answer. And this document describes an observation path that no longer runs while omitting the one
-that does: `ObserveNativeStackFamily` appears nowhere in `documents/engineering/`. Status lives only
-in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+that does: ~~`ObserveNativeStackFamily` appears nowhere in `documents/engineering/`.~~ Status lives
+only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+**Measurement corrected 2026-09-13 (Standard C).** The struck sentence was false in the revision
+that published it, and it was falsified by the act of writing it: the name now occurs twice in this
+directory — once in the paragraph above, and once in the sentence claiming it occurs nowhere. The
+claim it was reaching for is true and worth keeping, so it is restated here rather than lost: no
+governed document *describes* that observation or what it returns. A gap in coverage and a count of
+occurrences are not interchangeable, and only the second is a measurement under
+[documentation_standards.md § 12.2](../documentation_standards.md) — which holds only against the
+revision that publishes it. This one was taken against the revision before.
 
 
 The read-only Provider configuration needed to learn whether a stack is present comes from the
@@ -1509,6 +1538,29 @@ provenance and bind it for desired absence, but `SubmitRegisteredCreate` and
 has no type-level path into a future create or write-ahead append. The append constructor also
 requires `RegisteredOwnershipEdge stack resource kind`, projected only from the registry dependency
 graph, so an observed resource cannot be attached to an unrelated stack's manifest.
+
+**One submission, two durable objects (Sprint `7.41`, 2026-09-14).** The write-ahead slot is
+immutable by construction: its repository issues an initialize and nothing else, and an existing
+object yields an exact replay or a conflict. That immutability is the property the record exists for
+— what a create said it was about to make cannot be edited after it made it — and it is also why the
+identities the provider returned cannot be appended to it. They are committed to a second object
+under the same authority identity, in a completion namespace on the logical name rather than as a
+field of the identity: the identity answers *which run, which stack*, and that answer is the same
+for both objects.
+
+Cleanup reads the completion slot first and falls back to the write-ahead slot. A completion exists
+exactly when the create returned and said what it had made, so preferring it is preferring the
+record that carries identities; the fallback is what makes an interrupted create addressable rather
+than invisible.
+
+**An identity-less manifest is not authority.** The write-ahead record on its own names coordinates
+and carries no observed identity on any entry, and the destroy authorization refuses it by naming
+the missing entry rather than by destroying nothing. That refusal is the correct outcome and not a
+gap: a manifest with no identities commits and reads back exactly as a real one does, so a decision
+that treated it as sufficient would authorize the destruction of nothing while reporting success.
+The append is correspondingly a *narrowing* — it may only fill identities on entries the write-ahead
+record already declared, and an append carrying no identity at all is refused, because a completion
+with none claims the create returned and made nothing.
 
 Pre-cutover resources created before write-ahead manifests existed use one separately typed legacy
 adoption protocol. A provider-native, read-only observer enumerates a closed registry-derived family
@@ -1578,6 +1630,15 @@ provider holds rather than the host: ownership tags authored by the creating pro
 vocabulary is owned by [Lifecycle Control-Plane
 Architecture](./lifecycle_control_plane_architecture.md). The tag is what makes an unrecorded
 resource enumerable; adoption is what makes it recoverable.
+
+**Landed 2026-09-14 (Sprint `7.41`).** The run pair is stamped provider-side and carries the same
+run scope the write-ahead manifest is keyed under, so the two halves join: a resource found by tag
+names the record that declared it, and a record found by scope names the tag a sweep can find it by.
+The window itself is unchanged and is not closable — what changed is that a resource inside it is
+now enumerable rather than invisible. The frozen counterexample `CREATE-INTERRUPTED-2026-09-08`
+states exactly where the two lanes differ: the superseded lane answers *orphan-unnameable* at every
+interruption at or after its effect, and the replacement lane answers *coordinates-named* at every
+interruption from its manifest commit onward.
 
 
 ### 3.3 Result-indexed programs and the durable cleanup graph
@@ -2240,7 +2301,7 @@ evidence can construct completion.
 | Command | Entry contract | Completion contract |
 |---|---|---|
 | `prodbox cluster delete --yes` | Local-only surface; probe local install state | Uninstall local RKE2 if installed, preserve `.data/`, and make no AWS claim |
-| `prodbox cluster delete --cascade --yes` | Acquire or resume a durable cascade run, then ensure the ordinary teardown recovery profile | Exact per-run and dynamic-family absence, credential disposition, terminal audit evidence (clean scoped AWS audit or exact no-AWS projection), backup-receipted convergence report, then exact local-uninstall absence and a scoped local completion receipt |
+| `prodbox cluster delete --cascade --yes` | Acquire or resume a durable cascade run, then ensure the ordinary teardown recovery profile | Exact per-run and dynamic-family absence, credential disposition, terminal audit evidence (clean scoped AWS audit or exact no-AWS projection; **the clean-audit arm was unreachable until Sprint `4.99`** — [§ 6.0b](#60b-the-audits-queries-are-one-provider-effect-per-query)), backup-receipted convergence report, then exact local-uninstall absence and a scoped local completion receipt |
 | `prodbox aws teardown` | Select only `Operational` registry targets and prove their exact consumers quiescent | Operational absence plus explicit observation/retention of every `LongLived` dependency |
 | `prodbox aws stack <stack> destroy --yes` | Select the exact registered stack; its lifecycle class projects either the explicit-per-run or permit-bound explicit-long-lived surface | Exact stack/family absence read-back; provider exit alone is insufficient |
 | `prodbox nuke` | TTY, typed confirmation, signed manifest, pinned runner, and external receipt sink | The external decommission protocol in §6b; ordinary cascade authority cannot enter this surface |
@@ -2415,6 +2476,7 @@ ensure or resume minimal recovery plane
   -> exact absence read-back               [RequiresAttempt per mutation]
   -> test-EBS and credential cleanup
   -> terminal audit requirement (AWS clean audit | exact no-AWS projection)
+     [left disjunct was unreachable 2026-08-24..2026-09-13 — see 6.0b]
   -> backup-receipted convergence report
   -> local RKE2 uninstall                  [RequiresSuccess]
   -> exact host-absence read-back and local completion receipt
@@ -2665,7 +2727,7 @@ The drain-before-network-destroy dependency remains load-bearing, but it is repr
 edges and typed outcomes, not positional execution. A positively absent EKS cluster satisfies its
 drain obligation from exact provider evidence. An unreachable EKS API does not: the graph attempts
 the registered provider backstops, retains the drain failure, and can close only after exact EKS and
-controller-family absence.
+controller-family absence. **Corrected 2026-09-13 (Standard C):** both controller-family observations were among the six whose evidence the wire refused, so that close condition could not be met until Sprint `4.99` — [§ 6.0b](#60b-the-audits-queries-are-one-provider-effect-per-query).
 
 
 ### 5c. Per-run EKS desired absence drains owners first
@@ -2750,6 +2812,16 @@ pages, and retries merge into one resource per ARN. Conflicting account, region,
 facts for the same ARN make the audit unobservable. The audit then partitions the normalized
 inventory against a declared retained catalog, described in §6.0.
 
+**The sweep runs before the local uninstall, and the uninstall is gated on it (Sprint `6.5`).** The
+cascade used to destroy the local control plane — the only surface this repository permits to mutate
+AWS — and only then ask whether anything was left to mutate, so detection without remediation was the
+best outcome the ordering allowed. The sweep now precedes the uninstall, and an unconfirmed or
+non-empty result withholds it: the run still fails, and the retained local plane is what makes the
+failure recoverable. Whether the sweep is owed at all is decided from the **declared substrate**,
+which is a fact this repository authored, and never from per-run checkpoints reading absent — a
+checkpoint is Pulumi state, and its absence is exactly the condition under which a resource is most
+likely to be stranded and least likely to be nameable.
+
 ### 6.0 The retained catalog is exact identities, not a tag predicate
 
 An audit needs two catalogs, and they answer different questions.
@@ -2783,8 +2855,17 @@ can never be reported permanently absent-declared by an audit that never asked a
 witness may not be minted over that blind spot: outside the global-service region a would-be-clean
 verdict lowers to `TerminalAuditUnobservable`, naming each unqueried service and the region that
 answered. A discovered escapee is unaffected — a blind spot cannot launder one into the retained set —
-so only the clean arm is bounded. The superseded executing tag sweep binds no region at all; the
-deletion ledger carries that residual until the consumer conversion deletes it.
+so only the clean arm is bounded.
+
+**Corrected 2026-09-14 (Sprint `6.5`, Standard C).** The sentence that stood here said the
+superseded executing tag sweep binds no region at all and that the deletion ledger carried the
+residual until the consumer conversion deleted it. The sweep now binds its regions explicitly and
+follows its cursor, because the conversion that would have retired it is gated on a live
+qualification campaign while the blindness was reachable on every cascade run today. It issues each
+filter in the run's own region **and** in the global-service region, so IAM — which this repository
+creates, and which a regional call cannot return at all — is asked about rather than assumed absent.
+The listing is the same bounded cursor-following one the compiled audit uses, so a truncated answer
+fails instead of shortening.
 
 The **retained-matcher catalog** says which resources this surface intends to keep. Every matcher is
 an exact identity: a fully-qualified ARN composed from the audited `AwsScope` plus a validated
@@ -2845,6 +2926,43 @@ and distinguishes a resource returned carrying no tags from a resource not retur
 and coordinate are derived from the returned identity rather than supplied by the caller; because a
 family matcher pins the type as well as the coordinate, a derivation this repository has not taught
 can only fail to match, which classifies the row as an escapee and fails the audit closed.
+
+**Corrected 2026-09-13 (Standard C): the round trip above cannot complete in the current revision,
+and it is not alone.** The renderer and parser genuinely are one unit — that part is true — but the
+form they share is tab- and newline-delimited, and `validateProviderIntentEvidence` refuses any
+character at or below `0x1f`. The audit's evidence is therefore rejected at the Worker's
+`capability-execution` boundary before the parser is ever reached, and again at Authority settlement.
+The listing additionally cannot fit its page bound inside the 4,096-character wire maximum, so the
+separator is not the whole defect either.
+
+Six provider-evidence producers share that fault, and the paragraphs and tables below were written
+against contracts none of them can currently satisfy. Each is annotated where it appears rather than
+silently rewritten, because the annotations are what tell a reader that a clean AWS cascade has not
+been merely unobserved but unreachable. The cause is upstream of all six and is not a separator
+choice: provider evidence is typed as bare `Text`, so nothing joins an encoder to the rule it must
+satisfy. [Provider Evidence Contract](./provider_evidence_contract.md) now owns that wire — its
+grammar, character rule, derived bounds, and the byte-exact retention that makes a re-rendering a
+compatibility break. Status lives only in the [Development
+Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+Worth naming explicitly, because it is the strongest thing this document already had:
+[§ 3.0](#30-positive-absence)'s second bullet forbids exactly what was happening — *collapsing
+the first into the second manufactures a refusal out of an answer*. Six real provider answers were
+being turned into refusals. The doctrine was right; nothing recorded that the tree disagreed with it.
+
+**Closed 2026-09-14 by Sprint `4.99`.** All six producers now render through one canonical encoder
+against a bound supplied by the intent being served, so the annotations below describe revisions
+between 2026-08-24 and 2026-09-13 rather than the current one. Two facts found during the repair are
+worth keeping, because neither was part of the original finding. The terminal audit emitted its rows
+in the provider's return order, so two identical listings paginated differently produced different
+bytes — which the Authority's byte-equality replay comparison reads as a mismatch; the ordering is
+canonical now. And the native family's two self-declared bounds were mutually unreachable as well as
+both wrong, which nothing noticed because the newline refused first.
+
+What is repaired is the mechanism, not the proof. No live cascade has yet carried one of these
+observations to settlement, and the terminal audit's new listing cardinality is arithmetic derived
+from the character bound rather than a measurement of a real escaping account. Both remain pending
+live proofs in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ### 6.0c The audit's verdict is durable where compaction cannot reach it
 

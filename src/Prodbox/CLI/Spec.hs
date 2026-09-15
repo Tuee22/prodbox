@@ -607,6 +607,8 @@ parserForPath path =
       Just (withCoverage (TestIntegration IntegrationControlPlaneCounterexample))
     ["test", "integration", "teardown-recovery"] ->
       Just (withCoverage (TestIntegration IntegrationTeardownRecovery))
+    ["test", "integration", "create-interrupted"] ->
+      Just (withCoverage (TestIntegration IntegrationCreateInterrupted))
     ["test", "integration", "certificate-scope"] ->
       Just (withCoverage (TestIntegration IntegrationCertificateScope))
     ["test", "integration", "clean-room-handoff"] ->
@@ -1244,7 +1246,7 @@ yesSwitchParser helpText =
 
 -- | Sprint 4.11: parser for the @prodbox cluster delete@ flag matrix.
 -- @--yes@ is independent; @--cascade@ opts into the full teardown (K8s
--- drain + per-run Pulumi destroys + uninstall + postflight tag sweep).
+-- drain + per-run Pulumi destroys + postflight tag sweep + uninstall).
 -- The default (no @--cascade@) is a pure local cluster uninstall that
 -- never touches the per-run AWS Pulumi backend.
 rke2DeleteFlagsParser :: Parser Rke2DeleteFlags
@@ -2302,13 +2304,13 @@ clusterGroup =
     , leaf
         "delete"
         "Delete the local cluster"
-        "Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (including the MinIO-backed per-run Pulumi state and the durable Vault PV) without querying, gating on, or destroying the per-run AWS Pulumi backend — so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. With no RKE2 install present the default mode exits 0 having done nothing. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully within a reachable run, but a cascade with no RKE2 install present reaches no phase at all and exits non-zero rather than reporting a success it did not observe. No cascade exit authorizes deleting the retained root."
+        "Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (including the MinIO-backed per-run Pulumi state and the durable Vault PV) without querying, gating on, or destroying the per-run AWS Pulumi backend — so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. With no RKE2 install present the default mode exits 0 having done nothing. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + postflight tag sweep + cluster uninstall) as one atomic operator action; the K8s drain phase skips gracefully within a reachable run, but a cascade with no RKE2 install present reaches no phase at all and exits non-zero rather than reporting a success it did not observe. The uninstall runs only on a confirmed-empty sweep: an unconfirmed or non-empty sweep leaves the local control plane running, because it is the only surface permitted to mutate AWS and destroying it would leave the answer with nothing able to act on it. No cascade exit authorizes deleting the retained root."
         [ flagOption "yes" (Just 'y') Nothing "Confirm full cluster deletion"
         , flagOption
             "cascade"
             Nothing
             Nothing
-            "Orchestrate the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action"
+            "Orchestrate the full teardown (K8s drain + per-run Pulumi destroys + postflight tag sweep + cluster uninstall) as one atomic operator action"
         , flagOption "dry-run" Nothing Nothing "Render the delete plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
@@ -2594,6 +2596,9 @@ testGroupSpec =
             ]
         , integrationLeaf "control-plane-counterexample" "Run the frozen control-plane counterexample"
         , integrationLeaf "teardown-recovery" "Run the frozen exact-keyed teardown recovery counterexample"
+        , integrationLeaf
+            "create-interrupted"
+            "Run the frozen interrupted registered-stack create counterexample"
         , integrationLeaf "certificate-scope" "Verify live TLS serving and the exact presented SAN scope"
         , integrationLeaf
             "clean-room-handoff"

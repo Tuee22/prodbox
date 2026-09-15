@@ -62,7 +62,7 @@ lifecycleTeardownAwsEksAdapterSuite =
           present = decodedExact decisionRequest exactPresentEvidence
       exactObservationResult absent
         `shouldBe` ExactResourceAbsent
-          (AbsenceEvidence "Provider EKS DescribeCluster returned exact not-found evidence")
+          (providerWorkerAbsence "Provider EKS DescribeCluster returned exact not-found evidence")
       exactObservationResult present
         `shouldBe` ExactResourcePresent
           ( ExactResourceInventory

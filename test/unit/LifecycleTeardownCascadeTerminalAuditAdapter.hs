@@ -29,10 +29,16 @@ import Prodbox.Lifecycle.AwsInventory
   , normalizeAwsTagRows
   )
 import Prodbox.Lifecycle.OwnedResourceTagEvidence
+import Prodbox.Lifecycle.ProviderWorker.Evidence
+  ( encodeProviderEvidence
+  , providerEvidenceFamilyOwnBound
+  , providerEvidenceText
+  )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
   , ProviderIntentCoordinate
   , ProviderOwnedTagQuery (..)
+  , ownedResourceTagEvidenceFamily
   , providerIntentCoordinate
   , providerOwnedTagQueryKey
   )
@@ -112,8 +118,17 @@ lifecycleTeardownCascadeTerminalAuditAdapterSuite =
         `shouldBe` "prodbox.io/managed-by=prodbox"
 
     it "round-trips a complete listing, tagless resources included" $ do
+      -- Sprint 4.99: the round trip is canonical rather than order-preserving.
+      -- Rows used to be emitted in the provider's return order, so two
+      -- identical listings paginated differently produced different bytes --
+      -- which the Authority's byte-equality replay comparison reads as a
+      -- mismatch.  The listing comes back in one fixed order now, whatever
+      -- order the provider returned it in.
       parseOwnedResourceTagObservation (mustRight (render listing))
-        `shouldBe` Right listing
+        `shouldBe` Right canonicalListing
+      parseOwnedResourceTagObservation (mustRight (render canonicalListing))
+        `shouldBe` Right canonicalListing
+      render listing `shouldBe` render canonicalListing
 
     it "refuses evidence that never stated its completion" $ do
       -- A paginated listing that stopped early looks exactly like a short one.
@@ -218,16 +233,27 @@ lifecycleTeardownCascadeTerminalAuditAdapterSuite =
         `shouldBe` Right True
 
     it "issues exactly one tag filter per call and paginates by cursor" $ do
-      length (filter ("--tag-filters" ==) (taggedResourceQueryArgs keyFilter Nothing))
+      length
+        ( filter
+            ("--tag-filters" ==)
+            (taggedResourceQueryArgs keyFilter auditRegion Nothing)
+        )
         `shouldBe` 1
-      taggedResourceQueryArgs keyFilter Nothing
+      taggedResourceQueryArgs keyFilter auditRegion Nothing
         `shouldNotContain` ["--pagination-token"]
-      taggedResourceQueryArgs keyFilter (Just "cursor")
+      taggedResourceQueryArgs keyFilter auditRegion (Just "cursor")
         `shouldContain` ["--pagination-token", "cursor"]
       taggedResourceQueryArgs
         (TaggedResourceTagPairFilter "prodbox.io/managed-by" "prodbox")
+        auditRegion
         Nothing
         `shouldContain` ["Key=prodbox.io/managed-by,Values=prodbox"]
+
+    it "names the region it asked, rather than inheriting one" $
+      -- Sprint 6.5. The Tagging API answers for the region it is called in, so
+      -- an empty answer from an unstated region covers nothing in particular.
+      taggedResourceQueryArgs keyFilter auditRegion Nothing
+        `shouldContain` ["--region", Text.unpack auditRegion]
 
     it "reads a page's cursor and refuses a body it cannot read" $ do
       fmap taggedResourcePageNextToken (parseTaggedResourcePage pageWithCursor)
@@ -384,6 +410,11 @@ pageWithUnreadableEntry =
 keyFilter :: TaggedResourceFilter
 keyFilter = TaggedResourceTagKeyFilter "prodbox.io/managed-by"
 
+-- | The region a query states. Any region will do for an argv assertion; what
+-- matters is that one is stated at all.
+auditRegion :: Text
+auditRegion = fixtureAwsRegion FixtureUsEast1
+
 listing :: OwnedResourceTagObservation
 listing =
   OwnedResourceTagObservation
@@ -411,13 +442,30 @@ untaggedVolume =
     , ownedResourceTagEntryTags = []
     }
 
+-- | The same listing after the canonical ordering the codec imposes.
+canonicalListing :: OwnedResourceTagObservation
+canonicalListing =
+  listing {ownedResourceTagObservationEntries = [untaggedVolume, taggedBucket]}
+
+-- | A listing that stopped before its terminator.  Sprint @4.99@: built through
+-- the production encoder with the completion row simply left out, so this is a
+-- well-formed value missing one row rather than a hand-authored string that the
+-- character rule would reject first.
 truncatedEvidence :: Text
 truncatedEvidence =
-  Text.intercalate
-    "\n"
-    [ "query\tkey\tprodbox.io/managed-by"
-    , "resource\tarn:aws:s3:::prodbox-fixed-state\tprodbox.io/managed-by\tprodbox"
-    ]
+  case encodeProviderEvidence
+    (providerEvidenceFamilyOwnBound ownedResourceTagEvidenceFamily)
+    ownedResourceTagEvidenceFamily
+    [ ["query", "key", "prodbox.io/managed-by"]
+    ,
+      [ "resource"
+      , "arn:aws:s3:::prodbox-fixed-state"
+      , "prodbox.io/managed-by"
+      , "prodbox"
+      ]
+    ] of
+    Right evidence -> providerEvidenceText evidence
+    Left refusal -> error ("fixture refused: " <> show refusal)
 
 rowsFor :: OwnedResourceTagEntry -> Either TerminalAuditAdapterError [AwsTagRow]
 rowsFor = awsTagRowsFromOwnedResourceTagEntry auditedScope

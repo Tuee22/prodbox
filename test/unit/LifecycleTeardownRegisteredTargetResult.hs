@@ -481,8 +481,8 @@ observationRevision = ObservationRevision 73
 providerRevision :: ProviderRevision
 providerRevision = mustRight (mkProviderRevision 17)
 
-absenceEvidence :: AbsenceEvidence
-absenceEvidence = AbsenceEvidence "registered resource is exactly absent"
+absenceEvidence :: AbsenceEvidence 'ProviderApi
+absenceEvidence = providerWorkerAbsence "registered resource is exactly absent"
 
 presentIdentity :: Text.Text
 presentIdentity = "sha256:" <> Text.replicate 64 "b"

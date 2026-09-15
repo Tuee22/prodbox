@@ -518,14 +518,23 @@ controlPlaneOwnershipManifestRepositorySuite =
         confirmOwnershipManifestReadBackResponse identity response
           `shouldSatisfy` isEndpointVersionMismatch
 
-    it "keeps positive-complete minting behind the future opaque creation admission seam" $ do
+    it "mints complete evidence from a decoded present manifest, and nothing else" $ do
+      -- Sprint 7.41 inverts the Sprint 4.97 assertion that stood here.  That
+      -- one pinned the repository to name neither positive minter, which was
+      -- the correct reading while no production path committed a manifest: a
+      -- present arm that minted authority from bytes nobody wrote is a claim
+      -- with no writer behind it.  The create lane now commits and reads back
+      -- before the effect, so the licence for that absence is gone, and an
+      -- absence assertion whose licence is gone has to be surfaced rather than
+      -- left to hold the defect in place (unit_testing_policy.md § 0, statement
+      -- 11).  What must still be absent is a *second* way in: no raw cluster
+      -- coordinate, no host-side credential material.
       repositorySource <-
         readFile "src/Prodbox/ControlPlane/OwnershipManifestRepository.hs"
-      repositorySource `shouldNotContain` "ValidatedCompleteOwnershipManifest"
       repositorySource
-        `shouldNotContain` "bindObservedDurableWriteAheadOwnershipManifestForCleanup"
+        `shouldContain` "bindObservedDurableWriteAheadOwnershipManifestForCleanup"
       repositorySource
-        `shouldNotContain` "observedDurableWriteAheadOwnershipManifest"
+        `shouldContain` "observedDurableWriteAheadOwnershipManifest"
       repositorySource `shouldNotContain` "KUBECONFIG"
       repositorySource `shouldNotContain` "publicIp"
 
@@ -672,6 +681,12 @@ fixedRepository observation =
     { createOrReplayOwnershipManifest =
         const (pure OwnershipManifestCommitExactReplay)
     , independentlyReadBackOwnershipManifest = const (pure observation)
+    , -- Sprint 7.41: the completion slot answers the same fixed observation, so
+      -- a case written against this fixture exercises one slot's algebra
+      -- without the other quietly answering something else.
+      createOrReplayOwnershipManifestCompletion =
+        const (pure OwnershipManifestCommitExactReplay)
+    , independentlyReadBackOwnershipManifestCompletion = const (pure observation)
     }
 
 fixtureAuthority :: LongLivedCheckpointAuthority
@@ -782,9 +797,17 @@ assertDecisionClass expected result = case (expected, fmap ownershipManifestDeci
     case ownershipManifestResult observation of
       OwnershipManifestUnobservable _ -> pure ()
       other -> expectationFailure ("expected unobservable, got " <> show other)
+  -- Sprint 7.41: a decoded present manifest is authority, not an observation.
+  -- Every other arm must still be an observation; laundering absence,
+  -- partiality or unobservability into a proof is the defect this shape has
+  -- always guarded, and that half is unchanged.
+  (ExpectPresent, Right (OwnershipManifestDecisionComplete _ version)) ->
+    version `shouldBe` fixtureObservedVersion
   (ExpectPresent, Right (OwnershipManifestDecisionObservation observation)) ->
-    ownershipManifestResult observation
-      `shouldBe` OwnershipManifestPresent fixtureObservedVersion
+    expectationFailure
+      ( "a decoded present manifest stayed observation-only: "
+          <> show (ownershipManifestResult observation)
+      )
   (_, Right OwnershipManifestDecisionComplete {}) ->
     expectationFailure "durable bytes laundered a complete ownership proof"
   (_, Left err) -> expectationFailure ("unexpected repository error: " <> show err)
@@ -800,8 +823,15 @@ assertObservationResult expectedScope expected result = case fmap ownershipManif
     ownershipManifestStackKey observation `shouldBe` AwsTestKey
     ownershipManifestEvidenceScope observation `shouldBe` expectedScope
     ownershipManifestResult observation `shouldBe` expected
-  Right OwnershipManifestDecisionComplete {} ->
-    expectationFailure "repository minted a complete ownership proof"
+  -- Sprint 7.41: a present manifest now mints a proof, so this helper is used
+  -- only for the arms that must stay observations. Its version is asserted
+  -- rather than its scope, because a complete proof carries the binding the
+  -- durable bytes were written under.
+  Right (OwnershipManifestDecisionComplete _ version) -> case expected of
+    OwnershipManifestPresent expectedVersion -> version `shouldBe` expectedVersion
+    other ->
+      expectationFailure
+        ("repository minted a complete ownership proof for " <> show other)
 
 isResponseLost
   :: Either OwnershipManifestRepositoryError OwnershipManifestCommitResult -> Bool

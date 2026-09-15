@@ -1,0 +1,128 @@
+# CREATE-INTERRUPTED-2026-09-08 canonical disposition matrix.
+#
+# Every row is derived, not authored: the loader recomputes it from the lane
+# each implementation runs and refuses the file if one row disagrees. Editing a
+# row here does not change the oracle, it fails the load -- which is what the
+# committed mutation beside this file demonstrates.
+
+format-version 1
+fixture-id CREATE-INTERRUPTED-2026-09-08
+result superseded unnameable-create-orphan expected-failure
+result replacement write-ahead-record-names-coordinates expected-pass
+
+external superseded authority-unreachable nothing-created
+external superseded admission-reply-lost nothing-created
+external superseded generation-commit-reply-lost cycle-addressable-only
+external superseded provider-dispatch-reply-lost orphan-unnameable
+external superseded provider-answered-failure orphan-unnameable
+
+external replacement authority-unreachable nothing-created
+external replacement admission-reply-lost nothing-created
+external replacement generation-commit-reply-lost cycle-addressable-only
+external replacement manifest-commit-reply-lost coordinates-named
+external replacement manifest-read-back-absent cycle-addressable-only
+external replacement provider-dispatch-reply-lost coordinates-named
+external replacement provider-answered-failure coordinates-named
+external replacement completion-append-reply-lost coordinates-named
+
+interrupt superseded ctrl-c before admit-create nothing-created
+interrupt superseded ctrl-c after admit-create nothing-created
+interrupt superseded sigkill before admit-create nothing-created
+interrupt superseded sigkill after admit-create nothing-created
+interrupt superseded client-disconnect before admit-create nothing-created
+interrupt superseded client-disconnect after admit-create nothing-created
+interrupt superseded owner-lease-expiry before admit-create nothing-created
+interrupt superseded owner-lease-expiry after admit-create nothing-created
+interrupt superseded restart before admit-create nothing-created
+interrupt superseded restart after admit-create nothing-created
+interrupt superseded ctrl-c before commit-generation nothing-created
+interrupt superseded ctrl-c after commit-generation cycle-addressable-only
+interrupt superseded sigkill before commit-generation nothing-created
+interrupt superseded sigkill after commit-generation cycle-addressable-only
+interrupt superseded client-disconnect before commit-generation nothing-created
+interrupt superseded client-disconnect after commit-generation cycle-addressable-only
+interrupt superseded owner-lease-expiry before commit-generation nothing-created
+interrupt superseded owner-lease-expiry after commit-generation cycle-addressable-only
+interrupt superseded restart before commit-generation nothing-created
+interrupt superseded restart after commit-generation cycle-addressable-only
+interrupt superseded ctrl-c before execute-admitted-create cycle-addressable-only
+interrupt superseded ctrl-c after execute-admitted-create orphan-unnameable
+interrupt superseded sigkill before execute-admitted-create cycle-addressable-only
+interrupt superseded sigkill after execute-admitted-create orphan-unnameable
+interrupt superseded client-disconnect before execute-admitted-create cycle-addressable-only
+interrupt superseded client-disconnect after execute-admitted-create orphan-unnameable
+interrupt superseded owner-lease-expiry before execute-admitted-create cycle-addressable-only
+interrupt superseded owner-lease-expiry after execute-admitted-create orphan-unnameable
+interrupt superseded restart before execute-admitted-create cycle-addressable-only
+interrupt superseded restart after execute-admitted-create orphan-unnameable
+
+interrupt replacement ctrl-c before mint-run-marker nothing-created
+interrupt replacement ctrl-c after mint-run-marker nothing-created
+interrupt replacement sigkill before mint-run-marker nothing-created
+interrupt replacement sigkill after mint-run-marker nothing-created
+interrupt replacement client-disconnect before mint-run-marker nothing-created
+interrupt replacement client-disconnect after mint-run-marker nothing-created
+interrupt replacement owner-lease-expiry before mint-run-marker nothing-created
+interrupt replacement owner-lease-expiry after mint-run-marker nothing-created
+interrupt replacement restart before mint-run-marker nothing-created
+interrupt replacement restart after mint-run-marker nothing-created
+interrupt replacement ctrl-c before admit-create nothing-created
+interrupt replacement ctrl-c after admit-create nothing-created
+interrupt replacement sigkill before admit-create nothing-created
+interrupt replacement sigkill after admit-create nothing-created
+interrupt replacement client-disconnect before admit-create nothing-created
+interrupt replacement client-disconnect after admit-create nothing-created
+interrupt replacement owner-lease-expiry before admit-create nothing-created
+interrupt replacement owner-lease-expiry after admit-create nothing-created
+interrupt replacement restart before admit-create nothing-created
+interrupt replacement restart after admit-create nothing-created
+interrupt replacement ctrl-c before commit-generation nothing-created
+interrupt replacement ctrl-c after commit-generation cycle-addressable-only
+interrupt replacement sigkill before commit-generation nothing-created
+interrupt replacement sigkill after commit-generation cycle-addressable-only
+interrupt replacement client-disconnect before commit-generation nothing-created
+interrupt replacement client-disconnect after commit-generation cycle-addressable-only
+interrupt replacement owner-lease-expiry before commit-generation nothing-created
+interrupt replacement owner-lease-expiry after commit-generation cycle-addressable-only
+interrupt replacement restart before commit-generation nothing-created
+interrupt replacement restart after commit-generation cycle-addressable-only
+interrupt replacement ctrl-c before commit-write-ahead-manifest cycle-addressable-only
+interrupt replacement ctrl-c after commit-write-ahead-manifest coordinates-named
+interrupt replacement sigkill before commit-write-ahead-manifest cycle-addressable-only
+interrupt replacement sigkill after commit-write-ahead-manifest coordinates-named
+interrupt replacement client-disconnect before commit-write-ahead-manifest cycle-addressable-only
+interrupt replacement client-disconnect after commit-write-ahead-manifest coordinates-named
+interrupt replacement owner-lease-expiry before commit-write-ahead-manifest cycle-addressable-only
+interrupt replacement owner-lease-expiry after commit-write-ahead-manifest coordinates-named
+interrupt replacement restart before commit-write-ahead-manifest cycle-addressable-only
+interrupt replacement restart after commit-write-ahead-manifest coordinates-named
+interrupt replacement ctrl-c before read-back-write-ahead-manifest coordinates-named
+interrupt replacement ctrl-c after read-back-write-ahead-manifest coordinates-named
+interrupt replacement sigkill before read-back-write-ahead-manifest coordinates-named
+interrupt replacement sigkill after read-back-write-ahead-manifest coordinates-named
+interrupt replacement client-disconnect before read-back-write-ahead-manifest coordinates-named
+interrupt replacement client-disconnect after read-back-write-ahead-manifest coordinates-named
+interrupt replacement owner-lease-expiry before read-back-write-ahead-manifest coordinates-named
+interrupt replacement owner-lease-expiry after read-back-write-ahead-manifest coordinates-named
+interrupt replacement restart before read-back-write-ahead-manifest coordinates-named
+interrupt replacement restart after read-back-write-ahead-manifest coordinates-named
+interrupt replacement ctrl-c before execute-admitted-create coordinates-named
+interrupt replacement ctrl-c after execute-admitted-create coordinates-named
+interrupt replacement sigkill before execute-admitted-create coordinates-named
+interrupt replacement sigkill after execute-admitted-create coordinates-named
+interrupt replacement client-disconnect before execute-admitted-create coordinates-named
+interrupt replacement client-disconnect after execute-admitted-create coordinates-named
+interrupt replacement owner-lease-expiry before execute-admitted-create coordinates-named
+interrupt replacement owner-lease-expiry after execute-admitted-create coordinates-named
+interrupt replacement restart before execute-admitted-create coordinates-named
+interrupt replacement restart after execute-admitted-create coordinates-named
+interrupt replacement ctrl-c before append-observed-identities coordinates-named
+interrupt replacement ctrl-c after append-observed-identities coordinates-named
+interrupt replacement sigkill before append-observed-identities coordinates-named
+interrupt replacement sigkill after append-observed-identities coordinates-named
+interrupt replacement client-disconnect before append-observed-identities coordinates-named
+interrupt replacement client-disconnect after append-observed-identities coordinates-named
+interrupt replacement owner-lease-expiry before append-observed-identities coordinates-named
+interrupt replacement owner-lease-expiry after append-observed-identities coordinates-named
+interrupt replacement restart before append-observed-identities coordinates-named
+interrupt replacement restart after append-observed-identities coordinates-named

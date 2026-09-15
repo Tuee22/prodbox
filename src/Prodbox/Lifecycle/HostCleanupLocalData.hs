@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -57,7 +58,11 @@ import Prodbox.Lifecycle.ResidueStatus
   , ResidueStatus (ResidueAbsent, ResiduePresent, ResidueUnreachable)
   , ResidueUnreachableReason (ResidueQueryFailed)
   )
-import Prodbox.Lifecycle.Teardown.Observation (AbsenceEvidence (..))
+import Prodbox.Lifecycle.Teardown.Observation
+  ( AbsenceEvidence
+  , ObservationStratum (..)
+  , hostLocalAbsence
+  )
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , ProcessOutput (..)
@@ -115,7 +120,7 @@ localDataRootPath (LocalDataRootPath path) = path
 -- symlink, including a broken one, is present: production uses @lstat(2)@.
 data LocalDataRootObservation
   = LocalDataRootPresent
-  | LocalDataRootAbsent !AbsenceEvidence
+  | LocalDataRootAbsent !(AbsenceEvidence 'HostLocal)
   | LocalDataRootUnobservable !Text
   deriving stock (Eq, Show)
 
@@ -132,7 +137,7 @@ data LocalDataDispositionOutcome
   = -- | @retain@: no effect was issued at all.
     LocalDataRetained
   | -- | @delete@: the root was already absent, so no removal ran.
-    LocalDataAlreadyAbsent !AbsenceEvidence
+    LocalDataAlreadyAbsent !(AbsenceEvidence 'HostLocal)
   | -- | @delete@: the removal exited zero.
     LocalDataRemovalApplied
   | -- | @delete@: the removal's response was lost, which is not evidence it
@@ -200,9 +205,9 @@ observeProductionRoot root = do
       | isDoesNotExistError err -> LocalDataRootAbsent (exactLocalDataAbsence root)
       | otherwise -> LocalDataRootUnobservable (boundedDetail (Text.pack (show err)))
 
-exactLocalDataAbsence :: LocalDataRootPath -> AbsenceEvidence
+exactLocalDataAbsence :: LocalDataRootPath -> AbsenceEvidence 'HostLocal
 exactLocalDataAbsence root =
-  AbsenceEvidence
+  hostLocalAbsence
     ( "local-data-root/v1: "
         <> Text.pack (localDataRootPath root)
         <> " was observed absent by a no-follow lookup"

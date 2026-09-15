@@ -143,18 +143,18 @@ must not change domain decisions. Direct `threadDelay` for race coordination is 
 
 | Category | What it proves | Canonical location |
 |----------|----------------|--------------------|
-| Pure unit tables | Parsing, validation, ADTs, graph rejection, `decide`/`evolve`, admission, deadline, cleanup scheduling | `test/unit/` |
-| Conformance tier | Cross-artifact agreement between compiled registries and their projections | `prodbox-unit` plus the canonical quality gate |
-| Parser tests | `argv -> Command` via `execParserPure`, including rejection | `test/unit/Parser.hs` |
-| Property tests | Codec/replay/idempotency/monotonicity/bounds/deadline laws | `prodbox-unit`. Since Sprint `5.46` (2026-09-11) the observation-evidence scope's round trip and identity projection are property-covered there; § 3.2 says which of its other bullets are table-covered rather than property-covered |
-| Real-child process boundary | A credential, an argument set, or a bound crossing a real `exec`, asserted by what arrived rather than by what is absent | `prodbox-unit`, self-exec modules such as `test/unit/CredentialDeliveryHarness.hs` and `test/unit/GatewayEmitterJournal.hs` |
+| Pure unit tables | Parsing, validation, ADTs, graph rejection, `decide`/`evolve`, admission, deadline, cleanup scheduling | `test/unit/`, executed by `prodbox dev check` since Sprint `5.47` (2026-09-14) |
+| Conformance tier | Cross-artifact agreement between compiled registries and their projections | `prodbox-unit`, executed by the canonical quality gate since Sprint `5.47` (2026-09-14) |
+| Parser tests | `argv -> Command` via `execParserPure`, including rejection | `test/unit/Parser.hs`, executed by `prodbox dev check` since Sprint `5.47` (2026-09-14) |
+| Property tests | Codec/replay/idempotency/monotonicity/bounds/deadline laws | `prodbox-unit`, executed by `prodbox dev check` since Sprint `5.47` (2026-09-14). Since Sprint `5.46` (2026-09-11) the observation-evidence scope's round trip and identity projection are property-covered there; § 3.2 says which of its other bullets are table-covered rather than property-covered |
+| Real-child process boundary | A credential, an argument set, or a bound crossing a real `exec`, asserted by what arrived rather than by what is absent | `prodbox-unit`, executed by `prodbox dev check` since Sprint `5.47` (2026-09-14); self-exec modules such as `test/unit/CredentialDeliveryHarness.hs` and `test/unit/GatewayEmitterJournal.hs` |
 | Deterministic concurrency simulation | Actor interleavings, saturation, cancellation, restart, response loss | dedicated pure/simulation test module |
 | Built-frontend integration | Real binary routing and fake boundary behavior | `test/integration/` |
 | Daemon lifecycle | Real process/config/health/admission/drain/restart contract | `test/daemon-lifecycle/`, named by `prodbox test all` since Sprint `5.45` (2026-09-11). It had been compiled by the gate and executed by nothing, and running it showed the cost: **23 of 27** cases failed because the daemon had since acquired a Tier-0 deployment-context requirement its fixture never learned to supply |
 | Production-adapter composition | Real binary with native MinIO/Vault/CAS clients and exact identity binding | named integration validation |
 | Load qualification | Authored steady rate plus burst under exact cgroups | named integration validation |
 | Chaos qualification | Kill/isolate/restart at every durable transition boundary | named integration validation |
-| Pulumi infrastructure | Provision, assert, always-run cleanup, residue re-observation | `test/pulumi/`, named by `prodbox test unit` since Sprint `5.45` (2026-09-11); the live retained flows remain the named validations' |
+| Pulumi infrastructure | Provision, assert, always-run cleanup, residue re-observation | `test/pulumi/`, named by `prodbox test unit` since Sprint `5.45` (2026-09-11) and deliberately not gated into `prodbox dev check` (Sprint `5.47`: it is a filesystem-harness tier); the live retained flows remain the named validations' |
 | Golden tests | CLI, plans, health/ready/metrics, generated docs | `test/golden/` |
 
 **Every declared suite has a runner, and a gate holds that (Sprint `5.45`, 2026-09-11).**
@@ -187,23 +187,44 @@ in [resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md)). Before
 compiled no test suite, which is how a 2026-08-07 config type change broke twenty integration cases
 and was recorded as `Done`.
 
-The gate now proves the suites **compile**. It still does not **run** them, and a conformance suite
+~~The gate now proves the suites **compile**. It still does not **run** them, and a conformance suite
 proves agreement only once something runs it: `prodbox test unit` for the four unit suites,
-`prodbox test integration cli` / `env` for the integration suite. **Recorded 2026-09-11 (Standard
-C): that sentence enumerates five of the eight, and the other three are run by nothing.**
-`prodbox-haskell-style`, `prodbox-daemon-lifecycle`, and `prodbox-pulumi` are compiled here and
-named by no `prodbox test` scope in `src/Prodbox/TestPlan.hs`, so running the whole documented local
-baseline executes none of them. Where this document or
-[code_quality.md](./code_quality.md) credits a guarantee to one of those suites, the guarantee is
-today obtained — if at all — by the shared function the corresponding `prodbox dev lint` leaf calls,
-not by the suite. Sprint `5.45` owns routing or retiring them and gating the condition.
+`prodbox test integration cli` / `env` for the integration suite.~~ **Recorded 2026-09-11 (Standard
+C): that sentence enumerated five of the eight, and the other three were run by nothing.** Sprint
+`5.45` closed that on 2026-09-11 by routing all eight, and Sprint `5.47` closed the rest of it on
+2026-09-14 by making the gate execute four.
+
+**Which gate runs which tier (Sprint `5.47`, 2026-09-14).** `prodbox dev check` executes the four
+stanzas named by `Prodbox.TestPlan.gatedCheckHaskellSuites` — `prodbox-unit`,
+`prodbox-authority-admission-unit`, `prodbox-control-plane-authentication-unit` and
+`prodbox-control-plane-authenticated-transport-unit` — after its warning-clean build and its
+operator-binary sync, through `runGatedTestSuites` in `src/Prodbox/CheckCode.hs`. The boundary is a
+property of the tier rather than a preference: a unit stanza asserts over pure values and
+interpreter-boundary fakes, so it needs no cluster, no socket and no credential, and the canonical
+gate may depend on none of those. The measured cost on the operator host is **126 seconds**, against
+a gate that already exceeds ten minutes — 125 s of it the primary suite, and 0.6 s the three
+auxiliaries together.
+
+The other four stay compiled-only in the gate and are run by a named command:
+`prodbox-haskell-style` and `prodbox-pulumi` by `prodbox test unit`; `prodbox-daemon-lifecycle` and
+`prodbox-integration` by `prodbox test all`, with the integration suite also by
+`prodbox test integration cli` / `env`. `prodbox-haskell-style` is deliberately not gated: it calls
+the same `haskellStyleViolations` the gate has already run in its own process, so gating it would
+buy a second fourmolu and HLint bootstrap and no new assertion. `prodbox-daemon-lifecycle` and
+`prodbox-integration` spawn the built binary over real sockets, which is the one dependency a gate
+must not acquire. `testSuiteStanzaViolations` holds the gated set against the manifest in both
+directions, so a suite cannot become reachable only from the gate.
+
+`prodbox test all` does not repeat the gated four: it enters `dev check` through `runLintFirst`, and
+`withoutGatedSuites` subtracts them, printing what it subtracted rather than dropping them silently.
 
 **Recorded 2026-09-12 (Standard C): the consequence is larger than three unrouted suites.** Every
-invariant this repository encodes as a `fixed…Regression :: Bool` self-test is proven by the gate to
-*typecheck* and by nothing to *hold*, unless a scope runs the suite that asserts it. The strongest
-absence rule in the lifecycle tree is in exactly that position, which is why a four-day EKS leak
+invariant this repository encodes as a `fixed…Regression :: Bool` self-test was proven by the gate to
+*typecheck* and by nothing to *hold*, unless a scope ran the suite that asserts it. The strongest
+absence rule in the lifecycle tree was in exactly that position, which is why a four-day EKS leak
 crossed it without any gate objecting. An assertion that a scope does not execute is a proof surface
-that does not run, and this document may not credit a guarantee to one. **A sprint that records `dev check`
+that does not run, and this document may not credit a guarantee to one. **Closed for the unit tier
+2026-09-14 by Sprint `5.47`**, and open for every other tier: **a sprint that records `dev check`
 and `prodbox test unit` as its validation has still not exercised the integration suite**, and a
 sprint touching a contract that suite exercises must name that command in its Validation section.
 
@@ -558,6 +579,17 @@ mutation callback, or node-success fold, and that the retired validation cleanup
 absent. The installed `prodbox test integration teardown-recovery` command remains the frozen
 80-boundary/typed-failure acceptance surface.
 
+A frozen counterexample family is five committed files -- a trace, a canonical disposition matrix, a
+mutation of that matrix, and a causal and a production resource profile -- and the profiles hold the
+topology-normalized budget constant, which is enforced at load rather than asserted in a test: a
+family whose replacement composition costs more than the superseded one proves only that the defect
+was reachable at the old budget. Sprint `7.41` added the second family,
+`CREATE-INTERRUPTED-2026-09-08`, behind `prodbox test integration create-interrupted`. Its rows are
+derived from each implementation's lane rather than authored, so editing one fails the load; and its
+oracle must close in both directions -- the superseded lane orphans and the replacement lane does
+not, with both running the effect -- because an implementation that never mutates never orphans
+either and is not a fix.
+
 For ordinary per-run AWS cleanup, local config/RKE2/Vault preparation may establish the retained
 Authority before descriptor submission. Tests therefore place the pre-mutation assertion at the
 first operation capable of creating a selected per-run AWS resource: registration and claim are
@@ -588,7 +620,13 @@ The same `CleanupRunId` and stable node operation IDs resume. `ReadyToUninstallE
 positive recovery-plane witness, complete exact absence and credential disposition, normalized
 terminal audit, and a backed-up pre-uninstall report plus one-shot permit. Exact local host absence
 and a scoped read-back local-completion receipt are additionally required for cascade success. The
-pre-uninstall commit alone proves only readiness to uninstall. Incomplete cleanup remains a failure
+pre-uninstall commit alone proves only readiness to uninstall. **Corrected 2026-09-13 (Standard
+C):** the normalized terminal audit named above was unobtainable on any AWS path until Sprint `4.99`
+closed it on 2026-09-14, because the audit's evidence carries tabs and newlines that
+`validateProviderIntentEvidence` refuses and cannot fit its listing inside the wire bound at any
+separator. The requirement is correct and stands; what a test may not do is treat its absence as a
+transient environmental failure. See [Provider Evidence
+Contract](./provider_evidence_contract.md). Incomplete cleanup remains a failure
 and carries a `RecoveryPlaneDisposition`: tests may assert that the profile remains live only when
 establishment was positively confirmed, and must preserve an establishment failure as a distinct
 outcome.
@@ -666,8 +704,12 @@ test-suite prodbox-daemon-lifecycle
 test-suite prodbox-pulumi
 ```
 
-Eight stanzas, of which `prodbox test` scopes name five; the last three are compiled by the
-canonical gate and executed by nothing (Sprint `5.45`).
+Eight stanzas. ~~Of which `prodbox test` scopes name five; the last three are compiled by the
+canonical gate and executed by nothing (Sprint `5.45`).~~ **Corrected 2026-09-14 (Standard C):** that
+sentence described the revision Sprint `5.45` was opened against and was already false when `5.45`
+reached `Done` on 2026-09-11. Every stanza has a runner, and since Sprint `5.47` the canonical gate
+executes the four `-unit` stanzas itself — see "Which gate runs which tier" in
+[The Conformance Tier](#the-conformance-tier).
 
 `cabal test` runs the package suites. `prodbox test all` is the developer-facing orchestration
 entrypoint and composes package tests with named validations; it is not a second independent test
@@ -677,8 +719,8 @@ system.
 
 The local code-quality baseline remains:
 
-- `prodbox dev check`;
-- `prodbox test unit`;
+- `prodbox dev check` — which since Sprint `5.47` also **executes** the four `-unit` stanzas;
+- `prodbox test unit` — which adds `prodbox-haskell-style` and `prodbox-pulumi`;
 - `prodbox test integration cli`; and
 - `prodbox test integration env`.
 

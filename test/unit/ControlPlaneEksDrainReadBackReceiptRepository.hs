@@ -97,7 +97,7 @@ import Prodbox.Lifecycle.Teardown.AwsEksAdapter
 import Prodbox.Lifecycle.Teardown.EksDrainIntent
 import Prodbox.Lifecycle.Teardown.EksDrainSession
 import Prodbox.Lifecycle.Teardown.Model
-import Prodbox.Lifecycle.Teardown.Observation (AbsenceEvidence (..))
+import Prodbox.Lifecycle.Teardown.Observation (kubernetesReadBackAbsence)
 import Prodbox.Lifecycle.Teardown.Registry (lifecycleRegistryRevision)
 import TestSupport
 
@@ -682,17 +682,17 @@ readBackObservationFor attempt uid =
               eksDrainSessionCertificateAuthorityDigest fixtureSession
           , eksDrainReadBackLoadBalancerServiceClass =
               LoadBalancerServiceClassReadBack
-                (EksDrainResourceClassAbsent (AbsenceEvidence "no LoadBalancer Services"))
+                (EksDrainResourceClassAbsent (kubernetesReadBackAbsence "no LoadBalancer Services"))
           , eksDrainReadBackIngressClass =
               IngressClassReadBack
-                (EksDrainResourceClassAbsent (AbsenceEvidence "no Ingresses"))
+                (EksDrainResourceClassAbsent (kubernetesReadBackAbsence "no Ingresses"))
           , eksDrainReadBackControllerOwnerClass =
               ControllerOwnerClassReadBack
-                (EksDrainResourceClassAbsent (AbsenceEvidence "controller owner absent"))
+                (EksDrainResourceClassAbsent (kubernetesReadBackAbsence "controller owner absent"))
           , eksDrainReadBackDeletePolicyPvcs =
               [ EksDrainPvcReadBack
                   fixturePvc
-                  (EksDrainPvcAbsent (AbsenceEvidence "PVC absent"))
+                  (EksDrainPvcAbsent (kubernetesReadBackAbsence "PVC absent"))
               ]
           }
     )

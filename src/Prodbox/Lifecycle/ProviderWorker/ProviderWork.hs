@@ -39,6 +39,14 @@ module Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderStackRef
   , mkProviderStackRef
   , providerStackRefText
+  , providerIntentRegisteredStackRef
+  , ProviderRunMarker
+  , mkProviderRunMarker
+  , maximumProviderRunMarkerLength
+  , providerRunMarkerRunScope
+  , providerRunMarkerSubmission
+  , registeredStackAbsenceEvidence
+  , parseRegisteredStackAbsenceEvidence
   , ProviderCheckpointRef
   , mkProviderCheckpointRef
   , providerCheckpointRefText
@@ -122,6 +130,14 @@ module Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , providerIntentResourceKey
   , maximumProviderIntentEvidenceCharacters
   , providerIntentEvidenceMaximumCharacters
+  , providerIntentEvidenceBound
+  , eksIamRoleFamilyEvidenceFamily
+  , eksLoadBalancerControllerFamilyEvidenceFamily
+  , nativeStackFamilyEvidenceFamily
+  , validationHostedZoneEvidenceFamily
+  , dns01ChallengeRecordEvidenceFamily
+  , ownedResourceTagEvidenceFamily
+  , registeredEvidenceFamilies
   , validateProviderIntentEvidence
   , ProviderIntentCoordinate
   , providerIntentCoordinate
@@ -147,9 +163,10 @@ where
 
 import Codec.Serialise (Serialise)
 import Crypto.Hash.SHA256 qualified as SHA256
+import Data.Bifunctor (bimap)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
-import Data.Char (isAsciiLower, isDigit)
+import Data.Char (isAlphaNum, isAsciiLower, isDigit)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -161,6 +178,15 @@ import Prodbox.ControlPlane.EksClientAuthProjection
   ( maximumEksClientAuthEvidenceCharacters
   )
 import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
+import Prodbox.Lifecycle.ProviderWorker.Evidence
+  ( ProviderEvidenceBound
+  , ProviderEvidenceFamily
+  , providerEvidenceFamily
+  , providerEvidenceFromWire
+  , providerEvidenceText
+  , renderProviderEvidenceRefusal
+  )
+import Prodbox.Lifecycle.ProviderWorker.Evidence.Internal (ProviderEvidenceBound (..))
 import Prodbox.Settings.AwsSubstrateProfile
   ( AwsSubstrateProfile
   , awsEksStackConfiguration
@@ -186,6 +212,73 @@ validateProviderRef raw
   | Text.length raw > maximumProviderRefLength = Left (ProviderRefTooLong (Text.length raw))
   | otherwise = Right raw
 
+-- | Sprint 7.41: the run a create belongs to, in the form the provider will
+-- hold it.
+--
+-- Every durable record this repository writes about a create lives on the host
+-- side of a boundary the host can die on. The provider-held tag is the only
+-- marker that survives a process kill, and without one a cascade cannot tell
+-- this run's VPC from a live predecessor's: every resource the three per-run
+-- programs declare carries the constant @prodbox.io\/managed-by: prodbox@ and
+-- nothing else.
+--
+-- __Two values, and the second is not the generation ordinal.__ The run scope is
+-- the host-minted per-invocation scope the committed generation also records as
+-- its creating run scope. The second is the submission key the create is
+-- admitted at — /not/ the lifecycle generation's ordinal, which cannot be here:
+-- the ordinal is assigned by the Authority after admission, and this value is
+-- inside the intent, whose serialisation is hashed into the admit and execute
+-- replay digest. A value that differed between those two calls would make the
+-- execute a divergent replay of its own admission. The submission key is what
+-- names the cycle before the effect, and the generation binds the operation
+-- admitted at it, so the two are joinable from either end.
+--
+-- Both values are durable before the effect: the run scope in the committed
+-- generation and in the write-ahead ownership manifest's scope, and the
+-- submission key as the key that generation's create operation was admitted
+-- at.
+data ProviderRunMarker = ProviderRunMarker !Text !Text
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- | The characters an AWS tag value accepts, narrowed to what this repository
+-- actually mints. A marker that a provider would refuse is refused here, where
+-- the refusal names the value, rather than by @pulumi up@ after the request has
+-- been admitted.
+mkProviderRunMarker
+  :: Text
+  -- ^ the durable run scope
+  -> Text
+  -- ^ the submission key the create is admitted at
+  -> Either ProviderRefError ProviderRunMarker
+mkProviderRunMarker runScope submission =
+  ProviderRunMarker
+    <$> validateRunMarkerValue runScope
+    <*> validateRunMarkerValue submission
+
+validateRunMarkerValue :: Text -> Either ProviderRefError Text
+validateRunMarkerValue raw
+  | Text.null raw = Left ProviderRefEmpty
+  | Text.length raw > maximumProviderRunMarkerLength =
+      Left (ProviderRefTooLong (Text.length raw))
+  | Text.any (not . isRunMarkerCharacter) raw =
+      Left (ProviderRefMalformed raw)
+  | otherwise = Right raw
+
+-- | AWS bounds a tag value at 256 characters.
+maximumProviderRunMarkerLength :: Int
+maximumProviderRunMarkerLength = 256
+
+isRunMarkerCharacter :: Char -> Bool
+isRunMarkerCharacter character =
+  isAlphaNum character || character `elem` ("+-=._:/@" :: String)
+
+providerRunMarkerRunScope :: ProviderRunMarker -> Text
+providerRunMarkerRunScope (ProviderRunMarker runScope _) = runScope
+
+providerRunMarkerSubmission :: ProviderRunMarker -> Text
+providerRunMarkerSubmission (ProviderRunMarker _ submission) = submission
+
 -- | A registered Pulumi/provider stack the worker may reconcile, observe, or read
 -- back. The named IAM roles it owns are non-credential by construction.
 newtype ProviderStackRef = ProviderStackRef Text
@@ -197,6 +290,34 @@ mkProviderStackRef = fmap ProviderStackRef . validateProviderRef
 
 providerStackRefText :: ProviderStackRef -> Text
 providerStackRefText (ProviderStackRef value) = value
+
+-- | The registered-stack absence arm.  Sprint @4.98@.
+--
+-- Absence used to cross the wire as the bare English literal
+-- @"registered stack is absent"@, authored independently on each side and
+-- compared by equality, so nothing joined the two copies and no coordinate
+-- travelled with the claim: an absence observed for one stack satisfied a
+-- request for any other.  The renderer and the parser below are the one unit,
+-- and the value carries the coordinate it is about.
+--
+-- The rendering is printable and single-line, so
+-- 'validateProviderIntentEvidence' admits it; a reference is bounded by
+-- 'validateProviderRef', so the whole value is far inside the shared character
+-- maximum.
+registeredStackAbsencePrefix :: Text
+registeredStackAbsencePrefix = "prodbox-registered-stack/v1:absent:"
+
+registeredStackAbsenceEvidence :: ProviderStackRef -> Text
+registeredStackAbsenceEvidence ref =
+  registeredStackAbsencePrefix <> providerStackRefText ref
+
+-- | Recover the coordinate an absence arm names.  A caller compares it against
+-- the coordinate it asked about; the parse alone proves nothing about which
+-- stack answered.
+parseRegisteredStackAbsenceEvidence :: Text -> Maybe ProviderStackRef
+parseRegisteredStackAbsenceEvidence evidence = do
+  suffix <- Text.stripPrefix registeredStackAbsencePrefix evidence
+  either (const Nothing) Just (mkProviderStackRef suffix)
 
 -- | A bounded scratch-checkpoint execution target.
 newtype ProviderCheckpointRef = ProviderCheckpointRef Text
@@ -719,7 +840,13 @@ productionRegisteredProviderResources =
 -- carries a requested 'ProviderRevision'; the @aws-ses@ arm reconciles single
 -- objects at the bound session revision.
 data ProviderIntent
-  = ReconcileRegisteredStack !ProviderStackRef !ProviderRevision !ProviderStackConfig
+  = -- | Sprint 7.41: a create carries the run it belongs to, so the provider
+    -- can hold a marker the host's death cannot erase.
+    ReconcileRegisteredStack
+      !ProviderStackRef
+      !ProviderRevision
+      !ProviderStackConfig
+      !ProviderRunMarker
   | DestroyRegisteredStack !ProviderStackRef !ProviderRevision !ProviderStackConfig
   | ObserveRegisteredStack !ProviderStackRef
   | ReadBackRegisteredStack !ProviderStackRef
@@ -864,26 +991,102 @@ providerIntentEvidenceMaximumCharacters intent = case intent of
 -- The evidence itself is never echoed: an 'IssueEksClientAuth' observation is a
 -- sealed capability projection.
 validateProviderIntentEvidence :: ProviderIntent -> Text -> Either Text Text
-validateProviderIntentEvidence intent evidence
-  | Text.null evidence = Left "the provider returned no evidence"
-  | Text.length evidence > maximumCharacters =
-      Left
-        ( "provider evidence is "
-            <> Text.pack (show (Text.length evidence))
-            <> " characters, over the maximum of "
-            <> Text.pack (show maximumCharacters)
-        )
-  | Text.any control evidence = Left "provider evidence carries a control character"
-  | otherwise = Right evidence
- where
-  maximumCharacters = providerIntentEvidenceMaximumCharacters intent
-  control character = character <= '\x1f' || character == '\x7f'
+validateProviderIntentEvidence intent evidence =
+  bimap
+    renderProviderEvidenceRefusal
+    providerEvidenceText
+    (providerEvidenceFromWire (providerIntentEvidenceBound intent) evidence)
+
+-- | The bound for one intent, as the value a codec is handed rather than a
+-- number it can read.  Sprint @4.99@.
+--
+-- This is the half that stops an encoder inventing a size limit for itself.
+-- Before it, the bound was an @Int@ any module could look up or ignore, and one
+-- encoder came to declare a 128 KiB maximum for a wire that carries 4,096
+-- characters -- a contradiction no type could see, because both sides were
+-- integers.
+-- | The registered evidence families.  Sprint @4.99@.
+--
+-- Each names one wire prefix and the cardinality it admits; its character bound
+-- follows from those by 'providerEvidenceFamilyBound'.  That derivation is the
+-- rule this sprint exists to establish, and the reason it matters is on the
+-- record: the native-family encoder declared a 128 KiB byte maximum and a
+-- 4,096-identity maximum beside a wire that carries 4,096 /characters/, and the
+-- two numbers were mutually unreachable as well as both wrong.  Nothing
+-- compared them, because nothing had to.
+--
+-- The cardinalities below are chosen so that every family's derived bound fits
+-- inside the intent bound it is answered under, which
+-- 'registeredEvidenceFamilies' exists to let a test assert rather than a
+-- reviewer believe.
+eksIamRoleFamilyEvidenceFamily :: ProviderEvidenceFamily
+eksIamRoleFamilyEvidenceFamily =
+  providerEvidenceFamily "prodbox-eks-iam-family" 16 220
+
+eksLoadBalancerControllerFamilyEvidenceFamily :: ProviderEvidenceFamily
+eksLoadBalancerControllerFamilyEvidenceFamily =
+  providerEvidenceFamily "prodbox-eks-lbc-family" 16 220
+
+nativeStackFamilyEvidenceFamily :: ProviderEvidenceFamily
+nativeStackFamilyEvidenceFamily =
+  providerEvidenceFamily "prodbox-native-stack-family" 24 150
+
+validationHostedZoneEvidenceFamily :: ProviderEvidenceFamily
+validationHostedZoneEvidenceFamily =
+  providerEvidenceFamily "prodbox-validation-hosted-zones" 12 140
+
+dns01ChallengeRecordEvidenceFamily :: ProviderEvidenceFamily
+dns01ChallengeRecordEvidenceFamily =
+  providerEvidenceFamily "prodbox-dns01-challenge-records" 12 200
+
+-- | The cascade's terminal audit.
+--
+-- Its cardinality is the one number here that is /not/ derived from what the
+-- domain can produce, because an AWS account can hold arbitrarily many tagged
+-- resources.  It is derived from what the wire can carry, and the audit refuses
+-- above it rather than truncating -- which is the honest answer, because the
+-- audit's normal result is that nothing escaped.  A run that finds more
+-- escapees than this can report is a fact worth refusing on.
+--
+-- A live measurement of a real escaping account has not been taken; until one
+-- is, this bound is arithmetic rather than evidence.  Status lives in the
+-- development plan.
+ownedResourceTagEvidenceFamily :: ProviderEvidenceFamily
+ownedResourceTagEvidenceFamily =
+  providerEvidenceFamily "prodbox-owned-resource-tags" 16 230
+
+-- | Every family the repository writes, so a test can hold all of them at once.
+registeredEvidenceFamilies :: [ProviderEvidenceFamily]
+registeredEvidenceFamilies =
+  [ eksIamRoleFamilyEvidenceFamily
+  , eksLoadBalancerControllerFamilyEvidenceFamily
+  , nativeStackFamilyEvidenceFamily
+  , validationHostedZoneEvidenceFamily
+  , dns01ChallengeRecordEvidenceFamily
+  , ownedResourceTagEvidenceFamily
+  ]
+
+providerIntentEvidenceBound :: ProviderIntent -> ProviderEvidenceBound
+providerIntentEvidenceBound =
+  ProviderEvidenceBound . providerIntentEvidenceMaximumCharacters
 
 -- | The registered-resource key an intent draws on (the granularity at which the
 -- Authority registers what the committed provider intent authorizes).
+-- | Sprint 7.41: the registered stack a create intent names, when it names one.
+--
+-- The registered-stack creation lane must commit a write-ahead ownership
+-- manifest for the stack it is about to make, and the stack is already stated
+-- exactly once -- inside the intent. Deriving it here rather than asking the
+-- caller to pass it again is what keeps the manifest and the effect from
+-- disagreeing about which stack a run created.
+providerIntentRegisteredStackRef :: ProviderIntent -> Maybe ProviderStackRef
+providerIntentRegisteredStackRef intent = case intent of
+  ReconcileRegisteredStack ref _ _ _ -> Just ref
+  _ -> Nothing
+
 providerIntentResourceKey :: ProviderIntent -> Text
 providerIntentResourceKey intent = case intent of
-  ReconcileRegisteredStack ref _ _ -> "stack:" <> providerStackRefText ref
+  ReconcileRegisteredStack ref _ _ _ -> "stack:" <> providerStackRefText ref
   DestroyRegisteredStack ref _ _ -> "stack:" <> providerStackRefText ref
   ObserveRegisteredStack ref -> "stack:" <> providerStackRefText ref
   ReadBackRegisteredStack ref -> "stack:" <> providerStackRefText ref
@@ -965,7 +1168,7 @@ publicARecordCoordinate ref =
 -- reconcile.
 providerIntentRequestedRevision :: ProviderIntent -> Maybe ProviderRevision
 providerIntentRequestedRevision intent = case intent of
-  ReconcileRegisteredStack _ revision _ -> Just revision
+  ReconcileRegisteredStack _ revision _ _ -> Just revision
   DestroyRegisteredStack _ revision _ -> Just revision
   _ -> Nothing
 
@@ -979,7 +1182,7 @@ newtype ProviderIntentCoordinate = ProviderIntentCoordinate Text
 
 providerIntentCoordinate :: ProviderIntent -> ProviderIntentCoordinate
 providerIntentCoordinate intent = ProviderIntentCoordinate $ case intent of
-  ReconcileRegisteredStack ref revision config ->
+  ReconcileRegisteredStack ref revision config _ ->
     "reconcile-stack:"
       <> providerStackRefText ref
       <> "@"
@@ -1252,7 +1455,7 @@ decideProviderWork registered bound now deadline state command = case command of
     coordinate = providerIntentCoordinate intent
 
   validateIntentStackConfig submitted = case submitted of
-    ReconcileRegisteredStack ref _ config -> validateProviderStackConfig ref config
+    ReconcileRegisteredStack ref _ config _ -> validateProviderStackConfig ref config
     DestroyRegisteredStack ref _ config -> validateProviderStackConfig ref config
     _ -> Right ()
 

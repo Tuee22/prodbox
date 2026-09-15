@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module HostCleanupRke2
@@ -25,7 +26,11 @@ import Prodbox.Lifecycle.CleanupRun
   )
 import Prodbox.Lifecycle.HostCleanupRke2
 import Prodbox.Lifecycle.HostCleanupRunner (HostCleanupEffectOutcome (..))
-import Prodbox.Lifecycle.Teardown.Observation (AbsenceEvidence (..))
+import Prodbox.Lifecycle.Teardown.Observation
+  ( AbsenceEvidence
+  , ObservationStratum (..)
+  , hostLocalAbsence
+  )
 import Prodbox.Subprocess (ProcessOutput (..), Subprocess (..))
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..))
@@ -384,9 +389,9 @@ fixtureOperation =
 fixtureWorkingDirectory :: FilePath
 fixtureWorkingDirectory = "/tmp/prodbox-host-cleanup-rke2"
 
-exactAbsence :: AbsenceEvidence
+exactAbsence :: AbsenceEvidence 'HostLocal
 exactAbsence =
-  AbsenceEvidence
+  hostLocalAbsence
     "local-rke2-install/v1: every canonical no-follow install marker was observed absent"
 
 withEnvironmentVariable :: String -> String -> IO value -> IO value

@@ -1245,6 +1245,22 @@ encoder, or the region's proofs end at the crossing.* Three corollaries, each fa
   n+1-th opaque wrapper to a repository whose n existing wrappers did not fire is answering the
   wrong question.
 
+**Worked instance recorded 2026-09-13, and it exercises both corollaries at once.** Counting the
+encoders for provider evidence gave six, in three modules, for one conceptual value — which is how a
+report about one codec became a report about a class. The third corollary then names the repair the
+repository had already reached for and should not have:
+`validateProviderIntentEvidence` is exactly the added gate, a character-class check bolted onto the
+seam, and it refused correctly without ever preventing another disagreeing encoder from being
+written. The instance is worked out in
+[Pure FP Standards § 2.3a](./pure_fp_standards.md#23a-encode-at-exactly-one-boundary); the resulting
+wire is owned by [Provider Evidence Contract](./provider_evidence_contract.md).
+
+**Closed 2026-09-14 by Sprint `4.99`, in the order this section prescribes.** The six encoders were
+deleted first and the ratcheting gate landed afterwards, which is the third corollary applied
+literally: the gate holds a completed migration shut and could not have substituted for one. Had it
+landed first it would have had to exempt every module it was written to constrain, which is how a
+rule ends up describing the tree instead of binding it.
+
 **The reconcile-step boundary follows that rule literally.** `runAnchoredStepOrder` carries an
 `AdmissionRefusal` intact to its caller as `Either AdmissionRefusal (ExitCode, AdmissionSet)`; it
 must not lower the refusal to `ExitFailure` or discard it with a wildcard. The command-surface

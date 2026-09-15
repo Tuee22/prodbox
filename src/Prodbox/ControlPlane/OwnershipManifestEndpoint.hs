@@ -11,6 +11,8 @@ module Prodbox.ControlPlane.OwnershipManifestEndpoint
   , OwnershipManifestWireRequest (..)
   , ownershipManifestCommitWireRequest
   , ownershipManifestReadBackWireRequest
+  , ownershipManifestCompletionCommitWireRequest
+  , ownershipManifestCompletionReadBackWireRequest
   , OwnershipManifestWireCommitDisposition (..)
   , OwnershipManifestWireRefusal (..)
   , OwnershipManifestWireUnavailable (..)
@@ -73,9 +75,19 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest
   ( maximumDurableWriteAheadOwnershipManifestBytes
   )
 
+-- | Sprint 7.41: four actions, because one submission has two durable manifest
+-- objects.
+--
+-- The write-ahead slot is immutable by construction, so the identities the
+-- provider returned cannot be appended to it; they are committed to a second
+-- object under the same identity. The tags are additive and an unknown tag
+-- still fails the decode, so a peer that does not know the completion actions
+-- refuses them rather than mistaking one for a write-ahead commit.
 data OwnershipManifestWireAction
   = OwnershipManifestWireCommitAttempt
   | OwnershipManifestWireIndependentReadBack
+  | OwnershipManifestWireCompletionCommitAttempt
+  | OwnershipManifestWireCompletionReadBack
   deriving stock (Eq, Show)
 
 instance Serialise OwnershipManifestWireAction where
@@ -85,6 +97,8 @@ instance Serialise OwnershipManifestWireAction where
         ( case action of
             OwnershipManifestWireCommitAttempt -> 0
             OwnershipManifestWireIndependentReadBack -> 1
+            OwnershipManifestWireCompletionCommitAttempt -> 2
+            OwnershipManifestWireCompletionReadBack -> 3
         )
   decode = do
     requireListLength "OwnershipManifestWireAction" 1
@@ -92,6 +106,8 @@ instance Serialise OwnershipManifestWireAction where
     case tag of
       0 -> pure OwnershipManifestWireCommitAttempt
       1 -> pure OwnershipManifestWireIndependentReadBack
+      2 -> pure OwnershipManifestWireCompletionCommitAttempt
+      3 -> pure OwnershipManifestWireCompletionReadBack
       _ -> fail "OwnershipManifestWireAction: unknown tag"
 
 data OwnershipManifestWireRequest = OwnershipManifestWireRequest
@@ -140,6 +156,24 @@ ownershipManifestReadBackWireRequest identity =
     , ownershipManifestWireRequestIdentityBytes =
         encodeOwnershipManifestAuthorityIdentity identity
     , ownershipManifestWireRequestManifestBytes = ByteString.empty
+    }
+
+-- | Sprint 7.41: commit the completion manifest under the same identity.
+ownershipManifestCompletionCommitWireRequest
+  :: AuthorityOwnershipManifestWrite -> OwnershipManifestWireRequest
+ownershipManifestCompletionCommitWireRequest write =
+  (ownershipManifestCommitWireRequest write)
+    { ownershipManifestWireRequestAction =
+        OwnershipManifestWireCompletionCommitAttempt
+    }
+
+-- | Sprint 7.41: read the completion manifest back under the same identity.
+ownershipManifestCompletionReadBackWireRequest
+  :: OwnershipManifestAuthorityIdentity -> OwnershipManifestWireRequest
+ownershipManifestCompletionReadBackWireRequest identity =
+  (ownershipManifestReadBackWireRequest identity)
+    { ownershipManifestWireRequestAction =
+        OwnershipManifestWireCompletionReadBack
     }
 
 data OwnershipManifestWireCommitDisposition
@@ -401,6 +435,23 @@ serveOwnershipManifestEndpointRequest repository requestBytes =
             pure (refused OwnershipManifestWireUnexpectedPayload)
         | otherwise -> do
             observed <- independentlyReadBackOwnershipManifest repository identity
+            pure (readBackResult identity observed)
+      OwnershipManifestWireCompletionCommitAttempt
+        | ByteString.null payload ->
+            pure (refused OwnershipManifestWireCommitPayloadMissing)
+        | otherwise ->
+            case confirmAuthorityOwnershipManifestWriteBytes identity payload of
+              Left err -> pure (manifestErrorResult err)
+              Right write -> do
+                attempted <-
+                  createOrReplayOwnershipManifestCompletion repository write
+                pure (commitResult write attempted)
+      OwnershipManifestWireCompletionReadBack
+        | not (ByteString.null payload) ->
+            pure (refused OwnershipManifestWireUnexpectedPayload)
+        | otherwise -> do
+            observed <-
+              independentlyReadBackOwnershipManifestCompletion repository identity
             pure (readBackResult identity observed)
    where
     payload = ownershipManifestWireRequestManifestBytes request

@@ -102,6 +102,7 @@ owning implementation change updates `CommandSpec` and regenerates this section.
 | `prodbox test integration gateway-pods` | Run gateway pod integration tests |
 | `prodbox test integration control-plane-counterexample` | Run the frozen control-plane counterexample |
 | `prodbox test integration teardown-recovery` | Run the frozen exact-keyed teardown recovery counterexample |
+| `prodbox test integration create-interrupted` | Run the frozen interrupted registered-stack create counterexample |
 | `prodbox test integration certificate-scope` | Verify live TLS serving and the exact presented SAN scope |
 | `prodbox test integration clean-room-handoff` | Verify clean-room migration, rollback refusal, and legacy absence |
 | `prodbox test integration cascade-qualification` | Run one named destructive recover-to-clean cascade qualification cycle |

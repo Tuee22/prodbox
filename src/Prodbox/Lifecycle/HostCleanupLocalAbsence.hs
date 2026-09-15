@@ -88,7 +88,7 @@ import Prodbox.Lifecycle.Teardown.Model
   , ObservationEvidenceScope
   , ObservationFailure (ObservationFailure)
   )
-import Prodbox.Lifecycle.Teardown.Observation (AbsenceEvidence (AbsenceEvidence))
+import Prodbox.Lifecycle.Teardown.Observation (hostLocalAbsence)
 
 -- ---------------------------------------------------------------------------
 -- Reading local absence back
@@ -270,7 +270,7 @@ fixedPresentObservation = LocalRke2InstallPresent fixedPresentMarkers
 
 fixedAbsentObservation :: LocalRke2InstallObservation
 fixedAbsentObservation =
-  LocalRke2InstallAbsent (AbsenceEvidence "local-rke2-fixed-authoritative-not-found")
+  LocalRke2InstallAbsent (hostLocalAbsence "local-rke2-fixed-authoritative-not-found")
 
 fixedFailure :: Text -> LocalRke2MarkerFailure
 fixedFailure detail =

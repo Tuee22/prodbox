@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Sprint 4.85: the operator's retained-local-data decision, from the closed
@@ -74,7 +75,7 @@ import Prodbox.Lifecycle.HostCleanupLocalData
 import Prodbox.Lifecycle.ResidueStatus
   ( ResidueStatus (ResidueAbsent, ResiduePresent, ResidueUnreachable)
   )
-import Prodbox.Lifecycle.Teardown.Observation (AbsenceEvidence (AbsenceEvidence))
+import Prodbox.Lifecycle.Teardown.Observation (hostLocalAbsence)
 import Prodbox.Subprocess (ProcessOutput (..), Subprocess (..))
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import TestSupport
@@ -207,11 +208,11 @@ decommissionLocalDataDispositionSuite =
       removals <- newIORef ([] :: [Subprocess])
       result <-
         attemptLocalDataDisposition
-          (adapter removals (pure (LocalDataRootAbsent (AbsenceEvidence "gone"))))
+          (adapter removals (pure (LocalDataRootAbsent (hostLocalAbsence "gone"))))
           DeleteLocalData
           operationId
       localDataDispositionOutcome result
-        `shouldBe` LocalDataAlreadyAbsent (AbsenceEvidence "gone")
+        `shouldBe` LocalDataAlreadyAbsent (hostLocalAbsence "gone")
       classifyLocalDataDisposition result `shouldBe` Right ()
       readIORef removals `shouldReturn` []
 
@@ -277,11 +278,11 @@ decommissionLocalDataDispositionSuite =
       -- ResidueAbsent means the decision was honoured, which is the only
       -- reading the node classifier accepts. The residue a `retain` run
       -- reports is therefore a MISSING root.
-      residue DeleteLocalData (LocalDataRootAbsent (AbsenceEvidence "gone"))
+      residue DeleteLocalData (LocalDataRootAbsent (hostLocalAbsence "gone"))
         `shouldBe` ResidueAbsent
       residue RetainLocalData LocalDataRootPresent `shouldBe` ResidueAbsent
       residue DeleteLocalData LocalDataRootPresent `shouldSatisfy` isResiduePresent
-      residue RetainLocalData (LocalDataRootAbsent (AbsenceEvidence "gone"))
+      residue RetainLocalData (LocalDataRootAbsent (hostLocalAbsence "gone"))
         `shouldSatisfy` isResiduePresent
       -- An absence nobody observed is not a disposition anybody honoured.
       residue DeleteLocalData (LocalDataRootUnobservable "EACCES")

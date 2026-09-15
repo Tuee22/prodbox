@@ -4,9 +4,10 @@
 **Supersedes**: N/A
 **Generated sections**: none
 
-> **Purpose**: Define the gateway emitter models' runtime correspondence, the finite actor,
-> journal, fencing, acknowledgement, checkpoint, and pre-cutover liveness domains explored by TLC,
-> and the boundary between formal safety evidence and native/runtime proof.
+> **Purpose**: Define the registered models' runtime correspondence — the gateway emitter's finite
+> actor, journal, fencing, acknowledgement, checkpoint and pre-cutover liveness domains, and the
+> lifecycle create's ownership ordering — as explored by TLC, and the boundary between formal safety
+> evidence and native/runtime proof.
 
 ---
 
@@ -33,6 +34,13 @@ writer to the bounded semantic gateway model. The separate pre-cutover specifica
 models the temporary remote-Model-B topology's durable process-boot and periodic backend-proof
 fences, compacted-cursor boot witness, and signed latest-only liveness protocol without inserting
 that adapter into the target actor model.
+
+The third specification is
+[`documents/engineering/tla/lifecycle_create_ownership.tla`](./tla/lifecycle_create_ownership.tla),
+added by Sprint `5.48`. It is not about the gateway. It models the ordering of durable writes around
+a provider effect — admit, commit generation, commit and read back a write-ahead ownership manifest,
+dispatch, land, append, settle — together with the two ways the host can stop knowing what it did: a
+transport deadline that cancels the reply, and a crash. § 1.6 owns it.
 
 There is deliberately no append-only event log. Each emitter has fixed slots for:
 
@@ -208,6 +216,36 @@ and local freshness exists only for a running process on its own durable fence. 
 DNS authorization remain persistence-first semantic transitions covered by the target/ownership
 model and native composition tests; a liveness frame cannot encode them.
 
+### 1.6 Lifecycle create ownership (Sprint `5.48`)
+
+This model exists because the other two cannot reach the class that has produced four incidents
+since May 2026. Thirty-four sprints applied a type-level device to cleanup, absence and residue;
+each makes a *value* unconstructible and each claim is true, and none makes an *outcome in a cloud
+account* unconstructible, which
+[pure_fp_standards.md](./pure_fp_standards.md) now states as doctrine. A leak is not a value: it is
+a property of an ordering across processes and crashes — which durable writes happened before the
+effect that created a resource, and what survives a process that dies between them. That is a
+protocol property, and a model checker is the instrument for it.
+
+**The property is safety, not liveness.** "The resource is eventually absent in AWS" is a claim
+about the world and does not belong inside a model property any more than inside a type, and
+liveness over a reconciler with no fairness assumption yields a stuttering counterexample that
+proves nothing. The checked property is:
+
+> there is no reachable state in which a provider effect has landed and no durable record names the
+> coordinates it created.
+
+**The module carries its own frozen superseded ordering.** `WriteAheadEnabled` is a configured
+constant. `FALSE` is the 2026-09-08 revision — a generation record names the cycle, nothing names
+the resources — and `TRUE` is the ordering Sprint `7.41` schedules. Both configurations are
+registered, the second is declared to expect a counterexample, and `prodbox dev tla-check` refuses
+if it does not produce one. A model checked only in the configuration it passes under has been
+observed to pass and never to refuse.
+
+`durableManifests` is a slot per cycle rather than one slot. The first draft used one, and TLC found
+in eleven steps that a second create's manifest erased the first's record; the correction is in the
+model because it is also true of the runtime, where a manifest is committed at the submission key.
+
 ---
 
 ## 2. Variable-to-Runtime Correspondence
@@ -325,6 +363,17 @@ The legacy-liveness module checks six separately scoped invariants:
 | `FreshFrameHasAuthenticatedFenceEvidence` | No fresh frame under the timeout can count without one of those exact authenticated fence observations. |
 | `FreshLocalFrameRequiresLiveDurableBoot` | Local freshness requires a running process on its own durable boot, so recovered predecessor evidence alone cannot self-elect. |
 
+The lifecycle create-ownership module checks six separately scoped invariants:
+
+| Invariant | Meaning |
+|---|---|
+| `TypeOK` | Every phase, cycle, manifest and resource set stays inside its finite typed domain. |
+| `EveryProviderResourceIsDurablyNamed` | Every coordinate that exists in the provider is named by the declared set of some durable manifest, so a later run can reach it. It asserts naming and never absence. |
+| `GenerationNamesACycleAndNeverAResource` | The generation record's domain is cycles, which is the precise sense in which the 2026-09-08 cycle was addressable while its cluster was not. |
+| `DispatchFollowsReadBackWriteAhead` | Under the write-ahead ordering, no effect is dispatched until the manifest declaring its coordinates is committed *and* independently read back. |
+| `AppendedIdentitiesAreDeclared` | An append narrows to what the write-ahead declared; it never widens the claim. |
+| `ScratchIsNeverTheOnlyRecord` | A coordinate held only in the process is never the sole record of it — the property the retired checkpoint interpreter violated. |
+
 These are safety properties. Progress depends on scheduling, transport, Kubernetes API, storage,
 and credential availability. Native deterministic schedules and daemon/integration tests own those
 liveness and timeout obligations.
@@ -366,6 +415,25 @@ keeps the exact FIFO position and queue depth, recomputes the same cost at that 
 the original request untouched if the replacement misses its deadline. Unit/property tests own
 that queue, replacement, cancellation, threshold, and absolute-clock math. TLC owns the protocol
 consequence: no successful pre-publish phase crosses while the bounded deadline state is closed.
+
+The lifecycle create-ownership model additionally does not prove:
+
+- that any particular repository function implements the ordering it models. The model proves the
+  **protocol** and never the boundary implementation; whether
+  `commitOwnershipManifestWriteAheadAttempt` is called before the execute step is a source fact
+  Sprint `7.41` owns and the guard-consumption gate observes, not a model fact.
+- anything about the provider. `providerResources` is an abstraction of a database this repository
+  does not own; the model gives it no failure modes, no partial visibility, and no eventual
+  consistency, and a real account has all three.
+- that the declared coordinate set is the right one. `CommitWriteAheadManifest` may declare any
+  non-empty subset, and whether a real create's authorized coordinate set is known before the
+  effect is a provisioning-program fact outside the model.
+- retry, idempotency, or the identity of a re-dispatched effect. A cancelled reply followed by a new
+  admission takes a fresh cycle here; a real create may be re-dispatched under the same key, and the
+  replay identity that makes that safe is Sprint `7.36`'s dispatch digest, exercised by unit tables
+  rather than by TLC.
+- any bound on time. There is no clock: `CancelReply` is enabled from dispatch onward without a
+  deadline being modelled, which is deliberately more permissive than the runtime.
 
 Native tests cover exact payload retention, corruption rejection, lock exclusion, monotonic
 incarnation, Lease conflicts/read-back/expiry, stale admission and exact-record completion
@@ -425,6 +493,24 @@ The enlarged run additionally covers a periodic persistence-first fence refresh 
 whose compacted cursor proves the embedded signed boot while its latest-heartbeat projection is
 absent. Delayed predecessor frames remain inadmissible after both restart and in-process rotation.
 
+The lifecycle create-ownership configurations were first checked on 2026-09-14 UTC, over
+`Coordinates = {vpc, cluster}` and `Cycles = {c1, c2}`.
+
+The write-ahead ordering completed exhaustive exploration with no invariant violation:
+
+- 2,993 states generated
+- 1,750 distinct states checked
+- depth 18
+- zero states left on the queue
+- all six configured invariants passed
+
+The frozen superseded ordering produced the counterexample it is registered to produce, in five
+states: `Admit`, `CommitGeneration`, `DispatchEffect`, `LandEffect` — and
+`EveryProviderResourceIsDurablyNamed` is violated at the fourth transition, before any crash is
+needed. That is the 2026-09-08 shape stated as a trace: the generation record is committed, the
+effect lands, and nothing durable names what it created. It is registered evidence that the model
+can fail rather than a defect in the tree.
+
 This result covers only the finite model and assumptions documented here. It does not claim
 deployment qualification or replace native and live-infrastructure validation.
 
@@ -437,6 +523,9 @@ deployment qualification or replace native and live-infrastructure validation.
 - [TLA+ configuration](./tla/gateway_orders_rule.cfg)
 - [Legacy liveness model](./tla/gateway_legacy_liveness.tla)
 - [Legacy liveness configuration](./tla/gateway_legacy_liveness.cfg)
+- [Lifecycle create-ownership model](./tla/lifecycle_create_ownership.tla)
+- [Lifecycle create-ownership configuration](./tla/lifecycle_create_ownership.cfg)
+- [Frozen superseded ordering configuration](./tla/lifecycle_create_ownership_superseded.cfg)
 - [Chaos Hardening Doctrine](./chaos_hardening_doctrine.md)
 - [Runtime memory doctrine](./resource_scaling_doctrine.md)
 - [Development plan](../../DEVELOPMENT_PLAN/README.md)

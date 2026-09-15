@@ -28,6 +28,22 @@ config:
   subnet2Cidr:
     type: string
 
+  # Sprint 7.41: the creating run's durable scope and the submission key its
+  # create was admitted at. Both are committed durably -- in the lifecycle
+  # generation and in the write-ahead ownership manifest -- before the effect
+  # runs, so a resource carrying them can always be joined back to a record
+  # that declared it.
+  #
+  # The default is what a stack created before this sprint carries, and it is
+  # deliberately a statement rather than a blank: a destroy of such a stack must
+  # not fail for want of a value nobody recorded.
+  prodboxRunScope:
+    type: string
+    default: unrecorded
+  prodboxSubmission:
+    type: string
+    default: unrecorded
+
 variables:
   stackName: ${pulumi.stack}
   availabilityZones:
@@ -78,6 +94,16 @@ resources:
   awsProvider:
     type: pulumi:providers:aws
     defaultProvider: true
+    properties:
+      # Sprint 7.41: the run that made these resources, stamped by the provider
+      # onto every resource it creates rather than by each declaration. It is
+      # the only marker that survives a host process kill between the admitted
+      # create and its reply, and it is the join key back to the write-ahead
+      # ownership manifest, which is keyed under this exact run scope.
+      defaultTags:
+        tags:
+          prodbox.io/run-scope: ${prodboxRunScope}
+          prodbox.io/submission: ${prodboxSubmission}
     options:
       envVarMappings:
         PRODBOX_PULUMI_AWS_ACCESS_KEY_ID: AWS_ACCESS_KEY_ID

@@ -26,15 +26,82 @@ dependency licenses the deviation ([Standard N.2](development_plan_standards.md#
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
 | 1 | `6.5` | 6 | Next | — |
-| 2 | `7.42` | 7 | Parked | — |
 
-**Resume at Sprint `6.5`, whose remaining work is the live campaign.** Sprint `7.41` is `Done` and
-Phase `7`'s own-surface reopen closes with it; Phases `4` and `5` both reclosed on 2026-09-14. A
+**Resume at Sprint `6.5`, whose remaining work is the live campaign. It is the plan suite's only
+open row.** Sprints `7.41` and `7.42` are both `Done` and Phase `7`'s own-surface reopen closes with
+the second; Phases `4` and `5` both reclosed on 2026-09-14. A
 create now records the resources it makes and not only the cycle it belongs to, and stamps the same
 run scope provider-side so those resources stay enumerable when every host record is gone. Its live
 proof — a create interrupted on purpose, followed by a cascade that names and destroys what it made —
 is pending, and the stamped tags reach a live cluster only after the Provider Worker runtime image is
 rebuilt.
+
+**Sprint `7.42` is Done and Phase 7 recloses (2026-09-15): the one mechanism that can recover a live
+resource named by nothing now has a way in.** The adoption observer, its planner, the permit
+admission and the receipt repository were written, tested, and called from nothing — not because
+anyone forgot a call, but because the authorization half had no surface. It is now two verbs.
+`prodbox aws stack <eks|test|aws-subzone> adopt-legacy plan` observes the closed registry-derived
+family through the read-only Provider capability and prints the exact candidate document with the
+digest taken over those bytes; `... adopt-legacy apply --plan-digest <digest> --yes` observes and
+renders **again** and confirms the operator's digest against the plan *that* pass produced, then
+receipt-commits and independently reads back. The second observation is the deliverable's real
+content: carrying the first pass's document forward would authorize a candidate set nobody
+re-checked against the world, and a plan re-rendered after the provider facts changed is a different
+plan the operator never saw. Retained `aws-ses` has no adoption verb, because a per-run cleanup
+ownership record over the one stack nothing may reap is the same category error the run-scoped tag
+keeps it out of.
+
+**The sprint's second deliverable turned out to be a claim that was false rather than merely
+unstated.** It asked that the result be "cleanup-only provenance with no type-level path into a
+future create" — and `proveWriteAheadOwnership` accepted any complete manifest. An adoption commits
+a `CompleteOwnershipManifest` and reads it back through the same projection a create does, so a
+record of resources somebody else made would have minted the create-side proof that type's own GADT
+index says it may not; the index could not see it because the purpose was a field the decision view
+did not carry. The view carries it now and the minter refuses the adoption arm, and the receipt is
+an opaque `AdoptedCleanupOwnership` with no projection back to that evidence at all. The synthetic
+mutation was written, compiled, rejected, and reverted rather than asserted.
+
+**One property of the mechanism is worth stating because its first draft got it wrong.** The
+composition root gave all four family members a single Authority dispatch key. The submission key is
+the Authority's idempotency identity, so the second, third and fourth observations would have
+replayed the first's evidence — four well-formed answers about one resource, which is an ambiguity
+the planner's five refusals cannot detect. `legacyAdoptionDispatchKeyFor` now derives one key per
+member from the intent's own coordinate, stable across re-runs so a repeated plan pass replays the
+retained observation rather than allocating a new identity for one question.
+
+**A second finding is about a rule that was describing a projection that did not exist.**
+`ValidatedCoordinates` parsed `aws_substrate.subzone_name` and discarded it while
+`tier0CoordinateReadRegistry` listed the field as having a projection, so the subzone adoption had
+nothing validated to read and the honest alternative was a raw read of the kind an open ledger row
+already names. The projection is added.
+
+**`prodbox dev check` refused the change twice before it passed, both times correctly.** Deleting
+the six `unconsumedTypedGuardRegistry` rows the closed ledger row owned left four cleanup-authority
+projections with no production consumer. One gained a real one — the operator output prints the run
+scope the receipt is keyed under, which is how a reader finds the object a later cleanup will read.
+The three `AdminLegacyAdoptionPermit` projections had none and are deleted: a permit is a token
+rather than a record, and accessors that read a proof's contents back out are how a caller starts
+re-deciding what the admission already decided. The consequence is stated rather than hidden — the
+nonce is now unobservable outside its module, which is correct only while nothing records permits
+durably.
+
+**A third defect was in the gate that was asked to hold the new claims.** Registering the four
+adoption unconstructibility claims in `checkSealedConstructors` made it refuse
+`LegacyAdoptionPlan` — whose export list does not expose its constructors. `moduleExportListIn`
+returned the whole module header joined with spaces, and
+`Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan` ends with the exact type name, so the export list's
+own opening parenthesis read as that type exporting its constructors; the boundary check could not
+object, because the character before the name is a dot. It returns only the parenthesised list now.
+Adoption lane **9/9**, planner **13/13**, observer **3/3**, receipt repository **5/5**,
+write-ahead ownership **26/26**, primary unit **5,159/5,159**, canonical `prodbox dev check`
+exits 0.
+
+**What the sprint does not claim is registered rather than implied.** Nothing consumes the identity
+allowlist the receipt records: the lane ends before any mutation, and turning that allowlist into a
+destroy is Sprint `6.5`'s single-writer cutover. And no live adoption has run — a fake provider
+cannot establish that a real Provider answer decodes into the closed family, or that the committed
+receipt reads back byte-identically from the retained Authority. Both are `Live-proof: pending` and
+non-blocking under Standard O.
 
 **Sprint `6.5`'s three non-activation deliverables landed 2026-09-14, and they are the ones that
 were never gated on the campaign.** The postflight tag sweep passed no region and read one response
@@ -86,6 +153,17 @@ the obvious layer split would add the measured **5.8 GB** dependency store to th
 because layers are additive and BuildKit cache mounts are forbidden by doctrine. The repair that
 gets both is a builder stage, which is a doctrine change on a Standard-P component-image surface and
 is recorded rather than taken.
+
+**Sprint `6.5`'s code-local validation matrix was re-run on 2026-09-15, which is the part of that
+row a session can actually discharge while the campaign is pending.** Every scope exits 0:
+`prodbox dev check`; `prodbox test unit` over **5,160** primary cases plus authority admission
+**27/27**, control-plane authentication **35/35**, authenticated transport **39/39**, Haskell style
+**17/17** and Pulumi **4/4**; and both `prodbox test integration cli` and `prodbox test integration
+env`, each running the `prodbox-integration` stanza at **70/70**. Sole-writer status was re-verified
+against the tree rather than restated: the four cutover functions and `LegacyScanPostActivation`
+still occur only in `Prodbox.Test.CleanRoomHandoff`, and `prodbox cluster delete --cascade` still
+routes to `runNativeDeleteCascade`. The item is standing rather than one-shot — it is owed again on
+every revision that reaches this row.
 
 **What is left of Sprint `6.5` is the activation, and the activation is blocked on evidence this
 worktree cannot produce.** Standard P forbids activation and legacy deletion until a current-revision
@@ -13715,6 +13793,22 @@ public raw hash of plaintext secrets; the evidence digest covers only those publ
 
 Any change to process topology, capability wiring, deadline algebra, resource envelopes,
 persistence, lifecycle orchestration, or cleanup invalidates a prior `proven` row.
+
+**Registered 2026-09-15 — Sprint `7.42` moves a Standard-P capability-wiring surface, and the AWS
+row's counterexample cell already names what a run must now exercise.** Both rows are already
+`pending`, so nothing is retracted. What is recorded is that the bounded pre-manifest adoption arms
+the AWS row lists — "every bounded pre-manifest adoption confirm/read-back/refusal arm" — became
+reachable from an installed command on this date, so a qualification run must exercise them through
+`prodbox aws stack <stack> adopt-legacy plan` / `apply` rather than through a table. The wiring that
+moved is a fifth Provider dispatch purpose and the per-member Authority submission keys derived under
+it: those keys are durable idempotency identities, so a run that re-observes under them replays
+retained evidence, and an identity captured before this sprint describes a different set of them.
+
+One consequence belongs in the Cleanup/residue column rather than in the aggregate one. An adoption
+commits a durable ownership record and destroys nothing, so a run that adopts and then reports
+"clean" has said nothing about whether the adopted resources were reaped — the record and the
+reaping are separate facts, and only the second closes the cascade. The cell must say which of the
+two it observed.
 
 **Registered 2026-09-13 — Sprint `4.99` moves Standard-P persistence-protocol and capability-wiring
 surfaces.** Both rows are already `pending`, so nothing is retracted; what is recorded is that no

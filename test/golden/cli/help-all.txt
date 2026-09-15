@@ -111,6 +111,24 @@ Options:
 Examples:
 - prodbox aws stack eks prune-corrupt-checkpoint --yes  # Clear a corrupt eks per-run checkpoint.
 
+## prodbox aws stack eks adopt-legacy plan
+prodbox aws stack eks adopt-legacy plan - Render the eks adoption candidate plan and its digest
+
+Observe the closed registry-derived family for the eks stack through the read-only provider capability, write the exact candidate document to stdout, and report the digest that `adopt-legacy apply` requires. Mints no permit, commits nothing, and mutates nothing.
+Examples:
+- prodbox aws stack eks adopt-legacy plan  # Show the eks adoption candidates and their digest.
+
+## prodbox aws stack eks adopt-legacy apply
+prodbox aws stack eks adopt-legacy apply - Adopt the eks family under a confirmed plan digest
+
+Re-observe the closed family, re-render the candidate plan, and refuse unless it digests to --plan-digest. On a match, commit the cleanup-only ownership record and read it back independently before returning. A plan re-rendered after the provider facts changed is a different plan and is refused: re-run `adopt-legacy plan` and confirm the new digest.
+Options:
+- --plan-digest <DIGEST> - The exact candidate-plan digest printed by `adopt-legacy plan`
+- --yes, -y - Confirm committing a durable ownership record for the observed candidates
+
+Examples:
+- prodbox aws stack eks adopt-legacy apply --plan-digest DIGEST --yes  # Adopt the eks family under a confirmed digest.
+
 ## prodbox aws stack test reconcile
 prodbox aws stack test reconcile - Provision or inspect the test stack
 
@@ -144,6 +162,24 @@ Options:
 Examples:
 - prodbox aws stack test prune-corrupt-checkpoint --yes  # Clear a corrupt test per-run checkpoint.
 
+## prodbox aws stack test adopt-legacy plan
+prodbox aws stack test adopt-legacy plan - Render the test adoption candidate plan and its digest
+
+Observe the closed registry-derived family for the test stack through the read-only provider capability, write the exact candidate document to stdout, and report the digest that `adopt-legacy apply` requires. Mints no permit, commits nothing, and mutates nothing.
+Examples:
+- prodbox aws stack test adopt-legacy plan  # Show the test adoption candidates and their digest.
+
+## prodbox aws stack test adopt-legacy apply
+prodbox aws stack test adopt-legacy apply - Adopt the test family under a confirmed plan digest
+
+Re-observe the closed family, re-render the candidate plan, and refuse unless it digests to --plan-digest. On a match, commit the cleanup-only ownership record and read it back independently before returning. A plan re-rendered after the provider facts changed is a different plan and is refused: re-run `adopt-legacy plan` and confirm the new digest.
+Options:
+- --plan-digest <DIGEST> - The exact candidate-plan digest printed by `adopt-legacy plan`
+- --yes, -y - Confirm committing a durable ownership record for the observed candidates
+
+Examples:
+- prodbox aws stack test adopt-legacy apply --plan-digest DIGEST --yes  # Adopt the test family under a confirmed digest.
+
 ## prodbox aws stack aws-subzone reconcile
 prodbox aws stack aws-subzone reconcile - Provision or inspect the aws-subzone stack
 
@@ -176,6 +212,24 @@ Options:
 
 Examples:
 - prodbox aws stack aws-subzone prune-corrupt-checkpoint --yes  # Clear a corrupt aws-subzone per-run checkpoint.
+
+## prodbox aws stack aws-subzone adopt-legacy plan
+prodbox aws stack aws-subzone adopt-legacy plan - Render the aws-subzone adoption candidate plan and its digest
+
+Observe the closed registry-derived family for the aws-subzone stack through the read-only provider capability, write the exact candidate document to stdout, and report the digest that `adopt-legacy apply` requires. Mints no permit, commits nothing, and mutates nothing.
+Examples:
+- prodbox aws stack aws-subzone adopt-legacy plan  # Show the aws-subzone adoption candidates and their digest.
+
+## prodbox aws stack aws-subzone adopt-legacy apply
+prodbox aws stack aws-subzone adopt-legacy apply - Adopt the aws-subzone family under a confirmed plan digest
+
+Re-observe the closed family, re-render the candidate plan, and refuse unless it digests to --plan-digest. On a match, commit the cleanup-only ownership record and read it back independently before returning. A plan re-rendered after the provider facts changed is a different plan and is refused: re-run `adopt-legacy plan` and confirm the new digest.
+Options:
+- --plan-digest <DIGEST> - The exact candidate-plan digest printed by `adopt-legacy plan`
+- --yes, -y - Confirm committing a durable ownership record for the observed candidates
+
+Examples:
+- prodbox aws stack aws-subzone adopt-legacy apply --plan-digest DIGEST --yes  # Adopt the aws-subzone family under a confirmed digest.
 
 ## prodbox aws stack aws-ses reconcile
 prodbox aws stack aws-ses reconcile - Provision or inspect the aws-ses stack

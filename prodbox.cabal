@@ -167,6 +167,7 @@ library
         Prodbox.ControlPlane.RegisteredStackCreationSubmitter
         Prodbox.ControlPlane.RegisteredStackGenerationRepository
         Prodbox.ControlPlane.OwnershipManifestEndpoint
+        Prodbox.ControlPlane.LegacyAdoptionCompositionRoot
         Prodbox.ControlPlane.LegacyAdoptionManifestRepository
         Prodbox.ControlPlane.OwnershipManifestRepository
         Prodbox.ControlPlane.OwnershipManifestTransportClient
@@ -549,6 +550,7 @@ library
         Prodbox.Lifecycle.Teardown.Dns01ChallengeOwnerDeleteInterpreter
         Prodbox.Lifecycle.Teardown.Dns01ChallengeRecordAdapter
         Prodbox.Lifecycle.Teardown.EphemeralKubectl
+        Prodbox.Lifecycle.Teardown.LegacyAdoptionLane
         Prodbox.Lifecycle.Teardown.LegacyAdoptionObserver
         Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan
         Prodbox.Lifecycle.Teardown.Execution
@@ -942,6 +944,7 @@ test-suite prodbox-unit
         LifecycleTeardownAwsRetainedEbsAdapter
         LifecycleTeardownAwsRoute53ZoneAdapter
         LifecycleTeardownDns01ChallengeRecordAdapter
+        LifecycleTeardownLegacyAdoptionLane
         LifecycleTeardownLegacyAdoptionObserver
         LifecycleTeardownLegacyAdoptionPlan
         LifecycleTeardownAwsStackAdapter

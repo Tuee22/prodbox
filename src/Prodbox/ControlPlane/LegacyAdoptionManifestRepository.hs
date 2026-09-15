@@ -21,6 +21,11 @@ module Prodbox.ControlPlane.LegacyAdoptionManifestRepository
   , LegacyAdoptionManifestRepositoryError (..)
   , legacyAdoptionManifestModelBCodec
   , modelBLegacyAdoptionManifestRepository
+  , AdoptedCleanupOwnership
+  , adoptedCleanupOwnershipStackKey
+  , adoptedCleanupOwnershipScope
+  , adoptedCleanupOwnershipView
+  , adoptedCleanupOwnershipEntryIdentities
   , commitAndReadBackConfirmedLegacyAdoptionManifest
   , maximumLegacyAdoptionManifestReceiptBytes
   )
@@ -48,12 +53,14 @@ import Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan
   )
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
-  ( OwnershipManifestProvenance (..)
+  ( ObservedResourceIdentity
+  , OwnershipManifestProvenance (..)
   , OwnershipManifestVersion (..)
   )
 import Prodbox.Lifecycle.Teardown.OwnershipManifest
   ( LegacyAdoptionPlanDigest
   , OwnershipManifestDecisionEvidence
+  , OwnershipManifestDecisionView
   , OwnershipManifestError
   , completeConfirmedLegacyAdoptionManifestReadBack
   , confirmedLegacyAdoptionManifestWrite
@@ -62,6 +69,10 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest
   , confirmedLegacyAdoptionManifestWriteScope
   , confirmedLegacyAdoptionManifestWriteStackKey
   , legacyAdoptionPlanDigestText
+  , ownershipManifestDecisionEntryIdentities
+  , ownershipManifestDecisionScope
+  , ownershipManifestDecisionStackKey
+  , ownershipManifestDecisionView
   )
 
 data LegacyAdoptionManifestIdentity = LegacyAdoptionManifestIdentity
@@ -256,6 +267,71 @@ repositoryFailure category detail =
 authorityProvenance :: Text
 authorityProvenance = "lifecycle-authority/model-b/legacy-adoption/v1"
 
+-- | What a confirmed adoption produces once its receipt has been committed and
+-- independently read back: cleanup-only ownership, and nothing else.
+--
+-- The wrapper exists because the evidence inside it is the same type a create's
+-- own write-ahead read-back produces, and that type has a create-side
+-- consumer. @'Prodbox.ControlPlane.RegisteredStackCreationSubmitter.proveWriteAheadOwnership'@
+-- takes a bare 'OwnershipManifestDecisionEvidence' and mints the proof the
+-- execute step requires; handing it an adoption receipt would let a record of
+-- resources /somebody else made/ stand in for a create's record of what it was
+-- about to make. So the constructor is not exported and no projection here
+-- returns the evidence: the adoption lane's result has no type-level path into
+-- a create, and a synthetic mutation that tries to take one does not compile.
+--
+-- The projections are the cleanup-side facts an operator and a later
+-- desired-absence decision need — which stack, under which scope, with which
+-- provenance and version, and the exact identity allowlist per registered key.
+-- Consuming that allowlist into a destroy is the single-writer cutover's work
+-- and is deliberately not done here; this sprint's boundary ends at the
+-- independently read-back receipt, before any mutation.
+--
+-- __Compile witness.__ The expression below is a type error, and that it is one
+-- is the assertion. Uncommenting it fails the build; it was written, compiled
+-- and rejected, and then reverted.
+--
+-- > launderedCreateProof
+-- >   :: AdoptedCleanupOwnership
+-- >   -> Maybe (WriteAheadOwnershipProof 'WriteAheadOwnership)
+-- > launderedCreateProof = proveWriteAheadOwnership AwsTestKey
+--
+-- The bound is worth stating rather than implying. This closes the path from
+-- the /repository's/ result; @completeConfirmedLegacyAdoptionManifestReadBack@
+-- still returns a bare @OwnershipManifestDecisionEvidence@ to its one caller,
+-- which is this module. That remaining path is closed by value instead: the
+-- decision view carries the manifest purpose and @proveWriteAheadOwnership@
+-- refuses the adoption arm, asserted in
+-- @test\/unit\/RegisteredStackCreationOwnership.hs@ against a real adoption
+-- read-back with a write-ahead read-back beside it as the positive control.
+newtype AdoptedCleanupOwnership
+  = AdoptedCleanupOwnershipInternal OwnershipManifestDecisionEvidence
+
+adoptedCleanupOwnershipStackKey :: AdoptedCleanupOwnership -> RegisteredResourceKey
+adoptedCleanupOwnershipStackKey (AdoptedCleanupOwnershipInternal evidence) =
+  ownershipManifestDecisionStackKey evidence
+
+adoptedCleanupOwnershipScope :: AdoptedCleanupOwnership -> ObservationEvidenceScope
+adoptedCleanupOwnershipScope (AdoptedCleanupOwnershipInternal evidence) =
+  ownershipManifestDecisionScope evidence
+
+-- | The purpose, provenance and version the read-back carried. The purpose is
+-- visible here precisely so a reader can see that an adoption receipt says it
+-- is one.
+adoptedCleanupOwnershipView
+  :: AdoptedCleanupOwnership -> OwnershipManifestDecisionView
+adoptedCleanupOwnershipView (AdoptedCleanupOwnershipInternal evidence) =
+  ownershipManifestDecisionView evidence
+
+-- | The exact identities receipt-committed for one registered family, or
+-- 'Nothing' when the manifest carries no single entry for that key.
+adoptedCleanupOwnershipEntryIdentities
+  :: RegisteredResourceKey
+  -> AdoptedCleanupOwnership
+  -> Maybe [ObservedResourceIdentity]
+adoptedCleanupOwnershipEntryIdentities key (AdoptedCleanupOwnershipInternal evidence) =
+  ownershipManifestDecisionEntryIdentities key evidence
+
 commitAndReadBackConfirmedLegacyAdoptionManifest
   :: (Monad m)
   => LegacyAdoptionManifestRepository m
@@ -264,7 +340,7 @@ commitAndReadBackConfirmedLegacyAdoptionManifest
   -> m
        ( Either
            LegacyAdoptionManifestRepositoryError
-           OwnershipManifestDecisionEvidence
+           AdoptedCleanupOwnership
        )
 commitAndReadBackConfirmedLegacyAdoptionManifest repository surface confirmed =
   case confirmedLegacyAdoptionManifestWrite surface confirmed of
@@ -287,7 +363,7 @@ commitAndReadBackConfirmedLegacyAdoptionManifest repository surface confirmed =
               (Left LegacyAdoptionManifestReceiptMismatch)
             either
               (Left . LegacyAdoptionManifestCompletionInvalid)
-              Right
+              (Right . AdoptedCleanupOwnershipInternal)
               ( completeConfirmedLegacyAdoptionManifestReadBack
                   provenance
                   version

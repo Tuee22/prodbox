@@ -46,11 +46,10 @@ module Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan
   , legacyAdoptionExpectedFamily
   , LegacyAdoptionRefusal (..)
   , planLegacyAdoption
+  , LegacyAdoptionPlanDigestRefusal (..)
+  , mkLegacyAdoptionPlanDigest
   , AdminLegacyAdoptionPermitRequest (..)
   , AdminLegacyAdoptionPermit
-  , adminLegacyAdoptionPermitPlanDigest
-  , adminLegacyAdoptionPermitStackKey
-  , adminLegacyAdoptionPermitNonce
   , AdminLegacyAdoptionPermitRefusal (..)
   , admitAdminLegacyAdoptionPermit
   , ConfirmedLegacyAdoptionPlan
@@ -353,6 +352,29 @@ renderAwsScopeText awsScope =
 hashText :: Text -> Text
 hashText = TextEncoding.decodeUtf8 . hexSha256 . TextEncoding.encodeUtf8
 
+data LegacyAdoptionPlanDigestRefusal
+  = -- | The digest an operator supplied is not the shape this planner produces.
+    LegacyAdoptionPlanDigestMalformed !Text
+  deriving (Eq, Show)
+
+-- | Admit an operator-typed digest into the typed one.
+--
+-- 'legacyAdoptionPlanDigestOf' hashes the rendered document with SHA-256 and
+-- renders it as lowercase hex, so anything else is a transcription error rather
+-- than a disagreement about the candidate set.  Refusing it here separates the
+-- two: a mistyped digest says so, and a digest that is well formed and does not
+-- match says the plan changed.
+mkLegacyAdoptionPlanDigest
+  :: Text -> Either LegacyAdoptionPlanDigestRefusal LegacyAdoptionPlanDigest
+mkLegacyAdoptionPlanDigest raw
+  | Text.length raw == 64 && Text.all isLowerHexDigit raw =
+      Right (LegacyAdoptionPlanDigest raw)
+  | otherwise = Left (LegacyAdoptionPlanDigestMalformed raw)
+ where
+  isLowerHexDigit character =
+    (character >= '0' && character <= '9')
+      || (character >= 'a' && character <= 'f')
+
 -- | What an operator submits. A plain record: this is the request, not the
 -- authorization.
 data AdminLegacyAdoptionPermitRequest = AdminLegacyAdoptionPermitRequest
@@ -365,23 +387,22 @@ data AdminLegacyAdoptionPermitRequest = AdminLegacyAdoptionPermitRequest
 
 -- | The admitted permit. Its constructor is private, so holding one is proof
 -- that 'admitAdminLegacyAdoptionPermit' accepted the request.
+--
+-- It has no projections, deliberately. A permit is a token rather than a
+-- record: the only thing anyone needs to do with one is present it to
+-- 'confirmLegacyAdoptionPlan', which reads the two fields it must compare, and
+-- accessors that read a proof's contents back out are how a caller starts
+-- re-deciding what the admission already decided. The consequence is stated
+-- rather than hidden: the nonce is unobservable outside this module, which is
+-- correct only while nothing records permits durably. A sprint that adds
+-- durable permit replay adds the projection its reader needs, in the same
+-- change.
 data AdminLegacyAdoptionPermit = AdminLegacyAdoptionPermit
   { internalAdminLegacyPermitStackKey :: !RegisteredResourceKey
   , internalAdminLegacyPermitPlanDigest :: !LegacyAdoptionPlanDigest
   , internalAdminLegacyPermitNonce :: !Text
   }
   deriving (Eq, Show)
-
-adminLegacyAdoptionPermitStackKey
-  :: AdminLegacyAdoptionPermit -> RegisteredResourceKey
-adminLegacyAdoptionPermitStackKey = internalAdminLegacyPermitStackKey
-
-adminLegacyAdoptionPermitPlanDigest
-  :: AdminLegacyAdoptionPermit -> LegacyAdoptionPlanDigest
-adminLegacyAdoptionPermitPlanDigest = internalAdminLegacyPermitPlanDigest
-
-adminLegacyAdoptionPermitNonce :: AdminLegacyAdoptionPermit -> Text
-adminLegacyAdoptionPermitNonce = internalAdminLegacyPermitNonce
 
 data AdminLegacyAdoptionPermitRefusal
   = AdminLegacyPermitWrongAudience !RunnerRole

@@ -50,7 +50,15 @@ _prodbox() {
     5)
       case "$words[2,4]" in
         "aws stack eks")
-          words=("reconcile" "destroy" "prune-corrupt-checkpoint")
+          words=("reconcile" "destroy" "prune-corrupt-checkpoint" "adopt-legacy")
+          _describe 'subcommand' words
+          ;;
+      esac
+      ;;
+    6)
+      case "$words[2,5]" in
+        "aws stack eks adopt-legacy")
+          words=("plan" "apply")
           _describe 'subcommand' words
           ;;
       esac
@@ -58,7 +66,15 @@ _prodbox() {
     5)
       case "$words[2,4]" in
         "aws stack test")
-          words=("reconcile" "destroy" "prune-corrupt-checkpoint")
+          words=("reconcile" "destroy" "prune-corrupt-checkpoint" "adopt-legacy")
+          _describe 'subcommand' words
+          ;;
+      esac
+      ;;
+    6)
+      case "$words[2,5]" in
+        "aws stack test adopt-legacy")
+          words=("plan" "apply")
           _describe 'subcommand' words
           ;;
       esac
@@ -66,7 +82,15 @@ _prodbox() {
     5)
       case "$words[2,4]" in
         "aws stack aws-subzone")
-          words=("reconcile" "destroy" "prune-corrupt-checkpoint")
+          words=("reconcile" "destroy" "prune-corrupt-checkpoint" "adopt-legacy")
+          _describe 'subcommand' words
+          ;;
+      esac
+      ;;
+    6)
+      case "$words[2,5]" in
+        "aws stack aws-subzone adopt-legacy")
+          words=("plan" "apply")
           _describe 'subcommand' words
           ;;
       esac

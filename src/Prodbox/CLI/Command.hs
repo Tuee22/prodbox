@@ -33,6 +33,7 @@ module Prodbox.CLI.Command
   , Plan (..)
   , PolicyTier (..)
   , PulumiCommand (..)
+  , AdoptableLegacyStack (..)
   , PerRunPruneTarget (..)
   , Rke2Command (..)
   , Rke2DeleteFlags (..)
@@ -49,6 +50,7 @@ module Prodbox.CLI.Command
   )
 where
 
+import Data.Text (Text)
 import Prodbox.Bootstrap.Broker.SecretWorker (SecretWorkerOperation)
 import Prodbox.CLI.Output (writeOutput)
 import Prodbox.ControlPlane.TargetSecretWorkerRuntime
@@ -62,6 +64,9 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorker
   )
 import Prodbox.Lifecycle.CredentialProvisioner.ExternalMaterialWorker
   ( ExternalMaterialWorkerOptions
+  )
+import Prodbox.Lifecycle.Teardown.LegacyAdoptionLane
+  ( AdoptableLegacyStack (..)
   )
 import Prodbox.Runtime.Role (RuntimeRole)
 import Prodbox.Substrate (Substrate (..))
@@ -413,6 +418,17 @@ data PulumiCommand
     -- one. The 'Bool' is the @--yes@ confirmation. Per-run stacks only;
     -- a corrupt long-lived @aws-ses@ checkpoint always refuses.
     PulumiPruneCorruptCheckpoint PerRunPruneTarget Bool
+  | -- | Render the bounded legacy-adoption candidate plan for a per-run stack
+    -- and report its digest. Read-only: it observes the closed registry-derived
+    -- family through the Provider\'s read-only capability, mints no permit,
+    -- commits nothing, and mutates nothing.
+    PulumiAdoptLegacyPlan AdoptableLegacyStack
+  | -- | Re-observe, re-render, and adopt the per-run stack under the exact plan
+    -- digest the operator confirms. The 'Text' is that digest; the 'Bool' is
+    -- @--yes@. A digest that does not match the plan this pass renders refuses,
+    -- which is what makes the confirmation a statement about the present
+    -- candidate set rather than about a document that has since gone stale.
+    PulumiAdoptLegacyApply AdoptableLegacyStack Text Bool
   deriving (Eq, Show)
 
 -- | Sprint 7.22: which per-run stack's corrupt checkpoint to prune.

@@ -801,7 +801,11 @@ assertDecisionClass expected result = case (expected, fmap ownershipManifestDeci
   -- Every other arm must still be an observation; laundering absence,
   -- partiality or unobservability into a proof is the defect this shape has
   -- always guarded, and that half is unchanged.
-  (ExpectPresent, Right (OwnershipManifestDecisionComplete _ version)) ->
+  (ExpectPresent, Right (OwnershipManifestDecisionComplete purpose _ version)) -> do
+    -- Sprint 7.42: a write-ahead read-back must say it is one. The purpose is
+    -- what the create-side minter refuses an adoption receipt on, so a manifest
+    -- that reached this arm claiming another purpose would be a laundered one.
+    purpose `shouldBe` WriteAheadOwnershipValue
     version `shouldBe` fixtureObservedVersion
   (ExpectPresent, Right (OwnershipManifestDecisionObservation observation)) ->
     expectationFailure
@@ -827,7 +831,7 @@ assertObservationResult expectedScope expected result = case fmap ownershipManif
   -- only for the arms that must stay observations. Its version is asserted
   -- rather than its scope, because a complete proof carries the binding the
   -- durable bytes were written under.
-  Right (OwnershipManifestDecisionComplete _ version) -> case expected of
+  Right (OwnershipManifestDecisionComplete _ _ version) -> case expected of
     OwnershipManifestPresent expectedVersion -> version `shouldBe` expectedVersion
     other ->
       expectationFailure

@@ -3345,9 +3345,11 @@ providerEvidenceSealViolations (path, contents)
 -- produce is admitted rather than refused as stale.
 --
 -- It cannot see a guard that is consumed only by a caller that is itself
--- dead. @observeAndPlanLegacyAdoption@ has no caller, and the four helpers it
--- calls therefore have exactly one -- so the leaves of that lane are found
--- here and its interior is not.
+-- dead. When this rule landed, @observeAndPlanLegacyAdoption@ had no caller and
+-- the four helpers it calls therefore had exactly one, so the leaves of that
+-- lane were found here and its interior was not. That lane now has an operator
+-- surface and its rows are gone; the bound it illustrated is unchanged, because
+-- the rule still counts readers rather than reachable readers.
 --
 -- And it decides whether a symbol is read, never whether reading it was the
 -- right thing to do. A record field written into a literal is not a read of
@@ -3361,6 +3363,7 @@ typedGuardAuthorityTypes :: [(String, [String])]
 typedGuardAuthorityTypes =
   [ ("AbsenceEvidence", [])
   , ("AdminLegacyAdoptionPermit", [])
+  , ("AdoptedCleanupOwnership", [])
   , ("CapabilityDisposition", ["CustodyRetire"])
   , ("CapabilityRef", ["ManagedDestroy"])
   , ("ConfirmedLegacyAdoptionPlan", [])
@@ -3438,15 +3441,6 @@ unconsumedTypedGuardRegistry =
     , ("verifiedOwnershipManifestStackKey", ownershipManifestModule)
     , ("verifiedOwnershipManifestVersion", ownershipManifestModule)
     ]
-    ++ map
-      legacyAdoptionRow
-      [ ("commitAndReadBackConfirmedLegacyAdoptionManifest", legacyAdoptionRepositoryModule)
-      , ("adminLegacyAdoptionPermitNonce", legacyAdoptionPlanModule)
-      , ("adminLegacyAdoptionPermitPlanDigest", legacyAdoptionPlanModule)
-      , ("adminLegacyAdoptionPermitStackKey", legacyAdoptionPlanModule)
-      , ("admitAdminLegacyAdoptionPermit", legacyAdoptionPlanModule)
-      , ("confirmLegacyAdoptionPlan", legacyAdoptionPlanModule)
-      ]
     ++ map
       awsAdapterRow
       [
@@ -3556,9 +3550,6 @@ unconsumedTypedGuardRegistry =
  where
   ownershipRepositoryModule = "src/Prodbox/ControlPlane/OwnershipManifestRepository.hs"
   ownershipManifestModule = "src/Prodbox/Lifecycle/Teardown/OwnershipManifest.hs"
-  legacyAdoptionRepositoryModule =
-    "src/Prodbox/ControlPlane/LegacyAdoptionManifestRepository.hs"
-  legacyAdoptionPlanModule = "src/Prodbox/Lifecycle/Teardown/LegacyAdoptionPlan.hs"
 
   writeAheadOwnershipRow (symbol, owner) =
     UnconsumedTypedGuard
@@ -3572,18 +3563,6 @@ unconsumedTypedGuardRegistry =
             ++ "append so the manifest carries the identities the provider "
             ++ "returned, and makes the read-back witness the only way to "
             ++ "construct what the execute step consumes."
-      }
-
-  legacyAdoptionRow (symbol, owner) =
-    UnconsumedTypedGuard
-      { unconsumedGuardSymbol = symbol
-      , unconsumedGuardOwner = owner
-      , unconsumedGuardLedgerRow =
-          "The bounded legacy-adoption protocol has no authorization surface"
-      , unconsumedGuardConsumptionCondition =
-          "Sprint `7.42` lands the operator surface that mints an admin permit "
-            ++ "over the exact rendered plan digest, so the observer, the "
-            ++ "permit admission and the receipt commit have a caller."
       }
 
   awsAdapterRow (symbol, owner) =
@@ -4492,6 +4471,36 @@ sealedConstructorRegistry =
       SealedDeclaredHere
       "Sprint 7.41: an execute that skips the write-ahead read-back does not \
       \compile only while `proveWriteAheadOwnership` is the sole minter."
+  , -- The bounded legacy-adoption protocol's four claims. Each is written down
+    -- in the doctrine or in the type's own Haddock, and each is true only while
+    -- its constructor stays unexported.
+    SealedConstructorType
+      "src/Prodbox/ControlPlane/LegacyAdoptionManifestRepository.hs"
+      "AdoptedCleanupOwnership"
+      SealedDeclaredHere
+      "Sprint 7.42: an adoption receipt has no type-level path into a create \
+      \only while nothing can unwrap it back into the evidence \
+      \`proveWriteAheadOwnership` accepts."
+  , SealedConstructorType
+      "src/Prodbox/Lifecycle/Teardown/LegacyAdoptionPlan.hs"
+      "LegacyAdoptionPlan"
+      SealedDeclaredHere
+      "Sprint 7.42: a plan is a plan over a complete unambiguous observation of \
+      \the closed family only while `planLegacyAdoption` is the sole producer."
+  , SealedConstructorType
+      "src/Prodbox/Lifecycle/Teardown/LegacyAdoptionPlan.hs"
+      "AdminLegacyAdoptionPermit"
+      SealedDeclaredHere
+      "Sprint 7.42: holding a permit is proof that \
+      \`admitAdminLegacyAdoptionPermit` accepted the request, which holds only \
+      \while the constructor is private."
+  , SealedConstructorType
+      "src/Prodbox/Lifecycle/Teardown/LegacyAdoptionPlan.hs"
+      "ConfirmedLegacyAdoptionPlan"
+      SealedDeclaredHere
+      "Sprint 7.42: discovery cannot authorize a durable ownership record only \
+      \while `confirmLegacyAdoptionPlan` is the sole way to pair a plan with a \
+      \permit over its exact digest."
   , -- Sprint 6.5 validation item 6 calls these three private, and the public
     -- facade is where that is true: the family-internal module declares them and
     -- exports their constructors to its own decoder and restoration bridge.
@@ -4547,8 +4556,18 @@ moduleExportListIn contents =
   case dropWhile (not . isModuleHeader) (lines contents) of
     [] -> Nothing
     headerLines ->
-      let header = unwords (takeThroughWhere headerLines)
-       in if '(' `elem` header then Just header else Nothing
+      -- Sprint 7.42: the module's own name is dropped, and the reason is a
+      -- false positive it produced. @Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan@
+      -- ends with the exact type name @LegacyAdoptionPlan@, and the header is
+      -- joined with spaces, so the scan read @…LegacyAdoptionPlan (@ -- the
+      -- opening parenthesis of the export list itself -- as that type exporting
+      -- its constructors. The dot before the name is not an identifier
+      -- character, so the boundary check could not see it either. What this
+      -- function claims to return is the export list, and now it returns only
+      -- that.
+      case dropWhile (/= '(') (unwords (takeThroughWhere headerLines)) of
+        [] -> Nothing
+        exportList -> Just exportList
  where
   isModuleHeader line = "module " `isPrefixOf` line
   takeThroughWhere [] = []

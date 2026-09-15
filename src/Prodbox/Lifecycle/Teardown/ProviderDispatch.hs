@@ -82,6 +82,14 @@ data ProviderDispatchPurpose
     -- stand in for an exact family read-back, and admitting a registered
     -- observation here would let one family's answer close the audit.
     ProviderTerminalAudit
+  | -- | The bounded legacy-adoption observation.  It is a fifth purpose for the
+    -- same reason the audit is a fourth: it asks about a family this run does
+    -- /not/ own yet, which is the opposite premise from a decision observation
+    -- made immediately before mutating a target the run already owns.  Sharing
+    -- @ProviderDecisionObservation@ would also share its derived submission
+    -- key, so an adoption's answer and a destroy's decision observation under
+    -- the same cleanup operation would replay each other at the Authority.
+    ProviderLegacyAdoptionObservation
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 data ProviderDispatchKey = ProviderDispatchKey
@@ -171,6 +179,7 @@ purposeSuffix purpose = case purpose of
   ProviderRegisteredMutation -> "mutate"
   ProviderAbsenceReadBack -> "absence-readback"
   ProviderTerminalAudit -> "terminal-audit"
+  ProviderLegacyAdoptionObservation -> "legacy-adoption-observe"
 
 -- | Preserve the Authority's definite refusal separately from a transport or
 -- availability failure.  A refused mutation is terminal; an unavailable
@@ -394,6 +403,14 @@ validateObservationIntent purpose intent =
     (ProviderAbsenceReadBack, ObserveEksIamRoleFamily {}) -> True
     (ProviderAbsenceReadBack, ObserveEksLoadBalancerControllerFamily {}) -> True
     (ProviderTerminalAudit, ObserveOwnedResourceTags {}) -> True
+    -- The adoption lane's closed family.  Exactly the four read-only intents
+    -- its observer issues, and no tag or name-prefix query: a broad result may
+    -- not enter the candidate set the operator is asked to confirm.
+    (ProviderLegacyAdoptionObservation, ObserveNativeStackFamily {}) -> True
+    (ProviderLegacyAdoptionObservation, ObserveTestEbsVolumes {}) -> True
+    (ProviderLegacyAdoptionObservation, ObserveEksIamRoleFamily {}) -> True
+    (ProviderLegacyAdoptionObservation, ObserveEksLoadBalancerControllerFamily {}) ->
+      True
     _ -> False
 
 validateMutationIntent

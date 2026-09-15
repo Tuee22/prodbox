@@ -283,8 +283,14 @@ manifestAuthority
   -> Either
        StackDecisionRefusal
        (OwnershipManifestProvenance, OwnershipManifestVersion, [ObservedResourceIdentity])
+-- The purpose is deliberately not discriminated here. Both a create's
+-- write-ahead record and a confirmed legacy-adoption receipt are cleanup
+-- authority for a destroy -- that is what the adoption protocol exists to
+-- supply -- and the direction that must refuse is the other one, which
+-- 'Prodbox.ControlPlane.RegisteredStackCreationSubmitter.proveWriteAheadOwnership'
+-- owns.
 manifestAuthority key evidence = case ownershipManifestDecisionView evidence of
-  OwnershipManifestDecisionComplete provenance version ->
+  OwnershipManifestDecisionComplete _purpose provenance version ->
     case ownershipManifestDecisionEntryIdentities key evidence of
       Nothing -> Left (StackOwnershipManifestEntryMissing key)
       Just identities -> Right (provenance, version, identities)

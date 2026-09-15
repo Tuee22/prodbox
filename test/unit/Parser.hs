@@ -17,6 +17,7 @@ import Options.Applicative
 import Prodbox.App (canRunWithoutRepoRoot)
 import Prodbox.CLI.Command
   ( AdminActionCommand (..)
+  , AdoptableLegacyStack (..)
   , AwsCommand (..)
   , BootstrapBrokerCommand (..)
   , BrokerLaunchOptions (..)
@@ -463,6 +464,10 @@ commandPathOfRequest request =
                   PrunePerRunEks -> ["eks", "prune-corrupt-checkpoint"]
                   PrunePerRunSubzone -> ["aws-subzone", "prune-corrupt-checkpoint"]
                   PrunePerRunTest -> ["test", "prune-corrupt-checkpoint"]
+              PulumiAdoptLegacyPlan stack ->
+                [adoptStackSegment stack, "adopt-legacy", "plan"]
+              PulumiAdoptLegacyApply stack _ _ ->
+                [adoptStackSegment stack, "adopt-legacy", "apply"]
         NativeRke2 rke2Command ->
           "cluster"
             : case rke2Command of
@@ -540,3 +545,10 @@ commandPathOfRequest request =
           "workload"
             : case workloadCommand of
               WorkloadStart _ -> ["start"]
+
+-- | The @aws stack <name>@ path segment an adoptable stack is reached through.
+adoptStackSegment :: AdoptableLegacyStack -> String
+adoptStackSegment stack = case stack of
+  AdoptAwsEks -> "eks"
+  AdoptAwsEksSubzone -> "aws-subzone"
+  AdoptAwsTest -> "test"

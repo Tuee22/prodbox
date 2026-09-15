@@ -6862,6 +6862,28 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
   `documents/engineering/cli_command_surface.md` said seventeen of twenty-one operations are
   one-sided; it is eighteen of twenty-two, eight compiled-only and ten runner-only. None of the
   three changes what is owed, and all three would have been read as the current state.
+- **The code-local validation matrix was re-run on 2026-09-15, and the legacy public writer remains
+  sole.** This is `Remaining Work` item 2, which is the part of this sprint that is runnable while
+  the home qualification row is pending, and it is a measurement rather than a restatement.
+  Canonical `prodbox dev check` exits 0. `prodbox test unit` exits 0 over **5,160** primary cases
+  and every auxiliary stanza — authority admission **27/27**, control-plane authentication
+  **35/35**, authenticated transport **39/39**, Haskell style **17/17**, Pulumi **4/4**. Both
+  integration scopes exit 0: `prodbox test integration cli` and `prodbox test integration env` each
+  run the `prodbox-integration` stanza and each passed **70/70** (~780 s per scope). The two
+  env-only failures earlier passes recorded as environmental did not recur.
+  **Sole-writer status is verified rather than assumed.** `initialCutoverState`,
+  `activateReplacement`, `deleteLegacyRoute` and `qualifyPostActivation` still have no occurrence
+  outside `src/Prodbox/Test/CleanRoomHandoff.hs`, `LegacyScanPostActivation` is still constructed
+  only there, and `DeleteArmCascadeReachedPhases` still routes
+  `prodbox cluster delete --cascade` to `runNativeDeleteCascade`. Nothing in this pass moves the
+  activation.
+- **One change landed in the tree in the same session and is deliberately not this sprint's.**
+  Sprint `7.42` added the bounded legacy-adoption operator surface. It is not a second cleanup
+  writer and does not weaken this sprint's single-writer deliverable: its dispatch purpose admits
+  no mutation intent at all, its durable record lands in a namespace no cascade reads, and its
+  operation ids are read-only observation identities disjoint from any cascade's. What it produces
+  is an input a future cleanup may consume, and consuming it is this sprint's activation rather
+  than that one's.
 
 ### Remaining Work
 
@@ -6901,8 +6923,11 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
    campaign and the defects were reachable on every cascade run in the meantime. They do not move
    the activation one step closer and are not counted as if they had.
 
-2. Run the complete code-local validation matrix and keep the legacy public writer sole while the
-   home qualification row is pending.
+2. ~~Run the complete code-local validation matrix and keep the legacy public writer sole while the
+   home qualification row is pending.~~ **Re-run 2026-09-15 with every scope exiting 0 and sole-writer
+   status re-verified against the tree; recorded above.** This item is standing rather than
+   one-shot: it is owed again on every revision that reaches this row while the campaign is
+   pending, because what it asserts is a property of the current tree.
 3. Run two consecutive home candidate cycles, record the exact current-revision Standard-P
    evidence, consume its witness to activate the sole replacement writer, delete the legacy route,
    and requalify the post-deletion identity before moving ledger rows to Completed. AWS

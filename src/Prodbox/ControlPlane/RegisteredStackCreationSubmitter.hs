@@ -147,6 +147,7 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest
   , OwnershipManifestDecisionView (..)
   , OwnershipManifestError
   , OwnershipManifestPurpose (WriteAheadOwnership)
+  , OwnershipManifestPurposeValue (LegacyAdoptionOwnershipValue, WriteAheadOwnershipValue)
   , appendObservedIdentitiesToWriteAheadManifest
   , initialWriteAheadManifestWrite
   , mkWriteAheadManifestIntent
@@ -365,14 +366,23 @@ runScopeValue (DurableObservationRunScope value) = value
 -- shape @verifiedCallerSlotFixture@ uses for the authentication capability:
 -- publishing the minter is not publishing the constructor, and a caller still
 -- has to produce evidence a bind actually returned.
+--
+-- __The purpose arm is the second half of the type's own claim.__ The GADT
+-- index says a cleanup-only adoption receipt may not inhabit this slot, and
+-- until the decision view carried a purpose nothing here could tell one from a
+-- create's record: an adoption commits a @'CompleteOwnershipManifest'@ and
+-- reads it back through the same projection, so the complete arm matched it and
+-- minted a write-ahead proof for resources this run never made. The index
+-- closes the direct path and this arm closes the laundered one.
 proveWriteAheadOwnership
   :: RegisteredResourceKey
   -> OwnershipManifestDecisionEvidence
   -> Maybe (WriteAheadOwnershipProof 'WriteAheadOwnership)
 proveWriteAheadOwnership stackKey evidence =
   case ownershipManifestDecisionView evidence of
-    OwnershipManifestDecisionComplete _ version ->
+    OwnershipManifestDecisionComplete WriteAheadOwnershipValue _ version ->
       Just (WriteAheadOwnershipProved stackKey version)
+    OwnershipManifestDecisionComplete LegacyAdoptionOwnershipValue {} _ _ -> Nothing
     OwnershipManifestDecisionObservation _ -> Nothing
 
 -- | The foundation id every generation key for this host is built on.

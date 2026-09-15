@@ -76,9 +76,13 @@ controlPlaneLegacyAdoptionManifestRepositorySuite =
           repository
           ExplicitPerRunSurface
           confirmedPlan
-      fmap ownershipManifestDecisionView result
+      fmap adoptedCleanupOwnershipView result
         `shouldBe` Right
-          (OwnershipManifestDecisionComplete fixtureProvenance fixtureVersion)
+          ( OwnershipManifestDecisionComplete
+              (LegacyAdoptionOwnershipValue ExplicitPerRun)
+              fixtureProvenance
+              fixtureVersion
+          )
       readIORef commits `shouldReturn` 1
       readIORef readBacks `shouldReturn` 1
       observedIdentities <- readIORef identities
@@ -149,12 +153,20 @@ controlPlaneLegacyAdoptionManifestRepositorySuite =
           repository
           ExplicitPerRunSurface
           confirmedPlan
-      fmap ownershipManifestDecisionView firstResult
+      fmap adoptedCleanupOwnershipView firstResult
         `shouldBe` Right
-          (OwnershipManifestDecisionComplete modelBProvenance fixtureVersion)
-      fmap ownershipManifestDecisionView secondResult
+          ( OwnershipManifestDecisionComplete
+              (LegacyAdoptionOwnershipValue ExplicitPerRun)
+              modelBProvenance
+              fixtureVersion
+          )
+      fmap adoptedCleanupOwnershipView secondResult
         `shouldBe` Right
-          (OwnershipManifestDecisionComplete modelBProvenance fixtureVersion)
+          ( OwnershipManifestDecisionComplete
+              (LegacyAdoptionOwnershipValue ExplicitPerRun)
+              modelBProvenance
+              fixtureVersion
+          )
       readIORef writes `shouldReturn` 1
 
     it "bounds the Model-B codec and rejects empty receipts" $ do

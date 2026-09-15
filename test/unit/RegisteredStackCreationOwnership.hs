@@ -44,6 +44,11 @@ import Prodbox.ControlPlane.RegisteredStackCreationSubmitter
   , registeredStackCreationRunScope
   , registeredStackCreationScope
   , renderRegisteredStackCreationSubmitError
+  , writeAheadOwnershipProofStackKey
+  )
+import Prodbox.Lifecycle.Authority.AdminAction
+  ( PermitFreshness (PermitFresh)
+  , RunnerRole (AdminActionRunner)
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderRefError (ProviderRefEmpty, ProviderRefMalformed, ProviderRefTooLong)
@@ -54,6 +59,15 @@ import Prodbox.Lifecycle.Teardown.AuditFieldOfView
   ( DeclaredAwsResource (declaredResourceName, declaredResourceTags)
   , parseProvisioningProgram
   )
+import Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan
+  ( AdminLegacyAdoptionPermitRequest (..)
+  , ConfirmedLegacyAdoptionPlan
+  , LegacyAdoptionPlan
+  , admitAdminLegacyAdoptionPermit
+  , confirmLegacyAdoptionPlan
+  , legacyAdoptionPlanDigestOf
+  , planLegacyAdoption
+  )
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.OwnershipManifest
@@ -63,6 +77,26 @@ import TestSupport
 registeredStackCreationOwnershipSuite :: SuiteBuilder ()
 registeredStackCreationOwnershipSuite =
   describe "Sprint 7.41 write-ahead ownership" $ do
+    describe "a cleanup-only adoption receipt is not a create's record" $ do
+      it "mints a proof from a write-ahead read-back" $ do
+        -- The positive control. Without it the negative one below would pass
+        -- against a minter that refuses everything.
+        proveWriteAheadOwnership AwsTestKey boundEvidence
+          `shouldSatisfy` isJustProof
+        fmap writeAheadOwnershipProofStackKey (proveWriteAheadOwnership AwsTestKey boundEvidence)
+          `shouldBe` Just AwsTestKey
+
+      it "refuses a confirmed legacy-adoption receipt" $ do
+        -- Sprint 7.42. The GADT index says an adoption receipt may not inhabit
+        -- this slot, and until the decision view carried a purpose nothing here
+        -- could tell one from a create's own record: an adoption commits a
+        -- complete manifest and reads it back through the same projection. A
+        -- proof minted from this value would authorize an execute step for
+        -- resources this run never made.
+        ownershipManifestDecisionView adoptionEvidence
+          `shouldSatisfy` isAdoptionPurpose
+        proveWriteAheadOwnership AwsTestKey adoptionEvidence `shouldBe` Nothing
+
     describe "one identity, two durable objects" $ do
       it "addresses the completion slot as a different object" $ do
         -- The write-ahead slot is immutable by construction, so the identities
@@ -340,6 +374,69 @@ boundEvidence =
         )
     )
 
+-- | A real confirmed-adoption read-back, minted the only way the adoption lane
+-- mints one.
+--
+-- Reached through 'completeConfirmedLegacyAdoptionManifestReadBack' rather than
+-- through the repository, because the repository wraps its result in the opaque
+-- @AdoptedCleanupOwnership@ and that wrapper is the /type-level/ half of the
+-- same claim: it has no projection back to this evidence, so the mutation this
+-- case exercises cannot even be written against the repository's own result.
+-- What is left open at the library level is exactly this function, and this is
+-- the arm that closes it.
+adoptionEvidence :: OwnershipManifestDecisionEvidence
+adoptionEvidence =
+  mustRight
+    ( completeConfirmedLegacyAdoptionManifestReadBack
+        (OwnershipManifestProvenance "fixture/legacy-adoption")
+        (OwnershipManifestVersion "adoption-v1")
+        ( mustRight
+            (confirmedLegacyAdoptionManifestWrite ExplicitPerRunSurface confirmedAdoptionPlan)
+        )
+    )
+
+confirmedAdoptionPlan :: ConfirmedLegacyAdoptionPlan 'ExplicitPerRun
+confirmedAdoptionPlan =
+  mustRight (confirmLegacyAdoptionPlan permit adoptionPlan)
+ where
+  permit =
+    mustRight
+      ( admitAdminLegacyAdoptionPermit
+          PermitFresh
+          AdminLegacyAdoptionPermitRequest
+            { adminLegacyPermitRequestAudience = AdminActionRunner
+            , adminLegacyPermitRequestStackKey = AwsTestKey
+            , adminLegacyPermitRequestPlanDigest =
+                legacyAdoptionPlanDigestOf adoptionPlan
+            , adminLegacyPermitRequestNonce = "adoption-provenance-witness"
+            }
+      )
+
+adoptionPlan :: LegacyAdoptionPlan 'ExplicitPerRun
+adoptionPlan =
+  mustRight
+    ( planLegacyAdoption
+        ExplicitPerRunSurface
+        AwsTestKey
+        cleanupScope
+        [ exactResourceObservationFor
+            (mustIdentity AwsTestKey)
+            (ObservationRevision 7)
+            cleanupScope
+            (ExactResourceAbsent (providerWorkerAbsence "fixture observed absence"))
+        ]
+    )
+
+isAdoptionPurpose :: OwnershipManifestDecisionView -> Bool
+isAdoptionPurpose view = case view of
+  OwnershipManifestDecisionComplete (LegacyAdoptionOwnershipValue _) _ _ -> True
+  _ -> False
+
+isJustProof :: Maybe (WriteAheadOwnershipProof purpose) -> Bool
+isJustProof value = case value of
+  Just _ -> True
+  Nothing -> False
+
 dispatchFailedFixture :: RegisteredStackCreationSubmitError
 dispatchFailedFixture =
   RegisteredStackCreationDispatchFailed
@@ -363,3 +460,8 @@ isAppendedIdentitiesEmpty
 isAppendedIdentitiesEmpty result = case result of
   Left (OwnershipManifestAppendedIdentitiesEmpty _) -> True
   _ -> False
+
+mustIdentity :: RegisteredResourceKey -> RegisteredIdentity
+mustIdentity key = case lookupRegisteredIdentity key of
+  Just identity -> identity
+  Nothing -> error ("unregistered fixture key " <> show key)

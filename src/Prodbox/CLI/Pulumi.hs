@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Prodbox.CLI.Pulumi
   ( EphemeralPulumiStack (..)
   , EphemeralPulumiOutputs (..)
@@ -25,23 +27,68 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Prodbox.CLI.Command
-  ( PerRunPruneTarget (..)
+  ( AdoptableLegacyStack
+  , PerRunPruneTarget (..)
   , Plan
   , PulumiCommand (..)
   , buildPlan
   , runPlanWithOptions
   )
 import Prodbox.CLI.Output (writeDiagnosticLine, writeOutputLine)
+import Prodbox.ControlPlane.LegacyAdoptionCompositionRoot
+  ( LegacyAdoptionCompositionError
+  , maximumLegacyAdoptionConfirmationSeconds
+  , renderLegacyAdoptionCompositionError
+  , withProductionLegacyAdoption
+  )
+import Prodbox.ControlPlane.LegacyAdoptionManifestRepository
+  ( AdoptedCleanupOwnership
+  , adoptedCleanupOwnershipEntryIdentities
+  , adoptedCleanupOwnershipScope
+  , adoptedCleanupOwnershipStackKey
+  , adoptedCleanupOwnershipView
+  )
 import Prodbox.Infra.AwsEksSubzoneStack qualified as SubzoneStack
 import Prodbox.Infra.AwsEksTestStack qualified as EksStack
 import Prodbox.Infra.AwsSesStack qualified as SesStack
 import Prodbox.Infra.AwsTestStack qualified as TestStack
 import Prodbox.Infra.StackOutputs (StackName (..))
+import Prodbox.Lifecycle.Authority.AdminAction
+  ( RunnerRole (AdminActionRunner)
+  )
 import Prodbox.Lifecycle.LiveResidue
   ( awsEksSubzoneStackName
   , awsEksTestStackName
   , awsTestStackName
   , pruneCorruptPerRunCheckpoint
+  )
+import Prodbox.Lifecycle.Teardown.LegacyAdoptionLane
+  ( adoptableLegacyStackKey
+  , adoptableLegacyStackName
+  , applyConfirmedLegacyAdoption
+  , renderLegacyAdoptionCandidatePlan
+  , renderLegacyAdoptionLaneError
+  , renderedLegacyAdoptionDigest
+  , renderedLegacyAdoptionDocument
+  )
+import Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan
+  ( AdminLegacyAdoptionPermitRequest (..)
+  , LegacyAdoptionPlanDigestRefusal (LegacyAdoptionPlanDigestMalformed)
+  , legacyAdoptionExpectedFamily
+  , mkLegacyAdoptionPlanDigest
+  )
+import Prodbox.Lifecycle.Teardown.Model
+  ( CleanupSurfaceWitness (ExplicitPerRunSurface)
+  , DurableObservationRunScope (DurableObservationRunScope)
+  , evidenceDurableRunScope
+  )
+import Prodbox.Lifecycle.Teardown.Observation
+  ( ObservedResourceIdentity (ObservedResourceIdentity)
+  )
+import Prodbox.Lifecycle.Teardown.OwnershipManifest
+  ( LegacyAdoptionPlanDigest
+  , OwnershipManifestDecisionView (..)
+  , legacyAdoptionPlanDigestText
   )
 import Prodbox.Settings
   ( validateAndLoadSettings
@@ -145,6 +192,156 @@ runPulumiCommandWithGate gate repoRoot command =
         (\_ -> runGatedPulumiApply gate (SesStack.migrateAwsSesStackBackend repoRoot))
     PulumiPruneCorruptCheckpoint target confirmed ->
       runGatedPulumiApply gate (runPruneCorruptCheckpoint repoRoot target confirmed)
+    PulumiAdoptLegacyPlan stack -> runAdoptLegacyPlan repoRoot stack
+    PulumiAdoptLegacyApply stack digest confirmed ->
+      runAdoptLegacyApply repoRoot stack digest confirmed
+
+-- | Render the bounded adoption candidate plan and its digest.
+--
+-- Read-only in the strongest sense available here: it reaches AWS only through
+-- the Provider\'s closed read-only intent vocabulary at the adoption dispatch
+-- purpose, which admits no mutation, and it mints no permit and commits
+-- nothing. The digest it prints is taken over the exact document it prints, so
+-- what the operator confirms later is these bytes and not a summary of them.
+runAdoptLegacyPlan :: FilePath -> AdoptableLegacyStack -> IO ExitCode
+runAdoptLegacyPlan repoRoot stack = do
+  composed <-
+    withProductionLegacyAdoption repoRoot stack $ \sources request -> do
+      rendered <-
+        renderLegacyAdoptionCandidatePlan sources ExplicitPerRunSurface request
+      case rendered of
+        Left err -> do
+          writeDiagnosticLine
+            (Text.unpack (renderLegacyAdoptionLaneError err))
+          pure (ExitFailure 1)
+        Right plan -> do
+          writeOutputLine (Text.unpack (renderedLegacyAdoptionDocument plan))
+          writeOutputLine ""
+          writeOutputLine
+            ( "PLAN_DIGEST="
+                ++ Text.unpack
+                  ( legacyAdoptionPlanDigestText
+                      (renderedLegacyAdoptionDigest plan)
+                  )
+            )
+          writeOutputLine
+            ( "Confirm within "
+                ++ show maximumLegacyAdoptionConfirmationSeconds
+                ++ "s of the apply run's own observation: `prodbox aws stack "
+                ++ Text.unpack (adoptableLegacyStackName stack)
+                ++ " adopt-legacy apply --plan-digest <digest> --yes`."
+            )
+          pure ExitSuccess
+  either compositionFailure pure composed
+
+-- | Adopt the family under the operator\'s confirmed digest.
+--
+-- The digest is the authorization and the re-observation is what gives it
+-- meaning: the lane renders the plan again from a fresh read of the world and
+-- refuses when the operator\'s digest names a different one.
+runAdoptLegacyApply
+  :: FilePath -> AdoptableLegacyStack -> Text.Text -> Bool -> IO ExitCode
+runAdoptLegacyApply repoRoot stack rawDigest confirmed
+  | not confirmed = do
+      writeDiagnosticLine
+        ( "Refusing to adopt the "
+            ++ Text.unpack (adoptableLegacyStackName stack)
+            ++ " family without confirmation: this commits a durable ownership "
+            ++ "record that later cleanup treats as authority over the named "
+            ++ "resources. Re-run with --yes."
+        )
+      pure (ExitFailure 1)
+  | otherwise = case mkLegacyAdoptionPlanDigest rawDigest of
+      -- Admitted before any session is opened, so a transcription error is
+      -- reported as one instead of as a plan that no longer matches.
+      Left (LegacyAdoptionPlanDigestMalformed value) -> do
+        writeDiagnosticLine
+          ( "--plan-digest is not a candidate-plan digest: `"
+              ++ Text.unpack value
+              ++ "` is not 64 lowercase hexadecimal characters. Re-run "
+              ++ "`adopt-legacy plan` and copy the PLAN_DIGEST line."
+          )
+        pure (ExitFailure 1)
+      Right digest -> do
+        composed <-
+          withProductionLegacyAdoption repoRoot stack $ \sources request -> do
+            adopted <-
+              applyConfirmedLegacyAdoption
+                sources
+                ExplicitPerRunSurface
+                request
+                (permitRequestFor stack digest)
+            case adopted of
+              Left err -> do
+                writeDiagnosticLine
+                  (Text.unpack (renderLegacyAdoptionLaneError err))
+                pure (ExitFailure 1)
+              Right ownership -> do
+                mapM_ writeOutputLine (renderAdoptedOwnership stack ownership)
+                pure ExitSuccess
+        either compositionFailure pure composed
+
+-- | The operator\'s submission. The nonce is derived from the digest rather
+-- than freshly generated, because a nonce exists so a replay can be recognized
+-- as the same permit: re-running the same confirmation is the same permit, and
+-- a per-invocation value would make every retry a different one.
+permitRequestFor
+  :: AdoptableLegacyStack
+  -> LegacyAdoptionPlanDigest
+  -> AdminLegacyAdoptionPermitRequest
+permitRequestFor stack digest =
+  AdminLegacyAdoptionPermitRequest
+    { adminLegacyPermitRequestAudience = AdminActionRunner
+    , adminLegacyPermitRequestStackKey = adoptableLegacyStackKey stack
+    , adminLegacyPermitRequestPlanDigest = digest
+    , adminLegacyPermitRequestNonce =
+        "legacy-adoption:"
+          <> adoptableLegacyStackName stack
+          <> ":"
+          <> legacyAdoptionPlanDigestText digest
+    }
+
+-- | What the adoption recorded, read back from the receipt rather than from
+-- what was sent. The per-key identities are the allowlist a later
+-- desired-absence decision consumes; printing them is what makes the record
+-- auditable outside the process that wrote it.
+renderAdoptedOwnership
+  :: AdoptableLegacyStack -> AdoptedCleanupOwnership -> [String]
+renderAdoptedOwnership stack ownership =
+  [ "ADOPTED_STACK=" ++ show (adoptedCleanupOwnershipStackKey ownership)
+  , -- The scope is the coordinate the receipt is keyed under, so an operator
+    -- reading this line can find the object a later cleanup will read.
+    "ADOPTED_RUN_SCOPE="
+      ++ Text.unpack
+        (runScopeText (evidenceDurableRunScope (adoptedCleanupOwnershipScope ownership)))
+  , "ADOPTED_PURPOSE=" ++ purposeLine
+  ]
+    ++ [ "ADOPTED_IDENTITIES="
+           ++ show key
+           ++ " "
+           ++ unwords [Text.unpack value | ObservedResourceIdentity value <- identities]
+       | key <- legacyAdoptionExpectedFamily (adoptableLegacyStackKey stack)
+       , Just identities <- [adoptedCleanupOwnershipEntryIdentities key ownership]
+       ]
+ where
+  runScopeText (DurableObservationRunScope value) = value
+
+  purposeLine = case adoptedCleanupOwnershipView ownership of
+    OwnershipManifestDecisionComplete purpose provenance version ->
+      show purpose
+        ++ " provenance="
+        ++ show provenance
+        ++ " version="
+        ++ show version
+    -- Unreachable through this lane: the repository mints cleanup ownership
+    -- only from a byte-exact independent read-back. Named rather than
+    -- wildcarded so a later widening of the evidence type fails here.
+    OwnershipManifestDecisionObservation observation -> show observation
+
+compositionFailure :: LegacyAdoptionCompositionError -> IO ExitCode
+compositionFailure err = do
+  writeDiagnosticLine (renderLegacyAdoptionCompositionError err)
+  pure (ExitFailure 1)
 
 -- | Sprint 4.77: @--yes@ on the four @aws stack \<stack\> destroy@ verbs now
 -- gates the destroy, in the shape 'runPruneCorruptCheckpoint' below has always

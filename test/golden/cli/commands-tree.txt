@@ -15,14 +15,23 @@ prodbox
         reconcile
         destroy
         prune-corrupt-checkpoint
+        adopt-legacy
+          plan
+          apply
       test
         reconcile
         destroy
         prune-corrupt-checkpoint
+        adopt-legacy
+          plan
+          apply
       aws-subzone
         reconcile
         destroy
         prune-corrupt-checkpoint
+        adopt-legacy
+          plan
+          apply
       aws-ses
         reconcile
         destroy

@@ -265,6 +265,29 @@ sealedConstructorsSuite =
         moduleExportListIn (sealedModule "FixtureProof")
           `shouldSatisfy` maybe False (not . isInfixOf "proveFixture value")
 
+      it "drops the module's own name, which can end with the type's" $ do
+        -- Sprint 7.42. The header is joined with spaces, so a module named
+        -- `…Teardown.FixtureProof` put `FixtureProof (` into the scanned text --
+        -- the export list's own opening parenthesis -- and the dot before the
+        -- name is not an identifier character, so the boundary check admitted
+        -- it. The rule then reported a sealed type as exporting its
+        -- constructors while its export list said the opposite.
+        let selfNamedModule =
+              unlines
+                [ "module Prodbox.Synthetic.FixtureProof"
+                , "  ( FixtureProof"
+                , "  , proveFixture"
+                , "  )"
+                , "where"
+                ]
+        moduleExportListIn selfNamedModule
+          `shouldSatisfy` maybe False (not . isInfixOf "module")
+        maybe
+          True
+          (exportListExposesConstructors "FixtureProof")
+          (moduleExportListIn selfNamedModule)
+          `shouldBe` False
+
       it "separates naming a type from exposing its constructors" $ do
         exportListNamesType "FixtureProof" "( FixtureProof , other )" `shouldBe` True
         exportListNamesType "FixtureProof" "( FixtureProofBundle )" `shouldBe` False

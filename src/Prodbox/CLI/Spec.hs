@@ -46,6 +46,7 @@ import Prodbox.Bootstrap.Broker.KubernetesAttestation
   )
 import Prodbox.CLI.Command
   ( AdminActionCommand (..)
+  , AdoptableLegacyStack (..)
   , AwsCommand (..)
   , AwsTeardownFlags (..)
   , BootstrapBrokerCommand (..)
@@ -520,6 +521,18 @@ parserForPath path =
     ["aws", "stack", "aws-subzone", "prune-corrupt-checkpoint"] ->
       Just
         (fmap (prunePerRunCheckpointCommand PrunePerRunSubzone) (yesSwitchParser "Skip confirmation prompts"))
+    ["aws", "stack", "eks", "adopt-legacy", "plan"] ->
+      Just (pure (adoptLegacyPlanCommand AdoptAwsEks))
+    ["aws", "stack", "eks", "adopt-legacy", "apply"] ->
+      Just (adoptLegacyApplyParser AdoptAwsEks)
+    ["aws", "stack", "test", "adopt-legacy", "plan"] ->
+      Just (pure (adoptLegacyPlanCommand AdoptAwsTest))
+    ["aws", "stack", "test", "adopt-legacy", "apply"] ->
+      Just (adoptLegacyApplyParser AdoptAwsTest)
+    ["aws", "stack", "aws-subzone", "adopt-legacy", "plan"] ->
+      Just (pure (adoptLegacyPlanCommand AdoptAwsEksSubzone))
+    ["aws", "stack", "aws-subzone", "adopt-legacy", "apply"] ->
+      Just (adoptLegacyApplyParser AdoptAwsEksSubzone)
     ["users", "invite"] ->
       Just $
         ( \email maybeRole planOptions' ->
@@ -1223,6 +1236,29 @@ writeSwitchParser =
 prunePerRunCheckpointCommand :: PerRunPruneTarget -> Bool -> CommandRequest
 prunePerRunCheckpointCommand target confirmed =
   RunNative (NativePulumi (PulumiPruneCorruptCheckpoint target confirmed))
+
+adoptLegacyPlanCommand :: AdoptableLegacyStack -> CommandRequest
+adoptLegacyPlanCommand stack =
+  RunNative (NativePulumi (PulumiAdoptLegacyPlan stack))
+
+-- | The digest is a required argument rather than an option: an adoption with
+-- no confirmed digest is read-only discovery authorizing a durable ownership
+-- record, which is the one thing the protocol exists to prevent.
+adoptLegacyApplyParser :: AdoptableLegacyStack -> Parser CommandRequest
+adoptLegacyApplyParser stack =
+  ( \digest confirmed ->
+      RunNative (NativePulumi (PulumiAdoptLegacyApply stack digest confirmed))
+  )
+    <$> strOption
+      ( long "plan-digest"
+          <> metavar "DIGEST"
+          <> help "The exact candidate-plan digest printed by `adopt-legacy plan`"
+      )
+    <*> yesSwitchParser adoptLegacyConfirmationHelp
+
+adoptLegacyConfirmationHelp :: String
+adoptLegacyConfirmationHelp =
+  "Confirm committing a durable ownership record for the observed candidates"
 
 -- | Sprint 1.85: the help text for @--yes@ on the four
 -- @aws stack \<stack\> destroy@ verbs.
@@ -2166,19 +2202,19 @@ awsStackGroup =
         "EKS validation stack"
         "Reconcile the EKS validation stack."
         "Destroy the EKS validation stack."
-        [pruneCorruptCheckpointLeaf "eks"]
+        [pruneCorruptCheckpointLeaf "eks", adoptLegacyGroup "eks"]
     , stackVerbGroup
         "test"
         "HA RKE2 validation stack"
         "Reconcile the HA RKE2 validation stack."
         "Destroy the HA RKE2 validation stack."
-        [pruneCorruptCheckpointLeaf "test"]
+        [pruneCorruptCheckpointLeaf "test", adoptLegacyGroup "test"]
     , stackVerbGroup
         "aws-subzone"
         "Per-substrate Route 53 subzone"
         "Reconcile the AWS-substrate Route 53 hosted subzone and NS delegation."
         "Destroy the AWS-substrate Route 53 hosted subzone and remove the parent NS delegation."
-        [pruneCorruptCheckpointLeaf "aws-subzone"]
+        [pruneCorruptCheckpointLeaf "aws-subzone", adoptLegacyGroup "aws-subzone"]
     , stackVerbGroup
         "aws-ses"
         "Cross-substrate AWS SES infrastructure"
@@ -2216,6 +2252,58 @@ pruneCorruptCheckpointLeaf stackName =
     [ example
         ["aws", "stack", stackName, "prune-corrupt-checkpoint", "--yes"]
         ("Clear a corrupt " ++ stackName ++ " per-run checkpoint.")
+    ]
+
+-- | The bounded Plan/Apply legacy-adoption subgroup for a per-run stack.
+--
+-- Recovery only, for a stack created before this repository recorded what it
+-- was about to make: its resources are live, its checkpoints are unusable, and
+-- no durable record names them. @plan@ observes and shows; @apply@ observes
+-- again and commits an ownership record only under the exact digest the
+-- operator confirms. Retained shared infrastructure has no adoption verb, and
+-- neither verb destroys anything.
+adoptLegacyGroup :: String -> CommandSpec
+adoptLegacyGroup stackName =
+  group
+    "adopt-legacy"
+    ("Adopt a pre-record " ++ stackName ++ " stack for cleanup")
+    ( "Bounded recovery for a "
+        ++ stackName
+        ++ " stack whose live AWS resources are named by no durable ownership record. Read-only observation of the closed registry-derived family renders a candidate plan and its digest; a separate apply re-observes and commits a cleanup-only ownership record under that exact digest. Neither verb destroys anything, and a missing, extra, ambiguous, partial, or unobservable candidate refuses the whole family rather than adopting a shorter one."
+    )
+    [ leaf
+        "plan"
+        ("Render the " ++ stackName ++ " adoption candidate plan and its digest")
+        ( "Observe the closed registry-derived family for the "
+            ++ stackName
+            ++ " stack through the read-only provider capability, write the exact candidate document to stdout, and report the digest that `adopt-legacy apply` requires. Mints no permit, commits nothing, and mutates nothing."
+        )
+        []
+        [ example
+            ["aws", "stack", stackName, "adopt-legacy", "plan"]
+            ("Show the " ++ stackName ++ " adoption candidates and their digest.")
+        ]
+    , leaf
+        "apply"
+        ("Adopt the " ++ stackName ++ " family under a confirmed plan digest")
+        ( "Re-observe the closed family, re-render the candidate plan, and refuse unless it digests to --plan-digest. On a match, commit the cleanup-only ownership record and read it back independently before returning. A plan re-rendered after the provider facts changed is a different plan and is refused: re-run `adopt-legacy plan` and confirm the new digest."
+        )
+        [ requiredOption
+            "plan-digest"
+            Nothing
+            "DIGEST"
+            "The exact candidate-plan digest printed by `adopt-legacy plan`"
+        , flagOption "yes" (Just 'y') Nothing adoptLegacyConfirmationHelp
+        ]
+        [ example
+            ["aws", "stack", stackName, "adopt-legacy", "apply", "--plan-digest", "DIGEST", "--yes"]
+            ("Adopt the " ++ stackName ++ " family under a confirmed digest.")
+        ]
+    ]
+    []
+    [ example
+        ["aws", "stack", stackName, "adopt-legacy", "plan"]
+        ("Show the " ++ stackName ++ " adoption candidates and their digest.")
     ]
 
 -- | One @aws stack <name>@ subgroup with the canonical @reconcile@ /

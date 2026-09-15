@@ -606,6 +606,34 @@ resolving any suite-owned mutation to a safe durable disposition. This
 is not permission to reuse arbitrary existing AWS state; only registry entries in the project SSoT
 receive the exception.
 
+### 7.5 Out-Of-Band Diagnostic And The Manual Recovery Order
+
+An enumeration run from account credentials alone — listing what is live in the account and alerting
+a human — is a legitimate operator diagnostic and is **outside the mutation boundary**. It is not a
+classifier `prodbox` may consult, and nothing in the product reads its verdict: an answer obtained
+outside the supported surface cannot become an input to a decision that destroys, because the whole
+point of the bounded protocol is that what authorizes a destroy is a record this repository
+committed and read back.
+
+The recovery order when the diagnostic finds something the product cannot name:
+
+1. **Do not destroy the local control plane.** It is the only surface permitted to mutate AWS, and
+   removing it converts detection into detection without remediation. The cascade's uninstall phase
+   is gated on a confirmed-empty postflight sweep for exactly this reason.
+2. **Adopt, then reconcile.** `prodbox aws stack <stack> adopt-legacy plan` renders the candidate
+   family and its digest; `adopt-legacy apply --plan-digest <digest> --yes` commits and independently
+   reads back the ownership record. Normal desired-absence reconciliation then has a durable record
+   naming the coordinates it may destroy.
+3. **Console or CLI deletion is a last resort and is recorded as one.** It leaves no receipt the
+   product can read, so the next supported run cannot distinguish what a human removed from what was
+   never there. Where it is unavoidable, the resources removed by hand belong in the run's record
+   for the same reason a cleanup report does.
+
+The bounded adoption protocol covers the registered `aws-eks`, `aws-eks-subzone`, and `aws-test`
+families. It makes no claim about arbitrary unregistered resources, and a missing, extra, ambiguous,
+partial, or unobservable candidate refuses the whole family rather than adopting a shorter one —
+because a shorter record would prove absence over the wrong set and report completion.
+
 ---
 
 ## 8. Operational Guardrails

@@ -365,7 +365,15 @@ providerAwsScopeAdapterSuite =
       -- AWS-scope receipt back.  It composes the reader and never decodes a
       -- receipt itself, which is why the minting surface stays closed.
       receiptInternalUsers
-        `shouldBe` [ "src/Prodbox/ControlPlane/ProviderAwsScopeReceipt.hs"
+        `shouldBe` [ -- Sprint 7.42's adoption composition root verifies a
+                     -- settled receipt to learn the account and region its
+                     -- candidate plan is scoped to, for the same reason the
+                     -- cascade candidate does: an adoption planned against an
+                     -- account the Provider is not operating in would name
+                     -- coordinates nothing can reach. It observes and cannot
+                     -- mint.
+                     "src/Prodbox/ControlPlane/LegacyAdoptionCompositionRoot.hs"
+                   , "src/Prodbox/ControlPlane/ProviderAwsScopeReceipt.hs"
                    , "src/Prodbox/ControlPlane/ProviderWorkerClient.hs"
                    , "src/Prodbox/ControlPlane/Runtime.hs"
                    , -- Sprint 6.5's candidate observes the exact executed

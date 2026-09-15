@@ -164,9 +164,20 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
         PermitFresh
         (permitRequest AdminActionRunner digest "")
         `shouldBe` Left AdminLegacyPermitNonceMissing
+      -- A permit has no projections, so what it carries is observable only
+      -- through the confirmation it authorizes -- which is the property that
+      -- matters anyway.
       fmap
-        adminLegacyAdoptionPermitPlanDigest
-        (admitAdminLegacyAdoptionPermit PermitFresh (permitRequest AdminActionRunner digest "nonce-1"))
+        confirmedLegacyAdoptionPlanDigest
+        ( confirmLegacyAdoptionPlan
+            ( mustRight
+                ( admitAdminLegacyAdoptionPermit
+                    PermitFresh
+                    (permitRequest AdminActionRunner digest "nonce-1")
+                )
+            )
+            samplePlan
+        )
         `shouldBe` Right digest
 
     it "confirms only the exact plan the permit names" $ do

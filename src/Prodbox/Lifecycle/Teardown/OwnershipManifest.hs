@@ -776,11 +776,20 @@ data OwnershipManifestDecisionEvidence where
     -> OwnershipManifestDecisionEvidence
 
 -- | Read-only projection of decision evidence.  The complete branch exposes
--- only the provenance/version facts consumed by the decision algebra; it
--- cannot be converted back into cleanup authority.
+-- only the purpose and the provenance\/version facts consumed by the decision
+-- algebra; it cannot be converted back into cleanup authority.
+--
+-- The purpose is carried because a reader that cannot see it cannot tell a
+-- create's own record of what it was about to make from a cleanup-only
+-- adoption receipt for resources somebody else made.  Both are complete
+-- manifests and both read back identically here, so the create-side minter
+-- 'Prodbox.ControlPlane.RegisteredStackCreationSubmitter.proveWriteAheadOwnership'
+-- had no field to refuse on and would mint a write-ahead proof from an
+-- adoption.
 data OwnershipManifestDecisionView
   = OwnershipManifestDecisionObservation !OwnershipManifestObservation
   | OwnershipManifestDecisionComplete
+      !OwnershipManifestPurposeValue
       !OwnershipManifestProvenance
       !OwnershipManifestVersion
   deriving (Eq, Show)
@@ -799,6 +808,7 @@ ownershipManifestDecisionView evidence = case evidence of
     OwnershipManifestDecisionObservation observation
   ValidatedCompleteOwnershipManifest manifest _ ->
     OwnershipManifestDecisionComplete
+      (completeOwnershipManifestPurpose manifest)
       (completeOwnershipManifestProvenance manifest)
       (completeOwnershipManifestVersion manifest)
 

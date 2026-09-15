@@ -369,6 +369,9 @@ import LifecycleTeardownEksDrainSession
 import LifecycleTeardownEksTeardownExecutor
   ( lifecycleTeardownEksTeardownExecutorSuite
   )
+import LifecycleTeardownLegacyAdoptionLane
+  ( lifecycleTeardownLegacyAdoptionLaneSuite
+  )
 import LifecycleTeardownLegacyAdoptionObserver
   ( lifecycleTeardownLegacyAdoptionObserverSuite
   )
@@ -3054,6 +3057,7 @@ unitSuite = do
   lifecycleTeardownDns01ChallengeRecordAdapterSuite
   lifecycleTeardownLegacyAdoptionPlanSuite
   lifecycleTeardownLegacyAdoptionObserverSuite
+  lifecycleTeardownLegacyAdoptionLaneSuite
   lifecycleAwsNativeStackFamilySuite
   lifecycleTeardownAwsStackAdapterSuite
   lifecycleTeardownAwsStackReaderInterpreterSuite

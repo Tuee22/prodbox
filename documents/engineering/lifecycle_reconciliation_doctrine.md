@@ -1576,6 +1576,36 @@ does not claim that arbitrary unregistered resources can always be recovered. Ob
 inside the read-only Provider Worker capability and authorization uses the permit-bounded Admin
 Action Runner; neither exposes host AWS credentials or creates a generic provider fallback.
 
+**The operator surface is two verbs and one digest.** `prodbox aws stack <stack> adopt-legacy plan`
+observes the closed family and prints the exact candidate document together with the digest taken
+over those bytes. `prodbox aws stack <stack> adopt-legacy apply --plan-digest <digest> --yes`
+observes the family **again**, renders the document again, admits an admin-audience permit over the
+digest the operator supplied, and confirms that permit against the plan *this* pass produced. The
+second observation is what gives the digest meaning: a plan re-rendered after the provider facts
+changed is a different plan, and the confirmation the operator gave does not transfer to it. Only
+then does the receipt commit and its independent read-back run. Retained shared infrastructure has
+no adoption verb — a per-run cleanup ownership record over the one stack nothing may reap is the
+same category error the run-scoped provider tag deliberately keeps `aws-ses` out of.
+
+**Freshness is observed rather than assumed.** The admission takes a `PermitFreshness`, and a
+constant `PermitFresh` would make the field an inert device. The operator surface observes the
+elapsed time between the start of the apply invocation and the admission, bounded at 300 seconds:
+confirming a candidate set is a statement about the present, and an observation pass that outran the
+bound no longer supports one.
+
+**The receipt is cleanup-only, and that is enforced by its type rather than by this sentence.** The
+adoption lane returns an opaque `AdoptedCleanupOwnership` whose constructor is unexported and which
+has no projection back to the decision evidence a create consumes, so an adoption receipt cannot be
+handed to `proveWriteAheadOwnership` at all. The value-level backstop is in that minter: the
+decision view carries the manifest purpose, and the write-ahead arm accepts only
+`WriteAheadOwnershipValue`. Before both existed an adoption receipt would have minted the
+create-side proof, because an adoption commits a complete manifest and reads it back through
+exactly the same projection a create does.
+
+**What the lane deliberately does not do is destroy anything.** It ends at the independently
+read-back receipt, before any mutation, and the identity allowlist it records is consumed by the
+desired-absence decision the single-writer cutover owns.
+
 The independently read-back manifest supplies an exact identity allowlist to native cleanup; a
 complete-manifest constructor without its entry identities is not cleanup authority. The Provider
 Worker re-observes the registered family at the mutation boundary and refuses before its first
@@ -1597,9 +1627,13 @@ Long-lived checkpoint retirement remains an explicit long-lived operation, never
 
 ### 3.2a Record before effect, for every resource kind
 
-> **Target.** The generation half of this rule is implemented for registered stacks; the ownership
-> half has no production writer and the appending operation has no occurrence in the source. Status
-> lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+> **Target.** Both halves of this rule are implemented for registered stacks: the generation record
+> and, since 2026-09-14, the write-ahead ownership manifest with its commit, its independent
+> read-back, and the append that gives it the identities the provider returned. What is still
+> outstanding is on the consuming side — no destroy yet reads the identity allowlist a manifest
+> carries — and the rule's third property below, which generalises past one resource kind, is
+> unimplemented. Status lives only in the
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 [Pure Functional Programming Standards](./pure_fp_standards.md#64-at-least-once-processing) owns the
 invariant. This section states what it means for a registered resource.

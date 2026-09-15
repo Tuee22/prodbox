@@ -190,12 +190,18 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox aws stack eks reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack eks destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
 | `prodbox aws stack eks prune-corrupt-checkpoint` | none | `--yes` |
+| `prodbox aws stack eks adopt-legacy plan` | none | none |
+| `prodbox aws stack eks adopt-legacy apply` | none | `--plan-digest`, `--yes` |
 | `prodbox aws stack test reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack test destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
 | `prodbox aws stack test prune-corrupt-checkpoint` | none | `--yes` |
+| `prodbox aws stack test adopt-legacy plan` | none | none |
+| `prodbox aws stack test adopt-legacy apply` | none | `--plan-digest`, `--yes` |
 | `prodbox aws stack aws-subzone reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack aws-subzone destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
 | `prodbox aws stack aws-subzone prune-corrupt-checkpoint` | none | `--yes` |
+| `prodbox aws stack aws-subzone adopt-legacy plan` | none | none |
+| `prodbox aws stack aws-subzone adopt-legacy apply` | none | `--plan-digest`, `--yes` |
 | `prodbox aws stack aws-ses reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack aws-ses destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
 | `prodbox aws stack aws-ses migrate-backend` | none | `--dry-run`, `--plan-file` |
@@ -744,13 +750,22 @@ for the canonical order and receipt boundary.
 
 `src/Prodbox/CLI/Pulumi.hs` owns the full public `prodbox aws stack ...` surface.
 
-The target permits one bounded Plan/Apply adoption path for a pre-cutover per-run stack; this is an
-internal recovery boundary, not an invented current command. Read-only provider discovery cannot
-authorize mutation. The operator must receive the complete exact candidate plan and digest and
-explicitly authorize that digest; receipt/read-back then mints the legacy ownership manifest before
-normal desired-absence reconciliation. Ambiguous, partial, or unobservable observation refuses. See
+`prodbox aws stack <eks|test|aws-subzone> adopt-legacy plan` and `... adopt-legacy apply` are the
+bounded Plan/Apply adoption path for a pre-record per-run stack — a recovery boundary for resources
+that are live and named by no durable ownership record, not a routine operation. Read-only provider
+discovery cannot authorize mutation. `plan` observes the closed registry-derived family through the
+read-only provider capability and prints the complete candidate document together with the digest
+taken over exactly those bytes; it mints no permit, commits nothing, and mutates nothing. `apply`
+observes and renders **again** and refuses unless the re-rendered plan digests to the operator's
+`--plan-digest`, so a plan that went stale between the two runs is refused rather than silently
+adopted; on a match it receipt-commits the ownership record and independently reads it back before
+returning. Neither verb destroys anything, and a missing, extra, ambiguous, duplicated, partial, or
+unobservable candidate refuses the whole family rather than adopting a shorter one. Retained shared
+infrastructure (`aws-ses`) has no adoption verb. See
 [Lifecycle Reconciliation Doctrine §3.2](lifecycle_reconciliation_doctrine.md#32-checkpoint-recovery-and-the-desired-absence-decision)
-for the canonical protocol.
+for the canonical protocol and
+[aws_test_environment.md §7.5](aws_test_environment.md) for the out-of-band operator diagnostic that
+sits outside the mutation boundary.
 
 `prodbox aws stack aws-ses migrate-backend` is a legacy operator-interactive (TTY-only)
 compatibility command. Sprint `7.14` moved the main `aws-ses` reconcile/destroy/read paths to the

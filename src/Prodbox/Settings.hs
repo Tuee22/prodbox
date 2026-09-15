@@ -569,6 +569,12 @@ data ValidatedCoordinates = ValidatedCoordinates
   -- @aws_substrate.hosted_zone_id@ below was shape-checked on every load.
   , coordinateAwsSubstrateZoneId :: !(Maybe Route53ZoneId)
   -- ^ @aws_substrate.hosted_zone_id@.
+  , coordinateAwsSubstrateSubzone :: !(Maybe Fqdn)
+  -- ^ @aws_substrate.subzone_name@. 'awsSubstrateCoordinatesFor' has always
+  -- parsed this beside the zone id and this record discarded it, so the field
+  -- was shape-checked and then unreachable -- and @subzone_name@ sat in
+  -- 'Prodbox.CheckCode.tier0CoordinateReadRegistry' naming a projection that
+  -- did not exist, which is the hole that registry's own note warns about.
   , coordinateOperationalAwsRegion :: !(Maybe AwsRegion)
   -- ^ @aws.region@. No shape rule existed for this field anywhere before
   -- Sprint 1.89; a typo reached the AWS SDK.
@@ -1211,7 +1217,7 @@ httpEndpointField fieldName raw = do
 validatedCoordinatesFor :: ConfigFile -> Either String ValidatedCoordinates
 validatedCoordinatesFor config = do
   demoTtl <- demoTtlCoordinateFor (domain config)
-  (substrateZoneId, _) <- awsSubstrateCoordinatesFor (aws_substrate config)
+  (substrateZoneId, substrateSubzone) <- awsSubstrateCoordinatesFor (aws_substrate config)
   (senderDomain, receiveSubdomain, captureBucket) <-
     sesCoordinatesFor (ses config)
   bootstrapIp <- bootstrapPublicIpCoordinateFor (deployment config)
@@ -1225,6 +1231,7 @@ validatedCoordinatesFor config = do
     ValidatedCoordinates
       { coordinateHomeZoneId = homeZoneId
       , coordinateAwsSubstrateZoneId = substrateZoneId
+      , coordinateAwsSubstrateSubzone = substrateSubzone
       , coordinateOperationalAwsRegion = operationalRegion
       , coordinatePulumiBackendRegion = backendRegion
       , coordinatePulumiBackendBucket = backendBucket

@@ -11,15 +11,29 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-09-12 on Sprints `7.41` and `7.42` (Standards A/L/P).** Own-surface reopen on
-the registered stack-creation lane and the bounded legacy-adoption protocol this phase built. An EKS
-cluster created 2026-09-08 billed for four days and was removed by hand; the analysis found that a
-generation record was committed one second before the capability ran, that a generation names a
-cycle rather than resources, and that the write-ahead ownership manifest which would have named the
-resources has no production writer — the half of Sprint `7.36` recorded as delivered. The adoption
-protocol that could have recovered the orphan is likewise written, tested, and called from nothing,
-because its authorization half has no operator surface. The phase recloses when both reach `Done`;
-until then this entry records an open reopen, not a closure.
+✅ **Reclosed 2026-09-15 on Sprints `7.41` and `7.42` (Standards A/L/P).** The own-surface reopen
+of 2026-09-12 was on the registered stack-creation lane and the bounded legacy-adoption protocol
+this phase built. An EKS cluster created 2026-09-08 billed for four days and was removed by hand;
+the analysis found that a generation record was committed one second before the capability ran, that
+a generation names a cycle rather than resources, and that the write-ahead ownership manifest which
+would have named the resources had no production writer — the half of Sprint `7.36` recorded as
+delivered. The adoption protocol that could have recovered the orphan was likewise written, tested,
+and called from nothing, because its authorization half had no operator surface.
+
+Both are closed. Sprint `7.41` (2026-09-14) commits the manifest and independently reads it back
+between the generation commit and the execute, takes a proof at the execute step whose only minter
+accepts complete read-back evidence, appends the identities the provider returned, and stamps the
+same run scope provider-side so the resources stay enumerable when every host record is gone. Sprint
+`7.42` (2026-09-15) gives adoption its operator surface — `prodbox aws stack <stack> adopt-legacy
+plan` and `apply`, whose apply pass re-observes and confirms the operator's digest against the plan
+*that* pass produced — and closes, in the same change, a hole neither sprint block had named: the
+create-side minter accepted any complete manifest, so an adoption receipt could have stood in for a
+create's own record of what it was about to make.
+
+Live proof remains pending and non-blocking under Standard O for both: no create has been
+interrupted on purpose and then reaped by run scope, and no adoption has been planned or applied
+against a real account. Deployment qualification stays **invalidated** under Standard P. Execution
+order lives in [README.md → Resume Here](README.md#resume-here).
 
 ✅ **Reclosed 2026-09-11 on Sprints `7.39` and `7.40` (Standards A/L/P).** The own-surface reopen
 was on the ephemeral Kubernetes client this phase created. Sprint `6.5`'s live investigation had
@@ -6426,18 +6440,28 @@ Create-interrupted oracle **23/23**, write-ahead ownership **14/14**, terminal-a
   [00-overview.md](00-overview.md); move the Sprint `7.36` write-ahead row back to `Pending Removal`
   in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
-## Sprint 7.42: Adopting What The Record Does Not Name [📋 Planned]
+## Sprint 7.42: Adopting What The Record Does Not Name [✅ Done]
 
-**Status**: Planned. Phase `7` own-surface reopen (Standard A/L/P) on the bounded legacy-adoption
-protocol this phase built and owns.
+**Status**: Done (2026-09-15). Phase `7` own-surface reopen (Standard A/L/P) on the bounded
+legacy-adoption protocol this phase built and owns; the reopen closes with this sprint.
 **Doctrine**: [Lifecycle Reconciliation
 Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md)'s bounded legacy adoption.
-**Implementation**: `src/Prodbox/Lifecycle/Teardown/LegacyAdoptionObserver.hs`,
+**Implementation**: `src/Prodbox/Lifecycle/Teardown/LegacyAdoptionLane.hs`,
+`src/Prodbox/ControlPlane/LegacyAdoptionCompositionRoot.hs`,
+`src/Prodbox/Lifecycle/Teardown/LegacyAdoptionObserver.hs`,
 `src/Prodbox/Lifecycle/Teardown/LegacyAdoptionPlan.hs`,
-`src/Prodbox/ControlPlane/LegacyAdoptionManifestRepository.hs`, `src/Prodbox/CLI/Command.hs`,
-`src/Prodbox/CLI/Spec.hs`, and `test/unit/Main.hs`.
+`src/Prodbox/ControlPlane/LegacyAdoptionManifestRepository.hs`,
+`src/Prodbox/ControlPlane/RegisteredStackCreationSubmitter.hs`,
+`src/Prodbox/Lifecycle/Teardown/OwnershipManifest.hs`,
+`src/Prodbox/Lifecycle/Teardown/ProviderDispatch.hs`, `src/Prodbox/Settings.hs`,
+`src/Prodbox/CheckCode.hs`, `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Spec.hs`,
+`src/Prodbox/CLI/Pulumi.hs`, `test/unit/LifecycleTeardownLegacyAdoptionLane.hs`, and
+`test/unit/Main.hs`.
 **Blocked by**: none.
-**Live-proof**: pending.
+**Live-proof**: pending — no live adoption has been planned or applied against a real account. The
+lane is asserted end to end against an injected provider and repository; what a fake cannot
+establish is that a real Provider answer decodes into the closed family, or that the committed
+receipt reads back byte-identically from the retained Authority. Non-blocking under Standard O.
 **Deployment qualification**: pending — **invalidated** on lifecycle orchestration and destructive
 cleanup.
 **Independent Validation**: the rendered plan and its digest; an admin permit bound to that exact
@@ -6449,11 +6473,12 @@ missing, extra, ambiguous, partial or unobservable candidate; full unit suite; `
 
 ### Objective
 
-The adoption observer and its pure planner exist, are tested, and are called from nothing. They are
-caller-less because the authorization half has no surface, not because someone forgot a call: the
-doctrine requires an explicit admin permit over the exact rendered plan digest, receipt-committed
+The adoption observer and its pure planner existed, were tested, and were called from nothing. They
+were caller-less because the authorization half had no surface, not because someone forgot a call:
+the doctrine requires an explicit admin permit over the exact rendered plan digest, receipt-committed
 and independently read back before any cleanup mutation, with observation confined to the read-only
-Provider capability.
+Provider capability. That surface is now `prodbox aws stack <stack> adopt-legacy plan` and
+`... adopt-legacy apply --plan-digest <digest> --yes`.
 
 This is the only mechanism that answers the asymmetry the leak analysis opens with. Everything else
 in the queue makes a resource this repository creates from now on addressable; only adoption can
@@ -6468,27 +6493,130 @@ rather than preceding it.
 
 ### Deliverables
 
-- The bounded plan and apply path: render the complete candidate set and its digest, bind an admin
+- ~~The bounded plan and apply path: render the complete candidate set and its digest, bind an admin
   permit over that exact digest through the permit-bounded runner, receipt-commit, then read back
-  independently before any mutation.
-- Keep observation inside the read-only Provider capability, and record that the result is a
-  cleanup-only provenance with no type-level path into a future create.
-- Document the out-of-band operator diagnostic — an enumeration run from credentials alone, alerting
-  a human, whose verdict feeds no prodbox decision — and say plainly that it is outside the mutation
-  boundary and is not a classifier the product may consult.
+  independently before any mutation.~~ **Landed 2026-09-15** as
+  `prodbox aws stack <eks|test|aws-subzone> adopt-legacy plan` and
+  `... adopt-legacy apply --plan-digest <digest> --yes`, over
+  `Prodbox.Lifecycle.Teardown.LegacyAdoptionLane` and
+  `Prodbox.ControlPlane.LegacyAdoptionCompositionRoot`. The shape the deliverable did not specify
+  and which decides whether the digest means anything: **apply observes and renders again**, and
+  confirms the operator's digest against the plan *that* pass produced. Carrying the plan pass's
+  document forward would authorize a candidate set nobody re-checked against the world. Retained
+  shared `aws-ses` has no adoption verb.
+- ~~Keep observation inside the read-only Provider capability, and record that the result is a
+  cleanup-only provenance with no type-level path into a future create.~~ **Landed 2026-09-15, and
+  the second half turned out to be false of the tree rather than merely unstated.**
+  `ProviderLegacyAdoptionObservation` is a fifth dispatch purpose admitting exactly the four
+  `Observe…` intents the observer issues and no mutation at all, for the same reason the terminal
+  audit is a fourth: sharing `ProviderDecisionObservation` would share its derived submission key,
+  so an adoption's answer and a destroy's decision observation under one cleanup operation would
+  replay each other at the Authority. The same reasoning applies *inside* the family and is where
+  the composition root's first draft was wrong: it gave all four members one dispatch key, and the
+  submission key is the Authority's idempotency identity — the second, third and fourth
+  observations would have replayed the first's evidence, and the planner would have seen four
+  well-formed answers about one resource, which is an ambiguity it has no way to detect.
+  `legacyAdoptionDispatchKeyFor` derives one key per member from the intent's own coordinate, and
+  it is stable across re-runs so a repeated plan pass replays the retained observation rather than
+  allocating a new identity for the same question. The receipt is an opaque
+  `AdoptedCleanupOwnership` with no projection back to the evidence a create consumes.
+- ~~Document the out-of-band operator diagnostic — an enumeration run from credentials alone,
+  alerting a human, whose verdict feeds no prodbox decision — and say plainly that it is outside the
+  mutation boundary and is not a classifier the product may consult.~~ **Landed 2026-09-15** as
+  [aws_test_environment.md § 7.5](../documents/engineering/aws_test_environment.md), together with
+  the manual recovery order it implies: do not destroy the local control plane, adopt and then
+  reconcile, and treat console deletion as a last resort that leaves no receipt the product can
+  read.
+
+**Two defects this block did not name surfaced while closing it, and the first is the reason the
+second deliverable was worth doing at all.**
+
+`proveWriteAheadOwnership` accepted *any* complete manifest. An adoption commits a
+`CompleteOwnershipManifest` and reads it back through the same `ownershipManifestDecisionView`
+projection a create does, so a cleanup-only record of resources somebody else made would have minted
+the create-side proof the type's own GADT index says it may not — and the index could not see it,
+because the purpose was a field inside the manifest that the view did not carry. The view now
+carries it and that minter refuses the adoption arm. The opaque receipt closes the direct path; this
+closes the laundered one, and both are asserted with a positive control beside them.
+
+`ValidatedCoordinates` parsed `aws_substrate.subzone_name` and discarded it, while
+`tier0CoordinateReadRegistry` listed that field as having a projection — the exact "hole in the
+rule" that registry's own note warns about. The subzone adoption had no validated read to use and
+would have had to re-read the raw field, which is the defect class an open ledger row already
+describes. The projection is added rather than worked around.
 
 ### Validation
 
-1. A permit bound to one plan digest is refused against any other plan.
-2. A missing, extra, ambiguous, partial or unobservable candidate refuses the whole family rather
-   than adopting a shorter one.
-3. The adoption receipt cannot inhabit a create-side position, proven by a synthetic mutation that
-   must not compile.
-4. Full unit suite and `prodbox dev check` exit 0.
+1. **A permit bound to one plan digest is refused against any other plan.** Asserted twice: over the
+   planner directly, and through the lane where the second plan is produced by a *changed world*
+   rather than by a different fixture — the case the two-pass shape exists for.
+2. **A missing, extra, ambiguous, partial or unobservable candidate refuses the whole family rather
+   than adopting a shorter one.** The planner's five refusals are each exercised, and the lane
+   carries an unobservable family through the real observer to the same refusal with nothing
+   committed.
+3. **The adoption receipt cannot inhabit a create-side position, proven by a synthetic mutation that
+   must not compile.** The mutation — `proveWriteAheadOwnership AwsTestKey` applied to an
+   `AdoptedCleanupOwnership` — was written, compiled, and rejected with the exact expected-versus-actual
+   mismatch, then reverted; the witness is recorded in the receipt type's Haddock. The bound is
+   stated with it: this closes the path from the *repository's* result, and the remaining library-level
+   path through `completeConfirmedLegacyAdoptionManifestReadBack` is closed by the value-level purpose
+   arm instead, asserted against a real adoption read-back.
+4. **Full unit suite and `prodbox dev check` exit 0.**
+
+### Current Validation State
+
+- Adoption lane **9/9**, planner **13/13**, observer **3/3**, receipt repository **5/5**,
+  write-ahead ownership **26/26** including the two new create-side controls, primary unit
+  **5,159/5,159**, canonical `prodbox dev check` exits 0.
+- `prodbox dev check` refused this change twice before it passed, both times correctly.
+  `checkTypedGuardConsumption` found four cleanup-authority projections with no production
+  consumer once the six registry rows were deleted. `adoptedCleanupOwnershipScope` gained a real
+  one — the operator output prints the run scope the receipt is keyed under, which is how a reader
+  finds the object a later cleanup will read. The three `AdminLegacyAdoptionPermit` projections had
+  none and are **deleted**: a permit is a token rather than a record, and accessors that read a
+  proof's contents back out are how a caller starts re-deciding what the admission already decided.
+  The consequence is stated rather than hidden — the nonce is now unobservable outside its module,
+  which is correct only while nothing records permits durably.
+- The four adoption unconstructibility claims are registered in `sealedConstructorRegistry`, so a
+  later export-list widening that voided one would fail the build rather than silently make a
+  written claim false. **Registering them found a defect in that gate's own parser**, which is the
+  third this closure surfaced: `moduleExportListIn` returned the whole module header, the header is
+  joined with spaces, and `Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan` ends with the exact type
+  name — so the export list's own opening parenthesis read as `LegacyAdoptionPlan (`, and the
+  boundary check could not object because the character before the name is a dot. The rule reported
+  a sealed type as exporting its constructors while its export list said the opposite. It now
+  returns only the parenthesised list, with a case that fails against the old behaviour.
+
+### Relationship To Sprint `6.5`'s Single-Writer Rule
+
+Stated because a reader should not have to derive it. Sprint `6.5` forbids two cleanup writers and
+two operation-ID allocators, and this sprint adds a public command that allocates
+`CleanupOperationId`s and commits a durable record — so the claim that it does not violate that rule
+is worth checking rather than assuming.
+
+It does not, on three counts. The lane **issues no cleanup mutation**: every intent it dispatches is
+admitted at `ProviderLegacyAdoptionObservation`, and `validateMutationIntent` has no arm for that
+purpose, so a mutation at an adoption key is refused before dispatch. Its durable write lands in
+`authority/legacy-adoption-manifests/`, which is **not the cleanup namespace** — no cascade reads or
+writes it. And its operation ids are read-only observation identities under a `legacy-adopt-` prefix,
+disjoint from any cascade's by construction; they name questions, never destroy authority.
+
+What it produces is an input a future cleanup may consume, which is the doctrine's own description
+of the adoption lane: one permitted provenance for a complete ownership manifest. The consumption
+does not exist yet, and Sprint `6.5` owns it.
 
 ### Remaining Work
 
-All of it.
+None owned by this sprint. Two things are **stated rather than closed**, and both are non-blocking:
+
+1. **Nothing consumes the identity allowlist yet.** The lane ends at the independently read-back
+   receipt, before any mutation, which is where the deliverable ends. Turning that allowlist into a
+   destroy is the single-writer cutover's work and Sprint `6.5` owns it; this sprint makes no claim
+   about it.
+2. **No live adoption has run.** The lane is asserted end to end against an injected provider and
+   repository. What a fake cannot establish is that a real Provider answer decodes into the closed
+   family, or that the committed receipt reads back byte-identically from the retained Authority.
+   Tracked as `Live-proof: pending` (Standard O).
 
 ## Documentation Requirements
 

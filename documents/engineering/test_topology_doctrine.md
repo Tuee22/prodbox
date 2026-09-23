@@ -192,6 +192,23 @@ constructors and the `run` index are private, neither a raw path nor a `LongLive
 relabelled as a legal delete target. This is the post-cutover MISU contract; implementation and
 activation status remain owned by the Development Plan.
 
+> **Target.** Isolation has a converse, and it runs the other way across the same boundary. The
+> rules above keep a *test* run out of `.data/`; the converse keeps a *production* teardown from
+> answering about `.data/` alone when `.test-data/` also exists. A delete arm that claims to have
+> examined the retained roots — the conjunction in
+> [Lifecycle Reconciliation Doctrine §5a.0](./lifecycle_reconciliation_doctrine.md#5a0-a-cascade-that-reaches-no-phase-may-still-query-aws)
+> — enumerates both roots this repository defines, answers for each one it found, and names the one
+> it did not find, because a worktree that ran `prodbox test` and a worktree that ran a production
+> reconcile leave untracked state in different places and the operator's question is about whichever
+> this checkout actually wrote.
+>
+> The direction of the licence does not widen: enumerating a root is a read, and it authorizes no
+> write. The never-touch-`.data/` guard on test commands is unchanged, the two fail-fast
+> preconditions are unchanged, and `TestDeleteTarget`'s private constructors remain the only way to
+> name something deletable — an enumeration result is not a delete target and cannot be refined into
+> one. What changes is only what a teardown is allowed to *say* it looked at. Status lives only in
+> [Development Plan → Resume Here](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
 `src/Prodbox/TestValidation.hs` resolves the sealed-Vault host-disk audit root from the topology
 run's `PRODBOX_TEST_MANUAL_PV_HOST_ROOT` override when present, falling back to the production
 `.data/prodbox/minio/0` root for legacy named-validation commands.

@@ -52,6 +52,7 @@ module Prodbox.Lifecycle.Teardown.ScopeCodec
     -- * Total re-scoping
   , scopeForTerminalAudit
   , scopeForCascadeTerminalAudit
+  , scopeForOwnershipManifestCleanupReadBack
 
     -- * The canonical wire form
   , ScopeWire (..)
@@ -179,6 +180,34 @@ scopeForCascadeTerminalAudit scope =
     (observationEvidenceScopeFields scope)
       { scopeFieldCleanupSurface = Cascade
       , scopeFieldLifecycleOperation = RunTerminalEscapeAudit
+      }
+
+-- | Re-scope a create's proven manifest scope to the cleanup side of the same
+-- ownership-manifest slot.
+--
+-- A write-ahead ownership manifest is committed under 'ReconcileDesiredPresent',
+-- because that is the side of the lifecycle its writer is on, and is read back
+-- for cleanup under 'ReconcileDesiredAbsent'.  The identity normalises the
+-- operation away, so both sides address one object; the /binding/ does not, and
+-- must not, because the operation is how a minted binding states which side it
+-- is on.
+--
+-- A create reads its own manifest back before running any effect, and the
+-- question it is asking is not \"is what I just wrote still there\" but \"can a
+-- later teardown bind this record\" — so it must ask on the cleanup side.  Asking
+-- under the creation scope refuses every live create, because the cleanup-side
+-- target mint requires an absent operation and the create's own scope correctly
+-- carries a present one.
+--
+-- Record update rather than a re-mint, for the reason the two audit re-scopers
+-- above give: a field-by-field copy is how this scope's DNS hosted zone was lost
+-- once already.
+scopeForOwnershipManifestCleanupReadBack
+  :: ObservationEvidenceScope -> ObservationEvidenceScope
+scopeForOwnershipManifestCleanupReadBack scope =
+  observationEvidenceScopeFromFields
+    (observationEvidenceScopeFields scope)
+      { scopeFieldLifecycleOperation = ReconcileDesiredAbsent
       }
 
 -- | The canonical encoded projection of a scope.

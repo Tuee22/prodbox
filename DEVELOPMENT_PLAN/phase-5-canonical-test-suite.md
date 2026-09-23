@@ -11,6 +11,28 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-09-15 on Sprints `5.47`–`5.48` (Standards A/N).** Both reached `Done` on
+2026-09-14 with `prodbox dev check` at 0; the reclose is written here on 2026-09-15 because the
+phase-document header is the only place a reclose must be written by hand in a second location, and
+it is therefore the one place that drifts. The reopen narrative is retained verbatim beneath,
+because it records why the phase reopened.
+
+What closed it is worth one line each. The canonical check now reads a `case` arm: a value-level
+guard typed by one of the repository's cleanup-authority vocabularies with no reader under `src/` is
+refused, and the forty-one that had none are registered against the ledger row that owns their
+consumption. The gate also runs the suites it compiles — `prodbox-unit` and the three auxiliary
+`-unit` stanzas execute after the binary sync, so the tree's strongest absence rules are asserted by
+booleans that are now executed rather than merely built. And the repository models create, cleanup
+and absence for the first time: a TLA⁺ model whose checked property asserts naming and never
+absence, with the superseded commit-before-effect ordering registered as `ExpectsCounterexample` so
+the check refuses if it passes, held against the model directory by a registration gate that refuses
+a model nobody registers and an entry no file backs.
+
+Two live proofs remain outstanding and neither gates this closure (Standards O/P): the model proves
+the protocol and not the boundary implementation — that the write-ahead commit precedes the execute
+step is a source fact Sprint `7.41` owns — and the wire-fidelity rule refuses nothing on the tree as
+it stands, so its value is prospective. Both are recorded on their sprints.
+
 🔄 **Reopened 2026-09-12 on Sprints `5.47`–`5.48` (Standards A/N).** Own-surface reopen on the
 canonical suite's gate surface, the scopes that execute it, and the repository's model-checked proof
 surface. The 2026-09-08 leak crossed four boundaries and no gate could see any of them, because

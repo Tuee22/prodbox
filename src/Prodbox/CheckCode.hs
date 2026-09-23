@@ -4448,6 +4448,15 @@ data SealedConstructorOrigin
 sealedConstructorRegistry :: [SealedConstructorType]
 sealedConstructorRegistry =
   [ SealedConstructorType
+      "src/Prodbox/CLI/Rke2.hs"
+      "ConfirmedNoInstallCascade"
+      SealedDeclaredHere
+      "Sprint 4.100: a no-install cascade carrying a confirmed result is \
+      \unrepresentable outside `confirmCascadeNoInstall`, which takes the \
+      \postflight sweep. Exporting the constructor would let the entry table \
+      \-- which observes only delete mode and install presence -- mint success \
+      \from silence again, which is the defect Sprint 4.88 closed."
+  , SealedConstructorType
       "src/Prodbox/Test/CleanRoomHandoff.hs"
       "CutoverState"
       SealedDeclaredHere

@@ -46,6 +46,7 @@ module Prodbox.Lifecycle.Authority.TlsRetention
   , TlsLegacyRecoveryEvidence (..)
   , TlsLegacyRecoveryCollisionEvidence (..)
   , TlsLegacyRecoverySuccessorEvidence (..)
+  , TlsUnopenableVersionEvidence (..)
   , TlsRetentionState (..)
   , initialTlsRetentionState
   , currentRetainedRef
@@ -66,6 +67,13 @@ module Prodbox.Lifecycle.Authority.TlsRetention
   , TlsLegacyRecoveryStagingRefusal (..)
   , decideTlsLegacyRecoveryStaging
   , applyTlsLegacyRecoveryStaging
+
+    -- * Unopenable Authority-lane successor staging
+  , TlsUnopenableSuccessorStagingDecision (..)
+  , TlsUnopenableSuccessorStagingRefusal (..)
+  , tlsUnopenableSuccessorVersion
+  , decideTlsUnopenableSuccessorStaging
+  , applyTlsUnopenableSuccessorStaging
 
     -- * Promotion (renewal CAS)
   , PromotionEvidence (..)
@@ -243,9 +251,43 @@ data TlsLegacyRecoverySuccessorEvidence = TlsLegacyRecoverySuccessorEvidence
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- | Value-free evidence that one /Authority-lane/ immutable version is occupied
+-- by an envelope this control plane cannot open: its wrapped DEK returned the
+-- closed authenticated @home-rewrap-ciphertext-authentication-failed@ result
+-- under the retained-home Transit key. It grants neither restore nor issuance
+-- authority and admits exactly one successor version.
+--
+-- __What the digest is and is not.__ It records which bytes the interpreter
+-- observed at that version when it proved them unopenable, so a later reader
+-- can re-observe the key and tell \"the object we stepped past\" from \"some
+-- object at that number\". This fold does not and cannot verify it against the
+-- store: the digest is an interpreter claim, exactly as
+-- 'TlsLegacyRecoveryEvidence' is. What the fold does enforce is that the claim
+-- is well formed, that it names the version this reference was about to claim,
+-- and that it is not the successor's own digest — so the evidence carries
+-- information the pending does not already contain and cannot launder the
+-- skipped envelope forward.
+--
+-- This is deliberately a separate type from 'TlsLegacyRecoveryEvidence' rather
+-- than a reuse of it. That value is pinned to version 1 of the /pre-Authority/
+-- lane by 'decideTlsLegacyRecoveryStaging', and the two lanes are disjoint: the
+-- legacy recovery transitions are reachable only from 'TlsRetentionEmpty' and
+-- this one only from 'TlsRetentionCurrent'.
+data TlsUnopenableVersionEvidence = TlsUnopenableVersionEvidence
+  { tlsUnopenableVersion :: !RetentionVersion
+  , tlsUnopenableEnvelopeDigest :: !Text
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
 -- | The per-substrate retention state: no committed reference, one current
 -- committed reference, or a durable pre-effect outbox retaining the previous
 -- committed reference while its exact successor is in flight.
+--
+-- Constructors are only ever /appended/. The derived 'Serialise' instance tags
+-- a constructor by its declaration index, so the retained encodings of every
+-- earlier constructor — including the pre-outbox @Empty@ and @Current@ bytes a
+-- codec case pins directly — are preserved by construction.
 data TlsRetentionState
   = TlsRetentionEmpty
   | TlsRetentionCurrent !RetainedTlsRef
@@ -260,6 +302,14 @@ data TlsRetentionState
   | TlsRetentionLegacyRecoverySuccessorPendingState
       !TlsLegacyRecoveryEvidence
       !TlsLegacyRecoverySuccessorEvidence
+      !TlsRetentionPending
+  | -- | A durable outbox for the one successor version admitted past an
+    -- Authority-lane version proven unopenable. Unlike every legacy-recovery
+    -- state above, this one /retains its predecessor/: the condition arises
+    -- from 'TlsRetentionCurrent', that committed reference is still intact and
+    -- still restorable, and only the unwritable successor slot is in flight.
+    TlsRetentionUnopenableSuccessorPendingState
+      !TlsUnopenableVersionEvidence
       !TlsRetentionPending
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -276,6 +326,10 @@ currentRetainedRef state = case state of
   TlsRetentionLegacyRecoveryPendingState _ _ -> Nothing
   TlsRetentionLegacyRecoveryCollisionPendingState {} -> Nothing
   TlsRetentionLegacyRecoverySuccessorPendingState {} -> Nothing
+  -- The predecessor survives an unopenable successor: it is a committed
+  -- reference whose own object is intact, and the only thing this outbox
+  -- cannot do is occupy the version after it.
+  TlsRetentionUnopenableSuccessorPendingState _ pending -> tlsPendingPrevious pending
 
 pendingTlsRetention :: TlsRetentionState -> Maybe TlsRetentionPending
 pendingTlsRetention state = case state of
@@ -283,14 +337,20 @@ pendingTlsRetention state = case state of
   TlsRetentionLegacyRecoveryPendingState _ pending -> Just pending
   TlsRetentionLegacyRecoveryCollisionPendingState _ _ pending -> Just pending
   TlsRetentionLegacyRecoverySuccessorPendingState _ _ pending -> Just pending
+  TlsRetentionUnopenableSuccessorPendingState _ pending -> Just pending
   TlsRetentionEmpty -> Nothing
   TlsRetentionCurrent _ -> Nothing
 
 nextRetentionVersion :: TlsRetentionState -> RetentionVersion
 nextRetentionVersion state = case currentRetainedRef state of
   Nothing -> RetentionVersion 1
-  Just current -> case retainedVersion current of
-    RetentionVersion version -> RetentionVersion (version + 1)
+  Just current -> successorRetentionVersion (retainedVersion current)
+
+-- | The exact next integer version. Named rather than inlined because both the
+-- ordinary selection above and the bounded successor admission below must mean
+-- the same step, and a lane that computed its own would be a search.
+successorRetentionVersion :: RetentionVersion -> RetentionVersion
+successorRetentionVersion (RetentionVersion version) = RetentionVersion (version + 1)
 
 -- | Validate the bounded semantic fields of one retained reference. This is
 -- applied both before staging and at the durable codec boundary, so canonical
@@ -353,6 +413,27 @@ validateTlsRetentionState state = case state of
     case validateLegacyRecoverySuccessorPending evidence successor pending of
       True -> Right ()
       False -> Left "TLS legacy-recovery successor pending state is invalid"
+  TlsRetentionUnopenableSuccessorPendingState evidence pending -> do
+    mapM_ validateRetainedTlsRef (tlsPendingPrevious pending)
+    validateRetainedTlsRef (tlsPendingCandidate pending)
+    validateTlsSealedEnvelope (tlsPendingEnvelope pending)
+    -- Everything 'decideTlsUnopenableSuccessorStaging' reads is recoverable
+    -- from this record alone: the predecessor is the pending's own previous,
+    -- the approval and candidate are the pending's, and the skipped version and
+    -- its occupant digest are the durably retained evidence. A version jump
+    -- therefore cannot be authorized by a token the codec boundary never sees.
+    let previousState = case tlsPendingPrevious pending of
+          Nothing -> TlsRetentionEmpty
+          Just reference -> TlsRetentionCurrent reference
+    if decideTlsUnopenableSuccessorStaging
+      (tlsPendingApproval pending)
+      previousState
+      evidence
+      (tlsPendingCandidate pending)
+      (tlsPendingEnvelope pending)
+      == TlsUnopenableSuccessorStaged pending
+      then Right ()
+      else Left "TLS unopenable-successor pending state is not a valid staging transition"
 
 validateBoundedText :: Text -> Int -> Text -> Either Text ()
 validateBoundedText label maximumLength value
@@ -552,6 +633,11 @@ decideTlsLegacyRecoveryStaging approval state evidence maybeCollision candidate 
         | otherwise -> concurrentPending
       TlsRetentionPendingState _ ->
         concurrentPending
+      -- The Authority-owned successor lane is disjoint from this one by
+      -- construction, and the disjointness is symmetric: that outbox is not a
+      -- pre-outbox recovery this transition may rebase, replay, or supersede.
+      TlsRetentionUnopenableSuccessorPendingState _ _ ->
+        concurrentPending
       TlsRetentionCurrent _ ->
         TlsLegacyRecoveryStagingRefused TlsLegacyRecoveryStageStateNotEmpty
  where
@@ -688,6 +774,154 @@ validateLegacyRecoverySuccessorPending evidence successor pending =
   displaced = tlsLegacyRecoveryDisplacedCandidate successor
   candidate = tlsPendingCandidate pending
 
+data TlsUnopenableSuccessorStagingRefusal
+  = -- | The evidence is not a well-formed statement about one object: a zero
+    -- version, or a digest that is not a canonical lowercase SHA-256.
+    TlsUnopenableSuccessorStageEvidenceInvalid
+  | -- | The evidence names a version this state would not have selected. The
+    -- admitted skip is exactly the version the committed reference was about
+    -- to claim, so evidence about any other version authorizes nothing here.
+    TlsUnopenableSuccessorStageSkippedVersionMismatch
+  | -- | The candidate claims the skipped object's own bytes. A successor that
+    -- re-asserted the unopenable digest would launder the envelope the lane is
+    -- stepping past into a fresh version.
+    TlsUnopenableSuccessorStageSkippedDigestReused
+  | TlsUnopenableSuccessorStageEnvelopeInvalid
+  | TlsUnopenableSuccessorStageReferenceInvalid
+  | TlsUnopenableSuccessorStageDigestMismatch
+  | -- | The candidate is not the exact single successor of the skipped
+    -- version. One version, not a search.
+    TlsUnopenableSuccessorStageVersionMismatch
+  | -- | There is no committed reference to step forward from. The pre-outbox
+    -- lane owns that case and is kept disjoint from this one.
+    TlsUnopenableSuccessorStageStateNotCurrent
+  | TlsUnopenableSuccessorStageConcurrentPending
+  | TlsUnopenableSuccessorStageValidityRegression
+  | TlsUnopenableSuccessorStageUnapprovedKeyChange
+  deriving stock (Eq, Show)
+
+data TlsUnopenableSuccessorStagingDecision
+  = TlsUnopenableSuccessorStaged !TlsRetentionPending
+  | TlsUnopenableSuccessorStagingNoop !TlsRetentionPending
+  | TlsUnopenableSuccessorStagingRefused !TlsUnopenableSuccessorStagingRefusal
+  deriving stock (Eq, Show)
+
+-- | The one successor version this evidence admits.
+--
+-- Exposed because the interpreter must seal fresh certificate material /at/
+-- that version before it can build a candidate to stage — the retention version
+-- is part of the AEAD associated data — and a second derivation of "one past"
+-- somewhere else is how a bounded step becomes a search.
+tlsUnopenableSuccessorVersion :: TlsUnopenableVersionEvidence -> RetentionVersion
+tlsUnopenableSuccessorVersion =
+  successorRetentionVersion . tlsUnopenableVersion
+
+-- | Stage the single successor admitted past an Authority-lane version proven
+-- unopenable.
+--
+-- __Why this transition exists.__ 'retainTlsAtSelectedAgent' draws a fresh DEK
+-- and nonce on every call, so the envelope a retain builds is not reproducible
+-- and an occupied immutable version can never be written again. Sprint @6.5@'s
+-- convergence closes every collision where the occupant opens: the retain
+-- adopts it, proves it by applying it at the selected Target under an AEAD
+-- whose associated data binds the version, certificate identity and source
+-- Secret, and stages it through the ordinary transition. What that cannot close
+-- is an occupant whose wrapped DEK does not open under
+-- @prodbox-tls-retention-dek@ — it can be neither rewritten nor adopted, and
+-- 'nextRetentionVersion' selects it on every future retain, so one unusable
+-- object stops every retain on that slot forever.
+--
+-- __Why it is bounded to one version.__ The skipped version is pinned to the
+-- one this state would itself have claimed and the candidate to its exact
+-- successor, both checked against the durable predecessor rather than against
+-- an argument. An unbounded search for a free integer is how a lane starts
+-- silently skipping objects it should have refused; a second consecutive skip
+-- therefore refuses rather than advancing.
+--
+-- __What it does not relax.__ Validity may not regress, a key change still
+-- needs approval, the candidate digest must be the envelope's, and the state
+-- must carry a committed predecessor. The skipped object is neither read,
+-- overwritten, deleted, nor asserted to hold any certificate: only its digest
+-- is retained, and only to say which object was proven unopenable.
+decideTlsUnopenableSuccessorStaging
+  :: KeyRotationApproval
+  -> TlsRetentionState
+  -> TlsUnopenableVersionEvidence
+  -> RetainedTlsRef
+  -> TlsSealedEnvelope
+  -> TlsUnopenableSuccessorStagingDecision
+decideTlsUnopenableSuccessorStaging approval state evidence candidate envelope
+  | tlsUnopenableVersion evidence == RetentionVersion 0 =
+      refused TlsUnopenableSuccessorStageEvidenceInvalid
+  | Left _ <- validateDigest (tlsUnopenableEnvelopeDigest evidence) =
+      refused TlsUnopenableSuccessorStageEvidenceInvalid
+  | Left _ <- validateTlsSealedEnvelope envelope =
+      refused TlsUnopenableSuccessorStageEnvelopeInvalid
+  | retainedCiphertextDigest candidate /= tlsSealedEnvelopeDigest envelope =
+      refused TlsUnopenableSuccessorStageDigestMismatch
+  | Left _ <- validateRetainedTlsRef candidate =
+      refused TlsUnopenableSuccessorStageReferenceInvalid
+  | tlsUnopenableEnvelopeDigest evidence == retainedCiphertextDigest candidate =
+      refused TlsUnopenableSuccessorStageSkippedDigestReused
+  | otherwise = case state of
+      TlsRetentionCurrent current -> decideAgainstCurrent current
+      -- An exact replay re-decides against the predecessor the outbox itself
+      -- retains and accepts only the pending already stored, so the replay
+      -- predicate and the codec boundary's predicate are the same by
+      -- construction rather than by two authors agreeing.
+      TlsRetentionUnopenableSuccessorPendingState existingEvidence pending
+        | existingEvidence == evidence
+        , Just previous <- tlsPendingPrevious pending
+        , decideAgainstCurrent previous == TlsUnopenableSuccessorStaged pending ->
+            TlsUnopenableSuccessorStagingNoop pending
+        -- A second successor stacked on a first is refused rather than
+        -- admitted: the durable record already names the one version this lane
+        -- stepped past, and stacking another is the search the bound forbids.
+        | otherwise -> concurrentPending
+      TlsRetentionEmpty -> refused TlsUnopenableSuccessorStageStateNotCurrent
+      TlsRetentionPendingState _ -> concurrentPending
+      TlsRetentionLegacyRecoveryPendingState _ _ -> concurrentPending
+      TlsRetentionLegacyRecoveryCollisionPendingState {} -> concurrentPending
+      TlsRetentionLegacyRecoverySuccessorPendingState {} -> concurrentPending
+ where
+  refused = TlsUnopenableSuccessorStagingRefused
+  concurrentPending = refused TlsUnopenableSuccessorStageConcurrentPending
+  -- Deliberately a pattern match on 'TlsRetentionCurrent' rather than a
+  -- 'currentRetainedRef' lookup: an ordinary pending outbox also answers
+  -- @Just previous@, and admitting a skip from one would step over a version
+  -- some other candidate is already staged for.
+  decideAgainstCurrent current
+    | tlsUnopenableVersion evidence
+        /= nextRetentionVersion (TlsRetentionCurrent current) =
+        refused TlsUnopenableSuccessorStageSkippedVersionMismatch
+    | retainedVersion candidate /= tlsUnopenableSuccessorVersion evidence =
+        refused TlsUnopenableSuccessorStageVersionMismatch
+    | certNotAfter (retainedCert candidate) < certNotAfter (retainedCert current) =
+        refused TlsUnopenableSuccessorStageValidityRegression
+    | certSpkiDigest (retainedCert candidate) /= certSpkiDigest (retainedCert current)
+    , approval == KeyRotationNotApproved =
+        refused TlsUnopenableSuccessorStageUnapprovedKeyChange
+    | otherwise = TlsUnopenableSuccessorStaged (desiredPendingFor current)
+
+  desiredPendingFor previous =
+    TlsRetentionPending
+      { tlsPendingPrevious = Just previous
+      , tlsPendingApproval = approval
+      , tlsPendingCandidate = candidate
+      , tlsPendingEnvelope = envelope
+      }
+
+applyTlsUnopenableSuccessorStaging
+  :: TlsUnopenableVersionEvidence
+  -> TlsUnopenableSuccessorStagingDecision
+  -> TlsRetentionState
+  -> TlsRetentionState
+applyTlsUnopenableSuccessorStaging evidence decision state = case decision of
+  TlsUnopenableSuccessorStaged pending ->
+    TlsRetentionUnopenableSuccessorPendingState evidence pending
+  TlsUnopenableSuccessorStagingNoop _ -> state
+  TlsUnopenableSuccessorStagingRefused _ -> state
+
 data TlsPromotionRefusal
   = -- | The source Secret was not re-observed exactly.
     TlsSourceNotReobserved
@@ -757,6 +991,15 @@ decideTlsPromotion approval evidence state candidate
             || tlsPendingApproval pending /= approval ->
             TlsPromotionRefused TlsPendingMismatch
         | otherwise -> decideAgainstPrevious Nothing
+      -- The only pending state with a predecessor besides the ordinary one, so
+      -- it is the only recovery state whose promotion is still judged against a
+      -- committed reference: the successor must be strictly newer than it, must
+      -- not regress its validity, and still needs approval to change its key.
+      TlsRetentionUnopenableSuccessorPendingState _ pending
+        | tlsPendingCandidate pending /= candidate
+            || tlsPendingApproval pending /= approval ->
+            TlsPromotionRefused TlsPendingMismatch
+        | otherwise -> decideAgainstPrevious (tlsPendingPrevious pending)
  where
   decideAgainstPrevious maybeCurrent = case maybeCurrent of
     Nothing -> TlsPromoted candidate
@@ -850,6 +1093,15 @@ decideTlsRestore state observation = case observation of
       TlsRestoreRefused TlsRestoreReferenceMismatch
     TlsRetentionLegacyRecoverySuccessorPendingState {} ->
       TlsRestoreRefused TlsRestoreReferenceMismatch
+    -- The predecessor stayed restorable throughout: the unopenable object is
+    -- the successor slot, never the committed reference.
+    TlsRetentionUnopenableSuccessorPendingState _ pending ->
+      case tlsPendingPrevious pending of
+        Just current
+          | retainedVersion observed == retainedVersion current
+              && retainedCiphertextDigest observed == retainedCiphertextDigest current ->
+              TlsRestoreApply current
+        _ -> TlsRestoreRefused TlsRestoreReferenceMismatch
   RestoreCommittedAbsent -> issueUnlessRecoveryPending state
   RestoreTrustedTimeExpired -> issueUnlessRecoveryPending state
   RestoreCommittedCorrupt -> TlsRestoreRefused TlsRestoreCorrupt
@@ -864,6 +1116,9 @@ issueUnlessRecoveryPending state = case state of
   TlsRetentionLegacyRecoverySuccessorPendingState {} ->
     TlsRestoreRefused TlsRestoreRecoveryPending
   TlsRetentionPendingState pending
+    | tlsPendingPrevious pending == Nothing ->
+        TlsRestoreRefused TlsRestoreRecoveryPending
+  TlsRetentionUnopenableSuccessorPendingState _ pending
     | tlsPendingPrevious pending == Nothing ->
         TlsRestoreRefused TlsRestoreRecoveryPending
   _ -> TlsRestoreIssue

@@ -21401,15 +21401,18 @@ unitSuite = do
           `shouldBe` (2 * ControlPlaneRuntime.authorityBackupQualificationAttemptRequestMaximum)
         ControlPlaneRuntime.authorityBackupReplayMaximumEncodedBytes
           `shouldBe` (32 * 1024 * 1024)
-        ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum `shouldBe` 34
-        ControlPlaneRuntime.targetSecretAgentReplayCapacity `shouldBe` 68
+        ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum `shouldBe` 38
+        ControlPlaneRuntime.targetSecretAgentReplayCapacity `shouldBe` 76
         ControlPlaneRuntime.targetSecretAgentReplayCapacity
           `shouldBe` (2 * ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum)
         ControlPlaneRuntime.targetSecretAgentReplayMaximumEncodedBytes
-          `shouldBe` (138 * 1024 * 1024)
+          `shouldBe` (154 * 1024 * 1024)
         vaultConfig <- readFile "charts/vault/templates/configmap.yaml"
         vaultStatefulSet <- readFile "charts/vault/templates/statefulset.yaml"
-        vaultConfig `shouldContain` "max_request_size = 201326592"
+        -- The listener ceiling is the physical closure of the projection above:
+        -- 154 MiB of retained responses expand to at most 205.34 MiB inside the
+        -- Base64 JSON KV write, and 224 MiB keeps a finite margin over that.
+        vaultConfig `shouldContain` "max_request_size = 234881024"
         vaultStatefulSet
           `shouldContain` "checksum/config: {{ include (print $.Template.BasePath \"/configmap.yaml\") . | sha256sum }}"
 

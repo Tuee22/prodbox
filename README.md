@@ -166,7 +166,11 @@ validation environments.
   Until the plan-tracked cutover lands, the current binary still uses the legacy handwritten
   cascade. A cascade with no local RKE2 installation reaches no phase and exits non-zero with a
   `RecoveryPlaneNotEstablished` disposition; local-only delete alone owns the no-install success
-  arm. **Neither cascade exit code is exact AWS-absence evidence.** A non-zero cascade is unresolved,
+  arm. The accepted target gives that pairing a second exit, taken only when the run queries the
+  provider on this invocation and finds nothing, under the conjunction owned by
+  [Lifecycle Reconciliation Doctrine §5a.0](./documents/engineering/lifecycle_reconciliation_doctrine.md#5a0-a-cascade-that-reaches-no-phase-may-still-query-aws);
+  the current binary reaches neither half of it. **Neither shipped cascade exit code is exact
+  AWS-absence evidence.** A non-zero cascade is unresolved,
   while zero still carries no exact completion receipt. Preserve `.data/` and the complete output
   for recovery in both cases, and treat deleting `.data/` as an action that needs a positive
   disposition of the capabilities it holds rather than a clean-looking exit. Rollout status lives only in
@@ -238,7 +242,9 @@ The current codebase baseline still deploys and manages:
   with registry-backed steady-state workload sourcing, a narrow public-registry bootstrap exception
   for the registry's MinIO/S3 storage-backend prerequisites, anonymous HTTP push, and native-host-
   architecture image publication (its namespace and Service retain the historical `harbor` name)
-- **MinIO** for the local-cluster-first Pulumi backend
+- **MinIO** as the local-cluster-first ciphertext store the Pulumi checkpoints are persisted into
+  and restored from; Pulumi itself runs against a decrypt-to-scratch backend and never addresses
+  MinIO ([vault_doctrine.md §10](./documents/engineering/vault_doctrine.md#10-pulumi-backend-under-vault))
 - **MetalLB**, **Envoy Gateway**, **Gateway API**, and **cert-manager** for the current cluster
   edge implementation
 - **Percona Operator for PostgreSQL** for Helm-managed application databases, with namespace-local
@@ -758,7 +764,9 @@ Remove the local runtime while preserving retained local roots and leaving AWS v
 ```
 
 `cluster delete --yes` is destructive to the local runtime only. It removes the local cluster,
-removes the managed kubeconfig, preserves `.data/` as the sole retained operator-host directory,
+removes the managed kubeconfig, preserves `.data/` — the sole retained operator-host directory on
+the production path, with `.test-data/` as its `prodbox test` counterpart
+([storage_lifecycle_doctrine.md §7](./documents/engineering/storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root)) —
 and does **not** destroy per-run AWS validation stacks. Use `cluster delete --cascade` when the
 intended cleanup also includes per-run AWS stacks and Kubernetes-controller-created AWS resources.
 The per-run Pulumi state lives on MinIO's PV under
@@ -775,10 +783,15 @@ no-op success (`No RKE2 cluster to delete.`, exit 0). `cluster delete --cascade 
 that shortcut, because local absence says nothing about durable cleanup or AWS: with no install
 present it reaches no phase, names the durable cleanup run namespace it could not reach and the
 `RecoveryPlaneNotEstablished` disposition it reports, makes no statement about per-run AWS stacks,
-and exits non-zero. **No cascade exit authorizes deleting the retained root.** Only a `cluster
-delete` terminal arm carrying a completion receipt, or an explicit local-only uninstall, says the
-retained root is preserved by what it did; every other arm names the root and states that the run
-establishes nothing about retiring it.
+and exits non-zero. **No cascade exit authorizes deleting the retained root.** The narration is three-valued: only a
+`cluster delete` terminal arm carrying a completion receipt, or an explicit local-only uninstall,
+says the retained root is preserved by what it did; an arm that reached a delete route without a
+receipt names the root and states that the run established nothing about retiring it; and an arm
+that reached no delete route is silent about the root, because it observed nothing. **Corrected
+2026-09-16** — this passage previously claimed every non-receipt arm names the root, which the
+shipped narration does not do for either no-install arm. Raising the no-install cascade arm out of
+silence is scheduled work; status lives only in
+[Development Plan → Resume Here](./DEVELOPMENT_PLAN/README.md#resume-here).
 
 Consequences of that preservation are tracked in the development plan rather than described here.
 Preserving `.data/` also preserves the Bootstrap Broker's session fence. A bring-up abandoned partway

@@ -95,6 +95,7 @@ data ControlPlaneRoute
   | LifecycleTlsRetentionStage
   | TlsRetentionObserveVersion
   | LifecycleTlsRetentionLegacyRecoveryStage
+  | LifecycleTlsRetentionUnopenableSuccessorStage
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 allControlPlaneRoutes :: [ControlPlaneRoute]
@@ -164,6 +165,7 @@ controlPlaneRouteMethod route = case route of
   LifecycleTlsRetentionStage -> ControlPlanePost
   TlsRetentionObserveVersion -> ControlPlanePost
   LifecycleTlsRetentionLegacyRecoveryStage -> ControlPlanePost
+  LifecycleTlsRetentionUnopenableSuccessorStage -> ControlPlanePost
 
 controlPlaneRoutePath :: ControlPlaneRoute -> String
 controlPlaneRoutePath route = case route of
@@ -236,6 +238,8 @@ controlPlaneRoutePath route = case route of
   TlsRetentionObserveVersion -> "/v1/tls-retention/observe-version"
   LifecycleTlsRetentionLegacyRecoveryStage ->
     "/v1/authority/tls-retention/stage-legacy-recovery"
+  LifecycleTlsRetentionUnopenableSuccessorStage ->
+    "/v1/authority/tls-retention/stage-unopenable-successor"
 
 controlPlaneRouteRole :: ControlPlaneRoute -> RuntimeRole
 controlPlaneRouteRole route = case route of
@@ -301,6 +305,7 @@ controlPlaneRouteRole route = case route of
   LifecycleTlsRetentionStage -> LifecycleAuthorityRuntime
   TlsRetentionObserveVersion -> TlsRetentionRuntime
   LifecycleTlsRetentionLegacyRecoveryStage -> LifecycleAuthorityRuntime
+  LifecycleTlsRetentionUnopenableSuccessorStage -> LifecycleAuthorityRuntime
 
 routesForRole :: RuntimeRole -> [ControlPlaneRoute]
 routesForRole role =

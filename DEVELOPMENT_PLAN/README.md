@@ -25,16 +25,181 @@ dependency licenses the deviation ([Standard N.2](development_plan_standards.md#
 
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
-| 1 | `6.5` | 6 | Next | — |
+| 1 | `4.101` | 4 | Next | — |
+| 2 | `6.5` | 6 | Parked | — |
+| 3 | `6.6` | 6 | Parked | — |
+| 4 | `7.43` | 7 | Parked | — |
 
-**Resume at Sprint `6.5`, whose remaining work is the live campaign. It is the plan suite's only
-open row.** Sprints `7.41` and `7.42` are both `Done` and Phase `7`'s own-surface reopen closes with
-the second; Phases `4` and `5` both reclosed on 2026-09-14. A
+**Resume at Sprint `4.101`. Four rows remain, and three of them were opened on 2026-09-16 by
+Sprint `0.35`.** Phase `4` reopened on its own surface for Sprints `4.100` and `4.101`; `4.100` is
+`Done` and the narration half is closed, so what remains on that surface is the absence vocabulary,
+which mints a proven absence from a checkpoint that exists and parses to nothing — the arm two live
+leaks have been attributed to. Phase `4` stays open until `4.101` closes. Sprint `6.6` takes the postflight sweep's owed-scope widening and the
+no-install cascade's fresh re-verification, on the surface Sprint `6.5` authored on 2026-09-14.
+Sprint `7.43` takes the resources no create-side record can name, because an in-cluster controller
+created them. None of the four is blocked on Sprint `6.5`'s campaign, and none of them performs the
+single-writer activation that campaign gates.
+
+Sprint `2.135` is `Done` and Phase `2` recloses (2026-09-17); the narrative is below. Sprint
+`6.5`'s remaining work is still the
+live campaign, and the condition `2.135` closes is the one that stopped it for five consecutive
+cycles — so a host that meets that condition again now steps past it rather than stopping, although
+no live host has yet run the transition. Sprints `7.41` and `7.42` are both `Done` and Phase `7`'s own-surface reopen closes with
+the second; Phases `4` and `5` both reclosed on 2026-09-14, Phase `5`'s header written by hand on
+2026-09-15 because that header is the one place a reclose must be restated and therefore the one
+place that drifts. Phase `4`'s reclose has since been superseded by the 2026-09-16 own-surface
+reopen on Sprints `4.100`–`4.101` described above; Phase `5`'s stands. A
 create now records the resources it makes and not only the cycle it belongs to, and stamps the same
 run scope provider-side so those resources stay enumerable when every host record is gone. Its live
 proof — a create interrupted on purpose, followed by a cascade that names and destroys what it made —
 is pending, and the stamped tags reach a live cluster only after the Provider Worker runtime image is
 rebuilt.
+
+**Sprint `4.100` is Done (2026-09-17): the two `cluster delete` exits that explain least now name
+the store an operator deletes next.** `retainedStateNarrationFor` was silent on both no-install
+arms, so a cascade that reached no phase — the exit whose very next question is whether the retained
+root may now be removed — said nothing about it at all. Both arms narrate now, and the silent case
+is deleted rather than left unmapped: a narration nothing can select is a case a reader looks for
+and never finds. Each arm's sentence is its own, which the previous shape could not manage by
+sharing one: a run that uninstalled nothing no longer says "this uninstall", and a cascade that
+attempted no destroy no longer says destroys "were attempted earlier in this cascade".
+
+**The confirmed no-install result is a type rather than a fifth table row, and that is the whole
+design.** The entry table decides from delete mode and install presence, and neither observes AWS,
+so a row that could carry a confirmed result is a row that could mint one from silence — which is
+the defect Sprint `4.88` closed once. `ConfirmedNoInstallCascade` has an unexported constructor and
+one producer that takes the postflight sweep, admitting exactly the two answers
+`decideCascadeUninstallGate` admits; a `checkSealedConstructors` row fails the build if that export
+list ever widens. So "never mint success from silence" is a fact the gate holds rather than a
+property of a table somebody must keep reading correctly. What the sprint does *not* do is reach it:
+`confirmCascadeNoInstall` is representable and uncalled, because the no-install path runs no sweep.
+That boundary is the deliverable's own, and `cli_command_surface.md`'s Target region already says
+the current revision can reach only the non-zero exit.
+
+**The inventory that arm renders was making two false claims.** It called the retained root
+"MinIO-backed per-run Pulumi state" — one writer of a multi-writer capability store that also holds
+the Vault durable anchor, the bootstrap unlock bundle, the Lifecycle Authority's records including
+Sprint `7.41`'s write-ahead ownership manifests, every registered stack's checkpoint including the
+long-lived `aws-ses` one nothing may reap, and the container-registry blobs — and it printed a
+hardcoded `.data/` beside the resolved root, so a host whose `manual_pv_host_root` points elsewhere
+was shown a path it does not use. It prints the resolved root once and names the classes.
+
+Two gates refused this before it passed, both correctly: the coordinate-hygiene rule caught a
+literal AWS region inside a test fixture's ARN, and the wire-fidelity rule caught an inventory
+heading that rendered a plain local uninstall and a cascade that had just run every phase against
+AWS to the same string. Entry-arm group **6/6**, primary unit **5,171/5,171**, both
+`prodbox test integration cli` and `prodbox test integration env` at **70/70**, canonical
+`prodbox dev check` exits 0. **Live-proof: pending** — the arm table and its narration are pure, and
+a live host exhibiting the silence is evidence rather than a gate.
+
+**Sprint `2.135` is Done and Phase 2 recloses (2026-09-17): the retained-TLS lane can step past one
+object it can never write, and exactly one.** Sprint `6.5`'s campaign stopped five consecutive times
+on the same node, and the fifth cycle produced the fact rather than another refusal: the Authority's
+current retained version is `v2` while the store holds a `v3` object that is a well-formed envelope
+whose wrapped DEK does not open under `prodbox-tls-retention-dek`. Both obvious repairs were already
+eliminated — rewriting the slot is impossible because a retain draws a fresh DEK and nonce per call
+so the bytes are not reproducible, and adopting it is impossible because its DEK is not ours — and
+`nextRetentionVersion` returns that version on every future retain, so one unusable object stopped
+every retain on that slot forever. The lane now admits one successor past it, from a committed
+current reference only.
+
+**The design decision that matters is that the evidence is durable, and the reason is a property of
+the validator rather than a preference.** `validateTlsRetentionState` re-runs each outbox's own
+staging decision against a state rebuilt from the durable record alone, on both encode and decode,
+so any admission input that is not in the record is an input the codec boundary cannot see — and a
+version jump authorized by such a token would fail to load the very state that authorized it. The
+skipped version and the digest of the bytes that occupied it are therefore retained, and the digest
+is not decoration: without it the evidence would be derivable from the candidate, the validator
+would be comparing a value against itself, and the skip would be unconditionally admitted.
+
+**The bound is one version and it is enforced in four independent places, because "bounded" is the
+whole claim.** The skipped version is pinned to the one the committed reference was about to claim,
+so the lane cannot walk forward looking for a free slot; the candidate is pinned to that version's
+immediate successor, so there is no jump of two; the transition is reachable from no state but a
+committed current reference, so a second skip stacked on a staged successor is a concurrent-pending
+refusal; and the successor slot is itself observed before it is claimed, so an occupied successor
+refuses by name rather than starting the search the other three forbid. That last refusal is what
+gave `TlsWorkflowRetentionVersionOccupied` a producer — Sprint `6.5` declared, classified and
+rendered it, then chose adoption over refusal and left it constructible nowhere.
+
+**The new durable state is the only recovery outbox that retains its predecessor, and that is not
+symmetry with the legacy lane but a difference from it.** Every pre-outbox recovery state answers
+`Nothing` for a current reference because it is entered from an empty aggregate, where none exists.
+This one is entered from a committed reference whose own object is intact; only the successor slot
+is unwritable. So restore keeps applying that reference for the whole staging window — which matters
+because the retain that stages the skip runs on the vscode chart delete and the matching restore
+runs on the deploy — and promotion is still judged against it for staleness, validity regression and
+key change. The constructor is appended, so both byte-pinned pre-outbox encodings and every
+intermediate wire tag are unchanged, which the existing codec cases prove by continuing to pass
+untouched.
+
+**One success is now announced, because no failure line would ever carry it.** The Authority's
+protected-log emitter fires only on `Left`, so a retain that succeeded while permanently abandoning
+an immutable object would leave the skip recorded in a durable Authority field and nowhere a reader
+looks. A promoted successor writes
+`tls-retention/workflow notice=retained-past-unopenable-version/v<n>`, distinct from the refusal
+line in both key and token. The deployed `TlsRetentionWorkflowAuthorityFailure` vocabulary is
+deliberately not widened: the successor succeeds and answers the existing retained response, and
+where no successor is admissible the existing `retention-version-unopenable/v<n>` remains the
+refusal.
+
+**An adversarial review after the change was green found three defects the gates and the tests had
+both agreed with, and all three are repaired.** `validateUnopenableSuccessorStaging` compared the
+evidence, candidate and envelope but not the approval or the predecessor, so an Authority returning
+a pending with an approval the host never sent would have been accepted — and promotion uses the
+pending's own approval; it now compares the complete record, as its three siblings do. The Target
+Secret Agent's per-attempt request bound was left unchanged on the argument that the Authority-lane
+branches are mutually exclusive with the pre-outbox ones — true at one retain, false across one
+attempt, because a first retain that enters empty and promotes leaves the aggregate current for the
+retain-on-ready that follows it; the two summands are added, taking the maximum to 38, the replay
+capacity to 76 and the encoded ceiling to 154 MiB, which in turn does not fit the Vault listener's
+former 192 MiB request ceiling once Base64-expanded, so that moves to 224 MiB and its comment stops
+describing a 112 MiB projection it has not had for some time. And two governed sentences were false
+rather than incomplete: "every recovery state refuses restore and issuance", which this sprint's
+state contradicts by design, and "`validateTlsRetentionState` re-runs each outbox's own staging
+decision", which holds for two of the five pending constructors. The same pass also softened an
+evidence Haddock that claimed more than a pure fold can know, and closed a false success where a
+`404` from the selected Agent reported nothing-to-retain while leaving a durable outbox bound to a
+source that had vanished.
+
+**Three findings are registered rather than closed, and one of them is about this sprint's own
+premise.** The TLS Retention Adapter's replay capacity is the undifferentiated generic 4 and was
+never derived for that role; counting the Adapter requests one retain issues, the deepest pre-outbox
+recovery path already reaches five, so the bound is exceeded on paper by a path that predates this
+sprint. Nothing is raised, because exhausting it is a live refusal no host has reported and moving a
+Standard-P capacity on a paper argument is the unmeasured change this plan exists to prevent; the
+ledger carries it `Unowned` so the measurement is owed. And the sprint block's claim that the two
+lanes are "kept disjoint by the frozen counterexample
+`TLS-LEGACY-RECOVERY-V3-IMMUTABLE-COLLISION-2026-09-08`" overstates that identifier: it has no
+fixture family, no loader and no derived rows, and its entire executable content is two string
+equalities over the two object-name constructors. What it freezes is the key-space partition, not
+any staging behaviour. The disjointness this sprint relies on is enforced by the two staging
+decisions' own state gates — pre-outbox recovery from `TlsRetentionEmpty` only, the successor from
+`TlsRetentionCurrent` only — and is asserted directly rather than inherited. The third is Sprint
+`6.5`'s rather than this sprint's: the resumed-collision rebase onto an occupied Authority-lane
+version can never commit, because its success path routes through the ordinary staging transition
+and the desired pending necessarily differs from the durable one by the very envelope mismatch that
+caused the collision. It does real Target work for an outcome fixed in advance, and superseding a
+pending with an occupant-derived one needs an Authority-side transition that does not exist. It is
+registered here because this sprint's successor outbox reaches the same arm.
+
+That last one was the review's strongest finding and the only one to survive three independent
+refutation attempts from two lenses, and the part worth keeping is what the dead path was doing on
+the way to failing. It ran a live selected retain and a live restore into the public-edge Secret
+before the Authority refused it, and the refusal arrived as `authority-state-unavailable` — an
+occupied immutable slot reported as an unavailable Authority, which is the misattribution four live
+cycles of this campaign were spent removing. The same arm emitted its "resumed slot occupied"
+refusal only on the branch where the re-read said the slot was *missing*. Both are repaired: the arm
+re-observes and refuses by name with no Target work, and each constructor now sits on the branch its
+own documentation describes.
+
+Stable counterexample `TLS-AUTHORITY-UNOPENABLE-VERSION-PERMANENT-RETAIN-STOP-2026-09-15` is
+registered with a repository-owned two-sided reproducer whose causal profile is one constructed
+durable state and no infrastructure at all. Authority fold **34/34**, TLS-retention endpoint
+**35/35**, control-plane route **9/9**, primary unit **5,169/5,169**, both
+`prodbox test integration cli` and `prodbox test integration env` at **70/70**, canonical
+`prodbox dev check` exits 0. **Live-proof: pending** — no live host has run the successor transition, and no fake can
+establish that a real retained-home Transit key refuses the exact object a live store holds.
 
 **Sprint `7.42` is Done and Phase 7 recloses (2026-09-15): the one mechanism that can recover a live
 resource named by nothing now has a way in.** The adoption observer, its planner, the permit
@@ -165,14 +330,83 @@ still occur only in `Prodbox.Test.CleanRoomHandoff`, and `prodbox cluster delete
 routes to `runNativeDeleteCascade`. The item is standing rather than one-shot — it is owed again on
 every revision that reaches this row.
 
-**What is left of Sprint `6.5` is the activation, and the activation is blocked on evidence this
-worktree cannot produce.** Standard P forbids activation and legacy deletion until a current-revision
-home qualification row is `proven`, which needs two consecutive live destructive candidate cycles.
-This host is in a genuine clean-room state — no RKE2 install, no `.prodbox-state`, and no Tier-0
-`prodbox.dhall` or `test-secrets.dhall` — and `test-secrets.dhall` carries the durable elevated AWS
-credential, which by
-[AGENTS.md](../AGENTS.md#security) enters `prodbox` only through the interactive `SecretRef.Prompt`.
-The campaign resumes with `prodbox config setup` run by the operator.
+**What is left of Sprint `6.5` is the activation, and the campaign that gates it is running again
+as of 2026-09-15.** Standard P forbids activation and legacy deletion until a current-revision home
+qualification row is `proven`, which needs two consecutive live destructive candidate cycles. The
+blocker recorded here through 2026-09-14 — no `test-secrets.dhall`, which carries the durable
+elevated AWS credential that by [AGENTS.md](../AGENTS.md#security) enters `prodbox` only through the
+interactive `SecretRef.Prompt` — **is lifted**: the operator restored the file, and the harness
+regenerates the Tier-0 `prodbox.dhall` from it through
+`regenerateConfigFromTestSecrets`, so no interactive `config setup` was needed and the first cycle
+installed RKE2 onto a genuine clean-room host and brought the full local control plane up.
+
+**Three cycles have run and none has completed one, which is the campaign working rather than
+failing.** Each refused before candidate execution, each refusal was attributable, and each was
+repaired code-locally with `prodbox dev check` at 0 before the next launched.
+
+The first refusal was in **Sprint `7.41`'s own write-ahead mechanism, on its first live exercise**:
+a create commits its ownership manifest under `ReconcileDesiredPresent` — its own side of the
+lifecycle — and then read the manifest back through the *cleanup-side* read-back while still passing
+that create-side scope. `mkOwnershipManifestTarget` mints its binding under `ReconcileDesiredAbsent`
+because a target is cleanup authority's vehicle, so the two are mutually exclusive by construction
+and every live create refused. Nothing leaked: the refusal is before the effect, and a read-only
+all-region sweep found no EKS cluster and no non-default VPC. The read-back now asks on the cleanup
+side, which is also the more honest statement of what it is for — the create is asking the question
+a later teardown will ask, not taking a second look at what it just wrote. **Both unit suites over
+this lane hand-built the cleanup-side scope in a fixture**, so what they held was a relationship an
+author had already got right rather than the one production passes; four cases now assert the
+production re-scoper.
+
+The second refusal came on the **second consecutive cycle, which is precisely what the two-cycle
+requirement exists to reach**. The public-edge TLS retain that runs before the vscode chart delete
+writes its Authority-lane object with a put-if-absent and never observes that lane first — the
+observation above it reads the *legacy* lane, to answer the different question of whether there is a
+pre-Authority envelope to adopt. When the store's occupancy has drifted ahead of the Authority's
+current version, which is what an interrupted retain leaves, the claim collides and surfaces as
+`put/conflict/confirmation/bytes-mismatch`: a refusal naming neither the version nor either digest.
+An ordinary retain now observes before it claims and refuses by name. The occupant is deliberately
+not adopted, because adoption on that lane would promote an envelope nothing staged; and the public
+failure vocabulary is deliberately not widened, because that is a deployed-protocol change.
+
+**The third cycle then proved that refusal was aimed at the wrong arm, which is the more useful
+result.** It ran the repaired runtime — the Authority pod's `imageID` is the manifest that cycle
+pushed — and still reported the opaque store conflict, so the new observation never ran, so the
+retain is not reaching the claim path at all. It is resuming a **pending staged by an earlier run**,
+and a resumed pending has no version to claim and no observation ahead of its store. Only the
+legacy-recovery state can rebase onto an occupant; every other state returned the adapter's own
+error, which is why three consecutive live cycles reported an unavailable adapter for a slot
+somebody else held. That catch-all now names the version, with the recovery behaviour unchanged.
+
+**The fourth cycle produced the number, and it names the blocker.** `retention-version-occupied/v3`:
+the Authority's current retained version is `v2` while the store already holds `v3` under an
+envelope that is not the one the retain builds. That is the skew an interrupted retain leaves — an
+object written and a promotion lost — and the ordinary state cannot pass it, because each attempt
+wraps a fresh DEK so the bytes are not reproducible and `v3` is immutable. The one mechanism that
+could resolve it, rebasing onto the occupant, is gated to the legacy-recovery state. **Until that
+skew is resolved this host completes no cycle**, because the retain runs on the vscode chart delete,
+the third node of the restore graph. That is the next owed piece of work on Sprint `6.5` and it is
+now a stated problem rather than an unattributed refusal.
+
+**Cycle six cleared the blocker and reached further than this campaign ever has.** From the restored
+clean-room baseline the restore graph completed with no failed node, and the `aws-eks-subzone` create
+returned a Provider receipt — the **first live execution of a registered stack create through the
+repaired write-ahead read-back**, so the defect that refused every create is closed live rather than
+only code-locally. The `aws-eks` create then failed at the effect with a Provider Worker 503 after
+its generation was committed, which is the one arm under which a resource can exist, and it named
+the durable manifest that says what it was authorized to make.
+
+**Resources did exist, and the teardown proved the leak class is detected but not remediated.** An
+ACTIVE EKS cluster, two `t3.large` nodes, a VPC, an internet gateway and IAM. `cluster delete
+--cascade` and `aws stack eks destroy --yes` both answered *absent* from an empty checkpoint — the
+false-absence this plan names — while the postflight sweep returned **43 tag-matches** on Sprint
+`7.41`'s own provider-side run tags and **gated the uninstall**, leaving the control plane running
+because destroying it would leave nothing able to act on the answer. Detection, region and page
+coverage, and the ordering repair are live-proven; remediation is the gap, and closing it is exactly
+what Sprint `6.5`'s activation owns. The residue was cleared by hand under explicit operator
+authorization and the account verified empty in all three regions.
+
+No qualification artifact and no activation witness exists, the legacy public writer remains sole,
+and Sprint `6.5` stays open.
 
 **Sprint `7.41`'s core is landed (2026-09-14): a create now says what it is about to make, and the
 reader stops laundering its own evidence.** The manifest is committed and read back through a
@@ -13500,8 +13734,8 @@ long-lived cross-substrate shared infrastructure retained by design) live in
 [Standard P](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)
 requires work opened by a live counterexample to carry a stable name and a repository-owned
 reproducer. It does not require a disposition, and without one a closed counterexample and an open
-one read alike. Re-measured 2026-09-14 by recounting the directory rather than incrementing the
-previous figure: `DEVELOPMENT_PLAN/` names **220** distinct counterexample identifiers, and **four**
+one read alike. Re-measured 2026-09-17 by recounting the directory rather than incrementing the
+previous figure: `DEVELOPMENT_PLAN/` names **221** distinct counterexample identifiers, and **four**
 frozen fixture families exist on disk — `LCPC-2026-07-11`, `TEARDOWN-2026-08-15`,
 `PROVIDER-EVIDENCE-CONTROL-CHARACTER-UNSETTLEABLE-2026-09-13`, and
 `CREATE-INTERRUPTED-2026-09-08` — under `test/qualification/`. The gap between those numbers is the
@@ -13518,6 +13752,7 @@ cycle in the same campaign superseded it, and no separate repair was owed.
 
 | Counterexample | Disposition | Owner |
 |---|---|---|
+| `TLS-AUTHORITY-UNOPENABLE-VERSION-PERMANENT-RETAIN-STOP-2026-09-15` | Closed by repair — Sprint `2.135` admits exactly one successor version past an Authority-lane object proven unopenable, from a committed current reference only and under durable evidence the codec boundary re-checks. Its reproducer is repository-owned and two-sided in one unit case: the frozen superseded answer is asserted, not described — `nextRetentionVersion` returns the unopenable version from that state on every call, `decideTlsStaging` refuses the successor as `TlsStageVersionMismatch`, and `decideTlsLegacyRecoveryStaging` refuses the state as `TlsLegacyRecoveryStageStateNotEmpty` — and the replacement stages, stores, promotes and replays idempotently in the same case. No frozen fixture family is on disk because the causal profile is one constructed durable state with no infrastructure, background load, or fault schedule to hold constant. Live re-crossing pending | — |
 | `PROVIDER-EVIDENCE-CONTROL-CHARACTER-UNSETTLEABLE-2026-09-13` | Closed by repair — Sprint `4.99` replaced all six encoders with one canonical codec, and the frozen two-sided family is on disk under `test/qualification/`: the superseded bytes refuse with the control-character cause under each producer's own intent, the replacements are admitted under the same intents, and the table asserts it covers all six on both sides. Registered 2026-09-13 from a unit reproducer rather than a live cycle, which is why it carries no `CASCADE-QUALIFICATION-` prefix; no live cascade has yet carried one of these observations to settlement | — |
 | `CASCADE-QUALIFICATION-EKS-DRAIN-LEASE-EXCEEDS-BEARER-EXPIRY-2026-09-12` | Closed by repair — Sprint `4.95` split the collapsed refusal so the bearer bound names itself and carries the expiry it compared against, and derived the lease from measured drain work instead of the ceiling; live re-crossing pending | — |
 | `CREATE-INTERRUPTED-2026-09-08` | Closed by repair — Sprint `7.41` committed and independently read back a write-ahead ownership manifest before the effect, and its fixture family is on disk in the established five-file form under `test/qualification/`. The reproducer separates the two lanes rather than describing one: the superseded lane answers `orphan-unnameable` at all five interruption kinds at or after its effect and `coordinates-named` at none, the replacement lane answers `coordinates-named` at thirty-five points and `orphan-unnameable` at none, and both run the effect — an implementation that never mutates never orphans either and would not be a fix. The committed mutation, which claims the replacement orphans after its effect, must fail to load and does. Live re-crossing pending | — |
@@ -13793,6 +14028,23 @@ public raw hash of plaintext secrets; the evidence digest covers only those publ
 
 Any change to process topology, capability wiring, deadline algebra, resource envelopes,
 persistence, lifecycle orchestration, or cleanup invalidates a prior `proven` row.
+
+**Registered 2026-09-17 — Sprint `2.135` moves a Standard-P persistence-protocol surface.** Both
+rows are already `pending`, so nothing is retracted. What is recorded is that a new durable
+`TlsRetentionState` constructor changes what a retained Authority object can contain, so no identity
+captured before this sprint describes the resulting state machine. The constructor is appended, so
+every earlier encoding is preserved and a pre-sprint object still loads; the invalidation is in the
+other direction — an object written after this sprint carries a state a pre-sprint revision cannot
+decode, which makes the rollback direction of a qualification run a real question rather than a
+formality. A run must also exercise the retain arm that reaches it, because the transition is
+reachable only from a committed current reference standing against an Authority-lane object that
+decodes and does not open, and no aggregate run has produced that state on purpose.
+
+One consequence belongs in the Cleanup/residue column. The successor permanently abandons an
+immutable object that nothing deletes: it stays a registered `LongLived` retention version and is
+removed only when TLS retention itself is deleted. A run whose intended-retained set is computed
+from the Authority's current reference alone will therefore under-count that slot, and the cell must
+say whether the skipped version was observed and counted.
 
 **Registered 2026-09-15 — Sprint `7.42` moves a Standard-P capability-wiring surface, and the AWS
 row's counterexample cell already names what a run must now exercise.** Both rows are already

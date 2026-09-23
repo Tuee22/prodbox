@@ -85,6 +85,7 @@ module Prodbox.ControlPlane.Runtime
   , targetSecretAgentReplayCapacity
   , targetSecretAgentReplayMaximumEncodedBytes
   , classifyTlsRetentionWorkflowFailure
+  , renderTlsWorkflowRetainCause
   , LifecycleAuthorityReadinessDependency (..)
   , lifecycleAuthorityReadinessDependencies
   , registeredClientTableFromTrustRegistry
@@ -784,6 +785,7 @@ import Prodbox.Lifecycle.Authority.Submission
   ( OperationId
   , RequestDigest (RequestDigest)
   )
+import Prodbox.Lifecycle.Authority.TlsRetention (RetentionVersion (..))
 import Prodbox.Lifecycle.CheckpointAuthority
   ( AuthorityCoordinateError
   , LongLivedCheckpointAuthority
@@ -2757,6 +2759,14 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                         pure TlsRetentionWorkflowAuthorityNothingToRetain
                       Right (TlsWorkflowRetained _) ->
                         pure TlsRetentionWorkflowAuthorityRetained
+                      -- A success, and therefore one the failure diagnostic
+                      -- never reaches. The response class is deliberately the
+                      -- unchanged retained answer: the skip is a fact about
+                      -- this control plane's own store, not a different
+                      -- outcome for the caller.
+                      Right outcome@(TlsWorkflowRetainedPastUnopenableVersion _ _) -> do
+                        observeTlsWorkflowRetainNotice outcome
+                        pure TlsRetentionWorkflowAuthorityRetained
                 TlsRetentionWorkflowAuthorityRestore substrate scope ->
                   runAuthorityTlsWorkflow substrate scope $ \workflow -> do
                     nowResult <- currentAuthorityTime
@@ -2815,6 +2825,12 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                 writeClosedDiagnostic
                   ( "tls-retention/workflow failure="
                       <> Text.unpack (renderTlsWorkflowFailureCause failure)
+                  )
+
+              observeTlsWorkflowRetainNotice outcome =
+                writeClosedDiagnostic
+                  ( "tls-retention/workflow notice="
+                      <> Text.unpack (renderTlsWorkflowRetainCause outcome)
                   )
             retainedSesSmtpRepository =
               modelBRetainedMaterialRepository
@@ -3724,6 +3740,18 @@ authorityBackupReplayMaximumEncodedBytes = 32 * 1024 * 1024
 -- authenticate at home, that branch stops before selected restore and then
 -- performs fresh home prepare, selected retain, and home wrap for fixed version
 -- 3: two requests beyond the already-sized successful collision branch.
+-- The Authority-owned lane has the same two shapes past a committed current
+-- reference, and both are counted rather than folded into the pre-outbox
+-- maxima above. It is tempting to net them out as mutually exclusive, because
+-- each pre-outbox branch requires an empty aggregate and each Authority-lane
+-- branch requires a committed one; that reasoning is about the state at one
+-- retain and not about one attempt. An attempt walks retain, restore, and
+-- retain-on-ready, and a first retain that enters empty and promotes leaves the
+-- aggregate current, so the retain-on-ready later in the same attempt can take
+-- an Authority-lane branch the earlier one could not. An occupied version is
+-- adopted through the same prepare\/rewrap\/restore substitution, adding two;
+-- a version proven unopenable stops before selected restore and then performs
+-- fresh home prepare, selected retain, and home wrap, adding four in total.
 targetSecretAgentReconcileAttemptRequestMaximum :: Natural
 targetSecretAgentReconcileAttemptRequestMaximum =
   providerCredentialTargetObservationRequests
@@ -3735,6 +3763,8 @@ targetSecretAgentReconcileAttemptRequestMaximum =
     + legacyTlsAdoptionAdditionalRequests
     + legacyTlsRecoveryAdditionalRequests
     + legacyTlsUnopenableCollisionSuccessorAdditionalRequests
+    + authorityLaneOccupiedAdoptionAdditionalRequests
+    + authorityLaneUnopenableSuccessorAdditionalRequests
  where
   providerCredentialTargetObservationRequests = 1
   committedExternalMaterialRecoveryObservationRequests = 1
@@ -3745,6 +3775,8 @@ targetSecretAgentReconcileAttemptRequestMaximum =
   legacyTlsAdoptionAdditionalRequests = 2
   legacyTlsRecoveryAdditionalRequests = 3
   legacyTlsUnopenableCollisionSuccessorAdditionalRequests = 2
+  authorityLaneOccupiedAdoptionAdditionalRequests = 2
+  authorityLaneUnopenableSuccessorAdditionalRequests = 2
 
 targetSecretAgentReplayCapacity :: Natural
 targetSecretAgentReplayCapacity =
@@ -3752,12 +3784,13 @@ targetSecretAgentReplayCapacity =
  where
   immediateSupportedAttemptCount = 2
 
--- Sixty-eight maximum-size responses plus their retained replay metadata fit
--- below sixty-nine response-widths. The corresponding Vault listener request
--- ceiling includes the Base64/JSON expansion of this finite bound.
+-- Seventy-six maximum-size responses plus their retained replay metadata fit
+-- below seventy-seven response-widths. The corresponding Vault listener request
+-- ceiling includes the Base64/JSON expansion of this finite bound: 154 MiB
+-- expands to at most 205.34 MiB, which the listener's 224 MiB maximum covers.
 targetSecretAgentReplayMaximumEncodedBytes :: Int
 targetSecretAgentReplayMaximumEncodedBytes =
-  69 * standardAuthenticatedResponseMaximumBytes
+  77 * standardAuthenticatedResponseMaximumBytes
 
 -- Replay stores the bounded response, not the potentially large checkpoint
 -- request.  Keeping this limit independent from the request frame prevents a
@@ -3844,7 +3877,27 @@ classifyTlsRetentionWorkflowFailure failure = case failure of
   TlsWorkflowPendingWithoutCurrent ->
     TlsRetentionWorkflowAuthorityRestoreRefused
   TlsWorkflowRestoreRefused _ -> TlsRetentionWorkflowAuthorityRestoreRefused
+  -- Deliberately not a new public constructor. Widening this vocabulary is a
+  -- deployed-protocol change; the coordinate that was missing is the version,
+  -- and it lands in the protected cause below where a reader can act on it.
+  TlsWorkflowRetentionVersionOccupied _ -> TlsRetentionWorkflowAuthorityRestoreRefused
+  TlsWorkflowResumedRetentionVersionOccupied _ -> TlsRetentionWorkflowAuthorityRestoreRefused
+  TlsWorkflowRetentionVersionUnopenable _ -> TlsRetentionWorkflowAuthorityRestoreRefused
+  TlsWorkflowRetentionVersionCorrupt _ -> TlsRetentionWorkflowAuthorityRestoreRefused
+  TlsWorkflowRetentionSuccessorSourceMissing _ ->
+    TlsRetentionWorkflowAuthorityLegacySourceMissing
   TlsWorkflowWrappedDekInvalid -> TlsRetentionWorkflowAuthorityWrappedDekInvalid
+
+-- | The closed cause vocabulary for a retain that /succeeded/. Only the
+-- successor arm is a notice worth writing: it names the version this control
+-- plane has permanently stopped being able to write, which no failure line
+-- will ever carry because the operation did not fail.
+renderTlsWorkflowRetainCause :: TlsWorkflowRetainOutcome -> Text
+renderTlsWorkflowRetainCause outcome = case outcome of
+  TlsWorkflowNothingToRetain -> "nothing-to-retain"
+  TlsWorkflowRetained _ -> "retained"
+  TlsWorkflowRetainedPastUnopenableVersion (RetentionVersion skipped) _ ->
+    "retained-past-unopenable-version/v" <> Text.pack (show skipped)
 
 renderTlsWorkflowFailureCause :: TlsRetentionWorkflowError -> Text
 renderTlsWorkflowFailureCause failure = case failure of
@@ -3866,6 +3919,16 @@ renderTlsWorkflowFailureCause failure = case failure of
     "legacy-adoption-not-idempotent"
   TlsWorkflowPendingWithoutCurrent -> "pending-without-current"
   TlsWorkflowRestoreRefused _ -> "restore-refused"
+  TlsWorkflowRetentionVersionOccupied (RetentionVersion version) ->
+    "retention-version-occupied/v" <> Text.pack (show version)
+  TlsWorkflowResumedRetentionVersionOccupied (RetentionVersion version) ->
+    "resumed-retention-version-occupied/v" <> Text.pack (show version)
+  TlsWorkflowRetentionVersionUnopenable (RetentionVersion version) ->
+    "retention-version-unopenable/v" <> Text.pack (show version)
+  TlsWorkflowRetentionVersionCorrupt (RetentionVersion version) ->
+    "retention-version-corrupt/v" <> Text.pack (show version)
+  TlsWorkflowRetentionSuccessorSourceMissing (RetentionVersion version) ->
+    "retention-successor-source-missing/v" <> Text.pack (show version)
   TlsWorkflowWrappedDekInvalid -> "wrapped-dek-invalid"
 
 -- | Diagnostics cannot change an operation result. Async cancellation remains

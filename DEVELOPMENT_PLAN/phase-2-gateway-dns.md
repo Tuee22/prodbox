@@ -11,6 +11,28 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-09-17 on Sprint `2.135` (Standards A/N/P).** The retained public-edge TLS lane
+admits exactly one successor version past an Authority-lane object proven unopenable, and admits it
+only from a committed current reference. The evidence is durable — the skipped version and the
+digest of the bytes that occupied it — and `validateTlsRetentionState` re-runs the whole admission
+from that record alone at every codec crossing, so a version jump cannot be authorized by a token
+the boundary never sees. The new durable constructor is appended, so every earlier wire tag and both
+byte-pinned pre-outbox encodings are unchanged. It is the only recovery outbox that retains its
+predecessor, which stays restorable for the whole staging window and still governs promotion. The
+bound is one version and never a search: the successor slot is itself observed before it is claimed
+and refuses by name if occupied, a second skip stacked on the first refuses, and evidence naming any
+version but the one the reference was about to claim authorizes nothing.
+
+🔄 **Reopened 2026-09-16 on Sprint `2.135` (Standards A/N).** Own-surface reopen on the retained
+public-edge TLS lane this phase owns. Sprint `6.5`'s live campaign was stopped for five consecutive
+cycles by a retention version whose Authority-lane object exists and cannot be opened:
+`nextRetentionVersion` selects it on every future retain, the envelope a retain builds is not
+reproducible because `retainTlsAtSelectedAgent` draws a fresh DEK and nonce per call, and the
+occupant's wrapped DEK does not open under `prodbox-tls-retention-dek`. The ordinary lane can
+therefore neither rewrite the slot nor adopt it, and the legacy lane's fixed-successor recovery is
+reachable only from `TlsRetentionLegacyRecoveryPendingState`. The phase recloses when `2.135`
+reaches `Done`; until then this entry records an open reopen, not a closure.
+
 ✅ **Reclosed 2026-09-11 on Sprint `2.134` (Standards A/N/P); header corrected 2026-09-12.** The
 own-surface reopen was on the daemon, workload, bootstrap-broker, and control-plane runtime
 concurrency this phase owns. Sprint `6.5`'s live investigation proved a token writer that died
@@ -14714,6 +14736,293 @@ passing.
 ### Remaining Work
 
 None.
+
+## Sprint 2.135: A Retention Version Nothing Can Open Stops Every Retain Forever [✅ Done]
+
+**Status**: Done (2026-09-17). Phase `2` own-surface reopen (Standards A/N) on the retained-TLS
+control-plane state machine this phase owns. Opened 2026-09-16 by Sprint `6.5`'s live campaign,
+which was stopped for five consecutive cycles by exactly this condition.
+**Doctrine**: [Vault Doctrine](../documents/engineering/vault_doctrine.md),
+[Lifecycle Control-Plane Architecture
+§5.4](../documents/engineering/lifecycle_control_plane_architecture.md#54-retained-tls-envelope-workflow),
+and [Pure FP Standards §7, "GADT-Indexed State
+Machines"](../documents/engineering/pure_fp_standards.md#7-gadt-indexed-state-machines).
+**Implementation**: `src/Prodbox/Lifecycle/Authority/TlsRetention.hs`,
+`src/Prodbox/ControlPlane/TlsRetentionWorkflow.hs`,
+`src/Prodbox/ControlPlane/TlsRetentionAuthority.hs`,
+`src/Prodbox/ControlPlane/TlsRetentionAuthorityEndpoint.hs`,
+`src/Prodbox/ControlPlane/TlsRetentionAuthorityClient.hs`,
+`src/Prodbox/ControlPlane/Route.hs`, `src/Prodbox/ControlPlane/Client.hs`,
+`src/Prodbox/ControlPlane/Server.hs`,
+`src/Prodbox/ControlPlane/RequestAuthentication.hs`,
+`src/Prodbox/ControlPlane/AuthenticationRegistry.hs`,
+`src/Prodbox/ControlPlane/RoleInterpreters.hs`, `src/Prodbox/ControlPlane/Runtime.hs`,
+`src/Prodbox/Lib/ChartPlatform.hs`, `charts/vault/templates/configmap.yaml`,
+`test/unit/LifecycleAuthorityTlsRetention.hs`,
+`test/unit/ControlPlaneTlsRetentionEndpoint.hs`, `test/unit/ControlPlaneRoute.hs`,
+`test/unit/Main.hs`, and `test/control-plane-authenticated-transport/Main.hs`.
+**Blocked by**: none.
+**Docs to update**: `documents/engineering/vault_doctrine.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`,
+`DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+**Live-proof**: pending and non-blocking for code-local closure. The condition is reproducible from
+a constructed durable state; a live host exhibiting it is evidence, not a gate. No live host has
+run the successor transition, and no fake can establish that a real retained-home Transit key
+returns the closed authentication failure for the exact object a live store holds.
+**Deployment qualification**: pending — **invalidated** on persistence protocol. A new durable
+state constructor changes what a retained Authority object can contain, so no identity captured
+before this sprint describes the resulting state machine.
+**Independent Validation**: pure staging/promotion/restore decision tables over constructed durable
+states, the durable codec's byte-pinned wire-tag cases and its refusal of five forged successor
+outboxes, Authority serve-level CAS/exact-replay/refusal-token cases over an in-memory repository,
+workflow cases against fakes that record every boundary crossing in order, and the route table's
+path/role/wire-code pins; no live infrastructure.
+
+### Objective
+
+Give the ordinary retained-TLS lane a bounded, evidence-carrying way past a version whose
+Authority-lane object exists and cannot be opened, so that one unusable object is a recoverable
+condition rather than a permanent stop.
+
+### Stable Counterexample (2026-09-15)
+
+`TLS-AUTHORITY-UNOPENABLE-VERSION-PERMANENT-RETAIN-STOP-2026-09-15`. Sprint `6.5`'s campaign held
+the host, image, credential and restore graph constant across five consecutive live cycles and
+stopped at the same node every time — `RestoreNodeDeleteChart RestoreChartVscode`, which owns the
+public-edge certificate and therefore runs a preserve-before-delete retain. Cycles one through four
+each produced a different refusal and each one was repaired before the next launched; the fifth
+produced the fact: `retention-version-unopenable/v3` from an Authority whose current retained
+version is `v2`. The object at `v3` is a well-formed envelope whose wrapped DEK does not open under
+`prodbox-tls-retention-dek`.
+
+The causal profile is one constructed durable state and carries no infrastructure, background load,
+or fault schedule at all, which is why the reproducer is repository-owned rather than live:
+`TlsRetentionCurrent` at `v2`, an Authority-lane object at `v3` that decodes and does not open. The
+frozen superseded answer is asserted rather than described — `nextRetentionVersion` returns `v3`
+from that state on every call, `decideTlsStaging` refuses a `v4` candidate as
+`TlsStageVersionMismatch`, and `decideTlsLegacyRecoveryStaging` refuses the state outright as
+`TlsLegacyRecoveryStageStateNotEmpty`, so no transition that existed before this sprint can reach
+past `v3` and the stop is permanent rather than intermittent. The replacement passes in the same
+case. The envelope mapping is unchanged in both directions: the superseded and replacement lanes
+run the same Target Agent and Adapter request shapes, and the replacement adds four Target requests
+to one retain attempt against five already counted for the mutually exclusive pre-outbox branches,
+so the compiled `targetSecretAgentReconcileAttemptRequestMaximum` bounds both without moving.
+
+### Architecture
+
+The lane is disjoint from the pre-outbox recovery lane by state rather than by convention.
+`decideTlsLegacyRecoveryStaging` is reachable only from `TlsRetentionEmpty` and pins its versions to
+the fixed literals 1, 2 and 3; `decideTlsUnopenableSuccessorStaging` is reachable only from
+`TlsRetentionCurrent` and derives both its versions from that reference. Neither admits the other's
+state, and both refuse the other's outbox as a concurrent pending.
+
+`TlsRetentionUnopenableSuccessorPendingState` is the only recovery outbox that **retains its
+predecessor**, and that is the material difference from every state above it. The condition arises
+from a committed reference whose own object is intact; only the successor slot is unwritable. So
+`currentRetainedRef` answers that predecessor, restore keeps applying it for the whole staging
+window, promotion is still judged against it for staleness, validity regression and key change, and
+a chart deploy between the stage and the promotion still restores the live certificate.
+
+### Why This Is Owed
+
+Sprint `6.5`'s campaign found the condition live on 2026-09-15 and could not run a single cycle
+through it. The mechanism is exact:
+
+- `retainTlsAtSelectedAgent` draws a fresh DEK and nonce on every call, so the envelope a retain
+  builds is **not reproducible**. A version whose object already exists can therefore never be
+  written again by rebuilding it.
+- Sprint `6.5` landed the convergence that resolves the *openable* case: the retain adopts the
+  occupant, proves it by applying it at the selected Target under an AEAD whose associated data
+  binds the version, certificate identity and source Secret, and stages it through the ordinary
+  transition. That closes every collision where the occupant is one of ours.
+- It does **not** close the case the live host hit, where the occupant's wrapped DEK does not open
+  under `prodbox-tls-retention-dek`. That object can be neither rewritten nor adopted, and
+  `nextRetentionVersion` will select it on every future retain.
+
+The legacy lane already solves this with a fixed successor version, and that mechanism is
+deliberately unreachable here: `decideTlsLegacyRecoveryStaging` refuses `TlsRetentionCurrent`
+outright, and the two lanes are kept disjoint by the frozen counterexample
+`TLS-LEGACY-RECOVERY-V3-IMMUTABLE-COLLISION-2026-09-08`.
+
+**The reason this needs durable evidence rather than an argument** is the part that decides the
+design. `validateTlsRetentionState` re-runs `decideTlsStaging` against a state rebuilt from the
+pending alone, so any staging the validator cannot reproduce from the durable record is rejected at
+the codec boundary. A version jump authorized by a token the validator never sees would fail to load
+the state that authorized it.
+
+### Deliverables
+
+- A `TlsUnopenableVersionEvidence` carrying the version proven unopenable and the digest of the
+  object that occupies it, minted only where the rewrap failure is observed.
+- A durable state constructor appended to `TlsRetentionState` — appended, so existing wire tags do
+  not shift and the pre-outbox `Empty`/`Current` encodings are preserved, which the existing codec
+  cases already pin.
+- A staging decision admitting exactly one successor version past a proven-unopenable one, with its
+  own refusal vocabulary, and a `validateTlsRetentionState` arm that reproduces it. Exactly one:
+  an unbounded search for a free version is how a lane starts skipping objects it should have
+  refused.
+- Promotion validation for the new pending, and the Authority route, client method and runtime
+  wiring that reach it.
+- A closed protected-log cause for the successor transition, distinct from
+  `retention-version-unopenable/v<n>` which remains the refusal when no successor is admissible.
+
+### Validation
+
+1. A constructed state with a current at `v<n-1>` and an unopenable object at `v<n>` stages a
+   successor at `v<n+1>`, stores, and promotes; the same input replayed is idempotent.
+2. The durable state round-trips, and the encodings of every pre-existing constructor are unchanged
+   — the existing wire-tag cases extended rather than restated.
+3. `validateTlsRetentionState` accepts the successor pending it produced and refuses a successor
+   pending whose evidence does not name the version it skipped.
+4. Two successors in a row are refused: the admission is one version, not a search.
+5. An occupant that *is* openable still takes the convergence path Sprint `6.5` landed and never
+   the successor path.
+6. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+
+Every item is discharged and the measured evidence is recorded rather than implied. Items 1 and 5
+are one workflow case over one fixture, because the two answers differ only in whether the
+occupant's DEK opens and asserting them from separate fixtures would prove the fakes agree rather
+than the lane does: with the rewrap opening, the retain adopts the `v3` occupant and promotes it,
+exactly as Sprint `6.5` landed; with the same rewrap failing, the retain observes `v4`, seals fresh
+material at it, stages under evidence, stores, reads back and promotes, and the recorded boundary
+order proves nothing wrote before the CAS. Item 1's replay half is asserted twice — once as the
+durable state after promotion, which is `TlsRetentionCurrent` at the successor and therefore has no
+skip left to repeat, and once as an exact staging no-op against the staged outbox. Item 2 extends
+the existing round-trip list and leaves the two byte-pinning cases untouched, which is the point of
+appending the constructor. Item 3 is five constructed states the codec must refuse, including the
+two the sprint block names. Item 4 is eleven refusal rows plus the serve-level refusal token. The
+TLS-retention Authority-fold group passes **34/34**, the TLS-retention endpoint group **35/35**, the
+route group **9/9**, the primary unit suite **5,169/5,169** with authority admission **27/27**,
+control-plane authentication **35/35** and authenticated transport **39/39**, both
+`prodbox test integration cli` and `prodbox test integration env` run the `prodbox-integration`
+stanza at **70/70**, and canonical `prodbox dev check` exits 0.
+
+### Remaining Work
+
+None.
+
+### What the Adversarial Review Corrected
+
+Five independent review lenses ran over the change after it was green, and three of their findings
+were real defects in work this sprint had just landed. All three are repaired; the account is here
+rather than absent because each one is a case where the gates and the tests agreed with code that
+was wrong.
+
+- **`validateUnopenableSuccessorStaging` compared less than every sibling validator.** It checked
+  the evidence, the candidate and the envelope, and not the approval or the predecessor — so an
+  Authority that returned a pending carrying an approval the host never sent would have been
+  accepted, and `confirmAndPromote` promotes with the *pending's* approval. That is exactly the hole
+  the three sibling validators exist to close. It now builds the complete expected pending, which
+  required threading the predecessor the state gate had already matched, and compares the whole
+  record.
+
+- **The Target Secret Agent's per-attempt request bound was left unchanged on a justification that
+  is false.** The first version of this sprint argued that the Authority-lane branches need no
+  summand because they require a committed reference while every pre-outbox branch requires an empty
+  aggregate. That exclusion holds at *one retain* and not across one attempt: an attempt walks
+  retain, restore and retain-on-ready, and a first retain that enters empty and promotes leaves the
+  aggregate current, so the retain-on-ready in the same attempt can take an Authority-lane branch the
+  first could not. The two summands are added — two for the occupied-version adoption, four for the
+  unopenable successor — taking the maximum from 34 to **38**, the replay capacity to **76** and the
+  encoded ceiling to **154 MiB**. That last figure does not fit the Vault listener's former 192 MiB
+  request ceiling once Base64-expanded, so the listener moves to **224 MiB** and its stale comment —
+  which still described a 112 MiB projection — is replaced with the current arithmetic.
+
+- **Two governed sentences were false rather than incomplete.** `system-components.md` said "every
+  recovery state refuses restore and issuance", which this sprint's state contradicts by design, and
+  `lifecycle_control_plane_architecture.md` said `validateTlsRetentionState` "re-runs each outbox's
+  own staging decision", which is true of two of the five pending constructors and an equivalent
+  hand-written predicate for the other two.
+
+A fourth finding was the review's strongest and the only one to survive three independent refutation
+attempts from two lenses. **Sprint `6.5`'s resumed-collision arm routed an occupied slot into an
+occupant adoption whose success path stages through the *ordinary* transition — which supersedes no
+pending.** `decideTlsStaging` answers `TlsStagingNoop` only for a byte-identical pending and
+`TlsStageConcurrentPending` otherwise, and the collision that reaches the arm proves by construction
+that the occupant is not the pending's envelope, so the rebase was refused in every reachable case.
+It was refused *after* a live selected retain and a live `restoreSelectedPublicEdgeTls` write had
+already run, and the refusal arrived as `TlsWorkflowAuthorityFailed`, which renders
+`authority-state-unavailable` — an occupied immutable slot reported as an unavailable Authority,
+which is precisely the misattribution four live cycles of this campaign were spent removing. The
+same arm emitted `TlsWorkflowResumedRetentionVersionOccupied` only on the branch where the re-read
+said the slot was *missing*, inverting the constructor's own documented meaning. The arm now
+re-observes and refuses by name with no Target work: present is the occupied refusal, corrupt is the
+corrupt refusal, and a re-read disagreeing with the store reports the store's own error rather than
+a claim about occupancy.
+
+Two further repairs came from the same pass. The evidence type's Haddock claimed its digest "binds
+the exact occupied bytes", which overstates what a pure fold can know: the digest is an interpreter
+claim the Authority cannot check against the store, exactly as `TlsLegacyRecoveryEvidence`'s is, and
+the Haddock now says so and says what the fold *does* enforce. And `adoptOccupiedAuthorityVersion`
+answered a `404` from the selected Agent with `Right TlsWorkflowNothingToRetain` on every path —
+correct when nothing is staged, a false success when reached while resuming a durable pending, since
+it reported nothing-to-do while leaving an outbox bound to a source that had vanished. That arm now
+answers `nothing-to-retain` only when no pending exists.
+
+### Findings This Sprint Registers Rather Than Closes
+
+- **`TlsWorkflowRetentionVersionOccupied` was a declared refusal nothing could produce.** Sprint
+  `6.5`'s convergence introduced it, then chose adoption over refusal and left the constructor
+  behind, classified and rendered but constructed nowhere in `src/` or `test/`. It is not deleted,
+  because this sprint gives it the one meaning it should have had: the single successor version the
+  lane admits is itself occupied. That is the refusal that states the bound — the admission is one
+  version, so an occupied successor stops the lane rather than starting a walk to the next integer.
+- **The TLS Retention Adapter's replay capacity is the undifferentiated generic 4 and was never
+  derived for that role.** Counting the Adapter requests one retain issues, the deepest pre-outbox
+  recovery path already reaches five — legacy observation, version-2 store, the exact version-2
+  collision observation, the version-3 store, and its read-back — so the bound is already exceeded
+  on paper by a path that predates this sprint, and this sprint's successor observation makes the
+  ordinary lane's deepest path four. Nothing is raised here: exhausting that capacity is a live
+  refusal, no live host has reported one, and moving a Standard-P capacity on a paper argument
+  alone would be the kind of unmeasured change this plan exists to prevent. The row is opened in
+  the deletion ledger as `Unowned` so the measurement is owed rather than assumed.
+- **No Authority transition can supersede a pending with a candidate derived from the envelope
+  occupying its version, so a resumed pending whose slot is held by foreign bytes is a permanent
+  stop on every lane but the pre-outbox one.** The pre-outbox lane has exactly that transition —
+  `TlsLegacyRecoveryCollisionRebased`, carrying both digests — and no other lane does. The
+  registered row is the missing transition, not the refusal: `decideTlsStaging` answers
+  `TlsStagingNoop` only for a byte-identical pending, and the collision that reaches this arm proves
+  the occupant is not the pending's envelope, so the ordinary transition can never accept a rebase.
+  Building the counterpart is a durable protocol change on a Standard-P surface and a sprint of its
+  own. The row is `Unowned`, and it is registered here rather than left with Sprint `6.5` because
+  this sprint's successor outbox reaches the same arm when its own successor slot collides.
+- **The sprint block's own claim that the two lanes are "kept disjoint by the frozen counterexample
+  `TLS-LEGACY-RECOVERY-V3-IMMUTABLE-COLLISION-2026-09-08`" overstates what that identifier holds.**
+  It is not a frozen fixture family: it has no entry under `test/qualification/`, no loader, and no
+  derived rows. Its whole executable content is two string equalities over the two object-name
+  constructors, so what it freezes is the key-space partition `authority-v1/versions/<n>.envelope`
+  versus `versions/<n>.envelope` and nothing about staging, promotion or version selection. The
+  disjointness this sprint relies on is enforced by the two staging decisions' own state gates, and
+  it is asserted directly in the counterexample case rather than inherited from that identifier.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_control_plane_architecture.md` — §5.4 gains the Authority-lane
+  occupied-version adoption and the one-version successor past a proven-unopenable object, states
+  that the successor outbox is the only recovery state retaining its predecessor, and records that
+  durable constructors are only ever appended.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — the post-promotion next-version
+  statement becomes an observation with three answers; "there is no version-4 or recursive recovery
+  transition" is re-scoped to the pre-outbox branch that owns it.
+- `documents/engineering/vault_doctrine.md` — the fail-closed absolute gains the one bounded
+  successor and its no-restore/no-issuance property, and states that a skipped object remains a
+  registered `LongLived` object.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- `DEVELOPMENT_PLAN/system-components.md` — the certificate-material inventory row (Standard F).
+- `DEVELOPMENT_PLAN/README.md` and `DEVELOPMENT_PLAN/00-overview.md` — the Phase `2` reclose
+  (Standard C) and the Standard-P deployment-qualification registration.
+- `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` — the Adapter replay-capacity measurement row
+  (Standard I).
 
 ## Related Documents
 

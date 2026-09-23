@@ -29,6 +29,7 @@ import Prodbox.ControlPlane.Client
     , LifecycleTlsRetentionObserveRoute
     , LifecycleTlsRetentionPromoteRoute
     , LifecycleTlsRetentionStageRoute
+    , LifecycleTlsRetentionUnopenableSuccessorStageRoute
     )
   )
 import Prodbox.ControlPlane.Codec
@@ -46,6 +47,7 @@ import Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
   , TlsAuthorityPromoteRequest (..)
   , TlsAuthorityResponse (..)
   , TlsAuthorityStageRequest (..)
+  , TlsAuthorityUnopenableSuccessorStageRequest (..)
   , tlsAuthorityResponseHttpStatus
   , tlsAuthorityResponseMaximumBytes
   )
@@ -58,6 +60,7 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   , TlsLegacyRecoveryEvidence
   , TlsRetentionState
   , TlsSealedEnvelope
+  , TlsUnopenableVersionEvidence
   )
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 
@@ -77,6 +80,16 @@ data TlsRetentionAuthorityClient m = TlsRetentionAuthorityClient
       :: KeyRotationApproval
       -> TlsLegacyRecoveryEvidence
       -> Maybe TlsLegacyRecoveryCollisionEvidence
+      -> RetainedTlsRef
+      -> TlsSealedEnvelope
+      -> m
+           ( Either
+               TlsRetentionAuthorityClientError
+               TlsAuthorityStagingOutcome
+           )
+  , stageTlsRetentionAfterUnopenableVersion
+      :: KeyRotationApproval
+      -> TlsUnopenableVersionEvidence
       -> RetainedTlsRef
       -> TlsSealedEnvelope
       -> m
@@ -128,6 +141,7 @@ mkTlsRetentionAuthorityClient transport substrate scope = do
       { observeTlsRetentionCurrent = observe
       , stageTlsRetentionCurrent = stage
       , stageTlsRetentionAfterUnrecoverableLegacy = stageLegacyRecovery
+      , stageTlsRetentionAfterUnopenableVersion = stageUnopenableSuccessor
       , promoteTlsRetentionCurrent = promote
       }
  where
@@ -177,6 +191,27 @@ mkTlsRetentionAuthorityClient transport substrate scope = do
           , tlsAuthorityLegacyRecoveryStageCollision = collision
           , tlsAuthorityLegacyRecoveryStageCandidate = candidate
           , tlsAuthorityLegacyRecoveryStageEnvelope = envelope
+          }
+    pure $ do
+      decoded <- response
+      case decoded of
+        TlsAuthorityStagingApplied state ->
+          Right (TlsAuthorityStagingCommitted state)
+        TlsAuthorityStagingNoop state ->
+          Right (TlsAuthorityStagingAlreadyPending state)
+        other -> Left (remoteError other)
+
+  stageUnopenableSuccessor approval evidence candidate envelope = do
+    response <-
+      call
+        LifecycleTlsRetentionUnopenableSuccessorStageRoute
+        TlsAuthorityUnopenableSuccessorStageRequest
+          { tlsAuthorityUnopenableSuccessorStageSubstrate = substrate
+          , tlsAuthorityUnopenableSuccessorStageScope = scope
+          , tlsAuthorityUnopenableSuccessorStageApproval = approval
+          , tlsAuthorityUnopenableSuccessorStageEvidence = evidence
+          , tlsAuthorityUnopenableSuccessorStageCandidate = candidate
+          , tlsAuthorityUnopenableSuccessorStageEnvelope = envelope
           }
     pure $ do
       decoded <- response

@@ -20,6 +20,7 @@ module Prodbox.ControlPlane.TlsRetentionAuthority
   , TlsRetentionAuthorityError (..)
   , TlsRetentionStagingResult (..)
   , TlsLegacyRecoveryStagingResult (..)
+  , TlsUnopenableSuccessorStagingResult (..)
   , TlsRetentionPromotionResult (..)
   , tlsRetentionStateMaximumBytes
   , tlsRetentionStateCodec
@@ -27,6 +28,7 @@ module Prodbox.ControlPlane.TlsRetentionAuthority
   , observeTlsRetentionAuthority
   , stageTlsRetentionAuthority
   , stageTlsLegacyRecoveryAuthority
+  , stageTlsUnopenableSuccessorAuthority
   , promoteTlsRetentionAuthority
   )
 where
@@ -55,12 +57,16 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   , TlsRetentionState
   , TlsSealedEnvelope
   , TlsStagingDecision (TlsStaged)
+  , TlsUnopenableSuccessorStagingDecision (TlsUnopenableSuccessorStaged)
+  , TlsUnopenableVersionEvidence
   , applyTlsLegacyRecoveryStaging
   , applyTlsPromotion
   , applyTlsStaging
+  , applyTlsUnopenableSuccessorStaging
   , decideTlsLegacyRecoveryStaging
   , decideTlsPromotion
   , decideTlsStaging
+  , decideTlsUnopenableSuccessorStaging
   , initialTlsRetentionState
   , validateTlsRetentionState
   )
@@ -173,6 +179,12 @@ data TlsRetentionStagingResult = TlsRetentionStagingResult
 data TlsLegacyRecoveryStagingResult = TlsLegacyRecoveryStagingResult
   { tlsLegacyRecoveryStagingState :: !TlsRetentionState
   , tlsLegacyRecoveryStagingDecision :: !TlsLegacyRecoveryStagingDecision
+  }
+  deriving stock (Eq, Show)
+
+data TlsUnopenableSuccessorStagingResult = TlsUnopenableSuccessorStagingResult
+  { tlsUnopenableSuccessorStagingState :: !TlsRetentionState
+  , tlsUnopenableSuccessorStagingDecision :: !TlsUnopenableSuccessorStagingDecision
   }
   deriving stock (Eq, Show)
 
@@ -305,6 +317,43 @@ stageTlsLegacyRecoveryAuthority repository approval evidence collision candidate
       Left detail -> Left (TlsRetentionAuthorityWriteFailed detail)
       Right False -> Left TlsRetentionAuthorityConcurrentWrite
       Right True -> Right result
+
+-- | One CAS that durably records the proven-unopenable version and the
+-- complete successor outbox before any Adapter write can occupy the successor
+-- slot. Only the staged decision commits; a replay and every refusal leave the
+-- retained state byte-identical.
+stageTlsUnopenableSuccessorAuthority
+  :: (Monad m)
+  => TlsRetentionAuthorityRepository m revision
+  -> KeyRotationApproval
+  -> TlsUnopenableVersionEvidence
+  -> RetainedTlsRef
+  -> TlsSealedEnvelope
+  -> m (Either TlsRetentionAuthorityError TlsUnopenableSuccessorStagingResult)
+stageTlsUnopenableSuccessorAuthority repository approval evidence candidate envelope = do
+  observed <- readTlsRetentionState repository
+  case observed of
+    Left detail -> pure (Left (TlsRetentionAuthorityReadFailed detail))
+    Right maybeStored -> do
+      let current = maybe initialTlsRetentionState storedTlsRetentionState maybeStored
+          expected = storedTlsRetentionRevision <$> maybeStored
+          decision =
+            decideTlsUnopenableSuccessorStaging
+              approval
+              current
+              evidence
+              candidate
+              envelope
+          next = applyTlsUnopenableSuccessorStaging evidence decision current
+          result = TlsUnopenableSuccessorStagingResult next decision
+      case decision of
+        TlsUnopenableSuccessorStaged _ -> do
+          written <- compareAndSwapTlsRetentionState repository expected next
+          pure $ case written of
+            Left detail -> Left (TlsRetentionAuthorityWriteFailed detail)
+            Right False -> Left TlsRetentionAuthorityConcurrentWrite
+            Right True -> Right result
+        _ -> pure (Right result)
 
 promoteTlsRetentionAuthority
   :: (Monad m)

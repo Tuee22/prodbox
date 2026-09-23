@@ -172,6 +172,8 @@ data ControlPlaneRouteFor (r :: RuntimeRole) where
     :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
   LifecycleTlsRetentionLegacyRecoveryStageRoute
     :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
+  LifecycleTlsRetentionUnopenableSuccessorStageRoute
+    :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
   LifecycleTlsRetentionWorkflowRoute
     :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
   LifecycleAdminActionExecutionRoute
@@ -281,6 +283,8 @@ controlPlaneRouteForValue route = case route of
   LifecycleTlsRetentionStageRoute -> LifecycleTlsRetentionStage
   LifecycleTlsRetentionLegacyRecoveryStageRoute ->
     LifecycleTlsRetentionLegacyRecoveryStage
+  LifecycleTlsRetentionUnopenableSuccessorStageRoute ->
+    LifecycleTlsRetentionUnopenableSuccessorStage
   LifecycleTlsRetentionWorkflowRoute -> LifecycleTlsRetentionWorkflow
   LifecycleAdminActionExecutionRoute -> LifecycleAdminActionExecution
   LifecycleBootstrapHandoffAcceptRoute -> LifecycleBootstrapHandoffAccept

@@ -269,6 +269,7 @@ import Prodbox.ControlPlane.Route
       , LifecycleTlsRetentionObserve
       , LifecycleTlsRetentionPromote
       , LifecycleTlsRetentionStage
+      , LifecycleTlsRetentionUnopenableSuccessorStage
       , LifecycleTlsRetentionWorkflow
       , ProviderWorkApply
       , ProviderWorkObserve
@@ -301,6 +302,7 @@ import Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
   , serveTlsAuthorityObserveRequest
   , serveTlsAuthorityPromoteRequest
   , serveTlsAuthorityStageRequest
+  , serveTlsAuthorityUnopenableSuccessorStageRequest
   , tlsAuthorityResponseBody
   , tlsAuthorityResponseHttpStatus
   )
@@ -985,6 +987,13 @@ lifecycleAuthorityTlsRetentionAuthenticatedHandler maximumBytes resolve inner =
     LifecycleTlsRetentionLegacyRecoveryStage -> do
       response <-
         serveTlsAuthorityLegacyRecoveryStageRequest
+          maximumBytes
+          resolve
+          (LazyByteString.fromStrict body)
+      pure (Just (tlsAuthorityResponseHttpStatus response, tlsAuthorityResponseBody response))
+    LifecycleTlsRetentionUnopenableSuccessorStage -> do
+      response <-
+        serveTlsAuthorityUnopenableSuccessorStageRequest
           maximumBytes
           resolve
           (LazyByteString.fromStrict body)

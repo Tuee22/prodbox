@@ -6637,6 +6637,90 @@ None owned by this sprint. Two things are **stated rather than closed**, and bot
 - Record the Phase `7` own-surface reopen in [README.md](README.md) and
   [00-overview.md](00-overview.md).
 
+## Sprint 7.43: What A Controller Made, No Create Can Record [📋 Planned]
+
+**Status**: Planned. New work on Phase `7`'s AWS substrate surface. Phase `7` reclosed 2026-09-15 on
+Sprints `7.41` and `7.42`; this row opens no reopen, because it names a gap those sprints' own
+records already register rather than a defect in what they landed.
+**Doctrine**: [AWS Integration Environment
+Doctrine](../documents/engineering/aws_integration_environment_doctrine.md) and [Lifecycle
+Reconciliation Doctrine §3.2a, "Record before effect, for every resource
+kind"](../documents/engineering/lifecycle_reconciliation_doctrine.md#32a-record-before-effect-for-every-resource-kind).
+**Implementation**: `src/Prodbox/ControlPlane/RegisteredStackCreationSubmitter.hs`,
+`src/Prodbox/Infra/AwsSesStack.hs`, `src/Prodbox/Lifecycle/EbsVolume.hs`,
+`src/Prodbox/Lifecycle/CredentialProvisioner/ProductionIam.hs`,
+`src/Prodbox/Lifecycle/Teardown/AwsLoadBalancerControllerFamilyAdapter.hs`, and
+`src/Prodbox/Lifecycle/Dns01Challenge.hs`.
+**Blocked by**: none.
+**Docs**: `documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+**Live-proof**: pending and non-blocking. The 2026-09-08 incident is the worked example: a cluster
+lost before teardown takes the controllers' owner records with it.
+**Deployment qualification**: pending — **invalidated** on persistence protocol if the ownership
+manifest gains a new writer.
+**Independent Validation**: importer and call-graph facts over the tree, plus pure cases over a
+constructed manifest; no live AWS.
+
+### Objective
+
+Close the gap between what Sprint `7.41`'s write-ahead ownership manifest can name and what actually
+creates AWS resources, so a resource whose creator is not a registered stack create is still
+nameable after the cluster is gone.
+
+### Deliverables
+
+- **Three of four Pulumi programs reach the write-ahead lane; the long-lived one does not.**
+  `src/Prodbox/Infra/AwsSesStack.hs` is not an importer of the submitter. Decide and record whether
+  the retained stack should be on the lane or is deliberately excluded, and make the exclusion
+  legible rather than incidental.
+- **Stackless creators can be in no manifest at all.** Retained EBS volumes and the production IAM
+  principals are created outside any registered stack create, so no manifest entry can contain them
+  and no destroy order can be derived for them. This is already stated in the tree as a consequence;
+  it needs an owner.
+- **Controller-created resources cannot be hooked at the create.** The load balancer controller's
+  children and cert-manager's DNS01 challenge records are created by controllers reconciling
+  Kubernetes objects, not by any `prodbox` create with an execute step to bind, and the provider-side
+  run-scope stamp reaches only the per-run Pulumi programs. Record them by something that outlives
+  the cluster — an Authority-side observation appended to the run's manifest before the cluster can
+  be lost, or a run-scope stamp the controllers themselves apply — so the postflight sweep's escaped
+  rows carry the scope that makes them destroyable.
+- This sprint owns the manifest's **input**. The destroy routes for both controller families landed
+  in Sprint `7.36` and are not reopened; they assume an input this sprint says may not exist.
+
+### Validation
+
+1. Every Pulumi program's relationship to the write-ahead lane is stated, and an exclusion is
+   declared rather than inferred from an absent import.
+2. Each stackless creator either reaches a manifest or carries a recorded reason it cannot, with the
+   destroy path that covers it named.
+3. A controller-created resource observed after its cluster is gone is nameable from a durable
+   record, demonstrated over a constructed manifest.
+4. The Sprint `7.36` destroy families are unchanged, and the record says so.
+5. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+1. Everything above; nothing is started.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/aws_integration_environment_doctrine.md` — which creators reach the
+  write-ahead ownership lane and which cannot, stated rather than inferred from an absent import.
+- `documents/engineering/storage_lifecycle_doctrine.md` — the write-ahead record rule's scope,
+  which is true of the registered stack creates and not of every created resource.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Ledger rows for the long-lived stack's absence from the lane, the stackless creators, and the
+  controller-created resources, in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
 ## Related Documents
 
 - [README.md](README.md)

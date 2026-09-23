@@ -622,14 +622,45 @@ reports. The arm is selected by the delete mode over the (mode, presence) produc
 is a no-install success and it belongs to local-only delete, so no later caller can hand the cascade
 mode a success it did not observe.
 
-No cascade exit authorizes deleting the retained root. The retained-state narration is a total
-function over the command's terminal arms: only an arm carrying a completion receipt or an explicit
-local-only uninstall says the root is preserved by what it did, and every other arm either says
-nothing about the root or names it and states that this run establishes nothing about retiring it.
+> **Target.** A no-install cascade has **two** operator-visible exits, and which one it takes is
+> decided by what the run observed, never by what a previous run recorded. It exits non-zero when it
+> observed nothing — the case above, and the only case the current revision can reach. It exits zero
+> only when it queried the provider on this invocation and the answer was empty, under the full
+> conjunction in
+> [Lifecycle Reconciliation Doctrine §5a.0](lifecycle_reconciliation_doctrine.md#5a0-a-cascade-that-reaches-no-phase-may-still-query-aws),
+> which owns the contract; this section does not restate it. The operator-facing consequence is the
+> reason the second exit exists: the non-zero exit says that removing this repository's untracked
+> state may strand a live resource, and the zero exit says the run looked and found none — while
+> still not licensing removal of the retained root, which §7 rule 10 of
+> [storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root)
+> governs on other grounds. A repeated cascade re-queries; it never replays an earlier verdict.
+> Status lives only in
+> [Development Plan → Resume Here](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
-- (default, no flag) → **pure local uninstall**. It uninstalls RKE2 and preserves `.data/` (the
-  MinIO-backed per-run Pulumi state) WITHOUT querying, gating on, or destroying the per-run AWS
-  Pulumi backend. Per-run AWS stacks (if any) are left untouched and remain destroyable
+`--dry-run` renders this plan without performing any of it. That purity is a property worth naming
+because the target arm above threatens it: `renderNativeDeletePlan` is a pure function of the
+repository root and the flags, and `--dry-run` deliberately skips the no-install short-circuit, the
+host prep, and every reconciler — just as dry-runs render Pulumi plans without probing Vault
+([vault_doctrine.md §10](vault_doctrine.md#10-pulumi-backend-under-vault)). A provider query and the
+credential load it needs are effects, and an admin credential load can prompt on a TTY. Placing the
+new observation in the rendered plan would give `--dry-run` a network call and a possible
+interactive prompt; it belongs in the apply closure, and the rendered plan may name the step without
+performing it.
+
+No cascade exit authorizes deleting the retained root. The retained-state narration is a total
+function over the command's terminal arms and no arm is silent: a local-only arm says the root is
+preserved by what it did, and every cascade arm names the root and states that this run establishes
+nothing about retiring it. Each arm's sentence is its own — a run that uninstalled nothing does not
+say "this uninstall", and a cascade that reached no phase does not say destroys "were attempted
+earlier in this cascade". The inventory those arms render prints the resolved retained root once and
+names the capability classes it holds, rather than a literal `.data/` and one of its writers.
+
+- (default, no flag) → **pure local uninstall**. It uninstalls RKE2 and preserves `.data/`, which holds the
+  in-cluster MinIO PV the per-run Pulumi checkpoints are persisted into — not a Pulumi backend
+  Pulumi itself talks to, a distinction
+  [vault_doctrine.md §10](vault_doctrine.md#10-pulumi-backend-under-vault) owns. It does this
+  WITHOUT querying, gating on, or destroying the per-run AWS
+  Pulumi state. Per-run AWS stacks (if any) are left untouched and remain destroyable
   afterward via `--cascade` or `prodbox aws stack <name> destroy --yes` once the required recovery
   capabilities are observable. Preserving `.data/` retains the state inputs needed for recovery; it
   does not prove those inputs readable, establish Lifecycle Authority or provider observability, or

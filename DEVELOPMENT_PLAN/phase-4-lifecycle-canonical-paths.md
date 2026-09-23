@@ -10,6 +10,22 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-09-16 on Sprints `4.100`–`4.101` (Standards A/N).** Own-surface reopen on the
+`cluster delete` entry table, its retained-root narration, and the absence vocabulary's producers —
+all authored by this phase. Nothing about a later phase's incompleteness drives it.
+
+Sprint `4.88`'s own Validation item 4 asks that every terminal arm be enumerated and narrated, and
+`retainedStateNarrationFor` returns `RetainedStateSilent` for **two of the four**
+(`src/Prodbox/CLI/Rke2.hs`), so the invocation an operator is most likely to type before removing
+the retained root is the one that says nothing about it. Sprint `4.100` takes the arm split, the
+narration, and the retained-root inventory sentence.
+
+Sprint `4.101` is separate because it must answer a dated decision rather than fill a gap:
+`residueStatusFromCheckpointObservability` maps a checkpoint that exists and parses to nothing onto
+the same proven absence as a checkpoint that is not there, and Sprint `4.89` adjudicated that
+function and recorded it correct. Two live leaks have since been attributed to that arm. The phase
+recloses when both reach `Done`; until then this entry records an open reopen, not a closure.
+
 ✅ **Reclosed 2026-09-14 on Sprints `4.95`–`4.99` (Standards A/L/P).** All five reached `Done` on
 their code-owned surfaces with `prodbox dev check` at 0 and the unit suite at 5002/5002. The reopen
 below records what it was for; what closed it is worth one line each. The drain's lease arithmetic
@@ -14688,6 +14704,181 @@ under Standards O/P:
 - Add the provider-evidence sentences to the root `README.md` cascade bullet and the dated
   measurement beside the existing EKS-create measurement.
 - Update the terminal-audit inventory row in [system-components.md](system-components.md).
+
+## Sprint 4.100: The Arm An Operator Types Before Deleting The Root Says Nothing About It [✅ Done]
+
+**Status**: Done (2026-09-17). Phase `4` own-surface reopen (Standards A/N) on the `cluster delete`
+entry table and its retained-root narration, both authored by Sprint `4.88`.
+**Doctrine**: [Lifecycle Reconciliation Doctrine §5a, "Local-only no-install
+short-circuit"](../documents/engineering/lifecycle_reconciliation_doctrine.md#5a-local-only-no-install-short-circuit),
+[Retained Storage Lifecycle Doctrine
+§7](../documents/engineering/storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root),
+and [CLI Command Surface §3, "Command
+Matrix"](../documents/engineering/cli_command_surface.md#3-command-matrix).
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CheckCode.hs`, and
+`test/unit/ClusterDeleteEntryArm.hs`.
+**Blocked by**: none.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/cli_command_surface.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`, `DEVELOPMENT_PLAN/README.md`, and
+`DEVELOPMENT_PLAN/00-overview.md`.
+**Live-proof**: pending and non-blocking for code-local closure. The arm table and its narration are
+pure; a live host exhibiting the silence is evidence, not a gate.
+**Deployment qualification**: pending — **invalidated** on destructive cleanup. This changes a
+destructive-cleanup entry contract and the exit status one arm may carry, which is the same surface
+Sprint `4.88` recorded as invalidating under Standard P.
+**Independent Validation**: pure table and narration cases over the enumerated arms, plus
+installed-binary traces on a host with no RKE2 install marker. No AWS and no cluster.
+
+### Objective
+
+Make the two `cluster delete` arms that reach no delete path say what they leave behind, and give
+the no-install cascade an arm that can carry a confirmed result without letting the entry table mint
+one.
+
+### Deliverables
+
+- Split `DeleteArmCascadeNoInstall` into an unproven constructor — what `selectDeleteEntryArm`
+  returns — and a sweep-confirmed constructor the table **cannot** return. The confirmed arm is
+  produced only by a second total function that takes the postflight sweep as its argument, so
+  "never mint success from silence" becomes a typing fact rather than a property of a table. The
+  existing `selectDeleteEntryArm` and `deleteArmIsNoInstallSuccess` cases are unchanged.
+- Narrate the retained root on every arm that currently renders `RetainedStateSilent`. A plain local
+  uninstall destroyed no AWS by construction, so the sentence is unconditional there; the
+  no-install cascade arm names the root and the licence it does not carry.
+- Correct `renderRetainedRootInventory`: it calls the retained root "MinIO-backed per-run Pulumi
+  state" and prints a hardcoded `.data/`. It is a multi-writer capability store — the Vault anchor,
+  the bootstrap unlock bundle, the Lifecycle Authority's records including the Sprint `7.41`
+  write-ahead ownership manifests, every registered stack's checkpoint including long-lived
+  `aws-ses`, and the container-registry blobs — and the path printed must be the resolved root.
+- This sprint makes no claim about `.test-data/` isolation; Sprint `5.11` owns it.
+
+### Validation
+
+1. `selectDeleteEntryArm` remains total over delete-mode × install-presence, still returns the
+   unproven constructor for the cascade/no-install pair, and the existing
+   `test/unit/ClusterDeleteEntryArm.hs` cases pass unchanged.
+2. The sweep-confirmed constructor is unreachable from the entry table and obtainable only from a
+   postflight-sweep value; a compile-time case demonstrates there is no other producer.
+3. `retainedStateNarrationFor` is total and no arm renders silence; each arm's sentence is pinned.
+4. The retained-root inventory names the capability classes the root holds and prints the resolved
+   root rather than a literal `.data/`.
+5. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+
+All five are discharged. Item 2's compile-time demonstration is the shape the repository already
+uses for a load-bearing unconstructibility claim: `ConfirmedNoInstallCascade` is a distinct type
+whose constructor `src/Prodbox/CLI/Rke2.hs` does not export, so no caller can name it, and the row
+registered in `checkSealedConstructors` fails the build if that export list ever widens — which
+makes "the table cannot return it" a fact the gate holds rather than a sentence in a comment. Item 4
+prints the resolved root and no literal `.data/`, which a case asserts in both directions against a
+fixture root of `/srv/elsewhere`. Entry-arm group **6/6**, primary unit suite **5,171/5,171** with
+authority admission **27/27**, control-plane authentication **35/35** and authenticated transport
+**39/39**, both `prodbox test integration cli` and `prodbox test integration env` at **70/70**, and
+canonical `prodbox dev check` exits 0.
+
+### What The Gates Refused Before This Passed
+
+Two refusals, both correct, both on work this sprint added.
+
+- **The coordinate-hygiene rule refused a test fixture.** The escaped-resource row this sprint built
+  to exercise the non-confirming sweep verdicts carried a literal AWS region inside an ARN. Complete
+  region coordinates are forbidden in Haskell, fixtures included, so the row is built from
+  `TestSupport`'s synthetic `FixtureEuWest2` constructor — which is what that constructor exists for.
+- **The wire-fidelity rule refused the first inventory heading.** `retainedRootInventoryHeading`
+  rendered `DeleteArmLocalOnlyUninstalled` and `DeleteArmCascadeReachedPhases` to the same string, so
+  an operator reading "Local cluster uninstalled." could not tell a plain uninstall from a cascade
+  that had just run every phase against AWS. That is exactly the distinction the heading exists to
+  make on the arm where it matters most, and the cascade now says so.
+
+### Remaining Work
+
+None.
+
+### A Finding Registered Rather Than Closed
+
+The zero exit `cli_command_surface.md` and `lifecycle_reconciliation_doctrine.md` §5a.0 describe —
+a no-install cascade that queried the provider on this invocation and found nothing — is now
+*representable* and still not *reachable*: `confirmCascadeNoInstall` exists and nothing calls it,
+because the no-install path runs no sweep. That is the sprint's own boundary rather than an
+oversight, and the deliverable said so: the sprint gives the arm a way to carry a confirmed result
+without letting the entry table mint one. Running the query is the other half, and it is not
+registered as a deletion-ledger row because nothing survives that needs removing — the Target
+region in `cli_command_surface.md` already owns the contract and already says the current revision
+can reach only the non-zero exit.
+
+## Sprint 4.101: A Checkpoint That Parses To Nothing Is Not An Absence [📋 Planned]
+
+**Status**: Planned. Phase `4` own-surface reopen (Standards A/N) on the absence vocabulary and its
+producers, which this phase owns.
+**Doctrine**: [Lifecycle Reconciliation Doctrine §3.0, "Positive
+absence"](../documents/engineering/lifecycle_reconciliation_doctrine.md#30-positive-absence) and
+[§3, "Exact-Keyed Desired-Absence
+Reconciliation"](../documents/engineering/lifecycle_reconciliation_doctrine.md#3-exact-keyed-desired-absence-reconciliation).
+**Implementation**: `src/Prodbox/Lifecycle/LiveResidue.hs` and
+`src/Prodbox/Lifecycle/ResourceRegistry.hs`.
+**Blocked by**: none.
+**Docs**: `documents/engineering/lifecycle_reconciliation_doctrine.md` and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+**Live-proof**: two live leaks are already attributed to this arm; the repair itself is a pure
+total function and closes on its code-owned surface.
+**Deployment qualification**: pending — **invalidated** on destructive cleanup. Changing which
+observation may produce an absence changes what the cascade destroys.
+**Independent Validation**: pure decision cases over constructed checkpoint observations; no AWS,
+no cluster, no Pulumi.
+
+### Objective
+
+Stop `residueStatusFromCheckpointObservability` minting a proven absence from a checkpoint that
+exists and parses to nothing, and answer by name the dated decision that this function was correct.
+
+### Deliverables
+
+- Map a checkpoint that reads as empty onto the unreachable verdict rather than the absent one. The
+  three-valued vocabulary is unchanged; what changes is which observation may produce the first of
+  its values. `CheckpointCorrupt` in the same function already returns unreachable with a rendered
+  detail, so the function already distinguished unparseable from absent and then collapsed a
+  narrower and far more common case into absent.
+- **Answer Sprint `4.89` explicitly.** That sprint adjudicated this function and recorded it
+  correct, after the same class of leak. The record must say what was known then, what is known
+  now, and why the earlier reading was defensible — not silently reverse it.
+- Re-check the consumer: `resourcesToDestroy` keeps only present entries, so the unreachable verdict
+  must reach the cross-check that consults the AWS tag layer rather than becoming a third silent
+  skip.
+
+### Validation
+
+1. An empty checkpoint for a stack with an admitted create record yields the unreachable verdict,
+   not the absent one; an absent checkpoint with no such record still yields absent.
+2. A corrupt checkpoint's existing verdict and rendered detail are unchanged.
+3. The per-run destroy fold treats unreachable as a refusal and not as nothing-to-do, and the run
+   fails closed rather than reporting every phase successful.
+4. The two live leaks this arm is attributed to are named in the record with their dates.
+5. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+1. Everything above; nothing is started.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — §5a is the upstream statement of
+  the no-install entry contract that Sprints `4.100` and `6.6` change; §3.0 gains the worked
+  example of an absence minted from a checkpoint that parses to nothing.
+- `documents/engineering/cli_command_surface.md` — the operator-visible `cluster delete` exit
+  contract and the retained-root sentence, both derived from §5a rather than restated.
+- `documents/engineering/storage_lifecycle_doctrine.md` — §7's opening enumeration of retained
+  roots, and the narration absolute that two silent arms falsify today.
+
+**Product docs to create/update:**
+
+- Root `README.md` — the two restatements of the arm contract and the retained-root description.
+
+**Cross-references to add:**
+
+- Ledger rows for the absence arm and for the narration gap, in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

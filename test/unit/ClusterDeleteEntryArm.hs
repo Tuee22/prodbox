@@ -16,6 +16,11 @@ where
 
 import Data.List (sort)
 import Prodbox.CLI.Rke2
+import Prodbox.Lifecycle.TagSweep
+  ( TagSweepVerdict (..)
+  , TaggedResource (..)
+  )
+import System.Exit (ExitCode (ExitSuccess))
 import TestSupport
 
 clusterDeleteEntryArmSuite :: SuiteBuilder ()
@@ -48,7 +53,7 @@ clusterDeleteEntryArmSuite =
             ]
       sort arms `shouldBe` sort ([minBound .. maxBound] :: [DeleteTerminalArm])
 
-    it "licenses the retained root from exactly the explicit local uninstall" $ do
+    it "licenses the retained root from exactly the local-only mode" $ do
       -- Every arm is enumerated: a new one with no narration fails to compile
       -- rather than silently rendering nothing, and this case pins which arms
       -- may say the store is preserved.
@@ -57,19 +62,24 @@ clusterDeleteEntryArmSuite =
             | arm <- [minBound .. maxBound]
             , retainedStateNarrationFor arm == RetainedStatePreserved
             ]
-      preserved `shouldBe` [DeleteArmLocalOnlyUninstalled]
+      -- Sprint 4.100: a local-only mode destroys no AWS by construction,
+      -- whether or not an install was present, so both of its arms may say the
+      -- store is preserved and neither cascade arm may.
+      preserved
+        `shouldBe` [DeleteArmLocalOnlyNoInstall, DeleteArmLocalOnlyUninstalled]
       -- The legacy cascade carries no completion receipt, so the arm that ran
       -- its phases names what it did not prove rather than licensing the store.
       retainedStateNarrationFor DeleteArmCascadeReachedPhases
         `shouldBe` RetainedStateUnproven
-      -- The two arms that reached no delete path say nothing about the store,
-      -- which is what keeps the local-only no-install trace unchanged.
-      retainedStateNarrationFor DeleteArmLocalOnlyNoInstall
-        `shouldBe` RetainedStateSilent
+      -- And the cascade that reached no phase now names the store too. Silence
+      -- on the exits that explain least is the defect this closes, so the
+      -- narration type no longer has a case for it.
       retainedStateNarrationFor DeleteArmCascadeNoInstall
-        `shouldBe` RetainedStateSilent
+        `shouldBe` RetainedStateUnproven
+      ([minBound .. maxBound] :: [RetainedStateNarration])
+        `shouldBe` [RetainedStatePreserved, RetainedStateUnproven]
 
-    it "keeps the local-only per-run sentence and adds the cascade's refusal" $ do
+    it "gives every arm a sentence that does not claim what it did not do" $ do
       retainedStateNoticePerRunLine DeleteArmLocalOnlyUninstalled
         `shouldSatisfy` containsAll
           [ "were NOT destroyed by this local uninstall"
@@ -80,6 +90,80 @@ clusterDeleteEntryArmSuite =
           [ "NO completion receipt"
           , "no exit status from this route authorizes deleting it"
           ]
+      -- Sprint 4.100. The no-install arms may not borrow the sentences of the
+      -- arms that ran something: one uninstalled nothing, the other attempted
+      -- no destroy, and both used to render no sentence at all.
+      retainedStateNoticePerRunLine DeleteArmLocalOnlyNoInstall
+        `shouldSatisfy` containsAll
+          [ "nothing was uninstalled"
+          , "The retained root above is preserved"
+          ]
+      retainedStateNoticePerRunLine DeleteArmLocalOnlyNoInstall
+        `shouldSatisfy` (not . isInfixOfString "this uninstall.")
+      retainedStateNoticePerRunLine DeleteArmCascadeNoInstall
+        `shouldSatisfy` containsAll
+          [ "reached no phase and attempted no per-run AWS destroy"
+          , "no confirmed postflight sweep"
+          , "no exit status from this route authorizes deleting it"
+          ]
+      retainedStateNoticePerRunLine DeleteArmCascadeNoInstall
+        `shouldSatisfy` (not . isInfixOfString "were attempted earlier in this cascade")
+
+    it "names the retained root's capability classes and its resolved path" $ do
+      -- The inventory called the root "MinIO-backed per-run Pulumi state" and
+      -- printed a hardcoded `.data/` beside the resolved path, so a host whose
+      -- manual_pv_host_root is configured elsewhere was shown a path it does
+      -- not use. The resolved root is printed once and the classes are named.
+      let rendered =
+            unlines (retainedRootInventoryLines DeleteArmLocalOnlyUninstalled "/srv/elsewhere")
+      rendered
+        `shouldSatisfy` containsAll
+          [ "retained root: /srv/elsewhere"
+          , "multi-writer capability store"
+          , "Vault durable PV: /srv/elsewhere/vault/vault/0"
+          , "bootstrap unlock bundle"
+          , "write-ahead ownership manifests"
+          , "aws-ses"
+          , "container-registry blobs"
+          ]
+      rendered `shouldSatisfy` (not . isInfixOfString ".data/")
+      rendered `shouldSatisfy` (not . isInfixOfString "per-run Pulumi state) is retained")
+      -- The heading may not claim an uninstall that did not happen.
+      unlines (retainedRootInventoryLines DeleteArmLocalOnlyNoInstall "/srv/elsewhere")
+        `shouldSatisfy` isInfixOfString "No local cluster was installed."
+      unlines (retainedRootInventoryLines DeleteArmCascadeNoInstall "/srv/elsewhere")
+        `shouldSatisfy` isInfixOfString "no cascade phase ran"
+
+    it "mints a confirmed no-install cascade only from a confirming sweep" $ do
+      -- The entry table cannot return this: it is a different type whose
+      -- constructor this module cannot name. `confirmCascadeNoInstall` is the
+      -- only producer in scope, and its admitting cases are exactly the two
+      -- that `decideCascadeUninstallGate` admits.
+      fmap confirmedNoInstallCascadeExit (confirmCascadeNoInstall CascadeSweepNotOwed)
+        `shouldBe` Just ExitSuccess
+      fmap
+        confirmedNoInstallCascadeExit
+        (confirmCascadeNoInstall (CascadeSweepRan (TagSweepConfirmedClean [])))
+        `shouldBe` Just ExitSuccess
+      confirmCascadeNoInstall (CascadeSweepNotRun "credential absent")
+        `shouldBe` Nothing
+      confirmCascadeNoInstall (CascadeSweepRan (TagSweepEscaped [] [escapedFixture]))
+        `shouldBe` Nothing
+      confirmCascadeNoInstall (CascadeSweepRan (TagSweepUnconfirmed "unreadable"))
+        `shouldBe` Nothing
+
+-- | One escaped row is all the verdict needs to be non-empty; the sweep's own
+-- suite owns what a row means.
+escapedFixture :: TaggedResource
+escapedFixture =
+  TaggedResource
+    { taggedResourceArn =
+        "arn:aws:ec2:"
+          ++ fixtureAwsRegion FixtureEuWest2
+          ++ ":000000000000:vpc/vpc-escaped"
+    , taggedResourceMatchedTagKey = "prodbox.io/run-scope"
+    , taggedResourceMatchedTagValue = "escaped-fixture"
+    }
 
 containsAll :: [String] -> String -> Bool
 containsAll needles haystack = all (`isInfixOfString` haystack) needles

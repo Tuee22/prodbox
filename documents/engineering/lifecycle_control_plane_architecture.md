@@ -1545,10 +1545,15 @@ at every transition, and a separate 32 MiB encoded ceiling covers two complete e
 metadata. The Target Secret Agent's complete qualification envelope is 34 requests: one provider-
 credential observation, one committed-source recovery observation, three retained-delivery
 requests, the complete retain/restore/retain-on-ready TLS envelope, the two-request legacy-adoption
-plus three-request immutable-version recovery maxima, and two net requests when an unopenable exact
-version-2 collision stages fresh fixed-version-3 bytes. It therefore retains `2 * 34 = 68`, with a
-distinct 138 MiB encoded ceiling for 68 accepted 2 MiB responses plus replay metadata. The Vault
-listener's finite 192 MiB request ceiling covers the projection's Base64 expansion plus its bounded
+plus three-request immutable-version recovery maxima, two net requests when an unopenable exact
+version-2 collision stages fresh fixed-version-3 bytes, and two plus four net requests for the
+Authority-lane occupied-version adoption and one-version unopenable successor. The last two are
+counted rather than netted against the pre-outbox maxima: each pre-outbox branch needs an empty
+aggregate and each Authority-lane branch a committed reference, but that exclusion holds at one
+retain and not across one attempt, since a first retain that enters empty and promotes leaves the
+aggregate current for the retain-on-ready in the same attempt. It therefore retains `2 * 38 = 76`, with a
+distinct 154 MiB encoded ceiling for 76 accepted 2 MiB responses plus replay metadata. The Vault
+listener's finite 224 MiB request ceiling covers the projection's at-most 205.34 MiB Base64 expansion plus its bounded
 KV JSON envelope. Provider Worker derives `2 * (1 + 6 * 4 + 3 + 7 + 5) = 80`: one AWS-scope
 proof; observe/reconcile-observe/mutate/read-back for six Provider-mutated non-EKS registered
 families; three Provider observations around the Kubernetes-owned DNS01 deletion; seven requests
@@ -2405,12 +2410,38 @@ displaced version-2 approval/candidate identity, and the complete version-3 outb
 and successor approval, certificate, and source must match. That state grants no current,
 predecessor, restore, or issuance authority; ordinary exact Adapter read-back, exact source
 re-observation, and promotion remain mandatory. A different version-3 immutable occupant or any
-attempt to advance to version 4 refuses.
+attempt to advance to version 4 within this pre-outbox branch refuses.
 
-A nonempty Authority state outside these exact recovery states, changed binding/evidence,
-missing/corrupt version-2 bytes, every other Adapter, Target, or Vault result, or unobservable state
-refuses. Recovery never overwrites or deletes an immutable object and never lists or selects
-`latest`; versions 1 and 2 are never applied or promoted in the successor branch.
+A nonempty Authority state outside these exact recovery states and the Authority-lane successor
+state below, changed binding/evidence, missing/corrupt version-2 bytes, every other Adapter,
+Target, or Vault result, or unobservable state refuses. Recovery never overwrites or deletes an
+immutable object and never lists or selects `latest`; versions 1 and 2 are never applied or
+promoted in the successor branch.
+
+The Authority-owned lane carries the same two shapes past a **committed current reference**, and
+they are reachable only from one. A next version the store already holds is adopted rather than
+refused: the candidate is rebuilt around the occupant's digest and the currently observed
+certificate and source, proved by an exact selected-Agent apply and source read-back, and staged
+through the ordinary transition, so exact-successor version, validity monotonicity, and key-change
+approval all still bind. A next version whose occupant decodes but whose wrapped DEK returns the
+closed `home-rewrap-ciphertext-authentication-failed` result can be neither rewritten — the
+envelope is not reproducible, since a fresh DEK and nonce are drawn per call — nor adopted, and the
+version selection returns it on every future retain. Exactly one successor version is admitted past
+it. The workflow asserts nothing about the unopenable bytes: it retains only their digest, observes
+the single successor version it admits and refuses by name if that too is occupied or undecodable,
+retains the still-present exact source afresh at the successor version, and performs one Authority
+CAS recording the skipped version, the occupied digest, and the complete successor outbox before
+any Adapter write. Unlike every pre-outbox recovery state, that outbox **retains its predecessor**:
+the committed reference is intact and stays restorable until the successor promotes, and promotion
+is still judged against it for staleness, validity regression, and key change. The skipped object
+is never read, overwritten, deleted, or promoted; it remains a registered `LongLived` object that
+only a retention deletion removes. A second skip stacked on the staged successor, evidence naming
+any version but the one this reference was about to claim, a candidate two versions past the skip,
+a successor re-asserting the skipped digest, an empty or pre-outbox state, a validity regression,
+and an unapproved key change each refuse under their own closed token. A retain that promotes such
+a successor writes `tls-retention/workflow notice=retained-past-unopenable-version/v<n>` to the
+Authority's protected log, because the operation succeeded and no failure line would record the
+abandoned object.
 
 The concrete durable pending value is ciphertext-only and contains the previous committed
 reference, the stored key-rotation approval, the exact candidate reference, and the exact sealed
@@ -2421,6 +2452,13 @@ approval. Exact staging replay is a no-op; a different candidate, envelope, pred
 approval is a concurrent-pending refusal. The state codec bounds both envelope components and the
 complete encoded state, validates every semantic reference field and pending relationship on read
 and write, and preserves the canonical encodings of the earlier Empty and Current constructors.
+Durable state constructors are only ever appended, so every earlier constructor keeps its wire tag;
+the Authority-lane successor outbox is the most recent append and carries its skipped-version
+evidence beside the ordinary pending value. `validateTlsRetentionState` validates every outbox from
+the record alone — the ordinary and Authority-lane successor outboxes by literally re-running their
+own staging decision against a state rebuilt from the pending, the pre-outbox recovery outboxes by
+an equivalent predicate over the same fields — which is why every input to an admission, including
+a version skip, must be durably present rather than supplied as an argument.
 
 Only the migration from a pre-outbox deployment may inspect an occupied next version without a
 pending record. That recovery route accepts one `RetentionVersion` and performs one exact-key GET
@@ -2435,8 +2473,10 @@ bytes, a missing or changed source, failed AAD/identity validation, or a non-ide
 refuses without staging the candidate.
 
 That compatibility inspection is a genesis-only transition: it requires `TlsRetentionEmpty`.
-Once Authority has promoted any current reference, the next retention version is generated and
-staged directly in the Authority lane; a same-numbered object surviving in the legacy lane is
+Once Authority has promoted any current reference, the next retention version is observed in the
+Authority lane and staged there — freshly generated when the version is free, converged onto the
+occupant when it is present and openable, and skipped by exactly one version when the occupant is
+present and unopenable; a same-numbered object surviving in the legacy lane is
 neither observed nor eligible for adoption. This prevents unrelated pre-outbox history from being
 combined with the newly observed live source after cutover, while an interrupted pending Authority
 outbox continues to replay its exact bytes before either branch is considered.

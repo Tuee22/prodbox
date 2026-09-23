@@ -124,7 +124,8 @@ Recommended patterns:
   needs a visible intermediate step
 - split prerequisite ownership into initial fail-fast host/tool/config checks and deferred
   cluster-backed backend proofs when the deferred proof depends on runtime created by that visible
-  runbook, such as the RKE2-backed MinIO Pulumi backend
+  runbook, such as the RKE2-backed MinIO store the Pulumi checkpoints are persisted into
+  ([vault_doctrine.md §10](./vault_doctrine.md#10-pulumi-backend-under-vault))
 - keep any repository-local self-heal bounded, logged, and followed by the same final readiness
   proof, such as recreating a deleted MinIO export host path before retrying Pulumi backend login
 - use explicit runtime-stability gates after prerequisite success when a long-running command needs

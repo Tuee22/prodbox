@@ -1,7 +1,7 @@
 # Vault Secret-Management Doctrine
 
 **Status**: Authoritative source
-** Supersedes**: N/A
+**Supersedes**: N/A
 **Generated sections**: none
 
 > **Purpose**: Single source of truth for Vault as the sole, fail-closed secrets,
@@ -1242,8 +1242,20 @@ Authority time and its uncertainty interval. Only [positive absence](./lifecycle
 expiry may permit a
 separate issuance intent. Not-yet-valid, boundary-ambiguous, regressed/unobservable time, corrupt,
 identity-mismatched, rollback, or unobservable Secret/S3/Transit state fails closed and cannot be
-collapsed to absence. TLS-retention credentials and exact
-registered object versions are `LongLived`. Deleting TLS retention removes only those registered
+collapsed to absence.
+
+A retained object whose wrapped DEK no longer authenticates under
+`transit/keys/prodbox-tls-retention-dek` is one such fail-closed state and stays one: it is never
+opened, restored, issued from, or treated as absent. Because a retain seals with a fresh data key
+and nonce on every call, that object's version can also never be written again, so the retention
+lane admits exactly one successor version past it under durable evidence naming the version and the
+occupied bytes' digest — a bound enforced by `decideTlsUnopenableSuccessorStaging` and re-checked at
+every codec crossing by `validateTlsRetentionState`. The skip authorizes no restore and no issuance:
+the predecessor stays the committed reference until the successor promotes through the ordinary
+read-back and source re-observation. TLS-retention credentials and exact
+registered object versions are `LongLived`, and a skipped object remains one — it is registered,
+never deleted by the skip, and removed only by deleting TLS retention. Deleting TLS retention
+removes only those registered
 prefix objects/versions and the TLS identity/policy. It never deletes the shared bucket; bucket
 deletion is the final Authority-backup decommission tail after every registered prefix is proved
 absent. The complete state machine and one-shot-worker placement are owned by

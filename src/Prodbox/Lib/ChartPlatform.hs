@@ -4832,9 +4832,21 @@ retainPublicEdgeTls repoRoot substrate scopeSet = case substrate of
       pure $ case retained of
         Left TlsWorkflowLegacySourceMissing ->
           Right PublicEdgeTlsRetainLegacySourceMissing
+        -- The live source was readable when the occupant was proven unopenable
+        -- and gone when the successor was sealed, which is the same fact about
+        -- the world as the arm above and is classified with it.
+        Left (TlsWorkflowRetentionSuccessorSourceMissing _) ->
+          Right PublicEdgeTlsRetainLegacySourceMissing
         Left err -> Left err
         Right TlsWorkflowNothingToRetain -> Right PublicEdgeTlsRetainNothing
         Right (TlsWorkflowRetained _) -> Right PublicEdgeTlsRetainSucceeded
+        -- The retain succeeded. The skipped version is not announced here:
+        -- the protected-log emitters live in the Lifecycle Authority runtime
+        -- and this substrate runs the workflow in the host process, so the
+        -- abandoned object is recorded only in the durable Authority state.
+        -- Widening that is out of scope for the sprint that added the lane.
+        Right (TlsWorkflowRetainedPastUnopenableVersion _ _) ->
+          Right PublicEdgeTlsRetainSucceeded
 
 classifyPublicEdgeTlsRetainResponse
   :: TlsRetentionWorkflowAuthorityResponse

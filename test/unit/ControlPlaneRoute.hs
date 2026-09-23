@@ -127,26 +127,34 @@ controlPlaneRouteSuite =
       source
         `shouldContain` "55 -> Just LifecycleOwnershipManifest"
 
-    it "owns TLS staging, legacy recovery, and exact-version observation at their separate roles" $ do
-      controlPlaneRoutePath LifecycleTlsRetentionStage
-        `shouldBe` "/v1/authority/tls-retention/stage"
-      controlPlaneRouteRole LifecycleTlsRetentionStage
-        `shouldBe` LifecycleAuthorityRuntime
-      controlPlaneRoutePath LifecycleTlsRetentionLegacyRecoveryStage
-        `shouldBe` "/v1/authority/tls-retention/stage-legacy-recovery"
-      controlPlaneRouteRole LifecycleTlsRetentionLegacyRecoveryStage
-        `shouldBe` LifecycleAuthorityRuntime
-      controlPlaneRoutePath TlsRetentionObserveVersion
-        `shouldBe` "/v1/tls-retention/observe-version"
-      controlPlaneRouteRole TlsRetentionObserveVersion
-        `shouldBe` TlsRetentionRuntime
-      source <- readFile "src/Prodbox/ControlPlane/RequestAuthentication.hs"
-      source `shouldContain` "LifecycleTlsRetentionStage -> 61"
-      source `shouldContain` "TlsRetentionObserveVersion -> 62"
-      source `shouldContain` "LifecycleTlsRetentionLegacyRecoveryStage -> 63"
-      source `shouldContain` "61 -> Just LifecycleTlsRetentionStage"
-      source `shouldContain` "62 -> Just TlsRetentionObserveVersion"
-      source `shouldContain` "63 -> Just LifecycleTlsRetentionLegacyRecoveryStage"
+    it
+      "owns TLS staging, both evidence-bearing recoveries, and exact-version observation at their separate roles"
+      $ do
+        controlPlaneRoutePath LifecycleTlsRetentionStage
+          `shouldBe` "/v1/authority/tls-retention/stage"
+        controlPlaneRouteRole LifecycleTlsRetentionStage
+          `shouldBe` LifecycleAuthorityRuntime
+        controlPlaneRoutePath LifecycleTlsRetentionLegacyRecoveryStage
+          `shouldBe` "/v1/authority/tls-retention/stage-legacy-recovery"
+        controlPlaneRouteRole LifecycleTlsRetentionLegacyRecoveryStage
+          `shouldBe` LifecycleAuthorityRuntime
+        controlPlaneRoutePath LifecycleTlsRetentionUnopenableSuccessorStage
+          `shouldBe` "/v1/authority/tls-retention/stage-unopenable-successor"
+        controlPlaneRouteRole LifecycleTlsRetentionUnopenableSuccessorStage
+          `shouldBe` LifecycleAuthorityRuntime
+        controlPlaneRoutePath TlsRetentionObserveVersion
+          `shouldBe` "/v1/tls-retention/observe-version"
+        controlPlaneRouteRole TlsRetentionObserveVersion
+          `shouldBe` TlsRetentionRuntime
+        source <- readFile "src/Prodbox/ControlPlane/RequestAuthentication.hs"
+        source `shouldContain` "LifecycleTlsRetentionStage -> 61"
+        source `shouldContain` "TlsRetentionObserveVersion -> 62"
+        source `shouldContain` "LifecycleTlsRetentionLegacyRecoveryStage -> 63"
+        source `shouldContain` "LifecycleTlsRetentionUnopenableSuccessorStage -> 64"
+        source `shouldContain` "61 -> Just LifecycleTlsRetentionStage"
+        source `shouldContain` "62 -> Just TlsRetentionObserveVersion"
+        source `shouldContain` "63 -> Just LifecycleTlsRetentionLegacyRecoveryStage"
+        source `shouldContain` "64 -> Just LifecycleTlsRetentionUnopenableSuccessorStage"
 
     it "contains no generic object-store or Vault route" $
       mapM_

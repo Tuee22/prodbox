@@ -24,8 +24,11 @@ import Prodbox.ControlPlane.AwsStackCreationBindingRepository
   ( AwsStackCreationCommitResult (AwsStackCreationCommitCreated)
   )
 import Prodbox.ControlPlane.OwnershipManifestRepository
-  ( OwnershipManifestSlotStage (..)
+  ( OwnershipManifestAuthorityReadBack (OwnershipManifestAuthorityReadBackPresent)
+  , OwnershipManifestSlotStage (..)
+  , authorityOwnershipManifestWriteBytes
   , authorityOwnershipManifestWriteIdentity
+  , confirmOwnershipManifestDecisionReadBack
   , ownershipManifestAuthorityLogicalName
   , ownershipManifestSlotLogicalName
   , prepareAuthorityOwnershipManifestWrite
@@ -50,6 +53,11 @@ import Prodbox.Lifecycle.Authority.AdminAction
   ( PermitFreshness (PermitFresh)
   , RunnerRole (AdminActionRunner)
   )
+import Prodbox.Lifecycle.CheckpointAuthority
+  ( ModelBObjectVersion
+  , mkModelBObjectVersion
+  )
+import Prodbox.Lifecycle.DnsRecord (mkHostedZoneId)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderRefError (ProviderRefEmpty, ProviderRefMalformed, ProviderRefTooLong)
   , maximumProviderRunMarkerLength
@@ -72,6 +80,11 @@ import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.OwnershipManifest
 import Prodbox.Lifecycle.Teardown.Registry
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ObservationEvidenceScopeFields (scopeFieldLifecycleOperation)
+  , observationEvidenceScopeFields
+  , scopeForOwnershipManifestCleanupReadBack
+  )
 import TestSupport
 
 registeredStackCreationOwnershipSuite :: SuiteBuilder ()
@@ -275,6 +288,64 @@ registeredStackCreationOwnershipSuite =
               ]
                 `shouldBe` []
 
+    describe "the create reads its own record back on the cleanup side" $ do
+      -- The live campaign's first exercise of this lane refused every create
+      -- with `OwnershipManifestScopeOperationMismatch ReconcileDesiredAbsent
+      -- ReconcileDesiredPresent`, and nothing here could see it: both this
+      -- suite and the repository suite hand-built the cleanup-side scope in a
+      -- fixture, so the relationship they asserted was the one an author had
+      -- already got right rather than the one production passes.
+      it "refuses a target minted under the create's own scope" $
+        -- The defect, stated as the refusal it was. A target is cleanup
+        -- authority's vehicle, so its mint demands the cleanup side; a create
+        -- asking with its own scope is asking the wrong question, and the
+        -- answer was a refused create rather than a wrong destroy.
+        mkOwnershipManifestTarget ExplicitPerRunSurface AwsTestKey creationScope
+          `shouldSatisfy` isScopeOperationMismatch
+
+      it "mints one under the scope the submitter asks with" $
+        mkOwnershipManifestTarget
+          ExplicitPerRunSurface
+          AwsTestKey
+          (scopeForOwnershipManifestCleanupReadBack creationScope)
+          `shouldSatisfy` isMintedTarget
+
+      it "still addresses the object the commit wrote" $ do
+        -- The other half, and the one that makes the flip safe rather than
+        -- merely accepted: the identity normalises the operation away, so the
+        -- commit's own identity confirms against a target minted on the other
+        -- side. If it did not, the record would be unreachable at exactly the
+        -- moment it exists to be read.
+        let prepared = mustRight (prepareAuthorityOwnershipManifestWrite initialWrite)
+            identity = authorityOwnershipManifestWriteIdentity prepared
+            target =
+              mustRight
+                ( mkOwnershipManifestTarget
+                    ExplicitPerRunSurface
+                    AwsTestKey
+                    (scopeForOwnershipManifestCleanupReadBack creationScope)
+                )
+        fmap
+          (proveWriteAheadOwnership AwsTestKey)
+          ( confirmOwnershipManifestDecisionReadBack
+              target
+              identity
+              ( OwnershipManifestAuthorityReadBackPresent
+                  readBackFixtureVersion
+                  (authorityOwnershipManifestWriteBytes prepared)
+              )
+          )
+          `shouldSatisfy` isProvedThroughReadBack
+
+      it "changes the operation and nothing else" $
+        -- A field-by-field re-mint is how this scope's DNS hosted zone was lost
+        -- once already, so the re-scoper is a record update and this states it.
+        observationEvidenceScopeFields
+          (scopeForOwnershipManifestCleanupReadBack zonedCreationScope)
+          `shouldBe` (observationEvidenceScopeFields zonedCreationScope)
+            { scopeFieldLifecycleOperation = ReconcileDesiredAbsent
+            }
+
     describe "the one arm that can leave a resource names it" $ do
       it "renders a durable obligation rather than a diagnostic" $ do
         -- Sprint 7.41 deliverable 5. Every other failure on this lane is before
@@ -297,6 +368,46 @@ perRunProvisioningPrograms = ["aws-eks", "aws-eks-subzone", "aws-test"]
 
 overlongValue :: Text.Text
 overlongValue = Text.replicate (maximumProviderRunMarkerLength + 1) "x"
+
+isScopeOperationMismatch
+  :: Either OwnershipManifestError (OwnershipManifestTarget surface) -> Bool
+isScopeOperationMismatch result = case result of
+  Left (OwnershipManifestScopeOperationMismatch ReconcileDesiredAbsent ReconcileDesiredPresent) ->
+    True
+  _ -> False
+
+isMintedTarget
+  :: Either OwnershipManifestError (OwnershipManifestTarget surface) -> Bool
+isMintedTarget result = case result of
+  Right _ -> True
+  Left _ -> False
+
+isProvedThroughReadBack
+  :: Either err (Maybe (WriteAheadOwnershipProof 'WriteAheadOwnership)) -> Bool
+isProvedThroughReadBack result = case result of
+  Right (Just _) -> True
+  _ -> False
+
+-- | A create scope that carries a retained DNS hosted zone, so the re-scoper's
+-- field preservation is stated over the field it was once written without.
+zonedCreationScope :: ObservationEvidenceScope
+zonedCreationScope =
+  mkObservationEvidenceScopeWithDnsZone
+    ExplicitPerRun
+    (evidenceRegistryRevision laneScope)
+    (evidenceDurableRunScope laneScope)
+    (evidenceLinuxRke2Foundation laneScope)
+    ( Just
+        ( AwsScope
+            (AwsAccountId "111122223333")
+            (AwsRegion (fixtureAwsRegion FixtureCaCentral1))
+        )
+    )
+    (mustRight (mkHostedZoneId "Z0FIXTUREZONEID000"))
+    ReconcileDesiredPresent
+
+readBackFixtureVersion :: ModelBObjectVersion
+readBackFixtureVersion = mustRight (mkModelBObjectVersion "manifest-object-v1")
 
 mustRight :: (Show err) => Either err value -> value
 mustRight result = case result of

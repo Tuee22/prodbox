@@ -3502,6 +3502,171 @@ None.
   [00-overview.md](00-overview.md); register the surviving defects in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
+## Sprint 0.35: A Cascade That Reaches No Phase Should Still Be Able To Answer [✅ Done]
+
+**Status**: Done (2026-09-16). It schedules the cascade-coverage remediation and corrects the
+governed record on the same already-reclosed Phase 0 documentation and governance surface — it
+neither re-closes nor reopens the phase. It opens five sprints in Phases `2`, `4`, `6` and `7`,
+records the own-surface reopens of Phases `2` and `4`, registers six ledger rows, and corrects five
+located claims that are false about the current revision.
+**Doctrine**: [Documentation Standards](../documents/documentation_standards.md) and
+[Development Plan Standards](development_plan_standards.md).
+**Implementation**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, `DEVELOPMENT_PLAN/phase-2-gateway-dns.md`,
+`DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md`,
+`DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md`,
+`DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`,
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/cli_command_surface.md`,
+`documents/engineering/test_topology_doctrine.md`,
+`documents/engineering/prerequisite_doctrine.md`, and `README.md`.
+**Blocked by**: none.
+**Live-proof**: pending — not applicable to a documentation and governance surface. The live
+evidence this sprint records was produced by Sprint `6.5`'s campaign, not by this row.
+**Deployment qualification**: pending — not invalidated by this sprint, which changes no production
+composition.
+**Independent Validation**: `prodbox dev lint docs` and `prodbox dev check` over the edited governed
+record, including the derived Resume Here execution order, the backward-dependency bijection, the
+Pending Removal owner and prerequisite direction, and every cited source path.
+**Docs**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/cli_command_surface.md`,
+`documents/engineering/test_topology_doctrine.md`,
+`documents/engineering/prerequisite_doctrine.md`, `README.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+The operator's question is not "did the cascade succeed". It is *may I now run `git clean -fxd`*.
+The supported surface cannot answer it, and the reason is a design decision that was correct when it
+was made and has outlived its premise.
+
+Sprint `4.88` established that a cascade must never mint success from silence, and implemented it by
+making the no-install cascade exit non-zero. That is sound: local absence says nothing about AWS. But
+it treats "cannot observe" and "did not observe" as one thing. The postflight tag sweep needs the
+repository root, a Tier-0 configuration read, and an ephemeral admin credential — no Kubernetes, no
+Vault, no Lifecycle Authority — so a cascade with no cluster *can* query AWS. It exits on silence
+it did not have to keep.
+
+Underneath that sits a defect of the opposite kind, where a reader mints absence it did not observe.
+`residueStatusFromCheckpointObservability` maps a checkpoint that is not there and a checkpoint that
+exists and parses to nothing onto the same proven absence; the consumer keeps only present entries;
+the per-run destroy phase runs nothing and reports success. A provider create makes resources before
+its state is committed, so "no checkpoint" is precisely the condition under which a live resource is
+most likely to exist. Two live incidents — 2026-09-07 and 2026-09-16 — are attributed to that arm in
+prose, in three separate files, and it had no ledger row.
+
+This sprint schedules the five code sprints that analysis produced, and corrects the claims in the
+governed record that the two incidents proved false.
+
+### Deliverables
+
+- Open Sprint `2.135` on Phase `2`'s retained-TLS lane, and record the own-surface reopen. The
+  retention version that stopped Sprint `6.5`'s campaign for five consecutive cycles is selected by
+  `nextRetentionVersion` on every future retain and can be neither rewritten nor adopted.
+- Open Sprints `4.100` and `4.101` on Phase `4`'s own surface, and record the reopen. `4.100` takes
+  the arm split, the retained-root narration and the retained-root inventory; `4.101` takes the
+  checkpoint-empty absence and must answer Sprint `4.89` by name, which decided this same function
+  correct after the same class of leak.
+- Open Sprint `6.6` on Phase `6`, which is already open and Active on `6.5` and therefore takes no
+  reopen. It widens the sweep's owed scope and gives the no-install cascade its second exit.
+- Open Sprint `7.43` on Phase `7`, which stays closed: the row names gaps that Sprints `7.41` and
+  `7.42`'s own records already register, rather than a defect in what they landed.
+- Register the six ledger rows, each a gap reachable on every run with no current owner. The
+  checkpoint-empty row is the one worth naming: a cause named in prose with no owner is this
+  ledger's own failure mode.
+- Write the upstream contract once, in
+  [Lifecycle Reconciliation Doctrine §5a.0](../documents/engineering/lifecycle_reconciliation_doctrine.md#5a0-a-cascade-that-reaches-no-phase-may-still-query-aws),
+  and derive the other four surfaces from it rather than restating a 2×2 arm contract in four places
+  that have already drifted once.
+- Correct the retained-root narration claim wherever it appears. Two documents state that every arm
+  without a completion receipt names the root and says the run established nothing about retiring
+  it; `retainedStateNarrationFor` is silent on two of its four arms.
+- Correct the claim that `.data/` is the only repository-local retained root, which rule 13 of the
+  document making it falsifies three hundred lines later.
+- Correct the description of MinIO as the Pulumi backend. Pulumi runs against a decrypt-to-scratch
+  `file://` backend in RAM and never addresses MinIO; `vault_doctrine.md §10` already owns the
+  mechanism and says so outright, so the other sites link it rather than restate it a sixth time.
+
+### Validation
+
+1. The derived Resume Here execution order matches the authored table, exactly one row is `Next`,
+   and every non-`Done` sprint appears.
+2. Every Pending Removal row names an existing sprint or is explicitly unowned, and no prerequisite
+   is later than its owner.
+3. Every cited source path resolves, and every bound section citation resolves to a real heading.
+4. The ledger census is recounted mechanically as data rows before and after, not incremented.
+5. `prodbox dev lint docs` and canonical `prodbox dev check` exit 0.
+
+### Closure Record
+
+The five sprint blocks, the six ledger rows and the thirty-fifth `Ledger Status` entry landed with
+the sprint block itself. Four things did not, and they are what closing required.
+
+**The phase table said the phases were closed — the same failure Sprint `0.34` closed on.**
+`00-overview.md` carried Phases `2` and `4` as reclosed while this plan's own queue held three new
+rows against them. Both are now 2026-09-16 reopens naming the sprints that own them, with the
+superseded cells preserved as one-line `<!-- Prior Phase N status: … -->` comments in the form the
+file already used. Phase `6`'s row gains Sprint `6.6` with the explicit note that it is not a reopen.
+Phases `5` and `7` are untouched, because neither has a new row on its own surface.
+
+**The Resume Here narrative contradicted itself within four paragraphs.** It recorded Phase `4`'s
+2026-09-16 reopen and then, further down, that Phases `4` and `5` "both reclosed on 2026-09-14". The
+later clause now states that Phase `4`'s reclose is superseded by the reopen above it and that Phase
+`5`'s stands.
+
+**Two corrections this sprint's own plan called for were withdrawn on re-reading, and withdrawing
+them is the finding.** The plan recorded the published counterexample figure of **219** as stale
+against a mechanical recount of **220**. Both cited sites are *dated historical records* — a
+2026-09-12 `Ledger Status` entry and a Completed row for Sprint `0.34` — and the live index in
+[README.md](README.md) already reads 220, re-measured 2026-09-14. Editing a dated record to a figure
+measured later falsifies history; the figures stand. The plan also asserted that the postflight
+sweep "found the escaped resources and withheld the uninstall" on both incident dates. That is true
+of 2026-09-16 and false of 2026-09-07, where the run exited non-zero with drain and sweep unresolved
+and part of the residue was untagged IAM no tag query can see. The doctrine records the difference
+rather than the generalisation.
+
+**The counts were recounted, and the recount script was wrong before the ledger was.** A first pass
+measured pending 74 and completed 370 against published figures of 73 and 369. The cause was the
+script counting each table's `Item` header row as data, not a ledger error. Corrected, the recount
+reproduces **pending 73, unowned 9, completed 369** and **220** counterexample identifiers exactly.
+This is the second time a naive split has mismeasured this file; the first was an escaped pipe.
+
+`prodbox dev lint docs` and canonical `prodbox dev check` exit 0.
+
+### Remaining Work
+
+None.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — §5a.0, the upstream contract for a
+  cascade that reaches no phase and still queries AWS, and the §3.0 record of the first bullet's
+  violation by the per-run residue reader.
+- `documents/engineering/storage_lifecycle_doctrine.md` — the §7 retained-root enumeration, rule
+  10's three-valued narration, rule 13's converse obligation, and rule 17's scope.
+- `documents/engineering/cli_command_surface.md` — the operator-visible exit contract for both
+  no-install cascade exits, and the `--dry-run` purity hazard the new arm introduces.
+- `documents/engineering/test_topology_doctrine.md` — §4's converse: enumerating `.test-data/` is a
+  read and widens no write licence.
+- `documents/engineering/prerequisite_doctrine.md` — MinIO named as the checkpoint store rather than
+  the Pulumi backend.
+
+**Product docs to create/update:**
+
+- `README.md` — the target second cascade exit, the retained-root enumeration, the three-valued
+  narration correction, and the Pulumi backend description.
+
+**Cross-references to add:**
+
+- Record the Phase `2` and Phase `4` own-surface reopens in [README.md](README.md) and
+  [00-overview.md](00-overview.md); register the six gaps in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
 ## Related Documents
 
 - [README.md](README.md)

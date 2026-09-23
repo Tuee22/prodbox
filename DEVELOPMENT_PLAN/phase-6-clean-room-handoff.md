@@ -569,7 +569,10 @@ could fall back to, and Sprint `6.5` proved on 2026-09-11 that the replacement's
 Kubernetes client had never authenticated on any live run.
 **Live-proof**: pending and non-blocking for code-local closure. Two consecutive destructive home
 cycles run the qualification-only replacement candidate under its exact identity before any public
-activation. Standard P forbids activation and legacy deletion until the current-revision home row is
+activation. The campaign is **running again as of 2026-09-15** — the operator restored
+`test-secrets.dhall` and the clean-room blocker recorded below is lifted — and the three cycles run
+since have each refused before candidate execution, closing two defects on the way; see
+[Current Validation State](#current-validation-state). Standard P forbids activation and legacy deletion until the current-revision home row is
 `proven`; the post-activation identity must then be qualified before the ledger row can complete.
 **Independent Validation**: pure prefix/resume and rollback folds, installed-binary fake traces,
 repository/rendered-resource scans, unit/integration suites, and `prodbox dev check`.
@@ -6885,6 +6888,191 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
   is an input a future cleanup may consume, and consuming it is this sprint's activation rather
   than that one's.
 
+- **The live campaign restarted on 2026-09-15, and the first cycle it ran refused before creating
+  anything — in Sprint `7.41`'s own write-ahead mechanism, on that mechanism's first live
+  exercise.** The operator restored `test-secrets.dhall`, which was the whole of the blocker
+  recorded above; the harness regenerates the Tier-0 `prodbox.dhall` from it, so no interactive
+  `config setup` was needed and the cycle installed RKE2 from a genuine clean-room host. Cycle
+  `q1-20260915` reached the registered stack create and answered *"the registered stack create is
+  admitted and was not executed, because its write-ahead ownership manifest could not be read back
+  independently: `OwnershipManifestRepositoryIdentityInvalid
+  "OwnershipManifestScopeOperationMismatch ReconcileDesiredAbsent ReconcileDesiredPresent"`"*. A
+  read-only all-region sweep afterwards found no EKS cluster and no non-default VPC, which is the
+  arm working: the refusal is before the effect, so nothing was created and nothing leaked.
+- **The cause is one value, and the reason no test could see it is worth more than the fix.**
+  `mkOwnershipManifestTarget` mints its binding under `ReconcileDesiredAbsent`, because an
+  `OwnershipManifestTarget` is cleanup authority's vehicle and `manifestBindingFor` is, by that
+  module's own statement, *"the only place that knows which side of the lifecycle it is on"*.
+  Sprint `7.41`'s create-side read-back reuses `readBackOwnershipManifestDecisionForScope` — the
+  cleanup-side read-back — and passed it the create's own proven scope, which correctly carries
+  `ReconcileDesiredPresent`. The two are mutually exclusive by construction, so every live create
+  refused. The identity is unaffected: `ownershipManifestSlotScope` normalises the operation away
+  precisely so both sides address one object, which is why the commit succeeded and only the target
+  mint refused. The repair is that the read-back now asks on the cleanup side —
+  `scopeForOwnershipManifestCleanupReadBack`, a record update in `Prodbox.Lifecycle.Teardown.ScopeCodec`
+  beside the two audit re-scopers, because a field-by-field re-mint is how this scope's DNS hosted
+  zone was lost once already. That is also the more honest reading of what the check is for: the
+  create is not taking a second look at what it just wrote, it is asking the question a later
+  teardown will ask, and the sprint's own prose says so — *a create whose record a later teardown
+  could not use is worse than a create that did not happen*.
+  **Both unit suites that cover this lane hand-built the cleanup-side scope in a fixture**, so what
+  they asserted was a relationship an author had already got right rather than the one production
+  passes; four cases now assert the production re-scoper, including that the commit's own identity
+  still confirms against a target minted on the other side, and that the re-scoper changes the
+  operation and nothing else over a zone-carrying scope.
+- **The second cycle, `q2-20260915`, got past that and refused somewhere new — on the second
+  consecutive run, which is exactly what Standard P's two-cycle requirement exists to reach.** The
+  restore graph's `RestoreNodeDeleteChart RestoreChartVscode` failed; the vscode chart owns the
+  public-edge certificate, so its delete runs a preserve-before-delete retain, and the Authority's
+  protected log carried
+  `tls-retention/workflow failure=adapter/http-status/store/repository-failed/put/conflict/confirmation/bytes-mismatch`.
+  The retain path writes the Authority-lane object `authority-v1/versions/<n>.envelope` with a
+  put-if-absent and **never observes that lane first**. The observation above it reads the *legacy*
+  lane and reads it to decide whether there is a pre-Authority envelope to adopt, which is a
+  different question; so when the store's occupancy has drifted ahead of the Authority's current
+  version — which is what an interrupted retain leaves — the claim collides and surfaces as a store
+  conflict naming neither the version nor either digest. `recoverImmutableCollision` exists and
+  handles exactly this, but it is reachable only from the legacy-recovery state.
+- **What landed for it is the measurement, not a behaviour change.** An ordinary retain now
+  observes the Authority lane before claiming a version on it: missing proceeds unchanged, and
+  present or corrupt refuses as `TlsWorkflowRetentionVersionOccupied`/`…VersionCorrupt`, rendered
+  into the protected log as `retention-version-occupied/v<n>`. The occupant is deliberately **not**
+  adopted — adoption on this lane would promote an envelope nothing staged, which is a behaviour
+  change on a Standard-P surface without evidence — and the public
+  `TlsRetentionWorkflowAuthorityFailure` vocabulary is deliberately **not** widened, because that is
+  a deployed-protocol change; the coordinate that was missing is the version, and it lands where a
+  reader can act on it. The unit fake for this path used to `error "ordinary retention must not
+  observe an Authority collision"`, which recorded the belief the live cycle refuted; it now serves
+  the observation, and a case asserts that an occupied successor version refuses by name while
+  nothing is staged and nothing is stored.
+- **The third cycle proved the widened refusal was aimed at the wrong arm, and that is worth more
+  than the refusal.** `q3-20260915` ran the repaired runtime — the Authority pod's `imageID` is the
+  manifest that cycle pushed, so the code under test is the new code — and the protected log still
+  said `put/conflict/confirmation/bytes-mismatch` rather than `retention-version-occupied/v<n>`.
+  The observation therefore never ran, which means the retain is not reaching `createFresh` at all:
+  it is reaching `resumePending`, so a **pending staged by an earlier run is being resumed**, and a
+  resumed pending has no version to claim and no observation ahead of its store. The collision
+  surfaces at the put, `isExactImmutableCollision` recognises it, and `recoverImmutableCollision`
+  refuses — because only `TlsRetentionLegacyRecoveryPendingState` can rebase onto an occupant and
+  every other state returned the adapter's own error. That catch-all now names the version the
+  resumed pending is for. The recovery behaviour is unchanged: a state that could not rebase still
+  does not rebase, it just stops reporting a slot somebody else holds as an unavailable adapter.
+  **The fourth cycle confirmed the attribution and produced the number.** `q4-20260915` failed at
+  the same node and the Authority log said `retention-version-occupied/v3` rather than a store
+  conflict, so the cause is located: **the Authority's current retained version is `v2` while the
+  store already holds `v3`, under an envelope that is not the one this retain builds.** That skew is
+  what an interrupted retain leaves — an object written and a promotion lost — and the ordinary
+  state has no way past it, because the retain's bytes are not reproducible (each attempt wraps a
+  fresh DEK) and `v3` is immutable. The only mechanism that can resolve it, rebasing onto the
+  occupant in `recoverImmutableCollision`, is gated to `TlsRetentionLegacyRecoveryPendingState`.
+  **Until that skew is resolved this host cannot complete any cycle**: the retain runs on the vscode
+  chart delete, which is the third node of the restore graph, so every campaign run stops there.
+  The two refusals are rendered distinguishably — `retention-version-occupied/v<n>` looked first and
+  wrote nothing, `resumed-retention-version-occupied/v<n>` found out at the write — because only one
+  of them is resolvable by rebasing and collapsing them would hide which one a run hit.
+  **The tag is stable by design and was checked rather than assumed** — `resolveCustomImageTag`
+  derives `prodbox-<machine-id>`, so the image reference does not move between cycles and the
+  rollout is forced by the resolved build token and manifest digest instead. Each cycle built and
+  pushed a distinct manifest and the Authority is running the current one.
+- **The fifth cycle turned the named collision into the actual fact, and the fact was not the one
+  the fourth cycle's number suggested.** With the retain adopting an occupied version rather than
+  refusing it, `q5-20260915` reached the adoption, rewrapped the occupant's DEK under the
+  retained-home key, and failed there: `retention-version-unopenable/v3`. The `v3` object is not
+  merely occupied, it is **an envelope this control plane cannot open** — well-formed bytes whose
+  wrapped DEK no longer opens under `prodbox-tls-retention-dek`. So the two repairs that looked like
+  candidates were both wrong: rewriting the slot is impossible because
+  `retainTlsAtSelectedAgent` draws a fresh DEK and nonce per call so the bytes are not reproducible,
+  and adopting the slot is impossible because its DEK is not ours.
+- **The convergence mechanism landed anyway, and it is the part worth keeping.** An ordinary retain
+  now adopts an occupied Authority-lane version instead of refusing it: it observes the occupant,
+  rebuilds the candidate around the occupant's digest and the live certificate and source, proves
+  the occupant by applying it at the selected Target, and stages it through the **ordinary**
+  transition so every one of the Authority's own rules still holds — exact successor version, no
+  validity regression, approval still required for a key change. Storing the occupant's own bytes at
+  its own version is idempotent at the put-if-absent, so the path completes rather than colliding a
+  second time. The adoption is a proof rather than a gamble because the AEAD's associated data binds
+  the version, the certificate identity and the source Secret: `restoreTlsAtSelectedAgent` cannot
+  open an envelope sealed for anything else, and it writes only after that open succeeds. An
+  occupant whose DEK does not open is refused by name as `TlsWorkflowRetentionVersionUnopenable`
+  rather than adopted, which is the arm the live cycle took.
+- **What this does not do is move past an unopenable version, and that is registered rather than
+  improvised.** The legacy lane's answer to an unopenable occupant is a fixed successor version, but
+  it is reachable only from `TlsRetentionLegacyRecoveryPendingState` and its staging refuses
+  `TlsRetentionCurrent` outright, by design — the two lanes are kept disjoint. Giving the ordinary
+  lane the same capability is not a small change: `validateTlsRetentionState` re-runs
+  `decideTlsStaging` against a state rebuilt from the pending alone, so a version jump cannot be
+  authorized by an argument the validator never sees. It needs durable evidence, which means a new
+  state constructor with its own appended wire tag, its own staging decision and refusal vocabulary,
+  promotion validation, a control-plane route, client method and runtime wiring. That is a
+  deployed-protocol change on a Standard-P surface and it is **Sprint `2.135`**, opened for it.
+- **This host was unstuck by restoring the clean-room baseline, which is the campaign's own
+  premise.** Every retained PV on this host — MinIO, Vault, the Authority journal — is under
+  `.test-data/`, the test-scoped retained root that
+  [storage_lifecycle_doctrine.md §7](../documents/engineering/storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root)
+  rule 13 and
+  [test_topology_doctrine.md §4](../documents/engineering/test_topology_doctrine.md#4-fail-fast-preconditions-and-test-data-isolation)
+  exist to keep separate from production `.data/`; `.data/` does not exist on this host at all. The
+  capability disposition rule 10 requires was verified positive immediately beforehand rather than
+  assumed — no EKS cluster, no non-default VPC and no EC2 instance in `us-west-2`, `ca-central-1` or
+  `us-east-1` — so nothing registered depended on the root being retired. `prodbox cluster delete
+  --yes` uninstalled the local cluster and, as it documents, preserved the retained root; the root
+  was then moved aside rather than deleted, so the evidence is still on disk outside the worktree.
+  What the reset costs is stated: Vault re-inits from an empty anchor and the retained ZeroSSL
+  certificates are gone, so the next run re-orders from ZeroSSL.
+- **Cycle `q6-20260916` cleared the retention blocker and live-proved Sprint `7.41`'s repair, then
+  failed further along than this campaign has ever reached.** From the restored clean-room baseline
+  the restore graph completed with no failed node — the vscode chart delete, which had stopped five
+  consecutive cycles, reported the clean-room answer *"no Secret and no Certificate; the next deploy
+  triggers a fresh order"*. The `aws-eks-subzone` create then returned a Provider receipt, which is
+  the **first live execution of a registered stack create through the repaired write-ahead
+  read-back**: the manifest was committed, read back on the cleanup side, and the execute ran. The
+  defect that refused every create on 2026-09-15 is closed live, not only code-locally.
+- **The `aws-eks` create then failed at the effect, and the mechanism Sprint `7.41` exists for did
+  its job.** The Provider Worker refused the dispatch with
+  `AuthorityProviderRemoteRefused 503 "ProviderWorkerResponseInvalid ControlPlaneRequestInvalid"`
+  *after* the lifecycle generation was committed, so the create is the one arm under which an AWS
+  resource may exist. It named the obligation instead of dying as a sentence: *"A write-ahead
+  ownership manifest for `aws-eks` is durable at version `71b39622ec3baf052541d2965b8971c9` and
+  names every coordinate this create was authorized to make."* The resources did exist — an ACTIVE
+  EKS cluster, a node group of two `t3.large`, a VPC with two subnets, an internet gateway, a route
+  table, a security group, an IAM policy, an OIDC provider and three roles.
+- **The teardown then demonstrated, live, that the 2026-09-08 leak class is detected but not yet
+  remediated — and that both halves of Sprint `6.5`'s 2026-09-14 sweep repair work.** `cluster
+  delete --cascade` answered `aws-eks=absent [answered by: retained checkpoint store]`, because the
+  create's execute failed before Pulumi state was committed and an empty checkpoint reads as
+  absence; `prodbox aws stack eks destroy --yes` exited **0** with
+  `destroy receipt: prodbox-registered-stack/v1:absent:aws-eks` for the same reason. That is the
+  false-absence this plan already names. What did work is the postflight sweep: it returned **43
+  tag-matches** across the run's region and the global-service region — the VPC, IGW, security
+  group, IAM policy and OIDC provider, matched on `prodbox.io/run-scope` and `prodbox.io/submission`,
+  which are Sprint `7.41`'s own provider-side tags — and it **gated the uninstall**, leaving the
+  local control plane running with the exact stated reason that destroying it *"would leave the
+  answer above with nothing able to act on it"*. Detection, region and page coverage, and the
+  ordering repair are all live-proven. Remediation is the gap.
+- **The gap is exactly the work Sprint `6.5`'s activation owns, and this run is its first live
+  demonstration.** The durable manifest names the coordinates; the sweep finds the resources; no
+  supported command consumes either into a destroy, because *"turning that allowlist into a destroy
+  is Sprint `6.5`'s single-writer cutover"*. `prodbox nuke` is not that path — it is a total
+  decommission that would also retire the retained `aws-ses` stack, the retained TLS objects and the
+  shared bucket — and it is operator-only. The residue was therefore cleared by hand under explicit
+  operator authorization, resource by resource against the ARN inventory the sweep produced, and the
+  account was verified empty of EKS clusters, non-default VPCs, EBS volumes, customer-managed IAM
+  policies and OIDC providers in all three regions afterwards; only the retained
+  `prodbox-lifecycle-provider` role remains. **This is the second time this campaign has had to
+  clear a leak from outside the product, and it is the strongest argument yet for the activation.**
+- **One resource the sweep did not report is worth recording, because it is a coverage fact rather
+  than a cleanup detail.** `aws-eks-test-ebs-csi-driver` carried `prodbox.io/run-scope` and
+  `prodbox.io/managed-by` and was created at 13:21 UTC — after the sweep had run — so the sweep's
+  answer was complete for the moment it was taken and incomplete by the time the cascade finished.
+  A sweep is a measurement at an instant, and a create that is still landing resources while the
+  teardown runs is outside what a single pass can bound.
+- **Neither repair moves the activation, and only the manifest read-back is now live-proven.** Primary unit
+  **5,165/5,165** (four cases added for the manifest re-scope, and the retention lane's
+  convergence and unopenable-refusal arms),
+  auxiliaries **27/27**, **35/35**, **39/39**, canonical `prodbox dev check` exits 0. No
+  qualification artifact and no activation witness exists, the legacy public writer remains sole,
+  and no consecutive-cycle pair has completed.
+
 ### Remaining Work
 
 1. Complete the existing qualification-only runner, type-indexed activation machinery, scoped
@@ -6933,6 +7121,15 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
    and requalify the post-deletion identity before moving ledger rows to Completed. AWS
    adapter implementation/removal remains Sprint `7.36`.
 
+   **Where this stands on 2026-09-15.** The campaign can start again and does; what it cannot yet
+   do is complete one cycle. Three ran. The first refused in the write-ahead ownership read-back,
+   the second in the public-edge TLS retain on the vscode chart delete, and each refusal was
+   repaired code-locally with the canonical gate at 0 before the next was launched. Neither repair
+   changed a successful path and neither is live-proven. The next owed step is not a decision but a
+   measurement: the widened retention refusal names the version it collided on, and the cycle after
+   it says which version that is — which is what decides whether the Authority's view or the store's
+   occupancy is the one that drifted, and therefore which of them a repair belongs in.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -6954,6 +7151,89 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
 
 - Move legacy rows to Completed only after removal and current-revision qualification satisfy the
   new governance rule.
+
+## Sprint 6.6: A Cascade With No Cluster Can Still Ask AWS [📋 Planned]
+
+**Status**: Planned. New work on Phase `6`'s already-open surface — the phase is reopened and active
+on Sprint `6.5`, so this row opens no reopen of its own. Sprint `6.5` authored every symbol this
+sprint changes, on 2026-09-14, and its own deliverable bullet already records the owed half.
+**Doctrine**: [Lifecycle Reconciliation Doctrine §5, "Mandatory Entry Contracts for Destructive
+Commands"](../documents/engineering/lifecycle_reconciliation_doctrine.md#5-mandatory-entry-contracts-for-destructive-commands),
+[§5a, "Local-only no-install
+short-circuit"](../documents/engineering/lifecycle_reconciliation_doctrine.md#5a-local-only-no-install-short-circuit),
+and [Retained Storage Lifecycle Doctrine
+§7](../documents/engineering/storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root).
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` and `src/Prodbox/Lifecycle/TagSweep.hs`.
+**Blocked by**: none.
+**Docs**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/cli_command_surface.md`,
+`documents/engineering/test_topology_doctrine.md`, root `README.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+**Live-proof**: pending and non-blocking. A repeat cascade against a real account is the natural
+demonstration, and the sweep it runs is the same one the cascade already runs today.
+**Deployment qualification**: pending — **invalidated** on destructive cleanup and lifecycle
+orchestration. The set of conditions under which the uninstall is admitted changes.
+**Independent Validation**: pure decision cases over constructed sweep verdicts and scope values,
+plus a host-only trace with no RKE2 install. The sweep's own reachability is the point: it needs the
+repository root, a Tier-0 configuration read, and an admin AWS credential — no Kubernetes, no Vault,
+and no Lifecycle Authority.
+
+### Objective
+
+Let a repeat `cluster delete --cascade` on a host with no install re-verify AWS rather than refuse
+from silence, and stop the uninstall gate admitting on a sweep that was never owed.
+
+### Deliverables
+
+- **Widen when the sweep is owed.** `cascadeAwsScopeOwesSweep` keys on the declared AWS substrate
+  profile alone, which is absent in the shipped default, so the gate's first admitting case is
+  reached having issued no Tagging API call at all — while a home-local deployment still mints IAM
+  principals, access keys and DNS records. Owe the sweep whenever any AWS coordinate is authored.
+- **Run the sweep on the no-install path** and promote the confirmed arm Sprint `4.100` supplies.
+  Exit zero only when the sweep ran, an admin credential was available, the escaped set is empty,
+  the queried account and regions cover the authored coordinates, and every retained root in the
+  worktree was examined rather than only the one the configuration resolves.
+- **Report the retained rows explicitly.** The cascade scope deliberately carves intentionally
+  retained long-lived infrastructure out of the escaped set, so a confirmed-clean verdict means no
+  per-run residue and not an empty account. The narration must say which, and name what survives.
+- A credential that cannot be loaded is a refusal, never a confirmation.
+- This sprint makes no claim about `.test-data/` isolation; Sprint `5.11` owns it. It performs no
+  part of Sprint `6.5`'s single-writer activation and destroys nothing new.
+
+### Validation
+
+1. With no AWS coordinate authored, the sweep is not owed and the confirmed arm is not reachable.
+2. With a coordinate authored and no admin credential, the run refuses; absence of a credential is
+   never a confirmation.
+3. An escaped or unconfirmed verdict does not promote; only an in-scope confirmed-clean verdict does.
+4. A second retained root present in the worktree and not examined blocks promotion.
+5. The confirmed narration names the retained carve-out rather than implying an empty account.
+6. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+1. Everything above; nothing is started.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — the entry contract for a cascade
+  that reaches no phase but still queries AWS, written beside §5a rather than as a second copy.
+- `documents/engineering/cli_command_surface.md` — both no-install cascade exits, and the
+  `--dry-run` contract for a path that may now issue a network query and prompt for a credential.
+- `documents/engineering/test_topology_doctrine.md` — the converse of the `.test-data/` isolation
+  rule: a delete arm claiming every retained root was examined must enumerate it.
+
+**Product docs to create/update:**
+
+- Root `README.md` — the cascade's no-install behaviour and what a confirmed sweep does and does
+  not license.
+
+**Cross-references to add:**
+
+- Ledger rows for the sweep's missing destroy phases and the unreaped validation zones, in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Related Documents
 

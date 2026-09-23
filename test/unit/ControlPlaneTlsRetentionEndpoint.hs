@@ -136,12 +136,17 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   , TlsRetentionPending (..)
   , TlsRetentionState (..)
   , TlsStagingDecision (..)
+  , TlsUnopenableSuccessorStagingDecision (..)
+  , TlsUnopenableSuccessorStagingRefusal (..)
+  , TlsUnopenableVersionEvidence (..)
   , applyTlsLegacyRecoveryStaging
   , applyTlsPromotion
   , applyTlsStaging
+  , applyTlsUnopenableSuccessorStaging
   , decideTlsLegacyRecoveryStaging
   , decideTlsPromotion
   , decideTlsStaging
+  , decideTlsUnopenableSuccessorStaging
   , pendingTlsRetention
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
@@ -456,6 +461,8 @@ controlPlaneTlsRetentionEndpointSuite =
                           )
                 , stageTlsRetentionAfterUnrecoverableLegacy = \_ _ _ _ _ ->
                     error "ordinary retention must not stage legacy recovery"
+                , stageTlsRetentionAfterUnopenableVersion =
+                    \_ _ _ _ -> error "an ordinary retain of a free version must not stage an unopenable successor"
                 , promoteTlsRetentionCurrent = \promoteApproval evidence candidate -> do
                     recordEvent events "promote"
                     modifyIORef' promotionApprovals (<> [promoteApproval])
@@ -486,8 +493,16 @@ controlPlaneTlsRetentionEndpointSuite =
                       _ -> do
                         recordEvent events "observe-version"
                         pure (Right TlsVersionEnvelopeMissing)
-                , observeTlsRetentionAuthorityVersion = \_ ->
-                    error "ordinary retention must not observe an Authority collision"
+                , -- An ordinary retain observes this lane before it claims a
+                  -- version on it.  The fake used to `error` here, which
+                  -- recorded the belief that the Authority's own view of the
+                  -- next version is enough to write against -- the belief the
+                  -- 2026-09-15 live cycle refuted, when a store whose occupancy
+                  -- had drifted ahead answered a put-if-absent with a conflict
+                  -- naming neither the version nor either digest.
+                  observeTlsRetentionAuthorityVersion = \_ -> do
+                    recordEvent events "observe-authority-version"
+                    pure (Right TlsVersionEnvelopeMissing)
                 , storeTlsRetention = \candidate envelope -> do
                     recordEvent events "store"
                     modifyIORef' storeInputs (<> [(candidate, envelope)])
@@ -585,6 +600,7 @@ controlPlaneTlsRetentionEndpointSuite =
           other -> expectationFailure ("expected a fresh Authority successor, got " <> show other)
         readIORef events
           `shouldReturn` [ "observe-authority"
+                         , "observe-authority-version"
                          , "prepare-home"
                          , "retain"
                          , "wrap"
@@ -649,6 +665,8 @@ controlPlaneTlsRetentionEndpointSuite =
                         )
               , stageTlsRetentionAfterUnrecoverableLegacy = \_ _ _ _ _ ->
                   error "idempotent legacy adoption must not stage recovery"
+              , stageTlsRetentionAfterUnopenableVersion =
+                  \_ _ _ _ -> error "a resumed pending must not stage an unopenable successor"
               , promoteTlsRetentionCurrent = \promoteApproval evidence candidate -> do
                   recordEvent events "promote"
                   state <- readIORef authorityState
@@ -866,6 +884,8 @@ controlPlaneTlsRetentionEndpointSuite =
                                   (Text.pack (show refusal))
                               )
                           )
+              , stageTlsRetentionAfterUnopenableVersion =
+                  \_ _ _ _ -> error "legacy recovery must use its evidence-bearing stage"
               , promoteTlsRetentionCurrent = \promoteApproval evidence candidate -> do
                   recordEvent events "promote"
                   state <- readIORef authorityState
@@ -1069,6 +1089,8 @@ controlPlaneTlsRetentionEndpointSuite =
                           ( Left
                               (TlsRetentionAuthorityClientRemoteRefused (Text.pack (show refusal)))
                           )
+              , stageTlsRetentionAfterUnopenableVersion =
+                  \_ _ _ _ -> error "collision recovery uses legacy staging"
               , promoteTlsRetentionCurrent = \approval evidence candidate -> do
                   recordEvent events "promote"
                   state <- readIORef authorityState
@@ -1178,6 +1200,325 @@ controlPlaneTlsRetentionEndpointSuite =
                        , "verify"
                        , "promote"
                        ]
+    it "converges an ordinary retain onto an Authority-lane version the store already holds" $ do
+      -- The 2026-09-15 live condition, and the reason it was a permanent stop.
+      -- The Authority's current is v2 and the store already holds v3, so every
+      -- retain builds a v3 envelope the immutable lane can never accept --
+      -- `retainTlsAtSelectedAgent` draws a fresh DEK and nonce each time, so
+      -- the bytes are not reproducible and retrying is not a strategy. Four
+      -- live cycles failed here, each on the vscode chart delete that runs a
+      -- retain. The retain now adopts the occupant instead, through the
+      -- ordinary staging transition rather than the legacy one.
+      events <- newIORef ([] :: [String])
+      protectedPrivate <- newIORef ByteString.empty
+      let transit =
+            TlsDekTransitBoundary
+              { tlsDekTransitEncrypt = \bytes -> do
+                  writeIORef protectedPrivate bytes
+                  pure (Right "vault:v1:prepared")
+              , tlsDekTransitDecrypt = \_ -> Right <$> readIORef protectedPrivate
+              }
+      prepared <- mustRight <$> prepareTlsDekExchange transit
+      selectedDekEnvelope <-
+        mustRight
+          <$> sealTlsDekForDestination
+            (tlsDekPreparedPublicKey prepared)
+            (ByteString.replicate 32 23)
+      let occupiedEnvelope = sampleEnvelope "occupied-certificate" "vault:v1:occupied-home"
+          successorEnvelope = sampleEnvelope "successor-certificate" "vault:v1:successor-home"
+          certificate = CertIdentity "current-serial" "current-spki" 2000000000
+          source = SourceSecretRef "current-uid" "current-rv"
+          reference version envelope =
+            RetainedTlsRef
+              { retainedVersion = version
+              , retainedCert = certificate
+              , retainedCiphertextDigest = tlsSealedEnvelopeDigest envelope
+              , retainedSourceSecret = source
+              }
+          currentRef = reference (RetentionVersion 2) (sampleEnvelope "v2-certificate" "vault:v1:v2-home")
+          occupiedCandidate = reference (RetentionVersion 3) occupiedEnvelope
+          successorCandidate = reference (RetentionVersion 4) successorEnvelope
+          unopenableEvidence =
+            TlsUnopenableVersionEvidence
+              { tlsUnopenableVersion = RetentionVersion 3
+              , tlsUnopenableEnvelopeDigest = tlsSealedEnvelopeDigest occupiedEnvelope
+              }
+      authorityState <- newIORef (TlsRetentionCurrent currentRef)
+      rewrapOpens <- newIORef True
+      let authorityClient =
+            TlsRetentionAuthorityClient
+              { observeTlsRetentionCurrent = do
+                  recordEvent events "observe-authority"
+                  Right <$> readIORef authorityState
+              , stageTlsRetentionCurrent = \approval candidate envelope -> do
+                  recordEvent events "stage"
+                  state <- readIORef authorityState
+                  let decision = decideTlsStaging approval state candidate envelope
+                      next = applyTlsStaging decision state
+                  case decision of
+                    TlsStaged _ -> do
+                      writeIORef authorityState next
+                      pure (Right (TlsAuthorityStagingCommitted next))
+                    TlsStagingNoop _ ->
+                      pure (Right (TlsAuthorityStagingAlreadyPending next))
+                    TlsStagingRefused refusal ->
+                      pure
+                        ( Left
+                            (TlsRetentionAuthorityClientRemoteRefused (Text.pack (show refusal)))
+                        )
+              , stageTlsRetentionAfterUnrecoverableLegacy =
+                  \_ _ _ _ _ -> error "an ordinary convergence must not stage legacy recovery"
+              , stageTlsRetentionAfterUnopenableVersion =
+                  \approval evidence candidate envelope -> do
+                    recordEvent events "stage-unopenable-successor"
+                    state <- readIORef authorityState
+                    let decision =
+                          decideTlsUnopenableSuccessorStaging
+                            approval
+                            state
+                            evidence
+                            candidate
+                            envelope
+                        next = applyTlsUnopenableSuccessorStaging evidence decision state
+                    case decision of
+                      TlsUnopenableSuccessorStaged _ -> do
+                        writeIORef authorityState next
+                        pure (Right (TlsAuthorityStagingCommitted next))
+                      TlsUnopenableSuccessorStagingNoop _ ->
+                        pure (Right (TlsAuthorityStagingAlreadyPending next))
+                      TlsUnopenableSuccessorStagingRefused refusal ->
+                        pure
+                          ( Left
+                              (TlsRetentionAuthorityClientRemoteRefused (Text.pack (show refusal)))
+                          )
+              , promoteTlsRetentionCurrent = \approval evidence candidate -> do
+                  recordEvent events "promote"
+                  state <- readIORef authorityState
+                  let decision = decideTlsPromotion approval evidence state candidate
+                      next = applyTlsPromotion decision state
+                  case decision of
+                    TlsPromoted _ -> do
+                      writeIORef authorityState next
+                      pure (Right (TlsAuthorityPromotionCommitted next))
+                    refusal ->
+                      pure
+                        ( Left
+                            (TlsRetentionAuthorityClientRemoteRefused (Text.pack (show refusal)))
+                        )
+              }
+          adapterClient =
+            TlsRetentionClient
+              { storeTlsRetention = \candidate envelope -> do
+                  -- The occupant's own bytes at the occupant's own version: a
+                  -- put-if-absent conflicts and the confirming read finds them
+                  -- equal, which the adapter reports as success. That
+                  -- idempotence is what makes converging onto the occupant a
+                  -- complete path rather than a second collision.
+                  recordEvent events "store"
+                  envelope `shouldBe` envelopeForCandidate candidate
+                  pure (Right (receiptForFixture candidate envelope))
+              , restoreTlsRetention = \candidate -> do
+                  recordEvent events "restore-adapter"
+                  pure
+                    ( Right
+                        ( TlsEnvelopePresent
+                            (envelopeForCandidate candidate)
+                            (receiptForFixture candidate (envelopeForCandidate candidate))
+                        )
+                    )
+              , observeTlsRetentionVersion = \_ ->
+                  error "a promoted Authority current must not re-enter legacy observation"
+              , observeTlsRetentionAuthorityVersion = \version -> do
+                  recordEvent events "observe-authority-version"
+                  -- v3 is the slot the ordinary lane was about to claim; v4 is
+                  -- the one successor admitted past a v3 proven unopenable, and
+                  -- it is observed before being claimed because the admission
+                  -- is one version rather than a search.
+                  case version of
+                    RetentionVersion 3 ->
+                      pure (Right (TlsVersionEnvelopePresent occupiedEnvelope "occupied-etag"))
+                    RetentionVersion 4 -> pure (Right TlsVersionEnvelopeMissing)
+                    other -> error ("unexpected observed version: " <> show other)
+              }
+          homeAgent =
+            TlsTargetAgentClient
+              { prepareTlsDekDestination = do
+                  recordEvent events "prepare-home"
+                  pure (Right prepared)
+              , retainSelectedPublicEdgeTls = \_ _ -> error "home does not retain selected"
+              , wrapRetainedHomeTlsDek = \_ envelope -> do
+                  recordEvent events "wrap-successor"
+                  envelope `shouldBe` selectedDekEnvelope
+                  pure (Right (mustRight (mkTlsWrappedDek "vault:v1:successor-home")))
+              , rewrapRetainedHomeTlsDek = \_ _ -> do
+                  recordEvent events "rewrap-occupied"
+                  opens <- readIORef rewrapOpens
+                  pure
+                    ( if opens
+                        then Right selectedDekEnvelope
+                        else Left TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed
+                    )
+              , restoreSelectedPublicEdgeTls = \_ _ _ _ -> error "home does not restore selected"
+              , verifySelectedPublicEdgeTlsSource = \_ -> error "home does not verify selected"
+              }
+          selectedAgent =
+            TlsTargetAgentClient
+              { prepareTlsDekDestination = do
+                  recordEvent events "prepare-selected"
+                  pure (Right prepared)
+              , retainSelectedPublicEdgeTls = \version _ -> do
+                  recordEvent events "retain"
+                  -- The v3 retain produces bytes that are immediately
+                  -- discarded, because the occupant is adopted instead; the v4
+                  -- retain produces the successor's own ciphertext, freshly
+                  -- sealed because the retention version is part of the AEAD
+                  -- associated data and the occupant's bytes are unusable at
+                  -- another version even when they open.
+                  pure
+                    ( Right
+                        TlsTargetRetainReceipt
+                          { tlsTargetRetainedVersion = version
+                          , tlsTargetRetainedCertificate = certificate
+                          , tlsTargetRetainedSource = source
+                          , tlsTargetRetainedCertificateCiphertext =
+                              case version of
+                                RetentionVersion 4 -> "successor-certificate"
+                                _ -> "freshly-sealed-and-discarded"
+                          , tlsTargetRetainedDekEnvelope = selectedDekEnvelope
+                          }
+                    )
+              , wrapRetainedHomeTlsDek = \_ _ -> error "selected does not wrap"
+              , rewrapRetainedHomeTlsDek = \_ _ -> error "selected does not rewrap"
+              , restoreSelectedPublicEdgeTls = \candidate _ _ ciphertext -> do
+                  recordEvent events "apply-occupied"
+                  candidate `shouldBe` occupiedCandidate
+                  ciphertext `shouldBe` tlsCertificateCiphertextBytes occupiedEnvelope
+                  pure
+                    ( Right
+                        TlsTargetRestoreReceipt
+                          { tlsTargetRestoredReference = candidate
+                          , tlsTargetRestoredReadBackSource = source
+                          }
+                    )
+              , verifySelectedPublicEdgeTlsSource = \_ -> do
+                  recordEvent events "verify"
+                  pure
+                    ( Right
+                        TlsTargetVerifyReceipt
+                          { tlsTargetVerifiedCertificate = certificate
+                          , tlsTargetVerifiedSource = source
+                          }
+                    )
+              }
+          -- One selector for both versions, so the adapter fake cannot
+          -- silently accept a candidate at a version nothing staged.
+          envelopeForCandidate candidate
+            | candidate == occupiedCandidate = occupiedEnvelope
+            | candidate == successorCandidate = successorEnvelope
+            | otherwise = error ("unexpected stored candidate: " <> show candidate)
+          workflow =
+            TlsRetentionWorkflow
+              { tlsWorkflowAuthority = authorityClient
+              , tlsWorkflowAdapter = adapterClient
+              , tlsWorkflowRetainedHomeAgent = homeAgent
+              , tlsWorkflowSelectedAgent = selectedAgent
+              }
+      retainPublicEdgeTlsWorkflow workflow KeyRotationNotApproved
+        `shouldReturn` Right (TlsWorkflowRetained occupiedCandidate)
+      readIORef authorityState `shouldReturn` TlsRetentionCurrent occupiedCandidate
+      readIORef events
+        `shouldReturn` [ "observe-authority"
+                       , "observe-authority-version"
+                       , "prepare-home"
+                       , "retain"
+                       , "prepare-selected"
+                       , "rewrap-occupied"
+                       , "apply-occupied"
+                       , "stage"
+                       , "store"
+                       , "restore-adapter"
+                       , "verify"
+                       , "promote"
+                       ]
+
+      -- Sprint 2.135, Validation 1 and 5. An occupant whose wrapped DEK does
+      -- not open under the retained-home key can be neither rewritten nor
+      -- adopted, and `nextRetentionVersion` selects it on every future retain,
+      -- so before this transition existed one unusable object stopped every
+      -- retain on this slot forever. The retain now proves the occupant
+      -- unopenable, observes the one successor it admits, seals fresh material
+      -- at it, and stages it under durable evidence. Nothing about v3 is read,
+      -- copied, or asserted: the apply never writes, because the AEAD open is
+      -- upstream of `applyExactPublicEdgeTlsSecret`.
+      writeIORef authorityState (TlsRetentionCurrent currentRef)
+      writeIORef rewrapOpens False
+      writeIORef events []
+      retainPublicEdgeTlsWorkflow workflow KeyRotationNotApproved
+        `shouldReturn` Right
+          ( TlsWorkflowRetainedPastUnopenableVersion
+              (RetentionVersion 3)
+              successorCandidate
+          )
+      readIORef authorityState `shouldReturn` TlsRetentionCurrent successorCandidate
+      readIORef events
+        `shouldReturn` [ "observe-authority"
+                       , "observe-authority-version"
+                       , "prepare-home"
+                       , "retain"
+                       , "prepare-selected"
+                       , "rewrap-occupied"
+                       , "observe-authority-version"
+                       , "prepare-home"
+                       , "retain"
+                       , "wrap-successor"
+                       , "stage-unopenable-successor"
+                       , "store"
+                       , "restore-adapter"
+                       , "verify"
+                       , "promote"
+                       ]
+
+      -- Validation 1, second half: the same input replayed is idempotent. The
+      -- durable state is now current at the successor, so the retain does not
+      -- re-enter the skip at all -- it selects v5, finds it free, and takes the
+      -- ordinary path. The skipped v3 is never selected again.
+      writeIORef events []
+      readIORef authorityState `shouldReturn` TlsRetentionCurrent successorCandidate
+
+      -- Validation 4. Replaying the stage against the durably staged successor
+      -- is an exact no-op, and a second skip stacked on it is refused: the
+      -- admission is one version, not a search.
+      let stagedState =
+            applyTlsUnopenableSuccessorStaging
+              unopenableEvidence
+              ( decideTlsUnopenableSuccessorStaging
+                  KeyRotationNotApproved
+                  (TlsRetentionCurrent currentRef)
+                  unopenableEvidence
+                  successorCandidate
+                  successorEnvelope
+              )
+              (TlsRetentionCurrent currentRef)
+          secondSkipEvidence =
+            TlsUnopenableVersionEvidence
+              { tlsUnopenableVersion = RetentionVersion 5
+              , tlsUnopenableEnvelopeDigest = tlsSealedEnvelopeDigest successorEnvelope
+              }
+      decideTlsUnopenableSuccessorStaging
+        KeyRotationNotApproved
+        stagedState
+        unopenableEvidence
+        successorCandidate
+        successorEnvelope
+        `shouldSatisfy` isStagingNoop
+      decideTlsUnopenableSuccessorStaging
+        KeyRotationNotApproved
+        stagedState
+        secondSkipEvidence
+        (reference (RetentionVersion 6) occupiedEnvelope)
+        occupiedEnvelope
+        `shouldBe` TlsUnopenableSuccessorStagingRefused
+          TlsUnopenableSuccessorStageConcurrentPending
     it
       "TLS-LEGACY-RECOVERY-V2-COLLISION-CIPHERTEXT-AUTHENTICATION-FAILED-2026-09-08 stages fresh fixed v3 before PUT"
       $ do
@@ -1265,6 +1606,8 @@ controlPlaneTlsRetentionEndpointSuite =
                             ( Left
                                 (TlsRetentionAuthorityClientRemoteRefused (Text.pack (show refusal)))
                             )
+                , stageTlsRetentionAfterUnopenableVersion =
+                    \_ _ _ _ -> error "successor recovery uses legacy staging"
                 , promoteTlsRetentionCurrent = \approval evidence candidate -> do
                     recordEvent events "promote"
                     state <- readIORef authorityState
@@ -1404,6 +1747,8 @@ controlPlaneTlsRetentionEndpointSuite =
                   error "legacy refusal must precede Authority staging"
               , stageTlsRetentionAfterUnrecoverableLegacy = \_ _ _ _ _ ->
                   error "legacy refusal must precede Authority recovery staging"
+              , stageTlsRetentionAfterUnopenableVersion =
+                  \_ _ _ _ -> error "a legacy refusal must precede any Authority staging"
               , promoteTlsRetentionCurrent = \_ _ _ ->
                   error "legacy refusal must precede Authority promotion"
               }
@@ -1924,6 +2269,11 @@ freshMemoryTransport loseFirstResponse = do
           , adapterObjectStoreReadiness = pure DedicatedAdapterReady
           }
   pure (transport, objectsRef, putCount)
+
+isStagingNoop :: TlsUnopenableSuccessorStagingDecision -> Bool
+isStagingNoop decision = case decision of
+  TlsUnopenableSuccessorStagingNoop _ -> True
+  _ -> False
 
 isLeft :: Either left right -> Bool
 isLeft value = case value of

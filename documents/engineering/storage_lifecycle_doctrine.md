@@ -110,10 +110,13 @@ provenance, not a parallel status ledger.
   successful provider delete exit is not exact absence read-back. **Target:** each cleanup surface
   requires exact identity plus absence read-back before success; partial or unobservable cleanup
   remains incomplete rather than claiming that no volume leaked.
-- When the MinIO-backed Pulumi backend is still running but kubelet reports its `/export`
-  mount as deleted, the Haskell backend helper recreates the declared retained host path,
-  reapplies the `1000:1000` plus `0770` contract, and restarts `statefulset/minio` before
-  backend validation or stack operations continue.
+- When the MinIO StatefulSet that persists the Pulumi checkpoints is still running but kubelet
+  reports its `/export` mount as deleted, the Haskell backend helper recreates the declared retained
+  host path, reapplies the `1000:1000` plus `0770` contract, and restarts `statefulset/minio` before
+  backend validation or stack operations continue. MinIO is the ciphertext store the checkpoints are
+  persisted into and restored from, not a backend Pulumi itself addresses — see
+  [vault_doctrine.md §10](./vault_doctrine.md#10-pulumi-backend-under-vault), which owns the
+  decrypt-to-scratch mechanism and is the single source of truth for it.
 
 ## 2. Scope
 
@@ -201,7 +204,7 @@ The retained-storage effect must reconcile:
    read-only registry rollout, Distribution-owned untagged collection, exact read-write/reference
    read-back, and a new storage-edge proof; no raw backend object becomes a deletion target
 8. deleted MinIO export-mount detection and a bounded recreate-plus-restart repair before
-   MinIO-backed Pulumi validation continues
+   Pulumi checkpoint validation continues
 9. MinIO IAM bootstrap (the single generically-named object-store bucket and separate
    least-privilege principals, including the Lifecycle Authority principal) per
    [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) §7 so supported object-store
@@ -332,7 +335,11 @@ The current tag-selected reaper/provider-exit bound remains the one stated in §
 
 ## 7. The Single Retained Operator-Host Root
 
-`.data/` is the only repository-local retained root.
+`.data/` is the only repository-local retained root **on the production path**. It is not the only
+one this repository writes: rule 13 establishes `.test-data/` as a second retained root under
+`prodbox test`, with the same PV-content role and the same property that no chart delete and no
+cluster delete removes it. The qualifier matters wherever a delete arm claims to have examined the
+retained roots rather than *a* retained root — see rule 13.
 
 Rules:
 
@@ -380,10 +387,25 @@ Rules:
     licensed by a positive disposition of the capabilities it holds —
     [Lifecycle Control-Plane Architecture §3.4](./lifecycle_control_plane_architecture.md#34-custodial-capability-and-the-disposition-rule)
     — and never by a command's exit code, including a zero one (§5). The supported surface says so
-    in its own narration: only a `cluster delete` terminal arm carrying a completion receipt, or an
-    explicit local-only uninstall, states that the root is preserved by what it did; every other arm
-    names the root and states that the run establishes nothing about retiring it. When the
-    precondition holds, the
+    in its own narration, which is two-valued and total: a `cluster delete` terminal arm in the
+    local-only mode may state that the root is preserved by what it did, because a local-only mode
+    destroys no AWS by construction whether or not an install was present; every cascade arm names
+    the root and states that the run established nothing about retiring it, because no cascade the
+    current revision can reach carries a completion receipt. `retainedStateNarrationFor`
+    (`src/Prodbox/CLI/Rke2.hs`) is the total function, and a new terminal arm with no narration
+    fails to compile rather than silently rendering nothing.
+    - **Corrected 2026-09-16, closed 2026-09-17 by Sprint `4.100`.** This rule previously read
+      "every other arm names the root and states that the run establishes nothing about retiring
+      it", which the shipped narration did not do: it was *silent* for both no-install arms, so an
+      operator who ran a cascade with no local install was told nothing about the retained root at
+      all — on precisely the exit whose next question is whether the root may now be removed. Both
+      arms narrate now and the silent case is deleted rather than left unmapped, so the rule and the
+      narration agree in both directions. The inventory those arms render was corrected in the same
+      change: it called the root "MinIO-backed per-run Pulumi state", which names one writer of the
+      multi-writer capability store rule 1 describes, and printed a hardcoded `.data/` beside the
+      resolved root, so a host whose `manual_pv_host_root` is configured elsewhere was shown a path
+      it does not use. It prints the resolved root once and names the capability classes it holds.
+      When the precondition holds, the
     next reconcile initializes a brand-new Vault from the empty anchor and every secret is generated
     fresh as a new Vault KV object.
 11. `.data/vault/vault/0` is the durable Vault storage anchor. It is preserved by cluster
@@ -403,6 +425,17 @@ Rules:
     `.test-data/<case>/`), and test commands are mechanically forbidden from touching the
     production `.data/`; see
     [test_topology_doctrine.md § 4](./test_topology_doctrine.md#4-fail-fast-preconditions-and-test-data-isolation).
+
+    > **Target.** The isolation rule has a converse that the current surface does not honor. A
+    > delete arm that speaks about *the* retained root has spoken about one of two, and an
+    > operator's real question — whether removing this repository's untracked state is safe — is
+    > about whichever root this checkout actually wrote. An arm that makes a retained-root claim
+    > therefore enumerates both roots that exist, answers for each one it found, and says which it
+    > did not find; an arm that cannot enumerate says that instead of answering for `.data/` alone.
+    > The isolation direction is unchanged and still mechanically enforced: enumerating `.test-data/`
+    > to report on it is not licence for a production path to write it, nor for a test path to reach
+    > `.data/`. Status lives only in
+    > [Development Plan → Resume Here](../../DEVELOPMENT_PLAN/README.md#resume-here).
 14. Chart storage sizes are not chart-local literals. Each StatefulSet workload's PVC `size:` is
     single-sourced from that workload's `durable_storage_mib` in the capacity plan and **injected**
     into the rendered chart (Sprint `3.29`), so the PVC size, the namespace `requests.storage`
@@ -478,8 +511,17 @@ Rules:
     stamped as provider default tags carrying the run scope and the submission key, so a run killed
     between the effect and its return route leaves resources the provider can still enumerate under
     the exact run scope the write-ahead record is keyed on. The join is what is new: the tag and the
-    record now name the same run from opposite sides of the boundary the host can die on. Status
-    lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+    record now name the same run from opposite sides of the boundary the host can die on.
+    - **Scope, recorded 2026-09-16.** "All three now exist" is a claim about the *registered-stack
+      create lane*, not about every AWS resource this repository makes. Three of the four Pulumi
+      programs under `src/Prodbox/Infra/` submit through that lane; `AwsSesStack.hs` does not, so an
+      SES create leaves no write-ahead record. Two further creators — `ensureRetainedEbsVolumes`
+      and `ensureProductionIamPrerequisites` — make AWS resources without a registered stack at all,
+      so no ownership manifest can name them by construction and only the provider-side tag, where
+      one is stamped, makes them enumerable. Rule 15's retained EBS volumes are deliberately outside
+      this: they are `Retain` by design and their absence from a teardown record is the intent, not
+      a gap. Extending the record to the creators that should carry one is scheduled work.
+    Status lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 
 ## Cross-References

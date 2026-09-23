@@ -159,12 +159,16 @@ thirteen for terminal report custody, run/index tombstones, and independent read
 `2 * (13 + 8 + 6 + 6 + 59 * 8 + 13) = 1036`. The factor of two retains any interrupted prefix while
 admitting one immediate unchanged retry. Its exact compiled cascade aggregate stays below 24 KiB,
 so the independently enforced replay-encoding ceiling is 32 MiB rather than 1036 response-widths.
-Target Secret Agent derives `2 * 34 = 68`: one provider-credential observation, one committed-source
+Target Secret Agent derives `2 * 38 = 76`: one provider-credential observation, one committed-source
 recovery observation, three retained-delivery requests, the complete retain/restore/retain-on-ready
 TLS envelope, the two-request legacy-adoption plus three-request immutable-version recovery maxima,
-and the two net requests added when an unopenable exact version-2 collision stages fresh
-fixed-version-3 bytes. Its encoded ceiling is 138 MiB so 68 accepted 2 MiB responses plus metadata
-fit. The Vault listener's finite 192 MiB request ceiling covers that projection's Base64 expansion
+the two net requests added when an unopenable exact version-2 collision stages fresh
+fixed-version-3 bytes, and the two plus four net requests the Authority-lane occupied-version
+adoption and one-version unopenable successor add. Those last two are counted rather than netted
+against the pre-outbox maxima: the mutual exclusion holds at one retain, not across one attempt,
+because a first retain that enters empty and promotes leaves the aggregate current and the
+retain-on-ready later in the same attempt can then take an Authority-lane branch. Its encoded
+ceiling is 154 MiB so 76 accepted 2 MiB responses plus metadata fit. The Vault listener's finite 224 MiB request ceiling covers that projection's at-most 205.34 MiB Base64 expansion
 plus the bounded KV JSON envelope. Provider Worker derives
 `2 * (1 + 6 * 4 + 3 + 7 + 5) = 80`: the exact scope, six Provider-mutated non-EKS registered
 families, Kubernetes-owned DNS01, EKS drain/destroy, terminal-audit catalog, and immediate-retry
@@ -604,10 +608,43 @@ preserves occupied legacy objects while ensuring every retry and collision obser
 the same lane as its corresponding PUT.
 
 The legacy observer is reachable only from `TlsRetentionEmpty`. After any current reference is
-promoted, retention generates and stages the next version directly in the Authority lane; it never
+promoted, retention observes the Authority lane at the next version and stages there; it never
 observes or adopts a same-numbered legacy object. Pending state takes precedence and replays its
 byte-identical outbox, so neither an interruption nor retained legacy history can redirect a
 post-promotion successor.
+
+That Authority-lane observation is what an occupied next version is answered from, and the answer
+depends on whether the occupant opens. A missing version takes the ordinary generate-then-stage
+path. A present one is adopted rather than trusted: the candidate is rebuilt around the occupant's
+digest and the currently observed certificate and source, proved by applying it at the selected
+Agent under an AEAD whose associated data binds the version, certificate identity and source
+Secret, and staged through the **ordinary** transition, so exact-successor version, validity
+monotonicity and key-change approval all still hold. Storing the occupant's own bytes at its own
+version is idempotent at the put-if-absent. An occupied version that does not decode refuses.
+
+One narrower branch handles an occupant that decodes and whose wrapped DEK returns the closed
+authenticated `home-rewrap-ciphertext-authentication-failed` result. Such an object can be neither
+rewritten — `retainTlsAtSelectedAgent` draws a fresh DEK and nonce per call, so the envelope is not
+reproducible — nor adopted, and the next-version selection returns it on every future retain, so
+one unusable object otherwise stops every retain on that slot permanently. Exactly one successor
+version is admitted past it, and only from a committed current reference. The workflow asserts
+nothing about the unopenable bytes: it retains only their digest as evidence, observes the single
+successor version it admits and refuses by name if that too is occupied, re-observes the still
+present source through a fresh selected-Agent retain at the successor version, and performs one
+Authority CAS recording the skipped version, the occupied digest and the complete successor outbox
+before any Adapter write. `validateTlsRetentionState` re-runs that admission from the durable
+record alone on every read and write, so a version jump cannot be authorized by a token the codec
+boundary never sees. The skipped object is never overwritten, deleted, or promoted, and remains a
+registered `LongLived` object that only a retention deletion removes. The admission is one version
+and never a search: a second skip stacked on the staged successor, evidence naming any version but
+the one this reference was about to claim, a candidate two versions past the skip, a successor
+re-asserting the skipped digest, a validity regression, and an unapproved key change all refuse,
+each under its own closed token. A retain that promotes such a successor announces the abandoned
+version on the Authority's protected log as
+`tls-retention/workflow notice=retained-past-unopenable-version/v<n>`, because the operation
+succeeded and no failure line would otherwise record it. This lane is disjoint from the pre-outbox
+recovery below: that one is reachable only from `TlsRetentionEmpty`, this one only from a committed
+current reference, and neither admits the other's transition.
 
 The sole occupied-version compatibility transition is likewise fail closed. With an empty
 Authority aggregate and exact immutable version 1, normal legacy adoption must first attempt
@@ -636,8 +673,10 @@ version-3 pending outbox. The displaced and successor certificate/source metadat
 must be identical. This successor-pending state also exposes no current/predecessor and authorizes
 neither restore nor issuance. Exact Authority-lane version-3 Adapter read-back and source
 re-observation are required before promotion. A mismatching Authority-lane version-3 collision
-refuses; there is no version-4 or
-recursive recovery transition.
+refuses; within this pre-outbox recovery branch there is no version-4 or recursive recovery
+transition. The Authority-owned lane's one-version successor above is a separate, separately
+bounded transition reachable only from a committed current reference, and it neither extends this
+branch nor is reachable from it.
 
 Any other put result, corrupt/missing version-2 bytes, any other failure while opening/applying
 them, or version, digest, source, state, candidate, response, evidence, or observation drift
@@ -936,6 +975,35 @@ claim and says nothing about how presence is represented. A resource that exists
 names is therefore outside the vocabulary entirely — which is the state a leak *is*, and the reason
 detecting one depends on enumeration from the provider rather than on any value this repository
 holds.
+
+**Current revision — the first bullet is violated by the per-run residue reader, and two live
+incidents are attributed to it.** `residueStatusFromCheckpointObservability` in
+`src/Prodbox/Lifecycle/LiveResidue.hs` maps a checkpoint that is *absent* and a checkpoint that
+exists and *parses to nothing* onto the same proven absence, and its consumer keeps only present
+entries, so the per-run destroy phase runs nothing and reports success. The same function already
+returns the unobservable verdict for a checkpoint that is present and unparseable, so it
+distinguishes unreadable from absent and then collapses a narrower and far more common case into
+absent.
+
+The ordering is what makes this the worst possible arm to collapse: a provider create makes
+resources *before* its state is committed, so "no checkpoint" is precisely the condition under which
+a live resource is most likely to exist. On 2026-09-07 and again on 2026-09-16 the per-run destroy
+phase took this arm, reported the stack absent, ran nothing, and left an EKS cluster, a VPC and
+their IAM family live; both sets were cleared by hand from outside the product. The repair is
+registered in
+[legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md) with its
+owning sprint, and status lives only in [Development Plan → Resume
+Here](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+The two incidents differ in what the rest of the cascade did, and the difference is worth keeping
+because it separates this defect from the sweep's. In 2026-09-07 the run exited non-zero with drain
+and sweep unresolved, so the sweep never delivered a verdict at all, and part of the escaped
+residue was untagged IAM that no tag query can see. In 2026-09-16, with the sweep's region and
+pagination coverage repaired, it returned 43 tag-matches and withheld the local uninstall on the
+stated ground that destroying the control plane *"would leave the answer above with nothing able to
+act on it"* — the third bullet working as written, refuting a clean run it could not have proven.
+Neither the working sweep nor the failing one changes the reader's verdict: the sweep refutes, and
+the first-bullet violation lives in the reader that decides what to destroy.
 
 
 ### 3.1 The managed-resource registry and exact observation boundary
@@ -2372,13 +2440,60 @@ it by a later caller. A cascade with no install present reaches no phase, names 
 run namespace it could not reach and the `RecoveryPlaneNotEstablished` disposition it reports, makes
 no statement about per-run AWS stacks, and exits non-zero.
 
-**The retained-state narration is a total function over those arms.** Only an arm carrying a
-completion receipt, or an explicit local-only uninstall, may say the retained root is preserved by
-what it did; every other arm either says nothing about the root — because it reached no delete path
-— or names the root and states that this run establishes nothing about retiring it. The legacy
-cascade carries no completion receipt, so it takes the second form until the replacement that does
-becomes the sole writer. A new terminal arm with no narration fails to compile rather than silently
-rendering nothing.
+**The retained-state narration is a total function over those arms, and no arm is silent.** A
+local-only arm may say the retained root is preserved by what it did, because a local-only mode
+destroys no AWS by construction whether or not an install was present; every cascade arm names the
+root and states that this run establishes nothing about retiring it. The legacy cascade carries no
+completion receipt, so it takes the second form until the replacement that does becomes the sole
+writer, and the cascade that reaches no phase takes it too — it attempted no destroy, so it may not
+borrow the sentence of a cascade that ran one. A new terminal arm with no narration fails to compile
+rather than silently rendering nothing.
+
+**A confirmed no-install cascade is a type rather than a fifth arm.** The entry table decides from
+delete mode and install presence, and neither observes AWS, so a table row that could carry a
+confirmed result would be a row that could mint one from silence. `ConfirmedNoInstallCascade`
+(`src/Prodbox/CLI/Rke2.hs`) has an unexported constructor and one producer,
+`confirmCascadeNoInstall`, which takes the postflight sweep and admits exactly the two answers
+`decideCascadeUninstallGate` admits — not owed, and confirmed clean. Holding the value is the whole
+authorization for the zero exit §5a.0 describes; the query that would produce such a sweep on the
+no-install path is separate work.
+
+#### 5a.0 A cascade that reaches no phase may still query AWS
+
+> **Target.** This subsection describes an accepted end state, not the current revision. Rollout
+> status lives only in [Development Plan → Resume
+> Here](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+The rule the (mode, presence) product enforces is *never mint success from silence*, not *a cascade
+may never exit zero without an install*. A run that queries AWS is not silent, and the postflight
+tag sweep is reachable without a cluster: it needs the repository root, a Tier-0 configuration read,
+and an ephemeral admin credential, and it talks to the Tagging API directly — no Kubernetes, no
+Vault, no Lifecycle Authority.
+
+So the no-install cascade gains a second terminal arm that the product **cannot** return. The entry
+table stays total and still selects the unproven arm for the cascade/no-install pair; the confirmed
+arm is produced only by a function taking the sweep verdict as its argument, which makes "success
+requires observation" a property of the type rather than of a table a later caller might extend.
+
+Exit zero on that arm requires all of: the sweep was owed and ran; an admin credential was
+available, because a credential that cannot be loaded is a refusal and never a confirmation; the
+escaped set is empty; the queried account and regions cover every authored AWS coordinate; and every
+retained root present in the worktree was examined rather than only the one the configuration
+resolves.
+
+**What the confirmed arm does not license.** A confirmed-clean sweep is not a completion receipt,
+and §7 rule 10 of
+[storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root)
+licenses retiring the retained root only on a positive disposition of the capabilities it holds.
+§3.0's rule that a cluster-wide audit refutes and does not prove applies with full force here: the
+sweep is tag-scoped and single-account, and it deliberately carves intentionally retained long-lived
+infrastructure out of its escaped set. The arm therefore narrates what it proved and what survives
+by design, and continues to state that this run establishes nothing about retiring the root.
+
+**Current revision.** The shipped binary takes neither half of this: a cascade with no install
+reaches no phase and exits non-zero without querying AWS, and the sweep is owed only when a
+substrate profile is declared — which the shipped default does not declare, so the uninstall gate's
+first admitting case is reached having issued no Tagging API call at all.
 
 
 ### 5a.1. Inotify Host-Prep (first host-prep step)

@@ -561,14 +561,14 @@ replayPureTests =
                 reserveRequestSequence priorLimits requests
               (currentDecisions, currentProjection) =
                 reserveRequestSequence currentLimits requests
-          targetSecretAgentReconcileAttemptRequestMaximum @?= 34
-          targetSecretAgentReplayCapacity @?= 68
+          targetSecretAgentReconcileAttemptRequestMaximum @?= 38
+          targetSecretAgentReplayCapacity @?= 76
           priorDecisions
             @?= replicate 10 ReplayReservationFresh
-              <> replicate 58 ReplayReservationCapacityExhausted
+              <> replicate 66 ReplayReservationCapacityExhausted
           requestReplayEntryCount priorProjection @?= 10
-          currentDecisions @?= replicate 68 ReplayReservationFresh
-          requestReplayEntryCount currentProjection @?= 68
+          currentDecisions @?= replicate 76 ReplayReservationFresh
+          requestReplayEntryCount currentProjection @?= 76
     ]
 
 replayCodecTests :: TestTree
@@ -959,6 +959,19 @@ authenticatedTransportTests =
               , CallerService LifecycleAuthorityRuntime
               ]
         trustedCallersForRoute LifecycleTlsRetentionStage
+          @?= [ CallerOperatorCli
+              , CallerTestHarness
+              , CallerService LifecycleAuthorityRuntime
+              ]
+        -- The two evidence-bearing staging routes carry the same trust as the
+        -- ordinary one: they are Authority-internal transitions, and neither
+        -- widens who may ask for a durable version skip.
+        trustedCallersForRoute LifecycleTlsRetentionLegacyRecoveryStage
+          @?= [ CallerOperatorCli
+              , CallerTestHarness
+              , CallerService LifecycleAuthorityRuntime
+              ]
+        trustedCallersForRoute LifecycleTlsRetentionUnopenableSuccessorStage
           @?= [ CallerOperatorCli
               , CallerTestHarness
               , CallerService LifecycleAuthorityRuntime

@@ -154,6 +154,9 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest
   , ownershipManifestDecisionView
   )
 import Prodbox.Lifecycle.Teardown.Registry (lifecycleRegistryRevision)
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( scopeForOwnershipManifestCleanupReadBack
+  )
 import Prodbox.Lifecycle.Teardown.StackGeneration
   ( RegisteredStackGeneration
   , registeredStackGenerationKey
@@ -585,7 +588,13 @@ submitRegisteredStackCreation authentication repoRoot prefix revision buildInten
                     readBackOwnershipManifestDecisionForScope
                       (lifecycleAuthorityOwnershipManifestAuthenticatedClient transport)
                       stackKey
-                      scope
+                      -- Sprint 7.41's read-back asks the question a later
+                      -- teardown will ask -- can this record be bound for
+                      -- cleanup? -- so it asks on the cleanup side of the same
+                      -- slot. The commit stays on the create's own side; the
+                      -- identity normalises the operation away, so both address
+                      -- one object.
+                      (scopeForOwnershipManifestCleanupReadBack scope)
                 case readBack of
                   Left err ->
                     pure (Left (RegisteredStackCreationAuthorityUnreachable err))

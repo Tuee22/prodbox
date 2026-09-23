@@ -11,12 +11,14 @@ module Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
   ( TlsAuthorityObserveRequest (..)
   , TlsAuthorityStageRequest (..)
   , TlsAuthorityLegacyRecoveryStageRequest (..)
+  , TlsAuthorityUnopenableSuccessorStageRequest (..)
   , TlsAuthorityPromoteRequest (..)
   , TlsAuthorityResponse (..)
   , TlsAuthorityRepositoryResolver
   , serveTlsAuthorityObserveRequest
   , serveTlsAuthorityStageRequest
   , serveTlsAuthorityLegacyRecoveryStageRequest
+  , serveTlsAuthorityUnopenableSuccessorStageRequest
   , serveTlsAuthorityPromoteRequest
   , tlsAuthorityResponseHttpStatus
   , tlsAuthorityResponseBody
@@ -40,11 +42,13 @@ import Prodbox.ControlPlane.TlsRetentionAuthority
   , TlsRetentionPromotionResult (..)
   , TlsRetentionSlot
   , TlsRetentionStagingResult (..)
+  , TlsUnopenableSuccessorStagingResult (..)
   , mkTlsRetentionSlot
   , observeTlsRetentionAuthority
   , promoteTlsRetentionAuthority
   , stageTlsLegacyRecoveryAuthority
   , stageTlsRetentionAuthority
+  , stageTlsUnopenableSuccessorAuthority
   )
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.TlsRetention
@@ -61,6 +65,9 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   , TlsSealedEnvelope
   , TlsStagingDecision (..)
   , TlsStagingRefusal (..)
+  , TlsUnopenableSuccessorStagingDecision (..)
+  , TlsUnopenableSuccessorStagingRefusal (..)
+  , TlsUnopenableVersionEvidence
   )
 
 data TlsAuthorityObserveRequest = TlsAuthorityObserveRequest
@@ -98,6 +105,17 @@ data TlsAuthorityLegacyRecoveryStageRequest = TlsAuthorityLegacyRecoveryStageReq
   , tlsAuthorityLegacyRecoveryStageCollision :: !(Maybe TlsLegacyRecoveryCollisionEvidence)
   , tlsAuthorityLegacyRecoveryStageCandidate :: !RetainedTlsRef
   , tlsAuthorityLegacyRecoveryStageEnvelope :: !TlsSealedEnvelope
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data TlsAuthorityUnopenableSuccessorStageRequest = TlsAuthorityUnopenableSuccessorStageRequest
+  { tlsAuthorityUnopenableSuccessorStageSubstrate :: !Text
+  , tlsAuthorityUnopenableSuccessorStageScope :: !Text
+  , tlsAuthorityUnopenableSuccessorStageApproval :: !KeyRotationApproval
+  , tlsAuthorityUnopenableSuccessorStageEvidence :: !TlsUnopenableVersionEvidence
+  , tlsAuthorityUnopenableSuccessorStageCandidate :: !RetainedTlsRef
+  , tlsAuthorityUnopenableSuccessorStageEnvelope :: !TlsSealedEnvelope
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
@@ -186,6 +204,30 @@ serveTlsAuthorityLegacyRecoveryStageRequest maximumBytes resolve body =
                 (tlsAuthorityLegacyRecoveryStageEnvelope request)
         )
 
+serveTlsAuthorityUnopenableSuccessorStageRequest
+  :: (Monad m)
+  => Int
+  -> TlsAuthorityRepositoryResolver m revision
+  -> LazyByteString.ByteString
+  -> m TlsAuthorityResponse
+serveTlsAuthorityUnopenableSuccessorStageRequest maximumBytes resolve body =
+  case decodeControlPlaneRequest maximumBytes body of
+    Left _ -> pure TlsAuthorityRequestRefused
+    Right request ->
+      withRepository
+        resolve
+        (tlsAuthorityUnopenableSuccessorStageSubstrate request)
+        (tlsAuthorityUnopenableSuccessorStageScope request)
+        ( \repository ->
+            unopenableSuccessorStagingResponse
+              <$> stageTlsUnopenableSuccessorAuthority
+                repository
+                (tlsAuthorityUnopenableSuccessorStageApproval request)
+                (tlsAuthorityUnopenableSuccessorStageEvidence request)
+                (tlsAuthorityUnopenableSuccessorStageCandidate request)
+                (tlsAuthorityUnopenableSuccessorStageEnvelope request)
+        )
+
 serveTlsAuthorityPromoteRequest
   :: (Monad m)
   => Int
@@ -262,6 +304,20 @@ legacyRecoveryStagingResponse result = case result of
     TlsLegacyRecoveryStagingRefused refusal ->
       TlsAuthorityStagingRefused (legacyRecoveryStagingRefusalToken refusal)
 
+unopenableSuccessorStagingResponse
+  :: Either TlsRetentionAuthorityError TlsUnopenableSuccessorStagingResult
+  -> TlsAuthorityResponse
+unopenableSuccessorStagingResponse result = case result of
+  Left TlsRetentionAuthorityConcurrentWrite -> TlsAuthorityConcurrentWrite
+  Left _ -> TlsAuthorityUnavailable
+  Right staging -> case tlsUnopenableSuccessorStagingDecision staging of
+    TlsUnopenableSuccessorStaged _ ->
+      TlsAuthorityStagingApplied (tlsUnopenableSuccessorStagingState staging)
+    TlsUnopenableSuccessorStagingNoop _ ->
+      TlsAuthorityStagingNoop (tlsUnopenableSuccessorStagingState staging)
+    TlsUnopenableSuccessorStagingRefused refusal ->
+      TlsAuthorityStagingRefused (unopenableSuccessorStagingRefusalToken refusal)
+
 promotionResponse
   :: Either TlsRetentionAuthorityError TlsRetentionPromotionResult
   -> TlsAuthorityResponse
@@ -307,6 +363,32 @@ legacyRecoveryStagingRefusalToken refusal = case refusal of
   TlsLegacyRecoveryStageVersionMismatch -> "legacy-recovery-version-mismatch"
   TlsLegacyRecoveryStageCollisionEvidenceInvalid ->
     "legacy-recovery-collision-evidence-invalid"
+
+unopenableSuccessorStagingRefusalToken
+  :: TlsUnopenableSuccessorStagingRefusal -> Text
+unopenableSuccessorStagingRefusalToken refusal = case refusal of
+  TlsUnopenableSuccessorStageEvidenceInvalid ->
+    "unopenable-successor-evidence-invalid"
+  TlsUnopenableSuccessorStageSkippedVersionMismatch ->
+    "unopenable-successor-skipped-version-mismatch"
+  TlsUnopenableSuccessorStageSkippedDigestReused ->
+    "unopenable-successor-skipped-digest-reused"
+  TlsUnopenableSuccessorStageEnvelopeInvalid ->
+    "unopenable-successor-envelope-invalid"
+  TlsUnopenableSuccessorStageReferenceInvalid ->
+    "unopenable-successor-reference-invalid"
+  TlsUnopenableSuccessorStageDigestMismatch ->
+    "unopenable-successor-digest-mismatch"
+  TlsUnopenableSuccessorStageVersionMismatch ->
+    "unopenable-successor-version-mismatch"
+  TlsUnopenableSuccessorStageStateNotCurrent ->
+    "unopenable-successor-state-not-current"
+  TlsUnopenableSuccessorStageConcurrentPending ->
+    "unopenable-successor-concurrent-pending"
+  TlsUnopenableSuccessorStageValidityRegression ->
+    "unopenable-successor-validity-regression"
+  TlsUnopenableSuccessorStageUnapprovedKeyChange ->
+    "unopenable-successor-unapproved-key-change"
 
 tlsAuthorityResponseHttpStatus :: TlsAuthorityResponse -> ReplyStatus
 tlsAuthorityResponseHttpStatus response = case response of

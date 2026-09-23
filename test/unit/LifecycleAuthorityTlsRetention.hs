@@ -12,7 +12,7 @@ import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Control.Monad (forM_)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
-import Data.Either (isLeft)
+import Data.Either (isLeft, isRight)
 import Data.IORef
 import Data.Text (Text)
 import GHC.Generics (Generic)
@@ -527,13 +527,283 @@ lifecycleAuthorityTlsRetentionSuite =
         `shouldReturn` TlsAuthorityStagingNoop recoverySuccessorPending3
       readIORef writes `shouldReturn` [recoverySuccessorPending3]
 
+    it "serves the unopenable successor as one durable CAS and exact replay" $ do
+      stored <-
+        newIORef
+          (Just (StoredTlsRetentionState 1 current2) :: Maybe (StoredTlsRetentionState Int))
+      writes <- newIORef ([] :: [TlsRetentionState])
+      let repository = memoryRepository stored writes
+          resolve _ = Right repository
+          body =
+            encodeControlPlaneRequest
+              TlsAuthorityUnopenableSuccessorStageRequest
+                { tlsAuthorityUnopenableSuccessorStageSubstrate = "home-local"
+                , tlsAuthorityUnopenableSuccessorStageScope = "*.example.com"
+                , tlsAuthorityUnopenableSuccessorStageApproval = KeyRotationNotApproved
+                , tlsAuthorityUnopenableSuccessorStageEvidence = unopenableEvidence3
+                , tlsAuthorityUnopenableSuccessorStageCandidate = ref4Successor
+                , tlsAuthorityUnopenableSuccessorStageEnvelope = envelope4Successor
+                }
+          refusedBody =
+            encodeControlPlaneRequest
+              TlsAuthorityUnopenableSuccessorStageRequest
+                { tlsAuthorityUnopenableSuccessorStageSubstrate = "home-local"
+                , tlsAuthorityUnopenableSuccessorStageScope = "*.example.com"
+                , tlsAuthorityUnopenableSuccessorStageApproval = KeyRotationNotApproved
+                , tlsAuthorityUnopenableSuccessorStageEvidence =
+                    TlsUnopenableVersionEvidence
+                      (RetentionVersion 5)
+                      (tlsSealedEnvelopeDigest envelope4Successor)
+                , tlsAuthorityUnopenableSuccessorStageCandidate =
+                    reference 6 (CertIdentity "serial-2" "spki-A" 2000) envelope2
+                , tlsAuthorityUnopenableSuccessorStageEnvelope = envelope2
+                }
+      serveTlsAuthorityUnopenableSuccessorStageRequest (1024 * 1024) resolve body
+        `shouldReturn` TlsAuthorityStagingApplied unopenableSuccessorPending4
+      serveTlsAuthorityUnopenableSuccessorStageRequest (1024 * 1024) resolve body
+        `shouldReturn` TlsAuthorityStagingNoop unopenableSuccessorPending4
+      -- A second skip stacked on the first crosses the wire as its own closed
+      -- token and writes nothing.
+      serveTlsAuthorityUnopenableSuccessorStageRequest (1024 * 1024) resolve refusedBody
+        `shouldReturn` TlsAuthorityStagingRefused "unopenable-successor-concurrent-pending"
+      readIORef writes `shouldReturn` [unopenableSuccessorPending4]
+
+    it
+      "TLS-AUTHORITY-UNOPENABLE-VERSION-PERMANENT-RETAIN-STOP-2026-09-15 admits exactly one successor"
+      $ do
+        -- The two-sided reproducer for the condition that stopped Sprint 6.5's
+        -- live campaign for five consecutive cycles. The causal profile is one
+        -- constructed durable state: a committed current at v2 and an
+        -- Authority-lane object at v3 that is well formed and whose wrapped DEK
+        -- does not open under the retained-home Transit key.
+
+        -- The frozen superseded answer, asserted rather than described: without
+        -- evidence, the ordinary transition cannot reach past v3 at all.
+        -- `nextRetentionVersion` selects v3 on every future retain and the
+        -- envelope is never reproducible, so this refusal is permanent.
+        nextRetentionVersion current2 `shouldBe` RetentionVersion 3
+        decideTlsStaging KeyRotationNotApproved current2 ref4Successor envelope4Successor
+          `shouldBe` TlsStagingRefused TlsStageVersionMismatch
+        -- And the pre-Authority recovery lane cannot be borrowed for it: its
+        -- fixed-successor transition refuses a committed current outright,
+        -- which is what keeps the two lanes disjoint.
+        decideTlsLegacyRecoveryStaging
+          KeyRotationNotApproved
+          current2
+          legacyRecoveryEvidence
+          Nothing
+          ref3Recovery
+          envelope3Recovery
+          `shouldBe` TlsLegacyRecoveryStagingRefused TlsLegacyRecoveryStageStateNotEmpty
+
+        -- The replacement passes: one successor at v4, staged under durable
+        -- evidence naming the version it skipped and the bytes that occupied it.
+        stageUnopenableSuccessor current2 unopenableEvidence3 ref4Successor envelope4Successor
+          `shouldBe` TlsUnopenableSuccessorStaged unopenableSuccessorPendingRecord
+        applyTlsUnopenableSuccessorStaging
+          unopenableEvidence3
+          (stageUnopenableSuccessor current2 unopenableEvidence3 ref4Successor envelope4Successor)
+          current2
+          `shouldBe` unopenableSuccessorPending4
+
+        -- The predecessor stays restorable throughout, which is the property
+        -- that separates this outbox from every legacy-recovery one.
+        currentRetainedRef unopenableSuccessorPending4 `shouldBe` Just ref2
+        decideTlsRestore unopenableSuccessorPending4 (RestoreCommittedIntact ref2)
+          `shouldBe` TlsRestoreApply ref2
+        decideTlsRestore unopenableSuccessorPending4 RestoreCommittedAbsent
+          `shouldBe` TlsRestoreIssue
+
+        -- Promotion is still judged against that predecessor: strictly newer,
+        -- no validity regression, approval still required for a key change.
+        decideTlsPromotion
+          KeyRotationNotApproved
+          goodEvidence
+          unopenableSuccessorPending4
+          ref4Successor
+          `shouldBe` TlsPromoted ref4Successor
+        applyTlsPromotion
+          (decideTlsPromotion KeyRotationNotApproved goodEvidence unopenableSuccessorPending4 ref4Successor)
+          unopenableSuccessorPending4
+          `shouldBe` TlsRetentionCurrent ref4Successor
+
+    it "admits one successor version past an unopenable object and never a search" $ do
+      -- An exact replay is a no-op rather than a second CAS.
+      stageUnopenableSuccessor
+        unopenableSuccessorPending4
+        unopenableEvidence3
+        ref4Successor
+        envelope4Successor
+        `shouldBe` TlsUnopenableSuccessorStagingNoop unopenableSuccessorPendingRecord
+      -- Two successors in a row: a second skip stacked on the first is refused,
+      -- with no advance and no fresh version probed.
+      mapM_
+        ( \(state, evidence, candidate, envelope, expected) ->
+            stageUnopenableSuccessor state evidence candidate envelope
+              `shouldBe` TlsUnopenableSuccessorStagingRefused expected
+        )
+        [
+          ( unopenableSuccessorPending4
+          , TlsUnopenableVersionEvidence
+              (RetentionVersion 5)
+              (tlsSealedEnvelopeDigest envelope4Successor)
+          , reference 6 (CertIdentity "serial-2" "spki-A" 2000) envelope2
+          , envelope2
+          , TlsUnopenableSuccessorStageConcurrentPending
+          )
+        , -- Evidence about any version but the one this reference was about to
+          -- claim authorizes nothing: the lane cannot walk forward looking for
+          -- a free slot.
+
+          ( current2
+          , TlsUnopenableVersionEvidence
+              (RetentionVersion 4)
+              (tlsSealedEnvelopeDigest envelopeUnopenable3)
+          , reference 5 (CertIdentity "serial-2" "spki-A" 2000) envelope4Successor
+          , envelope4Successor
+          , TlsUnopenableSuccessorStageSkippedVersionMismatch
+          )
+        , -- One version, not two.
+
+          ( current2
+          , unopenableEvidence3
+          , reference 5 (CertIdentity "serial-2" "spki-A" 2000) envelope4Successor
+          , envelope4Successor
+          , TlsUnopenableSuccessorStageVersionMismatch
+          )
+        , -- The lane is entered only from a committed reference; the pre-outbox
+          -- states are the other lane's and stay disjoint from this one.
+
+          ( TlsRetentionEmpty
+          , TlsUnopenableVersionEvidence
+              (RetentionVersion 1)
+              (tlsSealedEnvelopeDigest envelope1)
+          , ref2
+          , envelope2
+          , TlsUnopenableSuccessorStageStateNotCurrent
+          )
+        ,
+          ( recoveryPending2
+          , unopenableEvidence3
+          , ref4Successor
+          , envelope4Successor
+          , TlsUnopenableSuccessorStageConcurrentPending
+          )
+        , -- A successor that re-asserted the skipped object's own digest would
+          -- launder the unopenable envelope into a fresh version.
+
+          ( current2
+          , TlsUnopenableVersionEvidence
+              (RetentionVersion 3)
+              (tlsSealedEnvelopeDigest envelope4Successor)
+          , ref4Successor
+          , envelope4Successor
+          , TlsUnopenableSuccessorStageSkippedDigestReused
+          )
+        ,
+          ( current2
+          , TlsUnopenableVersionEvidence (RetentionVersion 0) (tlsSealedEnvelopeDigest envelopeUnopenable3)
+          , ref4Successor
+          , envelope4Successor
+          , TlsUnopenableSuccessorStageEvidenceInvalid
+          )
+        ,
+          ( current2
+          , TlsUnopenableVersionEvidence (RetentionVersion 3) "not-a-digest"
+          , ref4Successor
+          , envelope4Successor
+          , TlsUnopenableSuccessorStageEvidenceInvalid
+          )
+        ,
+          ( current2
+          , unopenableEvidence3
+          , ref4Successor {retainedCiphertextDigest = tlsSealedEnvelopeDigest envelope2}
+          , envelope4Successor
+          , TlsUnopenableSuccessorStageDigestMismatch
+          )
+        , -- Nothing about the Authority's own rules is relaxed by the skip.
+
+          ( current2
+          , unopenableEvidence3
+          , reference 4 (CertIdentity "serial-4" "spki-A" 500) envelope4Successor
+          , envelope4Successor
+          , TlsUnopenableSuccessorStageValidityRegression
+          )
+        ,
+          ( current2
+          , unopenableEvidence3
+          , reference 4 (CertIdentity "serial-4" "spki-B" 2000) envelope4Successor
+          , envelope4Successor
+          , TlsUnopenableSuccessorStageUnapprovedKeyChange
+          )
+        ]
+      -- An approved key change past an unopenable version still stages.
+      decideTlsUnopenableSuccessorStaging
+        KeyRotationApproved
+        current2
+        unopenableEvidence3
+        (reference 4 (CertIdentity "serial-4" "spki-B" 2000) envelope4Successor)
+        envelope4Successor
+        `shouldBe` TlsUnopenableSuccessorStaged
+          ( TlsRetentionPending
+              (Just ref2)
+              KeyRotationApproved
+              (reference 4 (CertIdentity "serial-4" "spki-B" 2000) envelope4Successor)
+              envelope4Successor
+          )
+
+    it "refuses a durable successor whose evidence does not name the version it skipped" $ do
+      -- The codec boundary re-runs the whole decision from the record alone, so
+      -- a version jump cannot be authorized by a token the validator never saw.
+      encodeModelBValue tlsRetentionStateCodec unopenableSuccessorPending4
+        `shouldSatisfy` isRight
+      mapM_
+        ( \state ->
+            encodeModelBValue tlsRetentionStateCodec state `shouldSatisfy` isLeft
+        )
+        [ -- Evidence naming a version this predecessor would not have claimed.
+          TlsRetentionUnopenableSuccessorPendingState
+            (TlsUnopenableVersionEvidence (RetentionVersion 4) (tlsSealedEnvelopeDigest envelopeUnopenable3))
+            unopenableSuccessorPendingRecord
+        , -- Evidence whose digest is the successor's own bytes.
+          TlsRetentionUnopenableSuccessorPendingState
+            (TlsUnopenableVersionEvidence (RetentionVersion 3) (tlsSealedEnvelopeDigest envelope4Successor))
+            unopenableSuccessorPendingRecord
+        , -- A candidate two versions past the skip.
+          TlsRetentionUnopenableSuccessorPendingState
+            unopenableEvidence3
+            ( TlsRetentionPending
+                (Just ref2)
+                KeyRotationNotApproved
+                (reference 5 (CertIdentity "serial-2" "spki-A" 2000) envelope4Successor)
+                envelope4Successor
+            )
+        , -- No predecessor to reconstruct the skip from.
+          TlsRetentionUnopenableSuccessorPendingState
+            unopenableEvidence3
+            (TlsRetentionPending Nothing KeyRotationNotApproved ref4Successor envelope4Successor)
+        , -- An unapproved key change laundered through the skip.
+          TlsRetentionUnopenableSuccessorPendingState
+            unopenableEvidence3
+            ( TlsRetentionPending
+                (Just ref2)
+                KeyRotationNotApproved
+                (reference 4 (CertIdentity "serial-4" "spki-B" 2000) envelope4Successor)
+                envelope4Successor
+            )
+        ]
+
     it "round-trips every durable legacy-recovery outbox state" $ do
       mapM_
         ( \state -> do
             encoded <- expectRight (encodeModelBValue tlsRetentionStateCodec state)
             decodeModelBValue tlsRetentionStateCodec encoded `shouldBe` Right state
         )
-        [recoveryPending2, recoveryCollisionPending2, recoverySuccessorPending3]
+        [ recoveryPending2
+        , recoveryCollisionPending2
+        , recoverySuccessorPending3
+        , unopenableSuccessorPending4
+        ]
 
     it "round-trips pending maximum-size ciphertext without exceeding the state bound" $ do
       let maximumEnvelope =
@@ -698,6 +968,32 @@ lifecycleAuthorityTlsRetentionSuite =
   forgedStalePending =
     TlsRetentionPendingState
       (TlsRetentionPending (Just ref2) KeyRotationNotApproved ref1 envelope1)
+
+  -- The live 2026-09-15 shape: a committed current at v2, an Authority-lane
+  -- object at v3 that is well formed and does not open, and the one successor
+  -- at v4 that stepping past it admits.
+  envelopeUnopenable3 =
+    mustRight (mkTlsSealedEnvelope "ciphertext-3-unopenable" "wrapped-3-unopenable")
+  envelope4Successor =
+    mustRight (mkTlsSealedEnvelope "ciphertext-4-successor" "wrapped-4-successor")
+  ref4Successor = reference 4 (CertIdentity "serial-2" "spki-A" 2000) envelope4Successor
+  unopenableEvidence3 =
+    TlsUnopenableVersionEvidence
+      (RetentionVersion 3)
+      (tlsSealedEnvelopeDigest envelopeUnopenable3)
+  unopenableSuccessorPendingRecord =
+    TlsRetentionPending (Just ref2) KeyRotationNotApproved ref4Successor envelope4Successor
+  unopenableSuccessorPending4 =
+    TlsRetentionUnopenableSuccessorPendingState
+      unopenableEvidence3
+      unopenableSuccessorPendingRecord
+  stageUnopenableSuccessor state evidence candidate envelope =
+    decideTlsUnopenableSuccessorStaging
+      KeyRotationNotApproved
+      state
+      evidence
+      candidate
+      envelope
 
   reference version certificate envelope =
     RetainedTlsRef

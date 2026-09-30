@@ -10,9 +10,9 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-09-16 on Sprints `4.100`–`4.101` (Standards A/N).** Own-surface reopen on the
+✅ **Reclosed 2026-09-23 on Sprints `4.100`–`4.101` (Standards A/N).** The own-surface reopen on the
 `cluster delete` entry table, its retained-root narration, and the absence vocabulary's producers —
-all authored by this phase. Nothing about a later phase's incompleteness drives it.
+all authored by this phase — is complete. Nothing about a later phase's incompleteness drove it.
 
 Sprint `4.88`'s own Validation item 4 asks that every terminal arm be enumerated and narrated, and
 `retainedStateNarrationFor` returns `RetainedStateSilent` for **two of the four**
@@ -20,11 +20,14 @@ Sprint `4.88`'s own Validation item 4 asks that every terminal arm be enumerated
 the retained root is the one that says nothing about it. Sprint `4.100` takes the arm split, the
 narration, and the retained-root inventory sentence.
 
-Sprint `4.101` is separate because it must answer a dated decision rather than fill a gap:
-`residueStatusFromCheckpointObservability` maps a checkpoint that exists and parses to nothing onto
-the same proven absence as a checkpoint that is not there, and Sprint `4.89` adjudicated that
-function and recorded it correct. Two live leaks have since been attributed to that arm. The phase
-recloses when both reach `Done`; until then this entry records an open reopen, not a closure.
+Sprint `4.101` answers the dated decision rather than merely filling a gap:
+`residueStatusFromCheckpointObservability` now maps a checkpoint that exists and parses to nothing
+to `ResidueUnreachable`, the per-run reconcile carries it through `resourcesUnobserved` to a
+non-zero exit, and the cascade substrate gate refuses. Sprint `4.89`'s two-question separation
+remains correct, while its earlier `ResidueAbsent` answer for an empty object is corrected by name
+against the 2026-09-07 and 2026-09-16 live incidents. Focused proof, all unit stanzas, and the
+canonical gate close the code-owned surface; destructive-cleanup deployment qualification remains
+pending under Standard P.
 
 ✅ **Reclosed 2026-09-14 on Sprints `4.95`–`4.99` (Standards A/L/P).** All five reached `Done` on
 their code-owned surfaces with `prodbox dev check` at 0 and the unit suite at 5002/5002. The reopen
@@ -13178,13 +13181,15 @@ rather than a second implementation.
 ### Current Implementation Checkpoint (2026-08-20, checkpoint absence is not a discharge)
 
 - **The residue answer and the custody answer are two questions over one observation, and they were
-  one function consumed twice.** "Is there a stack to destroy" and "does this run still hold what
-  makes that stack's resources destroyable" have different answers for an absent or empty checkpoint:
-  the first is `ResidueAbsent` and correctly so, and the second is *lost*, because the resources may
-  exist and nothing now names them. Reading the first as the second is what stranded two AWS
-  resources. `CheckpointCustodyObservation` and `classifyCheckpointCustody` are the second answer;
-  `residueStatusFromCheckpointObservability` is unchanged, because it was answering its own question
-  correctly.
+  one function consumed twice.** This sprint correctly separated "is there readable stack state"
+  from "does this run still hold what makes that stack's resources destroyable", and classified an
+  absent or empty checkpoint as *lost* for the second. It also recorded `ResidueAbsent` as the
+  correct answer to the first for both observations. **Correction 2026-09-23, Sprint `4.101`:** that
+  last conclusion was defensible while residue was treated as a projection of checkpoint contents —
+  an empty object supplies no input to a Pulumi destroy — but it exceeded the checkpoint store's
+  authority. The 2026-09-07 and 2026-09-16 leaks show that an existing empty object can coincide
+  with live provider resources. The two-question split remains; `CheckpointEmpty` now maps to
+  `ResidueUnreachable`, while the custody answer remains *lost*.
 - **A corrupt checkpoint stays unobservable rather than lost.** A blob that cannot be parsed may
   still be the capability, so declaring it gone would be an invention in the opposite direction —
   the same asymmetry the residue classifier already applies.
@@ -14806,10 +14811,10 @@ registered as a deletion-ledger row because nothing survives that needs removing
 region in `cli_command_surface.md` already owns the contract and already says the current revision
 can reach only the non-zero exit.
 
-## Sprint 4.101: A Checkpoint That Parses To Nothing Is Not An Absence [📋 Planned]
+## Sprint 4.101: A Checkpoint That Parses To Nothing Is Not An Absence [✅ Done]
 
-**Status**: Planned. Phase `4` own-surface reopen (Standards A/N) on the absence vocabulary and its
-producers, which this phase owns.
+**Status**: Done (2026-09-23). Phase `4` own-surface reopen (Standards A/N) on the absence vocabulary
+and its producers, which this phase owns.
 **Doctrine**: [Lifecycle Reconciliation Doctrine §3.0, "Positive
 absence"](../documents/engineering/lifecycle_reconciliation_doctrine.md#30-positive-absence) and
 [§3, "Exact-Keyed Desired-Absence
@@ -14817,7 +14822,9 @@ Reconciliation"](../documents/engineering/lifecycle_reconciliation_doctrine.md#3
 **Implementation**: `src/Prodbox/Lifecycle/LiveResidue.hs` and
 `src/Prodbox/Lifecycle/ResourceRegistry.hs`.
 **Blocked by**: none.
-**Docs**: `documents/engineering/lifecycle_reconciliation_doctrine.md` and
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`, and
 `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
 **Live-proof**: two live leaks are already attributed to this arm; the repair itself is a pure
 total function and closes on its code-owned surface.
@@ -14857,7 +14864,21 @@ exists and parses to nothing, and answer by name the dated decision that this fu
 
 ### Remaining Work
 
-1. Everything above; nothing is started.
+None.
+
+### Validation Result
+
+- The focused `Sprint 4.101` group passes **2/2**, covering the rendered empty-checkpoint refusal
+  and its composition through `resourcesUnobserved`, the aggregate non-zero exit, and the cascade
+  substrate refusal while proving that no destroy action runs.
+- `prodbox test unit` exits 0: primary unit **5,172/5,172**, authority-admission **27/27**,
+  control-plane-authentication **35/35**, authenticated-transport **39/39**, Haskell-style
+  **17/17**, and Pulumi **4/4**.
+- `prodbox dev check` exits 0.
+- `CheckpointCorrupt` retains its unobservable verdict and detail; `CheckpointAbsent` retains its
+  absence verdict. The stable doctrine and the Sprint `4.89` checkpoint record name the
+  2026-09-07 and 2026-09-16 incidents and explain why the earlier content-projection reading was
+  defensible but exceeded the checkpoint store's authority.
 
 ## Documentation Requirements
 

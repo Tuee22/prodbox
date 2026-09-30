@@ -51,6 +51,7 @@ import Prodbox.ControlPlane.TlsRetentionEndpoint
 import Prodbox.Lifecycle.Authority.TlsRetention
   ( RetainedTlsRef (..)
   , RetentionVersion (..)
+  , TlsTerminalReplacementEvidence (..)
   )
 
 -- | The canonical encoded envelope must fit below the native S3 client's
@@ -71,6 +72,7 @@ tlsRetentionRepositoryWithTransport transport =
   TlsRetentionRepository
     { storeTlsEnvelope = storeEnvelope transport
     , restoreTlsEnvelope = restoreEnvelope transport
+    , replaceTlsEnvelope = replaceEnvelope transport
     , observeTlsEnvelopeVersion = observeEnvelopeVersion transport
     , observeTlsAuthorityEnvelopeVersion = observeAuthorityEnvelopeVersion transport
     }
@@ -122,6 +124,73 @@ storeEnvelope transport reference envelope =
    where
     confirmationFailed =
       Left . TlsStoreRepositoryConfirmationFailed disposition
+
+replaceEnvelope
+  :: DedicatedAdapterTransport 'TlsRetentionAdapter IO
+  -> TlsTerminalReplacementEvidence
+  -> RetainedTlsRef
+  -> TlsSealedEnvelope
+  -> IO (Either TlsStoreRepositoryFailure TlsRetentionReceipt)
+replaceEnvelope transport evidence reference envelope =
+  case validateTlsSealedEnvelope envelope of
+    Left _ -> pure (Left TlsStoreRepositoryEnvelopeInvalid)
+    Right ()
+      | tlsTerminalReplacementVersion evidence /= retainedVersion reference ->
+          pure (Left TlsStoreRepositoryDigestMismatch)
+      | tlsSealedEnvelopeDigest envelope /= retainedCiphertextDigest reference ->
+          pure (Left TlsStoreRepositoryDigestMismatch)
+      | tlsTerminalReplacementOccupantEnvelopeDigest evidence
+          == retainedCiphertextDigest reference ->
+          pure (Left TlsStoreRepositoryDigestMismatch)
+      | otherwise -> case retentionObjectName reference of
+          Left _ -> pure (Left TlsStoreRepositoryObjectNameInvalid)
+          Right objectName -> do
+            let encoded = encodeEnvelope envelope
+            if ByteString.length encoded > tlsRetentionMaximumEncodedEnvelopeBytes
+              then pure (Left TlsStoreRepositoryEncodedEnvelopeTooLarge)
+              else do
+                observed <- observeAdapterObject transport objectName
+                case observed of
+                  Left _ -> pure (confirmationFailed TlsStorePutUnobservable TlsStoreConfirmationUnobservable)
+                  Right AdapterObjectMissing ->
+                    pure (confirmationFailed TlsStorePutConflict TlsStoreConfirmationMissing)
+                  Right (AdapterObjectObserved version bytes)
+                    | bytes == encoded -> confirm TlsStorePutConflict objectName encoded
+                    | otherwise -> case decodeEnvelope bytes of
+                        Left _ ->
+                          pure (confirmationFailed TlsStorePutConflict TlsStoreConfirmationEnvelopeInvalid)
+                        Right occupied
+                          | tlsSealedEnvelopeDigest occupied
+                              /= tlsTerminalReplacementOccupantEnvelopeDigest evidence ->
+                              pure (confirmationFailed TlsStorePutConflict TlsStoreConfirmationBytesMismatch)
+                          | otherwise -> do
+                              attempted <-
+                                replaceAdapterObjectIfVersion transport objectName version encoded
+                              confirm (putDisposition attempted) objectName encoded
+ where
+  putDisposition attempted = case attempted of
+    Left _ -> TlsStorePutUnobservable
+    Right AdapterPutApplied -> TlsStorePutApplied
+    Right AdapterPutConflict -> TlsStorePutConflict
+
+  confirm disposition objectName expectedBytes = do
+    observed <- observeAdapterObject transport objectName
+    pure $ case observed of
+      Left _ -> confirmationFailed disposition TlsStoreConfirmationUnobservable
+      Right AdapterObjectMissing -> confirmationFailed disposition TlsStoreConfirmationMissing
+      Right (AdapterObjectObserved version bytes)
+        | bytes /= expectedBytes -> confirmationFailed disposition TlsStoreConfirmationBytesMismatch
+        | otherwise -> case decodeEnvelope bytes of
+            Left _ -> confirmationFailed disposition TlsStoreConfirmationEnvelopeInvalid
+            Right readBack
+              | readBack /= envelope ->
+                  confirmationFailed disposition TlsStoreConfirmationEnvelopeMismatch
+              | tlsSealedEnvelopeDigest readBack /= retainedCiphertextDigest reference ->
+                  confirmationFailed disposition TlsStoreConfirmationDigestMismatch
+              | otherwise -> Right (receiptFor reference readBack version)
+
+  confirmationFailed disposition =
+    Left . TlsStoreRepositoryConfirmationFailed disposition
 
 restoreEnvelope
   :: DedicatedAdapterTransport 'TlsRetentionAdapter IO

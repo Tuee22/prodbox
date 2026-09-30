@@ -1742,6 +1742,7 @@ data ProviderIntentExecutionError
   | ProviderIntentExecutionMutationNotConfirmed !Text
   | ProviderIntentExecutionReadBackUnavailable !Text
   | ProviderIntentExecutionEvidenceInvalid !Text
+  | ProviderIntentExecutionWallClockTimeout
   deriving stock (Eq, Show)
 
 -- | Fixed, non-authorizing diagnostics for the opaque credential-binding

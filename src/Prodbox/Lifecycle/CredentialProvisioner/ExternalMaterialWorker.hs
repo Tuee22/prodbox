@@ -70,6 +70,7 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
+  , classifyVaultAccessorLookupResponse
   , isBoundedBatchAuditorLogin
   )
 import Prodbox.ControlPlane.VaultServiceSessionJournal
@@ -621,7 +622,7 @@ workerAccessorAuditOps auditor =
           . fmap tokenAccessorKeys
           <$> vaultListTokenAccessors workerVaultAddress token
     , auditLookupAccessor = \accessor ->
-        first (const "accessor classification unavailable")
+        classifyVaultAccessorLookupResponse
           <$> vaultLookupTokenAccessorInfo workerVaultAddress token accessor
     , auditRevokeAccessor = \accessor ->
         first (const "accessor revocation unavailable")

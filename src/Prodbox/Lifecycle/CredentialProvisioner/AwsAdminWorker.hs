@@ -121,6 +121,7 @@ import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditError (..)
   , VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
+  , classifyVaultAccessorLookupResponse
   , isBoundedBatchAuditorLogin
   , isExactBoundedBatchAuditorLogin
   , revokeAndProveVaultAccessorSubjectAbsent
@@ -725,7 +726,7 @@ workerAccessorAuditOps auditor =
           . fmap tokenAccessorKeys
           <$> vaultListTokenAccessors workerVaultAddress token
     , auditLookupAccessor = \accessor ->
-        first (const "accessor classification unavailable")
+        classifyVaultAccessorLookupResponse
           <$> vaultLookupTokenAccessorInfo workerVaultAddress token accessor
     , auditRevokeAccessor = \accessor ->
         first (const "accessor revocation unavailable")
@@ -828,6 +829,10 @@ classifyPrecleanAuditError auditError = case auditError of
     AwsAdminWorkerSessionClosurePrecleanObservationFailed
   VaultAccessorObservationFailed ->
     AwsAdminWorkerSessionClosurePrecleanObservationFailed
+  VaultAccessorClassificationAbsent ->
+    AwsAdminWorkerSessionClosurePrecleanClassificationFailed
+  VaultAccessorClassificationUnavailable ->
+    AwsAdminWorkerSessionClosurePrecleanClassificationFailed
   VaultAccessorClassificationFailed ->
     AwsAdminWorkerSessionClosurePrecleanClassificationFailed
   VaultAccessorKnownIdentityMismatch ->
@@ -851,6 +856,10 @@ classifyCleanupAuditError auditError = case auditError of
     AwsAdminWorkerSessionClosureCleanupObservationFailed
   VaultAccessorObservationFailed ->
     AwsAdminWorkerSessionClosureCleanupObservationFailed
+  VaultAccessorClassificationAbsent ->
+    AwsAdminWorkerSessionClosureCleanupClassificationFailed
+  VaultAccessorClassificationUnavailable ->
+    AwsAdminWorkerSessionClosureCleanupClassificationFailed
   VaultAccessorClassificationFailed ->
     AwsAdminWorkerSessionClosureCleanupClassificationFailed
   VaultAccessorKnownIdentityMismatch ->

@@ -196,8 +196,8 @@ listEncryptedStackWithAuthentication authentication repoRoot stackRef = do
 -- @doesFileExist@ on the hydrated scratch file, then hydrates\/runs\/
 -- re-stores), this classifies the loaded checkpoint bytes purely into
 -- 'CheckpointObservability' without mutating backend state. The residue
--- path uses this so a corrupt checkpoint fails closed and an
--- absent\/empty one skips cleanly. The 'EncryptedBackendError' is mapped
+-- path uses this so a corrupt checkpoint fails closed, an absent one skips
+-- cleanly, and an empty one refuses. The 'EncryptedBackendError' is mapped
 -- to 'StackOutputsCommandFailed' so the residue layer can fail-close on
 -- an unreadable backend (the @kubectl get secret … minio not found@
 -- failure mode), the same as the listing path.

@@ -512,6 +512,10 @@ renderTargetWorkerSessionPrepareCause cause = case cause of
   TargetWorkerSessionPreparePrecleanAuditorEvidenceInvalid ->
     "preclean/auditor-evidence-invalid"
   TargetWorkerSessionPreparePrecleanObservationFailed -> "preclean/observation-failed"
+  TargetWorkerSessionPreparePrecleanClassificationAbsent ->
+    "preclean/classification-absent"
+  TargetWorkerSessionPreparePrecleanClassificationUnavailable ->
+    "preclean/classification-unavailable"
   TargetWorkerSessionPreparePrecleanClassificationFailed ->
     "preclean/classification-failed"
   TargetWorkerSessionPreparePrecleanKnownIdentityMismatch ->
@@ -543,6 +547,27 @@ renderTargetWorkerSessionPrepareCause cause = case cause of
 classifyTargetWorkerSessionCleanupFailure :: Text -> Text
 classifyTargetWorkerSessionCleanupFailure detail
   | detail == "cleanup-threw" = "cleanup-threw"
+  | detail
+      == "ServiceSessionLifecycleCleanupFailed VaultAccessorAuditIdentityInvalid" =
+      "accessor-audit/identity-invalid"
+  | detail
+      == "ServiceSessionLifecycleCleanupFailed VaultAccessorObservationFailed" =
+      "accessor-audit/observation-failed"
+  | detail
+      == "ServiceSessionLifecycleCleanupFailed VaultAccessorClassificationAbsent" =
+      "accessor-audit/classification-absent"
+  | detail
+      == "ServiceSessionLifecycleCleanupFailed VaultAccessorClassificationUnavailable" =
+      "accessor-audit/classification-unavailable"
+  | detail
+      == "ServiceSessionLifecycleCleanupFailed VaultAccessorClassificationFailed" =
+      "accessor-audit/classification-failed"
+  | detail
+      == "ServiceSessionLifecycleCleanupFailed VaultAccessorVisibilityWaitFailed" =
+      "accessor-audit/visibility-wait-failed"
+  | detail
+      == "ServiceSessionLifecycleCleanupFailed VaultAccessorStableAbsenceFailed" =
+      "accessor-audit/stable-absence-failed"
   | otherwise = case leadingToken of
       "ServiceSessionLifecycleJournalFailed" -> "journal-write-failed"
       "ServiceSessionLifecycleJournalUnavailable" -> "journal-unavailable"
@@ -554,7 +579,7 @@ classifyTargetWorkerSessionCleanupFailure detail
       "ServiceSessionLifecycleLoginAmbiguityCleaned" -> "login-ambiguity-cleaned"
       "ServiceSessionLifecycleAccessorInvalid" -> "accessor-invalid"
       "ServiceSessionLifecycleAccessorIdentityMismatch" -> "accessor-identity-mismatch"
-      "ServiceSessionLifecycleCleanupFailed" -> "accessor-audit-failed"
+      "ServiceSessionLifecycleCleanupFailed" -> "accessor-audit/unrecognized"
       "ServiceSessionLifecycleCleanupThrew" -> "accessor-cleanup-threw"
       "ServiceSessionLifecycleCleanupJournalFailed" -> "cleanup-journal-failed"
       "ServiceSessionLifecycleActionFailed" -> "action-failed"
@@ -570,9 +595,16 @@ classifyTargetWorkerAttachFailure detail = case detail of
   "Target worker attach process start failed" -> "process-start-unavailable"
   "Target worker attach initial payload write failed" -> "initial-payload-write-unavailable"
   "Target worker attach provisional read failed" -> "provisional-read-unavailable"
+  "Target worker attach provisional read failed after worker Vault session cleanup refusal" ->
+    "provisional-read-unavailable/worker-vault-session-cleanup-unavailable"
   "Target worker attach decision continuation write failed" ->
     "decision-continuation-write-unavailable"
-  "Target worker attach completion collection failed" -> "completion-collection-unavailable"
+  "Target worker attach completion frame read failed" -> "completion-frame-read-unavailable"
+  "Target worker attach completion stderr read failed" -> "completion-stderr-read-unavailable"
+  "Target worker attach completion trailing stdout read failed" ->
+    "completion-trailing-stdout-read-unavailable"
+  "Target worker attach completion process wait failed" ->
+    "completion-process-wait-unavailable"
   "Target worker attach wall-clock timeout" -> "wall-clock-timeout"
   "Target worker cleanup acknowledgement is invalid" -> "cleanup-ack-invalid"
   "Target worker terminal status is inconsistent" -> "terminal-status-inconsistent"

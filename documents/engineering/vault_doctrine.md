@@ -235,10 +235,10 @@ Requirements:
 - The Vault chart defaults to root Shamir mode. Child clusters set `seal.mode = transit`, render a
   `seal "transit"` stanza pointing at the parent Vault, and source the parent Transit token from
   `VAULT_TOKEN` rather than from the ConfigMap.
-- The TCP listener carries an explicit finite 192 MiB request ceiling. This admits the Target
-  Agent's 138 MiB replay projection after Base64 expansion and its bounded KV JSON envelope; it is
-  not an unbounded listener override. The replay projection itself remains limited independently
-  by its 68-entry, 2 MiB-per-response, and 138 MiB encoded bounds. The StatefulSet Pod
+- The TCP listener carries an explicit finite 288 MiB request ceiling. This admits the Target
+  Agent's 198 MiB replay projection after its at-most 264 MiB Base64 expansion and bounded KV JSON
+  envelope; it is not an unbounded listener override. The replay projection itself remains limited
+  independently by its 98-entry, 2 MiB-per-response, and 198 MiB encoded bounds. The StatefulSet Pod
   template binds a deterministic digest of the rendered Vault ConfigMap: an unchanged effective
   configuration keeps the template stable, while any listener, storage, or transit-seal change
   rolls the Vault process before the reconcile's StatefulSet rollout wait can succeed.

@@ -87,6 +87,7 @@ import Prodbox.ControlPlane.TargetSecretWorkerProduction
   , recoverTargetWorkerCreateWith
   , runtimeImageIdentityMatches
   , targetWorkerActiveAccessorSubject
+  , targetWorkerAttachProvisionalFailureDetail
   , targetWorkerAttachTransportFailureDetail
   , targetWorkerOutcomeExitMatches
   , targetWorkerRetainedExecutionBoundary
@@ -134,8 +135,11 @@ import Prodbox.ControlPlane.TlsTargetAgentProduction
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditError (..)
   , VaultAccessorAuditOps (..)
+  , VaultAccessorLookupError (..)
   , VaultAccessorSubject (..)
+  , classifyVaultAccessorLookupResponse
   , isBoundedBatchAuditorLogin
+  , revokeAndProveVaultAccessorSubjectAbsent
   )
 import Prodbox.Crypto.Aead (AeadError (AeadAuthenticationFailed))
 import Prodbox.Http.Client (HttpError (..))
@@ -240,7 +244,10 @@ controlPlaneTargetSecretWorkerSuite =
                    , "attach-failed/initial-payload-write-unavailable"
                    , "attach-failed/provisional-read-unavailable"
                    , "attach-failed/decision-continuation-write-unavailable"
-                   , "attach-failed/completion-collection-unavailable"
+                   , "attach-failed/completion-frame-read-unavailable"
+                   , "attach-failed/completion-stderr-read-unavailable"
+                   , "attach-failed/completion-trailing-stdout-read-unavailable"
+                   , "attach-failed/completion-process-wait-unavailable"
                    , "attach-failed/wall-clock-timeout"
                    ]
       diagnostic "Target worker cleanup acknowledgement is invalid"
@@ -254,115 +261,217 @@ controlPlaneTargetSecretWorkerSuite =
     -- and nothing anywhere recorded which close step failed. Session close now
     -- classifies exactly as session prepare already does, and an unrecognized
     -- shape says so instead of echoing interpreter text.
-    it "refines retained session cleanup to one closed value-free stage" $ do
-      let diagnostic detail =
-            renderTargetWorkerCoordinatorDiagnostic
-              (TargetWorkerCoordinatorSessionCleanupFailed detail)
-      diagnostic "cleanup-threw" `shouldBe` "session-cleanup-failed/cleanup-threw"
-      map
-        (diagnostic . Text.pack . show)
-        [ ServiceSessionLifecycleBindingRoleMismatch
-        , ServiceSessionLifecycleRoleOccupied
-        , ServiceSessionLifecycleAccessorInvalid
-        , ServiceSessionLifecycleAccessorIdentityMismatch
-        , ServiceSessionLifecycleCleanupThrew
-        , ServiceSessionLifecycleLoginAmbiguityCleaned
-        , ServiceSessionLifecycleUnhandledException
-        ]
-        `shouldBe` [ "session-cleanup-failed/binding-role-mismatch"
-                   , "session-cleanup-failed/role-occupied"
-                   , "session-cleanup-failed/accessor-invalid"
-                   , "session-cleanup-failed/accessor-identity-mismatch"
-                   , "session-cleanup-failed/accessor-cleanup-threw"
-                   , "session-cleanup-failed/login-ambiguity-cleaned"
-                   , "session-cleanup-failed/unhandled-exception"
-                   ]
-      diagnostic (Text.pack (show (ServiceSessionLifecycleJournalUnavailable "private")))
-        `shouldBe` "session-cleanup-failed/journal-unavailable"
-      diagnostic (Text.pack (show (ServiceSessionLifecycleActionFailed "private")))
-        `shouldBe` "session-cleanup-failed/action-failed"
-      diagnostic "private-detail" `shouldBe` "session-cleanup-failed/unrecognized"
+    it
+      "CASCADE-QUALIFICATION-TLS-SESSION-CLEANUP-ACCESSOR-AUDIT-CAUSE-DISCARDED-2026-09-24 refines retained session cleanup to one closed value-free stage"
+      $ do
+        let diagnostic detail =
+              renderTargetWorkerCoordinatorDiagnostic
+                (TargetWorkerCoordinatorSessionCleanupFailed detail)
+        diagnostic "cleanup-threw" `shouldBe` "session-cleanup-failed/cleanup-threw"
+        map
+          (diagnostic . Text.pack . show)
+          [ ServiceSessionLifecycleBindingRoleMismatch
+          , ServiceSessionLifecycleRoleOccupied
+          , ServiceSessionLifecycleAccessorInvalid
+          , ServiceSessionLifecycleAccessorIdentityMismatch
+          , ServiceSessionLifecycleCleanupThrew
+          , ServiceSessionLifecycleLoginAmbiguityCleaned
+          , ServiceSessionLifecycleUnhandledException
+          ]
+          `shouldBe` [ "session-cleanup-failed/binding-role-mismatch"
+                     , "session-cleanup-failed/role-occupied"
+                     , "session-cleanup-failed/accessor-invalid"
+                     , "session-cleanup-failed/accessor-identity-mismatch"
+                     , "session-cleanup-failed/accessor-cleanup-threw"
+                     , "session-cleanup-failed/login-ambiguity-cleaned"
+                     , "session-cleanup-failed/unhandled-exception"
+                     ]
+        diagnostic (Text.pack (show (ServiceSessionLifecycleJournalUnavailable "private")))
+          `shouldBe` "session-cleanup-failed/journal-unavailable"
+        diagnostic (Text.pack (show (ServiceSessionLifecycleActionFailed "private")))
+          `shouldBe` "session-cleanup-failed/action-failed"
+        map
+          ( diagnostic
+              . Text.pack
+              . show
+              . ServiceSessionLifecycleCleanupFailed
+          )
+          [ VaultAccessorAuditIdentityInvalid
+          , VaultAccessorObservationFailed
+          , VaultAccessorClassificationAbsent
+          , VaultAccessorClassificationUnavailable
+          , VaultAccessorClassificationFailed
+          , VaultAccessorVisibilityWaitFailed
+          , VaultAccessorStableAbsenceFailed
+          ]
+          `shouldBe` [ "session-cleanup-failed/accessor-audit/identity-invalid"
+                     , "session-cleanup-failed/accessor-audit/observation-failed"
+                     , "session-cleanup-failed/accessor-audit/classification-absent"
+                     , "session-cleanup-failed/accessor-audit/classification-unavailable"
+                     , "session-cleanup-failed/accessor-audit/classification-failed"
+                     , "session-cleanup-failed/accessor-audit/visibility-wait-failed"
+                     , "session-cleanup-failed/accessor-audit/stable-absence-failed"
+                     ]
+        diagnostic "ServiceSessionLifecycleCleanupFailed private-detail"
+          `shouldBe` "session-cleanup-failed/accessor-audit/unrecognized"
+        diagnostic "private-detail" `shouldBe` "session-cleanup-failed/unrecognized"
 
-    it "refines retained session preparation to one closed value-free stage" $ do
-      let causes = [minBound .. maxBound] :: [TargetWorkerSessionPrepareCause]
-          diagnostic =
-            renderTargetWorkerCoordinatorDiagnostic
-              . TargetWorkerCoordinatorSessionPrepareFailed
-      map diagnostic causes
-        `shouldBe` [ "session-prepare-failed/journal-write-failed"
-                   , "session-prepare-failed/journal-unavailable"
-                   , "session-prepare-failed/binding-role-mismatch"
-                   , "session-prepare-failed/role-occupied"
-                   , "session-prepare-failed/binding-invalid"
-                   , "session-prepare-failed/preclean/identity-invalid"
-                   , "session-prepare-failed/preclean/auditor-login-failed"
-                   , "session-prepare-failed/preclean/auditor-evidence-invalid"
-                   , "session-prepare-failed/preclean/observation-failed"
-                   , "session-prepare-failed/preclean/classification-failed"
-                   , "session-prepare-failed/preclean/known-identity-mismatch"
-                   , "session-prepare-failed/preclean/revocation-failed"
-                   , "session-prepare-failed/preclean/visibility-wait-failed"
-                   , "session-prepare-failed/preclean/stable-absence-failed"
-                   , "session-prepare-failed/login-failed-cleaned"
-                   , "session-prepare-failed/login-ambiguity-cleaned"
-                   , "session-prepare-failed/accessor-invalid"
-                   , "session-prepare-failed/accessor-identity-mismatch"
-                   , "session-prepare-failed/cleanup-failed"
-                   , "session-prepare-failed/cleanup-threw"
-                   , "session-prepare-failed/cleanup-journal-failed"
-                   , "session-prepare-failed/action-failed"
-                   , "session-prepare-failed/unhandled-exception"
-                   ]
-      classifyTargetWorkerSessionPrepareError
-        (ServiceSessionLifecycleJournalUnavailable "private-detail-a")
-        `shouldBe` TargetWorkerSessionPrepareJournalUnavailable
-      classifyTargetWorkerSessionPrepareError
-        (ServiceSessionLifecycleJournalUnavailable "private-detail-b")
-        `shouldBe` TargetWorkerSessionPrepareJournalUnavailable
-      classifyTargetWorkerSessionPrepareError
-        (ServiceSessionLifecycleActionFailed "private-detail")
-        `shouldBe` TargetWorkerSessionPrepareActionFailed
-      map
-        ( classifyTargetWorkerSessionPrepareError
-            . ServiceSessionLifecyclePrecleanFailed
-        )
-        [ VaultAccessorAuditIdentityInvalid
-        , VaultAccessorAuditorLoginFailed
-        , VaultAccessorAuditorEvidenceInvalid
-        , VaultAccessorObservationFailed
-        , VaultAccessorClassificationFailed
-        , VaultAccessorKnownIdentityMismatch
-        , VaultAccessorRevocationFailed
-        , VaultAccessorVisibilityWaitFailed
-        , VaultAccessorStableAbsenceFailed
-        ]
-        `shouldBe` [ TargetWorkerSessionPreparePrecleanIdentityInvalid
-                   , TargetWorkerSessionPreparePrecleanAuditorLoginFailed
-                   , TargetWorkerSessionPreparePrecleanAuditorEvidenceInvalid
-                   , TargetWorkerSessionPreparePrecleanObservationFailed
-                   , TargetWorkerSessionPreparePrecleanClassificationFailed
-                   , TargetWorkerSessionPreparePrecleanKnownIdentityMismatch
-                   , TargetWorkerSessionPreparePrecleanRevocationFailed
-                   , TargetWorkerSessionPreparePrecleanVisibilityWaitFailed
-                   , TargetWorkerSessionPreparePrecleanStableAbsenceFailed
-                   ]
+    it
+      "TLS-RETENTION-SELECTED-RESTORE-SESSION-PRECLEAN-FAILED-2026-09-04 separates an accessor that vanished after inventory from unavailable classification"
+      $ do
+        let causes = [minBound .. maxBound] :: [TargetWorkerSessionPrepareCause]
+            diagnostic =
+              renderTargetWorkerCoordinatorDiagnostic
+                . TargetWorkerCoordinatorSessionPrepareFailed
+        map diagnostic causes
+          `shouldBe` [ "session-prepare-failed/journal-write-failed"
+                     , "session-prepare-failed/journal-unavailable"
+                     , "session-prepare-failed/binding-role-mismatch"
+                     , "session-prepare-failed/role-occupied"
+                     , "session-prepare-failed/binding-invalid"
+                     , "session-prepare-failed/preclean/identity-invalid"
+                     , "session-prepare-failed/preclean/auditor-login-failed"
+                     , "session-prepare-failed/preclean/auditor-evidence-invalid"
+                     , "session-prepare-failed/preclean/observation-failed"
+                     , "session-prepare-failed/preclean/classification-absent"
+                     , "session-prepare-failed/preclean/classification-unavailable"
+                     , "session-prepare-failed/preclean/classification-failed"
+                     , "session-prepare-failed/preclean/known-identity-mismatch"
+                     , "session-prepare-failed/preclean/revocation-failed"
+                     , "session-prepare-failed/preclean/visibility-wait-failed"
+                     , "session-prepare-failed/preclean/stable-absence-failed"
+                     , "session-prepare-failed/login-failed-cleaned"
+                     , "session-prepare-failed/login-ambiguity-cleaned"
+                     , "session-prepare-failed/accessor-invalid"
+                     , "session-prepare-failed/accessor-identity-mismatch"
+                     , "session-prepare-failed/cleanup-failed"
+                     , "session-prepare-failed/cleanup-threw"
+                     , "session-prepare-failed/cleanup-journal-failed"
+                     , "session-prepare-failed/action-failed"
+                     , "session-prepare-failed/unhandled-exception"
+                     ]
+        classifyTargetWorkerSessionPrepareError
+          (ServiceSessionLifecycleJournalUnavailable "private-detail-a")
+          `shouldBe` TargetWorkerSessionPrepareJournalUnavailable
+        classifyTargetWorkerSessionPrepareError
+          (ServiceSessionLifecycleJournalUnavailable "private-detail-b")
+          `shouldBe` TargetWorkerSessionPrepareJournalUnavailable
+        classifyTargetWorkerSessionPrepareError
+          (ServiceSessionLifecycleActionFailed "private-detail")
+          `shouldBe` TargetWorkerSessionPrepareActionFailed
+        map
+          ( classifyTargetWorkerSessionPrepareError
+              . ServiceSessionLifecyclePrecleanFailed
+          )
+          [ VaultAccessorAuditIdentityInvalid
+          , VaultAccessorAuditorLoginFailed
+          , VaultAccessorAuditorEvidenceInvalid
+          , VaultAccessorObservationFailed
+          , VaultAccessorClassificationAbsent
+          , VaultAccessorClassificationUnavailable
+          , VaultAccessorClassificationFailed
+          , VaultAccessorKnownIdentityMismatch
+          , VaultAccessorRevocationFailed
+          , VaultAccessorVisibilityWaitFailed
+          , VaultAccessorStableAbsenceFailed
+          ]
+          `shouldBe` [ TargetWorkerSessionPreparePrecleanIdentityInvalid
+                     , TargetWorkerSessionPreparePrecleanAuditorLoginFailed
+                     , TargetWorkerSessionPreparePrecleanAuditorEvidenceInvalid
+                     , TargetWorkerSessionPreparePrecleanObservationFailed
+                     , TargetWorkerSessionPreparePrecleanClassificationAbsent
+                     , TargetWorkerSessionPreparePrecleanClassificationUnavailable
+                     , TargetWorkerSessionPreparePrecleanClassificationFailed
+                     , TargetWorkerSessionPreparePrecleanKnownIdentityMismatch
+                     , TargetWorkerSessionPreparePrecleanRevocationFailed
+                     , TargetWorkerSessionPreparePrecleanVisibilityWaitFailed
+                     , TargetWorkerSessionPreparePrecleanStableAbsenceFailed
+                     ]
+        let privatePayload = "private-vault-response-body"
+        classifyVaultAccessorLookupResponse (Left (HttpStatus 404 privatePayload))
+          `shouldBe` Left VaultAccessorLookupAbsent
+        map
+          classifyVaultAccessorLookupResponse
+          [ Left (HttpConnectionFailure privatePayload)
+          , Left (HttpTimeout privatePayload)
+          , Left (HttpStatus 503 privatePayload)
+          , Left (HttpDecode privatePayload)
+          ]
+          `shouldBe` replicate 4 (Left VaultAccessorLookupUnavailable)
+        let auditWith lookupFailure =
+              VaultAccessorAuditOps
+                { auditListAccessors = pure (Right ["racing-accessor"])
+                , auditLookupAccessor = \_ -> pure (Left lookupFailure)
+                , auditRevokeAccessor = \_ -> pure (Right ())
+                , auditObserveAccessorAbsent = \_ -> pure (Right True)
+                , auditWaitVisibilityGrace = pure (Right ())
+                }
+        revokeAndProveVaultAccessorSubjectAbsent
+          (auditWith VaultAccessorLookupAbsent)
+          targetWorkerRoleWideAccessorSubject
+          Nothing
+          `shouldReturn` Left VaultAccessorClassificationAbsent
+        revokeAndProveVaultAccessorSubjectAbsent
+          (auditWith VaultAccessorLookupUnavailable)
+          targetWorkerRoleWideAccessorSubject
+          Nothing
+          `shouldReturn` Left VaultAccessorClassificationUnavailable
 
-    it "classifies a worker exit before its provisional frame at the closed read stage" $ do
-      result <-
-        captureSubprocessFramedExchangeBounded
-          (BoundedSubprocessLimits 64 64 64 1000000)
-          "frame"
-          (\_ -> pure (Right (ByteString.empty, ())))
-          (Subprocess "/bin/sh" ["-c", "head -c 9 >/dev/null"] Nothing Nothing)
-          :: IO
-               ( Either
-                   (FramedSubprocessExchangeError ())
-                   ((), ProcessOutput)
-               )
-      case result of
-        Left (FramedSubprocessExchangeTransportError FramedExchangeProvisionalRead _) ->
-          pure ()
-        _ -> expectationFailure "expected closed provisional-read transport stage"
+    it
+      "CASCADE-QUALIFICATION-TLS-RETAIN-PROVISIONAL-FAILURE-CAUSE-DISCARDED-2026-09-24 retains only an exact bounded worker refusal while the superseded stage and arbitrary output stay generic"
+      $ do
+        let diagnostic detail =
+              renderTargetWorkerCoordinatorDiagnostic
+                (TargetWorkerCoordinatorAttachFailed detail)
+            superseded =
+              diagnostic
+                (targetWorkerAttachTransportFailureDetail FramedExchangeProvisionalRead)
+        superseded `shouldBe` "attach-failed/provisional-read-unavailable"
+        let output =
+              ProcessOutput
+                (ExitFailure 1)
+                ""
+                "target-secret worker refused: TargetSecretWorkerVaultSessionCleanupUnavailable\n"
+        diagnostic (targetWorkerAttachProvisionalFailureDetail output)
+          `shouldBe` "attach-failed/provisional-read-unavailable/worker-vault-session-cleanup-unavailable"
+        let arbitrary =
+              output
+                { processStderr =
+                    processStderr output <> "private-provider-detail"
+                }
+        diagnostic (targetWorkerAttachProvisionalFailureDetail arbitrary)
+          `shouldBe` "attach-failed/provisional-read-unavailable"
+        Text.unpack (diagnostic (targetWorkerAttachProvisionalFailureDetail arbitrary))
+          `shouldNotContain` "private-provider-detail"
+
+    it
+      "CASCADE-QUALIFICATION-TLS-HOME-PREPARE-ATTACH-COMPLETION-COLLECTION-UNAVAILABLE-2026-09-24 selects a missing terminal acknowledgement at the closed final-frame stage"
+      $ do
+        result <-
+          captureSubprocessFramedExchangeBounded
+            (BoundedSubprocessLimits 64 64 64 1000000)
+            "frame"
+            (\provisional -> pure (Right (ByteString.empty, provisional)))
+            ( Subprocess
+                "/bin/sh"
+                [ "-c"
+                , "head -c 9 >/dev/null; printf '\\000\\000\\000\\002ok'; head -c 4 >/dev/null"
+                ]
+                Nothing
+                Nothing
+            )
+            :: IO
+                 ( Either
+                     (FramedSubprocessExchangeError ())
+                     (ByteString.ByteString, ProcessOutput)
+                 )
+        case result of
+          Left
+            ( FramedSubprocessExchangeTransportError
+                FramedExchangeCompletionFrameRead
+                _
+              ) -> pure ()
+          _ -> expectationFailure "expected closed completion-frame-read transport stage"
 
     it "refines only closed value-free TLS worker refusals" $ do
       let runtimeToken = renderTargetSecretWorkerRuntimeRefusal

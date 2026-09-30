@@ -16281,9 +16281,40 @@ unitSuite = do
       LiveResidue.residueStatusFromCheckpointObservability "aws-eks-test" CheckpointAbsent
         `shouldBe` Residue.ResidueAbsent
 
-    it "residueStatusFromCheckpointObservability: empty → skip (ResidueAbsent)" $
-      LiveResidue.residueStatusFromCheckpointObservability "aws-eks-test" CheckpointEmpty
-        `shouldBe` Residue.ResidueAbsent
+    it "Sprint 4.101: an empty checkpoint refuses with the stack and cause" $ do
+      let status =
+            LiveResidue.residueStatusFromCheckpointObservability
+              "aws-eks-test"
+              CheckpointEmpty
+          rendered = Residue.renderResidueStatus status
+      status `shouldSatisfy` Residue.isResidueUnreachable
+      rendered `shouldContain` "empty"
+      rendered `shouldContain` "aws-eks-test"
+      rendered `shouldContain` "contains no stack state"
+
+    it "Sprint 4.101: an empty admitted stack reaches a failing reconcile" $ do
+      destroyed <- newIORef ([] :: [String])
+      let emptyStatus =
+            LiveResidue.residueStatusFromCheckpointObservability
+              "aws-eks-test"
+              CheckpointEmpty
+          pairs =
+            [
+              ( registryFixtureResource "aws-eks-test" ExitSuccess destroyed
+              , emptyStatus
+              )
+            ]
+      map ResourceRegistry.resourceName (ResourceRegistry.resourcesToDestroy pairs)
+        `shouldBe` []
+      map ResourceRegistry.resourceName (ResourceRegistry.resourcesUnobserved pairs)
+        `shouldBe` ["aws-eks-test"]
+      outcome <- ResourceRegistry.reconcileAbsent "/tmp" pairs
+      ResourceRegistry.absentReconcileObservedAbsent outcome `shouldBe` []
+      ResourceRegistry.absentReconcileUnobserved outcome `shouldBe` ["aws-eks-test"]
+      ResourceRegistry.absentReconcileExitCode outcome `shouldBe` ExitFailure 1
+      inferCascadeSubstrate emptyStatus Residue.ResidueAbsent Residue.ResidueAbsent
+        `shouldBe` CascadeSubstrateUnobservable ["aws-eks"]
+      readIORef destroyed `shouldReturn` []
 
     it "residueStatusFromCheckpointObservability: present → destroy (ResiduePresent)" $
       LiveResidue.residueStatusFromCheckpointObservability "aws-eks-test" CheckpointPresent
@@ -21401,18 +21432,24 @@ unitSuite = do
           `shouldBe` (2 * ControlPlaneRuntime.authorityBackupQualificationAttemptRequestMaximum)
         ControlPlaneRuntime.authorityBackupReplayMaximumEncodedBytes
           `shouldBe` (32 * 1024 * 1024)
-        ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum `shouldBe` 38
-        ControlPlaneRuntime.targetSecretAgentReplayCapacity `shouldBe` 76
+        ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum `shouldBe` 49
+        ControlPlaneRuntime.targetSecretAgentReplayCapacity `shouldBe` 98
         ControlPlaneRuntime.targetSecretAgentReplayCapacity
           `shouldBe` (2 * ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum)
         ControlPlaneRuntime.targetSecretAgentReplayMaximumEncodedBytes
-          `shouldBe` (154 * 1024 * 1024)
+          `shouldBe` (198 * 1024 * 1024)
+        ControlPlaneRuntime.tlsRetentionAdapterAttemptRequestMaximum `shouldBe` 19
+        ControlPlaneRuntime.tlsRetentionAdapterReplayCapacity `shouldBe` 38
+        ControlPlaneRuntime.tlsRetentionAdapterReplayCapacity
+          `shouldBe` (2 * ControlPlaneRuntime.tlsRetentionAdapterAttemptRequestMaximum)
+        ControlPlaneRuntime.tlsRetentionAdapterReplayMaximumEncodedBytes
+          `shouldBe` (78 * 1024 * 1024)
         vaultConfig <- readFile "charts/vault/templates/configmap.yaml"
         vaultStatefulSet <- readFile "charts/vault/templates/statefulset.yaml"
         -- The listener ceiling is the physical closure of the projection above:
-        -- 154 MiB of retained responses expand to at most 205.34 MiB inside the
-        -- Base64 JSON KV write, and 224 MiB keeps a finite margin over that.
-        vaultConfig `shouldContain` "max_request_size = 234881024"
+        -- 198 MiB of retained responses expand to at most 264 MiB inside the
+        -- Base64 JSON KV write, and 288 MiB keeps a finite margin over that.
+        vaultConfig `shouldContain` "max_request_size = 301989888"
         vaultStatefulSet
           `shouldContain` "checksum/config: {{ include (print $.Template.BasePath \"/configmap.yaml\") . | sha256sum }}"
 
@@ -23171,7 +23208,7 @@ unitSuite = do
           configuredChild = Capacity.child_process_budget defaultProviderWorkerRuntimeMemoryProfile
       requestWorkers `shouldBe` 4
       Capacity.permit_capacity configuredChild `shouldBe` Just 1
-      Capacity.action_deadline_milliseconds configuredChild `shouldBe` Just 300000
+      Capacity.action_deadline_milliseconds configuredChild `shouldBe` Just 1800000
       Capacity.simultaneous_peak_bytes configuredChild
         `shouldBe` [1024 * 1024 * 1024]
       boundedSubprocessTimeoutMicros ProviderProduction.providerAwsCliLimits
@@ -23432,13 +23469,17 @@ unitSuite = do
 
     it "contains every admitted Provider child deadline inside its Provider-only HTTP budget" $ do
       ProviderWorkerBudget.providerWorkerMaximumChildDeadlineMilliseconds
-        `shouldBe` 300000
+        `shouldBe` 1800000
+      ProviderWorkerBudget.providerWorkerIntentLifetimeMicros
+        `shouldBe` (1800 * 1000 * 1000)
       ProviderWorkerBudget.providerWorkerResponseOverheadMilliseconds
         `shouldBe` 30000
       ProviderWorkerBudget.providerWorkerServerEnvelopeMicros
-        `shouldBe` (330 * 1000 * 1000)
+        `shouldBe` (1830 * 1000 * 1000)
       ProviderWorkerBudget.providerWorkerResponseTimeoutMicros
-        `shouldBe` (360 * 1000 * 1000)
+        `shouldBe` (1860 * 1000 * 1000)
+      ProviderWorkerBudget.providerWorkerAuthenticatedRequestLifetimeMicros
+        `shouldBe` (1860 * 1000 * 1000)
 
       -- Sprint 4.96.  Stated as strict inequalities rather than as three
       -- numbers, because the defect this closes was an *equality* nobody had
@@ -23469,9 +23510,9 @@ unitSuite = do
         `shouldBe` (30 * 1000 * 1000)
       Prodbox.Http.Client.httpRequestTimeoutMicros Prodbox.Http.Client.defaultHttpConfig
         `shouldBe` (10 * 1000 * 1000)
-      ProviderWorkerBudget.validateProviderWorkerChildDeadlineMilliseconds 300000
+      ProviderWorkerBudget.validateProviderWorkerChildDeadlineMilliseconds 1800000
         `shouldBe` Right ()
-      ProviderWorkerBudget.validateProviderWorkerChildDeadlineMilliseconds 300001
+      ProviderWorkerBudget.validateProviderWorkerChildDeadlineMilliseconds 1800001
         `shouldSatisfy` isLeft
 
       providerCallerSource <- readFile "src/Prodbox/ControlPlane/ProviderCaller.hs"
@@ -23500,7 +23541,7 @@ unitSuite = do
                 profile
                   { Capacity.child_process_budget =
                       (Capacity.child_process_budget profile)
-                        { Capacity.action_deadline_milliseconds = Just 300001
+                        { Capacity.action_deadline_milliseconds = Just 1800001
                         }
                   }
             | otherwise = profile
@@ -23554,15 +23595,15 @@ unitSuite = do
 
     it "contains the closed TLS workflow inside its host route budget" $ do
       TlsRetentionWorkflowBudget.tlsRetentionWorkflowMaximumTargetOneShotCalls
-        `shouldBe` 4
+        `shouldBe` 9
       TlsRetentionWorkflowBudget.tlsRetentionWorkflowMaximumShortCalls
-        `shouldBe` 4
+        `shouldBe` 11
       TlsRetentionWorkflowBudget.tlsRetentionWorkflowShortCallTimeoutMicros
         `shouldBe` (10 * 1000 * 1000)
       TlsRetentionWorkflowBudget.tlsRetentionWorkflowResponseOverheadMicros
         `shouldBe` (30 * 1000 * 1000)
       TlsRetentionWorkflowBudget.tlsRetentionWorkflowResponseTimeoutMicros
-        `shouldBe` (3790 * 1000 * 1000)
+        `shouldBe` (8510 * 1000 * 1000)
       Prodbox.Http.Client.httpRequestTimeoutMicros lifecycleAuthorityTlsWorkflowHttpConfig
         `shouldBe` TlsRetentionWorkflowBudget.tlsRetentionWorkflowResponseTimeoutMicros
       Prodbox.Http.Client.httpRequestTimeoutMicros lifecycleAuthorityHttpConfig
@@ -23591,7 +23632,7 @@ unitSuite = do
         Right plan -> do
           let childBudget = RuntimeMemory.runtimeMemoryChildBudget plan
           RuntimeMemory.childProcessPermitCount childBudget `shouldBe` 1
-          RuntimeMemory.childProcessDeadlineMicros childBudget `shouldBe` 300000000
+          RuntimeMemory.childProcessDeadlineMicros childBudget `shouldBe` 1800000000
           RuntimeMemory.positiveBytesValue
             (RuntimeMemory.childProcessReservedPeakBytes childBudget)
             `shouldBe` (1024 * 1024 * 1024)

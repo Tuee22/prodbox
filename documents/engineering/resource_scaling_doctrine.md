@@ -404,7 +404,7 @@ recorded six child OOM kills. A non-mutating preview of the same project and ima
 uncapped schema/preview child at exactly 1,024,434,176 bytes (976.9765625 MiB), so the typed plan
 rounds that child slot upward to 1,024 MiB. The complete production profile is `64 MiB heap + 16 MiB
 native + 1,024 MiB child + 8 MiB kernel/cgroup + 8 MiB safety = 1,120 MiB`, with the child schedule
-bounded to one permit and the request-wide 300-second deadline. A hard 1,120 MiB probe reaches the
+bounded to one permit and a physical thirty-minute Provider deadline. A hard 1,120 MiB probe reaches the
 post-schema invalid-credential boundary at a 966,365,184-byte peak with zero OOM events. The exact
 `100m / 1120Mi` request-equals-limit envelope transfers 944 MiB from the compiled plan's declared
 idle headroom: workload draw becomes 6,210m / 9,984Mi / 15,456Mi / 155,648Mi inside the unchanged
@@ -421,16 +421,14 @@ simultaneous encoded input, decoded retained responses, replacement encoding, an
 headroom. This raises the steady workload memory draw from 9,984 MiB to 10,048 MiB, still within the
 unchanged 13,312 MiB allocatable host budget.
 The Lifecycle Authority's Provider-route HTTP response budget is derived from the same admitted
-schedule maximum: 300 seconds of child execution plus 30 seconds of bounded authenticated
-framing/projection/encoding/socket overhead yields 330 seconds. Both synchronous transport legs,
-host-to-Authority and Authority-to-Provider, consume that one typed bound for execute and
-admit-and-execute; admission-only keeps the ordinary Authority budget because it cannot run the
-child. Capacity validation rejects a configured Provider child deadline above the 300-second
-maximum, so neither transport leg can time out before an admitted schedule by construction. The
-Lifecycle Authority server also uses the typed 330-second accepted-connection upper bound so the
-nested Provider response can be projected after the Provider Worker's unchanged 300-second server
-envelope terminates. Every sibling role retains that 300-second server bound, and unrelated clients
-keep their shorter wait budgets. The independently long-running retained-material
+schedule maximum. A live registered EKS create completed after about fourteen minutes, invalidating
+the former 300-second child bound. The effect and signed intent are now physically bounded at thirty
+minutes; the Provider server adds thirty seconds for authenticated framing/projection/encoding/
+socket completion, and the Authority/host clients plus replay ownership add a second thirty-second
+allowance. The strict ordering is `30m < 30m30s < 31m`. Admission-only keeps the ordinary Authority
+budget because it cannot run the child, capacity validation rejects a Provider child deadline above
+thirty minutes, every sibling role retains its 300-second server bound, and unrelated clients keep
+their shorter wait budgets. The independently long-running retained-material
 delivery route derives the same finite 330-second bound from its five-minute persisted operation
 lifetime plus 30 seconds of response overhead; both the host EAB client and in-cluster SES worker
 client consume that one constant. Unrelated HTTP clients retain their existing budgets, including

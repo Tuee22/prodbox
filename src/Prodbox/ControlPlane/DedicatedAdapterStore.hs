@@ -168,8 +168,9 @@ renderDedicatedAdapterReadinessCause cause = case cause of
   DedicatedAdapterHttpNotFound -> "http-not-found"
   DedicatedAdapterHttpOther -> "http-other"
 
--- | Prefix-confined immutable object transport.  There is deliberately no
--- replace operation: both backup blobs and TLS envelope versions are immutable.
+-- | Prefix-confined object transport. Ordinary writes are immutable. The exact
+-- version compare-and-swap exists for the TLS terminal-repair protocol only;
+-- callers cannot choose an object name outside their typed adapter prefix.
 data DedicatedAdapterTransport (kind :: DedicatedAdapterKind) m
   = DedicatedAdapterTransport
   { observeAdapterObject
@@ -177,6 +178,11 @@ data DedicatedAdapterTransport (kind :: DedicatedAdapterKind) m
       -> m (Either Text AdapterObjectObservation)
   , putAdapterObjectIfAbsent
       :: AdapterObjectName kind
+      -> ByteString
+      -> m (Either Text AdapterPutResult)
+  , replaceAdapterObjectIfVersion
+      :: AdapterObjectName kind
+      -> AdapterObjectVersion
       -> ByteString
       -> m (Either Text AdapterPutResult)
   , adapterObjectStoreReadiness :: m DedicatedAdapterReadiness
@@ -643,6 +649,9 @@ deferredTransport loadTransport =
     , putAdapterObjectIfAbsent = \objectName bytes ->
         withCurrentTransport
           (\transport -> putAdapterObjectIfAbsent transport objectName bytes)
+    , replaceAdapterObjectIfVersion = \objectName version bytes ->
+        withCurrentTransport
+          (\transport -> replaceAdapterObjectIfVersion transport objectName version bytes)
     , adapterObjectStoreReadiness = do
         current <- loadTransport
         case current of
@@ -715,6 +724,7 @@ nativeTransport config =
   DedicatedAdapterTransport
     { observeAdapterObject = observeNativeObject config
     , putAdapterObjectIfAbsent = putNativeObjectIfAbsent config
+    , replaceAdapterObjectIfVersion = replaceNativeObjectIfVersion config
     , adapterObjectStoreReadiness = probeNativePrefixReadiness config
     }
 
@@ -753,6 +763,28 @@ putNativeObjectIfAbsent config objectName bytes = do
       | status >= 200 && status < 300 -> Right AdapterPutApplied
       | status == 409 || status == 412 -> Right AdapterPutConflict
       | otherwise -> Left (statusFailure "immutable PUT" status body)
+
+replaceNativeObjectIfVersion
+  :: NativeS3Config
+  -> AdapterObjectName kind
+  -> AdapterObjectVersion
+  -> ByteString
+  -> IO (Either Text AdapterPutResult)
+replaceNativeObjectIfVersion config objectName (AdapterObjectVersion version) bytes = do
+  response <-
+    performNativeS3
+      config
+      "PUT"
+      (objectPath config objectName)
+      []
+      bytes
+      [("If-Match", "\"" <> TextEncoding.encodeUtf8 version <> "\"")]
+  pure $ case response of
+    Left err -> Left err
+    Right (status, _, body)
+      | status >= 200 && status < 300 -> Right AdapterPutApplied
+      | status == 409 || status == 412 -> Right AdapterPutConflict
+      | otherwise -> Left (statusFailure "exact-version replacement PUT" status body)
 
 probeNativePrefixReadiness :: NativeS3Config -> IO DedicatedAdapterReadiness
 probeNativePrefixReadiness config = do

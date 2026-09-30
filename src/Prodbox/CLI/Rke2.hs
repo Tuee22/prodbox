@@ -3773,11 +3773,11 @@ data DeleteMode
 -- Skip-is-success invariants:
 --
 -- * Per-run destroys (Sprint 4.16): when a stack reports
---   'ResidueAbsent' (today via the file-existence adapter, tomorrow via
---   @pulumi stack ls --json@ against MinIO), its destroy is skipped.
---   When MinIO is unreachable a future swap of the adapter will return
---   'ResidueUnreachable' which 'isResiduePresent' treats as absent —
---   the per-run state died with the cluster.
+--   'ResidueAbsent', its destroy is skipped. 'ResidueUnreachable' is also
+--   outside the destroy-only projection, but it reaches the unobserved set and
+--   makes the reconcile non-zero. Sprint 4.101 puts an existing empty
+--   checkpoint in that arm, and the entry gate refuses before selecting a
+--   substrate or running a destructive phase.
 -- * K8s drain (Sprint 4.15): on the home substrate, when the local
 --   Kubernetes cluster is absent, the drain phase emits 'DrainSkipped'
 --   and the cascade continues — there are no in-cluster controllers

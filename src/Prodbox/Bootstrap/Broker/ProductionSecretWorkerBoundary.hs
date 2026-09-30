@@ -113,6 +113,7 @@ import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
+  , classifyVaultAccessorLookupResponse
   , isBoundedBatchAuditorLogin
   , revokeAndProveVaultAccessorSubjectAbsent
   )
@@ -401,7 +402,7 @@ auditVaultSubjectStableZero settings auditorToken subject maybeKnown = do
               (Vault.vaultListTokenAccessors address auditorToken)
         , auditLookupAccessor = \accessor ->
             fmap
-              (either (Left . Text.pack . show) Right)
+              classifyVaultAccessorLookupResponse
               (Vault.vaultLookupTokenAccessorInfo address auditorToken accessor)
         , auditRevokeAccessor = \accessor ->
             fmap

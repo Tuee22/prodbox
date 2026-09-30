@@ -197,6 +197,7 @@ import Prodbox.ControlPlane.TlsTargetAgentProduction
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
+  , classifyVaultAccessorLookupResponse
   , isBoundedBatchAuditorLogin
   , revokeAndProveVaultAccessorSubjectAbsent
   )
@@ -1372,7 +1373,7 @@ workerAccessorAuditOps auditor =
           (first (const "accessor inventory unavailable") . fmap tokenAccessorKeys)
           (vaultListTokenAccessors workerVaultAddress auditorToken)
     , auditLookupAccessor = \accessor ->
-        first (const "accessor classification unavailable")
+        classifyVaultAccessorLookupResponse
           <$> vaultLookupTokenAccessorInfo workerVaultAddress auditorToken accessor
     , auditRevokeAccessor = \accessor ->
         first (const "accessor revocation unavailable")

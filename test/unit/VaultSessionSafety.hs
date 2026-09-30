@@ -31,6 +31,7 @@ import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditDetailedError (..)
   , VaultAccessorAuditDetailedOps (..)
   , VaultAccessorAuditOps (..)
+  , VaultAccessorLookupError (..)
   , VaultAccessorSubject (..)
   , isBoundedBatchAuditorLogin
   , isExactBoundedBatchAuditorLogin
@@ -545,7 +546,11 @@ inventoryAuditOps inventory events =
     { auditListAccessors = Right . Map.keys <$> readIORef inventory
     , auditLookupAccessor = \accessor -> do
         observed <- readIORef inventory
-        pure $ maybe (Left "fixture accessor missing") Right (Map.lookup accessor observed)
+        pure $
+          maybe
+            (Left VaultAccessorLookupAbsent)
+            Right
+            (Map.lookup accessor observed)
     , auditRevokeAccessor = \accessor -> do
         modifyIORef' events (++ ["audit-revoke:" <> accessor])
         modifyIORef' inventory (Map.delete accessor)

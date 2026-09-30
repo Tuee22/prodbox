@@ -71,12 +71,18 @@ import Prodbox.ControlPlane.TlsRetentionEndpoint
 import Prodbox.Lifecycle.Authority.TlsRetention
   ( RetainedTlsRef (..)
   , RetentionVersion
+  , TlsTerminalReplacementEvidence
   )
 import Prodbox.Runtime.Role (RuntimeRole (TlsRetentionRuntime))
 
 data TlsRetentionClient m = TlsRetentionClient
   { storeTlsRetention
       :: RetainedTlsRef
+      -> TlsSealedEnvelope
+      -> m (Either TlsRetentionClientError TlsRetentionReceipt)
+  , replaceTlsRetentionTerminal
+      :: TlsTerminalReplacementEvidence
+      -> RetainedTlsRef
       -> TlsSealedEnvelope
       -> m (Either TlsRetentionClientError TlsRetentionReceipt)
   , restoreTlsRetention
@@ -176,13 +182,17 @@ clientFromCall
 clientFromCall call =
   TlsRetentionClient
     { storeTlsRetention = store
+    , replaceTlsRetentionTerminal = replace
     , restoreTlsRetention = restore
     , observeTlsRetentionVersion = observeVersion TlsObserveVersionPayload
     , observeTlsRetentionAuthorityVersion =
         observeVersion tlsObserveAuthorityVersionPayload
     }
  where
-  store reference envelope = case validateTlsSealedEnvelope envelope of
+  store = storeWith Nothing
+  replace evidence = storeWith (Just evidence)
+
+  storeWith replacement reference envelope = case validateTlsSealedEnvelope envelope of
     Left detail -> pure (Left (TlsRetentionClientEnvelopeInvalid detail))
     Right ()
       | retainedCiphertextDigest reference /= tlsSealedEnvelopeDigest envelope ->
@@ -197,7 +207,7 @@ clientFromCall call =
           attempted <-
             call
               TlsRetentionStoreRoute
-              (strictRequest (TlsStorePayload reference envelope))
+              (strictRequest (TlsStorePayload reference envelope replacement))
           pure $ do
             ControlPlaneResponse status body <-
               first TlsRetentionClientTransportFailed attempted

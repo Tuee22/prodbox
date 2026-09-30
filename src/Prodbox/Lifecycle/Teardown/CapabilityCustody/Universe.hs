@@ -220,9 +220,10 @@ holdDispositionCount = 1
 -- The residue question is "is there a stack to destroy"; the custody question
 -- is "does this run still hold what makes that stack destroyable". They have
 -- different answers for the same observation, which is why they are different
--- types: an absent or empty checkpoint answers @ResidueAbsent@ to the first —
--- nothing to destroy — and @lost@ to the second, because the resources the
--- checkpoint reached may exist and nothing now names them.
+-- types. Sprint 4.101 corrected the residue answer for an empty object to
+-- @ResidueUnreachable@: its existence does not prove the provider is empty.
+-- Custody still answers both absent and empty as @lost@, because the resources
+-- the checkpoint reached may exist and nothing now names them.
 --
 -- Deliberately declared here rather than imported: the encrypted-backend
 -- observability type lives beside a subprocess and a Vault session, and this

@@ -233,9 +233,9 @@ data AuthorityLoadedCheckpoint = AuthorityLoadedCheckpoint
 -- checkpoint, applying the
 -- @documents\/engineering\/lifecycle_reconciliation_doctrine.md § 3.1@
 -- soundness invariant to the encrypted-checkpoint backend. A destructive
--- teardown must distinguish "nothing to destroy" (absent\/empty) from
--- "cannot observe" (corrupt) so it never silently skips a possibly-live
--- stack, and never hard-fails on a genuinely-absent one.
+-- teardown must distinguish a missing object from an object whose bytes cannot
+-- establish stack state, so it never silently skips a possibly-live stack and
+-- never hard-fails on a genuinely-absent one.
 --
 --   * 'CheckpointAbsent' — the encrypted checkpoint object is missing
 --     (@NoSuchKey@\/@Nothing@ loaded): the stack was never created or was
@@ -244,7 +244,8 @@ data AuthorityLoadedCheckpoint = AuthorityLoadedCheckpoint
 --     are never provisioned on home).
 --   * 'CheckpointEmpty' — the object exists but is zero-length\/all
 --     whitespace (the @"unexpected end of JSON input"@ failure mode when
---     Pulumi loads it). No stack state — also nothing to destroy.
+--     Pulumi loads it). It carries no stack state and cannot prove provider
+--     absence, so the residue boundary refuses it.
 --   * 'CheckpointCorrupt' — the object is non-empty but does not parse as
 --     JSON. The carried 'String' is the parser detail. This is the
 --     "cannot observe" class: a corrupt checkpoint may hide live
@@ -266,9 +267,10 @@ data CheckpointObservability
 -- a live MinIO\/Vault round-trip; the IO wrapper ('observeStackCheckpoint')
 -- only fetches the bytes and hands them here.
 --
--- The empty case is matched precisely on zero-length-or-whitespace bytes,
--- so it is distinguishable from a non-empty-but-unparseable blob: only
--- 'CheckpointAbsent' and 'CheckpointEmpty' are "nothing to destroy".
+-- The empty case is matched precisely on zero-length-or-whitespace bytes, so
+-- it is distinguishable from both a missing object and a non-empty-but-
+-- unparseable blob. Interpretation belongs to the residue and custody
+-- boundaries rather than to this byte classifier.
 classifyCheckpointBytes :: Maybe ByteString -> CheckpointObservability
 classifyCheckpointBytes Nothing = CheckpointAbsent
 classifyCheckpointBytes (Just bytes)
@@ -1182,8 +1184,9 @@ withDecryptedStackWith hooks stackRef action = do
 -- | Sprint 7.21: read-only observability query for a per-run stack's
 -- encrypted checkpoint. Production entry point used by the residue path
 -- ('Prodbox.Infra.StackOutputs.observeEncryptedStackCheckpoint') so the
--- per-run destroy can fail-close on a corrupt checkpoint and skip cleanly
--- on an absent\/empty one — *without* hydrating scratch, running Pulumi,
+-- per-run destroy can fail-close on a corrupt or empty checkpoint and skip
+-- cleanly on a genuinely absent one — *without* hydrating scratch, running
+-- Pulumi,
 -- or re-storing the object (it must not mutate teardown state just to
 -- observe it). Resolves the same Vault-backed material as
 -- 'withDecryptedStack', then classifies the loaded bytes purely.

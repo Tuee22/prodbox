@@ -17,18 +17,25 @@ module Prodbox.ControlPlane.TlsRetentionAuthority
   , tlsRetentionAuthorityCoordinate
   , TlsRetentionAuthorityRepository (..)
   , StoredTlsRetentionState (..)
+  , TlsRetentionAuthorityReadFailure (..)
+  , TlsRetentionAuthorityWriteFailure (..)
   , TlsRetentionAuthorityError (..)
+  , diagnoseTlsRetentionAuthorityRepository
   , TlsRetentionStagingResult (..)
+  , TlsPendingCollisionStagingResult (..)
   , TlsLegacyRecoveryStagingResult (..)
   , TlsUnopenableSuccessorStagingResult (..)
+  , TlsTerminalReplacementStagingResult (..)
   , TlsRetentionPromotionResult (..)
   , tlsRetentionStateMaximumBytes
   , tlsRetentionStateCodec
   , modelBTlsRetentionAuthorityRepository
   , observeTlsRetentionAuthority
   , stageTlsRetentionAuthority
+  , stageTlsPendingCollisionAuthority
   , stageTlsLegacyRecoveryAuthority
   , stageTlsUnopenableSuccessorAuthority
+  , stageTlsTerminalReplacementAuthority
   , promoteTlsRetentionAuthority
   )
 where
@@ -53,19 +60,35 @@ import Prodbox.Lifecycle.Authority.TlsRetention
     , TlsLegacyRecoveryCollisionSuccessorStaged
     , TlsLegacyRecoveryStaged
     )
+  , TlsPendingCollisionRecovery
+  , TlsPendingCollisionStagingDecision
+    ( TlsPendingCollisionBoundedSuccessorRebased
+    , TlsPendingCollisionLegacyRecoverySuccessorRebased
+    , TlsPendingCollisionLegacyRecoveryTerminalSuccessorRebased
+    , TlsPendingCollisionLegacyRecoveryTerminalSuccessorStaged
+    , TlsPendingCollisionRebased
+    , TlsPendingCollisionSuccessorStaged
+    , TlsPendingCollisionUnopenableSuccessorRebased
+    )
   , TlsPromotionDecision (TlsPromoted)
   , TlsRetentionState
   , TlsSealedEnvelope
   , TlsStagingDecision (TlsStaged)
+  , TlsTerminalReplacementEvidence
+  , TlsTerminalReplacementStagingDecision (TlsTerminalReplacementStaged)
   , TlsUnopenableSuccessorStagingDecision (TlsUnopenableSuccessorStaged)
   , TlsUnopenableVersionEvidence
   , applyTlsLegacyRecoveryStaging
+  , applyTlsPendingCollisionStaging
   , applyTlsPromotion
   , applyTlsStaging
+  , applyTlsTerminalReplacementStaging
   , applyTlsUnopenableSuccessorStaging
   , decideTlsLegacyRecoveryStaging
+  , decideTlsPendingCollisionStaging
   , decideTlsPromotion
   , decideTlsStaging
+  , decideTlsTerminalReplacementStaging
   , decideTlsUnopenableSuccessorStaging
   , initialTlsRetentionState
   , validateTlsRetentionState
@@ -151,18 +174,74 @@ data StoredTlsRetentionState revision = StoredTlsRetentionState
 
 data TlsRetentionAuthorityRepository m revision = TlsRetentionAuthorityRepository
   { readTlsRetentionState
-      :: m (Either Text (Maybe (StoredTlsRetentionState revision)))
+      :: m
+           ( Either
+               TlsRetentionAuthorityReadFailure
+               (Maybe (StoredTlsRetentionState revision))
+           )
   , compareAndSwapTlsRetentionState
       :: Maybe revision
       -> TlsRetentionState
-      -> m (Either Text Bool)
+      -> m (Either TlsRetentionAuthorityWriteFailure Bool)
   }
 
+data TlsRetentionAuthorityReadFailure
+  = TlsRetentionAuthorityReadCorrupt
+  | TlsRetentionAuthorityReadEndpointUnready
+  | TlsRetentionAuthorityReadUnobservable
+  deriving stock (Bounded, Enum, Eq, Show)
+
+data TlsRetentionAuthorityWriteFailure
+  = TlsRetentionAuthorityWriteRefusedCorrupt
+  | TlsRetentionAuthorityWriteEndpointUnready
+  | TlsRetentionAuthorityWriteUnobservable
+  deriving stock (Bounded, Enum, Eq, Show)
+
 data TlsRetentionAuthorityError
-  = TlsRetentionAuthorityReadFailed !Text
-  | TlsRetentionAuthorityWriteFailed !Text
+  = TlsRetentionAuthorityReadFailed !TlsRetentionAuthorityReadFailure
+  | TlsRetentionAuthorityWriteFailed !TlsRetentionAuthorityWriteFailure
   | TlsRetentionAuthorityConcurrentWrite
   deriving stock (Eq, Show)
+
+-- | Add a protected diagnostic at the exact repository boundary without
+-- changing the read/CAS result. The failure algebras deliberately discard the
+-- provider, codec, object-name, and credential detail before this reporter can
+-- observe it.
+diagnoseTlsRetentionAuthorityRepository
+  :: (Monad m)
+  => (Text -> m ())
+  -> TlsRetentionAuthorityRepository m revision
+  -> TlsRetentionAuthorityRepository m revision
+diagnoseTlsRetentionAuthorityRepository report repository =
+  repository
+    { readTlsRetentionState = do
+        result <- readTlsRetentionState repository
+        reportFailure result
+        pure result
+    , compareAndSwapTlsRetentionState = \expected state -> do
+        result <- compareAndSwapTlsRetentionState repository expected state
+        reportFailure result
+        pure result
+    }
+ where
+  reportFailure result = case result of
+    Left failure -> report (renderTlsRetentionAuthorityFailure failure)
+    Right _ -> pure ()
+
+class TlsRetentionAuthorityFailure failure where
+  renderTlsRetentionAuthorityFailure :: failure -> Text
+
+instance TlsRetentionAuthorityFailure TlsRetentionAuthorityReadFailure where
+  renderTlsRetentionAuthorityFailure failure = case failure of
+    TlsRetentionAuthorityReadCorrupt -> "read/corrupt"
+    TlsRetentionAuthorityReadEndpointUnready -> "read/endpoint-unready"
+    TlsRetentionAuthorityReadUnobservable -> "read/unobservable"
+
+instance TlsRetentionAuthorityFailure TlsRetentionAuthorityWriteFailure where
+  renderTlsRetentionAuthorityFailure failure = case failure of
+    TlsRetentionAuthorityWriteRefusedCorrupt -> "write/refused-corrupt"
+    TlsRetentionAuthorityWriteEndpointUnready -> "write/endpoint-unready"
+    TlsRetentionAuthorityWriteUnobservable -> "write/unobservable"
 
 data TlsRetentionPromotionResult = TlsRetentionPromotionResult
   { tlsRetentionPromotionState :: !TlsRetentionState
@@ -176,6 +255,12 @@ data TlsRetentionStagingResult = TlsRetentionStagingResult
   }
   deriving stock (Eq, Show)
 
+data TlsPendingCollisionStagingResult = TlsPendingCollisionStagingResult
+  { tlsPendingCollisionStagingState :: !TlsRetentionState
+  , tlsPendingCollisionStagingDecision :: !TlsPendingCollisionStagingDecision
+  }
+  deriving stock (Eq, Show)
+
 data TlsLegacyRecoveryStagingResult = TlsLegacyRecoveryStagingResult
   { tlsLegacyRecoveryStagingState :: !TlsRetentionState
   , tlsLegacyRecoveryStagingDecision :: !TlsLegacyRecoveryStagingDecision
@@ -185,6 +270,12 @@ data TlsLegacyRecoveryStagingResult = TlsLegacyRecoveryStagingResult
 data TlsUnopenableSuccessorStagingResult = TlsUnopenableSuccessorStagingResult
   { tlsUnopenableSuccessorStagingState :: !TlsRetentionState
   , tlsUnopenableSuccessorStagingDecision :: !TlsUnopenableSuccessorStagingDecision
+  }
+  deriving stock (Eq, Show)
+
+data TlsTerminalReplacementStagingResult = TlsTerminalReplacementStagingResult
+  { tlsTerminalReplacementStagingState :: !TlsRetentionState
+  , tlsTerminalReplacementStagingDecision :: !TlsTerminalReplacementStagingDecision
   }
   deriving stock (Eq, Show)
 
@@ -226,9 +317,9 @@ modelBTlsRetentionAuthorityRepository adapter coordinate =
           ModelBMissing -> Right Nothing
           ModelBObserved revision state ->
             Right (Just (StoredTlsRetentionState revision state))
-          ModelBCorrupt detail -> Left ("TLS retention state is corrupt: " <> detail)
-          ModelBEndpointUnready detail -> Left ("TLS retention state is unavailable: " <> detail)
-          ModelBUnobservable detail -> Left ("TLS retention state is unobservable: " <> detail)
+          ModelBCorrupt _ -> Left TlsRetentionAuthorityReadCorrupt
+          ModelBEndpointUnready _ -> Left TlsRetentionAuthorityReadEndpointUnready
+          ModelBUnobservable _ -> Left TlsRetentionAuthorityReadUnobservable
     , compareAndSwapTlsRetentionState = \expected state -> do
         result <-
           modelBCompareAndSwap adapter $ case expected of
@@ -237,9 +328,9 @@ modelBTlsRetentionAuthorityRepository adapter coordinate =
         pure $ case result of
           ModelBCasApplied _ _ -> Right True
           ModelBCasConflict _ -> Right False
-          ModelBCasRefusedCorrupt detail -> Left ("TLS retention CAS refused corrupt state: " <> detail)
-          ModelBCasEndpointUnready detail -> Left ("TLS retention CAS endpoint is unavailable: " <> detail)
-          ModelBCasUnobservable detail -> Left ("TLS retention CAS is unobservable: " <> detail)
+          ModelBCasRefusedCorrupt _ -> Left TlsRetentionAuthorityWriteRefusedCorrupt
+          ModelBCasEndpointUnready _ -> Left TlsRetentionAuthorityWriteEndpointUnready
+          ModelBCasUnobservable _ -> Left TlsRetentionAuthorityWriteUnobservable
     }
 
 observeTlsRetentionAuthority
@@ -278,6 +369,88 @@ stageTlsRetentionAuthority repository approval candidate envelope = do
             Right False -> Left TlsRetentionAuthorityConcurrentWrite
             Right True -> Right result
         _ -> pure (Right result)
+
+stageTlsPendingCollisionAuthority
+  :: (Monad m)
+  => TlsRetentionAuthorityRepository m revision
+  -> KeyRotationApproval
+  -> TlsPendingCollisionRecovery
+  -> RetainedTlsRef
+  -> TlsSealedEnvelope
+  -> m (Either TlsRetentionAuthorityError TlsPendingCollisionStagingResult)
+stageTlsPendingCollisionAuthority repository approval recovery candidate envelope = do
+  observed <- readTlsRetentionState repository
+  case observed of
+    Left detail -> pure (Left (TlsRetentionAuthorityReadFailed detail))
+    Right maybeStored -> do
+      let current = maybe initialTlsRetentionState storedTlsRetentionState maybeStored
+          expected = storedTlsRetentionRevision <$> maybeStored
+          decision =
+            decideTlsPendingCollisionStaging
+              approval
+              current
+              recovery
+              candidate
+              envelope
+          next = applyTlsPendingCollisionStaging decision current
+          result = TlsPendingCollisionStagingResult next decision
+      case decision of
+        TlsPendingCollisionRebased {} -> commit expected next result
+        TlsPendingCollisionSuccessorStaged {} -> commit expected next result
+        TlsPendingCollisionUnopenableSuccessorRebased {} -> commit expected next result
+        TlsPendingCollisionLegacyRecoverySuccessorRebased {} -> commit expected next result
+        TlsPendingCollisionBoundedSuccessorRebased {} -> commit expected next result
+        TlsPendingCollisionLegacyRecoveryTerminalSuccessorStaged {} -> commit expected next result
+        TlsPendingCollisionLegacyRecoveryTerminalSuccessorRebased {} -> commit expected next result
+        _ -> pure (Right result)
+ where
+  commit expected next result = do
+    written <- compareAndSwapTlsRetentionState repository expected next
+    pure $ case written of
+      Left detail -> Left (TlsRetentionAuthorityWriteFailed detail)
+      Right False -> Left TlsRetentionAuthorityConcurrentWrite
+      Right True -> Right result
+
+stageTlsTerminalReplacementAuthority
+  :: (Monad m)
+  => TlsRetentionAuthorityRepository m revision
+  -> KeyRotationApproval
+  -> TlsPendingCollisionRecovery
+  -> TlsTerminalReplacementEvidence
+  -> RetainedTlsRef
+  -> TlsSealedEnvelope
+  -> m (Either TlsRetentionAuthorityError TlsTerminalReplacementStagingResult)
+stageTlsTerminalReplacementAuthority
+  repository
+  approval
+  recovery
+  terminalEvidence
+  candidate
+  envelope = do
+    observed <- readTlsRetentionState repository
+    case observed of
+      Left detail -> pure (Left (TlsRetentionAuthorityReadFailed detail))
+      Right maybeStored -> do
+        let current = maybe initialTlsRetentionState storedTlsRetentionState maybeStored
+            expected = storedTlsRetentionRevision <$> maybeStored
+            decision =
+              decideTlsTerminalReplacementStaging
+                approval
+                current
+                recovery
+                terminalEvidence
+                candidate
+                envelope
+            next = applyTlsTerminalReplacementStaging decision current
+            result = TlsTerminalReplacementStagingResult next decision
+        case decision of
+          TlsTerminalReplacementStaged {} -> do
+            written <- compareAndSwapTlsRetentionState repository expected next
+            pure $ case written of
+              Left detail -> Left (TlsRetentionAuthorityWriteFailed detail)
+              Right False -> Left TlsRetentionAuthorityConcurrentWrite
+              Right True -> Right result
+          _ -> pure (Right result)
 
 stageTlsLegacyRecoveryAuthority
   :: (Monad m)

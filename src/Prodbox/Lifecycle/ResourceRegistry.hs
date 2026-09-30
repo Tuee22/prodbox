@@ -495,6 +495,9 @@ pairAwsSesResidue sesStatus = [(awsSesPulumiResource, sesStatus)]
 -- 'absentReconcileExitCode' keeps it out of a success. Refuse-on-
 -- unreachable at the *gates* remains the separate concern of
 -- 'Prodbox.Lifecycle.ResidueStatus.residueBlocksTeardownGate'.
+-- Sprint 4.101 relies on that split: an existing empty checkpoint maps to
+-- 'ResidueUnreachable', reaches 'resourcesUnobserved', and makes the aggregate
+-- exit non-zero even though this destroy-only projection remains empty.
 resourcesToDestroy :: [(ManagedResource, ResidueStatus)] -> [ManagedResource]
 resourcesToDestroy pairs =
   [resource | (resource, status) <- pairs, isResiduePresent status]

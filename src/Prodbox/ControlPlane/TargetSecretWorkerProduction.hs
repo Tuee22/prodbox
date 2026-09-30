@@ -14,6 +14,7 @@ module Prodbox.ControlPlane.TargetSecretWorkerProduction
   , targetWorkerObserveSubprocess
   , targetWorkerAttachSubprocess
   , targetWorkerAttachTransportFailureDetail
+  , targetWorkerAttachProvisionalFailureDetail
   , targetWorkerKubernetesBoundary
   , recoverTargetWorkerCreateWith
   , terminalTargetWorkerObservation
@@ -127,6 +128,7 @@ import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditError (..)
   , VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
+  , classifyVaultAccessorLookupResponse
   )
 import Prodbox.ControlPlane.VaultServiceSessionJournal
   ( vaultServiceSessionJournalRepository
@@ -215,8 +217,25 @@ targetWorkerAttachTransportFailureDetail stage = case stage of
   FramedExchangeProvisionalRead -> "Target worker attach provisional read failed"
   FramedExchangeDecisionContinuationWrite ->
     "Target worker attach decision continuation write failed"
-  FramedExchangeCompletionCollect -> "Target worker attach completion collection failed"
+  FramedExchangeCompletionFrameRead -> "Target worker attach completion frame read failed"
+  FramedExchangeCompletionStderrRead -> "Target worker attach completion stderr read failed"
+  FramedExchangeCompletionTrailingStdoutRead ->
+    "Target worker attach completion trailing stdout read failed"
+  FramedExchangeCompletionProcessWait -> "Target worker attach completion process wait failed"
   FramedExchangeWallClockTimeout -> "Target worker attach wall-clock timeout"
+
+-- | Recover one exact runtime-owned refusal from a bounded child that exits
+-- before its provisional frame. Arbitrary stderr, mixed output, and every
+-- other exit status collapse to the existing transport-stage detail.
+targetWorkerAttachProvisionalFailureDetail :: ProcessOutput -> Text
+targetWorkerAttachProvisionalFailureDetail output
+  | processExitCode output == ExitFailure 1
+      && Text.strip (Text.pack (processStderr output)) == exactCleanupRefusal =
+      "Target worker attach provisional read failed after worker Vault session cleanup refusal"
+  | otherwise = targetWorkerAttachTransportFailureDetail FramedExchangeProvisionalRead
+ where
+  exactCleanupRefusal =
+    "target-secret worker refused: TargetSecretWorkerVaultSessionCleanupUnavailable"
 
 targetWorkerKubernetesBoundary
   :: TargetWorkerJobConnection -> TargetWorkerKubernetesBoundary IO
@@ -348,6 +367,11 @@ targetWorkerKubernetesBoundary connection =
         Left
           ( TargetWorkerCoordinatorAttachFailed
               (targetWorkerAttachTransportFailureDetail stage)
+          )
+      Left (FramedSubprocessExchangeProvisionalReadError _ output) ->
+        Left
+          ( TargetWorkerCoordinatorAttachFailed
+              (targetWorkerAttachProvisionalFailureDetail output)
           )
       Left (FramedSubprocessExchangeDecisionError err output)
         | cleanupCompletionObserved output
@@ -864,6 +888,10 @@ classifyTargetWorkerSessionPrepareError err = case err of
         TargetWorkerSessionPreparePrecleanAuditorEvidenceInvalid
       VaultAccessorObservationFailed ->
         TargetWorkerSessionPreparePrecleanObservationFailed
+      VaultAccessorClassificationAbsent ->
+        TargetWorkerSessionPreparePrecleanClassificationAbsent
+      VaultAccessorClassificationUnavailable ->
+        TargetWorkerSessionPreparePrecleanClassificationUnavailable
       VaultAccessorClassificationFailed ->
         TargetWorkerSessionPreparePrecleanClassificationFailed
       VaultAccessorKnownIdentityMismatch ->
@@ -923,7 +951,7 @@ targetWorkerControllerAuditOps address token =
         first (const "accessor inventory unavailable") . fmap tokenAccessorKeys
           <$> vaultListTokenAccessors address token
     , auditLookupAccessor = \accessor ->
-        first (const "accessor classification unavailable")
+        classifyVaultAccessorLookupResponse
           <$> vaultLookupTokenAccessorInfo address token accessor
     , auditRevokeAccessor = \accessor ->
         first (const "accessor revocation unavailable")

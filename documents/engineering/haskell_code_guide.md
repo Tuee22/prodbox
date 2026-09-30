@@ -259,7 +259,8 @@ strand its caller. Captured and bounded paths, which do not delegate Ctrl-C, ret
 A bounded framed exchange that has more than one transport step reports transport failure through
 an exhaustive stage ADT, not one undifferentiated error string. The stage may distinguish only
 value-free interpreter boundaries such as limits validation, input admission, process start,
-framed writes/reads, completion collection, and wall-clock timeout. Domain projection may map those
+framed writes/reads, final-frame read, stderr drain, trailing-stdout validation, process-exit wait,
+and wall-clock timeout. Domain projection may map those
 constructors to fixed public tokens, but it must not expose the underlying exception, child output,
 payload, or frame bytes. Adding stage evidence is diagnostic only: it does not authorize retrying
 an ambiguous exchange or changing its deadline, cleanup, or protocol semantics.

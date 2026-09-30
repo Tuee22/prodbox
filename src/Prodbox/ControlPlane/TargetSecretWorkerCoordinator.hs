@@ -118,6 +118,8 @@ data TargetWorkerSessionPrepareCause
   | TargetWorkerSessionPreparePrecleanAuditorLoginFailed
   | TargetWorkerSessionPreparePrecleanAuditorEvidenceInvalid
   | TargetWorkerSessionPreparePrecleanObservationFailed
+  | TargetWorkerSessionPreparePrecleanClassificationAbsent
+  | TargetWorkerSessionPreparePrecleanClassificationUnavailable
   | TargetWorkerSessionPreparePrecleanClassificationFailed
   | TargetWorkerSessionPreparePrecleanKnownIdentityMismatch
   | TargetWorkerSessionPreparePrecleanRevocationFailed

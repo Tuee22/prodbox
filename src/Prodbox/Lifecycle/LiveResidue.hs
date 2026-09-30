@@ -766,9 +766,10 @@ residueStatusFromMinioListingWithVaultGate gate stackName result
 --   * 'CheckpointAbsent' — the object was never created or is already
 --     destroyed: 'ResidueAbsent' (nothing to destroy → SKIP). This is the
 --     home-substrate case.
---   * 'CheckpointEmpty' — a zero-length object yields no stack state:
---     'ResidueAbsent' (nothing to destroy → SKIP). Precisely the empty
---     case, distinct from a non-empty-unparseable blob.
+--   * 'CheckpointEmpty' — the object exists but yields no stack state:
+--     'ResidueUnreachable' (REFUSE). The object is evidence that the create
+--     lane reached checkpoint storage, but its empty contents cannot prove
+--     provider absence.
 --   * 'CheckpointCorrupt' — present-but-unparseable: "cannot observe" the
 --     stack state, so 'ResidueUnreachable' (REFUSE; a corrupt checkpoint
 --     may hide live resources, so it must never silently skip). The
@@ -778,13 +779,11 @@ residueStatusFromMinioListingWithVaultGate gate stackName result
 -- | Sprint 4.89 (pure): the same four arms, answered as a __custody__ question
 -- rather than a residue question.
 --
--- The residue question is "is there a stack to destroy", and an absent or empty
--- checkpoint correctly answers @ResidueAbsent@ to it. The custody question is
--- "does this run still hold what makes that stack's resources destroyable", and
--- the same observation answers it @lost@: the resources may exist and nothing
--- now names them. Reading the first answer as the second is what stranded two
--- AWS resources, so the two answers are two functions over one observation
--- rather than one function consumed twice.
+-- Sprint 4.101 corrects the residue half of Sprint 4.89's distinction. An
+-- absent checkpoint with no admitted create still answers @ResidueAbsent@, but
+-- an empty object answers @ResidueUnreachable@: the object exists, while its
+-- contents cannot name either resources or a provider absence. The custody
+-- question remains distinct and answers both absent and empty as @lost@.
 --
 -- Total with no fall-through arm, and it lives here because this module already
 -- holds both vocabularies.
@@ -861,7 +860,14 @@ fixedCheckpointAbsenceDischargeRegression =
 residueStatusFromCheckpointObservability :: String -> CheckpointObservability -> ResidueStatus
 residueStatusFromCheckpointObservability stackName observability = case observability of
   CheckpointAbsent -> ResidueAbsent
-  CheckpointEmpty -> ResidueAbsent
+  CheckpointEmpty ->
+    ResidueUnreachable
+      ( ResidueQueryFailed
+          ( "empty (zero-length or whitespace-only) encrypted Pulumi checkpoint for stack "
+              ++ stackName
+              ++ ": the checkpoint object exists but contains no stack state"
+          )
+      )
   CheckpointCorrupt detail ->
     ResidueUnreachable
       ( ResidueQueryFailed

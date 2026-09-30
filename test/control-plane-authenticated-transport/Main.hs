@@ -116,6 +116,9 @@ import Prodbox.ControlPlane.Runtime
   , targetSecretAgentReconcileAttemptRequestMaximum
   , targetSecretAgentReplayCapacity
   , targetSecretAgentReplayMaximumEncodedBytes
+  , tlsRetentionAdapterAttemptRequestMaximum
+  , tlsRetentionAdapterReplayCapacity
+  , tlsRetentionAdapterReplayMaximumEncodedBytes
   )
 import Prodbox.ControlPlane.Server
   ( RoleInterpreter (..)
@@ -561,14 +564,14 @@ replayPureTests =
                 reserveRequestSequence priorLimits requests
               (currentDecisions, currentProjection) =
                 reserveRequestSequence currentLimits requests
-          targetSecretAgentReconcileAttemptRequestMaximum @?= 38
-          targetSecretAgentReplayCapacity @?= 76
+          targetSecretAgentReconcileAttemptRequestMaximum @?= 49
+          targetSecretAgentReplayCapacity @?= 98
           priorDecisions
             @?= replicate 10 ReplayReservationFresh
-              <> replicate 66 ReplayReservationCapacityExhausted
+              <> replicate 88 ReplayReservationCapacityExhausted
           requestReplayEntryCount priorProjection @?= 10
-          currentDecisions @?= replicate 76 ReplayReservationFresh
-          requestReplayEntryCount currentProjection @?= 76
+          currentDecisions @?= replicate 98 ReplayReservationFresh
+          requestReplayEntryCount currentProjection @?= 98
     ]
 
 replayCodecTests :: TestTree
@@ -592,7 +595,7 @@ replayCodecTests =
         decodeRequestReplayProjection 65536 otherLimits encoded
           @?= Left RequestReplayLimitsMismatch
     , testCase
-        "widens canonical v2 through v12 limits into v13 without dropping retained entries"
+        "widens canonical v2 through v14 limits into v15 without dropping retained entries"
         $ do
           let targetLimits = mustRight (mkRequestReplayLimits 120 64 skew)
               tooSmallLimits = mustRight (mkRequestReplayLimits 3 64 skew)
@@ -646,6 +649,26 @@ replayCodecTests =
                           (ByteString.replicate (64 * 1024 + 1) 97)
                       )
                   )
+              tlsAdapterV13Bytes =
+                LazyByteString.toStrict
+                  ( serialise
+                      ( previousReplayEnvelopeWithResponse
+                          13
+                          4
+                          (2 * 1024 * 1024)
+                          "response"
+                      )
+                  )
+              tlsAdapterV14Bytes =
+                LazyByteString.toStrict
+                  ( serialise
+                      ( previousReplayEnvelopeWithResponse
+                          14
+                          20
+                          (2 * 1024 * 1024)
+                          "response"
+                      )
+                  )
               widenedV2 =
                 mustRight
                   (decodeRequestReplayProjection 65536 targetLimits legacyV2Bytes)
@@ -684,6 +707,27 @@ replayCodecTests =
                       providerLimits
                       providerV12Bytes
                   )
+              tlsAdapterLimits =
+                mustRight
+                  ( mkRequestReplayLimits
+                      tlsRetentionAdapterReplayCapacity
+                      (2 * 1024 * 1024)
+                      skew
+                  )
+              widenedTlsAdapterV13 =
+                mustRight
+                  ( decodeRequestReplayProjection
+                      tlsRetentionAdapterReplayMaximumEncodedBytes
+                      tlsAdapterLimits
+                      tlsAdapterV13Bytes
+                  )
+              widenedTlsAdapterV14 =
+                mustRight
+                  ( decodeRequestReplayProjection
+                      tlsRetentionAdapterReplayMaximumEncodedBytes
+                      tlsAdapterLimits
+                      tlsAdapterV14Bytes
+                  )
               targetAgentLimits =
                 mustRight (mkRequestReplayLimits targetSecretAgentReplayCapacity 64 skew)
               widenedTargetAgentV6 =
@@ -716,6 +760,9 @@ replayCodecTests =
           requestReplayProjectionLimits widenedAdapterV5 @?= adapterLimits
           requestReplayProjectionLimits widenedAuthorityBackupV11 @?= adapterLimits
           requestReplayProjectionLimits widenedProviderV12 @?= providerLimits
+          requestReplayProjectionLimits widenedTlsAdapterV13 @?= tlsAdapterLimits
+          requestReplayProjectionLimits widenedTlsAdapterV14 @?= tlsAdapterLimits
+          tlsRetentionAdapterAttemptRequestMaximum @?= 19
           requestReplayProjectionLimits widenedTargetAgentV6 @?= targetAgentLimits
           requestReplayProjectionLimits widenedTargetAgentV7 @?= targetAgentLimits
           requestReplayProjectionLimits widenedTargetAgentV8 @?= targetAgentLimits
@@ -728,12 +775,14 @@ replayCodecTests =
           requestReplayEntryCount widenedAdapterV5 @?= 1
           requestReplayEntryCount widenedAuthorityBackupV11 @?= 1
           requestReplayEntryCount widenedProviderV12 @?= 1
+          requestReplayEntryCount widenedTlsAdapterV13 @?= 1
+          requestReplayEntryCount widenedTlsAdapterV14 @?= 1
           requestReplayEntryCount widenedTargetAgentV6 @?= 1
           requestReplayEntryCount widenedTargetAgentV7 @?= 1
           requestReplayEntryCount widenedTargetAgentV8 @?= 1
           requestReplayEntryCount widenedTargetAgentV9 @?= 1
           requestReplayEntryCount widenedTargetAgentV10 @?= 1
-          previousReplayEnvelopeVersion currentEnvelope @?= 13
+          previousReplayEnvelopeVersion currentEnvelope @?= 15
           previousReplayEnvelopeCapacity currentEnvelope @?= 120
           decodeRequestReplayProjection 65536 targetLimits currentBytes
             @?= Right widenedV5
@@ -759,6 +808,10 @@ replayCodecTests =
             @?= Left RequestReplayLimitsMismatch
           decodeRequestReplayProjection 65536 tooSmallLimits providerV12Bytes
             @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 tooSmallLimits tlsAdapterV13Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 tooSmallLimits tlsAdapterV14Bytes
+            @?= Left RequestReplayLimitsMismatch
           decodeRequestReplayProjection 65536 responseDrift legacyV4Bytes
             @?= Left RequestReplayLimitsMismatch
           decodeRequestReplayProjection 65536 skewDrift legacyV4Bytes
@@ -776,6 +829,45 @@ replayCodecTests =
             targetLimits
             (LazyByteString.toStrict (serialise (previousReplayEnvelope 99 4)))
             @?= Left (RequestReplayEnvelopeUnsupportedVersion 99)
+    , testCase "bounds the complete TLS Retention Adapter envelope at maximum response size" $ do
+        let responseMaximum = 2 * 1024 * 1024
+            priorMaximumEncodedBytes = 42 * 1024 * 1024
+            limits =
+              mustRight
+                (mkRequestReplayLimits tlsRetentionAdapterReplayCapacity responseMaximum skew)
+            maximumResponse =
+              mustRight
+                (mkReplayResponse limits ReplyOk (ByteString.replicate responseMaximum 97))
+            requests =
+              [ verifiedFor (nonceForIndex index) body
+              | index <- [1 .. tlsRetentionAdapterReplayCapacity]
+              ]
+            completed =
+              foldl'
+                (completeReplayRequest limits maximumResponse)
+                (initialRequestReplayProjection limits)
+                requests
+            encoded =
+              mustRight
+                ( encodeRequestReplayProjection
+                    tlsRetentionAdapterReplayMaximumEncodedBytes
+                    limits
+                    completed
+                )
+        tlsRetentionAdapterAttemptRequestMaximum @?= 19
+        tlsRetentionAdapterReplayCapacity @?= 38
+        tlsRetentionAdapterReplayMaximumEncodedBytes @?= 78 * 1024 * 1024
+        requestReplayEntryCount completed @?= tlsRetentionAdapterReplayCapacity
+        ByteString.length encoded > priorMaximumEncodedBytes @?= True
+        ByteString.length encoded <= tlsRetentionAdapterReplayMaximumEncodedBytes @?= True
+        decodeRequestReplayProjection tlsRetentionAdapterReplayMaximumEncodedBytes limits encoded
+          @?= Right completed
+        encodeRequestReplayProjection priorMaximumEncodedBytes limits completed
+          @?= Left
+            ( RequestReplayEnvelopeTooLarge
+                (ByteString.length encoded)
+                priorMaximumEncodedBytes
+            )
     , testCase "bounds the complete Provider Worker envelope at maximum response size" $ do
         let priorMaximumEncodedBytes = 5 * 1024 * 1024
             limits =
@@ -1875,12 +1967,12 @@ decodeTestMetadata bytes =
 
 makeReplayVersionNonCanonical :: ByteString -> ByteString
 makeReplayVersionNonCanonical bytes =
-  case replaceFirst "\x19\x00\x0d" "\x18\x0d" bytes of
+  case replaceFirst "\x19\x00\x0f" "\x18\x0f" bytes of
     Just replaced -> replaced
     Nothing -> replaceShortReplayVersion bytes
 
 replaceShortReplayVersion :: ByteString -> ByteString
-replaceShortReplayVersion bytes = case replaceFirst "\x0d" "\x18\x0d" bytes of
+replaceShortReplayVersion bytes = case replaceFirst "\x0f" "\x18\x0f" bytes of
   Just replaced -> replaced
   Nothing -> error "unexpected replay envelope encoding"
 

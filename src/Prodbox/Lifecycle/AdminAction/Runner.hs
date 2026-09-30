@@ -74,6 +74,7 @@ import Prodbox.ControlPlane.TransitRequestAuthentication
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
+  , classifyVaultAccessorLookupResponse
   , isBoundedBatchAuditorLogin
   , revokeAndProveVaultAccessorSubjectAbsent
   )
@@ -636,7 +637,7 @@ runnerAccessorAuditOps auditor =
           . fmap tokenAccessorKeys
           <$> vaultListTokenAccessors runnerVaultAddress token
     , auditLookupAccessor = \accessor ->
-        first (const "accessor classification unavailable")
+        classifyVaultAccessorLookupResponse
           <$> vaultLookupTokenAccessorInfo runnerVaultAddress token accessor
     , auditRevokeAccessor = \accessor ->
         first (const "accessor revocation unavailable")

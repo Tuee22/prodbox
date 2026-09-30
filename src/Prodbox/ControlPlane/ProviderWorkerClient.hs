@@ -25,6 +25,7 @@ import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Text (Text)
 import Data.Text qualified as Text
 import GHC.Generics (Generic)
+import Prodbox.Capacity.ProviderWorkerBudget qualified as ProviderWorkerBudget
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler (..)
   , AuthenticatedRolePlainResponseObservation (..)
@@ -58,7 +59,7 @@ import Prodbox.ControlPlane.ProviderWorkerDiagnostic
   )
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ExecutedProviderIntent
-  , ProviderIntentExecutionError
+  , ProviderIntentExecutionError (..)
   , ProviderIntentExecutionResult
   , ProviderWorkerExecutionBoundary
   , VerifiedProviderCommittedIntent
@@ -76,6 +77,7 @@ import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Runtime.Role
   ( RuntimeRole (LifecycleAuthorityRuntime, ProviderWorkerRuntime)
   )
+import System.Timeout (timeout)
 
 data ProviderWorkerResponse
   = ProviderWorkerExecuted !ProviderIntentExecutionResult
@@ -119,9 +121,18 @@ providerWorkerExecutionAuthenticatedHandlerObserved maximumBytes observer bounda
   providerWorkerExecutionAuthenticatedHandlerWith
     (observeProviderWorkerRequest observer)
     boundary
-    (executeVerifiedProviderIntentBoundObserved observer boundary)
+    executeWithinWallClockBound
     maximumBytes
     fallback
+ where
+  executeWithinWallClockBound verified = do
+    completed <-
+      timeout
+        (fromIntegral ProviderWorkerBudget.providerWorkerIntentLifetimeMicros)
+        (executeVerifiedProviderIntentBoundObserved observer boundary verified)
+    pure $ case completed of
+      Nothing -> Left ProviderIntentExecutionWallClockTimeout
+      Just result -> result
 
 providerWorkerExecutionAuthenticatedHandlerWith
   :: (Monad m)

@@ -341,6 +341,7 @@ import Prodbox.ControlPlane.VaultAccessorAudit
   , VaultAccessorAuditDetailedOps (..)
   , VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
+  , classifyVaultAccessorLookupResponse
   , isBoundedBatchAuditorLogin
   , revokeAndProveVaultAccessorSubjectAbsent
   , revokeAndProveVaultAccessorSubjectAbsentDetailed
@@ -2277,7 +2278,7 @@ auditVaultRoleStableZeroWithToken waitForVisibility settings token role knownAcc
       , auditLookupAccessor =
           \accessor ->
             fmap
-              (mapLeft (Text.pack . show))
+              classifyVaultAccessorLookupResponse
               (Vault.vaultLookupTokenAccessorInfo address token accessor)
       , auditRevokeAccessor =
           \accessor ->

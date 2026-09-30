@@ -75,6 +75,9 @@ module Prodbox.ControlPlane.Runtime
   , providerWorkerQualificationAttemptRequestMaximum
   , providerWorkerReplayCapacity
   , providerWorkerReplayMaximumEncodedBytes
+  , tlsRetentionAdapterAttemptRequestMaximum
+  , tlsRetentionAdapterReplayCapacity
+  , tlsRetentionAdapterReplayMaximumEncodedBytes
   , authorityBackupReconcileAttemptRequestMaximum
   , authorityBackupQualificationPreludeRequestMaximum
   , authorityBackupCascadeCandidateRequestMaximum
@@ -675,12 +678,14 @@ import Prodbox.ControlPlane.TlsRetentionAdapter
   ( tlsRetentionRepository
   )
 import Prodbox.ControlPlane.TlsRetentionAuthority
-  ( modelBTlsRetentionAuthorityRepository
+  ( diagnoseTlsRetentionAuthorityRepository
+  , modelBTlsRetentionAuthorityRepository
   , tlsRetentionAuthorityCoordinate
   , tlsRetentionStateCodec
   )
 import Prodbox.ControlPlane.TlsRetentionAuthorityClient
   ( mkTlsRetentionAuthorityClient
+  , renderTlsRetentionAuthorityClientCause
   )
 import Prodbox.ControlPlane.TlsRetentionClient
   ( renderTlsRetentionClientCause
@@ -2149,10 +2154,28 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
             lifecycleAuthorityAuthenticationMetadataMaximumBytes
             lifecycleAuthoritySignedEnvelopeMaximumBytes
         )
-    maximumLifetime <-
+    ordinaryClientLifetime <-
       mapLeft
         (const LifecycleAuthorityInterpreterAuthenticationLifetime)
         (authorityDurationFromMicros lifecycleAuthorityAuthenticationLifetimeMicros)
+    maximumAcceptedLifetime <-
+      mapLeft
+        (const LifecycleAuthorityInterpreterAuthenticationLifetime)
+        ( authorityDurationFromMicros
+            ProviderWorkerBudget.providerWorkerAuthenticatedRequestLifetimeMicros
+        )
+    providerClientLifetime <-
+      mapLeft
+        (const LifecycleAuthorityInterpreterAuthenticationLifetime)
+        ( authorityDurationFromMicros
+            ProviderWorkerBudget.providerWorkerAuthenticatedRequestLifetimeMicros
+        )
+    providerIntentLifetime <-
+      mapLeft
+        (const LifecycleAuthorityInterpreterAuthenticationLifetime)
+        ( authorityDurationFromMicros
+            ProviderWorkerBudget.providerWorkerIntentLifetimeMicros
+        )
     replayClockSkew <-
       mapLeft
         (const LifecycleAuthorityInterpreterReplayClockSkew)
@@ -2242,7 +2265,10 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
       , initialAdmission
       , authorityScope
       , transportBounds
-      , maximumLifetime
+      , ordinaryClientLifetime
+      , maximumAcceptedLifetime
+      , providerClientLifetime
+      , providerIntentLifetime
       , replayLimits
       , casAttempts
       , backupTransport
@@ -2258,7 +2284,10 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
         , initialAdmission
         , authorityScope
         , transportBounds
-        , maximumLifetime
+        , ordinaryClientLifetime
+        , maximumAcceptedLifetime
+        , providerClientLifetime
+        , providerIntentLifetime
         , replayLimits
         , casAttempts
         , backupTransport
@@ -2309,7 +2338,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
               AuthenticatedRuntimeInputs
                 LifecycleAuthorityRuntime
                 transportBounds
-                maximumLifetime
+                maximumAcceptedLifetime
                 AuthenticatedRoleProviders
                   { authenticatedRoleServerProviders =
                       AuthenticatedServerProviders
@@ -2329,7 +2358,13 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                 clientSigner
                 (pure (Right authorityScope))
                 (provideAuthenticationAuthorityEpoch admissionRepository)
-                maximumLifetime
+                ordinaryClientLifetime
+            providerClientProviders =
+              transitAuthenticatedClientProviders
+                clientSigner
+                (pure (Right authorityScope))
+                (provideAuthenticationAuthorityEpoch admissionRepository)
+                providerClientLifetime
             targetTransport =
               mkAuthenticatedClientTransport
                 transportBounds
@@ -2353,7 +2388,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
             providerTransport =
               mkAuthenticatedClientTransport
                 transportBounds
-                checkpointClientProviders
+                providerClientProviders
                 providerClient
             backupClient =
               authorityCheckpointBackupClient
@@ -2733,13 +2768,19 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
             tlsAuthorityRepositoryResolver slot = do
               coordinate <- tlsRetentionAuthorityCoordinate authority slot
               Right
-                ( modelBTlsRetentionAuthorityRepository
-                    ( inClusterAuthorityModelBCasAdapter
-                        store
-                        authority
-                        tlsRetentionStateCodec
+                ( diagnoseTlsRetentionAuthorityRepository
+                    ( writeClosedDiagnostic
+                        . ("tls-retention/authority-repository failure=" <>)
+                        . Text.unpack
                     )
-                    coordinate
+                    ( modelBTlsRetentionAuthorityRepository
+                        ( inClusterAuthorityModelBCasAdapter
+                            store
+                            authority
+                            tlsRetentionStateCodec
+                        )
+                        coordinate
+                    )
                 )
             tlsWorkflowBoundary =
               TlsRetentionWorkflowAuthorityBoundary runAuthorityTlsWorkflowRequest
@@ -2765,6 +2806,9 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                       -- this control plane's own store, not a different
                       -- outcome for the caller.
                       Right outcome@(TlsWorkflowRetainedPastUnopenableVersion _ _) -> do
+                        observeTlsWorkflowRetainNotice outcome
+                        pure TlsRetentionWorkflowAuthorityRetained
+                      Right outcome@(TlsWorkflowRetainedReplacingUnopenableVersion _ _) -> do
                         observeTlsWorkflowRetainNotice outcome
                         pure TlsRetentionWorkflowAuthorityRetained
                 TlsRetentionWorkflowAuthorityRestore substrate scope ->
@@ -3054,7 +3098,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                     { authorityProviderAdmissionRepository = admissionRepository
                     , authorityProviderSigningCapability = clientSigner
                     , authorityProviderNow = currentAuthorityTime
-                    , authorityProviderIntentLifetime = maximumLifetime
+                    , authorityProviderIntentLifetime = providerIntentLifetime
                     , authorityProviderRevision =
                         pure (mkProviderRevision 1)
                     , authorityProviderWorkerDispatch =
@@ -3660,6 +3704,37 @@ providerWorkerReplayCapacity =
 providerWorkerReplayMaximumEncodedBytes :: Int
 providerWorkerReplayMaximumEncodedBytes = standardReplayMaximumEncodedBytes
 
+-- | One complete qualification attempt can take the Adapter's deepest
+-- pre-outbox recovery path through a racing fixed version-4 terminal successor
+-- (ten requests), restore the resulting current reference (one), then take an
+-- ordinary Authority-lane collision through its bounded successor and a
+-- same-version race on retain-on-ready (eight). These shapes can occur
+-- sequentially in one attempt: the first retain changes Empty to Current,
+-- enabling the latter branch.
+tlsRetentionAdapterAttemptRequestMaximum :: Natural
+tlsRetentionAdapterAttemptRequestMaximum =
+  preOutboxRecoveryRequests
+    + restoreRequests
+    + authorityLaneSuccessorRequests
+ where
+  preOutboxRecoveryRequests = 10
+  restoreRequests = 1
+  authorityLaneSuccessorRequests = 8
+
+-- The live 2026-09-23 campaign exhausted the former generic capacity four on
+-- the fifth Adapter request. Preserve one complete attempt plus its immediate
+-- unchanged retry without deleting retained replay evidence.
+tlsRetentionAdapterReplayCapacity :: Natural
+tlsRetentionAdapterReplayCapacity =
+  2 * tlsRetentionAdapterAttemptRequestMaximum
+
+-- Thirty-eight maximum-size responses plus replay metadata fit below thirty-nine
+-- response widths. The existing finite Vault listener ceiling already covers
+-- this encoded projection after Base64/JSON expansion.
+tlsRetentionAdapterReplayMaximumEncodedBytes :: Int
+tlsRetentionAdapterReplayMaximumEncodedBytes =
+  39 * standardAuthenticatedResponseMaximumBytes
+
 -- | The Authority Backup Adapter sees a different request envelope from the
 -- Lifecycle Authority that calls it. A complete ordinary reconcile can repair
 -- the retained aggregate (observe, copy, and final health observation), then
@@ -3752,6 +3827,11 @@ authorityBackupReplayMaximumEncodedBytes = 32 * 1024 * 1024
 -- adopted through the same prepare\/rewrap\/restore substitution, adding two;
 -- a version proven unopenable stops before selected restore and then performs
 -- fresh home prepare, selected retain, and home wrap, adding four in total.
+-- The terminal legacy chain can then fail the version-3 rewrap, create fixed
+-- version 4, and adopt a version-4 race, adding eight requests. A bounded
+-- Authority-lane successor can likewise race and be adopted at its same
+-- version, adding three. Both proof chains terminate there; neither term is an
+-- allowance for recursive search.
 targetSecretAgentReconcileAttemptRequestMaximum :: Natural
 targetSecretAgentReconcileAttemptRequestMaximum =
   providerCredentialTargetObservationRequests
@@ -3763,8 +3843,10 @@ targetSecretAgentReconcileAttemptRequestMaximum =
     + legacyTlsAdoptionAdditionalRequests
     + legacyTlsRecoveryAdditionalRequests
     + legacyTlsUnopenableCollisionSuccessorAdditionalRequests
+    + legacyTlsTerminalSuccessorAdditionalRequests
     + authorityLaneOccupiedAdoptionAdditionalRequests
     + authorityLaneUnopenableSuccessorAdditionalRequests
+    + authorityLaneBoundedSuccessorCollisionAdditionalRequests
  where
   providerCredentialTargetObservationRequests = 1
   committedExternalMaterialRecoveryObservationRequests = 1
@@ -3775,8 +3857,10 @@ targetSecretAgentReconcileAttemptRequestMaximum =
   legacyTlsAdoptionAdditionalRequests = 2
   legacyTlsRecoveryAdditionalRequests = 3
   legacyTlsUnopenableCollisionSuccessorAdditionalRequests = 2
+  legacyTlsTerminalSuccessorAdditionalRequests = 8
   authorityLaneOccupiedAdoptionAdditionalRequests = 2
   authorityLaneUnopenableSuccessorAdditionalRequests = 2
+  authorityLaneBoundedSuccessorCollisionAdditionalRequests = 3
 
 targetSecretAgentReplayCapacity :: Natural
 targetSecretAgentReplayCapacity =
@@ -3784,13 +3868,13 @@ targetSecretAgentReplayCapacity =
  where
   immediateSupportedAttemptCount = 2
 
--- Seventy-six maximum-size responses plus their retained replay metadata fit
--- below seventy-seven response-widths. The corresponding Vault listener request
--- ceiling includes the Base64/JSON expansion of this finite bound: 154 MiB
--- expands to at most 205.34 MiB, which the listener's 224 MiB maximum covers.
+-- Ninety-eight maximum-size responses plus their retained replay metadata fit
+-- below ninety-nine response-widths. The corresponding Vault listener request
+-- ceiling includes the Base64/JSON expansion of this finite bound: 198 MiB
+-- expands to at most 264 MiB, which the listener's 288 MiB maximum covers.
 targetSecretAgentReplayMaximumEncodedBytes :: Int
 targetSecretAgentReplayMaximumEncodedBytes =
-  77 * standardAuthenticatedResponseMaximumBytes
+  99 * standardAuthenticatedResponseMaximumBytes
 
 -- Replay stores the bounded response, not the potentially large checkpoint
 -- request.  Keeping this limit independent from the request frame prevents a
@@ -3898,10 +3982,13 @@ renderTlsWorkflowRetainCause outcome = case outcome of
   TlsWorkflowRetained _ -> "retained"
   TlsWorkflowRetainedPastUnopenableVersion (RetentionVersion skipped) _ ->
     "retained-past-unopenable-version/v" <> Text.pack (show skipped)
+  TlsWorkflowRetainedReplacingUnopenableVersion (RetentionVersion replaced) _ ->
+    "retained-replacing-unopenable-version/v" <> Text.pack (show replaced)
 
 renderTlsWorkflowFailureCause :: TlsRetentionWorkflowError -> Text
 renderTlsWorkflowFailureCause failure = case failure of
-  TlsWorkflowAuthorityFailed _ -> "authority-state-unavailable"
+  TlsWorkflowAuthorityFailed clientError ->
+    "authority/" <> renderTlsRetentionAuthorityClientCause clientError
   TlsWorkflowAdapterFailed clientError ->
     "adapter/" <> renderTlsRetentionClientCause clientError
   TlsWorkflowHomeAgentFailed clientError ->
@@ -4364,8 +4451,8 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
             interpreter
             standardAuthenticatedFrameMaximumBytes
             standardAuthenticatedResponseMaximumBytes
-            standardReplayCapacity
-            standardReplayMaximumEncodedBytes
+            tlsRetentionAdapterReplayCapacity
+            tlsRetentionAdapterReplayMaximumEncodedBytes
     (ProviderWorkerRuntime, ValidatedProviderWorkerStore) ->
       case providerWorkerRuntimeHandler
         vaultSession
@@ -5000,7 +5087,9 @@ installVaultAuthenticatedHandler
     maximumLifetime <-
       mapLeft
         (Text.pack . show)
-        (authorityDurationFromMicros authenticationLifetimeMicros)
+        ( authorityDurationFromMicros
+            (authenticationLifetimeMicrosFor role)
+        )
     replayClockSkew <-
       mapLeft
         (Text.pack . show)
@@ -5088,14 +5177,21 @@ largeAuthenticatedFrameMaximumBytes = 100 * 1024 * 1024
 standardAuthenticatedResponseMaximumBytes :: Int
 standardAuthenticatedResponseMaximumBytes = 2 * 1024 * 1024
 
-standardReplayCapacity :: Natural
-standardReplayCapacity = 4
-
 standardReplayMaximumEncodedBytes :: Int
 standardReplayMaximumEncodedBytes = 12 * 1024 * 1024
 
 authenticationLifetimeMicros :: Natural
 authenticationLifetimeMicros = 5 * 60 * 1000000
+
+-- Provider effects are the only standing-role requests whose production child
+-- can outlive the ordinary five-minute authentication window.  Their outer
+-- frame remains replay-owned through the finite Provider response envelope;
+-- every sibling role retains the existing five-minute maximum.
+authenticationLifetimeMicrosFor :: RuntimeRole -> Natural
+authenticationLifetimeMicrosFor role = case role of
+  ProviderWorkerRuntime ->
+    ProviderWorkerBudget.providerWorkerAuthenticatedRequestLifetimeMicros
+  _ -> authenticationLifetimeMicros
 
 replayClockSkewMicros :: Natural
 replayClockSkewMicros = 60 * 1000000

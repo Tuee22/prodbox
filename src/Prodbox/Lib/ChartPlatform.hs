@@ -4847,6 +4847,8 @@ retainPublicEdgeTls repoRoot substrate scopeSet = case substrate of
         -- Widening that is out of scope for the sprint that added the lane.
         Right (TlsWorkflowRetainedPastUnopenableVersion _ _) ->
           Right PublicEdgeTlsRetainSucceeded
+        Right (TlsWorkflowRetainedReplacingUnopenableVersion _ _) ->
+          Right PublicEdgeTlsRetainSucceeded
 
 classifyPublicEdgeTlsRetainResponse
   :: TlsRetentionWorkflowAuthorityResponse

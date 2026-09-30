@@ -35,6 +35,8 @@ module Prodbox.Capacity.ProviderWorkerBudget
   , frozenProviderWorkerSchemaMemoryCounterexample
   , validateProviderWorkerSchemaMemoryCounterexample
   , providerWorkerMaximumChildDeadlineMilliseconds
+  , providerWorkerIntentLifetimeMicros
+  , providerWorkerAuthenticatedRequestLifetimeMicros
   , providerWorkerResponseOverheadMilliseconds
   , providerWorkerServerEnvelopeMicros
   , providerWorkerResponseTimeoutMicros
@@ -526,7 +528,16 @@ mebibytes value = kibibytes value * 1024
 -- a shorter deadline, but never one the fixed Provider transport cannot wait
 -- out.
 providerWorkerMaximumChildDeadlineMilliseconds :: Natural
-providerWorkerMaximumChildDeadlineMilliseconds = 5 * 60 * 1000
+providerWorkerMaximumChildDeadlineMilliseconds = 30 * 60 * 1000
+
+-- | The independently signed Provider intent bounds the effect itself.  The
+-- 2026-09-23 live EKS create took about fourteen minutes, proving that the old
+-- authored five-minute value described neither the Pulumi child nor a usable
+-- production deadline.  Thirty minutes is the already-supported Helm/Pulumi
+-- convergence envelope and remains a finite hard ceiling.
+providerWorkerIntentLifetimeMicros :: Natural
+providerWorkerIntentLifetimeMicros =
+  providerWorkerMaximumChildDeadlineMilliseconds * 1000
 
 -- | Bounded time after the child deadline for authenticated framing, authority
 -- projection, response encoding, and the socket write.
@@ -569,6 +580,14 @@ providerWorkerResponseTimeoutMicros :: Int
 providerWorkerResponseTimeoutMicros =
   providerWorkerServerEnvelopeMicros
     + fromIntegral (providerWorkerResponseOverheadMilliseconds * 1000)
+
+-- | The authenticated outer request must remain replay-owned until the
+-- Provider server has returned its terminal response.  Using the response
+-- timeout here keeps replay completion from expiring a successful long-running
+-- effect before its response can be committed.
+providerWorkerAuthenticatedRequestLifetimeMicros :: Natural
+providerWorkerAuthenticatedRequestLifetimeMicros =
+  fromIntegral providerWorkerResponseTimeoutMicros
 
 -- | Sprint 4.96: the least time a registered provider apply can plausibly need.
 --

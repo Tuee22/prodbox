@@ -26,7 +26,9 @@ module Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
   )
 where
 
-import Codec.Serialise (Serialise)
+import Codec.Serialise (Serialise (decode, encode))
+import Codec.Serialise.Decoding (decodeListLen, decodeWord)
+import Codec.Serialise.Encoding (encodeListLen, encodeWord)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Text (Text)
@@ -37,17 +39,21 @@ import Prodbox.ControlPlane.Codec
   )
 import Prodbox.ControlPlane.TlsRetentionAuthority
   ( TlsLegacyRecoveryStagingResult (..)
+  , TlsPendingCollisionStagingResult (..)
   , TlsRetentionAuthorityError (..)
   , TlsRetentionAuthorityRepository
   , TlsRetentionPromotionResult (..)
   , TlsRetentionSlot
   , TlsRetentionStagingResult (..)
+  , TlsTerminalReplacementStagingResult (..)
   , TlsUnopenableSuccessorStagingResult (..)
   , mkTlsRetentionSlot
   , observeTlsRetentionAuthority
   , promoteTlsRetentionAuthority
   , stageTlsLegacyRecoveryAuthority
+  , stageTlsPendingCollisionAuthority
   , stageTlsRetentionAuthority
+  , stageTlsTerminalReplacementAuthority
   , stageTlsUnopenableSuccessorAuthority
   )
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
@@ -59,12 +65,19 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   , TlsLegacyRecoveryEvidence
   , TlsLegacyRecoveryStagingDecision (..)
   , TlsLegacyRecoveryStagingRefusal (..)
+  , TlsPendingCollisionRecovery
+  , TlsPendingCollisionStagingDecision (..)
+  , TlsPendingCollisionStagingRefusal (..)
   , TlsPromotionDecision (..)
   , TlsPromotionRefusal (..)
   , TlsRetentionState
   , TlsSealedEnvelope
   , TlsStagingDecision (..)
   , TlsStagingRefusal (..)
+  , TlsTerminalReplacementEvidence
+  , TlsTerminalReplacementEvidenceCause (..)
+  , TlsTerminalReplacementStagingDecision (..)
+  , TlsTerminalReplacementStagingRefusal (..)
   , TlsUnopenableSuccessorStagingDecision (..)
   , TlsUnopenableSuccessorStagingRefusal (..)
   , TlsUnopenableVersionEvidence
@@ -91,11 +104,57 @@ data TlsAuthorityStageRequest = TlsAuthorityStageRequest
   { tlsAuthorityStageSubstrate :: !Text
   , tlsAuthorityStageScope :: !Text
   , tlsAuthorityStageApproval :: !KeyRotationApproval
+  , tlsAuthorityStagePendingCollision :: !(Maybe TlsPendingCollisionRecovery)
+  , tlsAuthorityStageTerminalReplacement :: !(Maybe TlsTerminalReplacementEvidence)
   , tlsAuthorityStageCandidate :: !RetainedTlsRef
   , tlsAuthorityStageEnvelope :: !TlsSealedEnvelope
   }
   deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
+
+-- | Preserve the original six-field staging command exactly when no terminal
+-- replacement evidence is present.  The generic product codec includes a
+-- leading zero constructor tag, hence the legacy arity of seven.  Only the
+-- replacement command uses the arity-eight extension, allowing old and new
+-- peers to continue exchanging ordinary stage requests during a rollout.
+instance Serialise TlsAuthorityStageRequest where
+  encode request =
+    case tlsAuthorityStageTerminalReplacement request of
+      Nothing ->
+        encodeListLen 7
+          <> encodeWord 0
+          <> encode (tlsAuthorityStageSubstrate request)
+          <> encode (tlsAuthorityStageScope request)
+          <> encode (tlsAuthorityStageApproval request)
+          <> encode (tlsAuthorityStagePendingCollision request)
+          <> encode (tlsAuthorityStageCandidate request)
+          <> encode (tlsAuthorityStageEnvelope request)
+      Just evidence ->
+        encodeListLen 8
+          <> encodeWord 0
+          <> encode (tlsAuthorityStageSubstrate request)
+          <> encode (tlsAuthorityStageScope request)
+          <> encode (tlsAuthorityStageApproval request)
+          <> encode (tlsAuthorityStagePendingCollision request)
+          <> encode evidence
+          <> encode (tlsAuthorityStageCandidate request)
+          <> encode (tlsAuthorityStageEnvelope request)
+  decode = do
+    elements <- decodeListLen
+    tag <- decodeWord
+    if tag /= 0
+      then fail ("unsupported TLS Authority stage request tag: " ++ show tag)
+      else pure ()
+    substrate <- decode
+    scope <- decode
+    approval <- decode
+    pendingCollision <- decode
+    terminalReplacement <- case elements of
+      7 -> pure Nothing
+      8 -> Just <$> decode
+      _ -> fail ("unsupported TLS Authority stage request arity: " ++ show elements)
+    TlsAuthorityStageRequest substrate scope approval pendingCollision terminalReplacement
+      <$> decode
+      <*> decode
 
 data TlsAuthorityLegacyRecoveryStageRequest = TlsAuthorityLegacyRecoveryStageRequest
   { tlsAuthorityLegacyRecoveryStageSubstrate :: !Text
@@ -170,14 +229,37 @@ serveTlsAuthorityStageRequest maximumBytes resolve body =
         resolve
         (tlsAuthorityStageSubstrate request)
         (tlsAuthorityStageScope request)
-        ( \repository ->
-            stagingResponse
-              <$> stageTlsRetentionAuthority
-                repository
-                (tlsAuthorityStageApproval request)
-                (tlsAuthorityStageCandidate request)
-                (tlsAuthorityStageEnvelope request)
-        )
+        (stageRequest request)
+ where
+  stageRequest request repository =
+    case ( tlsAuthorityStagePendingCollision request
+         , tlsAuthorityStageTerminalReplacement request
+         ) of
+      (Nothing, Nothing) ->
+        stagingResponse
+          <$> stageTlsRetentionAuthority
+            repository
+            (tlsAuthorityStageApproval request)
+            (tlsAuthorityStageCandidate request)
+            (tlsAuthorityStageEnvelope request)
+      (Just recovery, Nothing) ->
+        pendingCollisionStagingResponse
+          <$> stageTlsPendingCollisionAuthority
+            repository
+            (tlsAuthorityStageApproval request)
+            recovery
+            (tlsAuthorityStageCandidate request)
+            (tlsAuthorityStageEnvelope request)
+      (Just recovery, Just terminalEvidence) ->
+        terminalReplacementStagingResponse
+          <$> stageTlsTerminalReplacementAuthority
+            repository
+            (tlsAuthorityStageApproval request)
+            recovery
+            terminalEvidence
+            (tlsAuthorityStageCandidate request)
+            (tlsAuthorityStageEnvelope request)
+      (Nothing, Just _) -> pure TlsAuthorityRequestRefused
 
 serveTlsAuthorityLegacyRecoveryStageRequest
   :: (Monad m)
@@ -286,6 +368,46 @@ stagingResponse result = case result of
     TlsStagingRefused refusal ->
       TlsAuthorityStagingRefused (stagingRefusalToken refusal)
 
+pendingCollisionStagingResponse
+  :: Either TlsRetentionAuthorityError TlsPendingCollisionStagingResult
+  -> TlsAuthorityResponse
+pendingCollisionStagingResponse result = case result of
+  Left TlsRetentionAuthorityConcurrentWrite -> TlsAuthorityConcurrentWrite
+  Left _ -> TlsAuthorityUnavailable
+  Right staging -> case tlsPendingCollisionStagingDecision staging of
+    TlsPendingCollisionRebased {} ->
+      TlsAuthorityStagingApplied (tlsPendingCollisionStagingState staging)
+    TlsPendingCollisionSuccessorStaged {} ->
+      TlsAuthorityStagingApplied (tlsPendingCollisionStagingState staging)
+    TlsPendingCollisionUnopenableSuccessorRebased {} ->
+      TlsAuthorityStagingApplied (tlsPendingCollisionStagingState staging)
+    TlsPendingCollisionLegacyRecoverySuccessorRebased {} ->
+      TlsAuthorityStagingApplied (tlsPendingCollisionStagingState staging)
+    TlsPendingCollisionBoundedSuccessorRebased {} ->
+      TlsAuthorityStagingApplied (tlsPendingCollisionStagingState staging)
+    TlsPendingCollisionLegacyRecoveryTerminalSuccessorStaged {} ->
+      TlsAuthorityStagingApplied (tlsPendingCollisionStagingState staging)
+    TlsPendingCollisionLegacyRecoveryTerminalSuccessorRebased {} ->
+      TlsAuthorityStagingApplied (tlsPendingCollisionStagingState staging)
+    TlsPendingCollisionStagingNoop _ ->
+      TlsAuthorityStagingNoop (tlsPendingCollisionStagingState staging)
+    TlsPendingCollisionStagingRefused refusal ->
+      TlsAuthorityStagingRefused (pendingCollisionStagingRefusalToken refusal)
+
+terminalReplacementStagingResponse
+  :: Either TlsRetentionAuthorityError TlsTerminalReplacementStagingResult
+  -> TlsAuthorityResponse
+terminalReplacementStagingResponse result = case result of
+  Left TlsRetentionAuthorityConcurrentWrite -> TlsAuthorityConcurrentWrite
+  Left _ -> TlsAuthorityUnavailable
+  Right staging -> case tlsTerminalReplacementStagingDecision staging of
+    TlsTerminalReplacementStaged {} ->
+      TlsAuthorityStagingApplied (tlsTerminalReplacementStagingState staging)
+    TlsTerminalReplacementStagingNoop _ ->
+      TlsAuthorityStagingNoop (tlsTerminalReplacementStagingState staging)
+    TlsTerminalReplacementStagingRefused refusal ->
+      TlsAuthorityStagingRefused (terminalReplacementStagingRefusalToken refusal)
+
 legacyRecoveryStagingResponse
   :: Either TlsRetentionAuthorityError TlsLegacyRecoveryStagingResult
   -> TlsAuthorityResponse
@@ -351,6 +473,43 @@ stagingRefusalToken refusal = case refusal of
   TlsStageValidityRegression -> "validity-regression"
   TlsStageUnapprovedKeyChange -> "unapproved-key-change"
   TlsStageConcurrentPending -> "concurrent-pending"
+
+pendingCollisionStagingRefusalToken :: TlsPendingCollisionStagingRefusal -> Text
+pendingCollisionStagingRefusalToken refusal = case refusal of
+  TlsPendingCollisionStageStateNotPending -> "pending-collision-state-not-pending"
+  TlsPendingCollisionStageConcurrentPending -> "pending-collision-concurrent-pending"
+  TlsPendingCollisionStageEvidenceInvalid -> "pending-collision-evidence-invalid"
+  TlsPendingCollisionStageEnvelopeInvalid -> "pending-collision-envelope-invalid"
+  TlsPendingCollisionStageReferenceInvalid -> "pending-collision-reference-invalid"
+  TlsPendingCollisionStageDigestMismatch -> "pending-collision-digest-mismatch"
+
+terminalReplacementStagingRefusalToken
+  :: TlsTerminalReplacementStagingRefusal -> Text
+terminalReplacementStagingRefusalToken refusal = case refusal of
+  TlsTerminalReplacementStageStateNotSuccessor ->
+    "terminal-replacement-state-not-successor"
+  TlsTerminalReplacementStageConcurrentPending ->
+    "terminal-replacement-concurrent-pending"
+  TlsTerminalReplacementStageEvidenceInvalid cause ->
+    "terminal-replacement-evidence-invalid/" <> terminalReplacementEvidenceCauseToken cause
+  TlsTerminalReplacementStageEnvelopeInvalid ->
+    "terminal-replacement-envelope-invalid"
+  TlsTerminalReplacementStageReferenceInvalid ->
+    "terminal-replacement-reference-invalid"
+  TlsTerminalReplacementStageDigestMismatch ->
+    "terminal-replacement-digest-mismatch"
+
+terminalReplacementEvidenceCauseToken :: TlsTerminalReplacementEvidenceCause -> Text
+terminalReplacementEvidenceCauseToken cause = case cause of
+  TlsTerminalReplacementEvidenceMalformed -> "malformed"
+  TlsTerminalReplacementVersionLineageInvalid -> "version-lineage"
+  TlsTerminalReplacementDigestLineageInvalid -> "digest-lineage"
+  TlsTerminalReplacementApprovalLineageInvalid -> "approval-lineage"
+  TlsTerminalReplacementCertificateLineageInvalid -> "certificate-lineage"
+  TlsTerminalReplacementSourceUidLineageInvalid -> "source-uid-lineage"
+  TlsTerminalReplacementSourceResourceVersionLineageInvalid ->
+    "source-resource-version-lineage"
+  TlsTerminalReplacementRecoveryDispositionInvalid -> "recovery-disposition"
 
 legacyRecoveryStagingRefusalToken :: TlsLegacyRecoveryStagingRefusal -> Text
 legacyRecoveryStagingRefusalToken refusal = case refusal of

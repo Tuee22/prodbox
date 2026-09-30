@@ -8,6 +8,7 @@
 -- create a recursive auditor-cleanup obligation.
 module Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditError (..)
+  , VaultAccessorLookupError (..)
   , VaultAccessorAuditDetailedError (..)
   , VaultAccessorSubject (..)
   , VaultAccessorAuditOps (..)
@@ -15,6 +16,7 @@ module Prodbox.ControlPlane.VaultAccessorAudit
   , isBoundedBatchAuditorLogin
   , isExactBoundedBatchAuditorLogin
   , vaultAccessorMatchesSubject
+  , classifyVaultAccessorLookupResponse
   , revokeAndProveVaultAccessorSubjectAbsent
   , revokeAndProveVaultAccessorSubjectAbsentDetailed
   , auditVaultTokenAccessorAbsence
@@ -27,6 +29,7 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.Http.Client (HttpError (..))
 import Prodbox.Vault.Client
   ( TokenAccessorInfo (..)
   , VaultAddress
@@ -40,11 +43,22 @@ data VaultAccessorAuditError
   | VaultAccessorAuditorLoginFailed
   | VaultAccessorAuditorEvidenceInvalid
   | VaultAccessorObservationFailed
+  | VaultAccessorClassificationAbsent
+  | VaultAccessorClassificationUnavailable
   | VaultAccessorClassificationFailed
   | VaultAccessorKnownIdentityMismatch
   | VaultAccessorRevocationFailed
   | VaultAccessorVisibilityWaitFailed
   | VaultAccessorStableAbsenceFailed
+  deriving stock (Eq, Show)
+
+-- | Closed, payload-free result of classifying one accessor named by a
+-- preceding global inventory. Vault can legitimately remove that accessor
+-- between LIST and lookup; that race is distinct from an unavailable lookup
+-- even while both still fail closed at the lifecycle boundary.
+data VaultAccessorLookupError
+  = VaultAccessorLookupAbsent
+  | VaultAccessorLookupUnavailable
   deriving stock (Eq, Show)
 
 -- | The finite audit result with the interpreter's closed operation failure
@@ -75,11 +89,21 @@ data VaultAccessorSubject = VaultAccessorSubject
 -- unrelated accessors without constructing bearer tokens.
 data VaultAccessorAuditOps m = VaultAccessorAuditOps
   { auditListAccessors :: m (Either Text [Text])
-  , auditLookupAccessor :: Text -> m (Either Text TokenAccessorInfo)
+  , auditLookupAccessor :: Text -> m (Either VaultAccessorLookupError TokenAccessorInfo)
   , auditRevokeAccessor :: Text -> m (Either Text ())
   , auditObserveAccessorAbsent :: Text -> m (Either Text Bool)
   , auditWaitVisibilityGrace :: m (Either Text ())
   }
+
+-- | Erase HTTP payloads while retaining the one provider response that means
+-- an accessor named by the preceding inventory no longer exists.
+classifyVaultAccessorLookupResponse
+  :: Either HttpError TokenAccessorInfo
+  -> Either VaultAccessorLookupError TokenAccessorInfo
+classifyVaultAccessorLookupResponse response = case response of
+  Left (HttpStatus 404 _) -> Left VaultAccessorLookupAbsent
+  Left _ -> Left VaultAccessorLookupUnavailable
+  Right info -> Right info
 
 -- | Typed counterpart to 'VaultAccessorAuditOps'. The interpreter supplies a
 -- closed failure type that identifies the exact operation without retaining
@@ -140,19 +164,41 @@ revokeAndProveVaultAccessorSubjectAbsent ops subject maybeKnown =
  where
   detailedOps =
     VaultAccessorAuditDetailedOps
-      { detailedAuditListAccessors = auditListAccessors ops
-      , detailedAuditLookupAccessor = auditLookupAccessor ops
-      , detailedAuditRevokeAccessor = auditRevokeAccessor ops
-      , detailedAuditObserveAccessorAbsent = auditObserveAccessorAbsent ops
-      , detailedAuditWaitVisibilityGrace = auditWaitVisibilityGrace ops
+      { detailedAuditListAccessors =
+          fmap (mapLeft VaultAccessorAuditGeneralFailure) (auditListAccessors ops)
+      , detailedAuditLookupAccessor = \accessor ->
+          fmap
+            (mapLeft VaultAccessorAuditLookupFailure)
+            (auditLookupAccessor ops accessor)
+      , detailedAuditRevokeAccessor = \accessor ->
+          fmap
+            (mapLeft VaultAccessorAuditGeneralFailure)
+            (auditRevokeAccessor ops accessor)
+      , detailedAuditObserveAccessorAbsent = \accessor ->
+          fmap
+            (mapLeft VaultAccessorAuditGeneralFailure)
+            (auditObserveAccessorAbsent ops accessor)
+      , detailedAuditWaitVisibilityGrace =
+          fmap
+            (mapLeft VaultAccessorAuditGeneralFailure)
+            (auditWaitVisibilityGrace ops)
       }
 
   collapseDetailedAuditError failure = case failure of
     VaultAccessorAuditDetailedIdentityInvalid -> VaultAccessorAuditIdentityInvalid
     VaultAccessorAuditDetailedObservationFailed _ -> VaultAccessorObservationFailed
-    VaultAccessorAuditDetailedClassificationFailed _ -> VaultAccessorClassificationFailed
+    VaultAccessorAuditDetailedClassificationFailed operationFailure -> case operationFailure of
+      VaultAccessorAuditLookupFailure VaultAccessorLookupAbsent ->
+        VaultAccessorClassificationAbsent
+      VaultAccessorAuditLookupFailure VaultAccessorLookupUnavailable ->
+        VaultAccessorClassificationUnavailable
+      VaultAccessorAuditGeneralFailure _ -> VaultAccessorClassificationFailed
     VaultAccessorAuditDetailedVisibilityWaitFailed _ -> VaultAccessorVisibilityWaitFailed
     VaultAccessorAuditDetailedStableAbsenceFailed -> VaultAccessorStableAbsenceFailed
+
+data VaultAccessorAuditOperationFailure
+  = VaultAccessorAuditGeneralFailure !Text
+  | VaultAccessorAuditLookupFailure !VaultAccessorLookupError
 
 -- | Typed stable-zero proof. The provider-specific failure is returned only
 -- for authoritative list, lookup, direct-absence, and visibility operations.

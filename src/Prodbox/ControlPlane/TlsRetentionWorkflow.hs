@@ -60,14 +60,18 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   , RestoreObservation (..)
   , RetainedTlsRef (..)
   , RetentionVersion (..)
+  , TlsDisplacedPendingIdentity
   , TlsLegacyRecoveryCollisionEvidence (..)
   , TlsLegacyRecoveryEvidence (..)
   , TlsLegacyRecoverySuccessorEvidence (..)
+  , TlsPendingCollisionDisposition (..)
+  , TlsPendingCollisionRecovery (..)
   , TlsRestoreDecision (..)
   , TlsRestoreRefusal
   , TlsRetentionPending (..)
   , TlsRetentionState (..)
   , TlsSealedEnvelope
+  , TlsTerminalReplacementEvidence (..)
   , TlsUnopenableVersionEvidence (..)
   , currentRetainedRef
   , decideTlsRestore
@@ -97,6 +101,9 @@ data TlsWorkflowRetainOutcome
     -- diagnostic never fires for it, and otherwise the only record of the skip
     -- is a durable Authority field nobody reads.
     TlsWorkflowRetainedPastUnopenableVersion
+      !RetentionVersion
+      !RetainedTlsRef
+  | TlsWorkflowRetainedReplacingUnopenableVersion
       !RetentionVersion
       !RetainedTlsRef
   deriving stock (Eq, Show)
@@ -151,6 +158,22 @@ data TlsRetentionWorkflowError
   | TlsWorkflowWrappedDekInvalid
   deriving stock (Eq, Show)
 
+data TlsPendingCollisionExpectedOrigin
+  = TlsPendingCollisionExpectedOrdinary
+  | TlsPendingCollisionExpectedUnopenableSuccessor !TlsUnopenableVersionEvidence
+  | TlsPendingCollisionExpectedLegacyRecoverySuccessor
+      !TlsLegacyRecoveryEvidence
+      !TlsLegacyRecoverySuccessorEvidence
+  | TlsPendingCollisionExpectedBoundedSuccessor
+      !TlsPendingCollisionRecovery
+      !TlsDisplacedPendingIdentity
+  | TlsPendingCollisionExpectedLegacyRecoveryTerminalSuccessor
+      !TlsLegacyRecoveryEvidence
+      !TlsLegacyRecoverySuccessorEvidence
+      !TlsPendingCollisionRecovery
+      !TlsDisplacedPendingIdentity
+  deriving stock (Eq, Show)
+
 retainPublicEdgeTlsWorkflow
   :: TlsRetentionWorkflow IO
   -> KeyRotationApproval
@@ -159,24 +182,27 @@ retainPublicEdgeTlsWorkflow workflow approval = do
   observed <- observeTlsRetentionCurrent (tlsWorkflowAuthority workflow)
   case first TlsWorkflowAuthorityFailed observed of
     Left err -> pure (Left err)
-    Right state -> case pendingTlsRetention state of
-      Just pending -> resumePending state pending
-      Nothing -> do
-        let version = nextRetentionVersion state
-        case currentRetainedRef state of
-          Just _ -> claimFreshVersion state version
-          Nothing -> do
-            occupied <-
-              observeTlsRetentionVersion
-                (tlsWorkflowAdapter workflow)
-                version
-            case first TlsWorkflowAdapterFailed occupied of
-              Left err -> pure (Left err)
-              Right TlsVersionEnvelopeMissing -> createFresh state version
-              Right TlsVersionEnvelopeCorrupt ->
-                pure (Left TlsWorkflowLegacyEnvelopeCorrupt)
-              Right (TlsVersionEnvelopePresent envelope _) ->
-                adoptLegacy state version envelope
+    Right state -> case state of
+      TlsRetentionLegacyRecoveryTerminalReplacementState _ _ _ _ evidence pending ->
+        resumeTerminalReplacement evidence pending
+      _ -> case pendingTlsRetention state of
+        Just pending -> resumePending state pending
+        Nothing -> do
+          let version = nextRetentionVersion state
+          case currentRetainedRef state of
+            Just _ -> claimFreshVersion state version
+            Nothing -> do
+              occupied <-
+                observeTlsRetentionVersion
+                  (tlsWorkflowAdapter workflow)
+                  version
+              case first TlsWorkflowAdapterFailed occupied of
+                Left err -> pure (Left err)
+                Right TlsVersionEnvelopeMissing -> createFresh state version
+                Right TlsVersionEnvelopeCorrupt ->
+                  pure (Left TlsWorkflowLegacyEnvelopeCorrupt)
+                Right (TlsVersionEnvelopePresent envelope _) ->
+                  adoptLegacy state version envelope
  where
   -- Observe the Authority lane before claiming a version on it.
   --
@@ -564,6 +590,55 @@ retainPublicEdgeTlsWorkflow workflow approval = do
         | otherwise -> pure (Left (TlsWorkflowAdapterFailed clientError))
       Right _ -> fmap (fmap (retainOutcomeFor state)) (confirmAndPromote pending)
 
+  resumeTerminalReplacement evidence pending = do
+    replaced <-
+      replaceTlsRetentionTerminal
+        (tlsWorkflowAdapter workflow)
+        evidence
+        (tlsPendingCandidate pending)
+        (tlsPendingEnvelope pending)
+    case first TlsWorkflowAdapterFailed replaced of
+      Left err -> pure (Left err)
+      Right _ ->
+        fmap
+          (fmap (terminalReplacementOutcome evidence))
+          (confirmAndPromote pending)
+
+  stageTerminalReplacementAndResume
+    expectedEvidence
+    expectedSuccessor
+    recovery
+    terminalEvidence
+    pending = do
+      staged <-
+        stageTlsRetentionTerminalReplacement
+          (tlsWorkflowAuthority workflow)
+          (tlsPendingApproval pending)
+          recovery
+          terminalEvidence
+          (tlsPendingCandidate pending)
+          (tlsPendingEnvelope pending)
+      case first TlsWorkflowAuthorityFailed staged of
+        Left err -> pure (Left err)
+        Right outcome ->
+          case validateTerminalReplacementStaging
+            expectedEvidence
+            expectedSuccessor
+            recovery
+            terminalEvidence
+            pending
+            outcome of
+            Left err -> pure (Left err)
+            Right stagedPending ->
+              resumeTerminalReplacement terminalEvidence stagedPending
+
+  terminalReplacementOutcome evidence outcome = case outcome of
+    TlsWorkflowRetained reference ->
+      TlsWorkflowRetainedReplacingUnopenableVersion
+        (tlsTerminalReplacementVersion evidence)
+        reference
+    other -> other
+
   -- The skip is announced from the durable state rather than from the call
   -- that staged it, so a run that only resumes an already-staged successor
   -- reports it too.
@@ -573,6 +648,24 @@ retainPublicEdgeTlsWorkflow workflow approval = do
       ) ->
         TlsWorkflowRetainedPastUnopenableVersion
           (tlsUnopenableVersion evidence)
+          reference
+    ( TlsRetentionPendingCollisionSuccessorState recovery _ _
+      , TlsWorkflowRetained reference
+      ) ->
+        TlsWorkflowRetainedPastUnopenableVersion
+          (tlsPendingCollisionVersion recovery)
+          reference
+    ( TlsRetentionUnopenableSuccessorCollisionRebasedState evidence _ _ _
+      , TlsWorkflowRetained reference
+      ) ->
+        TlsWorkflowRetainedPastUnopenableVersion
+          (tlsUnopenableVersion evidence)
+          reference
+    ( TlsRetentionPendingCollisionSuccessorRebasedState originalRecovery _ _ _ _
+      , TlsWorkflowRetained reference
+      ) ->
+        TlsWorkflowRetainedPastUnopenableVersion
+          (tlsPendingCollisionVersion originalRecovery)
           reference
     _ -> outcome
 
@@ -619,16 +712,66 @@ retainPublicEdgeTlsWorkflow workflow approval = do
                         occupiedEnvelope
                   | otherwise -> pure (Left TlsWorkflowSourceReadBackMismatch)
             Right _ -> pure (Left (TlsWorkflowAdapterFailed originalError))
+    TlsRetentionPendingState durablePending
+      | durablePending == pending ->
+          recoverOrdinaryPendingCollision pending originalError
+    TlsRetentionUnopenableSuccessorPendingState evidence durablePending
+      | durablePending == pending ->
+          recoverUnopenableSuccessorPendingCollision evidence pending originalError
+    TlsRetentionLegacyRecoverySuccessorPendingState evidence successor durablePending
+      | durablePending == pending ->
+          recoverLegacyRecoverySuccessorPendingCollision
+            evidence
+            successor
+            pending
+            originalError
+    TlsRetentionPendingCollisionSuccessorState originalRecovery originalDisplaced durablePending
+      | durablePending == pending ->
+          recoverPendingCollisionSuccessorCollision
+            originalRecovery
+            originalDisplaced
+            pending
+            originalError
+    TlsRetentionLegacyRecoveryTerminalSuccessorState
+      evidence
+      successor
+      originalRecovery
+      originalDisplaced
+      durablePending
+        | durablePending == pending ->
+            recoverLegacyRecoveryTerminalSuccessorCollision
+              evidence
+              successor
+              originalRecovery
+              originalDisplaced
+              pending
+              originalError
+    TlsRetentionLegacyRecoveryTerminalSuccessorRebasedState
+      evidence
+      successor
+      originalRecovery
+      originalDisplaced
+      _
+      _
+      durablePending
+        | durablePending == pending ->
+            recoverLegacyRecoveryTerminalSuccessorCollision
+              evidence
+              successor
+              originalRecovery
+              originalDisplaced
+              pending
+              originalError
     -- Every other durable state reaches here only because the store answered a
     -- put-if-absent with a conflict *and* the confirming read found different
     -- bytes at that exact object, so the version this pending is for is
-    -- occupied by an envelope that is not the pending's.  Only the
-    -- legacy-recovery state above can rebase onto it; the rest cannot, and used
-    -- to say so by returning the adapter's own error, which names neither the
-    -- version nor either digest.  The recovery is unchanged and the version is
-    -- now named -- a resumed pending whose slot somebody else holds is a
-    -- different fact from an adapter that is unavailable, and the live campaign
-    -- could not tell them apart.
+    -- occupied by an envelope that is not the pending's.  The ordinary pending
+    -- arm above, the already-bounded successor arm, and the legacy-recovery arm
+    -- can replace their durable outboxes through their own collision
+    -- transitions; the remaining recovery outboxes cannot, and say so without
+    -- running Target work. A resumed pending whose
+    -- slot somebody else holds is a different fact from an adapter that is
+    -- unavailable, and the live campaign could not tell them apart.
     --
     -- __Why this re-observes and then refuses rather than rebasing.__  An
     -- earlier draft sent the occupant to 'adoptOccupiedAuthorityVersion', whose
@@ -640,10 +783,9 @@ retainPublicEdgeTlsWorkflow workflow approval = do
     -- refused in every reachable case, after a live selected retain and a live
     -- restore had already run, and the refusal arrived as an Authority failure
     -- rendered @authority-state-unavailable@ -- an occupied immutable slot
-    -- reported as an unavailable Authority, which is the misattribution this
-    -- lane exists to remove.  Superseding a pending with an occupant-derived one
-    -- needs an Authority-side transition that does not exist; until it does, the
-    -- honest answer is the named refusal and no Target work at all.
+    -- reported as an unavailable Authority.  The ordinary pending arm now has
+    -- the required Authority-side transition.  Any other recovery outbox stays
+    -- on this named refusal until it owns an equally explicit transition.
     _ -> do
       let version = retainedVersion (tlsPendingCandidate pending)
       observed <-
@@ -663,6 +805,443 @@ retainPublicEdgeTlsWorkflow workflow approval = do
         -- store's own error is reported rather than a claim about occupancy.
         Right TlsVersionEnvelopeMissing ->
           pure (Left (TlsWorkflowAdapterFailed originalError))
+
+  recoverOrdinaryPendingCollision pending originalError = do
+    let pendingCandidate = tlsPendingCandidate pending
+        version = retainedVersion pendingCandidate
+    observed <-
+      observeTlsRetentionAuthorityVersion
+        (tlsWorkflowAdapter workflow)
+        version
+    case first TlsWorkflowAdapterFailed observed of
+      Left err -> pure (Left err)
+      Right (TlsVersionEnvelopePresent occupiedEnvelope _) -> do
+        let occupiedCandidate =
+              pendingCandidate
+                { retainedCiphertextDigest = tlsSealedEnvelopeDigest occupiedEnvelope
+                }
+            recovery disposition =
+              TlsPendingCollisionRecovery
+                { tlsPendingCollisionVersion = version
+                , tlsPendingCollisionDisplacedEnvelopeDigest =
+                    retainedCiphertextDigest pendingCandidate
+                , tlsPendingCollisionObservedEnvelopeDigest =
+                    retainedCiphertextDigest occupiedCandidate
+                , tlsPendingCollisionDisposition = disposition
+                }
+        applied <- applyTlsEnvelopeAtSelected workflow occupiedCandidate occupiedEnvelope
+        case applied of
+          Left
+            ( TlsWorkflowHomeAgentFailed
+                TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed
+              ) ->
+              recoverOrdinaryPendingUnopenable
+                pending
+                (recovery TlsPendingCollisionStepPastUnopenable)
+          Left err -> pure (Left err)
+          Right receipt
+            | tlsTargetRestoredReadBackSource receipt
+                == retainedSourceSecret occupiedCandidate ->
+                stagePendingCollisionAndResume
+                  TlsPendingCollisionExpectedOrdinary
+                  pending
+                  (recovery TlsPendingCollisionAdoptObserved)
+                  occupiedCandidate
+                  occupiedEnvelope
+            | otherwise -> pure (Left TlsWorkflowSourceReadBackMismatch)
+      Right TlsVersionEnvelopeCorrupt ->
+        pure (Left (TlsWorkflowRetentionVersionCorrupt version))
+      Right TlsVersionEnvelopeMissing ->
+        pure (Left (TlsWorkflowAdapterFailed originalError))
+
+  -- This state has already spent its one version skip. It may converge onto
+  -- authenticated bytes at the exact successor version, but an occupant whose
+  -- wrapped DEK is unopenable cannot admit another successor.
+  recoverUnopenableSuccessorPendingCollision evidence pending originalError = do
+    let pendingCandidate = tlsPendingCandidate pending
+        version = retainedVersion pendingCandidate
+    observed <-
+      observeTlsRetentionAuthorityVersion
+        (tlsWorkflowAdapter workflow)
+        version
+    case first TlsWorkflowAdapterFailed observed of
+      Left err -> pure (Left err)
+      Right (TlsVersionEnvelopePresent occupiedEnvelope _) -> do
+        let occupiedCandidate =
+              pendingCandidate
+                { retainedCiphertextDigest = tlsSealedEnvelopeDigest occupiedEnvelope
+                }
+            recovery =
+              TlsPendingCollisionRecovery
+                { tlsPendingCollisionVersion = version
+                , tlsPendingCollisionDisplacedEnvelopeDigest =
+                    retainedCiphertextDigest pendingCandidate
+                , tlsPendingCollisionObservedEnvelopeDigest =
+                    retainedCiphertextDigest occupiedCandidate
+                , tlsPendingCollisionDisposition = TlsPendingCollisionAdoptObserved
+                }
+        applied <- applyTlsEnvelopeAtSelected workflow occupiedCandidate occupiedEnvelope
+        case applied of
+          Left
+            ( TlsWorkflowHomeAgentFailed
+                TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed
+              ) ->
+              pure (Left (TlsWorkflowRetentionVersionUnopenable version))
+          Left err -> pure (Left err)
+          Right receipt
+            | tlsTargetRestoredReadBackSource receipt
+                == retainedSourceSecret occupiedCandidate ->
+                stagePendingCollisionAndResume
+                  (TlsPendingCollisionExpectedUnopenableSuccessor evidence)
+                  pending
+                  recovery
+                  occupiedCandidate
+                  occupiedEnvelope
+            | otherwise -> pure (Left TlsWorkflowSourceReadBackMismatch)
+      Right TlsVersionEnvelopeCorrupt ->
+        pure (Left (TlsWorkflowRetentionVersionCorrupt version))
+      Right TlsVersionEnvelopeMissing ->
+        pure (Left (TlsWorkflowAdapterFailed originalError))
+
+  -- The pre-Authority lane has already stepped over its fixed version-2
+  -- collision and staged version 3. A collision at version 3 first tries
+  -- same-version adoption. If that exact occupant is also unopenable, the
+  -- fully retained v1/v2/v3 chain admits one fixed terminal version 4. There
+  -- is no recursive successor search and no state capable of admitting v5.
+  recoverLegacyRecoverySuccessorPendingCollision evidence successor pending originalError = do
+    let pendingCandidate = tlsPendingCandidate pending
+        version = retainedVersion pendingCandidate
+    observed <-
+      observeTlsRetentionAuthorityVersion
+        (tlsWorkflowAdapter workflow)
+        version
+    case first TlsWorkflowAdapterFailed observed of
+      Left err -> pure (Left err)
+      Right (TlsVersionEnvelopePresent occupiedEnvelope _) -> do
+        let occupiedCandidate =
+              pendingCandidate
+                { retainedCiphertextDigest = tlsSealedEnvelopeDigest occupiedEnvelope
+                }
+            recovery disposition =
+              TlsPendingCollisionRecovery
+                { tlsPendingCollisionVersion = version
+                , tlsPendingCollisionDisplacedEnvelopeDigest =
+                    retainedCiphertextDigest pendingCandidate
+                , tlsPendingCollisionObservedEnvelopeDigest =
+                    retainedCiphertextDigest occupiedCandidate
+                , tlsPendingCollisionDisposition = disposition
+                }
+        applied <- applyTlsEnvelopeAtSelected workflow occupiedCandidate occupiedEnvelope
+        case applied of
+          Left
+            ( TlsWorkflowHomeAgentFailed
+                TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed
+              ) ->
+              recoverLegacyRecoveryTerminalSuccessor
+                evidence
+                successor
+                pending
+                (recovery TlsPendingCollisionStepPastUnopenable)
+          Left err -> pure (Left err)
+          Right receipt
+            | tlsTargetRestoredReadBackSource receipt
+                == retainedSourceSecret occupiedCandidate ->
+                stagePendingCollisionAndResume
+                  (TlsPendingCollisionExpectedLegacyRecoverySuccessor evidence successor)
+                  pending
+                  (recovery TlsPendingCollisionAdoptObserved)
+                  occupiedCandidate
+                  occupiedEnvelope
+            | otherwise -> pure (Left TlsWorkflowSourceReadBackMismatch)
+      Right TlsVersionEnvelopeCorrupt ->
+        pure (Left (TlsWorkflowRetentionVersionCorrupt version))
+      Right TlsVersionEnvelopeMissing ->
+        pure (Left (TlsWorkflowAdapterFailed originalError))
+
+  recoverLegacyRecoveryTerminalSuccessor evidence successor displaced recovery = do
+    let displacedCandidate = tlsPendingCandidate displaced
+        terminalCandidateFor envelope =
+          displacedCandidate
+            { retainedVersion = terminalVersion
+            , retainedCiphertextDigest = tlsSealedEnvelopeDigest envelope
+            }
+        stageTerminal candidate envelope =
+          stagePendingCollisionAndResume
+            (TlsPendingCollisionExpectedLegacyRecoverySuccessor evidence successor)
+            displaced
+            recovery
+            candidate
+            envelope
+    observed <-
+      observeTlsRetentionAuthorityVersion
+        (tlsWorkflowAdapter workflow)
+        terminalVersion
+    case first TlsWorkflowAdapterFailed observed of
+      Left err -> pure (Left err)
+      Right TlsVersionEnvelopeCorrupt ->
+        pure (Left (TlsWorkflowRetentionVersionCorrupt terminalVersion))
+      Right (TlsVersionEnvelopePresent occupiedEnvelope _) -> do
+        let occupiedCandidate = terminalCandidateFor occupiedEnvelope
+        applied <- applyTlsEnvelopeAtSelected workflow occupiedCandidate occupiedEnvelope
+        case applied of
+          Left
+            ( TlsWorkflowHomeAgentFailed
+                TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed
+              ) ->
+              retainTerminal
+                ( \candidate envelope ->
+                    stageTerminalReplacementAndResume
+                      evidence
+                      successor
+                      recovery
+                      TlsTerminalReplacementEvidence
+                        { tlsTerminalReplacementVersion = terminalVersion
+                        , tlsTerminalReplacementOccupantEnvelopeDigest =
+                            tlsSealedEnvelopeDigest occupiedEnvelope
+                        }
+                      TlsRetentionPending
+                        { tlsPendingPrevious = Nothing
+                        , tlsPendingApproval = tlsPendingApproval displaced
+                        , tlsPendingCandidate = candidate
+                        , tlsPendingEnvelope = envelope
+                        }
+                )
+          Left err -> pure (Left err)
+          Right receipt
+            | tlsTargetRestoredReadBackSource receipt
+                == retainedSourceSecret occupiedCandidate ->
+                stageTerminal occupiedCandidate occupiedEnvelope
+            | otherwise -> pure (Left TlsWorkflowSourceReadBackMismatch)
+      Right TlsVersionEnvelopeMissing -> retainTerminal stageTerminal
+   where
+    terminalVersion = RetentionVersion 4
+
+    retainTerminal continuation = do
+      homePreparedResult <-
+        prepareTlsDekDestination (tlsWorkflowRetainedHomeAgent workflow)
+      case first TlsWorkflowHomeAgentFailed homePreparedResult of
+        Left err -> pure (Left err)
+        Right homePrepared -> do
+          retainedResult <-
+            retainSelectedPublicEdgeTls
+              (tlsWorkflowSelectedAgent workflow)
+              terminalVersion
+              (tlsDekPreparedPublicKey homePrepared)
+          case retainedResult of
+            Left (TlsTargetAgentClientHttpStatus 404 _) ->
+              pure (Left (TlsWorkflowRetentionSuccessorSourceMissing terminalVersion))
+            Left err -> pure (Left (TlsWorkflowSelectedAgentFailed err))
+            Right retained -> do
+              wrappedResult <-
+                wrapRetainedHomeTlsDek
+                  (tlsWorkflowRetainedHomeAgent workflow)
+                  homePrepared
+                  (tlsTargetRetainedDekEnvelope retained)
+              case first TlsWorkflowHomeAgentFailed wrappedResult of
+                Left err -> pure (Left err)
+                Right wrapped ->
+                  case mkTlsSealedEnvelope
+                    (tlsTargetRetainedCertificateCiphertext retained)
+                    (TextEncoding.encodeUtf8 (tlsWrappedDekText wrapped)) of
+                    Left detail -> pure (Left (TlsWorkflowEnvelopeInvalid detail))
+                    Right envelope ->
+                      continuation
+                        (referenceFor terminalVersion retained envelope)
+                        envelope
+
+  recoverLegacyRecoveryTerminalSuccessorCollision
+    evidence
+    successor
+    originalRecovery
+    originalDisplaced
+    pending
+    originalError = do
+      let pendingCandidate = tlsPendingCandidate pending
+          version = retainedVersion pendingCandidate
+      observed <-
+        observeTlsRetentionAuthorityVersion
+          (tlsWorkflowAdapter workflow)
+          version
+      case first TlsWorkflowAdapterFailed observed of
+        Left err -> pure (Left err)
+        Right (TlsVersionEnvelopePresent occupiedEnvelope _) -> do
+          let occupiedCandidate =
+                pendingCandidate
+                  { retainedCiphertextDigest = tlsSealedEnvelopeDigest occupiedEnvelope
+                  }
+              recovery =
+                TlsPendingCollisionRecovery
+                  { tlsPendingCollisionVersion = version
+                  , tlsPendingCollisionDisplacedEnvelopeDigest =
+                      retainedCiphertextDigest pendingCandidate
+                  , tlsPendingCollisionObservedEnvelopeDigest =
+                      retainedCiphertextDigest occupiedCandidate
+                  , tlsPendingCollisionDisposition = TlsPendingCollisionAdoptObserved
+                  }
+          applied <- applyTlsEnvelopeAtSelected workflow occupiedCandidate occupiedEnvelope
+          case applied of
+            Left
+              ( TlsWorkflowHomeAgentFailed
+                  TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed
+                ) ->
+                stageTerminalReplacementAndResume
+                  evidence
+                  successor
+                  originalRecovery
+                  TlsTerminalReplacementEvidence
+                    { tlsTerminalReplacementVersion = version
+                    , tlsTerminalReplacementOccupantEnvelopeDigest =
+                        tlsSealedEnvelopeDigest occupiedEnvelope
+                    }
+                  pending
+            Left err -> pure (Left err)
+            Right receipt
+              | tlsTargetRestoredReadBackSource receipt
+                  == retainedSourceSecret occupiedCandidate ->
+                  stagePendingCollisionAndResume
+                    ( TlsPendingCollisionExpectedLegacyRecoveryTerminalSuccessor
+                        evidence
+                        successor
+                        originalRecovery
+                        originalDisplaced
+                    )
+                    pending
+                    recovery
+                    occupiedCandidate
+                    occupiedEnvelope
+              | otherwise -> pure (Left TlsWorkflowSourceReadBackMismatch)
+        Right TlsVersionEnvelopeCorrupt ->
+          pure (Left (TlsWorkflowRetentionVersionCorrupt version))
+        Right TlsVersionEnvelopeMissing ->
+          pure (Left (TlsWorkflowAdapterFailed originalError))
+
+  recoverPendingCollisionSuccessorCollision
+    originalRecovery
+    originalDisplaced
+    pending
+    originalError = do
+      let pendingCandidate = tlsPendingCandidate pending
+          version = retainedVersion pendingCandidate
+      observed <-
+        observeTlsRetentionAuthorityVersion
+          (tlsWorkflowAdapter workflow)
+          version
+      case first TlsWorkflowAdapterFailed observed of
+        Left err -> pure (Left err)
+        Right (TlsVersionEnvelopePresent occupiedEnvelope _) -> do
+          let occupiedCandidate =
+                pendingCandidate
+                  { retainedCiphertextDigest = tlsSealedEnvelopeDigest occupiedEnvelope
+                  }
+              recovery =
+                TlsPendingCollisionRecovery
+                  { tlsPendingCollisionVersion = version
+                  , tlsPendingCollisionDisplacedEnvelopeDigest =
+                      retainedCiphertextDigest pendingCandidate
+                  , tlsPendingCollisionObservedEnvelopeDigest =
+                      retainedCiphertextDigest occupiedCandidate
+                  , tlsPendingCollisionDisposition = TlsPendingCollisionAdoptObserved
+                  }
+          applied <- applyTlsEnvelopeAtSelected workflow occupiedCandidate occupiedEnvelope
+          case applied of
+            Left
+              ( TlsWorkflowHomeAgentFailed
+                  TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed
+                ) ->
+                pure (Left (TlsWorkflowRetentionVersionUnopenable version))
+            Left err -> pure (Left err)
+            Right receipt
+              | tlsTargetRestoredReadBackSource receipt
+                  == retainedSourceSecret occupiedCandidate ->
+                  stagePendingCollisionAndResume
+                    ( TlsPendingCollisionExpectedBoundedSuccessor
+                        originalRecovery
+                        originalDisplaced
+                    )
+                    pending
+                    recovery
+                    occupiedCandidate
+                    occupiedEnvelope
+              | otherwise -> pure (Left TlsWorkflowSourceReadBackMismatch)
+        Right TlsVersionEnvelopeCorrupt ->
+          pure (Left (TlsWorkflowRetentionVersionCorrupt version))
+        Right TlsVersionEnvelopeMissing ->
+          pure (Left (TlsWorkflowAdapterFailed originalError))
+
+  recoverOrdinaryPendingUnopenable displaced recovery = do
+    let successorVersion =
+          case tlsPendingCollisionVersion recovery of
+            RetentionVersion version -> RetentionVersion (version + 1)
+    observed <-
+      observeTlsRetentionAuthorityVersion
+        (tlsWorkflowAdapter workflow)
+        successorVersion
+    case first TlsWorkflowAdapterFailed observed of
+      Left err -> pure (Left err)
+      Right TlsVersionEnvelopeCorrupt ->
+        pure (Left (TlsWorkflowRetentionVersionCorrupt successorVersion))
+      Right (TlsVersionEnvelopePresent _ _) ->
+        pure (Left (TlsWorkflowRetentionVersionOccupied successorVersion))
+      Right TlsVersionEnvelopeMissing -> do
+        homePreparedResult <-
+          prepareTlsDekDestination (tlsWorkflowRetainedHomeAgent workflow)
+        case first TlsWorkflowHomeAgentFailed homePreparedResult of
+          Left err -> pure (Left err)
+          Right homePrepared -> do
+            retainedResult <-
+              retainSelectedPublicEdgeTls
+                (tlsWorkflowSelectedAgent workflow)
+                successorVersion
+                (tlsDekPreparedPublicKey homePrepared)
+            case retainedResult of
+              Left (TlsTargetAgentClientHttpStatus 404 _) ->
+                pure
+                  ( Left
+                      (TlsWorkflowRetentionSuccessorSourceMissing successorVersion)
+                  )
+              Left err -> pure (Left (TlsWorkflowSelectedAgentFailed err))
+              Right retained -> do
+                wrappedResult <-
+                  wrapRetainedHomeTlsDek
+                    (tlsWorkflowRetainedHomeAgent workflow)
+                    homePrepared
+                    (tlsTargetRetainedDekEnvelope retained)
+                case first TlsWorkflowHomeAgentFailed wrappedResult of
+                  Left err -> pure (Left err)
+                  Right wrapped ->
+                    case mkTlsSealedEnvelope
+                      (tlsTargetRetainedCertificateCiphertext retained)
+                      (TextEncoding.encodeUtf8 (tlsWrappedDekText wrapped)) of
+                      Left detail -> pure (Left (TlsWorkflowEnvelopeInvalid detail))
+                      Right envelope ->
+                        stagePendingCollisionAndResume
+                          TlsPendingCollisionExpectedOrdinary
+                          displaced
+                          recovery
+                          (referenceFor successorVersion retained envelope)
+                          envelope
+
+  stagePendingCollisionAndResume expectedOrigin displaced recovery candidate envelope = do
+    staged <-
+      stageTlsRetentionAfterPendingCollision
+        (tlsWorkflowAuthority workflow)
+        (tlsPendingApproval displaced)
+        recovery
+        candidate
+        envelope
+    case first TlsWorkflowAuthorityFailed staged of
+      Left err -> pure (Left err)
+      Right outcome ->
+        let expected =
+              TlsRetentionPending
+                { tlsPendingPrevious = tlsPendingPrevious displaced
+                , tlsPendingApproval = tlsPendingApproval displaced
+                , tlsPendingCandidate = candidate
+                , tlsPendingEnvelope = envelope
+                }
+         in case validatePendingCollisionStaging expectedOrigin recovery expected outcome of
+              Left err -> pure (Left err)
+              Right pending -> resumePending (stagingOutcomeState outcome) pending
 
   recoverUnopenableCollision evidence collision displaced = do
     let successorVersion = RetentionVersion 3
@@ -904,6 +1483,120 @@ validateLegacyRecoverySuccessorStaging expectedEvidence expectedSuccessor expect
               && pending == expectedPending ->
               Right pending
         _ -> Left TlsWorkflowStagingStateMismatch
+
+validatePendingCollisionStaging
+  :: TlsPendingCollisionExpectedOrigin
+  -> TlsPendingCollisionRecovery
+  -> TlsRetentionPending
+  -> TlsAuthorityStagingOutcome
+  -> Either TlsRetentionWorkflowError TlsRetentionPending
+validatePendingCollisionStaging expectedOrigin expectedRecovery expectedPending outcome =
+  let state = case outcome of
+        TlsAuthorityStagingCommitted value -> value
+        TlsAuthorityStagingAlreadyPending value -> value
+   in case state of
+        TlsRetentionPendingCollisionRebasedState recovery _ pending
+          | expectedOrigin == TlsPendingCollisionExpectedOrdinary
+              && recovery == expectedRecovery
+              && pending == expectedPending ->
+              Right pending
+        TlsRetentionPendingCollisionSuccessorState recovery _ pending
+          | expectedOrigin == TlsPendingCollisionExpectedOrdinary
+              && recovery == expectedRecovery
+              && pending == expectedPending ->
+              Right pending
+        TlsRetentionUnopenableSuccessorCollisionRebasedState evidence recovery _ pending
+          | expectedOrigin == TlsPendingCollisionExpectedUnopenableSuccessor evidence
+              && recovery == expectedRecovery
+              && pending == expectedPending ->
+              Right pending
+        TlsRetentionLegacyRecoverySuccessorCollisionRebasedState
+          evidence
+          successor
+          recovery
+          _
+          pending
+            | expectedOrigin
+                == TlsPendingCollisionExpectedLegacyRecoverySuccessor evidence successor
+                && recovery == expectedRecovery
+                && pending == expectedPending ->
+                Right pending
+        TlsRetentionPendingCollisionSuccessorRebasedState
+          originalRecovery
+          originalDisplaced
+          recovery
+          _
+          pending
+            | expectedOrigin
+                == TlsPendingCollisionExpectedBoundedSuccessor
+                  originalRecovery
+                  originalDisplaced
+                && recovery == expectedRecovery
+                && pending == expectedPending ->
+                Right pending
+        TlsRetentionLegacyRecoveryTerminalSuccessorState
+          evidence
+          successor
+          recovery
+          _
+          pending
+            | expectedOrigin
+                == TlsPendingCollisionExpectedLegacyRecoverySuccessor evidence successor
+                && recovery == expectedRecovery
+                && pending == expectedPending ->
+                Right pending
+        TlsRetentionLegacyRecoveryTerminalSuccessorRebasedState
+          evidence
+          successor
+          originalRecovery
+          originalDisplaced
+          recovery
+          _
+          pending
+            | expectedOrigin
+                == TlsPendingCollisionExpectedLegacyRecoveryTerminalSuccessor
+                  evidence
+                  successor
+                  originalRecovery
+                  originalDisplaced
+                && recovery == expectedRecovery
+                && pending == expectedPending ->
+                Right pending
+        _ -> Left TlsWorkflowStagingStateMismatch
+
+validateTerminalReplacementStaging
+  :: TlsLegacyRecoveryEvidence
+  -> TlsLegacyRecoverySuccessorEvidence
+  -> TlsPendingCollisionRecovery
+  -> TlsTerminalReplacementEvidence
+  -> TlsRetentionPending
+  -> TlsAuthorityStagingOutcome
+  -> Either TlsRetentionWorkflowError TlsRetentionPending
+validateTerminalReplacementStaging
+  expectedEvidence
+  expectedSuccessor
+  expectedRecovery
+  expectedTerminalEvidence
+  expectedPending
+  outcome =
+    let state = case outcome of
+          TlsAuthorityStagingCommitted value -> value
+          TlsAuthorityStagingAlreadyPending value -> value
+     in case state of
+          TlsRetentionLegacyRecoveryTerminalReplacementState
+            evidence
+            successor
+            recovery
+            _
+            terminalEvidence
+            pending
+              | evidence == expectedEvidence
+                  && successor == expectedSuccessor
+                  && recovery == expectedRecovery
+                  && terminalEvidence == expectedTerminalEvidence
+                  && pending == expectedPending ->
+                  Right pending
+          _ -> Left TlsWorkflowStagingStateMismatch
 
 -- | The Authority may only answer with the one durable state this transition
 -- produces, carrying exactly the evidence and the /complete/ pending the host

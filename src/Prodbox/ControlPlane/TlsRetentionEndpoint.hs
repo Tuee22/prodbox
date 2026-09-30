@@ -58,7 +58,9 @@ module Prodbox.ControlPlane.TlsRetentionEndpoint
   )
 where
 
-import Codec.Serialise (Serialise)
+import Codec.Serialise (Serialise (decode, encode))
+import Codec.Serialise.Decoding (decodeListLen, decodeWord)
+import Codec.Serialise.Encoding (encodeListLen, encodeWord)
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.List (find)
@@ -76,6 +78,7 @@ import Prodbox.Lifecycle.Authority.TlsRetention
   ( RetainedTlsRef (..)
   , RetentionVersion
   , TlsSealedEnvelope
+  , TlsTerminalReplacementEvidence
   , mkTlsSealedEnvelope
   , tlsCertificateCiphertextBytes
   , tlsMaximumCertificateCiphertextBytes
@@ -88,9 +91,48 @@ import Prodbox.Lifecycle.Authority.TlsRetention
 data TlsStorePayload = TlsStorePayload
   { tlsStoreCandidate :: !RetainedTlsRef
   , tlsStoreEnvelope :: !TlsSealedEnvelope
+  , tlsStoreTerminalReplacement :: !(Maybe TlsTerminalReplacementEvidence)
   }
   deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
+
+-- | Keep ordinary immutable-store requests byte-identical to the original
+-- two-field payload while adding the terminal replacement command as the only
+-- wider form.  The generic product codec writes a zero constructor tag before
+-- its fields, so the legacy payload has arity three.  A generic three-field
+-- derivation would widen every ordinary request to arity four and silently
+-- break rolling peers despite the shared request envelope still being v1.
+instance Serialise TlsStorePayload where
+  encode payload =
+    case tlsStoreTerminalReplacement payload of
+      Nothing ->
+        encodeListLen 3
+          <> encodeWord 0
+          <> encode (tlsStoreCandidate payload)
+          <> encode (tlsStoreEnvelope payload)
+      Just evidence ->
+        encodeListLen 4
+          <> encodeWord 0
+          <> encode (tlsStoreCandidate payload)
+          <> encode (tlsStoreEnvelope payload)
+          <> encode evidence
+  decode = do
+    elements <- decodeListLen
+    tag <- decodeWord
+    if tag /= 0
+      then fail ("unsupported TLS store payload tag: " ++ show tag)
+      else pure ()
+    candidate <- decode
+    envelope <- decode
+    terminalReplacement <- case elements of
+      3 -> pure Nothing
+      4 -> Just <$> decode
+      _ -> fail ("unsupported TLS store payload arity: " ++ show elements)
+    pure
+      TlsStorePayload
+        { tlsStoreCandidate = candidate
+        , tlsStoreEnvelope = envelope
+        , tlsStoreTerminalReplacement = terminalReplacement
+        }
 
 newtype TlsRestorePayload = TlsRestorePayload
   { tlsRestoreReference :: RetainedTlsRef
@@ -238,6 +280,11 @@ data TlsRetentionRepository m = TlsRetentionRepository
   , restoreTlsEnvelope
       :: RetainedTlsRef
       -> m (Either TlsRestoreRepositoryFailure TlsEnvelopeObservation)
+  , replaceTlsEnvelope
+      :: TlsTerminalReplacementEvidence
+      -> RetainedTlsRef
+      -> TlsSealedEnvelope
+      -> m (Either TlsStoreRepositoryFailure TlsRetentionReceipt)
   , observeTlsEnvelopeVersion
       :: RetentionVersion
       -> m (Either TlsRestoreRepositoryFailure TlsVersionEnvelopeObservation)
@@ -384,11 +431,18 @@ serveTlsStoreRequest maximumBytes repository body =
               /= tlsSealedEnvelopeDigest (tlsStoreEnvelope payload) ->
               pure TlsStoreDigestMismatch
           | otherwise -> do
-              stored <-
-                storeTlsEnvelope
-                  repository
-                  (tlsStoreCandidate payload)
-                  (tlsStoreEnvelope payload)
+              stored <- case tlsStoreTerminalReplacement payload of
+                Nothing ->
+                  storeTlsEnvelope
+                    repository
+                    (tlsStoreCandidate payload)
+                    (tlsStoreEnvelope payload)
+                Just evidence ->
+                  replaceTlsEnvelope
+                    repository
+                    evidence
+                    (tlsStoreCandidate payload)
+                    (tlsStoreEnvelope payload)
               pure $ case stored of
                 Left failure -> TlsStoreFailed failure
                 Right receipt -> TlsStoreSucceeded receipt

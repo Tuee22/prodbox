@@ -105,7 +105,10 @@ data FramedSubprocessExchangeTransportStage
   | FramedExchangeInitialPayloadWrite
   | FramedExchangeProvisionalRead
   | FramedExchangeDecisionContinuationWrite
-  | FramedExchangeCompletionCollect
+  | FramedExchangeCompletionFrameRead
+  | FramedExchangeCompletionStderrRead
+  | FramedExchangeCompletionTrailingStdoutRead
+  | FramedExchangeCompletionProcessWait
   | FramedExchangeWallClockTimeout
   deriving (Bounded, Enum, Eq, Show)
 
@@ -113,6 +116,7 @@ data FramedSubprocessExchangeError errorValue
   = FramedSubprocessExchangeTransportError
       !FramedSubprocessExchangeTransportStage
       !AppError
+  | FramedSubprocessExchangeProvisionalReadError !AppError !ProcessOutput
   | FramedSubprocessExchangeDecisionError !errorValue !ProcessOutput
 
 data BackgroundProcess = BackgroundProcess
@@ -331,14 +335,18 @@ captureSubprocessFramedExchangeBounded limits initialPayload decide spec
             (boundedSubprocessMaximumStdoutBytes limits)
             (Typed.getStdout process)
         case provisional of
-          Left err ->
-            pure
-              ( Left
+          Left err -> do
+            closeHandleQuietly (Typed.getStdin process)
+            earlyOutput <- collectProvisionalFailureOutput process stderrReader
+            pure $ case earlyOutput of
+              Left _ ->
+                Left
                   ( FramedSubprocessExchangeTransportError
                       FramedExchangeProvisionalRead
                       err
                   )
-              )
+              Right output ->
+                Left (FramedSubprocessExchangeProvisionalReadError err output)
           Right (provisionalBytes, consumedBytes) -> do
             decision <- decide provisionalBytes
             continueAfterDecision
@@ -378,10 +386,10 @@ captureSubprocessFramedExchangeBounded limits initialPayload decide spec
             stderrReader
             (boundedSubprocessMaximumStdoutBytes limits - consumedBytes)
         pure $ case completed of
-          Left err ->
+          Left (stage, err) ->
             Left
               ( FramedSubprocessExchangeTransportError
-                  FramedExchangeCompletionCollect
+                  stage
                   err
               )
           Right output -> case decision of
@@ -451,15 +459,25 @@ collectFramedExchangeProcess
   :: Typed.Process Handle Handle Handle
   -> Async BoundedStreamResult
   -> Int
-  -> IO (Either AppError ProcessOutput)
+  -> IO
+       ( Either
+           (FramedSubprocessExchangeTransportStage, AppError)
+           ProcessOutput
+       )
 collectFramedExchangeProcess process stderrReader remainingStdoutBytes = do
   finalFrameResult <- readFramedHandle remainingStdoutBytes (Typed.getStdout process)
   stderrResult <- wait stderrReader
   case (finalFrameResult, stderrResult) of
-    (Left err, _) -> pure (Left err)
+    (Left err, _) -> pure (Left (FramedExchangeCompletionFrameRead, err))
     (_, BoundedStreamTooLarge) ->
-      pure (Left (boundedSubprocessError "bounded subprocess stderr exceeds its configured ceiling"))
-    (_, BoundedStreamReadFailed err) -> pure (Left (subprocessIOException err))
+      pure
+        ( Left
+            ( FramedExchangeCompletionStderrRead
+            , boundedSubprocessError "bounded subprocess stderr exceeds its configured ceiling"
+            )
+        )
+    (_, BoundedStreamReadFailed err) ->
+      pure (Left (FramedExchangeCompletionStderrRead, subprocessIOException err))
     (Right (finalBytes, finalConsumed), BoundedStreamBytes stderrBytes) -> do
       trailingResult <-
         readBoundedHandle
@@ -467,16 +485,36 @@ collectFramedExchangeProcess process stderrReader remainingStdoutBytes = do
           (Typed.getStdout process)
       case trailingResult of
         BoundedStreamTooLarge ->
-          pure (Left (boundedSubprocessError "bounded subprocess stdout exceeds its configured ceiling"))
-        BoundedStreamReadFailed err -> pure (Left (subprocessIOException err))
+          pure
+            ( Left
+                ( FramedExchangeCompletionTrailingStdoutRead
+                , boundedSubprocessError "bounded subprocess stdout exceeds its configured ceiling"
+                )
+            )
+        BoundedStreamReadFailed err ->
+          pure
+            ( Left
+                ( FramedExchangeCompletionTrailingStdoutRead
+                , subprocessIOException err
+                )
+            )
         BoundedStreamBytes trailing
           | not (ByteString.null trailing) ->
-              pure (Left (boundedSubprocessError "bounded subprocess emitted trailing framed output"))
+              pure
+                ( Left
+                    ( FramedExchangeCompletionTrailingStdoutRead
+                    , boundedSubprocessError "bounded subprocess emitted trailing framed output"
+                    )
+                )
           | otherwise -> do
               exitResult <-
                 try (Typed.waitExitCode process) :: IO (Either IOException ExitCode)
               pure $ case exitResult of
-                Left err -> Left (subprocessIOException err)
+                Left err ->
+                  Left
+                    ( FramedExchangeCompletionProcessWait
+                    , subprocessIOException err
+                    )
                 Right exitCode ->
                   Right
                     ProcessOutput
@@ -484,6 +522,33 @@ collectFramedExchangeProcess process stderrReader remainingStdoutBytes = do
                       , processStdout = BL8.unpack (LazyByteString.fromStrict finalBytes)
                       , processStderr = BL8.unpack (LazyByteString.fromStrict stderrBytes)
                       }
+
+-- | Retain only the already-bounded stderr and exit status when a child closes
+-- stdout before its provisional frame. The partially consumed framed stdout
+-- is deliberately discarded: it may contain attacker-controlled bytes and is
+-- not needed to classify an exact domain-owned refusal. A still-running child
+-- is stopped here, as it would be by the enclosing bracket immediately after
+-- the same terminal read failure.
+collectProvisionalFailureOutput
+  :: Typed.Process Handle Handle Handle
+  -> Async BoundedStreamResult
+  -> IO (Either AppError ProcessOutput)
+collectProvisionalFailureOutput process stderrReader = do
+  stopProcessQuietly process
+  stderrResult <- wait stderrReader
+  exitResult <- try (Typed.waitExitCode process) :: IO (Either IOException ExitCode)
+  pure $ case (stderrResult, exitResult) of
+    (BoundedStreamTooLarge, _) ->
+      Left (boundedSubprocessError "bounded subprocess stderr exceeds its configured ceiling")
+    (BoundedStreamReadFailed err, _) -> Left (subprocessIOException err)
+    (_, Left err) -> Left (subprocessIOException err)
+    (BoundedStreamBytes stderrBytes, Right exitCode) ->
+      Right
+        ProcessOutput
+          { processExitCode = exitCode
+          , processStdout = ""
+          , processStderr = BL8.unpack (LazyByteString.fromStrict stderrBytes)
+          }
 
 closeHandleQuietly :: Handle -> IO ()
 closeHandleQuietly handle = do

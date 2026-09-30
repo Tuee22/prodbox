@@ -16,9 +16,21 @@ import Data.Either (isLeft, isRight)
 import Data.IORef
 import Data.Text (Text)
 import GHC.Generics (Generic)
-import Prodbox.ControlPlane.Codec (encodeControlPlaneRequest)
+import Prodbox.ControlPlane.AuthenticatedTransport
+  ( AuthenticatedClientError (..)
+  )
+import Prodbox.ControlPlane.Client (ControlPlaneClientError (..))
+import Prodbox.ControlPlane.Codec
+  ( ControlPlaneRequestCodecError (..)
+  , encodeControlPlaneRequest
+  )
 import Prodbox.ControlPlane.TlsRetentionAuthority
+import Prodbox.ControlPlane.TlsRetentionAuthorityClient
+  ( TlsRetentionAuthorityClientError (..)
+  , renderTlsRetentionAuthorityClientCause
+  )
 import Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
+import Prodbox.Http.Client (HttpError (..))
 import Prodbox.Lifecycle.Authority.TlsRetention
 import Prodbox.Lifecycle.CheckpointAuthority (ModelBCodec (..))
 import TestSupport
@@ -47,9 +59,284 @@ data LegacyTlsAuthorityResponse
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- The exact pre-terminal-replacement staging request.  Its generic encoding is
+-- the byte-level rolling peer the production compatibility instance preserves.
+data LegacyTlsAuthorityStageRequest
+  = LegacyTlsAuthorityStageRequest
+      !Text
+      !Text
+      !KeyRotationApproval
+      !(Maybe TlsPendingCollisionRecovery)
+      !RetainedTlsRef
+      !TlsSealedEnvelope
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
 lifecycleAuthorityTlsRetentionSuite :: SuiteBuilder ()
 lifecycleAuthorityTlsRetentionSuite =
   describe "Sprint 4.48 Lifecycle Authority TLS-retention promotion/restore fold" $ do
+    it
+      "CASCADE-QUALIFICATION-TLS-AUTHORITY-CLIENT-CAUSE-DISCARDED-2026-09-24 retains one closed value-free client cause"
+      $ do
+        let transport = TlsRetentionAuthorityClientTransportFailed
+            nestedTransport = transport . AuthenticatedClientTransportFailed
+            nestedHttp = nestedTransport . ControlPlaneTransportFailed
+            cases =
+              [
+                ( TlsRetentionAuthorityClientSlotInvalid
+                    TlsRetentionSlotSubstrateInvalid
+                , "slot/substrate-invalid"
+                )
+              ,
+                ( TlsRetentionAuthorityClientSlotInvalid
+                    TlsRetentionSlotScopeEmpty
+                , "slot/scope-empty"
+                )
+              ,
+                ( TlsRetentionAuthorityClientSlotInvalid
+                    TlsRetentionSlotScopeContainsControl
+                , "slot/scope-control"
+                )
+              ,
+                ( TlsRetentionAuthorityClientSlotInvalid
+                    TlsRetentionSlotScopeContainsWhitespace
+                , "slot/scope-whitespace"
+                )
+              ,
+                ( TlsRetentionAuthorityClientSlotInvalid
+                    (TlsRetentionSlotScopeTooLong 999 1)
+                , "slot/scope-too-long"
+                )
+              ,
+                ( transport (AuthenticatedClientSignerUnavailable "secret signer detail")
+                , "authenticated/signer-unavailable"
+                )
+              ,
+                ( transport (AuthenticatedClientScopeUnavailable "secret scope detail")
+                , "authenticated/scope-unavailable"
+                )
+              ,
+                ( transport (AuthenticatedClientEpochUnavailable "secret epoch detail")
+                , "authenticated/epoch-unavailable"
+                )
+              ,
+                ( transport (AuthenticatedClientDeadlineUnavailable "secret deadline detail")
+                , "authenticated/deadline-unavailable"
+                )
+              ,
+                ( transport (AuthenticatedClientNonceUnavailable "secret nonce detail")
+                , "authenticated/nonce-unavailable"
+                )
+              ,
+                ( nestedTransport ControlPlaneEndpointEmpty
+                , "authenticated/transport/endpoint-empty"
+                )
+              ,
+                ( nestedTransport ControlPlaneEndpointContainsWhitespace
+                , "authenticated/transport/endpoint-whitespace"
+                )
+              ,
+                ( nestedTransport ControlPlaneEndpointContainsControl
+                , "authenticated/transport/endpoint-control"
+                )
+              ,
+                ( nestedTransport (ControlPlaneEndpointTooLong 999 1)
+                , "authenticated/transport/endpoint-too-long"
+                )
+              ,
+                ( nestedTransport ControlPlaneEndpointSchemeUnsupported
+                , "authenticated/transport/endpoint-scheme-unsupported"
+                )
+              ,
+                ( nestedTransport ControlPlaneEndpointAuthorityInvalid
+                , "authenticated/transport/endpoint-authority-invalid"
+                )
+              ,
+                ( nestedTransport ControlPlaneResponseLimitMustBePositive
+                , "authenticated/transport/response-limit-invalid"
+                )
+              ,
+                ( nestedHttp (HttpConnectionFailure "secret connection detail")
+                , "authenticated/transport/http/connection-failed"
+                )
+              ,
+                ( nestedHttp (HttpTimeout "secret timeout detail")
+                , "authenticated/transport/http/timeout"
+                )
+              ,
+                ( nestedHttp (HttpStatus 503 "secret status detail")
+                , "authenticated/transport/http/status/server"
+                )
+              ,
+                ( nestedHttp (HttpDecode "secret decode detail")
+                , "authenticated/transport/http/decode-failed"
+                )
+              ,
+                ( nestedTransport (ControlPlaneResponseTooLarge 999 1)
+                , "authenticated/transport/response-too-large"
+                )
+              ,
+                ( TlsRetentionAuthorityClientResponseInvalid
+                    ControlPlaneRequestTooLarge
+                , "response-codec/too-large"
+                )
+              ,
+                ( TlsRetentionAuthorityClientResponseInvalid
+                    ControlPlaneRequestInvalid
+                , "response-codec/invalid"
+                )
+              ,
+                ( TlsRetentionAuthorityClientResponseInvalid
+                    ControlPlaneRequestUnsupportedVersion
+                , "response-codec/unsupported-version"
+                )
+              ,
+                ( TlsRetentionAuthorityClientResponseInvalid
+                    ControlPlaneRequestNonCanonical
+                , "response-codec/non-canonical"
+                )
+              ,
+                ( TlsRetentionAuthorityClientHttpStatus 400
+                , "response-status/bad-request"
+                )
+              ,
+                ( TlsRetentionAuthorityClientHttpStatus 429
+                , "response-status/too-many-requests"
+                )
+              ,
+                ( TlsRetentionAuthorityClientHttpStatus 503
+                , "response-status/server"
+                )
+              ,
+                ( TlsRetentionAuthorityClientRemoteRefused "request-refused"
+                , "remote-refusal/request-refused"
+                )
+              ,
+                ( TlsRetentionAuthorityClientRemoteRefused "secret remote detail"
+                , "remote-refusal/other"
+                )
+              ,
+                ( TlsRetentionAuthorityClientUnavailable
+                , "remote-unavailable"
+                )
+              ,
+                ( TlsRetentionAuthorityClientConcurrentWrite
+                , "remote-concurrent-write"
+                )
+              ,
+                ( TlsRetentionAuthorityClientResponseShapeMismatch
+                , "response-shape-mismatch"
+                )
+              ]
+        forM_ cases $ \(failure, expected) ->
+          renderTlsRetentionAuthorityClientCause failure `shouldBe` expected
+    it
+      "CASCADE-QUALIFICATION-TLS-AUTHORITY-REMOTE-REFUSAL-OTHER-2026-09-24 retains every endpoint-authored refusal and rejects arbitrary detail"
+      $ do
+        let authoredRefusals =
+              [ "request-refused"
+              , "source-not-reobserved"
+              , "adapter-readback-mismatch"
+              , "stale-version"
+              , "validity-regression"
+              , "unapproved-key-change"
+              , "pending-missing"
+              , "pending-mismatch"
+              , "envelope-invalid"
+              , "reference-invalid"
+              , "digest-mismatch"
+              , "version-mismatch"
+              , "concurrent-pending"
+              , "pending-collision-state-not-pending"
+              , "pending-collision-concurrent-pending"
+              , "pending-collision-evidence-invalid"
+              , "pending-collision-envelope-invalid"
+              , "pending-collision-reference-invalid"
+              , "pending-collision-digest-mismatch"
+              , "terminal-replacement-state-not-successor"
+              , "terminal-replacement-concurrent-pending"
+              , "terminal-replacement-evidence-invalid"
+              , "terminal-replacement-evidence-invalid/malformed"
+              , "terminal-replacement-evidence-invalid/version-lineage"
+              , "terminal-replacement-evidence-invalid/digest-lineage"
+              , "terminal-replacement-evidence-invalid/approval-lineage"
+              , "terminal-replacement-evidence-invalid/certificate-lineage"
+              , "terminal-replacement-evidence-invalid/source-lineage"
+              , "terminal-replacement-evidence-invalid/source-uid-lineage"
+              , "terminal-replacement-evidence-invalid/source-resource-version-lineage"
+              , "terminal-replacement-evidence-invalid/recovery-disposition"
+              , "terminal-replacement-envelope-invalid"
+              , "terminal-replacement-reference-invalid"
+              , "terminal-replacement-digest-mismatch"
+              , "legacy-recovery-state-not-empty"
+              , "legacy-recovery-concurrent-pending"
+              , "legacy-recovery-evidence-invalid"
+              , "legacy-recovery-envelope-invalid"
+              , "legacy-recovery-reference-invalid"
+              , "legacy-recovery-digest-mismatch"
+              , "legacy-recovery-version-mismatch"
+              , "legacy-recovery-collision-evidence-invalid"
+              , "unopenable-successor-evidence-invalid"
+              , "unopenable-successor-skipped-version-mismatch"
+              , "unopenable-successor-skipped-digest-reused"
+              , "unopenable-successor-envelope-invalid"
+              , "unopenable-successor-reference-invalid"
+              , "unopenable-successor-digest-mismatch"
+              , "unopenable-successor-version-mismatch"
+              , "unopenable-successor-state-not-current"
+              , "unopenable-successor-concurrent-pending"
+              , "unopenable-successor-validity-regression"
+              , "unopenable-successor-unapproved-key-change"
+              ]
+        forM_ authoredRefusals $ \detail ->
+          renderTlsRetentionAuthorityClientCause
+            (TlsRetentionAuthorityClientRemoteRefused detail)
+            `shouldBe` ("remote-refusal/" <> detail)
+        renderTlsRetentionAuthorityClientCause
+          (TlsRetentionAuthorityClientRemoteRefused "secret remote detail")
+          `shouldBe` "remote-refusal/other"
+    it
+      "CASCADE-QUALIFICATION-TLS-AUTHORITY-REPOSITORY-CAUSE-DISCARDED-2026-09-24 retains one closed value-free repository cause"
+      $ do
+        diagnostics <- newIORef ([] :: [Text])
+        let observeCases =
+              [ (TlsRetentionAuthorityReadCorrupt, "read/corrupt")
+              , (TlsRetentionAuthorityReadEndpointUnready, "read/endpoint-unready")
+              , (TlsRetentionAuthorityReadUnobservable, "read/unobservable")
+              ]
+            writeCases =
+              [ (TlsRetentionAuthorityWriteRefusedCorrupt, "write/refused-corrupt")
+              , (TlsRetentionAuthorityWriteEndpointUnready, "write/endpoint-unready")
+              , (TlsRetentionAuthorityWriteUnobservable, "write/unobservable")
+              ]
+            repositoryFor
+              :: Either
+                   TlsRetentionAuthorityReadFailure
+                   (Maybe (StoredTlsRetentionState Int))
+              -> Either TlsRetentionAuthorityWriteFailure Bool
+              -> TlsRetentionAuthorityRepository IO Int
+            repositoryFor readResult writeResult =
+              diagnoseTlsRetentionAuthorityRepository
+                (\diagnostic -> modifyIORef' diagnostics (<> [diagnostic]))
+                TlsRetentionAuthorityRepository
+                  { readTlsRetentionState = pure readResult
+                  , compareAndSwapTlsRetentionState = \_ _ -> pure writeResult
+                  }
+        forM_ observeCases $ \(failure, expected) -> do
+          writeIORef diagnostics []
+          let repository =
+                repositoryFor
+                  (Left failure)
+                  (Left TlsRetentionAuthorityWriteUnobservable)
+          readTlsRetentionState repository
+            `shouldReturn` Left failure
+          readIORef diagnostics `shouldReturn` [expected]
+        forM_ writeCases $ \(failure, expected) -> do
+          writeIORef diagnostics []
+          let repository = repositoryFor (Right Nothing) (Left failure)
+          compareAndSwapTlsRetentionState repository Nothing initialTlsRetentionState
+            `shouldReturn` Left failure
+          readIORef diagnostics `shouldReturn` [expected]
     it "durably stages the first exact envelope before promotion" $ do
       let (staging, pending) =
             stepTlsStaging
@@ -77,6 +364,138 @@ lifecycleAuthorityTlsRetentionSuite =
         `shouldBe` TlsStagingNoop pendingRecord1
       decideTlsStaging KeyRotationNotApproved pending1 ref1Alternate envelope1Alternate
         `shouldBe` TlsStagingRefused TlsStageConcurrentPending
+
+    it "rebases an ordinary pending only onto its exact authenticated collision occupant" $ do
+      let decision =
+            decideTlsPendingCollisionStaging
+              KeyRotationNotApproved
+              pending2
+              ordinaryCollisionAdoption
+              ref2Collision
+              envelope2Collision
+          state = applyTlsPendingCollisionStaging decision pending2
+      decision
+        `shouldBe` TlsPendingCollisionRebased
+          ordinaryCollisionAdoption
+          ordinaryDisplacedIdentityRecord
+          ordinaryCollisionPendingRecord
+      state `shouldBe` ordinaryCollisionRebasedState
+      currentRetainedRef state `shouldBe` Just ref1
+      pendingTlsRetention state `shouldBe` Just ordinaryCollisionPendingRecord
+      decideTlsPendingCollisionStaging
+        KeyRotationNotApproved
+        state
+        ordinaryCollisionAdoption
+        ref2Collision
+        envelope2Collision
+        `shouldBe` TlsPendingCollisionStagingNoop ordinaryCollisionPendingRecord
+      decideTlsPromotion KeyRotationNotApproved goodEvidence state ref2Collision
+        `shouldBe` TlsPromoted ref2Collision
+
+    it "steps an ordinary pending past one proven-unopenable collision and no farther" $ do
+      let decision =
+            decideTlsPendingCollisionStaging
+              KeyRotationNotApproved
+              pending2
+              ordinaryCollisionSuccessor
+              ref3Recovery
+              envelope3Recovery
+          state = applyTlsPendingCollisionStaging decision pending2
+      decision
+        `shouldBe` TlsPendingCollisionSuccessorStaged
+          ordinaryCollisionSuccessor
+          ordinaryDisplacedIdentityRecord
+          ordinaryCollisionSuccessorPendingRecord
+      state `shouldBe` ordinaryCollisionSuccessorState
+      currentRetainedRef state `shouldBe` Just ref1
+      decideTlsPromotion KeyRotationNotApproved goodEvidence state ref3Recovery
+        `shouldBe` TlsPromoted ref3Recovery
+      decideTlsPendingCollisionStaging
+        KeyRotationNotApproved
+        state
+        ordinaryCollisionSuccessor
+        (ref3Recovery {retainedVersion = RetentionVersion 4})
+        envelope3Recovery
+        `shouldBe` TlsPendingCollisionStagingRefused TlsPendingCollisionStageConcurrentPending
+
+    it "rebases the current-backed bounded successor only at its exact version" $ do
+      let decision =
+            decideTlsPendingCollisionStaging
+              KeyRotationNotApproved
+              ordinaryCollisionSuccessorState
+              recoverySuccessorCollisionAdoption
+              ref3Collision
+              envelope3Collision
+          state = applyTlsPendingCollisionStaging decision ordinaryCollisionSuccessorState
+      decision
+        `shouldBe` TlsPendingCollisionBoundedSuccessorRebased
+          ordinaryCollisionSuccessor
+          ordinaryDisplacedIdentityRecord
+          recoverySuccessorCollisionAdoption
+          ordinarySuccessorDisplacedIdentity
+          ordinarySuccessorCollisionPendingRecord
+      state `shouldBe` ordinarySuccessorCollisionRebasedState
+      currentRetainedRef state `shouldBe` Just ref1
+      decideTlsPendingCollisionStaging
+        KeyRotationNotApproved
+        state
+        recoverySuccessorCollisionAdoption
+        ref3Collision
+        envelope3Collision
+        `shouldBe` TlsPendingCollisionStagingNoop ordinarySuccessorCollisionPendingRecord
+      decideTlsPromotion KeyRotationNotApproved goodEvidence state ref3Collision
+        `shouldBe` TlsPromoted ref3Collision
+
+    it "refuses a second skip from the current-backed bounded successor" $ do
+      decideTlsPendingCollisionStaging
+        KeyRotationNotApproved
+        ordinaryCollisionSuccessorState
+        ( recoverySuccessorCollisionAdoption
+            { tlsPendingCollisionDisposition = TlsPendingCollisionStepPastUnopenable
+            }
+        )
+        (ref3Collision {retainedVersion = RetentionVersion 4})
+        envelope3Collision
+        `shouldBe` TlsPendingCollisionStagingRefused TlsPendingCollisionStageEvidenceInvalid
+
+    it "rebases an already-skipped successor only onto its authenticated exact occupant" $ do
+      let decision =
+            decideTlsPendingCollisionStaging
+              KeyRotationNotApproved
+              unopenableSuccessorPending4
+              unopenableSuccessorCollisionAdoption
+              ref4Collision
+              envelope4Collision
+          state = applyTlsPendingCollisionStaging decision unopenableSuccessorPending4
+      decision
+        `shouldBe` TlsPendingCollisionUnopenableSuccessorRebased
+          unopenableEvidence3
+          unopenableSuccessorCollisionAdoption
+          unopenableSuccessorDisplacedIdentity
+          unopenableSuccessorCollisionPendingRecord
+      state `shouldBe` unopenableSuccessorCollisionRebasedState
+      currentRetainedRef state `shouldBe` Just ref2
+      decideTlsPendingCollisionStaging
+        KeyRotationNotApproved
+        state
+        unopenableSuccessorCollisionAdoption
+        ref4Collision
+        envelope4Collision
+        `shouldBe` TlsPendingCollisionStagingNoop unopenableSuccessorCollisionPendingRecord
+      decideTlsPromotion KeyRotationNotApproved goodEvidence state ref4Collision
+        `shouldBe` TlsPromoted ref4Collision
+
+    it "never admits a second skip from an already-skipped successor collision" $ do
+      decideTlsPendingCollisionStaging
+        KeyRotationNotApproved
+        unopenableSuccessorPending4
+        ( unopenableSuccessorCollisionAdoption
+            { tlsPendingCollisionDisposition = TlsPendingCollisionStepPastUnopenable
+            }
+        )
+        (ref4Collision {retainedVersion = RetentionVersion 5})
+        envelope4Collision
+        `shouldBe` TlsPendingCollisionStagingRefused TlsPendingCollisionStageEvidenceInvalid
 
     it "stages an unopenable pre-outbox version and its fresh successor in one CAS-safe state" $ do
       let decision =
@@ -106,8 +525,125 @@ lifecycleAuthorityTlsRetentionSuite =
         `shouldBe` TlsLegacyRecoveryStagingNoop recoveryPendingRecord
       decideTlsRestore state RestoreCommittedAbsent
         `shouldBe` TlsRestoreRefused TlsRestoreRecoveryPending
+      decideTlsTerminalReplacementStaging
+        KeyRotationNotApproved
+        recoveryTerminalState
+        recoveryTerminalEvidence
+        terminalReplacementEvidence
+        ref4Successor
+        envelope4Successor
+        `shouldBe` TlsTerminalReplacementStaged
+          legacyRecoveryEvidence
+          recoverySuccessorEvidence
+          recoveryTerminalEvidence
+          recoverySuccessorDisplacedIdentity
+          terminalReplacementEvidence
+          recoveryTerminalPendingRecord
+      decideTlsTerminalReplacementStaging
+        KeyRotationNotApproved
+        recoverySuccessorPending3
+        recoveryTerminalEvidence
+        (terminalReplacementEvidence {tlsTerminalReplacementVersion = RetentionVersion 5})
+        (ref4Replacement {retainedVersion = RetentionVersion 5})
+        envelope4Replacement
+        `shouldBe` TlsTerminalReplacementStagingRefused
+          ( TlsTerminalReplacementStageEvidenceInvalid
+              TlsTerminalReplacementVersionLineageInvalid
+          )
       decideTlsPromotion KeyRotationNotApproved goodEvidence state ref2
         `shouldBe` TlsPromoted ref2
+
+    it
+      "CASCADE-QUALIFICATION-TLS-TERMINAL-REPLACEMENT-EVIDENCE-INVALID-2026-09-24 distinguishes every closed evidence-invariant family"
+      $ do
+        let decideFrom state approval recovery terminalEvidence candidate =
+              decideTlsTerminalReplacementStaging
+                approval
+                state
+                recovery
+                terminalEvidence
+                candidate
+                envelope4Replacement
+            decide = decideFrom recoverySuccessorPending3
+            expectCauseFrom state approval recovery terminalEvidence candidate cause =
+              decideFrom state approval recovery terminalEvidence candidate
+                `shouldBe` TlsTerminalReplacementStagingRefused
+                  (TlsTerminalReplacementStageEvidenceInvalid cause)
+            expectCause approval recovery terminalEvidence candidate cause =
+              decide approval recovery terminalEvidence candidate
+                `shouldBe` TlsTerminalReplacementStagingRefused
+                  (TlsTerminalReplacementStageEvidenceInvalid cause)
+        expectCause
+          KeyRotationNotApproved
+          recoveryTerminalEvidence
+          ( terminalReplacementEvidence
+              { tlsTerminalReplacementOccupantEnvelopeDigest = "not-a-digest"
+              }
+          )
+          ref4Replacement
+          TlsTerminalReplacementEvidenceMalformed
+        expectCause
+          KeyRotationNotApproved
+          recoveryTerminalEvidence
+          (terminalReplacementEvidence {tlsTerminalReplacementVersion = RetentionVersion 5})
+          ref4Replacement
+          TlsTerminalReplacementVersionLineageInvalid
+        expectCause
+          KeyRotationNotApproved
+          ( recoveryTerminalEvidence
+              { tlsPendingCollisionObservedEnvelopeDigest =
+                  tlsPendingCollisionDisplacedEnvelopeDigest recoveryTerminalEvidence
+              }
+          )
+          terminalReplacementEvidence
+          ref4Replacement
+          TlsTerminalReplacementDigestLineageInvalid
+        expectCause
+          KeyRotationApproved
+          recoveryTerminalEvidence
+          terminalReplacementEvidence
+          ref4Replacement
+          TlsTerminalReplacementApprovalLineageInvalid
+        expectCause
+          KeyRotationNotApproved
+          recoveryTerminalEvidence
+          terminalReplacementEvidence
+          (ref4Replacement {retainedCert = CertIdentity "other" "spki-A" 2000})
+          TlsTerminalReplacementCertificateLineageInvalid
+        expectCause
+          KeyRotationNotApproved
+          recoveryTerminalEvidence
+          terminalReplacementEvidence
+          (ref4Replacement {retainedSourceSecret = SourceSecretRef "uid-other" "rv-1"})
+          TlsTerminalReplacementSourceUidLineageInvalid
+        let priorResourceVersionCandidate =
+              ref3Recovery
+                { retainedSourceSecret = SourceSecretRef "uid-1" "rv-prior-drift"
+                }
+            priorResourceVersionState =
+              TlsRetentionLegacyRecoverySuccessorPendingState
+                legacyRecoveryEvidence
+                recoverySuccessorEvidence
+                ( recoverySuccessorPendingRecord
+                    { tlsPendingCandidate = priorResourceVersionCandidate
+                    }
+                )
+        expectCauseFrom
+          priorResourceVersionState
+          KeyRotationNotApproved
+          recoveryTerminalEvidence
+          terminalReplacementEvidence
+          (ref4Replacement {retainedSourceSecret = SourceSecretRef "uid-1" "rv-terminal"})
+          TlsTerminalReplacementSourceResourceVersionLineageInvalid
+        expectCause
+          KeyRotationNotApproved
+          ( recoveryTerminalEvidence
+              { tlsPendingCollisionDisposition = TlsPendingCollisionAdoptObserved
+              }
+          )
+          terminalReplacementEvidence
+          ref4Replacement
+          TlsTerminalReplacementRecoveryDispositionInvalid
 
     it "durably rebases only an exact immutable recovery collision and still refuses restore" $ do
       let decision =
@@ -178,6 +714,160 @@ lifecycleAuthorityTlsRetentionSuite =
           ref3Recovery
           envelope3Recovery
           `shouldBe` TlsLegacyRecoveryStagingNoop recoverySuccessorPendingRecord
+
+    it "rebases the fixed legacy-recovery successor only at version 3" $ do
+      let decision =
+            decideTlsPendingCollisionStaging
+              KeyRotationNotApproved
+              recoverySuccessorPending3
+              recoverySuccessorCollisionAdoption
+              ref3Collision
+              envelope3Collision
+          state = applyTlsPendingCollisionStaging decision recoverySuccessorPending3
+      decision
+        `shouldBe` TlsPendingCollisionLegacyRecoverySuccessorRebased
+          legacyRecoveryEvidence
+          recoverySuccessorEvidence
+          recoverySuccessorCollisionAdoption
+          recoverySuccessorDisplacedIdentity
+          recoverySuccessorCollisionPendingRecord
+      state `shouldBe` recoverySuccessorCollisionRebasedState
+      currentRetainedRef state `shouldBe` Nothing
+      pendingTlsRetention state `shouldBe` Just recoverySuccessorCollisionPendingRecord
+      decideTlsPendingCollisionStaging
+        KeyRotationNotApproved
+        state
+        recoverySuccessorCollisionAdoption
+        ref3Collision
+        envelope3Collision
+        `shouldBe` TlsPendingCollisionStagingNoop recoverySuccessorCollisionPendingRecord
+      decideTlsPromotion KeyRotationNotApproved goodEvidence state ref3Collision
+        `shouldBe` TlsPromoted ref3Collision
+      mapM_
+        ( \forged ->
+            encodeModelBValue tlsRetentionStateCodec forged `shouldSatisfy` isLeft
+        )
+        [ TlsRetentionLegacyRecoverySuccessorCollisionRebasedState
+            legacyRecoveryEvidence
+            recoverySuccessorEvidence
+            ( recoverySuccessorCollisionAdoption
+                { tlsPendingCollisionVersion = RetentionVersion 4
+                }
+            )
+            recoverySuccessorDisplacedIdentity
+            recoverySuccessorCollisionPendingRecord
+        , TlsRetentionLegacyRecoverySuccessorCollisionRebasedState
+            legacyRecoveryEvidence
+            recoverySuccessorEvidence
+            recoverySuccessorCollisionAdoption
+            ( recoverySuccessorDisplacedIdentity
+                { tlsDisplacedPendingPrevious = Just ref2
+                }
+            )
+            recoverySuccessorCollisionPendingRecord
+        ]
+
+    it "stages the fixed terminal version 4 after the exact legacy v1/v2/v3 chain" $ do
+      let decision =
+            decideTlsPendingCollisionStaging
+              KeyRotationNotApproved
+              recoverySuccessorPending3
+              recoveryTerminalEvidence
+              ref4Successor
+              envelope4Successor
+          state = applyTlsPendingCollisionStaging decision recoverySuccessorPending3
+      decision
+        `shouldBe` TlsPendingCollisionLegacyRecoveryTerminalSuccessorStaged
+          legacyRecoveryEvidence
+          recoverySuccessorEvidence
+          recoveryTerminalEvidence
+          recoverySuccessorDisplacedIdentity
+          recoveryTerminalPendingRecord
+      state `shouldBe` recoveryTerminalState
+      currentRetainedRef state `shouldBe` Nothing
+      pendingTlsRetention state `shouldBe` Just recoveryTerminalPendingRecord
+      decideTlsRestore state RestoreCommittedAbsent
+        `shouldBe` TlsRestoreRefused TlsRestoreRecoveryPending
+      decideTlsPendingCollisionStaging
+        KeyRotationNotApproved
+        state
+        recoveryTerminalEvidence
+        ref4Successor
+        envelope4Successor
+        `shouldBe` TlsPendingCollisionStagingNoop recoveryTerminalPendingRecord
+      decideTlsPromotion KeyRotationNotApproved goodEvidence state ref4Successor
+        `shouldBe` TlsPromoted ref4Successor
+
+    it "rebases the terminal legacy-recovery successor only at version 4" $ do
+      let decision =
+            decideTlsPendingCollisionStaging
+              KeyRotationNotApproved
+              recoveryTerminalState
+              recoveryTerminalCollisionAdoption
+              ref4Collision
+              envelope4Collision
+          state = applyTlsPendingCollisionStaging decision recoveryTerminalState
+      decision
+        `shouldBe` TlsPendingCollisionLegacyRecoveryTerminalSuccessorRebased
+          legacyRecoveryEvidence
+          recoverySuccessorEvidence
+          recoveryTerminalEvidence
+          recoverySuccessorDisplacedIdentity
+          recoveryTerminalCollisionAdoption
+          recoveryTerminalDisplacedIdentity
+          recoveryTerminalCollisionPendingRecord
+      state `shouldBe` recoveryTerminalCollisionRebasedState
+      currentRetainedRef state `shouldBe` Nothing
+      pendingTlsRetention state `shouldBe` Just recoveryTerminalCollisionPendingRecord
+      decideTlsPendingCollisionStaging
+        KeyRotationNotApproved
+        state
+        recoveryTerminalCollisionAdoption
+        ref4Collision
+        envelope4Collision
+        `shouldBe` TlsPendingCollisionStagingNoop recoveryTerminalCollisionPendingRecord
+      decideTlsPromotion KeyRotationNotApproved goodEvidence state ref4Collision
+        `shouldBe` TlsPromoted ref4Collision
+
+    it "refuses a recursive successor after terminal legacy-recovery version 4" $ do
+      decideTlsPendingCollisionStaging
+        KeyRotationNotApproved
+        recoveryTerminalState
+        ( recoveryTerminalCollisionAdoption
+            { tlsPendingCollisionDisposition = TlsPendingCollisionStepPastUnopenable
+            }
+        )
+        (ref4Collision {retainedVersion = RetentionVersion 5})
+        envelope4Collision
+        `shouldBe` TlsPendingCollisionStagingRefused TlsPendingCollisionStageEvidenceInvalid
+      mapM_
+        ( \forged ->
+            encodeModelBValue tlsRetentionStateCodec forged `shouldSatisfy` isLeft
+        )
+        [ TlsRetentionLegacyRecoveryTerminalSuccessorState
+            legacyRecoveryEvidence
+            recoverySuccessorEvidence
+            recoveryTerminalEvidence
+            recoverySuccessorDisplacedIdentity
+            ( recoveryTerminalPendingRecord
+                { tlsPendingCandidate = ref4Successor {retainedVersion = RetentionVersion 5}
+                }
+            )
+        , TlsRetentionLegacyRecoveryTerminalSuccessorRebasedState
+            legacyRecoveryEvidence
+            recoverySuccessorEvidence
+            recoveryTerminalEvidence
+            recoverySuccessorDisplacedIdentity
+            recoveryTerminalCollisionAdoption
+            recoveryTerminalDisplacedIdentity
+            ( recoveryTerminalCollisionPendingRecord
+                { tlsPendingCandidate =
+                    ref4Collision
+                      { retainedSourceSecret = SourceSecretRef "forged" "source"
+                      }
+                }
+            )
+        ]
 
     it "refuses forged successor metadata and any recovery advance beyond version 3" $ do
       decideTlsLegacyRecoveryStaging
@@ -457,6 +1147,8 @@ lifecycleAuthorityTlsRetentionSuite =
                 { tlsAuthorityStageSubstrate = "home-local"
                 , tlsAuthorityStageScope = "*.example.com"
                 , tlsAuthorityStageApproval = KeyRotationNotApproved
+                , tlsAuthorityStagePendingCollision = Nothing
+                , tlsAuthorityStageTerminalReplacement = Nothing
                 , tlsAuthorityStageCandidate = ref1
                 , tlsAuthorityStageEnvelope = envelope1
                 }
@@ -465,6 +1157,36 @@ lifecycleAuthorityTlsRetentionSuite =
       serveTlsAuthorityStageRequest (1024 * 1024) resolve body
         `shouldReturn` TlsAuthorityStagingNoop pending1
       readIORef writes `shouldReturn` [pending1]
+
+    it "keeps ordinary stage requests byte-compatible while round-tripping replacement evidence" $ do
+      let ordinary =
+            TlsAuthorityStageRequest
+              { tlsAuthorityStageSubstrate = "home-local"
+              , tlsAuthorityStageScope = "*.example.com"
+              , tlsAuthorityStageApproval = KeyRotationNotApproved
+              , tlsAuthorityStagePendingCollision = Nothing
+              , tlsAuthorityStageTerminalReplacement = Nothing
+              , tlsAuthorityStageCandidate = ref1
+              , tlsAuthorityStageEnvelope = envelope1
+              }
+          legacy =
+            LegacyTlsAuthorityStageRequest
+              "home-local"
+              "*.example.com"
+              KeyRotationNotApproved
+              Nothing
+              ref1
+              envelope1
+          replacement =
+            ordinary
+              { tlsAuthorityStagePendingCollision = Just recoveryTerminalEvidence
+              , tlsAuthorityStageTerminalReplacement = Just terminalReplacementEvidence
+              , tlsAuthorityStageCandidate = ref4Replacement
+              , tlsAuthorityStageEnvelope = envelope4Replacement
+              }
+      serialise ordinary `shouldBe` serialise legacy
+      deserialiseOrFail (serialise legacy) `shouldBe` Right ordinary
+      deserialiseOrFail (serialise replacement) `shouldBe` Right replacement
 
     it "serves legacy recovery staging as one durable CAS and exact replay" $ do
       stored <- newIORef (Nothing :: Maybe (StoredTlsRetentionState Int))
@@ -567,6 +1289,214 @@ lifecycleAuthorityTlsRetentionSuite =
       serveTlsAuthorityUnopenableSuccessorStageRequest (1024 * 1024) resolve refusedBody
         `shouldReturn` TlsAuthorityStagingRefused "unopenable-successor-concurrent-pending"
       readIORef writes `shouldReturn` [unopenableSuccessorPending4]
+
+    it "serves the already-skipped successor collision as one durable CAS and exact replay" $ do
+      stored <-
+        newIORef
+          ( Just (StoredTlsRetentionState 1 unopenableSuccessorPending4)
+              :: Maybe (StoredTlsRetentionState Int)
+          )
+      writes <- newIORef ([] :: [TlsRetentionState])
+      let repository = memoryRepository stored writes
+          resolve _ = Right repository
+          body =
+            encodeControlPlaneRequest
+              TlsAuthorityStageRequest
+                { tlsAuthorityStageSubstrate = "home-local"
+                , tlsAuthorityStageScope = "*.example.com"
+                , tlsAuthorityStageApproval = KeyRotationNotApproved
+                , tlsAuthorityStagePendingCollision =
+                    Just unopenableSuccessorCollisionAdoption
+                , tlsAuthorityStageTerminalReplacement = Nothing
+                , tlsAuthorityStageCandidate = ref4Collision
+                , tlsAuthorityStageEnvelope = envelope4Collision
+                }
+      serveTlsAuthorityStageRequest (1024 * 1024) resolve body
+        `shouldReturn` TlsAuthorityStagingApplied unopenableSuccessorCollisionRebasedState
+      serveTlsAuthorityStageRequest (1024 * 1024) resolve body
+        `shouldReturn` TlsAuthorityStagingNoop unopenableSuccessorCollisionRebasedState
+      readIORef writes `shouldReturn` [unopenableSuccessorCollisionRebasedState]
+
+    it "serves the fixed legacy-recovery successor collision as one CAS and replay" $ do
+      stored <-
+        newIORef
+          ( Just (StoredTlsRetentionState 1 recoverySuccessorPending3)
+              :: Maybe (StoredTlsRetentionState Int)
+          )
+      writes <- newIORef ([] :: [TlsRetentionState])
+      let repository = memoryRepository stored writes
+          resolve _ = Right repository
+          body =
+            encodeControlPlaneRequest
+              TlsAuthorityStageRequest
+                { tlsAuthorityStageSubstrate = "home-local"
+                , tlsAuthorityStageScope = "*.example.com"
+                , tlsAuthorityStageApproval = KeyRotationNotApproved
+                , tlsAuthorityStagePendingCollision =
+                    Just recoverySuccessorCollisionAdoption
+                , tlsAuthorityStageTerminalReplacement = Nothing
+                , tlsAuthorityStageCandidate = ref3Collision
+                , tlsAuthorityStageEnvelope = envelope3Collision
+                }
+      serveTlsAuthorityStageRequest (1024 * 1024) resolve body
+        `shouldReturn` TlsAuthorityStagingApplied recoverySuccessorCollisionRebasedState
+      serveTlsAuthorityStageRequest (1024 * 1024) resolve body
+        `shouldReturn` TlsAuthorityStagingNoop recoverySuccessorCollisionRebasedState
+      readIORef writes `shouldReturn` [recoverySuccessorCollisionRebasedState]
+
+    it "serves the terminal legacy-recovery successor as one CAS and replay" $ do
+      stored <-
+        newIORef
+          ( Just (StoredTlsRetentionState 1 recoverySuccessorPending3)
+              :: Maybe (StoredTlsRetentionState Int)
+          )
+      writes <- newIORef ([] :: [TlsRetentionState])
+      let repository = memoryRepository stored writes
+          resolve _ = Right repository
+          body =
+            encodeControlPlaneRequest
+              TlsAuthorityStageRequest
+                { tlsAuthorityStageSubstrate = "home-local"
+                , tlsAuthorityStageScope = "*.example.com"
+                , tlsAuthorityStageApproval = KeyRotationNotApproved
+                , tlsAuthorityStagePendingCollision = Just recoveryTerminalEvidence
+                , tlsAuthorityStageTerminalReplacement = Nothing
+                , tlsAuthorityStageCandidate = ref4Successor
+                , tlsAuthorityStageEnvelope = envelope4Successor
+                }
+      serveTlsAuthorityStageRequest (1024 * 1024) resolve body
+        `shouldReturn` TlsAuthorityStagingApplied recoveryTerminalState
+      serveTlsAuthorityStageRequest (1024 * 1024) resolve body
+        `shouldReturn` TlsAuthorityStagingNoop recoveryTerminalState
+      readIORef writes `shouldReturn` [recoveryTerminalState]
+
+    it "serves the terminal version-4 collision rebase as one CAS and replay" $ do
+      stored <-
+        newIORef
+          ( Just (StoredTlsRetentionState 1 recoveryTerminalState)
+              :: Maybe (StoredTlsRetentionState Int)
+          )
+      writes <- newIORef ([] :: [TlsRetentionState])
+      let repository = memoryRepository stored writes
+          resolve _ = Right repository
+          body =
+            encodeControlPlaneRequest
+              TlsAuthorityStageRequest
+                { tlsAuthorityStageSubstrate = "home-local"
+                , tlsAuthorityStageScope = "*.example.com"
+                , tlsAuthorityStageApproval = KeyRotationNotApproved
+                , tlsAuthorityStagePendingCollision = Just recoveryTerminalCollisionAdoption
+                , tlsAuthorityStageTerminalReplacement = Nothing
+                , tlsAuthorityStageCandidate = ref4Collision
+                , tlsAuthorityStageEnvelope = envelope4Collision
+                }
+      serveTlsAuthorityStageRequest (1024 * 1024) resolve body
+        `shouldReturn` TlsAuthorityStagingApplied recoveryTerminalCollisionRebasedState
+      serveTlsAuthorityStageRequest (1024 * 1024) resolve body
+        `shouldReturn` TlsAuthorityStagingNoop recoveryTerminalCollisionRebasedState
+      readIORef writes `shouldReturn` [recoveryTerminalCollisionRebasedState]
+
+    it "stages the exact terminal version-4 replacement before the compare-and-swap effect" $ do
+      let decision =
+            decideTlsTerminalReplacementStaging
+              KeyRotationNotApproved
+              recoverySuccessorPending3
+              recoveryTerminalEvidence
+              terminalReplacementEvidence
+              ref4Replacement
+              envelope4Replacement
+          state = applyTlsTerminalReplacementStaging decision recoverySuccessorPending3
+      decision
+        `shouldBe` TlsTerminalReplacementStaged
+          legacyRecoveryEvidence
+          recoverySuccessorEvidence
+          recoveryTerminalEvidence
+          recoverySuccessorDisplacedIdentity
+          terminalReplacementEvidence
+          terminalReplacementPendingRecord
+      state `shouldBe` terminalReplacementState
+      encodeModelBValue tlsRetentionStateCodec state `shouldSatisfy` isRight
+      decideTlsTerminalReplacementStaging
+        KeyRotationNotApproved
+        state
+        recoveryTerminalEvidence
+        terminalReplacementEvidence
+        ref4Replacement
+        envelope4Replacement
+        `shouldBe` TlsTerminalReplacementStagingNoop terminalReplacementPendingRecord
+      decideTlsPromotion KeyRotationNotApproved goodEvidence state ref4Replacement
+        `shouldBe` TlsPromoted ref4Replacement
+      decideTlsRestore state RestoreCommittedAbsent
+        `shouldBe` TlsRestoreRefused TlsRestoreRecoveryPending
+
+    it "serves terminal replacement as one durable CAS, exact replay, and no version search" $ do
+      stored <-
+        newIORef
+          ( Just (StoredTlsRetentionState 1 recoverySuccessorPending3)
+              :: Maybe (StoredTlsRetentionState Int)
+          )
+      writes <- newIORef ([] :: [TlsRetentionState])
+      let repository = memoryRepository stored writes
+          resolve _ = Right repository
+          body evidence candidate envelope =
+            encodeControlPlaneRequest
+              TlsAuthorityStageRequest
+                { tlsAuthorityStageSubstrate = "home-local"
+                , tlsAuthorityStageScope = "*.example.com"
+                , tlsAuthorityStageApproval = KeyRotationNotApproved
+                , tlsAuthorityStagePendingCollision = Just recoveryTerminalEvidence
+                , tlsAuthorityStageTerminalReplacement = Just evidence
+                , tlsAuthorityStageCandidate = candidate
+                , tlsAuthorityStageEnvelope = envelope
+                }
+      serveTlsAuthorityStageRequest
+        (1024 * 1024)
+        resolve
+        (body terminalReplacementEvidence ref4Replacement envelope4Replacement)
+        `shouldReturn` TlsAuthorityStagingApplied terminalReplacementState
+      serveTlsAuthorityStageRequest
+        (1024 * 1024)
+        resolve
+        (body terminalReplacementEvidence ref4Replacement envelope4Replacement)
+        `shouldReturn` TlsAuthorityStagingNoop terminalReplacementState
+      let versionFive = ref4Replacement {retainedVersion = RetentionVersion 5}
+      serveTlsAuthorityStageRequest
+        (1024 * 1024)
+        resolve
+        ( body
+            (terminalReplacementEvidence {tlsTerminalReplacementVersion = RetentionVersion 5})
+            versionFive
+            envelope4Replacement
+        )
+        `shouldReturn` TlsAuthorityStagingRefused "terminal-replacement-concurrent-pending"
+      readIORef writes `shouldReturn` [terminalReplacementState]
+
+    it "serves the current-backed bounded successor collision as one CAS and replay" $ do
+      stored <-
+        newIORef
+          ( Just (StoredTlsRetentionState 1 ordinaryCollisionSuccessorState)
+              :: Maybe (StoredTlsRetentionState Int)
+          )
+      writes <- newIORef ([] :: [TlsRetentionState])
+      let repository = memoryRepository stored writes
+          resolve _ = Right repository
+          body =
+            encodeControlPlaneRequest
+              TlsAuthorityStageRequest
+                { tlsAuthorityStageSubstrate = "home-local"
+                , tlsAuthorityStageScope = "*.example.com"
+                , tlsAuthorityStageApproval = KeyRotationNotApproved
+                , tlsAuthorityStagePendingCollision =
+                    Just recoverySuccessorCollisionAdoption
+                , tlsAuthorityStageTerminalReplacement = Nothing
+                , tlsAuthorityStageCandidate = ref3Collision
+                , tlsAuthorityStageEnvelope = envelope3Collision
+                }
+      serveTlsAuthorityStageRequest (1024 * 1024) resolve body
+        `shouldReturn` TlsAuthorityStagingApplied ordinarySuccessorCollisionRebasedState
+      serveTlsAuthorityStageRequest (1024 * 1024) resolve body
+        `shouldReturn` TlsAuthorityStagingNoop ordinarySuccessorCollisionRebasedState
+      readIORef writes `shouldReturn` [ordinarySuccessorCollisionRebasedState]
 
     it
       "TLS-AUTHORITY-UNOPENABLE-VERSION-PERMANENT-RETAIN-STOP-2026-09-15 admits exactly one successor"
@@ -803,6 +1733,14 @@ lifecycleAuthorityTlsRetentionSuite =
         , recoveryCollisionPending2
         , recoverySuccessorPending3
         , unopenableSuccessorPending4
+        , ordinaryCollisionRebasedState
+        , ordinaryCollisionSuccessorState
+        , unopenableSuccessorCollisionRebasedState
+        , recoverySuccessorCollisionRebasedState
+        , ordinarySuccessorCollisionRebasedState
+        , recoveryTerminalState
+        , recoveryTerminalCollisionRebasedState
+        , terminalReplacementState
         ]
 
     it "round-trips pending maximum-size ciphertext without exceeding the state bound" $ do
@@ -913,6 +1851,7 @@ lifecycleAuthorityTlsRetentionSuite =
   envelope2 = mustRight (mkTlsSealedEnvelope "ciphertext-2" "wrapped-2")
   envelope2Collision = mustRight (mkTlsSealedEnvelope "ciphertext-2-old" "wrapped-2-old")
   envelope3Recovery = mustRight (mkTlsSealedEnvelope "ciphertext-3-recovery" "wrapped-3-recovery")
+  envelope3Collision = mustRight (mkTlsSealedEnvelope "ciphertext-3-collision" "wrapped-3-collision")
   envelopeRegress = mustRight (mkTlsSealedEnvelope "ciphertext-3" "wrapped-3")
   envelopeKeyChange = mustRight (mkTlsSealedEnvelope "ciphertext-key" "wrapped-key")
   ref1 = reference 1 (CertIdentity "serial-1" "spki-A" 1000) envelope1
@@ -920,6 +1859,7 @@ lifecycleAuthorityTlsRetentionSuite =
   ref2 = reference 2 (CertIdentity "serial-2" "spki-A" 2000) envelope2
   ref2Collision = ref2 {retainedCiphertextDigest = tlsSealedEnvelopeDigest envelope2Collision}
   ref3Recovery = reference 3 (CertIdentity "serial-2" "spki-A" 2000) envelope3Recovery
+  ref3Collision = reference 3 (CertIdentity "serial-2" "spki-A" 2000) envelope3Collision
   refRegress = reference 3 (CertIdentity "serial-3" "spki-A" 500) envelopeRegress
   refKeyChange = reference 2 (CertIdentity "serial-2" "spki-B" 2000) envelopeKeyChange
   current1 = TlsRetentionCurrent ref1
@@ -931,6 +1871,49 @@ lifecycleAuthorityTlsRetentionSuite =
     applyTlsStaging
       (decideTlsStaging KeyRotationNotApproved current1 ref2 envelope2)
       current1
+  ordinaryDisplacedIdentityRecord =
+    TlsDisplacedPendingIdentity
+      (Just ref1)
+      KeyRotationNotApproved
+      ref2
+  ordinaryCollisionAdoption =
+    TlsPendingCollisionRecovery
+      (RetentionVersion 2)
+      (tlsSealedEnvelopeDigest envelope2)
+      (tlsSealedEnvelopeDigest envelope2Collision)
+      TlsPendingCollisionAdoptObserved
+  ordinaryCollisionSuccessor =
+    ordinaryCollisionAdoption
+      { tlsPendingCollisionDisposition = TlsPendingCollisionStepPastUnopenable
+      }
+  ordinaryCollisionPendingRecord =
+    TlsRetentionPending (Just ref1) KeyRotationNotApproved ref2Collision envelope2Collision
+  ordinaryCollisionSuccessorPendingRecord =
+    TlsRetentionPending (Just ref1) KeyRotationNotApproved ref3Recovery envelope3Recovery
+  ordinaryCollisionRebasedState =
+    TlsRetentionPendingCollisionRebasedState
+      ordinaryCollisionAdoption
+      ordinaryDisplacedIdentityRecord
+      ordinaryCollisionPendingRecord
+  ordinaryCollisionSuccessorState =
+    TlsRetentionPendingCollisionSuccessorState
+      ordinaryCollisionSuccessor
+      ordinaryDisplacedIdentityRecord
+      ordinaryCollisionSuccessorPendingRecord
+  ordinarySuccessorDisplacedIdentity =
+    TlsDisplacedPendingIdentity
+      (Just ref1)
+      KeyRotationNotApproved
+      ref3Recovery
+  ordinarySuccessorCollisionPendingRecord =
+    TlsRetentionPending (Just ref1) KeyRotationNotApproved ref3Collision envelope3Collision
+  ordinarySuccessorCollisionRebasedState =
+    TlsRetentionPendingCollisionSuccessorRebasedState
+      ordinaryCollisionSuccessor
+      ordinaryDisplacedIdentityRecord
+      recoverySuccessorCollisionAdoption
+      ordinarySuccessorDisplacedIdentity
+      ordinarySuccessorCollisionPendingRecord
   legacyRecoveryEvidence =
     TlsLegacyRecoveryEvidence
       (RetentionVersion 1)
@@ -965,6 +1948,61 @@ lifecycleAuthorityTlsRetentionSuite =
       legacyRecoveryEvidence
       recoverySuccessorEvidence
       recoverySuccessorPendingRecord
+  recoverySuccessorCollisionAdoption =
+    TlsPendingCollisionRecovery
+      (RetentionVersion 3)
+      (tlsSealedEnvelopeDigest envelope3Recovery)
+      (tlsSealedEnvelopeDigest envelope3Collision)
+      TlsPendingCollisionAdoptObserved
+  recoverySuccessorDisplacedIdentity =
+    TlsDisplacedPendingIdentity
+      Nothing
+      KeyRotationNotApproved
+      ref3Recovery
+  recoverySuccessorCollisionPendingRecord =
+    TlsRetentionPending Nothing KeyRotationNotApproved ref3Collision envelope3Collision
+  recoverySuccessorCollisionRebasedState =
+    TlsRetentionLegacyRecoverySuccessorCollisionRebasedState
+      legacyRecoveryEvidence
+      recoverySuccessorEvidence
+      recoverySuccessorCollisionAdoption
+      recoverySuccessorDisplacedIdentity
+      recoverySuccessorCollisionPendingRecord
+  recoveryTerminalEvidence =
+    recoverySuccessorCollisionAdoption
+      { tlsPendingCollisionDisposition = TlsPendingCollisionStepPastUnopenable
+      }
+  recoveryTerminalPendingRecord =
+    TlsRetentionPending Nothing KeyRotationNotApproved ref4Successor envelope4Successor
+  recoveryTerminalState =
+    TlsRetentionLegacyRecoveryTerminalSuccessorState
+      legacyRecoveryEvidence
+      recoverySuccessorEvidence
+      recoveryTerminalEvidence
+      recoverySuccessorDisplacedIdentity
+      recoveryTerminalPendingRecord
+  recoveryTerminalCollisionAdoption =
+    TlsPendingCollisionRecovery
+      (RetentionVersion 4)
+      (tlsSealedEnvelopeDigest envelope4Successor)
+      (tlsSealedEnvelopeDigest envelope4Collision)
+      TlsPendingCollisionAdoptObserved
+  recoveryTerminalDisplacedIdentity =
+    TlsDisplacedPendingIdentity
+      Nothing
+      KeyRotationNotApproved
+      ref4Successor
+  recoveryTerminalCollisionPendingRecord =
+    TlsRetentionPending Nothing KeyRotationNotApproved ref4Collision envelope4Collision
+  recoveryTerminalCollisionRebasedState =
+    TlsRetentionLegacyRecoveryTerminalSuccessorRebasedState
+      legacyRecoveryEvidence
+      recoverySuccessorEvidence
+      recoveryTerminalEvidence
+      recoverySuccessorDisplacedIdentity
+      recoveryTerminalCollisionAdoption
+      recoveryTerminalDisplacedIdentity
+      recoveryTerminalCollisionPendingRecord
   forgedStalePending =
     TlsRetentionPendingState
       (TlsRetentionPending (Just ref2) KeyRotationNotApproved ref1 envelope1)
@@ -976,7 +2014,27 @@ lifecycleAuthorityTlsRetentionSuite =
     mustRight (mkTlsSealedEnvelope "ciphertext-3-unopenable" "wrapped-3-unopenable")
   envelope4Successor =
     mustRight (mkTlsSealedEnvelope "ciphertext-4-successor" "wrapped-4-successor")
+  envelope4Collision =
+    mustRight (mkTlsSealedEnvelope "ciphertext-4-collision" "wrapped-4-collision")
+  envelope4Replacement =
+    mustRight (mkTlsSealedEnvelope "ciphertext-4-replacement" "wrapped-4-replacement")
   ref4Successor = reference 4 (CertIdentity "serial-2" "spki-A" 2000) envelope4Successor
+  ref4Collision = reference 4 (CertIdentity "serial-2" "spki-A" 2000) envelope4Collision
+  ref4Replacement = reference 4 (CertIdentity "serial-2" "spki-A" 2000) envelope4Replacement
+  terminalReplacementEvidence =
+    TlsTerminalReplacementEvidence
+      (RetentionVersion 4)
+      (tlsSealedEnvelopeDigest envelope4Collision)
+  terminalReplacementPendingRecord =
+    TlsRetentionPending Nothing KeyRotationNotApproved ref4Replacement envelope4Replacement
+  terminalReplacementState =
+    TlsRetentionLegacyRecoveryTerminalReplacementState
+      legacyRecoveryEvidence
+      recoverySuccessorEvidence
+      recoveryTerminalEvidence
+      recoverySuccessorDisplacedIdentity
+      terminalReplacementEvidence
+      terminalReplacementPendingRecord
   unopenableEvidence3 =
     TlsUnopenableVersionEvidence
       (RetentionVersion 3)
@@ -987,6 +2045,29 @@ lifecycleAuthorityTlsRetentionSuite =
     TlsRetentionUnopenableSuccessorPendingState
       unopenableEvidence3
       unopenableSuccessorPendingRecord
+  unopenableSuccessorDisplacedIdentity =
+    TlsDisplacedPendingIdentity
+      (Just ref2)
+      KeyRotationNotApproved
+      ref4Successor
+  unopenableSuccessorCollisionAdoption =
+    TlsPendingCollisionRecovery
+      (RetentionVersion 4)
+      (tlsSealedEnvelopeDigest envelope4Successor)
+      (tlsSealedEnvelopeDigest envelope4Collision)
+      TlsPendingCollisionAdoptObserved
+  unopenableSuccessorCollisionPendingRecord =
+    TlsRetentionPending
+      (Just ref2)
+      KeyRotationNotApproved
+      ref4Collision
+      envelope4Collision
+  unopenableSuccessorCollisionRebasedState =
+    TlsRetentionUnopenableSuccessorCollisionRebasedState
+      unopenableEvidence3
+      unopenableSuccessorCollisionAdoption
+      unopenableSuccessorDisplacedIdentity
+      unopenableSuccessorCollisionPendingRecord
   stageUnopenableSuccessor state evidence candidate envelope =
     decideTlsUnopenableSuccessorStaging
       KeyRotationNotApproved

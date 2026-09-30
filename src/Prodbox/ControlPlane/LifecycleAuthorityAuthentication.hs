@@ -53,6 +53,7 @@ import Data.Char (isControl, isSpace)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.Capacity.ProviderWorkerBudget qualified as ProviderWorkerBudget
 import Prodbox.Config.Basics
   ( UnencryptedBasics
       ( basicsClusterId
@@ -61,7 +62,7 @@ import Prodbox.Config.Basics
   )
 import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
 import Prodbox.ControlPlane.AuthenticatedTransport
-  ( AuthenticatedClientProviders
+  ( AuthenticatedClientProviders (..)
   , AuthenticatedClientTransport
   , AuthenticatedTransportBounds
   , AuthenticatedTransportBoundsError
@@ -112,6 +113,7 @@ import Prodbox.Lifecycle.Decommission.Manifest (manifestPublicKeyDigest)
 import Prodbox.Lifecycle.Lease
   ( AuthorityDuration
   , LeaseValueError
+  , addAuthorityDuration
   , authorityDurationFromMicros
   )
 import Prodbox.Runtime.Role
@@ -334,16 +336,31 @@ withLifecycleAuthorityProviderAuthenticatedTransport
      )
   -> IO (Either LifecycleAuthorityAuthenticationError value)
 withLifecycleAuthorityProviderAuthenticatedTransport authentication action = do
-  result <-
-    withLocalLifecycleAuthorityProviderAuthenticatedTransport
-      (lifecycleAuthenticationBounds authentication)
-      (lifecycleAuthenticationProviders authentication)
-      action
-  pure
-    ( mapLeft
-        LifecycleAuthorityLocalTransportUnavailable
-        result
-    )
+  case authorityDurationFromMicros providerDeadlineExtensionMicros of
+    Left err -> pure (Left (LifecycleAuthorityRequestLifetimeInvalid err))
+    Right extension -> do
+      let ordinaryProviders = lifecycleAuthenticationProviders authentication
+          providerProviders =
+            ordinaryProviders
+              { provideAuthenticatedClientDeadline =
+                  fmap
+                    (fmap (`addAuthorityDuration` extension))
+                    (provideAuthenticatedClientDeadline ordinaryProviders)
+              }
+      result <-
+        withLocalLifecycleAuthorityProviderAuthenticatedTransport
+          (lifecycleAuthenticationBounds authentication)
+          providerProviders
+          action
+      pure
+        ( mapLeft
+            LifecycleAuthorityLocalTransportUnavailable
+            result
+        )
+ where
+  providerDeadlineExtensionMicros =
+    ProviderWorkerBudget.providerWorkerAuthenticatedRequestLifetimeMicros
+      - lifecycleAuthorityRequestLifetimeMicros
 
 withLifecycleAuthorityRetainedDeliveryAuthenticatedTransport
   :: LifecycleAuthorityAuthentication

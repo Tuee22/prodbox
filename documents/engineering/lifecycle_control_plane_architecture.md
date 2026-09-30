@@ -1551,20 +1551,25 @@ Authority-lane occupied-version adoption and one-version unopenable successor. T
 counted rather than netted against the pre-outbox maxima: each pre-outbox branch needs an empty
 aggregate and each Authority-lane branch a committed reference, but that exclusion holds at one
 retain and not across one attempt, since a first retain that enters empty and promotes leaves the
-aggregate current for the retain-on-ready in the same attempt. It therefore retains `2 * 38 = 76`, with a
-distinct 154 MiB encoded ceiling for 76 accepted 2 MiB responses plus replay metadata. The Vault
-listener's finite 224 MiB request ceiling covers the projection's at-most 205.34 MiB Base64 expansion plus its bounded
+aggregate current for the retain-on-ready in the same attempt. Terminal legacy recovery and its
+same-version race add eight requests, and the bounded Authority successor's same-version race adds
+three. It therefore retains `2 * 49 = 98`, with a distinct 198 MiB encoded ceiling for 98 accepted
+2 MiB responses plus replay metadata. The Vault listener's finite 288 MiB request ceiling covers the
+projection's at-most 264 MiB Base64 expansion plus its bounded
 KV JSON envelope. Provider Worker derives `2 * (1 + 6 * 4 + 3 + 7 + 5) = 80`: one AWS-scope
 proof; observe/reconcile-observe/mutate/read-back for six Provider-mutated non-EKS registered
 families; three Provider observations around the Kubernetes-owned DNS01 deletion; seven requests
 across EKS observation, drain, destroy, and read-back; five terminal-audit queries; and one
 immediate unchanged retry. Its replay response limit is the same 64 KiB limit already enforced by
 the Provider client, and 80 maximum responses plus metadata fit under the unchanged 12 MiB encoded
-ceiling. TLS Retention remains at generic capacity four and the 12 MiB encoded ceiling. A limit
-change is a retained codec migration: canonical v2 through v12 bytes are admitted only when stored
+ceiling. TLS Retention derives one complete attempt as ten requests on the deepest terminal
+pre-outbox collision path, one restore, and eight bounded Authority-lane collision requests later
+in the same attempt. It therefore retains `2 * (10 + 1 + 8) = 38` for that attempt plus one
+immediate retry, with a 78 MiB encoded ceiling for 38 maximum 2 MiB responses plus metadata. A
+limit change is a retained codec migration: canonical v2 through v14 bytes are admitted only when stored
 capacity is no greater than the role's compiled target, stored response maximum is no smaller than
 the new maximum, clock skew is identical, and every retained response validates under the new
-maximum. All entries survive and the next successful CAS writes v13 with the current limits. The
+maximum. All entries survive and the next successful CAS writes v15 with the current limits. The
 encoded and Vault-request ceilings may widen only to the new compiled finite bounds. Capacity
 shrink, response-limit widening, clock-skew drift, an oversized retained response, corruption, or
 deleting replay evidence to make room fails closed. An
@@ -1700,7 +1705,9 @@ auditor-role cleanup are distinct from the fenced service-session result. That r
 the closed lifecycle constructor for journal commit/availability, binding role/occupation/shape,
 pre-clean audit, cleaned login ambiguity, cleanup audit/exception, or cleanup-journal commit.
 Pre-clean and cleanup audit causes identify only identity, accessor observation, accessor
-classification, visibility wait, or stable-zero failure. Direct revoke status stays provisional;
+classification, visibility wait, or stable-zero failure. Classification further distinguishes an
+accessor that disappeared after the authoritative inventory from an unavailable lookup and the
+generic non-production fallback; all three still fail closed. Direct revoke status stays provisional;
 only the independent absence proof closes the session. Tokens, accessors, journal keys, Vault
 responses, operation identifiers, and receipt values cannot enter this diagnostic, and the
 classification changes no session, delivery, cleanup, completion, or receipt behavior.
@@ -2330,6 +2337,13 @@ trusted on those downstream routes; widening Target trust would let a caller sel
 outside the committed outbox and is forbidden. NetworkPolicy admits the same exact Authority Pod
 lane in both directions rather than granting cross-role namespace-wide access.
 
+The retained Authority repository preserves storage failures as a closed internal algebra rather
+than free text: reads are corrupt, endpoint-unready, or unobservable; writes are refused-corrupt,
+endpoint-unready, or unobservable. A protected diagnostic may render only the corresponding fixed
+`read/...` or `write/...` token. Provider, codec, object-name, credential, and transport detail is
+discarded before that renderer. The public workflow response remains the generic unavailable
+answer, so this diagnostic cannot widen retry authority, admit state, or change a CAS result.
+
 For retention after issuance or renewal:
 
 1. Authority commits a bounded retention intent naming the selected substrate, exact canonical
@@ -2409,8 +2423,31 @@ a successor-pending state containing the version-1 evidence, both version-2 coll
 displaced version-2 approval/candidate identity, and the complete version-3 outbox. The displaced
 and successor approval, certificate, and source must match. That state grants no current,
 predecessor, restore, or issuance authority; ordinary exact Adapter read-back, exact source
-re-observation, and promotion remain mandatory. A different version-3 immutable occupant or any
-attempt to advance to version 4 within this pre-outbox branch refuses.
+re-observation, and promotion remain mandatory. A different version-3 immutable occupant is first
+authenticated for same-version adoption. If it is authenticated-unopenable, the retained
+v1/v2/v3 chain admits one fixed terminal version 4: missing stages fresh bytes and present requires
+authenticated apply/read-back and same-version adoption. An authenticated-unopenable v4 does not
+admit v5. Authority first CAS-stages its exact digest, the complete prior chain, the displaced v3
+identity, and a replacement v4 outbox; the Adapter then re-observes the exact ETag, issues
+`If-Match`, and confirms by read-back. Applied response loss replays from the confirmed replacement,
+while a changed occupant or third-party race refuses. A v4 racing an initially missing observation
+enters the same durable state. Restore/apply/source verification and promotion remain mandatory.
+No state or workflow transition admits version 5 or recursively searches for a free key.
+
+The version-2 and version-3 historical candidates retain one exact source UID/resourceVersion
+coordinate. Terminal-v4 retention is a new selected-Agent observation: it must keep that UID, but
+its opaque Kubernetes `resourceVersion` may advance. The fresh v4 coordinate is bound into the
+Target AEAD associated data and encrypted plaintext, the retained reference, and the durably staged
+outbox. Immutable Adapter read-back and a subsequent exact selected-Agent source re-observation
+must both match that v4 coordinate before promotion. Historical resourceVersion drift between v2
+and v3, a v4 UID change, or any v4 read-back/re-observation mismatch still refuses.
+
+The terminal-replacement staging refusal projects its durable-proof validation into eight fixed
+value-free families: malformed evidence, version, digest, approval, certificate, source UID,
+pre-terminal source resource version, and recovery disposition. Staging and durable decode share
+the same pure validation conjunction; the projection changes no state transition,
+compare-and-swap, Adapter effect, restore, or promotion decision, and arbitrary peer refusal detail
+remains unloggable.
 
 A nonempty Authority state outside these exact recovery states and the Authority-lane successor
 state below, changed binding/evidence, missing/corrupt version-2 bytes, every other Adapter,
@@ -2452,13 +2489,44 @@ approval. Exact staging replay is a no-op; a different candidate, envelope, pred
 approval is a concurrent-pending refusal. The state codec bounds both envelope components and the
 complete encoded state, validates every semantic reference field and pending relationship on read
 and write, and preserves the canonical encodings of the earlier Empty and Current constructors.
+
+If replaying that ordinary pending reaches an immutable-put conflict and the confirming exact-key
+read returns different canonical bytes, the pending is not routed back through ordinary staging:
+ordinary staging cannot supersede a different pending and would refuse deterministically. The
+workflow instead authenticates the exact occupant at the selected Target. A successful apply and
+source read-back authorizes one Authority CAS replacing the outbox at the same version; an exact
+retained-home wrapped-DEK authentication failure authorizes one Authority CAS staging fresh bytes
+at the immediate successor version. Both appended states retain the displaced pending's
+predecessor, approval and candidate identity plus the displaced and observed digests. Their
+validator reconstructs the original ordinary transition and the collision transition from those
+durable values, so response loss replays idempotently and no version search, second skip, changed
+approval, changed predecessor or inferred occupant metadata is admitted. The CAS commits before
+the occupant's bytes are stored idempotently or the successor object is written. This
+ordinary-pending transition does not silently widen other states.
+
+Every pending that already represents a one-version skip owns a separate same-version-only
+collision transition. The three origins are a direct Authority-lane unopenable successor, the
+current-backed successor of an ordinary pending collision, and the current-less fixed version-3
+successor of legacy recovery. Because each state already records one skipped version, an
+authenticated occupant at the successor slot may replace the pending only at that exact version
+after selected-Agent apply and source read-back. Its origin-specific append-only state preserves
+the complete original proof chain alongside the displaced-successor identity and both collision
+digests, and the codec validates the original one-skip relation plus the same-version adoption
+relation from those values. The legacy origin remains current-less and reconstructs its version-1
+failure, version-2 collision, and version-3 staging relation; it is never projected as a committed
+predecessor. The host compares the Authority response's complete origin evidence and replacement
+pending to what it observed before resuming. If the successor-slot occupant cannot be opened, the
+transition refuses rather than probing or staging a farther version, so the original one-version
+bound remains a bound across retries and collisions.
+
 Durable state constructors are only ever appended, so every earlier constructor keeps its wire tag;
-the Authority-lane successor outbox is the most recent append and carries its skipped-version
-evidence beside the ordinary pending value. `validateTlsRetentionState` validates every outbox from
-the record alone — the ordinary and Authority-lane successor outboxes by literally re-running their
-own staging decision against a state rebuilt from the pending, the pre-outbox recovery outboxes by
-an equivalent predicate over the same fields — which is why every input to an admission, including
-a version skip, must be durably present rather than supplied as an argument.
+the ordinary collision rebase/successor states and the three origin-specific
+already-spent-successor collision-rebase states are the most recent appends, and carry their full
+origin and collision evidence beside the replacement pending value. `validateTlsRetentionState` validates
+every outbox from the record alone — the ordinary, Authority-lane successor, and ordinary-collision
+outboxes by re-running their staging relation against reconstructed durable inputs, the pre-outbox
+recovery outboxes by an equivalent predicate over the same fields — which is why every input to an
+admission, including a version skip, must be durably present rather than supplied as an argument.
 
 Only the migration from a pre-outbox deployment may inspect an occupied next version without a
 pending record. That recovery route accepts one `RetentionVersion` and performs one exact-key GET
@@ -2735,23 +2803,37 @@ credential to call its provider, return plaintext after sealing, or read any pat
 registered schema. A stale or forged authority cannot advance target generation merely by
 possessing transport access.
 
-The bounded attach exchange classifies transport failure at exactly eight value-free stages:
+The bounded attach exchange classifies transport failure at exactly eleven value-free stages:
 limits validation, initial-payload validation, process start, initial-payload write, provisional
-read, decision-continuation write, completion collection, and wall-clock timeout. The Target Agent
-may project those constructors to fixed `attach-failed/...` diagnostics, but it never retains or
-emits the underlying exception, `kubectl` response, payload, or frame bytes. A stage is observation,
-not retry authority: once initial ingress may have reached the worker, the controller preserves the
-existing exact cleanup and refusal semantics rather than replaying an ambiguous secret-bearing
-exchange.
+read, decision-continuation write, completion-frame read, stderr drain, trailing-stdout validation,
+process-exit wait, and wall-clock timeout. If the child closes before its provisional frame, the
+generic subprocess boundary may additionally carry only its already-bounded stderr and exit status
+to the Target interpreter. That interpreter admits one exact exit-1 worker-owned Vault-session
+cleanup refusal into a fixed nested diagnostic; mixed, appended, oversized, or arbitrary output
+collapses to the ordinary provisional-read token. No raw stderr crosses the interpreter boundary.
+Every public refusal and effect result is unchanged. A stage is observation, not retry authority:
+once initial ingress may have reached the worker, the controller preserves the existing exact
+cleanup and refusal semantics rather than replaying an ambiguous secret-bearing exchange.
 
 The retained service-session preparation immediately before permit issuance has its own closed
 diagnostic boundary. Allocation and preparation errors are converted from the exhaustive
 `ServiceSessionLifecycleError` algebra to a value-free cause ADT before they enter the coordinator;
 only fixed `session-prepare-failed/...` tokens may be emitted. A preclean refusal retains its exact
 closed accessor-audit stage under `preclean/...`—identity, auditor login/evidence, inventory
-observation, accessor classification, known identity, revocation, visibility wait, or stable
-absence—without carrying provider detail. Embedded Vault, audit, journal, and action details never
+observation, accessor classification absent/unavailable/fallback, known identity, revocation,
+visibility wait, or stable absence—without carrying provider detail. HTTP 404 is absent only at
+accessor lookup after the inventory named that accessor; every other lookup failure is unavailable.
+Embedded Vault, audit, journal, and action details never
 cross that boundary, and the projection grants no additional retry or cleanup authority.
+
+The matching retained session-close diagnostic preserves the closed audit member already carried
+by `ServiceSessionLifecycleCleanupFailed`: identity invalid, inventory observation failed,
+accessor classification absent/unavailable/fallback, visibility wait failed, or stable absence
+failed. These are fixed
+`session-cleanup-failed/accessor-audit/...` tokens. An unrecognized rendered shape becomes
+`accessor-audit/unrecognized`; provider text, accessors, journal values, and secrets never cross the
+protected boundary. This observation neither retries the attach nor weakens mandatory role-wide
+cleanup.
 
 Sealing itself is response-loss safe. A receipt-committed `TargetSealMutation` authorizes one
 secret-free `TargetSealMetadata` value carrying only the operation/action ID, schema, and bound; it
@@ -3207,15 +3289,15 @@ the rendered production envelope; current live replacement-pass status remains s
 development-plan resume ledger.
 
 Two disjoint long-running Lifecycle Authority routes have response budgets derived from the
-operations they contain. The Provider route admits at most a 300-second child deadline and adds
-30 seconds for authenticated framing, authority projection, response encoding, and socket
-completion, producing a finite 330-second HTTP response budget; both the host-to-Authority client
-and Authority-to-Provider client consume that same typed bound for execute and
-admit-and-execute. Admission-only stays on the generic Authority budget because it starts no
-Provider effect. Capacity validation rejects any Provider profile above that admitted maximum. The
-Lifecycle Authority server's accepted-connection envelope also uses that 330-second upper bound:
-it contains the nested Provider response and retains enough time to encode an exact Authority
-result if the Provider Worker's unchanged 300-second server envelope returns a terminal timeout.
+operations they contain. A live registered EKS create took about fourteen minutes and completed in
+the Provider Worker, proving that the former 300-second maximum described neither the child nor a
+usable intent lifetime. The Provider effect is now physically capped at thirty minutes and the
+signed intent has the same lifetime. The Provider server adds thirty seconds for its authenticated
+framing, projection, response encoding and socket completion; the Authority client, host client and
+retained replay ownership add one further thirty-second layer. The exact ordering is therefore
+`30m < 30m30s < 31m`, so the innermost boundary that can decide an outcome expires before its
+caller. Admission-only stays on the generic Authority budget because it starts no Provider effect,
+and capacity validation rejects any Provider profile above the thirty-minute admitted maximum.
 Every sibling role keeps the established 300-second server envelope, and their shorter clients
 remain unchanged. The
 retained-material delivery route likewise owns
@@ -3328,6 +3410,17 @@ discarded, and an exact pair authored by neither producer becomes `other`. A suc
 Authority diagnostic renders the closed client cause below
 `tls-retention/workflow failure=adapter/`, while the workflow's public response, retry, retention,
 and storage decisions remain unchanged.
+
+The same workflow diagnoses its authenticated self-client separately below
+`tls-retention/workflow failure=authority/`. The projection is exhaustive and value-free across
+slot validation, signer/scope/epoch/deadline/nonce acquisition, binding/signing/frame construction,
+endpoint validation, bounded HTTP connection/timeout/status/decode, response codec/status, remote
+refusal, unavailable, concurrent-write, and response-shape failure. HTTP values are reduced to a
+closed status class, every fixed endpoint-authored domain refusal has its own literal projection,
+and any other peer-supplied refusal becomes `other`; all payload-bearing detail is erased before the
+protected log. The public workflow response remains
+`TlsRetentionWorkflowAuthorityStateUnavailable`; the diagnostic grants no retry, repository, CAS,
+or effect authority.
 
 Trust-record observation is nested once more at its Vault source. It distinguishes session
 acquisition from the single forbidden-triggered relogin, sealed/forbidden/unavailable session

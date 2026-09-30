@@ -279,7 +279,7 @@ controlPlaneRoleInterpretersSuite =
         (status, body) <-
           serveTls
             interpreter
-            (post "/v1/tls-retention/store" (encoded (TlsStorePayload ref1 tlsEnvelope)))
+            (post "/v1/tls-retention/store" (encoded (TlsStorePayload ref1 tlsEnvelope Nothing)))
         status `shouldBe` ReplyOk
         (decodeStrictResponse body :: Either ControlPlaneRequestCodecError TlsRetentionReceipt)
           `shouldSatisfy` isRight
@@ -560,6 +560,16 @@ freshTlsInterpreter initial ready = do
                       { tlsRetentionReceiptReference = reference
                       , tlsRetentionReceiptEnvelopeDigest = tlsSealedEnvelopeDigest envelope
                       , tlsRetentionReceiptObjectVersion = "fixture-etag"
+                      }
+                )
+          , replaceTlsEnvelope = \_ reference envelope -> do
+              writeIORef stateRef (Just (reference, envelope))
+              pure
+                ( Right
+                    TlsRetentionReceipt
+                      { tlsRetentionReceiptReference = reference
+                      , tlsRetentionReceiptEnvelopeDigest = tlsSealedEnvelopeDigest envelope
+                      , tlsRetentionReceiptObjectVersion = "fixture-replaced-etag"
                       }
                 )
           , restoreTlsEnvelope = \reference -> do

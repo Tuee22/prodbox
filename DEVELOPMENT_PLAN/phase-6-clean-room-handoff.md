@@ -7073,6 +7073,511 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
   qualification artifact and no activation witness exists, the legacy public writer remains sole,
   and no consecutive-cycle pair has completed.
 
+- **Live cycle `pre-1-20260923` crossed every earlier TLS blocker and measured a different
+  boundary: the registered `aws-eks` effect took about fourteen minutes and completed inside the
+  Provider Worker, while the five-minute Provider intent/server/replay envelope expired before the
+  reply could return.** The worker's protected trace reached `capability-execution=completed`,
+  `response-encoding=completed`, and `socket-completion=completed`; the caller received
+  `AuthorityProviderRemoteRefused 503 "ProviderWorkerResponseInvalid
+  ControlPlaneRequestInvalid"` after durable ownership-manifest version
+  `57b6f27b6a1a78eaf40d9dfc619e51a1` had been committed. This is stable counterexample
+  `CASCADE-QUALIFICATION-PROVIDER-EFFECT-OUTLIVES-FIVE-MINUTE-ENVELOPE-2026-09-23`. It is not an
+  AWS-effect failure and it is not permission to retry the create from outside the registered
+  lane.
+- **The Provider envelope now describes the operation actually observed.** The maximum child and
+  signed-intent lifetime is finite at thirty minutes, the Provider server has thirty minutes plus
+  one thirty-second reply allowance, and the Authority client, host client and authenticated replay
+  ownership have one further thirty-second allowance: `30m < 30m30s < 31m`. Provider execution is
+  also physically wrapped at the thirty-minute wall clock, so the larger authenticated envelope
+  cannot license an unbounded child. Ordinary roles retain their established five-minute admission
+  and server bounds. The primary suite passes **5,175/5,175** with the new strict-ordering and
+  timeout cases; live re-crossing is pending.
+- **Recovery cycle `recovery-pre-1-20260923` measured the TLS Retention Adapter row Sprint `2.135`
+  deliberately left open.** One restore attempt reached a fifth Adapter request while four retained
+  replay slots were occupied, and the Authority protected trace reported
+  `adapter/http-status/replay-capacity-exhausted`. Stable counterexample
+  `CASCADE-QUALIFICATION-TLS-ADAPTER-REPLAY-CAPACITY-EXHAUSTED-2026-09-23` resolves the paper/live
+  disagreement. The role now derives an exact per-attempt maximum of ten requests — five deepest
+  pre-outbox recovery, one restore, and four Authority-lane requests later in the same attempt — and
+  retains one complete attempt plus one immediate retry at capacity twenty. The encoded ceiling is
+  42 MiB, and codec v14 admits canonical v2-through-v13 retained state without dropping entries.
+- **That recovery also reached the ordinary durable-pending collision that had no Authority
+  transition.** The trace named `resumed-retention-version-occupied/v3`: the staged pending's
+  immutable slot held different canonical bytes, so replaying the displaced envelope could never
+  succeed and the ordinary staging transition could never replace it. Stable counterexample
+  `CASCADE-QUALIFICATION-TLS-ORDINARY-PENDING-COLLISION-UNRECOVERABLE-2026-09-23` now has two
+  bounded durable outcomes. An occupant that authenticates and applies is CAS-rebased at the exact
+  version; an occupant whose wrapped DEK fails retained-home authentication permits exactly its
+  immediate successor, never a search. Both constructors retain the displaced pending identity and
+  both are revalidated from their durable record on every codec crossing before Adapter storage or
+  promotion. The production Authority endpoint/client and ordinary workflow consume the transition;
+  the focused ordinary workflow group passes **52/52**, the collision group **11/11**, and the
+  authenticated transport suite **39/39**. The narrower unopenable-successor-outbox collision still
+  has no superseding transition and remains registered separately; live re-crossing of this ordinary
+  repair is pending.
+- **Canonical validation after all three repairs exits 0.** Pinned Fourmolu is clean, HLint reports
+  `No hints`, all targets compile warning-clean, governed documentation/diff gates pass, primary unit
+  is **5,175/5,175**, and auxiliaries are **27/27**, **35/35**, and **39/39**. This is the exact
+  source/doc revision the next live cycle must build; an earlier image cannot qualify it.
+- **Corrected-runtime cycle `recovery-provider-envelope-tls-replay-collision-20260923` crossed the
+  first two repaired boundaries and isolated the narrower collision left registered above.** It
+  built local image
+  `sha256:6c9bac55b0b4613de492f74f8efc1b7f5cea2cebc7452ab55f86417cadd73266`, published registry
+  manifest `sha256:afeccaf272bc28937fdfbd1fccdc0e524c598a9fcae9e34ecf44608645b505d6`, and imported OCI
+  manifest `sha256:56255130b2e7b4cda2950d4109accc925e10289569ad091e9a898b8ff0df3d63`.
+  Restore no longer exhausted Adapter replay capacity. It completed websocket delete, API delete,
+  gateway delete, gateway MinIO bootstrap, gateway reconcile, API reconcile, websocket reconcile,
+  and public-edge readiness, but vscode delete and reconcile both failed. The Authority protected
+  trace named `resumed-retention-version-occupied/v3`. The state was provisionally inferred to be
+  `TlsRetentionUnopenableSuccessorPendingState`: the already-bounded one-version skip had staged its
+  v3 successor, and that successor slot itself contained different immutable bytes. This is stable
+  counterexample
+  `CASCADE-QUALIFICATION-TLS-UNOPENABLE-SUCCESSOR-PENDING-COLLISION-2026-09-23`. It is not the
+  ordinary-pending transition just repaired and must not be admitted by weakening that transition's
+  state gate. The legal convergence is narrower: authenticate and apply the exact occupant, retain
+  the original skipped-version evidence plus the displaced-successor identity in a new append-only
+  Authority state, and adopt at the same version only. An occupant whose DEK is unopenable refuses;
+  this state has already spent its one skip and may never search for another version.
+- **The state-specific correction is landed and keeps the original bound intact.**
+  `TlsRetentionUnopenableSuccessorCollisionRebasedState` is appended after every prior durable
+  constructor and carries the original skipped-version evidence, the displaced-successor identity,
+  both collision digests and the replacement pending. Its codec validator reconstructs the
+  original one-skip relation and admits only `TlsPendingCollisionAdoptObserved` at the same version.
+  The workflow authenticates/applies the occupant and proves source read-back before the Authority
+  CAS; its response validator compares the original skip evidence and the complete pending before
+  resuming storage and promotion. A second authenticated-unopenable occupant returns
+  `retention-version-unopenable/v<n>` without staging, selected-Agent retain, or a farther-version
+  observation. Focused Authority proof passes **39/39**, same-version fold/serve/workflow replay
+  passes **4/4**, and the explicit no-second-skip workflow passes **1/1**. Stable counterexample
+  `CASCADE-QUALIFICATION-TLS-UNOPENABLE-SUCCESSOR-PENDING-COLLISION-2026-09-23` was provisionally
+  closed by repair; the live result below reopens it.
+- **Live cycle `recovery-unopenable-successor-collision-20260923` disproved that production
+  closure.** It built local image
+  `sha256:bdfdd1d0bcd9e42d5d04e1bbdf37301dbc9dbf2a4a52d22f9db81b9a9c4f0c3b` in 1157.4 seconds,
+  published registry manifest
+  `sha256:aa4f040ae7c5419a03bad1d7968a36cd69df8402821756a5bc8f6c218d2c7e3f`, and imported OCI
+  manifest `sha256:95ca83b292471c0f808a561c7acc908c67f94c4df736293e0444c8e5e16b9908` in 92.7 seconds.
+  The retained Authority and root marker read back current and the authenticated operational
+  credential advanced to generation 5. Restore deleted websocket, API and gateway, recreated the
+  gateway MinIO bootstrap, and restored gateway, API, websocket and the public edge to
+  `ready-for-external-proof`; vscode delete and reconcile both refused. The protected Authority
+  log reported `resumed-retention-version-occupied/v3`, then `pending-without-current`, then
+  `resumed-retention-version-occupied/v3`. The middle refusal identifies the actual state as
+  current-less `TlsRetentionLegacyRecoverySuccessorPendingState`, not the provisionally inferred
+  direct current-backed successor: legacy version 1 was unopenable, its occupied version-2
+  recovery slot was also unopenable, and the staged fixed version-3 successor collided. Thus the
+  focused fake did not reproduce the production lineage. The command exited 1, preserved
+  operational credentials, produced no qualification artifact or activation witness, and left the
+  legacy public writer sole.
+- **The exact production-shaped lineage now has a distinct same-version-only transition.**
+  `TlsRetentionLegacyRecoverySuccessorCollisionRebasedState` retains the complete current-less
+  chain: legacy version-1 failure evidence, the version-2 collision and displaced identity, the
+  fixed version-3 successor evidence, the version-3 displaced/observed digests, and the replacement
+  pending. Its validator reconstructs every admission and permits only
+  `TlsPendingCollisionAdoptObserved` at version 3. The workflow recognizes that exact origin,
+  authenticates/applies the occupant, proves source read-back, commits one Authority CAS, validates
+  the complete response, and only then resumes immutable storage/read-back/promotion. An unopenable
+  occupant returns `retention-version-unopenable/v3` without selected-Agent retain or a version-4
+  observation. The structurally identical already-spent successor of an ordinary pending collision
+  receives its own `TlsRetentionPendingCollisionSuccessorRebasedState`; the earlier direct
+  current-backed state remains separate. Focused legacy-recovery proof passes **5/5**,
+  current-backed proof **3/3**, the exact stable-counterexample workflow **1/1**, and authenticated
+  transport **39/39**. Canonical `prodbox dev check` exits 0 with primary **5,186/5,186**,
+  auxiliaries **27/27**, **35/35**, and **39/39**, pinned Fourmolu, HLint `No hints`, warning-clean
+  all-target compilation, and governed plan/docs checks. The gate-built and installed executable is
+  byte-identical at
+  `sha256:39dc727a7fb31c1b7a0c8ac3aa6899dc302662742af81b41ed4f489cff6698b4`. Live re-crossing
+  remains owed before the row closes.
+- **Live cycle `recovery-legacy-successor-collision-20260923` crosses that exact transition and
+  narrows the boundary.** It builds local image
+  `sha256:59586187009cf3aa66606e75fb4ab397d97f762d73f528c07db898eb8a759a07` in 1,155.3 seconds,
+  publishes registry manifest
+  `sha256:972b690c4b9846d9afb5c9ce653dd58b956864b30720bc533a9a853418764ea4`, and imports OCI
+  manifest `sha256:f1ed09ce11a96cf47022f7b58596ed784b0d371ddf474a45d0f9810cd6193710`
+  in 91.3 seconds. The Authority/root marker read back current and operational credentials advance
+  to generation 6. During restore the protected Authority trace reports
+  `retention-version-unopenable/v3`, `pending-without-current`, then
+  `retention-version-unopenable/v3`; the former `resumed-retention-version-occupied/v3` refusal is
+  gone. The origin-specific transition is therefore production-reachable, but its exact occupant
+  cannot authenticate and same-version adoption correctly refuses. The one-skip invariant makes
+  version 4 unrepresentable. Stable counterexample
+  `CASCADE-QUALIFICATION-TLS-LEGACY-RECOVERY-SUCCESSOR-UNOPENABLE-2026-09-23` owns the remaining
+  gap: the current-less legacy-recovery chain has exhausted its only successor while its live
+  source remains. The command exits 1, preserves operational credentials, creates no artifact or
+  activation witness, restores gateway/API/websocket and the public edge to
+  `ready-for-external-proof`, and repeats the known vscode delete/reconcile failures. The legacy
+  public writer remains sole.
+- **The exhausted current-less chain now has one fixed terminal continuation, not a search.**
+  `TlsRetentionLegacyRecoveryTerminalSuccessorState` retains the complete version-1 evidence,
+  version-2 collision/displaced candidate, and version-3 collision/displaced candidate while
+  staging exactly version 4. The workflow first observes that fixed key: corrupt refuses, a present
+  envelope must authenticate/apply/read back before same-version adoption, and absence permits one
+  fresh retain/wrap. A later v4 race is represented separately by
+  `TlsRetentionLegacyRecoveryTerminalSuccessorRebasedState`, which may adopt only at v4. No state,
+  decision, or workflow arm admits v5. State validation, codec rejection of forged v4/v5 records,
+  Authority endpoint CAS/replay, promotion, and the exact production-shaped missing-v4 path are
+  focused-green. The longer reachable graph derives TLS Adapter capacity
+  `2 * (10 + 1 + 8) = 38` with a 78 MiB ceiling and Target Agent capacity `2 * 49 = 98` with a
+  198 MiB ceiling; replay codec v15 migrates v2-through-v14 state, and the finite Vault request
+  ceiling is 288 MiB. Canonical `prodbox dev check` exits 0 with primary **5,190/5,190**,
+  auxiliaries **27/27**, **35/35**, and **40/40**, pinned formatting, HLint `No hints`,
+  warning-clean all-target compilation, governed plan/docs checks, and installed executable
+  `sha256:4b0ca019a708a78ca0b4890d8a6347ba4920b81831d93f5d227835865cb3b1f2`. Live re-crossing is
+  next.
+- **No qualification artifact or activation witness exists from either 2026-09-23 cycle.** The
+  first exited after the Provider return envelope expired; the second and corrected-runtime cycles
+  exited in restore before candidate execution. Operational credentials were preserved, the
+  retained local Authority stayed installed, and the legacy public writer remains sole. The
+  next corrected-runtime cycle is the next campaign action; the two consecutive qualifying cycles
+  still restart at zero.
+- **Live cycle `recovery-terminal-legacy-successor-20260923` reaches the fixed terminal slot and
+  proves its occupant is also authenticated-unopenable.** The protected Authority log reports
+  `retention-version-unopenable/v4`, `pending-without-current`, then the same v4 refusal on
+  retain-on-ready. No v5 is probed, so the bounded transition behaves as designed; the live history
+  has nevertheless exhausted its only terminal continuation. Stable counterexample
+  `CASCADE-QUALIFICATION-TLS-LEGACY-RECOVERY-TERMINAL-SUCCESSOR-UNOPENABLE-2026-09-23` owns the
+  remaining exact boundary: converge or replace the authenticated-unopenable v4 occupant without a
+  recursive version search and without weakening the durable v1/v2/v3/v4 proof chain. The run
+  builds local image `sha256:c09eb73a63bb447af89e1dba84ad1ed35ccc669ebff356a2ea48a04b8fcf30b1`
+  in **1,052.3 s**, publishes registry manifest
+  `sha256:12c989ac638490d2b396f563a4e5de22a755d0193569c5751ae9f6bfd88991ef`, and imports OCI
+  manifest `sha256:225311ff048dd2949c7e67601f553663bca709b29cd3bf5724a3acdefda9ff31`
+  in **96.9 s**. The command exits 1 with no artifact or activation witness, preserves generation-7
+  operational credentials, restores gateway/API/websocket and the public edge to
+  `ready-for-external-proof`, and repeats the known vscode delete/reconcile failures. The legacy
+  public writer remains sole.
+- **The exact v4 occupant now converges by proof-bound replacement, not by a fifth version.** The
+  Authority first CAS-stages `TlsRetentionLegacyRecoveryTerminalReplacementState`, which retains
+  the complete v1/v2/v3 lineage, displaced v3 identity, authenticated-unopenable v4 occupant digest,
+  and exact replacement pending. The Adapter then re-observes v4 and issues S3 `If-Match` against
+  its exact ETag, followed by mandatory read-back; an applied-but-response-lost reply succeeds from
+  that read-back, and a third-party race refuses. Both the live already-present-v4 shape and a v4
+  race after an initially missing observation resume through the same durable state. Restore,
+  selected-Agent apply, exact source verification, and promotion remain mandatory. No v5, list,
+  delete, or recursive search exists. Ordinary store and Authority-stage payloads use hand-written
+  canonical codecs that reproduce the pre-change generic bytes when replacement evidence is
+  absent and admit the wider form only when it is present, preserving rolling schema-v1 peers.
+  Canonical `prodbox dev check` passes the repair's state/Authority/Adapter/workflow and rolling-wire
+  cases at primary **5,196/5,196**, auxiliaries **27/27**, **35/35**, and **40/40**, with pinned
+  formatting, HLint `No hints`, warning-clean all-target compilation, governed plan/docs checks, and
+  installed executable
+  `sha256:1e3a9436563c334ba738d529d33b21da4d426dcb6b8bf15c6f72d277e38a647e`. The longest closed
+  workflow derives nine 930-second Target calls, eleven ten-second short calls, and thirty seconds
+  of response overhead, fixing the route-specific host timeout at **8,510 seconds**. Live
+  re-crossing is next; no qualification artifact or activation witness exists and the two-cycle
+  count remains zero.
+- **Live cycle `recovery-terminal-v4-exact-replacement-20260923` crosses the terminal-v4
+  replacement and stops at a later Target-session boundary.** It builds local image
+  `sha256:518ebf70bd118b0f41fedec2f95c206dbfd078df244da1155bbf18b1d921a406` in 1,133.6 seconds,
+  publishes Registry manifest
+  `sha256:a136590a2f83ad81495be91b68c9dd35cec2b1e78e16945d2f3d1e51a83bae35`, and imports OCI
+  manifest `sha256:bed9720e3279ea2dbe71ce8638d89cc91898de153c59ebc0261d4235fea99627` in 96.9
+  seconds. TLS retention advances through Phase 1.6, live-closing
+  `CASCADE-QUALIFICATION-TLS-LEGACY-RECOVERY-TERMINAL-SUCCESSOR-UNOPENABLE-2026-09-23`. VS Code
+  delete/reconcile later selects Target retain
+  `coordinator/attach-failed/provisional-read-unavailable`; the next prepare retry selects
+  `coordinator/session-cleanup-failed/accessor-audit-failed`. The durable TLS state remains
+  `pending-without-current` and restore refuses. Gateway, API, WebSocket and the public edge recover,
+  the edge reaches `ready-for-external-proof`, VS Code remains failed, operational credentials are
+  preserved at generation 8, and no artifact or activation witness exists.
+- **The newly measured attribution loss is closed code-locally before behavior changes.** Stable
+  counterexample
+  `CASCADE-QUALIFICATION-TLS-SESSION-CLEANUP-ACCESSOR-AUDIT-CAUSE-DISCARDED-2026-09-24` freezes
+  that the retained `VaultAccessorAuditError` was collapsed to one token. The protected Target
+  renderer now distinguishes only the five reachable fixed stages—identity, observation,
+  classification, visibility wait, and stable absence—and maps arbitrary detail to
+  `accessor-audit/unrecognized`. The named focused reproducer passes **1/1**; no wire value,
+  timeout, retry, Vault operation, fencing, or cleanup behavior changes. Rerun the same recovery
+  cycle to select the exact audit subcause before changing behavior. The qualifying-cycle count
+  remains zero and the legacy writer remains sole. Canonical `prodbox dev check` passes primary
+  **5,196/5,196** plus auxiliaries **27/27**, **35/35**, and **40/40**, with pinned formatting,
+  HLint `No hints`, warning-clean all-target compilation, policy, generated-artifact, and
+  governed-document checks. The gate-built and installed executable is byte-identical at
+  `sha256:c854368781cebd111e034663ce94cb3c5b76a7d92e5af6307d2269ce0d17594b`.
+- **Live cycle `recovery-target-session-audit-cause-20260924` stops earlier at the TLS Authority
+  client boundary.** Phase 1.6 returns `TlsRetentionWorkflowAuthorityStateUnavailable` before the
+  Target-session path. The protected Authority trace is exactly `authority-state-unavailable`,
+  `pending-without-current`, `authority-state-unavailable`; that public workflow class does not say
+  whether the self-client failed before the endpoint, the endpoint returned unavailable, or its
+  repository failed. Recovery refuses TLS
+  restore, restores Gateway/API/Redis/WebSocket and the public edge to
+  `ready-for-external-proof`, leaves VS Code failed, preserves generation-9 operational
+  credentials, and produces no artifact or activation witness. The run builds local image
+  `sha256:1aa229f3c42059fcf9b69bf5432ee5ca18d4384fbab02d2fba2bbb457bbf2869` in
+  1,138.8 seconds, publishes Registry manifest
+  `sha256:45443d18fe3f5eb820f1163f4aad768f6fc94f6a21abbe2ac8306315a8aae428`, and imports OCI
+  manifest `sha256:9d38ca870aa33021f5314c5745774915fa4d740d8c4d4af771d26e5e745c0d91` in
+  91.5 seconds. The cycle count remains zero and the legacy writer remains sole.
+- **A repository-local attribution loss found by source inspection is closed code-locally without
+  changing the unavailable response.** Stable counterexample
+  `CASCADE-QUALIFICATION-TLS-AUTHORITY-REPOSITORY-CAUSE-DISCARDED-2026-09-24` freezes that inspected
+  boundary. The repository carries typed read causes—corrupt, endpoint-unready, unobservable—and
+  typed write causes—refused-corrupt, endpoint-unready, unobservable—to a behavior-neutral
+  diagnostic decorator. Only those six tokens can reach the protected log; arbitrary codec,
+  provider, object-name, credential, and transport detail is discarded first. Endpoint encoding,
+  CAS, retries, timeouts, and workflow behavior are unchanged. The named focused reproducer passes
+  **1/1**. This closes the repository deficiency without attributing the live primary to it; the
+  next cycle emits no repository diagnostic. Canonical `prodbox dev check`
+  passes primary **5,197/5,197** plus auxiliaries **27/27**, **35/35**, and **40/40**, with pinned
+  formatting, HLint `No hints`, warning-clean all-target compilation, policy, generated-artifact,
+  and governed-document checks. The gate-built and installed executable is byte-identical at
+  `sha256:7730591db88269e225239f06ac8338750e113922d2436f42a1d3a8be96e3ec62`.
+- **Live cycle `recovery-tls-authority-repository-cause-20260924` falsifies repository failure as
+  the freshly traversed primary.** Phase 1.6 again returns
+  `TlsRetentionWorkflowAuthorityStateUnavailable`, while the protected Authority log contains no
+  `tls-retention/authority-repository failure=...` token. It later records
+  `pending-without-current` and
+  `selected-agent/http-status/target/prepare/one-shot-operation-unavailable`; the Target log
+  selects that later cause as
+  `coordinator/session-prepare-failed/preclean/classification-failed`. Recovery refuses TLS
+  restore, restores Gateway/API/WebSocket and the public edge, leaves VS Code failed, preserves
+  operational credentials, and produces no artifact or activation witness. The run builds local
+  image `sha256:f6aa83f019ceed099f7063ae1d5650066980d7e6ebc8e7a7faac4fc6521bc7b6` and publishes Registry
+  manifest `sha256:d11d17fdb5437798e25231e7920bb7e5d9ca5e3dca75e7df604a2da2dfa763eb`; no trustworthy OCI
+  identity or build-duration observation survived the retained transcript, so none is claimed. The
+  cycle count remains zero and the legacy writer remains sole.
+- **The remaining first-terminal attribution loss is closed code-locally before behavior
+  changes.** Stable counterexample
+  `CASCADE-QUALIFICATION-TLS-AUTHORITY-CLIENT-CAUSE-DISCARDED-2026-09-24` freezes that
+  `TlsWorkflowAuthorityFailed` retained a complete `TlsRetentionAuthorityClientError` while its
+  protected renderer discarded it. The exhaustive replacement emits only fixed value-free
+  `authority/...` causes for slot validation, authenticated providers, endpoint/HTTP transport,
+  response codec/status, remote refusal, unavailable, concurrent-write, and response-shape
+  failures. Payloads cannot cross the renderer; the public response, wire, deadlines, replay,
+  repository, and effects are unchanged. The named focused reproducer passes **1/1**. Rerun the
+  same live retain to select the exact outer cause before changing behavior. The later Target
+  preclean counterexample stays open and now has its exact live-selected cause. Canonical
+  `prodbox dev check` passes primary **5,198/5,198** plus auxiliaries **27/27**, **35/35**, and
+  **40/40**, with pinned formatting, HLint `No hints`, warning-clean all-target compilation,
+  policy, generated-artifact, and governed-document checks. The gate-built and installed
+  executable is byte-identical at
+  `sha256:e85dea9517b1fc74b9f2f275c95b6b1b4615b3a451428b60a1d1c31e4d11a431`.
+- **Live cycle `recovery-tls-authority-client-cause-20260924` crosses the outer diagnostic and
+  selects the Target completion collector as the first stop.** The protected Authority log now
+  reports `home-agent/http-status/target/prepare/one-shot-operation-unavailable`, and the Target
+  log reports `coordinator/attach-failed/completion-collection-unavailable`. Stable counterexample
+  `CASCADE-QUALIFICATION-TLS-HOME-PREPARE-ATTACH-COMPLETION-COLLECTION-UNAVAILABLE-2026-09-24`
+  owns that first behavioral failure. A later retain-on-ready attempt separately reports
+  `authority/remote-refusal/other`; stable diagnostic counterexample
+  `CASCADE-QUALIFICATION-TLS-AUTHORITY-REMOTE-REFUSAL-OTHER-2026-09-24` owns it after the primary.
+  Recovery restores Gateway/API/WebSocket and the public edge to `ready-for-external-proof`, but
+  VS Code remains failed, TLS restore refuses, operational credentials remain preserved, and no
+  artifact or activation witness exists. The cycle builds local image
+  `sha256:2db1eebffffc1da8603e85b3bfee744df997c1377e6b806b91f12fc02954605a` in 1,131.7 seconds,
+  publishes Registry manifest
+  `sha256:cd015fc332e6a9dad2aff46dd322f88a5e83d76a01233cc6365ab07474667e9b`, and imports OCI
+  manifest `sha256:1fbe08bcbe81acf83b2225286fd012ffee6dbb141a15e389326e387c0964a452`
+  in 89.0 seconds. Lifecycle-provider credentials advance to generation 11; only the immediately
+  superseded Registry manifest and local image are removed. Inspect and repair the completion
+  collector before changing the later refusal classifier, then rerun the exact cycle. The cycle
+  count remains zero and the legacy writer remains sole.
+- **The completion collector's remaining attribution loss is closed code-locally before attach
+  behavior changes.** Its former single stage merged terminal-frame read, stderr drain,
+  trailing-stdout validation, and process-exit wait. Those operations now carry four exhaustive
+  value-free transport constructors and protected Target tokens; exception text, child output,
+  payload, and frame bytes remain erased. Attach argv, frames, deadlines, cleanup, retries, and
+  child lifetime are unchanged. The named real-child reproducer reaches provisional success,
+  consumes the continuation, exits without a terminal acknowledgement, and selects
+  `completion-frame-read`; it passes **1/1**. The exhaustive vocabulary regression also passes
+  **1/1**. Re-cross the exact live cycle before changing behavior; the missing `--quiet` parity
+  with the other repository-owned binary attach is an inspected candidate, not yet a claimed
+  cause.
+  Canonical `prodbox dev check` passes primary **5,199/5,199** plus auxiliaries **27/27**,
+  **35/35**, and **40/40**, with pinned formatting, HLint `No hints`, warning-clean all-target
+  compilation, policy, generated-artifact, and governed-document checks. The gate-built and
+  installed executable is byte-identical at
+  `sha256:a9c1ea41ea058b253603eae4e70b4aaf5dc571ea6e05f01ff4267af2ea7eb5ad`.
+
+- **Live diagnostic cycle `recovery-tls-completion-stage-20260924` selects terminal-frame read and
+  reorders the remaining attribution work from fresh evidence.** The protected Target token is
+  `coordinator/attach-failed/completion-frame-read-unavailable`: provisional success was emitted,
+  the continuation was consumed, and the worker exited before the host read its terminal cleanup
+  acknowledgement. The same protected log orders `authority/remote-refusal/other` before
+  `pending-without-current`, the later selected-Agent refusal, and the Target failure. Refine that
+  first Authority boundary before changing worker cleanup behavior. The cycle builds local image
+  `sha256:4aa921487a605febe3c486c48baa2e2788692daa61cbaebb2ae33129a73a5d61` in 1,142.9 seconds,
+  publishes Registry manifest
+  `sha256:c822c5e3dd595d03c97881f20bbf36fb4f24ba33ea20c9b088ec00798c212613`, and imports OCI
+  manifest `sha256:8624f9c8a9ecaa256c69a7e05d6c693fcfeb2868a6f9a6fdf47dd62cd2dcfe72`
+  in 89.3 seconds. Lifecycle-provider credentials advance to generation 12; only the immediately
+  superseded Registry manifest and local image are removed. Gateway/API/WebSocket and the public
+  edge recover to `ready-for-external-proof`; VS Code and exact TLS restore fail. Credentials are
+  preserved, no artifact or witness exists, the cycle count remains zero, and the legacy writer
+  remains sole.
+- **The first remaining Authority attribution boundary is closed code-locally.** Stable
+  counterexample
+  `CASCADE-QUALIFICATION-TLS-AUTHORITY-REMOTE-REFUSAL-OTHER-2026-09-24` now retains each of the 44
+  fixed refusal values authored by the endpoint through an explicit literal projection and maps
+  every other peer value to `remote-refusal/other`. The protected result cannot contain arbitrary
+  response text. The public failure, response wire, status validation, deadlines, replay,
+  repository, CAS, and effects are unchanged. Its named exhaustive regression passes **1/1**.
+  Re-cross live to select the exact first domain refusal before changing worker behavior.
+  Canonical `prodbox dev check` passes primary **5,200/5,200** plus auxiliaries **27/27**,
+  **35/35**, and **40/40**, with pinned formatting, HLint `No hints`, warning-clean all-target
+  compilation, policy, generated-artifact, and governed-document checks. The gate-built and
+  installed executable is byte-identical at
+  `sha256:d3c83798c5b1f61830c6b4de7c3833a251e58a876e5083555f3c4bd3c31b9fe3`.
+- **Live cycle `recovery-tls-authority-remote-refusal-20260924` selects the exact terminal
+  replacement refusal.** The protected Authority log reports
+  `authority/remote-refusal/terminal-replacement-evidence-invalid`, then
+  `pending-without-current`, then the same refusal on retain-on-ready; Target emits no failure in
+  this cycle. Stable counterexample
+  `CASCADE-QUALIFICATION-TLS-TERMINAL-REPLACEMENT-EVIDENCE-INVALID-2026-09-24` owns that first
+  behavioral stop. Inspect evidence construction and durable validation before changing
+  admission; the separately open missing Target completion frame was not selected. The cycle
+  builds local image
+  `sha256:9d3c714638c91706ceb5f19652a58a767d82d613579b9fdb70763db97f8e8132` in 1,141.7 seconds,
+  publishes Registry manifest
+  `sha256:be6f2349106f59cb8f5cb76fb7827e1f2014a454ba2d4067a97b508a6d0859ab`, and imports OCI
+  manifest `sha256:06564144fe5b8e3f696ed122b1e534282743071c45150c292558f917a58b1ab6`
+  in 93.9 seconds. Lifecycle-provider credentials advance to generation 13; only the immediately
+  superseded Registry manifest and local image are removed. Gateway/API/WebSocket and the public
+  edge recover to `ready-for-external-proof`; VS Code and exact TLS restore fail. Credentials are
+  preserved, no artifact or witness exists, the cycle count remains zero, and the legacy writer
+  remains sole.
+- **The terminal-replacement evidence collapse is split before behavior changes.** Its former
+  single refusal merged malformed evidence, version lineage, digest lineage, approval lineage,
+  certificate lineage, source UID lineage, source resource-version lineage, and recovery
+  disposition. The pure validator now returns those eight closed causes while enforcing the same
+  conjunction for staging and durable decode;
+  the endpoint and self-client project only fixed authored values, retain the rolling-peer generic
+  token, and still collapse arbitrary detail. The named table-shaped reproducer selects every
+  family and passes **1/1**. Re-cross live before changing the selected invariant. Canonical
+  `prodbox dev check` passes primary **5,201/5,201** plus auxiliaries **27/27**, **35/35**, and
+  **40/40**, with pinned formatting, HLint `No hints`, warning-clean all-target compilation,
+  policy, generated-artifact, and governed-document checks. The synchronized executable is
+  `sha256:5bd962b55a9072805396c0ff3ea2968c38161133f1a227a42492c25763c5a503`.
+- **Live cycle `recovery-tls-terminal-evidence-cause-20260924` selects source lineage.** The
+  protected Authority log reports
+  `authority/remote-refusal/terminal-replacement-evidence-invalid/source-lineage`, then
+  `pending-without-current`, then the same refusal on retain-on-ready; Target emits no protected
+  failure. Stable counterexample
+  `CASCADE-QUALIFICATION-TLS-TERMINAL-REPLACEMENT-SOURCE-LINEAGE-INVALID-2026-09-24` owns the
+  first behavioral stop. The cycle builds local image
+  `sha256:0c549b5bafb6493820a0e79cd7d3f7e6c64c9615f59a6d86d9d7cf94bf1ec201` in 1,147.8 seconds,
+  publishes Registry manifest
+  `sha256:d18bca121f9efeaebd5323b887ceb92088cc87db15b4c8c78f4b62e1c2b95bb6`, and imports OCI
+  manifest `sha256:98298628dba0f89deeab0e6a0498a39341bf9d610b3a750ec31975278952e2dc`
+  in 91.7 seconds. Lifecycle-provider credentials advance to generation 14; only the immediately
+  superseded Registry manifest and local image are removed. Gateway/API/WebSocket and the public
+  edge recover to `ready-for-external-proof`; VS Code and exact TLS restore fail. Credentials are
+  preserved, no artifact or witness exists, the cycle count remains zero, and the legacy writer
+  remains sole. Inspect the staged replacement's source binding against the retained proof chain
+  before changing admission.
+- **The selected source classification is split once more without changing behavior.** Its two
+  predicates are now reported separately as fixed `source-uid-lineage` and
+  `source-resource-version-lineage` causes. Exact equality remains required for both; the
+  rolling-peer `source-lineage` token is still recognized, and arbitrary peer detail remains
+  collapsed. The named invariant-family and authored-refusal regressions each pass **1/1**.
+  Re-cross live before weakening either field. Canonical `prodbox dev check` passes primary
+  **5,201/5,201** plus auxiliaries **27/27**, **35/35**, and **40/40**, with pinned formatting,
+  HLint `No hints`, warning-clean all-target compilation, policy, generated-artifact, and
+  governed-document checks. The synchronized executable is
+  `sha256:f0b43d7cba0424e946a55fdaf3df286da16f9ac74c1c4f9fa24a65f5cd959be5`.
+- **Live cycle `recovery-tls-terminal-source-field-20260924` stops earlier in the Target session
+  audit.** Authority records
+  `selected-agent/http-status/target/retain/one-shot-operation-unavailable`, then
+  `pending-without-current`, then
+  `selected-agent/http-status/target/prepare/one-shot-operation-unavailable`. Target selects
+  `coordinator/session-cleanup-failed/accessor-audit/classification-failed` and
+  `coordinator/session-prepare-failed/preclean/classification-failed`. This re-selects the open
+  `TLS-RETENTION-SELECTED-RESTORE-SESSION-PRECLEAN-FAILED-2026-09-04` at its exact classification
+  arm before either source field is evaluated. The cycle builds local image
+  `sha256:ea6c2c3eaac4791d17fe5fe0299cef73674207a524eefa20e0c3754cf599db55`
+  in 1,151.1 seconds, publishes Registry manifest
+  `sha256:03c5d938d45d4fa672a42afc1fd2d3df979466deeb03e7bb46f40dd59525712a`,
+  and imports OCI manifest
+  `sha256:502f2cce4d241fc7fa1a48c435f6a69c0f73676133d3bb8e141c81c988196d4d`
+  in 94.7 seconds. Credentials advance to generation 15; only the immediately superseded
+  image/manifest are removed. Gateway/API/WebSocket and the public edge recover to
+  `ready-for-external-proof`; VS Code and exact TLS restore fail. Credentials are preserved, no
+  artifact or witness exists, the cycle count remains zero, and the legacy writer remains sole.
+  Refine the erased accessor-lookup failure before changing audit behavior: the global inventory
+  can race token expiry or another cleanup between list and lookup.
+- **The accessor-classification diagnostic is split without changing stable-zero behavior.** A
+  closed lookup failure now maps exact HTTP 404 to `VaultAccessorLookupAbsent` and every other
+  HTTP/transport/decode failure to `VaultAccessorLookupUnavailable`; both continue to fail the
+  audit. Target preclean and cleanup emit only fixed `classification-absent` or
+  `classification-unavailable` tokens, with the generic fallback retained for injected tests.
+  Vault bodies, accessors, and provider detail remain erased. The named regression covers the HTTP
+  classifier, shared audit, prepare, cleanup, and payload erasure and passes **1/1**. Canonical
+  `prodbox dev check` passes primary **5,201/5,201** plus auxiliaries **27/27**, **35/35**, and
+  **40/40**, with pinned formatting, HLint `No hints`, warning-clean all-target compilation,
+  policy, generated-artifact, and governed-document checks. The synchronized executable is
+  `sha256:69f9f9479606bfa883e83b8f15ac777883a418f33ee613db58a782f69abf547f`.
+  Re-cross live before changing the stable-zero algorithm.
+- **Live cycle `recovery-target-accessor-lookup-cause-20260924` crosses the accessor boundary and
+  selects terminal source resource-version lineage.** The protected Authority log reports
+  `authority/remote-refusal/terminal-replacement-evidence-invalid/source-resource-version-lineage`,
+  then `pending-without-current`, then the same refusal on retain-on-ready; Target emits no
+  protected failure. This selects the resource-version half of
+  `CASCADE-QUALIFICATION-TLS-TERMINAL-REPLACEMENT-SOURCE-LINEAGE-INVALID-2026-09-24`; source UID
+  continuity remains valid. The cycle builds local image
+  `sha256:e2f91fa1e0ff0500e4decb7984aec50ba09cb6e6959fce93293353870ff73929`, publishes Registry
+  manifest `sha256:42f53caa5cef209c217905a4442660fefe1b9c0ad4e219868978ef6cf34e0d33`, and imports OCI
+  manifest `sha256:72db8bd91b756bd9026ba0108ae9b5c2d3118a51ec240f8c7918afdd98094a72`
+  in 89.2 seconds. Credentials advance to generation 16; only the immediately superseded
+  image/manifest are removed. Gateway/API/WebSocket and the public edge recover to
+  `ready-for-external-proof`; VS Code and exact TLS restore fail. Credentials are preserved, no
+  artifact or witness exists, the cycle count remains zero, and the legacy writer remains sole.
+  The intermittent accessor-race counterexample stays open because neither refined lookup arm was
+  selected. Repair only terminal-v4 resource-version lineage: v2/v3 remain equal, v4 retains its
+  fresh exact source coordinate, and the existing exact read-back/re-observation still gates
+  promotion.
+- **The selected terminal-v4 source-resourceVersion defect is closed code-locally; live
+  re-crossing is pending.** The retained v2/v3 proof continues to require the same exact source UID
+  and resourceVersion. Terminal v4 must retain that UID but may carry the fresh resourceVersion
+  retention observed and sealed into its candidate; the authenticated-encryption binding,
+  retained reference/outbox, immutable candidate read-back, and selected-Agent exact source
+  re-observation remain mandatory. The production-shaped regression first proves the superseded
+  v4-equals-v3 predicate returns
+  `TlsTerminalReplacementSourceResourceVersionLineageInvalid`, then traverses openable-v3
+  adoption plus present-unopenable, racing, and missing-v4 replacement and passes **1/1**. The full
+  terminal-evidence diagnostic-family table passes **1/1**. Canonical `prodbox dev check` passes
+  primary **5,201/5,201** plus auxiliaries **27/27**, **35/35**, and **40/40**, with pinned
+  formatting, HLint `No hints`, warning-clean all-target compilation, policy, generated-artifact,
+  and governed-document checks. The synchronized executable is
+  `sha256:4e0e991abda77e2c5411d4528ed55c9f245e695009ec93915412bc57fa9a8945`.
+- **Live cycle `recovery-terminal-v4-fresh-source-20260924` crosses the source-resourceVersion
+  repair and selects the next exact Target boundaries.** The repaired terminal-v4 replacement
+  advances into Phase 1.6, live-closing
+  `CASCADE-QUALIFICATION-TLS-TERMINAL-REPLACEMENT-SOURCE-LINEAGE-INVALID-2026-09-24`. VS Code
+  retain returns public `TlsRetentionWorkflowAuthoritySelectedAgentUnavailable`; protected Target
+  evidence selects `coordinator/attach-failed/provisional-read-unavailable`. Restore refuses the
+  durable `pending-without-current`. Retain-on-ready returns
+  `TlsRetentionWorkflowAuthorityHomeAgentUnavailable` and Target selects
+  `coordinator/session-prepare-failed/preclean/classification-unavailable`. That latter result is
+  the fail-closed unavailable lookup arm, not exact HTTP-404 disappearance, so stable-zero behavior
+  must not be weakened.
+
+  Stable counterexample
+  `CASCADE-QUALIFICATION-TLS-RETAIN-PROVISIONAL-FAILURE-CAUSE-DISCARDED-2026-09-24` owns the
+  earlier stop: when the worker exits before its provisional frame, the bounded attach layer drops
+  its bounded stderr/process outcome and retains only the read stage. Refine that boundary
+  behavior-neutrally so only an exact allowlisted runtime refusal reaches the protected diagnostic;
+  arbitrary output remains erased. The accessor counterexample stays open at exact unavailable and
+  is sequenced afterward. The cycle builds local image
+  `sha256:2f177c7bb834b3a3062060719882ede7ffc086356e970c6c06b1d4a8fc524264` in 1,148.3 seconds,
+  publishes Registry manifest
+  `sha256:7aa1d0b9da9af9277bc5ee64376c70d3279b2c015be4be673b089063e8404cae`, and imports OCI
+  manifest `sha256:40a796af69ec43f1ee4d259fb79607ec70e424c9b29cc922095b52c1b01bfdcb`
+  in 92.4 seconds. Credentials advance to generation 17; only the immediately superseded
+  image/manifest are removed. Gateway/API/WebSocket and the public edge recover to
+  `ready-for-external-proof`; VS Code remains failed. Credentials are preserved, no artifact or
+  witness exists, the cycle count remains zero, and the legacy writer remains sole.
+- **The pre-provisional attribution repair is implemented and canonical-valid; live re-crossing is
+  pending.** Only the early-close error carries bounded stderr and exit status from the generic
+  subprocess layer to the Target interpreter. That interpreter recognizes the exact exit-1
+  `TargetSecretWorkerVaultSessionCleanupUnavailable` line and emits fixed
+  `provisional-read-unavailable/worker-vault-session-cleanup-unavailable`. Every other exit, mixed
+  or appended output, oversize, and arbitrary detail stays generic; raw stderr never crosses the
+  interpreter. Public response, retry, session cleanup, and effect behavior remain unchanged. The
+  named exact-output classifier regression freezes the superseded generic result and proves both
+  the exact replacement token and arbitrary-detail erasure **1/1**. Canonical `prodbox dev check`
+  passes primary **5,201/5,201** plus auxiliaries **27/27**, **35/35**, and **40/40**; the
+  synchronized executable is
+  `sha256:a501801fba7b328d893efe058c3e223c08cae701d0dd299783ee500ea85f2ed3`.
+
 ### Remaining Work
 
 1. Complete the existing qualification-only runner, type-indexed activation machinery, scoped
@@ -7129,6 +7634,20 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
    measurement: the widened retention refusal names the version it collided on, and the cycle after
    it says which version that is — which is what decides whether the Authority's view or the store's
    occupancy is the one that drifted, and therefore which of them a repair belongs in.
+
+   **Where this stands on 2026-09-23.** The campaign crossed the Provider deadline, Adapter replay,
+   and ordinary-pending collision repairs, then isolated the already-spent version-3 successor
+   collision. A first repair covered the direct current-backed origin; the next live cycle's
+   `pending-without-current` result proved the actual production origin is the current-less
+   legacy-recovery successor. The exact origin-specific repair and both sibling-bound proofs are
+   code-local, focused-green, canonically validated, and live-reached. The occupant is itself
+   authenticated-unopenable, so same-version adoption refuses exactly as designed. The exhausted
+   chain now retains all three prior versions and admits only fixed terminal version 4; no v5 or
+   recursive search is representable. Canonical validation is green at primary **5,190/5,190** and
+   auxiliary **27/27**, **35/35**, **40/40**. The live re-crossing reaches that transition and proves
+   v4 is also authenticated-unopenable. The exact-v4 conditional replacement repair is now landed
+   and locally validated without a v5/search. Re-cross it live, then restart the two-cycle count at
+   zero; no activation step is licensed before both qualifying cycles exist.
 
 ## Documentation Requirements
 
